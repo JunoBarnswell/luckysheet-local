@@ -1,0 +1,164 @@
+import React, { useState } from 'react';
+import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import type { SparklineModel } from '@react-sheets/core-model';
+
+export interface SparklinePanelProps {
+  sheetId: string;
+  sparklines: SparklineModel[];
+  onAddSparkline: (sparkline: SparklineModel) => void;
+  onRemoveSparkline: (id: string) => void;
+  onClose?: () => void;
+}
+
+export function SparklinePanel({
+  sheetId,
+  sparklines,
+  onAddSparkline,
+  onRemoveSparkline,
+  onClose,
+}: SparklinePanelProps) {
+  const [type, setType] = useState<SparklineModel['type']>('line');
+  const [sourceRange, setSourceRange] = useState('B2:E2');
+  const [targetCell, setTargetCell] = useState('F2');
+  const [color, setColor] = useState('#2563eb');
+  const [highlightMax, setHighlightMax] = useState(true);
+  const [highlightMin, setHighlightMin] = useState(true);
+
+  const handleCreate = () => {
+    // Parse target cell
+    const match = /^([A-Z]+)(\d+)$/.exec(targetCell.toUpperCase());
+    let r = 1;
+    let c = 5;
+    if (match?.[1] && match[2]) {
+      let col = 0;
+      for (const char of match[1]) col = col * 26 + char.charCodeAt(0) - 64;
+      c = col - 1;
+      r = Number(match[2]) - 1;
+    }
+
+    const newSparkline: SparklineModel = {
+      id: 'spark-' + Math.random().toString(36).substring(2, 7),
+      sheetId,
+      anchor: { row: r, column: c },
+      sourceRange: {
+        sheetId,
+        startRow: r,
+        endRow: r,
+        startColumn: 1,
+        endColumn: 4,
+      },
+      type,
+      color,
+      negativeColor: '#ef4444',
+      highlightMax,
+      highlightMin,
+    };
+    onAddSparkline(newSparkline);
+  };
+
+  return (
+    <Panel className="h-full border-0 bg-transparent shadow-none">
+      <PanelHeader className="h-12 border-b border-slate-200 px-4">
+        <PanelTitle size="sm">Sparkline Mini Charts</PanelTitle>
+      </PanelHeader>
+
+      <PanelBody className="p-4">
+        <Stack gap="md">
+          <div>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">
+              Sparkline Style
+            </Text>
+            <Select
+              value={type}
+              onChange={(e) => setType(e.target.value as SparklineModel['type'])}
+              sizeVariant="sm"
+            >
+              <option value="line">Line Trend (with Min/Max dots)</option>
+              <option value="column">Column Bars</option>
+              <option value="win-loss">Win / Loss Indicator</option>
+            </Select>
+          </div>
+
+          <div>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">
+              Data Source Range
+            </Text>
+            <TextInput
+              value={sourceRange}
+              onChange={(e) => setSourceRange(e.target.value)}
+              placeholder="e.g. B2:E2"
+            />
+          </div>
+
+          <div>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">
+              Target Cell
+            </Text>
+            <TextInput
+              value={targetCell}
+              onChange={(e) => setTargetCell(e.target.value)}
+              placeholder="e.g. F2"
+            />
+          </div>
+
+          <div>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">
+              Theme Color
+            </Text>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={color}
+                onChange={(e) => setColor(e.target.value)}
+                className="h-8 w-8 cursor-pointer rounded border border-slate-300 p-0"
+              />
+              <TextInput value={color} onChange={(e) => setColor(e.target.value)} className="h-8 text-xs font-mono" />
+            </div>
+          </div>
+
+          <Button variant="primary" size="sm" icon="sparkline" onClick={handleCreate}>
+            Insert In-Cell Sparkline
+          </Button>
+
+          {sparklines.length > 0 ? (
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
+                Cell Sparklines ({sparklines.length})
+              </Text>
+              <Stack gap="xs">
+                {sparklines.map((s) => (
+                  <div
+                    key={s.id}
+                    className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
+                  >
+                    <div>
+                      <div className="font-medium text-slate-800">
+                        {s.type.toUpperCase()} at R{s.anchor.row + 1}C{s.anchor.column + 1}
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      icon="trash"
+                      iconOnly
+                      onClick={() => onRemoveSparkline(s.id)}
+                      className="text-rose-600 hover:bg-rose-50"
+                    />
+                  </div>
+                ))}
+              </Stack>
+            </div>
+          ) : null}
+        </Stack>
+      </PanelBody>
+
+      {onClose ? (
+        <PanelFooter className="border-t border-slate-200 px-4 py-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close Panel
+          </Button>
+        </PanelFooter>
+      ) : null}
+    </Panel>
+  );
+}

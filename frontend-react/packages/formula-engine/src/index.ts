@@ -4,6 +4,7 @@ export * from './dependencies';
 export * from './errors';
 export * from './evaluator';
 export * from './formula-engine';
+export * from './functions';
 export * from './lexer';
 export * from './parser';
 export * from './range-index';

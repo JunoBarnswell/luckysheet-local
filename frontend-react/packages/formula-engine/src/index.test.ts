@@ -80,6 +80,34 @@ test('FormulaEngine evaluates arithmetic, strings, SUM ranges, and exposes depen
   assert.equal(engine.getCellValue('A3'), 'ignored');
 });
 
+test('FormulaEngine evaluates comprehensive math, logical, text, and lookup functions', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setValue('A1', 10);
+  engine.setValue('A2', 20);
+  engine.setValue('A3', 30);
+  engine.setValue('B1', 'Apple');
+  engine.setValue('B2', 'Banana');
+  engine.setValue('B3', 'Cherry');
+
+  // IF, AVERAGE, COUNT, MIN, MAX
+  assert.equal(engine.setFormula('C1', '=IF(A1 > 5, "YES", "NO")').value, 'YES');
+  assert.equal(engine.setFormula('C2', '=AVERAGE(A1:A3)').value, 20);
+  assert.equal(engine.setFormula('C3', '=COUNT(A1:A3)').value, 3);
+  assert.equal(engine.setFormula('C4', '=MIN(A1:A3)').value, 10);
+  assert.equal(engine.setFormula('C5', '=MAX(A1:A3)').value, 30);
+
+  // VLOOKUP, INDEX, MATCH
+  assert.equal(engine.setFormula('D1', '=VLOOKUP(20, A1:B3, 2, FALSE)').value, 'Banana');
+  assert.equal(engine.setFormula('D2', '=INDEX(B1:B3, 3, 1)').value, 'Cherry');
+  assert.equal(engine.setFormula('D3', '=MATCH("Banana", B1:B3, 0)').value, 2);
+
+  // Text functions: CONCAT, LEFT, RIGHT, UPPER, TEXTJOIN
+  assert.equal(engine.setFormula('E1', '=CONCAT("Hello", " ", "World")').value, 'Hello World');
+  assert.equal(engine.setFormula('E2', '=UPPER(B1)').value, 'APPLE');
+  assert.equal(engine.setFormula('E3', '=LEFT(B2, 3)').value, 'Ban');
+  assert.equal(engine.setFormula('E4', '=TEXTJOIN(", ", TRUE, B1:B3)').value, 'Apple, Banana, Cherry');
+});
+
 test('FormulaEngine recalculates a dependency chain and updates replaced dependencies', () => {
   const engine = new FormulaEngine();
   engine.setFormula('B1', '=A1 + 1');
@@ -132,7 +160,10 @@ function address(sheetId: string, row: number, column: number): CellAddress {
   return { sheetId, row, column };
 }
 
-function assertError(value: FormulaValue, code: '#DIV/0!' | '#VALUE!' | '#REF!' | '#NAME?' | '#PARSE!' | '#CYCLE!'): void {
+function assertError(
+  value: FormulaValue,
+  code: '#DIV/0!' | '#VALUE!' | '#REF!' | '#NAME?' | '#NUM!' | '#N/A' | '#PARSE!' | '#CYCLE!' | '#SPILL!',
+): void {
   assert.equal(isFormulaError(value), true);
   if (!isFormulaError(value)) throw new Error('Expected a formula error');
   assert.equal(value.code, code);

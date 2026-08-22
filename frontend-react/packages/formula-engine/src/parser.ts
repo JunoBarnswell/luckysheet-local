@@ -1,5 +1,7 @@
 import type {
   BinaryExpressionNode,
+  BinaryOperator,
+  BooleanLiteralNode,
   CellReferenceNode,
   FormulaAst,
   FunctionCallNode,
@@ -24,10 +26,61 @@ class Parser {
   constructor(private readonly tokens: readonly Token[]) {}
 
   parse(): FormulaAst {
-    const expression = this.parseAdditive();
+    const expression = this.parseComparison();
     if (!this.check('eof')) {
       const token = this.peek();
       throw new FormulaSyntaxError(`Unexpected token: ${token.lexeme || token.kind}`, token.span.start);
+    }
+    return expression;
+  }
+
+  private parseComparison(): FormulaAst {
+    let expression = this.parseConcat();
+    while (
+      this.check('equal') ||
+      this.check('not-equal') ||
+      this.check('less-than') ||
+      this.check('less-than-equal') ||
+      this.check('greater-than') ||
+      this.check('greater-than-equal')
+    ) {
+      const opToken = this.advance();
+      let operator: BinaryOperator;
+      switch (opToken.kind) {
+        case 'equal': operator = '='; break;
+        case 'not-equal': operator = '<>'; break;
+        case 'less-than': operator = '<'; break;
+        case 'less-than-equal': operator = '<='; break;
+        case 'greater-than': operator = '>'; break;
+        case 'greater-than-equal': operator = '>='; break;
+        default: operator = '=';
+      }
+      const right = this.parseConcat();
+      const node: BinaryExpressionNode = {
+        type: 'binary-expression',
+        operator,
+        left: expression,
+        right,
+        span: spanFrom(expression.span, right.span),
+      };
+      expression = node;
+    }
+    return expression;
+  }
+
+  private parseConcat(): FormulaAst {
+    let expression = this.parseAdditive();
+    while (this.check('ampersand')) {
+      this.advance();
+      const right = this.parseAdditive();
+      const node: BinaryExpressionNode = {
+        type: 'binary-expression',
+        operator: '&',
+        left: expression,
+        right,
+        span: spanFrom(expression.span, right.span),
+      };
+      expression = node;
     }
     return expression;
   }
@@ -50,13 +103,30 @@ class Parser {
   }
 
   private parseMultiplicative(): FormulaAst {
-    let expression = this.parseUnary();
+    let expression = this.parseExponentiation();
     while (this.check('star') || this.check('slash')) {
       const operatorToken = this.advance();
-      const right = this.parseUnary();
+      const right = this.parseExponentiation();
       const node: BinaryExpressionNode = {
         type: 'binary-expression',
         operator: operatorToken.kind === 'star' ? '*' : '/',
+        left: expression,
+        right,
+        span: spanFrom(expression.span, right.span),
+      };
+      expression = node;
+    }
+    return expression;
+  }
+
+  private parseExponentiation(): FormulaAst {
+    let expression = this.parseUnary();
+    while (this.check('caret')) {
+      this.advance();
+      const right = this.parseUnary();
+      const node: BinaryExpressionNode = {
+        type: 'binary-expression',
+        operator: '^',
         left: expression,
         right,
         span: spanFrom(expression.span, right.span),
@@ -78,7 +148,18 @@ class Parser {
       };
       return node;
     }
-    return this.parsePrimary();
+    let expr = this.parsePrimary();
+    while (this.check('percent')) {
+      const percentToken = this.advance();
+      const node: UnaryExpressionNode = {
+        type: 'unary-expression',
+        operator: '%',
+        operand: expr,
+        span: spanFrom(expr.span, percentToken.span),
+      };
+      expr = node;
+    }
+    return expr;
   }
 
   private parsePrimary(): FormulaAst {
@@ -95,13 +176,31 @@ class Parser {
       return node;
     }
 
-    if (token.kind === 'identifier' || token.kind === 'string') {
-      if (token.kind === 'identifier' && this.checkNext('left-paren')) return this.parseFunctionCall();
+    if (token.kind === 'identifier') {
+      const upper = token.lexeme.toUpperCase();
+      if (upper === 'TRUE' || upper === 'FALSE') {
+        if (!this.checkNext('left-paren')) {
+          this.advance();
+          const node: BooleanLiteralNode = {
+            type: 'boolean-literal',
+            value: upper === 'TRUE',
+            span: token.span,
+          };
+          return node;
+        }
+      }
+      if (this.checkNext('left-paren')) {
+        return this.parseFunctionCall();
+      }
+      return this.parseReference();
+    }
+
+    if (token.kind === 'string') {
       return this.parseReference();
     }
 
     if (this.match('left-paren')) {
-      const expression = this.parseAdditive();
+      const expression = this.parseComparison();
       this.expect('right-paren', 'Expected closing parenthesis');
       return expression;
     }
@@ -115,7 +214,8 @@ class Parser {
     const argumentsList: FormulaAst[] = [];
     if (!this.check('right-paren')) {
       do {
-        argumentsList.push(this.parseAdditive());
+        if (this.check('right-paren')) break;
+        argumentsList.push(this.parseComparison());
       } while (this.match('comma'));
     }
     const closingToken = this.expect('right-paren', 'Expected closing parenthesis');

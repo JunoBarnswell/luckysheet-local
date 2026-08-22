@@ -17,6 +17,7 @@ export default defineConfig({
       '@react-sheets/formula-engine': path.resolve(projectRoot, 'packages/formula-engine/src'),
       '@react-sheets/ui-system': path.resolve(projectRoot, 'packages/ui-system/src'),
       '@react-sheets/sheet-features': path.resolve(projectRoot, 'packages/sheet-features/src'),
+      '@react-sheets/pro-features': path.resolve(projectRoot, 'packages/pro-features/src'),
     },
   },
   server: {

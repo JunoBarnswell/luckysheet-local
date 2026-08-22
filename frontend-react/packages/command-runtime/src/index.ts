@@ -43,7 +43,10 @@ export interface CommandContext {
 export type MutationHandler<P = unknown> = (item: MutationInfo<P>, context: CommandContext) => void;
 
 function createOperationId(): string {
-  return crypto.randomUUID();
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'op-' + Math.random().toString(36).substring(2, 9) + '-' + Date.now().toString(36);
 }
 
 export class CommandRegistry {
@@ -83,55 +86,129 @@ export class CommandRegistry {
     if (!mutation) throw new Error(`Unknown mutation: ${id}`);
     return mutation as MutationHandler<P>;
   }
+
+  hasCommand(id: string): boolean {
+    return this.commands.has(id);
+  }
+
+  hasMutation(id: string): boolean {
+    return this.mutations.has(id);
+  }
 }
 
-interface HistoryEntry {
+export interface HistoryEntry {
   operationId: string;
   undo: MutationInfo[];
   redo: MutationInfo[];
+  description?: string;
+  timestamp: number;
 }
+
+export type MutationListener = (mutation: MutationInfo) => void;
+export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
 
 export class CommandRuntime {
   private readonly undoStack: HistoryEntry[] = [];
   private readonly redoStack: HistoryEntry[] = [];
   private activeEntry: HistoryEntry | null = null;
+  private transactionDepth = 0;
+  private readonly mutationListeners: MutationListener[] = [];
+  private readonly commandListeners: CommandListener[] = [];
 
   constructor(
     readonly workbook: WorkbookModel,
     readonly registry = new CommandRegistry(),
   ) {}
 
+  onMutation(listener: MutationListener): () => void {
+    this.mutationListeners.push(listener);
+    return () => {
+      const idx = this.mutationListeners.indexOf(listener);
+      if (idx >= 0) this.mutationListeners.splice(idx, 1);
+    };
+  }
+
+  onCommand(listener: CommandListener): () => void {
+    this.commandListeners.push(listener);
+    return () => {
+      const idx = this.commandListeners.indexOf(listener);
+      if (idx >= 0) this.commandListeners.splice(idx, 1);
+    };
+  }
+
   execute<P>(id: string, params: P): CommandResult {
     const operationId = createOperationId();
     const mutations: MutationInfo[] = [];
-    this.activeEntry = { operationId, undo: [], redo: [] };
+    const isRootTransaction = this.transactionDepth === 0;
+
+    if (isRootTransaction) {
+      this.activeEntry = {
+        operationId,
+        undo: [],
+        redo: [],
+        description: id,
+        timestamp: Date.now(),
+      };
+    }
+    this.transactionDepth += 1;
+
     const context: CommandContext = {
       workbook: this.workbook,
       operationId,
       applyMutation: (mutation) => {
         mutation.apply(context);
-        mutations.push(mutation);
-        this.activeEntry?.undo.unshift(...mutation.inverse);
-        this.activeEntry?.redo.push({
+        const info: MutationInfo = {
           id: mutation.id,
           unitId: mutation.unitId,
           sheetId: mutation.sheetId,
           params: mutation.params,
           affectedRanges: mutation.affectedRanges,
-        });
+        };
+        mutations.push(info);
+        this.activeEntry?.undo.unshift(...mutation.inverse);
+        this.activeEntry?.redo.push(info);
+
+        for (const listener of this.mutationListeners) {
+          listener(info);
+        }
       },
       recordOperation: (operation, operationParams) => operation.execute(operationParams, context),
     };
 
     try {
       const commandResult = this.registry.getCommand<P>(id).execute(params, context);
-      if (mutations.length > 0) {
-        this.undoStack.push(this.activeEntry);
-        this.redoStack.length = 0;
+      this.transactionDepth -= 1;
+
+      if (isRootTransaction) {
+        if (this.activeEntry && (this.activeEntry.undo.length > 0 || this.activeEntry.redo.length > 0)) {
+          this.undoStack.push(this.activeEntry);
+          if (this.undoStack.length > 200) this.undoStack.shift();
+          this.redoStack.length = 0;
+        }
+        this.activeEntry = null;
       }
-      return { ...commandResult, operationId, mutationCount: mutations.length };
-    } finally {
-      this.activeEntry = null;
+
+      const result: CommandResult = {
+        ...commandResult,
+        operationId,
+        mutationCount: mutations.length,
+      };
+
+      for (const listener of this.commandListeners) {
+        listener(id, params, result);
+      }
+
+      return result;
+    } catch (err) {
+      this.transactionDepth -= 1;
+      if (isRootTransaction) {
+        // Rollback applied mutations in this transaction if failed
+        if (this.activeEntry && this.activeEntry.undo.length > 0) {
+          this.applyHistory(this.activeEntry.undo);
+        }
+        this.activeEntry = null;
+      }
+      throw err;
     }
   }
 
@@ -155,6 +232,10 @@ export class CommandRuntime {
     return { undo: this.undoStack.length, redo: this.redoStack.length };
   }
 
+  getUndoEntries(): readonly HistoryEntry[] {
+    return [...this.undoStack];
+  }
+
   clearHistory(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
@@ -162,12 +243,16 @@ export class CommandRuntime {
 
   private applyHistory(items: MutationInfo[]): void {
     for (const item of items) {
-      this.registry.getMutation(item.id)(item, {
+      const handler = this.registry.getMutation(item.id);
+      handler(item, {
         workbook: this.workbook,
         operationId: createOperationId(),
         applyMutation: () => undefined,
         recordOperation: () => ({ operationId: createOperationId() }),
       });
+      for (const listener of this.mutationListeners) {
+        listener(item);
+      }
     }
   }
 }

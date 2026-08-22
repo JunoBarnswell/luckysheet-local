@@ -5,13 +5,51 @@ export type Column = number;
 
 export type CellValue = string | number | boolean | null;
 
+export interface CellBorderSide {
+  style: 'thin' | 'medium' | 'thick' | 'dashed' | 'double';
+  color: string;
+}
+
+export interface CellBorders {
+  top?: CellBorderSide;
+  right?: CellBorderSide;
+  bottom?: CellBorderSide;
+  left?: CellBorderSide;
+}
+
+export interface CellStyle {
+  fontFamily?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  textColor?: string;
+  background?: string;
+  horizontalAlignment?: 'left' | 'center' | 'right';
+  verticalAlignment?: 'top' | 'middle' | 'bottom';
+  wrapText?: boolean;
+  numberFormat?: string;
+  borders?: CellBorders;
+  padding?: number;
+}
+
+export interface CellComment {
+  id: string;
+  author: string;
+  text: string;
+  createdAt: string;
+}
+
 export interface CellData {
   value: CellValue;
   formula?: string;
   displayValue?: string;
   styleId?: string;
+  style?: CellStyle;
   numberFormat?: string;
   error?: string;
+  comment?: CellComment;
 }
 
 export interface RangeRef {
@@ -43,33 +81,55 @@ export interface SelectionSnapshot {
   phase: 'idle' | 'selected' | 'selecting' | 'editing' | 'preview';
 }
 
+export interface ChartSeries {
+  name: string;
+  range: RangeRef;
+  color?: string;
+}
+
 export interface ChartModel {
   id: string;
   sheetId: SheetId;
-  sourceRanges: RangeRef[];
-  type: 'column' | 'line' | 'pie' | 'bar';
-  bounds: { x: number; y: number; width: number; height: number };
+  type: 'column' | 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter';
   title?: string;
+  sourceRanges: RangeRef[];
+  series?: ChartSeries[];
+  categoryRange?: RangeRef;
+  bounds: { x: number; y: number; width: number; height: number };
+  legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
+  showDataLabels?: boolean;
+}
+
+export interface PivotValueField {
+  field: string;
+  summarizeBy: 'sum' | 'count' | 'average' | 'min' | 'max' | 'product';
+  displayName?: string;
 }
 
 export interface PivotModel {
   id: string;
   sheetId: SheetId;
   sourceRange: RangeRef;
+  targetAnchor?: { row: Row; column: Column };
   rowFields: string[];
   columnFields: string[];
-  valueFields: string[];
+  valueFields: PivotValueField[];
   filterFields: string[];
+  data?: Record<string, unknown>;
 }
 
 export interface ShapeModel {
   id: string;
   sheetId: SheetId;
-  type: 'rectangle' | 'ellipse' | 'line' | 'arrow';
+  type: 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
   bounds: { x: number; y: number; width: number; height: number };
   fill: string;
   stroke: string;
+  strokeWidth?: number;
   text?: string;
+  textColor?: string;
+  fontSize?: number;
+  rotation?: number;
 }
 
 export interface SparklineModel {
@@ -79,6 +139,74 @@ export interface SparklineModel {
   sourceRange: RangeRef;
   type: 'line' | 'column' | 'win-loss';
   color: string;
+  negativeColor?: string;
+  highlightMax?: boolean;
+  highlightMin?: boolean;
+}
+
+export type ConditionalFormatType = 'highlight' | 'dataBar' | 'colorScale' | 'iconSet';
+export type ConditionalFormatOperator =
+  | 'greaterThan'
+  | 'lessThan'
+  | 'between'
+  | 'equal'
+  | 'notEqual'
+  | 'containsText'
+  | 'notContainsText'
+  | 'duplicate'
+  | 'unique'
+  | 'formula';
+
+export interface ConditionalFormatRule {
+  id: string;
+  sheetId: SheetId;
+  ranges: RangeRef[];
+  type: ConditionalFormatType;
+  operator?: ConditionalFormatOperator;
+  value1?: string | number;
+  value2?: string | number;
+  style?: CellStyle;
+  minColor?: string;
+  midColor?: string;
+  maxColor?: string;
+  barColor?: string;
+}
+
+export type DataValidationType = 'list' | 'whole' | 'decimal' | 'date' | 'textLength' | 'custom';
+export type DataValidationOperator = 'between' | 'notBetween' | 'equal' | 'notEqual' | 'greaterThan' | 'lessThan';
+
+export interface DataValidationRule {
+  id: string;
+  sheetId: SheetId;
+  ranges: RangeRef[];
+  type: DataValidationType;
+  operator?: DataValidationOperator;
+  formula1?: string;
+  formula2?: string;
+  allowBlank?: boolean;
+  showDropdown?: boolean;
+  promptTitle?: string;
+  promptMessage?: string;
+  errorTitle?: string;
+  errorMessage?: string;
+}
+
+export interface FilterColumnCondition {
+  column: Column;
+  selectedValues?: string[];
+  conditionOperator?: string;
+  conditionValue?: string;
+}
+
+export interface FilterModel {
+  sheetId: SheetId;
+  range: RangeRef;
+  criteria: Record<Column, FilterColumnCondition>;
+}
+
+export interface SortCriterion {
+  column: Column;
+  ascending: boolean;
 }
 
 export class CellMatrix {
@@ -101,6 +229,22 @@ export class CellMatrix {
     const rowMap = this.rows.get(row);
     rowMap?.delete(column);
     if (rowMap?.size === 0) this.rows.delete(row);
+  }
+
+  has(row: Row, column: Column): boolean {
+    return this.rows.get(row)?.has(column) ?? false;
+  }
+
+  clear(): void {
+    this.rows.clear();
+  }
+
+  count(): number {
+    let count = 0;
+    for (const columns of this.rows.values()) {
+      count += columns.size;
+    }
+    return count;
   }
 
   forEach(callback: (cell: CellData, row: Row, column: Column) => void): void {
@@ -142,6 +286,14 @@ export class WorksheetModel {
   readonly pivots: PivotModel[] = [];
   readonly shapes: ShapeModel[] = [];
   readonly sparklines: SparklineModel[] = [];
+  readonly conditionalFormats: ConditionalFormatRule[] = [];
+  readonly dataValidations: DataValidationRule[] = [];
+  filter?: FilterModel;
+  readonly rowHeights: Record<number, number> = {};
+  readonly columnWidths: Record<number, number> = {};
+  readonly hiddenRows = new Set<number>();
+  readonly hiddenColumns = new Set<number>();
+  tabColor?: string;
   freeze: FreezeModel = { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 };
 
   constructor(
@@ -150,6 +302,42 @@ export class WorksheetModel {
     public rowCount = 1000,
     public columnCount = 26,
   ) {}
+
+  isMerged(row: Row, column: Column): MergeSpan | undefined {
+    return this.merges.find(
+      (m) =>
+        row >= m.range.startRow &&
+        row <= m.range.endRow &&
+        column >= m.range.startColumn &&
+        column <= m.range.endColumn,
+    );
+  }
+
+  isMergeAnchor(row: Row, column: Column): boolean {
+    const merge = this.isMerged(row, column);
+    return !merge || (merge.anchor.row === row && merge.anchor.column === column);
+  }
+}
+
+export interface SheetSnapshotV1 {
+  id: SheetId;
+  name: string;
+  rowCount: number;
+  columnCount: number;
+  cells: Record<string, Record<string, CellData>>;
+  merges: MergeSpan[];
+  freeze: FreezeModel;
+  charts: ChartModel[];
+  pivots: PivotModel[];
+  shapes: ShapeModel[];
+  sparklines: SparklineModel[];
+  conditionalFormats?: ConditionalFormatRule[];
+  dataValidations?: DataValidationRule[];
+  rowHeights?: Record<number, number>;
+  columnWidths?: Record<number, number>;
+  hiddenRows?: number[];
+  hiddenColumns?: number[];
+  tabColor?: string;
 }
 
 export interface WorkbookSnapshotV1 {
@@ -157,24 +345,14 @@ export interface WorkbookSnapshotV1 {
   unitId: UnitId;
   name: string;
   activeSheetId: SheetId;
-  sheets: Array<{
-    id: SheetId;
-    name: string;
-    rowCount: number;
-    columnCount: number;
-    cells: Record<string, Record<string, CellData>>;
-    merges: MergeSpan[];
-    freeze: FreezeModel;
-    charts: ChartModel[];
-    pivots: PivotModel[];
-    shapes: ShapeModel[];
-    sparklines: SparklineModel[];
-  }>;
+  definedNames?: Record<string, string>;
+  sheets: SheetSnapshotV1[];
 }
 
 export class WorkbookModel {
   private readonly sheets = new Map<SheetId, WorksheetModel>();
   activeSheetId: SheetId;
+  definedNames: Record<string, string> = {};
 
   constructor(readonly unitId: UnitId, public name: string) {
     const sheet = new WorksheetModel('sheet-1', 'Sheet1');
@@ -188,13 +366,20 @@ export class WorkbookModel {
     return sheet;
   }
 
+  getSheetByName(name: string): WorksheetModel | undefined {
+    for (const sheet of this.sheets.values()) {
+      if (sheet.name.toLowerCase() === name.toLowerCase()) return sheet;
+    }
+    return undefined;
+  }
+
   getSheets(): WorksheetModel[] {
     return [...this.sheets.values()];
   }
 
-  addSheet(id: SheetId, name: string): WorksheetModel {
+  addSheet(id: SheetId, name: string, rowCount = 1000, columnCount = 26): WorksheetModel {
     if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
-    const sheet = new WorksheetModel(id, name);
+    const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);
     return sheet;
   }
@@ -216,6 +401,7 @@ export class WorkbookModel {
       unitId: this.unitId,
       name: this.name,
       activeSheetId: this.activeSheetId,
+      definedNames: { ...this.definedNames },
       sheets: this.getSheets().map((sheet) => ({
         id: sheet.id,
         name: sheet.name,
@@ -228,6 +414,13 @@ export class WorkbookModel {
         pivots: structuredClone(sheet.pivots),
         shapes: structuredClone(sheet.shapes),
         sparklines: structuredClone(sheet.sparklines),
+        conditionalFormats: structuredClone(sheet.conditionalFormats),
+        dataValidations: structuredClone(sheet.dataValidations),
+        rowHeights: { ...sheet.rowHeights },
+        columnWidths: { ...sheet.columnWidths },
+        hiddenRows: [...sheet.hiddenRows],
+        hiddenColumns: [...sheet.hiddenColumns],
+        tabColor: sheet.tabColor,
       })),
     };
   }
@@ -236,6 +429,7 @@ export class WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshotV1') throw new Error('Unsupported workbook snapshot');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
+    workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);
@@ -246,6 +440,13 @@ export class WorkbookModel {
       sheet.pivots.push(...structuredClone(input.pivots));
       sheet.shapes.push(...structuredClone(input.shapes));
       sheet.sparklines.push(...structuredClone(input.sparklines));
+      if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
+      if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
+      if (input.rowHeights) Object.assign(sheet.rowHeights, input.rowHeights);
+      if (input.columnWidths) Object.assign(sheet.columnWidths, input.columnWidths);
+      if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
+      if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
+      sheet.tabColor = input.tabColor;
       workbook.sheets.set(sheet.id, sheet);
     }
     workbook.activeSheetId = snapshot.activeSheetId;

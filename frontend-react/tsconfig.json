@@ -27,6 +27,7 @@
       "@react-sheets/ui-system": ["packages/ui-system/src/index.ts"],
       "@react-sheets/sheet-features": ["packages/sheet-features/src/index.ts"],
       "@react-sheets/storage": ["packages/storage/src/index.ts"],
+      "@react-sheets/pro-features": ["packages/pro-features/src/index.ts"],
       "@react-sheets/*": ["packages/*/src/index.ts"]
     }
   },

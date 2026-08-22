@@ -1,0 +1,110 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  paginateRange,
+  serializeSnapshot,
+  deserializeSnapshot,
+  exportSnapshotToXlsxXml,
+  parseXlsxXmlToSnapshot,
+  computePivotTable,
+} from './index';
+import { ChangesetStateMachine } from './collaboration';
+import { WorkbookModel } from '@react-sheets/core-model';
+
+test('print pagination creates deterministic inclusive ranges', () => {
+  const pages = paginateRange({ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 }, 2, 3);
+  assert.equal(pages.length, 6);
+  assert.deepEqual(pages[0]?.range, { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 2 });
+});
+
+test('changeset state machine enforces revision order', () => {
+  const machine = new ChangesetStateMachine();
+  machine.submit({
+    schema: 'CollaborationChangeSetV1',
+    operationId: 'op-1',
+    unitId: 'unit-1',
+    actorId: 'actor-1',
+    baseRevision: 0,
+    mutations: [],
+    createdAt: new Date(0).toISOString(),
+  });
+  assert.equal(machine.acknowledge('op-1', 1).status, 'acknowledged');
+  assert.throws(() =>
+    machine.submit({
+      schema: 'CollaborationChangeSetV1',
+      operationId: 'op-2',
+      unitId: 'unit-1',
+      actorId: 'actor-1',
+      baseRevision: 0,
+      mutations: [],
+      createdAt: new Date(0).toISOString(),
+    }),
+  );
+});
+
+test('snapshot serializer rejects non-v1 payloads', () => {
+  const snapshot = {
+    schema: 'WorkbookSnapshotV1' as const,
+    unitId: 'unit-1',
+    name: 'Test',
+    activeSheetId: 'sheet-1',
+    sheets: [],
+  };
+  assert.deepEqual(deserializeSnapshot(serializeSnapshot(snapshot)), snapshot);
+  assert.throws(() => deserializeSnapshot('{"schema":"legacy"}'));
+});
+
+test('xlsx export produces valid OpenXML structure and imports back', () => {
+  const workbook = new WorkbookModel('unit-xlsx', 'XLSX Test');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 'Product' });
+  sheet.cells.set(0, 1, { value: 'Sales' });
+  sheet.cells.set(1, 0, { value: 'Widget' });
+  sheet.cells.set(1, 1, { value: 150 });
+  sheet.cells.set(2, 0, { value: 'Total' });
+  sheet.cells.set(2, 1, { value: null, formula: '=SUM(B2:B2)' });
+
+  const snapshot = workbook.snapshot();
+  const xmlFiles = exportSnapshotToXlsxXml(snapshot);
+
+  assert.ok(xmlFiles['[Content_Types].xml']);
+  assert.ok(xmlFiles['xl/workbook.xml']);
+  assert.ok(xmlFiles['xl/worksheets/sheet1.xml']);
+  assert.ok(xmlFiles['xl/sharedStrings.xml']);
+
+  const imported = parseXlsxXmlToSnapshot(xmlFiles);
+  assert.equal(imported.sheets.length, 1);
+  assert.equal(imported.sheets[0]?.name, 'Sheet1');
+  assert.equal(imported.sheets[0]?.cells['1']?.['1']?.value, 150);
+});
+
+test('pivot engine aggregates source data by dimensions and value fields', () => {
+  const workbook = new WorkbookModel('unit-pivot', 'Pivot Test');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 'Region' });
+  sheet.cells.set(0, 1, { value: 'Sales' });
+
+  sheet.cells.set(1, 0, { value: 'North' });
+  sheet.cells.set(1, 1, { value: 100 });
+
+  sheet.cells.set(2, 0, { value: 'South' });
+  sheet.cells.set(2, 1, { value: 200 });
+
+  sheet.cells.set(3, 0, { value: 'North' });
+  sheet.cells.set(3, 1, { value: 300 });
+
+  const result = computePivotTable(workbook, {
+    id: 'pivot-1',
+    sheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+    rowFields: ['Region'],
+    columnFields: [],
+    valueFields: [{ field: 'Sales', summarizeBy: 'sum' }],
+    filterFields: [],
+  });
+
+  assert.deepEqual(result.headers, ['Region', 'SUM of Sales']);
+  assert.equal(result.rows.length, 2);
+  const northRow = result.rows.find((r) => r.keys[0] === 'North');
+  assert.deepEqual(northRow?.values, [400]);
+});

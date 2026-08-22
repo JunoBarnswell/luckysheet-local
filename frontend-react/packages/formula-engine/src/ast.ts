@@ -29,6 +29,12 @@ export interface StringLiteralNode {
   readonly span: SourceSpan;
 }
 
+export interface BooleanLiteralNode {
+  readonly type: 'boolean-literal';
+  readonly value: boolean;
+  readonly span: SourceSpan;
+}
+
 export interface CellReferenceNode {
   readonly type: 'cell-reference';
   readonly reference: ParsedCellReference;
@@ -44,14 +50,28 @@ export interface RangeReferenceNode {
 
 export interface UnaryExpressionNode {
   readonly type: 'unary-expression';
-  readonly operator: '+' | '-';
+  readonly operator: '+' | '-' | '%';
   readonly operand: FormulaAst;
   readonly span: SourceSpan;
 }
 
+export type BinaryOperator =
+  | '+'
+  | '-'
+  | '*'
+  | '/'
+  | '^'
+  | '&'
+  | '='
+  | '<>'
+  | '<'
+  | '<='
+  | '>'
+  | '>=';
+
 export interface BinaryExpressionNode {
   readonly type: 'binary-expression';
-  readonly operator: '+' | '-' | '*' | '/';
+  readonly operator: BinaryOperator;
   readonly left: FormulaAst;
   readonly right: FormulaAst;
   readonly span: SourceSpan;
@@ -67,6 +87,7 @@ export interface FunctionCallNode {
 export type FormulaAst =
   | NumberLiteralNode
   | StringLiteralNode
+  | BooleanLiteralNode
   | CellReferenceNode
   | RangeReferenceNode
   | UnaryExpressionNode

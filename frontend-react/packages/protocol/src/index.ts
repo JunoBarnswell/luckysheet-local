@@ -56,7 +56,7 @@ export class WorkbookApiClient {
 
 export type CollaborationMessage =
   | { type: 'snapshot.request'; unitId: string }
-  | { type: 'snapshot.response'; payload: SnapshotResponse }
+  | { type: 'snapshot.response'; unitId?: string; snapshot?: WorkbookSnapshotV1; revision?: number; payload?: SnapshotResponse }
   | { type: 'changeset.submit'; payload: CollaborationChangeSet }
   | { type: 'changeset.ack'; operationId: string; revision: number }
   | { type: 'changeset.reject'; operationId: string; error: ApiError }

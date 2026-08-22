@@ -2,8 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { CollaborationChangeSet, SnapshotResponse } from '@react-sheets/protocol';
-import { WorkbookModel } from '@react-sheets/core-model';
-import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import { WorkbookModel, type CellData, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
 
 const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -33,62 +32,216 @@ export class WorkbookStorage {
 
   createWorkbook(snapshot: WorkbookSnapshotV1): SnapshotResponse {
     const now = new Date().toISOString();
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO workbooks (unit_id, name, snapshot_json, revision, updated_at)
       VALUES (?, ?, ?, 0, ?)
       ON CONFLICT(unit_id) DO NOTHING
-    `).run(snapshot.unitId, snapshot.name, JSON.stringify(snapshot), now);
+    `,
+      )
+      .run(snapshot.unitId, snapshot.name, JSON.stringify(snapshot), now);
     return this.getSnapshot(snapshot.unitId);
   }
 
   getSnapshot(unitId: string): SnapshotResponse {
-    const row = this.database.prepare('SELECT snapshot_json, revision FROM workbooks WHERE unit_id = ?').get(unitId) as { snapshot_json?: string; revision?: number } | undefined;
-    if (!row?.snapshot_json || row.revision == null) throw new Error(`Workbook not found: ${unitId}`);
-    return { snapshot: JSON.parse(row.snapshot_json) as WorkbookSnapshotV1, revision: row.revision };
+    const row = this.database
+      .prepare('SELECT snapshot_json, revision FROM workbooks WHERE unit_id = ?')
+      .get(unitId) as { snapshot_json?: string; revision?: number } | undefined;
+    if (!row?.snapshot_json || row.revision == null)
+      throw new Error(`Workbook not found: ${unitId}`);
+    return {
+      snapshot: JSON.parse(row.snapshot_json) as WorkbookSnapshotV1,
+      revision: row.revision,
+    };
   }
 
   appendChangeSet(changeSet: CollaborationChangeSet): number {
     const current = this.getSnapshot(changeSet.unitId);
-    const existing = this.database.prepare('SELECT revision FROM changesets WHERE operation_id = ?').get(changeSet.operationId) as { revision?: number } | undefined;
+    const existing = this.database
+      .prepare('SELECT revision FROM changesets WHERE operation_id = ?')
+      .get(changeSet.operationId) as { revision?: number } | undefined;
     if (existing?.revision != null) return existing.revision;
     if (current.revision !== changeSet.baseRevision) throw new Error('Revision conflict');
     const nextRevision = current.revision + 1;
     const workbook = WorkbookModel.fromSnapshot(current.snapshot);
+
     for (const mutation of changeSet.mutations) {
       if (mutation.id === 'cell.set') {
         const sheet = workbook.getSheet(mutation.sheetId);
-        const params = mutation.params as { row: number; column: number; value: unknown };
-        sheet.cells.set(params.row, params.column, params.value as never);
+        const params = mutation.params as { row: number; column: number; value: CellData };
+        sheet.cells.set(params.row, params.column, params.value);
+      } else if (mutation.id === 'cell.restore') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        const params = mutation.params as { row: number; column: number; previous?: CellData };
+        if (params.previous) sheet.cells.set(params.row, params.column, params.previous);
+        else sheet.cells.delete(params.row, params.column);
       } else if (mutation.id === 'range.set') {
         const sheet = workbook.getSheet(mutation.sheetId);
-        const params = mutation.params as { startRow: number; startColumn: number; values: unknown[][] };
-        params.values.forEach((row, rowOffset) => row.forEach((value, columnOffset) => {
-          sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, value as never);
-        }));
+        const params = mutation.params as {
+          startRow: number;
+          startColumn: number;
+          values: CellData[][];
+        };
+        params.values.forEach((row, rowOffset) =>
+          row.forEach((value, columnOffset) => {
+            sheet.cells.set(
+              params.startRow + rowOffset,
+              params.startColumn + columnOffset,
+              value,
+            );
+          }),
+        );
       } else if (mutation.id === 'sheet.add') {
-        const params = mutation.params as { id: string; name: string };
-        workbook.addSheet(params.id, params.name);
-      } else {
-        throw new Error(`Unsupported mutation: ${mutation.id}`);
+        const params = mutation.params as {
+          id: string;
+          name: string;
+          rowCount?: number;
+          columnCount?: number;
+        };
+        workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount);
+      } else if (mutation.id === 'sheet.remove') {
+        workbook.removeSheet(mutation.sheetId);
+      } else if (mutation.id === 'sheet.rename') {
+        const params = mutation.params as { sheetId: string; name: string };
+        workbook.getSheet(params.sheetId).name = params.name;
+      } else if (mutation.id === 'merge.set') {
+        const params = mutation.params as {
+          sheetId: string;
+          range: { startRow: number; endRow: number; startColumn: number; endColumn: number };
+        };
+        const sheet = workbook.getSheet(params.sheetId);
+        sheet.merges.push({
+          range: { sheetId: params.sheetId, ...params.range },
+          anchor: { row: params.range.startRow, column: params.range.startColumn },
+        });
+      } else if (mutation.id === 'merge.remove') {
+        const params = mutation.params as {
+          sheetId: string;
+          range: { startRow: number; startColumn: number };
+        };
+        const sheet = workbook.getSheet(params.sheetId);
+        const idx = sheet.merges.findIndex(
+          (m) =>
+            m.range.startRow === params.range.startRow &&
+            m.range.startColumn === params.range.startColumn,
+        );
+        if (idx >= 0) sheet.merges.splice(idx, 1);
+      } else if (mutation.id === 'freeze.set') {
+        const params = mutation.params as { sheetId: string; freeze: any };
+        workbook.getSheet(params.sheetId).freeze = { ...params.freeze };
+      } else if (mutation.id === 'row.resize') {
+        const params = mutation.params as { sheetId: string; row: number; height: number };
+        workbook.getSheet(params.sheetId).rowHeights[params.row] = params.height;
+      } else if (mutation.id === 'column.resize') {
+        const params = mutation.params as { sheetId: string; column: number; width: number };
+        workbook.getSheet(params.sheetId).columnWidths[params.column] = params.width;
+      } else if (mutation.id === 'chart.add') {
+        workbook.getSheet(mutation.sheetId).charts.push(mutation.params as never);
+      } else if (mutation.id === 'chart.remove') {
+        const items = workbook.getSheet(mutation.sheetId).charts;
+        const index = items.findIndex((item) => item.id === mutation.params);
+        if (index >= 0) items.splice(index, 1);
+      } else if (mutation.id === 'pivot.add') {
+        workbook.getSheet(mutation.sheetId).pivots.push(mutation.params as never);
+      } else if (mutation.id === 'pivot.remove') {
+        const items = workbook.getSheet(mutation.sheetId).pivots;
+        const index = items.findIndex((item) => item.id === mutation.params);
+        if (index >= 0) items.splice(index, 1);
+      } else if (mutation.id === 'shape.add') {
+        workbook.getSheet(mutation.sheetId).shapes.push(mutation.params as never);
+      } else if (mutation.id === 'shape.remove') {
+        const items = workbook.getSheet(mutation.sheetId).shapes;
+        const index = items.findIndex((item) => item.id === mutation.params);
+        if (index >= 0) items.splice(index, 1);
+      } else if (mutation.id === 'sparkline.add') {
+        workbook.getSheet(mutation.sheetId).sparklines.push(mutation.params as never);
+      } else if (mutation.id === 'sparkline.remove') {
+        const items = workbook.getSheet(mutation.sheetId).sparklines;
+        const index = items.findIndex((item) => item.id === mutation.params);
+        if (index >= 0) items.splice(index, 1);
       }
     }
+
     const nextSnapshot = workbook.snapshot();
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO changesets (operation_id, unit_id, revision, payload_json, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(changeSet.operationId, changeSet.unitId, nextRevision, JSON.stringify(changeSet), changeSet.createdAt);
-    this.database.prepare('UPDATE workbooks SET snapshot_json = ?, revision = ?, updated_at = ? WHERE unit_id = ?').run(JSON.stringify(nextSnapshot), nextRevision, new Date().toISOString(), changeSet.unitId);
+    `,
+      )
+      .run(
+        changeSet.operationId,
+        changeSet.unitId,
+        nextRevision,
+        JSON.stringify(changeSet),
+        changeSet.createdAt,
+      );
+    this.database
+      .prepare(
+        'UPDATE workbooks SET snapshot_json = ?, revision = ?, updated_at = ? WHERE unit_id = ?',
+      )
+      .run(JSON.stringify(nextSnapshot), nextRevision, new Date().toISOString(), changeSet.unitId);
     return nextRevision;
   }
 
-  listRevisions(unitId: string): Array<{ operationId: string; revision: number; createdAt: string; payload: CollaborationChangeSet }> {
-    const rows = this.database.prepare('SELECT operation_id, revision, created_at, payload_json FROM changesets WHERE unit_id = ? ORDER BY revision DESC').all(unitId) as Array<{ operation_id: string; revision: number; created_at: string; payload_json: string }>;
-    return rows.map((row) => ({ operationId: row.operation_id, revision: row.revision, createdAt: row.created_at, payload: JSON.parse(row.payload_json) as CollaborationChangeSet }));
+  listRevisions(
+    unitId: string,
+  ): Array<{
+    operationId: string;
+    revision: number;
+    createdAt: string;
+    payload: CollaborationChangeSet;
+  }> {
+    const rows = this.database
+      .prepare(
+        'SELECT operation_id, revision, created_at, payload_json FROM changesets WHERE unit_id = ? ORDER BY revision DESC',
+      )
+      .all(unitId) as Array<{
+      operation_id: string;
+      revision: number;
+      created_at: string;
+      payload_json: string;
+    }>;
+    return rows.map((row) => ({
+      operationId: row.operation_id,
+      revision: row.revision,
+      createdAt: row.created_at,
+      payload: JSON.parse(row.payload_json) as CollaborationChangeSet,
+    }));
   }
 
-  getRevision(unitId: string, revision: number): { operationId: string; revision: number; createdAt: string; payload: CollaborationChangeSet } | undefined {
-    const row = this.database.prepare('SELECT operation_id, revision, created_at, payload_json FROM changesets WHERE unit_id = ? AND revision = ?').get(unitId, revision) as { operation_id?: string; revision?: number; created_at?: string; payload_json?: string } | undefined;
-    if (!row?.operation_id || row.revision == null || !row.created_at || !row.payload_json) return undefined;
-    return { operationId: row.operation_id, revision: row.revision, createdAt: row.created_at, payload: JSON.parse(row.payload_json) as CollaborationChangeSet };
+  getRevision(
+    unitId: string,
+    revision: number,
+  ):
+    | {
+        operationId: string;
+        revision: number;
+        createdAt: string;
+        payload: CollaborationChangeSet;
+      }
+    | undefined {
+    const row = this.database
+      .prepare(
+        'SELECT operation_id, revision, created_at, payload_json FROM changesets WHERE unit_id = ? AND revision = ?',
+      )
+      .get(unitId, revision) as
+      | {
+          operation_id?: string;
+          revision?: number;
+          created_at?: string;
+          payload_json?: string;
+        }
+      | undefined;
+    if (!row?.operation_id || row.revision == null || !row.created_at || !row.payload_json)
+      return undefined;
+    return {
+      operationId: row.operation_id,
+      revision: row.revision,
+      createdAt: row.created_at,
+      payload: JSON.parse(row.payload_json) as CollaborationChangeSet,
+    };
   }
 }

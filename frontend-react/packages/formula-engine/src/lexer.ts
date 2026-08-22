@@ -9,6 +9,15 @@ export type TokenKind =
   | 'minus'
   | 'star'
   | 'slash'
+  | 'caret'
+  | 'ampersand'
+  | 'percent'
+  | 'equal'
+  | 'not-equal'
+  | 'less-than'
+  | 'less-than-equal'
+  | 'greater-than'
+  | 'greater-than-equal'
   | 'left-paren'
   | 'right-paren'
   | 'comma'
@@ -46,6 +55,40 @@ export function lexFormula(source: string): readonly Token[] {
       const result = scanString(source, index, character);
       tokens.push(result.token);
       index = result.nextIndex;
+      continue;
+    }
+
+    if (character === '<') {
+      const nextChar = source[index + 1];
+      if (nextChar === '>') {
+        tokens.push({ kind: 'not-equal', lexeme: '<>', span: { start: index, end: index + 2 } });
+        index += 2;
+        continue;
+      }
+      if (nextChar === '=') {
+        tokens.push({ kind: 'less-than-equal', lexeme: '<=', span: { start: index, end: index + 2 } });
+        index += 2;
+        continue;
+      }
+      tokens.push({ kind: 'less-than', lexeme: '<', span: { start: index, end: index + 1 } });
+      index += 1;
+      continue;
+    }
+
+    if (character === '>') {
+      if (source[index + 1] === '=') {
+        tokens.push({ kind: 'greater-than-equal', lexeme: '>=', span: { start: index, end: index + 2 } });
+        index += 2;
+        continue;
+      }
+      tokens.push({ kind: 'greater-than', lexeme: '>', span: { start: index, end: index + 1 } });
+      index += 1;
+      continue;
+    }
+
+    if (character === '=') {
+      tokens.push({ kind: 'equal', lexeme: '=', span: { start: index, end: index + 1 } });
+      index += 1;
       continue;
     }
 
@@ -159,6 +202,12 @@ function punctuationKind(character: string): TokenKind | undefined {
       return 'star';
     case '/':
       return 'slash';
+    case '^':
+      return 'caret';
+    case '&':
+      return 'ampersand';
+    case '%':
+      return 'percent';
     case '(':
       return 'left-paren';
     case ')':

@@ -75,7 +75,7 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
   const initial = calculateRenderPlan({ skeleton, viewport: viewport() });
   assert.equal(initial.fullRedraw, true);
   assert.equal(initial.reason, 'initial');
-  assert.deepEqual(initial.layers.map((layer) => layer.mode), ['full', 'full', 'full']);
+  assert.deepEqual(initial.layers.map((layer) => layer.mode), ['full', 'full', 'full', 'full']);
 
   const dirty = calculateRenderPlan({
     skeleton,
@@ -100,7 +100,8 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
   });
   assert.equal(scroll.layers[0]?.mode, 'scroll');
   assert.equal(scroll.layers[1]?.mode, 'scroll');
-  assert.equal(scroll.layers[2]?.mode, 'full');
+  assert.equal(scroll.layers[2]?.mode, 'scroll');
+  assert.equal(scroll.layers[3]?.mode, 'full');
 });
 
 test('CanvasRenderEngine keeps rendering state independent from DOM mounting', () => {
