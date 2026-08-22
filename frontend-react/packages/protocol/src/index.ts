@@ -33,6 +33,14 @@ export interface SnapshotResponse {
 export class WorkbookApiClient {
   constructor(private readonly baseUrl = '') {}
 
+  async getSnapshot(unitId: string): Promise<SnapshotResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/snapshot`,
+    );
+    if (!response.ok) throw new Error(`Workbook snapshot fetch failed: ${response.status}`);
+    return response.json() as Promise<SnapshotResponse>;
+  }
+
   async createWorkbook(snapshot: WorkbookSnapshotV1): Promise<SnapshotResponse> {
     const response = await fetch(`${this.baseUrl}/api/v1/workbooks`, {
       method: 'POST',
@@ -75,3 +83,143 @@ export function decodeMessage(input: string): CollaborationMessage {
   }
   return message;
 }
+
+/** 连接状态 */
+export type CollabSocketStatus = 'connecting' | 'open' | 'closed';
+
+export interface CollabSocketOptions {
+  /** 断线重连基础延迟(毫秒),指数退避 */
+  reconnectBaseDelayMs?: number;
+  /** 重连延迟上限(毫秒) */
+  reconnectMaxDelayMs?: number;
+}
+
+type CollabSocketListener = (message: CollaborationMessage) => void;
+type StatusListener = (status: CollabSocketStatus) => void;
+
+/**
+ * 浏览器端协同 WebSocket 客户端。
+ * - 断线自动指数退避重连;
+ * - 断线期间 send() 的消息进入待发队列,连接恢复后按序冲刷;
+ * - 消息格式复用 encode/decodeMessage 协议。
+ */
+export class CollabSocketClient {
+  private socket: WebSocket | null = null;
+  private readonly messageListeners = new Set<CollabSocketListener>();
+  private readonly statusListeners = new Set<StatusListener>();
+  private readonly pendingOutbound: string[] = [];
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private closedByUser = false;
+
+  constructor(
+    private readonly url: string,
+    private readonly options: CollabSocketOptions = {},
+  ) {}
+
+  get status(): CollabSocketStatus {
+    if (this.socket?.readyState === WebSocket.OPEN) return 'open';
+    if (this.closedByUser) return 'closed';
+    return this.socket || this.reconnectTimer ? 'connecting' : 'closed';
+  }
+
+  open(): void {
+    this.closedByUser = false;
+    if (this.socket || this.reconnectTimer) return;
+    this.connect();
+  }
+
+  close(): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.socket?.close();
+    this.socket = null;
+    this.emitStatus('closed');
+  }
+
+  /** 发送消息;未连接时进入队列,连接恢复后冲刷。返回是否即时发出。 */
+  send(message: CollaborationMessage): boolean {
+    const encoded = encodeMessage(message);
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(encoded);
+      return true;
+    }
+    this.pendingOutbound.push(encoded);
+    return false;
+  }
+
+  onMessage(listener: CollabSocketListener): () => void {
+    this.messageListeners.add(listener);
+    return () => this.messageListeners.delete(listener);
+  }
+
+  onStatus(listener: StatusListener): () => void {
+    this.statusListeners.add(listener);
+    listener(this.status);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  /** 仅用于测试:取出当前待发队列长度 */
+  get queuedCount(): number {
+    return this.pendingOutbound.length;
+  }
+
+  private connect(): void {
+    this.emitStatus('connecting');
+    const socket = new WebSocket(this.url);
+    this.socket = socket;
+
+    socket.onopen = () => {
+      this.reconnectAttempt = 0;
+      this.emitStatus('open');
+      while (this.pendingOutbound.length > 0 && socket.readyState === WebSocket.OPEN) {
+        const encoded = this.pendingOutbound.shift();
+        if (encoded !== undefined) socket.send(encoded);
+      }
+    };
+
+    socket.onmessage = (event) => {
+      if (typeof event.data !== 'string') return;
+      try {
+        const message = decodeMessage(event.data);
+        for (const listener of this.messageListeners) listener(message);
+      } catch {
+        // 非法消息直接丢弃,保持连接可用
+      }
+    };
+
+    socket.onclose = () => {
+      this.socket = null;
+      if (this.closedByUser) {
+        this.emitStatus('closed');
+        return;
+      }
+      this.scheduleReconnect();
+    };
+
+    socket.onerror = () => {
+      socket.close();
+    };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.closedByUser) return;
+    const base = this.options.reconnectBaseDelayMs ?? 800;
+    const max = this.options.reconnectMaxDelayMs ?? 15000;
+    const delay = Math.min(max, base * Math.pow(2, this.reconnectAttempt));
+    this.reconnectAttempt += 1;
+    this.emitStatus('connecting');
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private emitStatus(status: CollabSocketStatus): void {
+    for (const listener of this.statusListeners) listener(status);
+  }
+}
+

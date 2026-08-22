@@ -6,6 +6,8 @@ export interface ChartPanelProps {
   sheetId: string;
   charts: ChartModel[];
   activeChart?: ChartModel;
+  /** 当前选区的 A1 文本,作为默认数据范围 */
+  defaultRange?: string;
   onAddChart: (chart: ChartModel) => void;
   onRemoveChart: (id: string) => void;
   onClose?: () => void;
@@ -15,13 +17,14 @@ export function ChartPanel({
   sheetId,
   charts,
   activeChart,
+  defaultRange,
   onAddChart,
   onRemoveChart,
   onClose,
 }: ChartPanelProps) {
   const [type, setType] = useState<ChartModel['type']>(activeChart?.type ?? 'column');
   const [title, setTitle] = useState(activeChart?.title ?? 'Sales Overview');
-  const [rangeInput, setRangeInput] = useState('A1:C5');
+  const [rangeInput, setRangeInput] = useState(defaultRange ?? 'A1:C5');
 
   const handleCreate = () => {
     const newChart: ChartModel = {

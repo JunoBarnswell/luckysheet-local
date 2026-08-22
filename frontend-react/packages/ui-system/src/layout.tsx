@@ -1,4 +1,4 @@
-import type { HTMLAttributes, ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode, Ref } from 'react';
 import { cn } from './cn';
 
 type BoxElement = 'article' | 'aside' | 'div' | 'footer' | 'form' | 'header' | 'li' | 'main' | 'nav' | 'section' | 'ul';
@@ -6,12 +6,14 @@ type BoxElement = 'article' | 'aside' | 'div' | 'footer' | 'form' | 'header' | '
 export interface BoxProps extends HTMLAttributes<HTMLElement> {
   as?: BoxElement;
   children?: ReactNode;
+  /** React 19 ref-as-prop:允许业务层持有 DOM 引用 */
+  ref?: Ref<HTMLElement>;
 }
 
-export function Box({ as = 'div', className, children, ...props }: BoxProps) {
+export function Box({ as = 'div', className, children, ref, ...props }: BoxProps) {
   const Component = as;
   return (
-    <Component className={className} {...props}>
+    <Component ref={ref} className={className} {...props}>
       {children}
     </Component>
   );

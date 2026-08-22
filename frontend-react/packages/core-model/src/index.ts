@@ -18,6 +18,7 @@ export interface CellBorders {
 }
 
 export interface CellStyle {
+  textRotate?: number;
   fontFamily?: string;
   fontSize?: number;
   bold?: boolean;
@@ -50,6 +51,7 @@ export interface CellData {
   numberFormat?: string;
   error?: string;
   comment?: CellComment;
+  hyperlink?: string;
 }
 
 export interface RangeRef {
@@ -142,6 +144,22 @@ export interface SparklineModel {
   negativeColor?: string;
   highlightMax?: boolean;
   highlightMin?: boolean;
+}
+
+/** 浮动图片(以内容坐标定位) */
+export interface FloatingImage {
+  id: string;
+  sheetId: SheetId;
+  name?: string;
+  src: string;
+  bounds: { x: number; y: number; width: number; height: number };
+}
+
+/** 隔行色带规则 */
+export interface BandedRule {
+  range: RangeRef;
+  firstColor: string;
+  secondColor: string;
 }
 
 export type ConditionalFormatType = 'highlight' | 'dataBar' | 'colorScale' | 'iconSet';
@@ -277,6 +295,56 @@ export class CellMatrix {
     }
     return matrix;
   }
+
+  /** 沿行轴整体平移:dir=+1 下移(插入),dir=-1 上移(删除);越界丢弃 */
+  shiftRows(at: Row, count: number, direction: 1 | -1): void {
+    const entries: Array<[Row, Column, CellData]> = [];
+    const delta = direction * count;
+    this.forEach((cell, row, column) => {
+      if (row >= at) entries.push([row, column, cell]);
+    });
+    if (direction === -1) {
+      // 从小到大删除,避免覆盖
+      entries.sort((a, b) => a[0] - b[0]);
+    } else {
+      entries.sort((a, b) => b[0] - a[0]);
+    }
+    for (const [row, column] of entries) this.delete(row, column);
+    for (const [row, column, cell] of entries) {
+      this.set(row + delta, column, cell);
+    }
+  }
+
+  /** 沿列轴整体平移:dir=+1 右移(插入),dir=-1 左移(删除) */
+  shiftColumns(at: Column, count: number, direction: 1 | -1): void {
+    const entries: Array<[Row, Column, CellData]> = [];
+    const delta = direction * count;
+    this.forEach((cell, row, column) => {
+      if (column >= at) entries.push([row, column, cell]);
+    });
+    if (direction === -1) entries.sort((a, b) => a[1] - b[1]);
+    else entries.sort((a, b) => b[1] - a[1]);
+    for (const [row, column] of entries) this.delete(row, column);
+    for (const [row, column, cell] of entries) {
+      this.set(row, column + delta, cell);
+    }
+  }
+
+  /** 摘除区间内全部单元格并返回(用于删除行的逆操作恢复) */
+  extractRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
+    const extracted: Array<{ row: Row; column: Column; cell: CellData }> = [];
+    this.forEach((cell, row, column) => {
+      if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
+        extracted.push({ row, column, cell: structuredClone(cell) });
+      }
+    });
+    for (const item of extracted) this.delete(item.row, item.column);
+    return extracted;
+  }
+
+  placeRegion(items: ReadonlyArray<{ row: Row; column: Column; cell: CellData }>): void {
+    for (const item of items) this.set(item.row, item.column, structuredClone(item.cell));
+  }
 }
 
 export class WorksheetModel {
@@ -288,13 +356,200 @@ export class WorksheetModel {
   readonly sparklines: SparklineModel[] = [];
   readonly conditionalFormats: ConditionalFormatRule[] = [];
   readonly dataValidations: DataValidationRule[] = [];
+  readonly images: FloatingImage[] = [];
   filter?: FilterModel;
+  bandedRule?: BandedRule;
   readonly rowHeights: Record<number, number> = {};
   readonly columnWidths: Record<number, number> = {};
   readonly hiddenRows = new Set<number>();
   readonly hiddenColumns = new Set<number>();
   tabColor?: string;
   freeze: FreezeModel = { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 };
+
+  /**
+   * 在 at 行前插入 count 行:单元格/合并/隐藏集/冻结/筛选/条件格式等全部随动。
+   */
+  insertRows(at: Row, count: number): void {
+    if (count <= 0) return;
+    this.cells.shiftRows(at, count, 1);
+    for (const merge of this.merges) {
+      merge.range.startRow = merge.range.startRow >= at ? merge.range.startRow + count : merge.range.startRow;
+      merge.range.endRow = merge.range.endRow >= at ? merge.range.endRow + count : merge.range.endRow;
+      if (merge.anchor.row >= at) merge.anchor.row += count;
+    }
+    for (const rule of [...this.conditionalFormats, ...this.dataValidations]) {
+      for (const range of rule.ranges) {
+        if (range.startRow >= at) { range.startRow += count; range.endRow += count; }
+        else if (range.endRow >= at) range.endRow += count;
+      }
+    }
+    for (const sparkline of this.sparklines) {
+      if (sparkline.anchor.row >= at) sparkline.anchor.row += count;
+    }
+    const shiftedHidden = new Set<number>();
+    for (const row of this.hiddenRows) shiftedHidden.add(row >= at ? row + count : row);
+    this.hiddenRows.clear();
+    for (const row of shiftedHidden) this.hiddenRows.add(row);
+    const shiftedHeights: Record<number, number> = {};
+    for (const [key, value] of Object.entries(this.rowHeights)) {
+      const row = Number(key);
+      shiftedHeights[row >= at ? row + count : row] = value;
+    }
+    for (const key of Object.keys(this.rowHeights)) delete this.rowHeights[Number(key)];
+    Object.assign(this.rowHeights, shiftedHeights);
+    if (this.freeze.ySplit >= at) this.freeze.ySplit += count;
+    if (this.filter) {
+      if (this.filter.range.startRow >= at) this.filter.range.startRow += count;
+      this.filter.range.endRow += count;
+    }
+    if (this.bandedRule && this.bandedRule.range.startRow >= at) {
+      this.bandedRule.range.startRow += count;
+      this.bandedRule.range.endRow += count;
+    }
+    this.rowCount += count;
+  }
+
+  /** 删除 [at, at+count) 行;返回被摘除的单元格以便撤销恢复 */
+  deleteRows(at: Row, count: number): Array<{ row: Row; column: Column; cell: CellData }> {
+    if (count <= 0) return [];
+    const end = at + count - 1;
+    const removed = this.cells.extractRegion(at, end, 0, Math.max(this.columnCount - 1, 0));
+    this.cells.shiftRows(end + 1, count, -1);
+    for (let index = this.merges.length - 1; index >= 0; index--) {
+      const merge = this.merges[index]!;
+      if (merge.range.startRow > end || merge.range.endRow < at) continue;
+      merge.range.endRow = Math.max(at - 1, merge.range.endRow - count);
+      merge.range.startRow = Math.min(Math.max(at - 1, merge.range.startRow), merge.range.endRow);
+      if (merge.range.endRow < merge.range.startRow) this.merges.splice(index, 1);
+    }
+    for (const rule of [...this.conditionalFormats, ...this.dataValidations]) {
+      for (const range of rule.ranges) {
+        if (range.endRow < at) continue;
+        if (range.startRow > end) { range.startRow -= count; range.endRow -= count; }
+        else range.endRow = Math.max(at - 1, range.endRow - count);
+      }
+      rule.ranges = rule.ranges.filter((range) => range.endRow >= range.startRow);
+    }
+    for (let index = this.sparklines.length - 1; index >= 0; index--) {
+      const anchorRow = this.sparklines[index]!.anchor.row;
+      if (anchorRow >= at && anchorRow <= end) this.sparklines.splice(index, 1);
+      else if (anchorRow > end) this.sparklines[index]!.anchor.row -= count;
+    }
+    const shiftedHidden = new Set<number>();
+    for (const row of this.hiddenRows) {
+      if (row < at) shiftedHidden.add(row);
+      else if (row > end) shiftedHidden.add(row - count);
+    }
+    this.hiddenRows.clear();
+    for (const row of shiftedHidden) this.hiddenRows.add(row);
+    const shiftedHeights: Record<number, number> = {};
+    for (const [key, value] of Object.entries(this.rowHeights)) {
+      const row = Number(key);
+      if (row < at) shiftedHeights[row] = value;
+      else if (row > end) shiftedHeights[row - count] = value;
+    }
+    for (const key of Object.keys(this.rowHeights)) delete this.rowHeights[Number(key)];
+    Object.assign(this.rowHeights, shiftedHeights);
+    if (this.freeze.ySplit > at) this.freeze.ySplit = Math.max(0, this.freeze.ySplit - count);
+    if (this.filter) {
+      if (this.filter.range.startRow > end) this.filter.range.startRow -= count;
+      this.filter.range.endRow = Math.max(at, this.filter.range.endRow - count);
+    }
+    this.rowCount = Math.max(1, this.rowCount - count);
+    return removed;
+  }
+
+  insertColumns(at: Column, count: number): void {
+    if (count <= 0) return;
+    this.cells.shiftColumns(at, count, 1);
+    for (const merge of this.merges) {
+      merge.range.startColumn = merge.range.startColumn >= at ? merge.range.startColumn + count : merge.range.startColumn;
+      merge.range.endColumn = merge.range.endColumn >= at ? merge.range.endColumn + count : merge.range.endColumn;
+      if (merge.anchor.column >= at) merge.anchor.column += count;
+    }
+    for (const rule of [...this.conditionalFormats, ...this.dataValidations]) {
+      for (const range of rule.ranges) {
+        if (range.startColumn >= at) { range.startColumn += count; range.endColumn += count; }
+        else if (range.endColumn >= at) range.endColumn += count;
+      }
+    }
+    const shiftedHidden = new Set<number>();
+    for (const column of this.hiddenColumns) shiftedHidden.add(column >= at ? column + count : column);
+    this.hiddenColumns.clear();
+    for (const column of shiftedHidden) this.hiddenColumns.add(column);
+    const shiftedWidths: Record<number, number> = {};
+    for (const [key, value] of Object.entries(this.columnWidths)) {
+      const column = Number(key);
+      shiftedWidths[column >= at ? column + count : column] = value;
+    }
+    for (const key of Object.keys(this.columnWidths)) delete this.columnWidths[Number(key)];
+    Object.assign(this.columnWidths, shiftedWidths);
+    if (this.freeze.xSplit >= at) this.freeze.xSplit += count;
+    if (this.filter) {
+      if (this.filter.range.startColumn >= at) this.filter.range.startColumn += count;
+      this.filter.range.endColumn += count;
+    }
+    this.columnCount += count;
+  }
+
+  deleteColumns(at: Column, count: number): Array<{ row: Row; column: Column; cell: CellData }> {
+    if (count <= 0) return [];
+    const end = at + count - 1;
+    const removed = this.cells.extractRegion(0, Math.max(this.rowCount - 1, 0), at, end);
+    this.cells.shiftColumns(end + 1, count, -1);
+    for (let index = this.merges.length - 1; index >= 0; index--) {
+      const merge = this.merges[index]!;
+      if (merge.range.startColumn > end || merge.range.endColumn < at) continue;
+      merge.range.endColumn = Math.max(at - 1, merge.range.endColumn - count);
+      merge.range.startColumn = Math.min(Math.max(at - 1, merge.range.startColumn), merge.range.endColumn);
+      if (merge.range.endColumn < merge.range.startColumn) this.merges.splice(index, 1);
+    }
+    const shiftedHidden = new Set<number>();
+    for (const column of this.hiddenColumns) {
+      if (column < at) shiftedHidden.add(column);
+      else if (column > end) shiftedHidden.add(column - count);
+    }
+    this.hiddenColumns.clear();
+    for (const column of shiftedHidden) this.hiddenColumns.add(column);
+    const shiftedWidths: Record<number, number> = {};
+    for (const [key, value] of Object.entries(this.columnWidths)) {
+      const column = Number(key);
+      if (column < at) shiftedWidths[column] = value;
+      else if (column > end) shiftedWidths[column - count] = value;
+    }
+    for (const key of Object.keys(this.columnWidths)) delete this.columnWidths[Number(key)];
+    Object.assign(this.columnWidths, shiftedWidths);
+    if (this.freeze.xSplit > at) this.freeze.xSplit = Math.max(0, this.freeze.xSplit - count);
+    if (this.filter) {
+      if (this.filter.range.startColumn > end) this.filter.range.startColumn -= count;
+      this.filter.range.endColumn = Math.max(at, this.filter.range.endColumn - count);
+    }
+    this.columnCount = Math.max(1, this.columnCount - count);
+    return removed;
+  }
+
+  /** 深拷贝当前工作表(删除工作表撤销恢复用) */
+  cloneSheet(): WorksheetModel {
+    const copy = new WorksheetModel(this.id, this.name, this.rowCount, this.columnCount);
+    this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
+    copy.merges.push(...structuredClone(this.merges));
+    copy.charts.push(...structuredClone(this.charts));
+    copy.pivots.push(...structuredClone(this.pivots));
+    copy.shapes.push(...structuredClone(this.shapes));
+    copy.sparklines.push(...structuredClone(this.sparklines));
+    copy.conditionalFormats.push(...structuredClone(this.conditionalFormats));
+    copy.dataValidations.push(...structuredClone(this.dataValidations));
+    copy.images.push(...structuredClone(this.images));
+    copy.filter = this.filter ? structuredClone(this.filter) : undefined;
+    copy.bandedRule = this.bandedRule ? structuredClone(this.bandedRule) : undefined;
+    Object.assign(copy.rowHeights, this.rowHeights);
+    Object.assign(copy.columnWidths, this.columnWidths);
+    for (const row of this.hiddenRows) copy.hiddenRows.add(row);
+    for (const column of this.hiddenColumns) copy.hiddenColumns.add(column);
+    copy.tabColor = this.tabColor;
+    copy.freeze = { ...this.freeze };
+    return copy;
+  }
 
   constructor(
     readonly id: SheetId,
@@ -338,6 +593,9 @@ export interface SheetSnapshotV1 {
   hiddenRows?: number[];
   hiddenColumns?: number[];
   tabColor?: string;
+  images?: FloatingImage[];
+  bandedRule?: BandedRule;
+  filter?: FilterModel;
 }
 
 export interface WorkbookSnapshotV1 {
@@ -350,7 +608,7 @@ export interface WorkbookSnapshotV1 {
 }
 
 export class WorkbookModel {
-  private readonly sheets = new Map<SheetId, WorksheetModel>();
+  readonly sheets = new Map<SheetId, WorksheetModel>();
   activeSheetId: SheetId;
   definedNames: Record<string, string> = {};
 
@@ -421,6 +679,9 @@ export class WorkbookModel {
         hiddenRows: [...sheet.hiddenRows],
         hiddenColumns: [...sheet.hiddenColumns],
         tabColor: sheet.tabColor,
+        images: structuredClone(sheet.images),
+        bandedRule: sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined,
+        filter: sheet.filter ? structuredClone(sheet.filter) : undefined,
       })),
     };
   }
@@ -446,6 +707,9 @@ export class WorkbookModel {
       if (input.columnWidths) Object.assign(sheet.columnWidths, input.columnWidths);
       if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
       if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
+      if (input.images) sheet.images.push(...structuredClone(input.images));
+      if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);
+      if (input.filter) sheet.filter = structuredClone(input.filter);
       sheet.tabColor = input.tabColor;
       workbook.sheets.set(sheet.id, sheet);
     }

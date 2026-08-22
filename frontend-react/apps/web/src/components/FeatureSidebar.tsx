@@ -39,6 +39,11 @@ import { HistoryPanel } from './panels/HistoryPanel';
 export interface FeatureSidebarProps {
   activePanel: SidebarPanelId;
   activeCell: string;
+  /** 主选区(供面板默认范围) */
+  selectedRange?: { startRow: number; endRow: number; startColumn: number; endColumn: number };
+  getRangeMatrix?: unknown;
+  getRangeNumbers?: unknown;
+  onRefreshPivot?: (id: string) => void;
   onPanelChange: (panel: SidebarPanelId) => void;
   onRetry: () => void;
   phase: WorkspacePhase;
@@ -144,6 +149,7 @@ function InspectorPanel({ activeCell, sheet }: { activeCell: string; sheet: Shee
 export function FeatureSidebar({
   activePanel,
   activeCell,
+  selectedRange,
   onPanelChange,
   onRetry,
   phase,
@@ -159,6 +165,7 @@ export function FeatureSidebar({
   onAddChart,
   onRemoveChart,
   onAddPivot,
+  onRefreshPivot,
   onRemovePivot,
   onAddShape,
   onRemoveShape,
@@ -173,6 +180,22 @@ export function FeatureSidebar({
 }: FeatureSidebarProps) {
   const disabled = phase !== 'ready';
   const activePanelLabel = panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect';
+
+  const columnLabelOf = (column: number): string => {
+    let label = '';
+    let remaining = column + 1;
+    while (remaining > 0) {
+      const modulo = (remaining - 1) % 26;
+      label = String.fromCharCode(65 + modulo) + label;
+      remaining = Math.floor((remaining - 1) / 26);
+    }
+    return label;
+  };
+  const selectionText = selectedRange
+    ? columnLabelOf(selectedRange.startColumn) + (selectedRange.startRow + 1)
+      + ':'
+      + columnLabelOf(selectedRange.endColumn) + (selectedRange.endRow + 1)
+    : undefined;
 
   return (
     <Box
@@ -230,6 +253,7 @@ export function FeatureSidebar({
           <ChartPanel
             sheetId={sheetId}
             charts={charts}
+            defaultRange={selectionText}
             onAddChart={onAddChart}
             onRemoveChart={onRemoveChart}
           />
@@ -238,6 +262,8 @@ export function FeatureSidebar({
           <PivotPanel
             sheetId={sheetId}
             pivots={pivots}
+            defaultSourceRange={selectionText}
+            onRefreshPivot={onRefreshPivot}
             onAddPivot={onAddPivot}
             onRemovePivot={onRemovePivot}
           />
@@ -254,6 +280,7 @@ export function FeatureSidebar({
           <SparklinePanel
             sheetId={sheetId}
             sparklines={sparklines}
+            defaultRange={selectionText}
             onAddSparkline={onAddSparkline}
             onRemoveSparkline={onRemoveSparkline}
           />

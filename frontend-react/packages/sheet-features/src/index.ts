@@ -1,8 +1,10 @@
 import type {
+  BandedRule,
   CellData,
   CellStyle,
   ConditionalFormatRule,
   DataValidationRule,
+  FilterModel,
   FreezeModel,
   MergeSpan,
   RangeRef,
@@ -12,6 +14,8 @@ import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime
 import { shiftFormula } from './clipboard';
 
 export * from './clipboard';
+export * from './data-features';
+
 
 export interface SetCellValueParams {
   sheetId: string;
@@ -160,6 +164,44 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation('sheet.rename', (item, context) => {
     const params = item.params as RenameSheetParams;
     context.workbook.getSheet(params.sheetId).name = params.name;
+  });
+  runtime.registry.registerMutation('sheet.restore', (item, context) => {
+    const restored = item.params as { sheet: WorksheetModel };
+    if (!context.workbook.sheets.has(restored.sheet.id)) {
+      context.workbook.sheets.set(restored.sheet.id, restored.sheet);
+    }
+  });
+
+  runtime.registry.registerCommand<{ id: string }>({
+    id: 'sheet.remove',
+    execute: (paramsInput, context) => {
+      const params = paramsInput as { id: string };
+      const workbook = context.workbook;
+      if (workbook.getSheets().length <= 1) {
+        throw new Error('A workbook must keep at least one worksheet');
+      }
+      const target = workbook.getSheet(params.id);
+      const clone = target.cloneSheet();
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'sheet.remove',
+        unitId: workbook.unitId,
+        sheetId: params.id,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'sheet.restore',
+            unitId: workbook.unitId,
+            sheetId: params.id,
+            params: { sheet: clone },
+            affectedRanges,
+          },
+        ],
+        apply: () => workbook.removeSheet(params.id),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
 
   runtime.registry.registerCommand<AddSheetParams>({
@@ -741,4 +783,631 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       });
     },
   });
+
+  // 11. 结构操作:行/列插入与删除
+  runtime.registry.registerMutation('rows.inserted', (item, context) => {
+    const params = item.params as { sheetId: string; at: number; count: number };
+    context.workbook.getSheet(params.sheetId).insertRows(params.at, params.count);
+  });
+  runtime.registry.registerMutation('rows.deleted', (item, context) => {
+    const params = item.params as { sheetId: string; at: number; count: number };
+    context.workbook.getSheet(params.sheetId).deleteRows(params.at, params.count);
+  });
+  runtime.registry.registerMutation('columns.inserted', (item, context) => {
+    const params = item.params as { sheetId: string; at: number; count: number };
+    context.workbook.getSheet(params.sheetId).insertColumns(params.at, params.count);
+  });
+  runtime.registry.registerMutation('columns.deleted', (item, context) => {
+    const params = item.params as { sheetId: string; at: number; count: number };
+    context.workbook.getSheet(params.sheetId).deleteColumns(params.at, params.count);
+  });
+  runtime.registry.registerMutation('rows.hidden', (item, context) => {
+    const params = item.params as { sheetId: string; index: number };
+    context.workbook.getSheet(params.sheetId).hiddenRows.add(params.index);
+  });
+  runtime.registry.registerMutation('rows.unhidden.all', (item, context) => {
+    context.workbook.getSheet(item.sheetId).hiddenRows.clear();
+  });
+  runtime.registry.registerMutation('columns.hidden', (item, context) => {
+    const params = item.params as { sheetId: string; index: number };
+    context.workbook.getSheet(params.sheetId).hiddenColumns.add(params.index);
+  });
+  runtime.registry.registerMutation('columns.unhidden.all', (item, context) => {
+    context.workbook.getSheet(item.sheetId).hiddenColumns.clear();
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({
+    id: 'sheet.rows.insert',
+    execute: (params, context) => {
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'rows.inserted',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'rows.deleted',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, at: params.at, count: params.count },
+            affectedRanges,
+          },
+        ],
+        apply: () => context.workbook.getSheet(params.sheetId).insertRows(params.at, params.count),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({
+    id: 'sheet.rows.delete',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const removed = sheet.deleteRows(params.at, params.count);
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'rows.deleted',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'rows.inserted',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, at: params.at, count: params.count },
+            affectedRanges,
+          },
+          ...removed.map((entry) => ({
+            id: 'cell.restore' as const,
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { row: entry.row, column: entry.column, previous: entry.cell },
+            affectedRanges: [] as RangeRef[],
+          })),
+        ],
+        apply: () => {
+          const target = context.workbook.getSheet(params.sheetId);
+          target.deleteRows(params.at, params.count);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({
+    id: 'sheet.columns.insert',
+    execute: (params, context) => {
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'columns.inserted',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'columns.deleted',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, at: params.at, count: params.count },
+            affectedRanges,
+          },
+        ],
+        apply: () => context.workbook.getSheet(params.sheetId).insertColumns(params.at, params.count),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({
+    id: 'sheet.columns.delete',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const removed = sheet.deleteColumns(params.at, params.count);
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'columns.deleted',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'columns.inserted',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, at: params.at, count: params.count },
+            affectedRanges,
+          },
+          ...removed.map((entry) => ({
+            id: 'cell.restore' as const,
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { row: entry.row, column: entry.column, previous: entry.cell },
+            affectedRanges: [] as RangeRef[],
+          })),
+        ],
+        apply: () => {
+          context.workbook.getSheet(params.sheetId).deleteColumns(params.at, params.count);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  // 12. 多列排序 / 转置 / 翻转 / 拆分
+  runtime.registry.registerCommand<{
+    sheetId: string;
+    range: RangeRef;
+    criteria: Array<{ column: number; ascending: boolean }>;
+    hasHeader: boolean;
+  }>({
+    id: 'sheet.sort.multi',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const startR = params.hasHeader ? params.range.startRow + 1 : params.range.startRow;
+      const rowCount = params.range.endRow - startR + 1;
+      if (rowCount <= 1 || params.criteria.length === 0) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
+      const width = params.range.endColumn - params.range.startColumn + 1;
+      const rowsData: CellData[][] = [];
+      for (let r = startR; r <= params.range.endRow; r++) {
+        const rowCells: CellData[] = [];
+        for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
+          rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
+        }
+        rowsData.push(rowCells);
+      }
+      rowsData.sort((a, b) => {
+        for (const criterion of params.criteria) {
+          const offset = criterion.column - params.range.startColumn;
+          const valA = a[offset]?.value;
+          const valB = b[offset]?.value;
+          if (valA === valB) continue;
+          if (valA == null) return 1;
+          if (valB == null) return -1;
+          let result: number;
+          if (typeof valA === 'number' && typeof valB === 'number') result = valA - valB;
+          else result = String(valA).localeCompare(String(valB));
+          return criterion.ascending ? result : -result;
+        }
+        return 0;
+      });
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: startR,
+        startColumn: params.range.startColumn,
+        values: rowsData.map((row) => row.slice(0, width)),
+      });
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; range: RangeRef }>({
+    id: 'matrix.transpose',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const range = params.range;
+      const source: CellData[][] = [];
+      for (let r = range.startRow; r <= range.endRow; r++) {
+        const rowCells: CellData[] = [];
+        for (let c = range.startColumn; c <= range.endColumn; c++) {
+          rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
+        }
+        source.push(rowCells);
+      }
+      const transposed: CellData[][] = [];
+      for (let c = 0; c < source[0]!.length; c++) {
+        transposed.push(source.map((row) => structuredClone(row[c] ?? { value: null })));
+      }
+      // 先清空原区域再写转置结果(非方形时形状不同)
+      runtime.execute('sheet.range.clear', {
+        sheetId: params.sheetId,
+        range,
+        mode: 'contents',
+      });
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: range.startRow,
+        startColumn: range.startColumn,
+        values: transposed,
+      });
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; range: RangeRef; direction: 'horizontal' | 'vertical' }>({
+    id: 'matrix.flip',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const range = params.range;
+      const source: CellData[][] = [];
+      for (let r = range.startRow; r <= range.endRow; r++) {
+        const rowCells: CellData[] = [];
+        for (let c = range.startColumn; c <= range.endColumn; c++) {
+          rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
+        }
+        source.push(rowCells);
+      }
+      const flipped = params.direction === 'horizontal'
+        ? source.map((row) => [...row].reverse())
+        : [...source].reverse();
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: range.startRow,
+        startColumn: range.startColumn,
+        values: flipped,
+      });
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
+    id: 'sheet.splitColumn',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const cell = sheet.cells.get(params.row, params.column);
+      const text = cell?.value == null ? '' : String(cell.value);
+      const maxColumns = Math.max(2, params.maxColumns ?? 4);
+      const parts = text.split(params.delimiter).slice(0, maxColumns);
+      if (parts.length <= 1 && parts[0] === text) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
+      const baseStyle = cell?.style ? structuredClone(cell.style) : undefined;
+      const values: CellData[][] = [parts.map((part) => ({ value: coerceText(part, cell), style: baseStyle ? structuredClone(baseStyle) : undefined }))];
+      while (values[0]!.length < 1) values[0]!.push({ value: null });
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: params.row,
+        startColumn: params.column,
+        values,
+      });
+    },
+  });
+
+  // 13. 筛选 / 条件格式 / 数据验证 / 色带 / 名称
+  runtime.registry.registerMutation('filter.set', (item, context) => {
+    const params = item.params as { sheetId: string; filter: FilterModel };
+    context.workbook.getSheet(params.sheetId).filter = structuredClone(params.filter);
+  });
+  runtime.registry.registerMutation('filter.remove', (item, context) => {
+    const params = item.params as { sheetId: string };
+    const sheet = context.workbook.getSheet(params.sheetId);
+    sheet.filter = undefined;
+  });
+  runtime.registry.registerCommand<{ sheetId: string; filter: FilterModel }>({
+    id: 'sheet.filter.set',
+    execute: (params, context) => {
+      const previous = context.workbook.getSheet(params.sheetId).filter;
+      const affectedRanges: RangeRef[] = [structuredClone(params.filter.range)];
+      context.applyMutation({
+        id: 'filter.set',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: previous ? 'filter.set' : 'filter.remove',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: previous ? { sheetId: params.sheetId, filter: structuredClone(previous) } : { sheetId: params.sheetId },
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          context.workbook.getSheet(params.sheetId).filter = structuredClone(params.filter);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string }>({
+    id: 'sheet.filter.remove',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.filter;
+      if (!previous) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges: RangeRef[] = [structuredClone(previous.range)];
+      context.applyMutation({
+        id: 'filter.remove',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'filter.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, filter: structuredClone(previous) },
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          context.workbook.getSheet(params.sheetId).filter = undefined;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerMutation('cf.add', (item, context) => {
+    const params = item.params as AddConditionalFormatParams;
+    const sheet = context.workbook.getSheet(params.rule.sheetId);
+    const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.rule.id);
+    if (index >= 0) sheet.conditionalFormats[index] = structuredClone(params.rule);
+    else sheet.conditionalFormats.push(structuredClone(params.rule));
+  });
+  runtime.registry.registerMutation('cf.remove', (item, context) => {
+    const params = item.params as { sheetId: string; ruleId: string };
+    const sheet = context.workbook.getSheet(params.sheetId);
+    const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
+    if (index >= 0) sheet.conditionalFormats.splice(index, 1);
+  });
+  runtime.registry.registerMutation('cf.clear', (item, context) => {
+    const params = item.params as { sheetId: string };
+    context.workbook.getSheet(params.sheetId).conditionalFormats.length = 0;
+  });
+  runtime.registry.registerCommand<AddConditionalFormatParams>({
+    id: 'sheet.cf.add',
+    execute: (params, context) => {
+      const affectedRanges: RangeRef[] = structuredClone(params.rule.ranges);
+      context.applyMutation({
+        id: 'cf.add',
+        unitId: context.workbook.unitId,
+        sheetId: params.rule.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'cf.remove',
+            unitId: context.workbook.unitId,
+            sheetId: params.rule.sheetId,
+            params: { sheetId: params.rule.sheetId, ruleId: params.rule.id },
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          const sheet = context.workbook.getSheet(params.rule.sheetId);
+          const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.rule.id);
+          if (index >= 0) sheet.conditionalFormats[index] = structuredClone(params.rule);
+          else sheet.conditionalFormats.push(structuredClone(params.rule));
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string; ruleId: string }>({
+    id: 'sheet.cf.remove',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
+      if (index < 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const previous = structuredClone(sheet.conditionalFormats[index]!);
+      const affectedRanges: RangeRef[] = structuredClone(previous.ranges);
+      context.applyMutation({
+        id: 'cf.remove',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'cf.add',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { rule: previous } satisfies AddConditionalFormatParams,
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          const target = context.workbook.getSheet(params.sheetId);
+          const idx = target.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
+          if (idx >= 0) target.conditionalFormats.splice(idx, 1);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string }>({
+    id: 'sheet.cf.clear',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (sheet.conditionalFormats.length === 0) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
+      const previous = structuredClone(sheet.conditionalFormats);
+      const affectedRanges: RangeRef[] = previous.flatMap((rule) => structuredClone(rule.ranges));
+      context.applyMutation({
+        id: 'cf.clear',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: previous.map((rule) => ({
+          id: 'cf.add' as const,
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { rule } satisfies AddConditionalFormatParams,
+          affectedRanges: [] as RangeRef[],
+        })),
+        apply: () => {
+          context.workbook.getSheet(params.sheetId).conditionalFormats.length = 0;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerMutation('dv.add', (item, context) => {
+    const params = item.params as AddDataValidationParams;
+    const sheet = context.workbook.getSheet(params.rule.sheetId);
+    const index = sheet.dataValidations.findIndex((rule) => rule.id === params.rule.id);
+    if (index >= 0) sheet.dataValidations[index] = structuredClone(params.rule);
+    else sheet.dataValidations.push(structuredClone(params.rule));
+  });
+  runtime.registry.registerMutation('dv.remove', (item, context) => {
+    const params = item.params as { sheetId: string; ruleId: string };
+    const sheet = context.workbook.getSheet(params.sheetId);
+    const index = sheet.dataValidations.findIndex((rule) => rule.id === params.ruleId);
+    if (index >= 0) sheet.dataValidations.splice(index, 1);
+  });
+  runtime.registry.registerCommand<AddDataValidationParams>({
+    id: 'sheet.dv.add',
+    execute: (params, context) => {
+      const affectedRanges: RangeRef[] = structuredClone(params.rule.ranges);
+      context.applyMutation({
+        id: 'dv.add',
+        unitId: context.workbook.unitId,
+        sheetId: params.rule.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'dv.remove',
+            unitId: context.workbook.unitId,
+            sheetId: params.rule.sheetId,
+            params: { sheetId: params.rule.sheetId, ruleId: params.rule.id },
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          const sheet = context.workbook.getSheet(params.rule.sheetId);
+          const index = sheet.dataValidations.findIndex((rule) => rule.id === params.rule.id);
+          if (index >= 0) sheet.dataValidations[index] = structuredClone(params.rule);
+          else sheet.dataValidations.push(structuredClone(params.rule));
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string; ruleId: string }>({
+    id: 'sheet.dv.remove',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const index = sheet.dataValidations.findIndex((rule) => rule.id === params.ruleId);
+      if (index < 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const previous = structuredClone(sheet.dataValidations[index]!);
+      const affectedRanges: RangeRef[] = structuredClone(previous.ranges);
+      context.applyMutation({
+        id: 'dv.remove',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'dv.add',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { rule: previous } satisfies AddDataValidationParams,
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          const target = context.workbook.getSheet(params.sheetId);
+          const idx = target.dataValidations.findIndex((rule) => rule.id === params.ruleId);
+          if (idx >= 0) target.dataValidations.splice(idx, 1);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerMutation('banded.set', (item, context) => {
+    const params = item.params as { sheetId: string; rule: BandedRule | null };
+    const sheet = context.workbook.getSheet(params.sheetId);
+    sheet.bandedRule = params.rule ? structuredClone(params.rule) : undefined;
+  });
+  runtime.registry.registerCommand<{ sheetId: string; rule: BandedRule | null }>({
+    id: 'sheet.banded.set',
+    execute: (params, context) => {
+      const previous = context.workbook.getSheet(params.sheetId).bandedRule;
+      const affectedRanges: RangeRef[] = params.rule ? [structuredClone(params.rule.range)] : [];
+      context.applyMutation({
+        id: 'banded.set',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          {
+            id: 'banded.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, rule: previous ? structuredClone(previous) : null },
+            affectedRanges,
+          },
+        ],
+        apply: () => {
+          const sheet = context.workbook.getSheet(params.sheetId);
+          sheet.bandedRule = params.rule ? structuredClone(params.rule) : undefined;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerMutation('name.set', (item, context) => {
+    const params = item.params as { name: string; value: string };
+    context.workbook.definedNames[params.name] = params.value;
+  });
+  runtime.registry.registerMutation('name.remove', (item, context) => {
+    const params = item.params as { name: string };
+    delete context.workbook.definedNames[params.name];
+  });
+  runtime.registry.registerCommand<{ name: string; value: string }>({
+    id: 'workbook.name.set',
+    execute: (params, context) => {
+      const previous = context.workbook.definedNames[params.name];
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'name.set',
+        unitId: context.workbook.unitId,
+        sheetId: context.workbook.activeSheetId,
+        params,
+        affectedRanges,
+        inverse: previous !== undefined
+          ? [{ id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: params.name, value: previous }, affectedRanges }]
+          : [{ id: 'name.remove', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: params.name }, affectedRanges }],
+        apply: () => {
+          context.workbook.definedNames[params.name] = params.value;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ name: string }>({
+    id: 'workbook.name.remove',
+    execute: (params, context) => {
+      const previous = context.workbook.definedNames[params.name];
+      if (previous === undefined) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'name.remove',
+        unitId: context.workbook.unitId,
+        sheetId: context.workbook.activeSheetId,
+        params,
+        affectedRanges,
+        inverse: [
+          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: params.name, value: previous }, affectedRanges },
+        ],
+        apply: () => {
+          delete context.workbook.definedNames[params.name];
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+}
+
+function coerceText(text: string, previousCell: CellData | undefined): CellData['value'] {
+  if (typeof previousCell?.value === 'number') {
+    const numeric = Number(text.replace(/[$,%]/g, ''));
+    if (Number.isFinite(numeric) && text.trim() !== '') return numeric;
+  }
+  return text;
 }

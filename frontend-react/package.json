@@ -11,7 +11,7 @@
     "dev:server": "tsx apps/server/src/main.ts",
     "build": "npm run typecheck && vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts packages/formula-engine/src/index.test.ts packages/render-engine/src/index.test.ts packages/pro-features/src/index.test.ts",
+    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts packages/formula-engine/src/index.test.ts packages/render-engine/src/index.test.ts packages/sheet-features/src/index.test.ts packages/pro-features/src/index.test.ts packages/number-format/src/index.test.ts packages/core-model/src/structure.test.ts",
     "check:boundaries": "node tools/check-boundaries.mjs"
   },
   "dependencies": {

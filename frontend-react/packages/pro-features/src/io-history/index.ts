@@ -1,6 +1,12 @@
 import type { RangeRef, WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import { exportSnapshotToXlsxXml } from './xlsx';
+import { bytesToBase64, createZipStore } from './zip';
 
 export * from './xlsx';
+export { buildXlsxArchiveBase64 } from './archive';
+
+/** 见 archive.ts */
+export { bytesToBase64, createZipStore } from './zip';
 
 export interface PrintLayout {
   paper: 'A4' | 'Letter' | 'Legal';

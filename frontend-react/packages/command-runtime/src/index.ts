@@ -104,7 +104,10 @@ export interface HistoryEntry {
   timestamp: number;
 }
 
-export type MutationListener = (mutation: MutationInfo) => void;
+/** 变更来源:正向命令、本地撤销、本地重做、远端协同重放 */
+export type MutationSource = 'command' | 'undo' | 'redo' | 'remote';
+
+export type MutationListener = (mutation: MutationInfo, source: MutationSource) => void;
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
 
 export class CommandRuntime {
@@ -169,7 +172,7 @@ export class CommandRuntime {
         this.activeEntry?.redo.push(info);
 
         for (const listener of this.mutationListeners) {
-          listener(info);
+          listener(info, 'command');
         }
       },
       recordOperation: (operation, operationParams) => operation.execute(operationParams, context),
@@ -204,7 +207,7 @@ export class CommandRuntime {
       if (isRootTransaction) {
         // Rollback applied mutations in this transaction if failed
         if (this.activeEntry && this.activeEntry.undo.length > 0) {
-          this.applyHistory(this.activeEntry.undo);
+          this.applyHistory(this.activeEntry.undo, 'undo');
         }
         this.activeEntry = null;
       }
@@ -215,7 +218,7 @@ export class CommandRuntime {
   undo(): boolean {
     const entry = this.undoStack.pop();
     if (!entry) return false;
-    this.applyHistory(entry.undo);
+    this.applyHistory(entry.undo, 'undo');
     this.redoStack.push(entry);
     return true;
   }
@@ -223,9 +226,22 @@ export class CommandRuntime {
   redo(): boolean {
     const entry = this.redoStack.pop();
     if (!entry) return false;
-    this.applyHistory(entry.redo);
+    this.applyHistory(entry.redo, 'redo');
     this.undoStack.push(entry);
     return true;
+  }
+
+  /**
+   * 应用来自远端协同的变更序列:执行已注册的 mutation 处理器,
+   * 以 'remote' 来源通知监听器(用于引擎同步/视图刷新),但不进入本地撤销栈。
+   */
+  applyRemoteMutations(items: readonly MutationInfo[]): void {
+    this.applyHistory(items, 'remote');
+  }
+
+  /** 当前事务嵌套深度(workspace 用以判断根事务冲刷协同队列) */
+  get activeDepth(): number {
+    return this.transactionDepth;
   }
 
   getHistoryDepth(): { undo: number; redo: number } {
@@ -241,7 +257,7 @@ export class CommandRuntime {
     this.redoStack.length = 0;
   }
 
-  private applyHistory(items: MutationInfo[]): void {
+  private applyHistory(items: readonly MutationInfo[], source: MutationSource): void {
     for (const item of items) {
       const handler = this.registry.getMutation(item.id);
       handler(item, {
@@ -251,7 +267,7 @@ export class CommandRuntime {
         recordOperation: () => ({ operationId: createOperationId() }),
       });
       for (const listener of this.mutationListeners) {
-        listener(item);
+        listener(item, source);
       }
     }
   }

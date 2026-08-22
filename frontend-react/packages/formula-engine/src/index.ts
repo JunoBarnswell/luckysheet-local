@@ -1,5 +1,7 @@
 export * from './address';
 export * from './ast';
+export * from './ast-format';
+export * from './ast-rewrite';
 export * from './dependencies';
 export * from './errors';
 export * from './evaluator';

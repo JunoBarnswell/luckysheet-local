@@ -7,6 +7,7 @@ import {
   exportSnapshotToXlsxXml,
   parseXlsxXmlToSnapshot,
   computePivotTable,
+  diffSnapshots,
 } from './index';
 import { ChangesetStateMachine } from './collaboration';
 import { WorkbookModel } from '@react-sheets/core-model';
@@ -107,4 +108,40 @@ test('pivot engine aggregates source data by dimensions and value fields', () =>
   assert.equal(result.rows.length, 2);
   const northRow = result.rows.find((r) => r.keys[0] === 'North');
   assert.deepEqual(northRow?.values, [400]);
+});
+
+test('diffSnapshots identifies exact cell changes between revisions', () => {
+  const wb1 = new WorkbookModel('unit-diff', 'Diff1');
+  wb1.getSheet('sheet-1').cells.set(0, 0, { value: 'Original' });
+  wb1.getSheet('sheet-1').cells.set(0, 1, { value: 100 });
+
+  const wb2 = new WorkbookModel('unit-diff', 'Diff2');
+  wb2.getSheet('sheet-1').cells.set(0, 0, { value: 'Modified' });
+  wb2.getSheet('sheet-1').cells.set(0, 1, { value: 100 }); // unchanged
+
+  const diff = diffSnapshots(wb1.snapshot(), wb2.snapshot());
+  assert.equal(diff.length, 1);
+  assert.equal(diff[0]?.row, 0);
+  assert.equal(diff[0]?.column, 0);
+  assert.equal(diff[0]?.oldValue, 'Original');
+  assert.equal(diff[0]?.newValue, 'Modified');
+});
+
+test('changeset state machine handles reject and offline transitions', () => {
+  const machine = new ChangesetStateMachine();
+  machine.submit({
+    schema: 'CollaborationChangeSetV1',
+    operationId: 'op-fail',
+    unitId: 'unit-1',
+    actorId: 'actor-1',
+    baseRevision: 0,
+    mutations: [],
+    createdAt: new Date(0).toISOString(),
+  });
+  const rejected = machine.reject('op-fail', 'Constraint violation');
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.error, 'Constraint violation');
+
+  const offline = machine.markOffline();
+  assert.equal(offline.status, 'offline');
 });

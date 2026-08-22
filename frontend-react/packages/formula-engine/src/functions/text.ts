@@ -1,4 +1,5 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
+import { formatValue } from '@react-sheets/number-format';
 
 function toStringVal(val: FormulaValue | undefined): string {
   if (val === null || val === undefined) return '';
@@ -175,9 +176,7 @@ export const textFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
     const format = toStringVal(args[1]);
     if (isFormulaError(val)) return val;
     if (typeof val === 'number') {
-      if (format.includes('%')) return `${(val * 100).toFixed(2)}%`;
-      if (format.includes('$')) return `$${val.toLocaleString('en-US')}`;
-      return String(val);
+      return formatValue(val, format || undefined);
     }
     return toStringVal(val);
   },

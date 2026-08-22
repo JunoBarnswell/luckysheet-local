@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { CommandRuntime } from './index';
+import { CommandRuntime, type MutationInfo } from './index';
 
 test('CommandRuntime executes a registered command and tracks history', () => {
   const workbook = new WorkbookModel('unit-1', 'Runtime');
@@ -33,11 +33,65 @@ test('CommandRuntime executes a registered command and tracks history', () => {
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: range };
     },
   });
+
+  const listenedMutations: MutationInfo[] = [];
+  const unsubscribe = runtime.onMutation((m) => listenedMutations.push(m));
+
   const result = runtime.execute('cell.set', { row: 1, column: 1, value: 'A' });
   assert.equal(result.mutationCount, 1);
+  assert.equal(listenedMutations.length, 1);
   assert.equal(runtime.getHistoryDepth().undo, 1);
   assert.equal(runtime.undo(), true);
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1), undefined);
   assert.equal(runtime.redo(), true);
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
+
+  unsubscribe();
+});
+
+test('CommandRuntime rolls back applied mutations if a command throws mid-execution', () => {
+  const workbook = new WorkbookModel('unit-rollback', 'Rollback');
+  const runtime = new CommandRuntime(workbook);
+
+  runtime.registry.registerMutation('val.set', (item, context) => {
+    const params = item.params as { row: number; value: number };
+    context.workbook.getSheet(item.sheetId).cells.set(params.row, 0, { value: params.value });
+  });
+  runtime.registry.registerMutation('val.restore', (item, context) => {
+    const params = item.params as { row: number };
+    context.workbook.getSheet(item.sheetId).cells.delete(params.row, 0);
+  });
+
+  runtime.registry.registerCommand({
+    id: 'failing.transaction',
+    execute: (_params: unknown, context) => {
+      const sheet = context.workbook.getSheet('sheet-1');
+      context.applyMutation({
+        id: 'val.set',
+        unitId: context.workbook.unitId,
+        sheetId: 'sheet-1',
+        params: { row: 0, value: 100 },
+        affectedRanges: [],
+        inverse: [{ id: 'val.restore', unitId: context.workbook.unitId, sheetId: 'sheet-1', params: { row: 0 }, affectedRanges: [] }],
+        apply: () => sheet.cells.set(0, 0, { value: 100 }),
+      });
+
+      // Now throw an error intentionally
+      throw new Error('Simulated failure during multi-mutation command');
+    },
+  });
+
+  assert.throws(() => runtime.execute('failing.transaction', {}), /Simulated failure/);
+  // The first mutation should have been rolled back
+  assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0), undefined);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
+test('CommandRegistry guards against duplicate IDs and unknown lookups', () => {
+  const workbook = new WorkbookModel('unit-guard', 'Guards');
+  const runtime = new CommandRuntime(workbook);
+
+  runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) });
+  assert.throws(() => runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) }), /Duplicate command/);
+  assert.throws(() => runtime.execute('non.existent', {}), /Unknown command/);
 });

@@ -192,7 +192,13 @@ class Parser {
       if (this.checkNext('left-paren')) {
         return this.parseFunctionCall();
       }
-      return this.parseReference();
+      try {
+        return this.parseReference();
+      } catch {
+        // 不是合法单元格引用 → 视为定义名称引用
+        this.advance();
+        return { type: 'name-reference', name: token.lexeme, span: token.span };
+      }
     }
 
     if (token.kind === 'string') {

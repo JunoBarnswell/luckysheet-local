@@ -3,10 +3,15 @@ import { intersectRect, mergeRects, translateRect } from './geometry';
 import { SheetSkeleton } from './sheet-skeleton';
 import {
   DEFAULT_LAYER_DEFINITIONS,
+  COL_HEADER_HEIGHT,
+  ROW_HEADER_WIDTH,
   type CellRange,
+  type FreezeSplits,
   type LayerDefinition,
+  type PaneId,
   type Point,
   type Rect,
+  type RenderPane,
   type ViewportSnapshot,
 } from './types';
 
@@ -38,6 +43,8 @@ export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'large-scroll' 
 export interface RenderPlan {
   viewport: ViewportSnapshot;
   visibleRange: CellRange | null;
+  /** 冻结窗格切分结果(无冻结时为单个 main 窗格) */
+  panes: RenderPane[];
   dirtyRanges: CellRange[];
   dirtyRects: Rect[];
   scrollDelta: ScrollDeltaPlan;
@@ -54,6 +61,70 @@ export interface RenderPlanInput {
   dirtyRanges?: readonly CellRange[];
   forceFull?: boolean;
   layers?: readonly LayerDefinition[];
+  /** 冻结切分(null = 不冻结) */
+  freeze?: FreezeSplits | null;
+  /** 表头条占用偏移(有表头时为 {x:ROW_HEADER_WIDTH,y:COL_HEADER_HEIGHT}) */
+  headerOffset?: Point | null;
+}
+
+/** 计算冻结四象限窗格(或单窗格)的屏幕矩形、滚动偏移与可见范围 */
+export function computeRenderPanes(
+  skeleton: SheetSkeleton,
+  viewport: ViewportSnapshot,
+  freeze: FreezeSplits | null,
+  headerOffset: Point | null,
+): RenderPane[] {
+  const originX = headerOffset?.x ?? 0;
+  const originY = headerOffset?.y ?? 0;
+  const gridWidth = Math.max(0, viewport.width - originX);
+  const gridHeight = Math.max(0, viewport.height - originY);
+
+  if (!freeze || (freeze.xSplit <= 0 && freeze.ySplit <= 0)) {
+    return [{
+      id: 'main',
+      rect: { x: originX, y: originY, width: gridWidth, height: gridHeight },
+      offset: { x: viewport.scrollX, y: viewport.scrollY },
+      range: skeleton.getVisibleRange({
+        x: viewport.scrollX,
+        y: viewport.scrollY,
+        width: gridWidth,
+        height: gridHeight,
+      }),
+    }];
+  }
+
+  const xSplit = Math.max(0, Math.min(freeze.xSplit, skeleton.columnCount - 1));
+  const ySplit = Math.max(0, Math.min(freeze.ySplit, skeleton.rowCount - 1));
+  let frozenLeft = 0;
+  for (let c = 0; c < xSplit; c++) frozenLeft += skeleton.getColumnWidth(c);
+  let frozenTop = 0;
+  for (let r = 0; r < ySplit; r++) frozenTop += skeleton.getRowHeight(r);
+  frozenLeft = Math.min(frozenLeft, gridWidth * 0.8);
+  frozenTop = Math.min(frozenTop, gridHeight * 0.8);
+
+  const panes: Array<{ id: PaneId; rect: Rect; offset: Point }> = [
+    { id: 'topLeft', rect: { x: originX, y: originY, width: frozenLeft, height: frozenTop }, offset: { x: 0, y: 0 } },
+    { id: 'topRight', rect: { x: originX + frozenLeft, y: originY, width: gridWidth - frozenLeft, height: frozenTop }, offset: { x: viewport.scrollX, y: 0 } },
+    { id: 'bottomLeft', rect: { x: originX, y: originY + frozenTop, width: frozenLeft, height: gridHeight - frozenTop }, offset: { x: 0, y: viewport.scrollY } },
+    { id: 'main', rect: { x: originX + frozenLeft, y: originY + frozenTop, width: gridWidth - frozenLeft, height: gridHeight - frozenTop }, offset: { x: viewport.scrollX, y: viewport.scrollY } },
+  ];
+
+  return panes
+    .filter((pane) => pane.rect.width > 0 && pane.rect.height > 0)
+    .map((pane) => ({
+      ...pane,
+      range: skeleton.getVisibleRange({
+        x: pane.offset.x,
+        y: pane.offset.y,
+        width: pane.rect.width,
+        height: pane.rect.height,
+      }),
+    }));
+}
+
+/** 默认表头偏移 */
+export function defaultHeaderOffset(): Point {
+  return { x: ROW_HEADER_WIDTH, y: COL_HEADER_HEIGHT };
 }
 
 function emptyScrollDelta(): ScrollDeltaPlan {
@@ -199,7 +270,10 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   );
   const resized = viewportChanged(previousViewport, input.viewport);
   const largeScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
-  const fullRedraw = input.forceFull === true || !hasPrevious || resized || largeScroll;
+  // 有表头/冻结时滚动禁用 blit(避免表头条与冻结区被拖影),整帧重绘保证正确性
+  const chromePinned = Boolean(input.freeze || input.headerOffset);
+  const blitBlocked = chromePinned && scrollDelta.hasDelta;
+  const fullRedraw = input.forceFull === true || !hasPrevious || resized || largeScroll || blitBlocked;
   const reason = calculateReason(
     hasPrevious,
     input.forceFull === true,
@@ -225,14 +299,12 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     return { layerId: definition.id, mode: 'none', clearRects: [], drawRects: [] };
   });
 
+  const panes = computeRenderPanes(input.skeleton, input.viewport, input.freeze ?? null, input.headerOffset ?? null);
+
   return {
     viewport: { ...input.viewport },
-    visibleRange: input.skeleton.getVisibleRange({
-      x: input.viewport.scrollX,
-      y: input.viewport.scrollY,
-      width: input.viewport.width,
-      height: input.viewport.height,
-    }),
+    visibleRange: panes.at(-1)?.range ?? null,
+    panes,
     dirtyRanges,
     dirtyRects,
     scrollDelta,

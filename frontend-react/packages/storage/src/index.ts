@@ -92,6 +92,59 @@ export class WorkbookStorage {
             );
           }),
         );
+      } else if (mutation.id === 'style.set') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        const params = mutation.params as {
+          range: { startRow: number; endRow: number; startColumn: number; endColumn: number };
+          style: Record<string, unknown> & { numberFormat?: string };
+        };
+        for (let r = params.range.startRow; r <= params.range.endRow; r++) {
+          for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
+            let cell = sheet.cells.get(r, c);
+            if (!cell) {
+              cell = { value: null };
+              sheet.cells.set(r, c, cell);
+            }
+            cell.style = { ...(cell.style ?? {}), ...(params.style as Partial<NonNullable<CellData['style']>>) };
+            if (params.style.numberFormat !== undefined) {
+              cell.numberFormat = params.style.numberFormat;
+            }
+          }
+        }
+      } else if (mutation.id === 'style.clear') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        const params = mutation.params as {
+          range: { startRow: number; endRow: number; startColumn: number; endColumn: number };
+        };
+        for (let r = params.range.startRow; r <= params.range.endRow; r++) {
+          for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
+            const cell = sheet.cells.get(r, c);
+            if (!cell) continue;
+            cell.style = undefined;
+            cell.styleId = undefined;
+            cell.numberFormat = undefined;
+          }
+        }
+      } else if (mutation.id === 'range.clear') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        const params = mutation.params as {
+          range: { startRow: number; endRow: number; startColumn: number; endColumn: number };
+          mode?: 'all' | 'contents' | 'formats';
+        };
+        for (let r = params.range.startRow; r <= params.range.endRow; r++) {
+          for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
+            if (params.mode === 'formats') {
+              const cell = sheet.cells.get(r, c);
+              if (cell) {
+                cell.style = undefined;
+                cell.styleId = undefined;
+                cell.numberFormat = undefined;
+              }
+            } else {
+              sheet.cells.delete(r, c);
+            }
+          }
+        }
       } else if (mutation.id === 'sheet.add') {
         const params = mutation.params as {
           id: string;
@@ -102,7 +155,13 @@ export class WorkbookStorage {
         workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount);
       } else if (mutation.id === 'sheet.remove') {
         workbook.removeSheet(mutation.sheetId);
-      } else if (mutation.id === 'sheet.rename') {
+      } else if (mutation.id === 'sheet.restore') {
+    const restored = mutation.params as { sheet: import('@react-sheets/core-model').WorksheetModel };
+    const workbookModel = workbook as unknown as { sheets: Map<string, import('@react-sheets/core-model').WorksheetModel> };
+    if (!workbookModel.sheets.has(restored.sheet.id)) {
+      workbookModel.sheets.set(restored.sheet.id, restored.sheet);
+    }
+  } else if (mutation.id === 'sheet.rename') {
         const params = mutation.params as { sheetId: string; name: string };
         workbook.getSheet(params.sheetId).name = params.name;
       } else if (mutation.id === 'merge.set') {
@@ -160,6 +219,99 @@ export class WorkbookStorage {
         const items = workbook.getSheet(mutation.sheetId).sparklines;
         const index = items.findIndex((item) => item.id === mutation.params);
         if (index >= 0) items.splice(index, 1);
+      } else if (mutation.id === 'cf.add') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        sheet.conditionalFormats.push(mutation.params as never);
+      } else if (mutation.id === 'cf.remove') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        const index = sheet.conditionalFormats.findIndex((item) => item.id === mutation.params);
+        if (index >= 0) sheet.conditionalFormats.splice(index, 1);
+      } else if (mutation.id === 'cf.clear') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        sheet.conditionalFormats.length = 0;
+      } else if (mutation.id === 'filter.set') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        sheet.filter = mutation.params as never;
+      } else if (mutation.id === 'filter.remove') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        sheet.filter = undefined;
+      } else if (mutation.id === 'rows.inserted') {
+        const params = mutation.params as { at: number; count: number };
+        workbook.getSheet(mutation.sheetId).insertRows(params.at, params.count);
+      } else if (mutation.id === 'rows.deleted') {
+        const params = mutation.params as { at: number; count: number };
+        workbook.getSheet(mutation.sheetId).deleteRows(params.at, params.count);
+      } else if (mutation.id === 'columns.inserted') {
+        const params = mutation.params as { at: number; count: number };
+        workbook.getSheet(mutation.sheetId).insertColumns(params.at, params.count);
+      } else if (mutation.id === 'columns.deleted') {
+        const params = mutation.params as { at: number; count: number };
+        workbook.getSheet(mutation.sheetId).deleteColumns(params.at, params.count);
+      } else if (mutation.id === 'banded.set') {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        sheet.bandedRule = (mutation.params ?? undefined) as never;
+      } else if (mutation.id === 'image.add') {
+        workbook.getSheet(mutation.sheetId).images.push(mutation.params as never);
+      } else if (mutation.id === 'image.remove') {
+        const items = workbook.getSheet(mutation.sheetId).images;
+        const index = items.findIndex((item) => item.id === mutation.params);
+        if (index >= 0) items.splice(index, 1);
+      } else if (mutation.id === 'image.update') {
+        const params = mutation.params as { id: string; bounds: unknown };
+        const image = workbook.getSheet(mutation.sheetId).images.find((item) => item.id === params.id);
+        if (image) image.bounds = params.bounds as typeof image.bounds;
+      } else if (mutation.id === 'dv.add') {
+    const sheet = workbook.getSheet(mutation.sheetId);
+    const rule = (mutation.params as { rule: unknown }).rule as never;
+    const index = sheet.dataValidations.findIndex((item) => item.id === (rule as { id: string }).id);
+    if (index >= 0) sheet.dataValidations[index] = structuredClone(rule);
+    else sheet.dataValidations.push(structuredClone(rule));
+  } else if (mutation.id === 'dv.remove') {
+    const sheet = workbook.getSheet(mutation.sheetId);
+    const index = sheet.dataValidations.findIndex((item) => item.id === mutation.params);
+    if (index >= 0) sheet.dataValidations.splice(index, 1);
+  } else if (mutation.id === 'chart.update' || mutation.id === 'pro.chart.move') {
+    const sheet = workbook.getSheet(mutation.sheetId);
+    const params = mutation.params as { id: string; bounds?: { x: number; y: number; width: number; height: number }; sourceRanges?: unknown };
+    const chart = sheet.charts.find((item) => item.id === params.id);
+    if (chart) {
+      if (params.bounds) chart.bounds = { ...params.bounds };
+      if (params.sourceRanges) chart.sourceRanges = structuredClone(params.sourceRanges as never);
+    }
+  } else if (mutation.id === 'shape.update' || mutation.id === 'pro.shape.move') {
+    const sheet = workbook.getSheet(mutation.sheetId);
+    const params = mutation.params as { id: string; bounds: { x: number; y: number; width: number; height: number } };
+    const shape = sheet.shapes.find((item) => item.id === params.id);
+    if (shape && params.bounds) shape.bounds = { ...params.bounds };
+  } else if (mutation.id === 'pro.pivot.write') {
+    const sheet = workbook.getSheet(mutation.sheetId);
+    const params = mutation.params as {
+      pivotId: string;
+      targetStartRow: number;
+      targetStartColumn: number;
+      values: Array<Array<{ value: import('@react-sheets/core-model').CellValue; style?: import('@react-sheets/core-model').CellStyle }>>;
+    };
+    for (let r = 0; r < params.values.length; r++) {
+      const rowValues = params.values[r]!;
+      for (let c = 0; c < rowValues.length; c++) {
+        sheet.cells.set(params.targetStartRow + r, params.targetStartColumn + c, structuredClone(rowValues[c]!));
+      }
+    }
+    const pivot = sheet.pivots.find((item) => item.id === params.pivotId);
+    if (pivot) pivot.lastWrittenAt = Date.now();
+  } else if (mutation.id === 'rows.hidden') {
+    workbook.getSheet(mutation.sheetId).hiddenRows.add((mutation.params as { index: number }).index);
+  } else if (mutation.id === 'rows.unhidden.all') {
+    workbook.getSheet(mutation.sheetId).hiddenRows.clear();
+  } else if (mutation.id === 'columns.hidden') {
+    workbook.getSheet(mutation.sheetId).hiddenColumns.add((mutation.params as { index: number }).index);
+  } else if (mutation.id === 'columns.unhidden.all') {
+    workbook.getSheet(mutation.sheetId).hiddenColumns.clear();
+  } else if (mutation.id === 'name.set') {
+        const params = mutation.params as { name: string; reference: string };
+        workbook.definedNames[params.name] = params.reference;
+      } else if (mutation.id === 'name.remove') {
+        delete workbook.definedNames[mutation.params as string];
       }
     }
 

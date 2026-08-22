@@ -84,12 +84,19 @@ export interface FunctionCallNode {
   readonly span: SourceSpan;
 }
 
+export interface NameReferenceNode {
+  readonly type: 'name-reference';
+  readonly name: string;
+  readonly span: SourceSpan;
+}
+
 export type FormulaAst =
   | NumberLiteralNode
   | StringLiteralNode
   | BooleanLiteralNode
   | CellReferenceNode
   | RangeReferenceNode
+  | NameReferenceNode
   | UnaryExpressionNode
   | BinaryExpressionNode
   | FunctionCallNode;

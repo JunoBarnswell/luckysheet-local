@@ -11,6 +11,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@react-sheets/core-model': path.resolve(projectRoot, 'packages/core-model/src'),
+      '@react-sheets/number-format': path.resolve(projectRoot, 'packages/number-format/src'),
+      '@react-sheets/storage': path.resolve(projectRoot, 'packages/storage/src'),
       '@react-sheets/command-runtime': path.resolve(projectRoot, 'packages/command-runtime/src'),
       '@react-sheets/protocol': path.resolve(projectRoot, 'packages/protocol/src'),
       '@react-sheets/render-engine': path.resolve(projectRoot, 'packages/render-engine/src'),

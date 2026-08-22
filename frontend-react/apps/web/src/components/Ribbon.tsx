@@ -336,6 +336,14 @@ export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {}
                 Insert Function (fx)
               </Button>
             </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+
+            <RibbonGroup label="Cells">
+              <Button size="sm" variant="ghost" onClick={() => onAction('insert-row')}>Insert Row</Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('insert-column')}>Insert Column</Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('delete-row')}>Delete Row</Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('delete-column')}>Delete Column</Button>
+            </RibbonGroup>
           </Inline>
         ) : null}
 
@@ -358,6 +366,25 @@ export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {}
               <Button size="sm" variant="ghost" icon="check-circle" onClick={() => onAction('open-data-validation')}>
                 Data Validation
               </Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('apply-filter-selection')}>
+                Filter Selection
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('filter-clear')}>
+                Clear Filter
+              </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+
+            <RibbonGroup label="Find & Transform">
+              <Button size="sm" variant="ghost" onClick={() => onAction('find-replace')}>
+                Find & Replace
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('transpose')}>
+                Transpose
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('flip-h')}>Flip H</Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('flip-v')}>Flip V</Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('split-column')}>Split by Delimiter</Button>
             </RibbonGroup>
           </Inline>
         ) : null}
@@ -403,6 +430,19 @@ export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {}
             <RibbonGroup label="Print Layout">
               <Button size="sm" variant="ghost" icon="printer" onClick={() => onAction('open-print')}>
                 Print & PDF
+              </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+
+            <RibbonGroup label="Appearance & Files">
+              <Button size="sm" variant="ghost" onClick={() => onAction('banded-toggle')}>
+                Banded Rows
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('export-xlsx')}>
+                Export .xlsx
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onAction('import-xlsx')}>
+                Import .xlsx
               </Button>
             </RibbonGroup>
           </Inline>

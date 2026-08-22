@@ -117,3 +117,31 @@ test('CanvasRenderEngine keeps rendering state independent from DOM mounting', (
   engine.dispose();
   assert.throws(() => engine.render(), /disposed/);
 });
+
+test('SheetSkeleton handles custom dimensions and coordinate lookups accurately', () => {
+  const customSkeleton = new SheetSkeleton({
+    rowCount: 100,
+    columnCount: 50,
+    defaultRowHeight: 24,
+    defaultColumnWidth: 100,
+  });
+
+  customSkeleton.setRowHeight(0, 48);
+  customSkeleton.setColumnWidth(0, 150);
+
+  assert.equal(customSkeleton.getRowHeight(0), 48);
+  assert.equal(customSkeleton.getRowHeight(1), 24);
+  assert.equal(customSkeleton.getColumnWidth(0), 150);
+  assert.equal(customSkeleton.getColumnWidth(1), 100);
+
+  assert.equal(customSkeleton.getRowTop(0), 0);
+  assert.equal(customSkeleton.getRowTop(1), 48);
+  assert.equal(customSkeleton.getRowTop(2), 72);
+
+  assert.equal(customSkeleton.getColumnLeft(0), 0);
+  assert.equal(customSkeleton.getColumnLeft(1), 150);
+  assert.equal(customSkeleton.getColumnLeft(2), 250);
+
+  assert.deepEqual(customSkeleton.getCellAtPoint({ x: 50, y: 20 }), { row: 0, column: 0 });
+  assert.deepEqual(customSkeleton.getCellAtPoint({ x: 160, y: 50 }), { row: 1, column: 1 });
+});

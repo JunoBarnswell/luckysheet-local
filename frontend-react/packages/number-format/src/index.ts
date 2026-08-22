@@ -1,0 +1,349 @@
+/**
+ * Excel 数字格式代码解析与应用引擎(单文件包,无外部依赖)。
+ *
+ * 支持:正/负/零/文本四段格式、数字占位符 0 # ?、千分位逗号、小数点、
+ * 百分比、字面量(引号 / 反斜杠转义)、日期时间令牌
+ * yyyy yy mmm mm m ddd dd d hhh hh h sss ss s AM/PM A/P、
+ * 下划线宽度符 _x 与星号填充 *x(按单字符宽度展开)。
+ */
+
+export interface FormatSection {
+  readonly tokens: FormatToken[];
+  readonly hasTextPlaceholder: boolean;
+}
+
+export type FormatToken =
+  | { kind: 'literal'; text: string }
+  | { kind: 'space'; widthChar: string }
+  | { kind: 'fill'; char: string }
+  | { kind: 'digit'; ch: '0' | '#' | '?' }
+  | { kind: 'decimal-point' }
+  | { kind: 'percent' }
+  | { kind: 'date'; ch: string }
+  | { kind: 'ampm'; style: 'AM/PM' | 'A/P' }
+  | { kind: 'text-placeholder' };
+
+/** Excel 序列日期起点:1899-12-30(TC) */
+const EPOCH_MS = Date.UTC(1899, 11, 30);
+const DATE_TOKEN_CHARS = new Set(['y', 'm', 'd', 'h', 's']);
+
+export function parseSections(format: string): FormatSection[] {
+  const sections: FormatSection[] = [];
+  let tokens: FormatToken[] = [];
+  let index = 0;
+
+  while (index <= format.length) {
+    if (index === format.length || format[index] === ';') {
+      sections.push({
+        tokens,
+        hasTextPlaceholder: tokens.some((token) => token.kind === 'text-placeholder'),
+      });
+      tokens = [];
+      index += 1;
+      continue;
+    }
+    const scanned = scanToken(format, index);
+    if (scanned) {
+      tokens.push(scanned.token);
+      index = scanned.next;
+    } else {
+      tokens.push({ kind: 'literal', text: format[index] ?? '' });
+      index += 1;
+    }
+  }
+  return sections.length > 0 ? sections : [{ tokens: [], hasTextPlaceholder: false }];
+}
+
+function scanToken(format: string, start: number): { token: FormatToken; next: number } | undefined {
+  const character = format[start] ?? '';
+  const next = start + 1;
+
+  if (character === '"') {
+    const end = format.indexOf('"', next);
+    if (end < 0) return { token: { kind: 'literal', text: format.slice(next) }, next: format.length };
+    return { token: { kind: 'literal', text: format.slice(next, end) }, next: end + 1 };
+  }
+  if (character === '\\') {
+    return { token: { kind: 'literal', text: format[next] ?? '' }, next: next + 1 };
+  }
+  if (character === '_') return { token: { kind: 'space', widthChar: format[next] ?? ' ' }, next: next + 1 };
+  if (character === '*') return { token: { kind: 'fill', char: format[next] ?? ' ' }, next: next + 1 };
+  if (character === '@') return { token: { kind: 'text-placeholder' }, next };
+  if (character === '.') return { token: { kind: 'decimal-point' }, next };
+  if (character === '%') return { token: { kind: 'percent' }, next };
+  if (character === '0' || character === '#' || character === '?') {
+    return { token: { kind: 'digit', ch: character }, next };
+  }
+  if (/am\/pm/i.test(format.slice(start, start + 5))) {
+    return { token: { kind: 'ampm', style: 'AM/PM' }, next: start + 5 };
+  }
+  if (/a\/p/i.test(format.slice(start, start + 3))) {
+    return { token: { kind: 'ampm', style: 'A/P' }, next: start + 3 };
+  }
+  if (DATE_TOKEN_CHARS.has(character.toLowerCase())) {
+    let end = start;
+    while (end < format.length && format[end]?.toLowerCase() === character.toLowerCase()) end += 1;
+    return { token: { kind: 'date', ch: character.toLowerCase() }, next: end };
+  }
+  if (character === '[') {
+    const end = format.indexOf(']', start);
+    if (end > start) return { token: { kind: 'literal', text: '' }, next: end + 1 };
+  }
+  return undefined;
+}
+
+interface NumericPattern {
+  integerDigits: Array<'0' | '#' | '?'>;
+  decimalDigits: Array<'0' | '#' | '?'>;
+  prefix: string;
+  suffix: string;
+  percentScale: number;
+  isDate: boolean;
+  hasText: boolean;
+}
+
+function analyzeTokens(tokens: readonly FormatToken[]): NumericPattern & { thousands: boolean } {
+  const pattern = {
+    integerDigits: [] as Array<'0' | '#' | '?'>,
+    decimalDigits: [] as Array<'0' | '#' | '?'>,
+    prefix: '',
+    suffix: '',
+    percentScale: 1,
+    isDate: false,
+    hasText: false,
+    thousands: false,
+  };
+
+  let seenDecimal = false;
+  let seenDigit = false;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    switch (token.kind) {
+      case 'digit':
+        seenDigit = true;
+        if (seenDecimal) pattern.decimalDigits.push(token.ch);
+        else pattern.integerDigits.push(token.ch);
+        break;
+      case 'decimal-point':
+        seenDecimal = true;
+        break;
+      case 'percent': {
+        pattern.percentScale *= 100;
+        pattern.suffix += '%';
+        break;
+      }
+      case 'date':
+        pattern.isDate = true;
+        break;
+      case 'ampm':
+        pattern.isDate = true;
+        break;
+      case 'text-placeholder':
+        pattern.hasText = true;
+        break;
+      case 'literal': {
+        if (!seenDigit && !seenDecimal && pattern.decimalDigits.length === 0) pattern.prefix += token.text;
+        else pattern.suffix += token.text;
+        break;
+      }
+      case 'space':
+        if (seenDigit || seenDecimal) pattern.suffix += ' ';
+        else pattern.prefix += ' ';
+        break;
+      case 'fill':
+        break;
+      default:
+        break;
+    }
+    void i;
+  }
+
+  // 千分位:存在 ',' 字面量且其后(更靠右)有数字占位
+  let sawDigitAfterComma = false;
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const token = tokens[i]!;
+    if (token.kind === 'digit') sawDigitAfterComma = true;
+    else if (token.kind === 'literal' && token.text === ',' && sawDigitAfterComma) {
+      pattern.thousands = true;
+      break;
+    } else if (token.kind === 'decimal-point') break;
+  }
+
+  return pattern;
+}
+
+function groupThousands(digits: string): string {
+  let output = '';
+  for (let i = 0; i < digits.length; i++) {
+    const remaining = digits.length - i;
+    output += digits[i];
+    if (remaining > 1 && (remaining - 1) % 3 === 0) output += ',';
+  }
+  return output;
+}
+
+function pad(text: number, length: number): string {
+  return String(text).padStart(length, '0');
+}
+
+function formatDateValue(serial: number, tokens: readonly FormatToken[]): string {
+  const ms = EPOCH_MS + Math.round(serial * 86400000);
+  const date = new Date(ms);
+  let output = '';
+  const hasAmPm = tokens.some((token) => token.kind === 'ampm');
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    switch (token.kind) {
+      case 'date': {
+        const run = countRun(tokens, i, token.ch);
+        switch (token.ch) {
+          case 'y':
+            output += run >= 3 ? String(date.getUTCFullYear()) : pad(date.getUTCFullYear() % 100, 2);
+            break;
+          case 'm': {
+            const asMinutes = previousTokenIs(tokens, i, 'h');
+            if (asMinutes) output += pad(date.getUTCMinutes(), Math.min(run, 2));
+            else if (run >= 4) output += MONTH_NAMES[date.getUTCMonth()] ?? '';
+            else if (run === 3) output += (MONTH_NAMES[date.getUTCMonth()] ?? '').slice(0, 3);
+            else output += pad(date.getUTCMonth() + 1, Math.min(run, 2));
+            break;
+          }
+          case 'd':
+            if (run >= 4) output += WEEKDAY_NAMES[date.getUTCDay()] ?? '';
+            else if (run === 3) output += (WEEKDAY_NAMES[date.getUTCDay()] ?? '').slice(0, 3);
+            else output += pad(date.getUTCDate(), Math.min(run, 2));
+            break;
+          case 'h': {
+            let hours = date.getUTCHours();
+            if (hasAmPm) hours = hours % 12 === 0 ? 12 : hours % 12;
+            output += pad(hours, Math.min(run, 2));
+            break;
+          }
+          case 's':
+            output += pad(date.getUTCSeconds(), Math.min(run, 2));
+            break;
+          default:
+            break;
+        }
+        i += run - 1;
+        break;
+      }
+      case 'ampm':
+        output += token.style === 'A/P'
+          ? (date.getUTCHours() < 12 ? 'A' : 'P')
+          : (date.getUTCHours() < 12 ? 'AM' : 'PM');
+        break;
+      case 'literal':
+        output += token.text;
+        break;
+      case 'space':
+        output += ' ';
+        break;
+      default:
+        break;
+    }
+  }
+  return output;
+}
+
+function countRun(tokens: readonly FormatToken[], start: number, ch: string): number {
+  let run = 0;
+  for (let i = start; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token.kind === 'date' && token.ch === ch) run += 1;
+    else break;
+  }
+  return run;
+}
+
+function previousTokenIs(tokens: readonly FormatToken[], index: number, ch: string): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    const token = tokens[i]!;
+    if (token.kind === 'literal') continue;
+    if (token.kind === 'space') continue;
+    return token.kind === 'date' ? token.ch === ch : false;
+  }
+  return false;
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const sectionCache = new Map<string, FormatSection[]>();
+
+function getSections(format: string): FormatSection[] {
+  const cached = sectionCache.get(format);
+  if (cached) return cached;
+  const parsed = parseSections(format);
+  if (sectionCache.size > 512) sectionCache.clear();
+  sectionCache.set(format, parsed);
+  return parsed;
+}
+
+function formatGeneralNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  const text = value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  return text;
+}
+
+/** 将数值/文本按 Excel 格式代码渲染为显示字符串 */
+export function formatValue(
+  value: number | string | boolean | null | undefined,
+  format?: string,
+): string {
+  if (value == null) return '';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+
+  const trimmedFormat = format?.trim();
+
+  if (typeof value === 'string') {
+    if (!trimmedFormat || trimmedFormat.toLowerCase() === 'general') return value;
+    const sections = getSections(trimmedFormat);
+    const textSection = sections.find((section) => section.hasTextPlaceholder)
+      ?? sections[sections.length - 1];
+    if (!textSection) return value;
+    let output = '';
+    for (const token of textSection.tokens) {
+      if (token.kind === 'text-placeholder') output += value;
+      else if (token.kind === 'literal') output += token.text;
+    }
+    return output.length > 0 ? output : value;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  if (!trimmedFormat || trimmedFormat.toLowerCase() === 'general') {
+    return formatGeneralNumber(numeric);
+  }
+
+  const sections = getSections(trimmedFormat);
+  let sectionIndex = 0;
+  if (sections.length >= 3 && numeric === 0) sectionIndex = 2;
+  else if (sections.length >= 2 && numeric < 0) sectionIndex = 1;
+  const section = sections[sectionIndex] ?? sections[0]!;
+  const pattern = analyzeTokens(section.tokens);
+
+  if (pattern.isDate) {
+    return formatDateValue(Math.abs(numeric), section.tokens);
+  }
+
+  const scaled = Math.abs(numeric) * pattern.percentScale;
+  const decimals = Math.min(pattern.decimalDigits.length, 20);
+  const rounded = scaled.toFixed(decimals);
+  const [intRaw, decRaw = ''] = rounded.split('.');
+
+  const minIntegers = pattern.integerDigits.filter((ch) => ch === '0').length;
+  let intText = intRaw;
+  while (intText.length < minIntegers) intText = `0${intText}`;
+  if (pattern.thousands) intText = groupThousands(intText);
+
+  // 小数位裁剪到模式长度;'?' 占位允许尾部空缺(此处直接截断即可满足常见格式)
+  const maxDecimals = pattern.decimalDigits.length;
+  const decText = decRaw.slice(0, maxDecimals);
+
+  const sign = numeric < 0 ? '-' : '';
+  const decimalOutput = decText.length > 0 ? `.${decText}` : '';
+  return `${pattern.prefix}${sign}${intText}${decimalOutput}${pattern.suffix}`;
+}

@@ -1,14 +1,18 @@
 import type { BinaryOperator, CellAddress, FormulaAst } from './ast';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
+import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
+import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
-import { createFormulaError, isFormulaError, type ArrayValue, type FormulaValue } from './values';
+import { createFormulaError, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;
+  /** 定义名称解析:返回 undefined 视为 #NAME? */
+  resolveName?(name: string): FormulaValue | undefined;
 }
 
 interface EvaluationRange {
@@ -50,6 +54,10 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext): Eval
       );
     case 'function-call':
       return evaluateFunction(node.name, node.arguments, context);
+    case 'name-reference': {
+      const resolved = context.resolveName?.(node.name.toUpperCase());
+      return resolved === undefined ? createFormulaError('#NAME?', 'Unknown name: ' + node.name) : resolved;
+    }
   }
 }
 
@@ -146,12 +154,16 @@ function evaluateFunction(
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
 ): FormulaValue {
-  const fn = getBuiltinFunction(name);
-  if (!fn) return createFormulaError('#NAME?', `Unknown function: ${name}`);
+  // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
+  const native = evaluateReferenceFunction(name, argumentsList, context);
+  if (native !== undefined) return native;
 
+  const fn = getBuiltinFunction(name);
   const evaluatedArgs: FormulaValue[] = [];
+  const rawRanges: EvaluationValue[] = [];
   for (const argument of argumentsList) {
     const value = evaluateNode(argument, context);
+    rawRanges.push(value);
     if (isEvaluationRange(value)) {
       evaluatedArgs.push(readRangeAsMatrix(value.range, context));
     } else {
@@ -159,10 +171,127 @@ function evaluateFunction(
     }
   }
 
-  try {
-    return fn(evaluatedArgs);
-  } catch (err) {
-    return createFormulaError('#VALUE!', err instanceof Error ? err.message : 'Function evaluation error');
+  if (fn) {
+    try {
+      return fn(evaluatedArgs);
+    } catch (err) {
+      return createFormulaError('#VALUE!', err instanceof Error ? err.message : 'Function evaluation error');
+    }
+  }
+
+  // 上下文感知函数(SUMIFS 家族 / SUMPRODUCT / SUBTOTAL 等)
+  const advanced = evaluateAdvancedFunction(name, { values: evaluatedArgs, ranges: rawRanges } as AdvancedFunctionArgs, {
+    currentCell: context.currentCell,
+    readMatrix: (range: RangeDependency) => readRangeAsMatrix(range, context),
+    toRange: (value: EvaluationValue) => (isEvaluationRange(value) ? value.range : undefined),
+  });
+  if (advanced !== undefined) return advanced;
+
+  return createFormulaError('#NAME?', `Unknown function: ${name}`);
+}
+
+/** ROW / COLUMN / ADDRESS / OFFSET / INDIRECT:需要 AST 或返回区间引用 */
+function evaluateReferenceFunction(
+  name: string,
+  args: readonly FormulaAst[],
+  context: FormulaEvaluationContext,
+): FormulaValue | EvaluationRange | undefined {
+  switch (name.toUpperCase()) {
+    case 'ROW': {
+      if (args.length === 0) return context.currentCell.row + 1;
+      const target = args[0]!;
+      if (target.type === 'cell-reference') {
+        return resolveCellReference(target.reference, context.currentCell).row + 1;
+      }
+      if (target.type === 'range-reference') {
+        return resolveRangeReference(target, context.currentCell).start.row + 1;
+      }
+      return createFormulaError('#VALUE!', 'ROW expects a reference');
+    }
+    case 'COLUMN': {
+      if (args.length === 0) return context.currentCell.column + 1;
+      const target = args[0]!;
+      if (target.type === 'cell-reference') {
+        return resolveCellReference(target.reference, context.currentCell).column + 1;
+      }
+      if (target.type === 'range-reference') {
+        return resolveRangeReference(target, context.currentCell).start.column + 1;
+      }
+      return createFormulaError('#VALUE!', 'COLUMN expects a reference');
+    }
+    case 'ADDRESS': {
+      const values: FormulaValue[] = [];
+      for (const argument of args) {
+        const value = evaluateNode(argument, context);
+        values.push(isEvaluationRange(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
+      }
+      const row = toNumber(values[0] ?? 1);
+      const column = toNumber(values[1] ?? 1);
+      if (isFormulaError(row) || isFormulaError(column)) return createFormulaError('#VALUE!', 'Invalid ADDRESS arguments');
+      const absMode = toNumber(values[2] ?? 1);
+      if (isFormulaError(absMode)) return createFormulaError('#VALUE!', 'Invalid ADDRESS abs mode');
+      let columnLetter = '';
+      let remaining = column;
+      while (remaining > 0) {
+        const modulo = (remaining - 1) % 26;
+        columnLetter = String.fromCharCode(65 + modulo) + columnLetter;
+        remaining = Math.floor((remaining - 1) / 26);
+      }
+      const absolute = (mode: number) => (mode === 1 || mode === 2 ? '$' : '');
+      const rowPart = absMode === 1 || absMode === 3 ? '$' : '';
+      return absolute(absMode as number) + columnLetter + rowPart + String(row);
+    }
+    case 'OFFSET': {
+      const base = args[0];
+      if (!base || (base.type !== 'cell-reference' && base.type !== 'range-reference')) {
+        return createFormulaError('#VALUE!', 'OFFSET expects a reference');
+      }
+      const scalar = (node: FormulaAst | undefined, fallback: number): number | FormulaError => {
+        if (!node) return fallback;
+        const value = evaluateNode(node, context);
+        if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
+        const numeric = toNumber(value);
+        return numeric;
+      };
+      const rows = scalar(args[1], 0);
+      const columns = scalar(args[2], 0);
+      const height = scalar(args[3], 1);
+      const width = scalar(args[4], 1);
+      for (const candidate of [rows, columns, height, width]) {
+        if (typeof candidate !== 'number') return candidate;
+      }
+      const anchorRange = base.type === 'range-reference' ? resolveRangeReference(base, context.currentCell) : undefined;
+      const anchorCell = base.type === 'cell-reference' ? resolveCellReference(base.reference, context.currentCell) : anchorRange!.start;
+      const startRow = anchorCell.row + (rows as number);
+      const startColumn = anchorCell.column + (columns as number);
+      const endRow = startRow + Math.max(1, height as number) - 1;
+      const endColumn = startColumn + Math.max(1, width as number) - 1;
+      if (startRow < 0 || startColumn < 0) return createFormulaError('#REF!', 'OFFSET out of bounds');
+      return {
+        kind: 'range',
+        range: {
+          kind: 'range',
+          start: { sheetId: anchorCell.sheetId, row: startRow, column: startColumn },
+          end: { sheetId: anchorCell.sheetId, row: endRow, column: endColumn },
+        },
+      };
+    }
+    case 'INDIRECT': {
+      const first = args[0];
+      if (!first) return createFormulaError('#REF!', 'INDIRECT expects a text reference');
+      const value = evaluateNode(first, context);
+      if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
+      if (typeof value !== 'string') return createFormulaError('#REF!', 'INDIRECT text required');
+      try {
+        const parsed = parseFormula('=' + value);
+        const resolved = evaluateNode(parsed, context);
+        return resolved;
+      } catch {
+        return createFormulaError('#REF!', 'INDIRECT cannot parse: ' + value);
+      }
+    }
+    default:
+      return undefined;
   }
 }
 

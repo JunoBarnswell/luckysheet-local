@@ -106,6 +106,17 @@ test('FormulaEngine evaluates comprehensive math, logical, text, and lookup func
   assert.equal(engine.setFormula('E2', '=UPPER(B1)').value, 'APPLE');
   assert.equal(engine.setFormula('E3', '=LEFT(B2, 3)').value, 'Ban');
   assert.equal(engine.setFormula('E4', '=TEXTJOIN(", ", TRUE, B1:B3)').value, 'Apple, Banana, Cherry');
+
+  // Precedence, percent, concat, date, information
+  assert.equal(engine.setFormula('F1', '=2 + 3 * 4 ^ 2').value, 50);
+  assert.equal(engine.setFormula('F2', '=50% + 10%').value, 0.6);
+  assert.equal(engine.setFormula('F3', '="Total: " & A1').value, 'Total: 10');
+  assert.equal(engine.setFormula('F4', '=YEAR(DATE(2025, 6, 15))').value, 2025);
+  assert.equal(engine.setFormula('F5', '=MONTH(DATE(2025, 6, 15))').value, 6);
+  assert.equal(engine.setFormula('F6', '=DAY(DATE(2025, 6, 15))').value, 15);
+  assert.equal(engine.setFormula('F7', '=ISNUMBER(A1)').value, true);
+  assert.equal(engine.setFormula('F8', '=ISTEXT(B1)').value, true);
+  assert.equal(engine.setFormula('F9', '=ISBLANK(Z99)').value, true);
 });
 
 test('FormulaEngine recalculates a dependency chain and updates replaced dependencies', () => {

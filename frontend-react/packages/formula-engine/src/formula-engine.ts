@@ -2,6 +2,8 @@ import type { CellAddress, FormulaAst } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
 import { collectFormulaDependencies } from './dependencies';
 import { evaluateFormula } from './evaluator';
+import { formatFormula } from './ast-format';
+import { remapAst } from './ast-rewrite';
 import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './errors';
 import { parseFormula as parseFormulaSource } from './parser';
 import { RangeIndex, type FormulaDependency, type RangeDependency } from './range-index';
@@ -38,6 +40,7 @@ interface StoredCell {
 export class FormulaEngine {
   readonly defaultSheetId: string;
   readonly dependencies: RangeIndex;
+  private definedNames: Record<string, string> = {};
 
   private readonly cells = new Map<string, StoredCell>();
 
@@ -109,6 +112,54 @@ export class FormulaEngine {
 
   getDependents(addressInput: CellAddressInput): readonly CellAddress[] {
     return this.dependencies.getDependents(this.resolveAddress(addressInput));
+  }
+
+  /** 批量设置定义名称(值为公式文本或引用文本,不带 =) */
+  setDefinedNames(names: Record<string, string>): void {
+    this.definedNames = { ...names };
+  }
+
+  getDefinedNames(): Record<string, string> {
+    return { ...this.definedNames };
+  }
+
+  /** 清空全部公式与缓存(结构操作后整体重建前调用) */
+  reset(): void {
+    this.cells.clear();
+    this.dependencies.clear?.();
+  }
+
+  /**
+   * 结构变更(插入/删除行列)后重映射所有存活公式的引用,
+   * 并用序列化器回写公式文本。
+   */
+  remapStructure(
+    sheetId: string,
+    shift: { axis: 'row' | 'column'; at: number; count: number; op: 'insert' | 'delete' },
+  ): RecalculationReport {
+    const updates: Array<{ address: CellAddress; formula: string }> = [];
+    for (const [, cell] of this.cells) {
+      if (cell.formula === undefined || !cell.ast) continue;
+      const relevantSheet =
+        cell.address.sheetId === sheetId
+        || collectFormulaDependencies(cell.ast, cell.address).some((dependency) =>
+          dependency.kind === 'cell'
+            ? dependency.address.sheetId === sheetId
+            : dependency.start.sheetId === sheetId,
+        );
+      if (!relevantSheet) continue;
+      const remapped = remapAst(cell.ast, shift);
+      updates.push({ address: { ...cell.address }, formula: formatFormula(remapped) });
+    }
+    for (const update of updates) {
+      this.cells.delete(cellAddressKey(update.address));
+    }
+    let report: RecalculationReport = { recalculated: [], results: new Map() };
+    for (const update of updates) {
+      this.setFormula(update.address, update.formula);
+    }
+    report = this.recalculate();
+    return report;
   }
 
   recalculate(addressInput?: CellAddressInput): RecalculationReport {
@@ -206,6 +257,7 @@ export class FormulaEngine {
         currentCell: cell.address,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
+        resolveName: (name) => this.resolveDefinedName(name),
       });
     } catch (error) {
       value = error instanceof FormulaReferenceError
@@ -218,6 +270,30 @@ export class FormulaEngine {
     cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
     cache.set(key, value);
     return value;
+  }
+
+  /** 定义名称求值:值文本按公式解析(相对当前单元格) */
+  private resolveDefinedName(name: string): FormulaValue | undefined {
+    const source = this.definedNames[name];
+    if (source === undefined) return undefined;
+    try {
+      const parsed = this.parseFormula(source.startsWith('=') ? source : '=' + source);
+      return evaluateFormula(parsed, {
+        currentCell: { sheetId: this.defaultSheetId, row: 0, column: 0 },
+        readCell: (reference) => this.getCellValue(reference),
+        readRange: (range) => {
+          const values: FormulaValue[] = [];
+          for (let row = range.start.row; row <= range.end.row; row++) {
+            for (let column = range.start.column; column <= range.end.column; column++) {
+              values.push(this.getCellValue({ sheetId: range.start.sheetId, row, column }));
+            }
+          }
+          return values;
+        },
+      });
+    } catch {
+      return createFormulaError('#NAME?', 'Cannot resolve name: ' + name);
+    }
   }
 
   private readRange(

@@ -4,8 +4,8 @@ function parseDateInput(val: FormulaValue | undefined): Date | null {
   if (val === undefined || val === null) return null;
   if (val instanceof Date) return val;
   if (typeof val === 'number') {
-    // Excel serial date: 1 = Jan 1, 1900
-    const ms = (val - 25569) * 86400 * 1000;
+    // Excel serial date: 1 = Jan 1, 1900, 25569 = Jan 1, 1970 UTC
+    const ms = Math.round((val - 25569) * 86400 * 1000);
     return new Date(ms);
   }
   if (typeof val === 'string') {
@@ -28,8 +28,8 @@ export const datetimeFunctions: Record<string, (args: FormulaValue[]) => Formula
     if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
       return createFormulaError('#VALUE!', 'Invalid date parameters');
     }
-    const d = new Date(year, month - 1, day);
-    return Math.floor(toSerialDate(d));
+    const d = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+    return Math.round(toSerialDate(d));
   },
 
   DATEVALUE: (args) => {
@@ -41,43 +41,43 @@ export const datetimeFunctions: Record<string, (args: FormulaValue[]) => Formula
   DAY: (args) => {
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in DAY');
-    return d.getDate();
+    return d.getUTCDate();
   },
 
   MONTH: (args) => {
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in MONTH');
-    return d.getMonth() + 1;
+    return d.getUTCMonth() + 1;
   },
 
   YEAR: (args) => {
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in YEAR');
-    return d.getFullYear();
+    return d.getUTCFullYear();
   },
 
   HOUR: (args) => {
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in HOUR');
-    return d.getHours();
+    return d.getUTCHours();
   },
 
   MINUTE: (args) => {
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in MINUTE');
-    return d.getMinutes();
+    return d.getUTCMinutes();
   },
 
   SECOND: (args) => {
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in SECOND');
-    return d.getSeconds();
+    return d.getUTCSeconds();
   },
 
   TODAY: () => {
     const now = new Date();
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    return Math.floor(toSerialDate(d));
+    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    return Math.round(toSerialDate(d));
   },
 
   NOW: () => {
@@ -88,7 +88,7 @@ export const datetimeFunctions: Record<string, (args: FormulaValue[]) => Formula
     const d = parseDateInput(args[0]);
     if (!d) return createFormulaError('#VALUE!', 'Invalid date in WEEKDAY');
     const returnType = args[1] !== undefined ? Number(args[1]) : 1;
-    const day = d.getDay(); // 0 = Sunday, 1 = Monday ... 6 = Saturday
+    const day = d.getUTCDay(); // 0 = Sunday, 1 = Monday ... 6 = Saturday
     if (returnType === 1) return day + 1; // 1 = Sun, 7 = Sat
     if (returnType === 2) return day === 0 ? 7 : day; // 1 = Mon, 7 = Sun
     if (returnType === 3) return day === 0 ? 6 : day - 1; // 0 = Mon, 6 = Sun
@@ -99,16 +99,16 @@ export const datetimeFunctions: Record<string, (args: FormulaValue[]) => Formula
     const d = parseDateInput(args[0]);
     const months = Number(args[1]);
     if (!d || Number.isNaN(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EDATE');
-    const next = new Date(d.getFullYear(), d.getMonth() + months, d.getDate());
-    return Math.floor(toSerialDate(next));
+    const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, d.getUTCDate()));
+    return Math.round(toSerialDate(next));
   },
 
   EOMONTH: (args) => {
     const d = parseDateInput(args[0]);
     const months = Number(args[1]);
     if (!d || Number.isNaN(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EOMONTH');
-    const next = new Date(d.getFullYear(), d.getMonth() + months + 1, 0);
-    return Math.floor(toSerialDate(next));
+    const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months + 1, 0));
+    return Math.round(toSerialDate(next));
   },
 
   DAYS: (args) => {

@@ -21,6 +21,7 @@ const saveStateCopy: Record<SaveState, { label: string; tone: string }> = {
   saved: { label: 'Saved', tone: 'text-emerald-300' },
   saving: { label: 'Saving', tone: 'text-amber-300' },
   offline: { label: 'Offline', tone: 'text-rose-300' },
+  syncing: { label: 'Syncing', tone: 'text-sky-300' },
 };
 
 export function AppShell({ children, formulaBar, isBusy, notice, onMenu, onShare, ribbon, saveState, sheetTabs, statusBar, title, workspacePhase }: AppShellProps) {

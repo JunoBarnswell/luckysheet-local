@@ -1,11 +1,38 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import { WebSocketServer } from 'ws';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { decodeMessage, encodeMessage } from '@react-sheets/protocol';
 import type { CollaborationChangeSet } from '@react-sheets/protocol';
 import { WorkbookStorage } from '@react-sheets/storage';
 import { exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot } from '@react-sheets/pro-features';
+
+/** 解析上传的 XLSX(zip)Base64:解 STORE/DEFLATE 条目并返回文件名到文本内容映射 */
+function unzipXlsxBase64(base64: string): Record<string, string> {
+  const buffer = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+  const files: Record<string, string> = {};
+  let offset = 0;
+  while (offset + 4 <= buffer.length) {
+    const signature = buffer.readUInt32LE(offset);
+    if (signature !== 0x04034b50) break;
+    const method = buffer.readUInt16LE(offset + 8);
+    const compressedSize = buffer.readUInt32LE(offset + 18);
+    const nameLength = buffer.readUInt16LE(offset + 26);
+    const extraLength = buffer.readUInt16LE(offset + 28);
+    const nameStart = offset + 30;
+    const name = buffer.subarray(nameStart, nameStart + nameLength).toString('utf8');
+    const dataStart = nameStart + nameLength + extraLength;
+    const rawData = buffer.subarray(dataStart, dataStart + compressedSize);
+    try {
+      files[name] = (method === 0 ? rawData : inflateRawSync(rawData)).toString('utf8');
+    } catch {
+      // 跳过无法解码的条目(如内嵌图片)
+    }
+    offset = dataStart + compressedSize;
+  }
+  return files;
+}
 
 const storage = new WorkbookStorage();
 const port = Number(process.env.REACT_SHEETS_SERVER_PORT ?? 4181);
@@ -78,6 +105,17 @@ const server = createServer(async (request, response) => {
       const body = JSON.parse(await readBody(request)) as CollaborationChangeSet;
       const revision = storage.appendChangeSet(body);
       sendJson(response, 200, { operationId: body.operationId, revision });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/v1/files/import-xlsx') {
+      const body = JSON.parse(await readBody(request)) as { base64?: string };
+      if (!body.base64) throw new Error('base64 payload is required');
+      const files = unzipXlsxBase64(body.base64);
+      if (!files['xl/workbook.xml']) throw new Error('Not a valid XLSX package');
+      const snapshot = parseXlsxXmlToSnapshot(files);
+      const result = storage.createWorkbook(snapshot);
+      sendJson(response, 200, result);
       return;
     }
 

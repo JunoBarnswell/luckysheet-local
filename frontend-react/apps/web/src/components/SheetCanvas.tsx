@@ -1,431 +1,1000 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
-  Button,
   ContextMenu,
-  Icon,
-  Inline,
+  type ContextMenuItem,
   Panel,
-  PanelHeader,
-  PanelTitle,
   Stack,
   StatePanel,
   Text,
-  type ContextMenuItem,
-} from '@react-sheets/ui-system';
+  Button,
+  Inline,
+} from "@react-sheets/ui-system";
 import {
   CanvasRenderSurface,
+  CanvasRenderEngine,
   SheetSkeleton,
-  type CanvasRenderEngine,
   type CellRenderData,
+  type ChromeState,
+  type FloatingDrawable,
+  type FloatingHit,
+  type HeaderHit,
   type Rect,
-} from '@react-sheets/render-engine';
-import {
-  drawChartOnCanvas,
-  drawShapeOnCanvas,
-  drawSparklineOnCanvas,
-} from '@react-sheets/pro-features';
-import type { ChartModel, ShapeModel, SparklineModel } from '@react-sheets/core-model';
-import type { SheetView, WorkspacePhase } from '../state/workspace';
-import { CellEditor } from './CellEditor';
+  createEmptyChromeState,
+} from "@react-sheets/render-engine";
+import { drawChartOnCanvas, drawShapeOnCanvas, drawSparklineOnCanvas } from "@react-sheets/pro-features";
+import type { ChartModel, ShapeModel, SparklineModel } from "@react-sheets/core-model";
+import { CellEditor } from "./CellEditor";
+import { FilterPopover } from "./FilterPopover";
+import type { PeerCursor, SelectionState, SheetCell, SheetView, WorkspacePhase } from "../state/workspace";
+
+const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
 export interface SheetCanvasProps {
   sheet: SheetView;
   sheetId: string;
-  selectedCell: string;
+  selection: SelectionState;
+  activeCell: string;
   formulaDraft: string;
+  editingCell: { row: number; column: number } | null;
   phase: WorkspacePhase;
   zoom: number;
+  peers: PeerCursor[];
   charts?: ChartModel[];
   shapes?: ShapeModel[];
   sparklines?: SparklineModel[];
-  onSelectCell: (address: string) => void;
+  selectedFloatingId: string | null;
+  onSelectionChange: (selection: SelectionState) => void;
   onCommitCell: (value: string) => void;
-  onMoveCell: (address: string, direction: 'down' | 'left' | 'right' | 'up') => void;
+  onBeginEdit: (initialText?: string) => void;
+  onCancelEdit: () => void;
+  onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
+  onFormulaDraftChange: (value: string) => void;
+  onInsertRef: (refText: string) => void;
+  onToggleAbsolute: () => void;
+  onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
+  onSelectAll: () => void;
+  onSelectRows: (startRow: number, endRow: number, additive: boolean) => void;
+  onSelectColumns: (startColumn: number, endColumn: number, additive: boolean) => void;
+  onResizeRow: (row: number, heightPx: number) => void;
+  onResizeColumn: (column: number, widthPx: number) => void;
+  onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
+  onFloatingSelect: (hit: FloatingHit | null) => void;
+  onFloatingMove: (kind: "chart" | "shape" | "image", id: string, bounds: Rect) => void;
+  onFloatingRemove: (kind: "chart" | "shape" | "image", id: string) => void;
   onAction: (action: string, payload?: unknown) => void;
+  onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
+  onFilterColumn: (column: number) => void;
+  getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
 }
 
-function parseAddress(address: string): { row: number; column: number } | undefined {
-  const match = /^([A-Z]+)(\d+)$/.exec(address.toUpperCase());
-  if (!match?.[1] || !match[2]) return undefined;
-  let column = 0;
-  for (const character of match[1]) column = column * 26 + character.charCodeAt(0) - 64;
-  return { row: Number(match[2]) - 1, column: column - 1 };
-}
-
-function cellAddress(row: number, column: number): string {
-  let value = column + 1;
-  let label = '';
-  while (value > 0) {
-    const remainder = (value - 1) % 26;
-    label = String.fromCharCode(65 + remainder) + label;
-    value = Math.floor((value - 1) / 26);
-  }
-  return `${label}${row + 1}`;
+interface DragState {
+  kind: "select" | "fill" | "col-resize" | "row-resize" | "floating-move" | "floating-resize";
+  startRow: number;
+  startColumn: number;
+  anchorRow: number;
+  anchorColumn: number;
+  currentRow: number;
+  currentColumn: number;
+  additive: boolean;
+  resizeStartSize: number;
+  resizeIndex: number;
+  floating?: { id: string; handle?: string; startBounds: Rect; startLocal: { x: number; y: number } };
 }
 
 export function SheetCanvas({
   sheet,
   sheetId,
-  selectedCell,
+  selection,
+  activeCell,
   formulaDraft,
+  editingCell,
   phase,
   zoom,
+  peers,
   charts = [],
   shapes = [],
   sparklines = [],
-  onSelectCell,
+  selectedFloatingId,
+  onSelectionChange,
   onCommitCell,
-  onMoveCell,
+  onBeginEdit,
+  onCancelEdit,
+  onCommitEdit,
+  onFormulaDraftChange,
+  onInsertRef,
+  onToggleAbsolute,
+  onJumpEdge,
+  onSelectAll,
+  onSelectRows,
+  onSelectColumns,
+  onResizeRow,
+  onResizeColumn,
+  onFillRange,
+  onFloatingSelect,
+  onFloatingMove,
+  onFloatingRemove,
   onAction,
+  onApplyFilter,
+  onFilterColumn,
+  getValidationList,
   onRetry,
   onCreateSheet,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [editing, setEditing] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; open: boolean }>({
-    x: 0,
-    y: 0,
-    open: false,
-  });
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
+  const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
+  const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
+  const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
+  const [scrollTick, setScrollTick] = useState(0);
+
+  const zoomFactor = zoom / 100;
 
   const skeleton = useMemo(
     () =>
       new SheetSkeleton({
-        rowCount: Math.max(sheet.rows.length, 100),
+        rowCount: Math.max(sheet.rowCount, 200),
         columnCount: Math.max(sheet.columns.length, 26),
         defaultRowHeight: 28,
         defaultColumnWidth: 110,
+        rowHeights: new Map(Object.entries(sheet.rowHeights).map(([key, value]) => [Number(key), value])),
+        columnWidths: new Map(Object.entries(sheet.columnWidths).map(([key, value]) => [Number(key), value])),
+        hiddenRows: new Set(sheet.hiddenRows),
+        zoom: zoomFactor,
       }),
-    [sheet.columns.length, sheet.rows.length],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sheet.rowCount, sheet.columns.length, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, zoomFactor],
   );
 
   const cellsMap = useMemo(() => {
     const map = new Map<string, CellRenderData>();
     for (const row of sheet.rows) {
       for (const cell of row.cells) {
-        const pos = parseAddress(cell.address);
-        if (!pos) continue;
-
-        const isHeader = row.rowNumber === 1;
-        map.set(`${pos.row}:${pos.column}`, {
-          value: cell.value,
+        const match = /^([A-Z]+)(\d+)$/.exec(cell.address);
+        if (!match?.[1] || !match[2]) continue;
+        let columnIndex = 0;
+        for (const character of match[1]) columnIndex = columnIndex * 26 + character.charCodeAt(0) - 64;
+        const rowIndex = Number(match[2]) - 1;
+        const columnIndex0 = columnIndex - 1;
+        const merge = sheet.merges.find((span) =>
+          rowIndex >= span.range.startRow && rowIndex <= span.range.endRow
+          && columnIndex0 >= span.range.startColumn && columnIndex0 <= span.range.endColumn);
+        const isAnchor = merge ? merge.anchor.row === rowIndex && merge.anchor.column === columnIndex0 : true;
+        map.set(rowIndex + ":" + columnIndex0, {
+          value: parseCellValue(cell),
           formula: cell.formula,
-          displayValue: cell.displayValue ?? cell.value,
-          style: isHeader
+          displayValue: cell.value,
+          style: cell.style,
+          overlay: cell.overlay
             ? {
-                background: '#f8fafc',
-                textColor: '#334155',
-                bold: true,
-                fontSize: 12,
-                fontFamily: 'Inter, sans-serif',
-                horizontalAlignment: 'left',
-                verticalAlignment: 'middle',
+                dataBar: cell.overlay.dataBar,
+                colorScale: cell.overlay.colorScale,
+                icon: cell.overlay.icon,
               }
-            : cell.tone === 'accent'
-              ? {
-                  background: '#f0fdf4',
-                  textColor: '#15803d',
-                  bold: true,
-                  fontSize: 12,
-                  fontFamily: 'Inter, sans-serif',
-                }
-              : cell.tone === 'total'
-                ? {
-                    background: '#fef2f2',
-                    textColor: '#b91c1c',
-                    bold: true,
-                    fontSize: 12,
-                    fontFamily: 'Inter, sans-serif',
-                  }
-                : {
-                    background: '#ffffff',
-                    textColor: '#1e293b',
-                    fontSize: 12,
-                    fontFamily: 'Inter, sans-serif',
-                  },
+            : undefined,
+          hasComment: cell.hasComment,
+          invalid: cell.invalid,
+          merge: merge
+            ? {
+                startRow: merge.range.startRow,
+                endRow: merge.range.endRow,
+                startColumn: merge.range.startColumn,
+                endColumn: merge.range.endColumn,
+                isAnchor,
+              }
+            : undefined,
         });
       }
     }
     return map;
   }, [sheet]);
 
-  // Update canvas engine on cells/skeleton change
+  // ---------- 浮动对象绘制器 ----------
+
+  const floatables = useMemo<FloatingDrawable[]>(() => {
+    const drawables: FloatingDrawable[] = [];
+    for (const chart of charts) {
+      const data = getChartSeries(chart);
+      const series = data.series.map((entry, index) => ({
+        ...entry,
+        color: CHART_PALETTE[index % CHART_PALETTE.length]!,
+      }));
+      drawables.push({
+        kind: "chart",
+        id: chart.id,
+        bounds: chart.bounds,
+        draw: (context, rect) =>
+          drawChartOnCanvas({ context, chart: { ...chart, bounds: rect }, categories: data.categories, series }),
+      });
+    }
+    for (const shape of shapes) {
+      drawables.push({
+        kind: "shape",
+        id: shape.id,
+        bounds: shape.bounds,
+        draw: (context, rect) => drawShapeOnCanvas({ context, shape: { ...shape, bounds: rect } }),
+      });
+    }
+    for (const sparkline of sparklines) {
+      const rect = skeleton.getCellRect(sparkline.anchor.row, sparkline.anchor.column);
+      if (!rect) continue;
+      drawables.push({
+        kind: "shape",
+        id: sparkline.id,
+        bounds: rect,
+        draw: (context, target) =>
+          drawSparklineOnCanvas({ context, sparkline, values: getSparklineValues(sparkline), rect: target }),
+      });
+    }
+    return drawables;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [charts, shapes, sparklines, skeleton, sheetId]);
+
+  function getChartSeries(chart: ChartModel): { categories: string[]; series: Array<{ name: string; values: number[] }> } {
+    const categories: string[] = [];
+    const series: Array<{ name: string; values: number[] }> = [];
+    const source = chart.sourceRanges[0];
+    if (!source) return { categories, series };
+    for (let row = source.startRow; row <= source.endRow; row++) {
+      for (let column = source.startColumn; column <= source.endColumn; column++) {
+        const cell = sheet.rows[row]?.cells[column];
+        if (!cell) continue;
+        const numeric = Number(cell.value.replace(/[$,%]/g, ""));
+        if (Number.isFinite(numeric) && cell.value !== "") {
+          const existing = series.at(-1);
+          if (existing) existing.values.push(numeric);
+        } else if (cell.value !== "") {
+          categories.push(cell.value);
+        }
+      }
+    }
+    if (series.length === 0 && categories.length > 0) {
+      series.push({ name: chart.title ?? "Series 1", values: [] });
+    }
+    return { categories, series };
+  }
+
+  function getSparklineValues(sparkline: SparklineModel): number[] {
+    const values: number[] = [];
+    const source = sparkline.sourceRange;
+    for (let row = source.startRow; row <= source.endRow; row++) {
+      for (let column = source.startColumn; column <= source.endColumn; column++) {
+        const cell = sheet.rows[row]?.cells[column];
+        if (!cell) continue;
+        const numeric = Number(cell.value.replace(/[$,%]/g, ""));
+        if (Number.isFinite(numeric) && cell.value !== "") values.push(numeric);
+      }
+    }
+    return values;
+  }
+
+  // ---------- 引擎生命周期与 chrome 同步 ----------
+
+  const chromeState = useMemo<ChromeState>(() => {
+    const state = createEmptyChromeState();
+    state.selection = {
+      ranges: selection.ranges.map((range) => ({
+        startRow: range.startRow,
+        endRow: range.endRow,
+        startColumn: range.startColumn,
+        endColumn: range.endColumn,
+      })),
+      primary: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex },
+      primaryIndex: selection.primaryRangeIndex,
+    };
+    state.editing = editingCell ? { row: editingCell.row, column: editingCell.column } : null;
+    state.filterColumns = sheet.filterColumns;
+    state.remoteCursors = peers.map((peer) => ({
+      actorId: peer.actorId,
+      color: peer.color,
+      name: peer.name,
+      row: peer.row,
+      column: peer.column,
+    }));
+    state.selectedFloatingId = selectedFloatingId;
+    return state;
+  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterColumns]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setCells(cellsMap);
+  }, [cellsMap]);
+
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
     engine.setSkeleton(skeleton);
-    engine.setCells(cellsMap);
-    engine.invalidate();
-    engine.requestRender();
-  }, [cellsMap, skeleton]);
+  }, [skeleton]);
 
-  // Draw floating items (Charts, Shapes, Sparklines) on overlay/extension canvas layer
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine || phase !== 'ready') return;
-    const canvas = engine.getCanvas('overlay');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!engine) return;
+    engine.setFreeze(
+      sheet.freeze.xSplit > 0 || sheet.freeze.ySplit > 0
+        ? { xSplit: sheet.freeze.xSplit, ySplit: sheet.freeze.ySplit }
+        : null,
+    );
+  }, [sheet.freeze.xSplit, sheet.freeze.ySplit]);
 
-    // Draw charts
-    for (const chart of charts) {
-      const categories = ['Q1', 'Q2', 'Q3', 'Q4'];
-      const series = [
-        { name: 'Target', values: [100, 130, 150, 180], color: '#2563eb' },
-        { name: 'Actual', values: [95, 140, 145, 190], color: '#10b981' },
-      ];
-      drawChartOnCanvas({ context: ctx, chart, categories, series });
-    }
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setFloating(floatables, selectedFloatingId);
+  }, [floatables, selectedFloatingId]);
 
-    // Draw shapes
-    for (const shape of shapes) {
-      drawShapeOnCanvas({ context: ctx, shape });
-    }
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setChrome(chromeState);
+  }, [chromeState]);
 
-    // Draw sparklines
-    for (const spark of sparklines) {
-      const cellRect = skeleton.getCellRect(spark.anchor.row, spark.anchor.column);
-      if (cellRect) {
-        drawSparklineOnCanvas({
-          context: ctx,
-          sparkline: spark,
-          values: [10, 14, 8, 16, 22, 19, 25],
-          rect: cellRect,
-        });
-      }
-    }
-  }, [charts, shapes, sparklines, phase, skeleton]);
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const detach = engine.onViewportChanged(() => setScrollTick((tick) => tick + 1));
+    return detach;
+  }, []);
 
-  const handleReady = useCallback(
-    (engine: CanvasRenderEngine) => {
-      engineRef.current = engine;
-      engine.setSkeleton(skeleton);
-      engine.setCells(cellsMap);
-      engine.render();
-    },
-    [cellsMap, skeleton],
-  );
+  // 选区变化 → 滚动至可见
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || dragRef.current) return;
+    engine.ensureVisible({ row: selection.primaryRowIndex, column: selection.primaryColumnIndex });
+  }, [selection.primaryRowIndex, selection.primaryColumnIndex]);
+
+  // ---------- 指针交互 ----------
+
+  const localPointOf = useCallback((event: { clientX: number; clientY: number }) => {
+    const host = containerRef.current;
+    if (!host) return { x: 0, y: 0 };
+    const bounds = host.getBoundingClientRect();
+    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  }, []);
 
   const handlePointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (event.button === 2) return; // Right click handled by context menu
+    (event: React.PointerEvent) => {
+      if (phase !== "ready") return;
+      if (event.button === 2) return; // 右键交给 contextmenu
       const engine = engineRef.current;
-      if (!engine || phase !== 'ready') return;
+      const host = containerRef.current;
+      if (!engine || !host) return;
+      host.focus();
+      setFilterPopover(null);
+      setValidationDropdown(null);
+      const local = localPointOf(event);
 
-      const bounds = event.currentTarget.getBoundingClientRect();
-      const viewport = engine.viewport.getSnapshot();
-      const point = {
-        x: event.clientX - bounds.left + viewport.scrollX,
-        y: event.clientY - bounds.top + viewport.scrollY,
-      };
-      const cell = engine.skeleton.getCellAtPoint(point);
-      if (cell) {
-        onSelectCell(cellAddress(cell.row, cell.column));
-        if (editing) setEditing(false);
+      // 1) 浮动对象优先
+      const floatingHit = engine.hitTestFloating(local);
+      if (floatingHit) {
+        const drawableBounds = floatables.find((item) => item.id === floatingHit.id)?.bounds;
+        if (drawableBounds) {
+          dragRef.current = {
+            kind: floatingHit.handle ? "floating-resize" : "floating-move",
+            startRow: 0,
+            startColumn: 0,
+            anchorRow: 0,
+            anchorColumn: 0,
+            currentRow: 0,
+            currentColumn: 0,
+            additive: false,
+            resizeStartSize: 0,
+            resizeIndex: 0,
+            floating: {
+              id: floatingHit.id,
+              handle: floatingHit.handle,
+              startBounds: { ...drawableBounds },
+              startLocal: local,
+            },
+          };
+          onFloatingSelect(floatingHit);
+          (event.target as Element).setPointerCapture?.(event.pointerId);
+          return;
+        }
       }
+      onFloatingSelect(null);
+
+      // 2) 表头区
+      const headerHit = engine.headerHitAtLocal(local);
+      if (headerHit) {
+        if (headerHit.kind === "corner") {
+          onSelectAll();
+          return;
+        }
+        if (headerHit.resizeBoundaryPx !== undefined) {
+          dragRef.current = {
+            kind: headerHit.kind === "col" ? "col-resize" : "row-resize",
+            startRow: 0,
+            startColumn: 0,
+            anchorRow: 0,
+            anchorColumn: 0,
+            currentRow: 0,
+            currentColumn: 0,
+            additive: false,
+            resizeStartSize: headerHit.kind === "col" ? skeleton.getColumnWidth(headerHit.index) : skeleton.getRowHeight(headerHit.index),
+            resizeIndex: headerHit.index,
+          };
+          (event.target as Element).setPointerCapture?.(event.pointerId);
+          return;
+        }
+        const additive = event.ctrlKey || event.metaKey;
+        if (headerHit.kind === "col") {
+          onSelectColumns(headerHit.index, headerHit.index, additive);
+          if (sheet.filterColumns.includes(headerHit.index)) {
+            setFilterPopover({ column: headerHit.index, x: event.clientX, y: event.clientY });
+          }
+        } else {
+          onSelectRows(headerHit.index, headerHit.index, additive);
+        }
+        dragRef.current = {
+          kind: "select",
+          startRow: headerHit.kind === "row" ? headerHit.index : 0,
+          startColumn: headerHit.kind === "col" ? headerHit.index : 0,
+          anchorRow: headerHit.kind === "row" ? headerHit.index : 0,
+          anchorColumn: headerHit.kind === "col" ? headerHit.index : 0,
+          currentRow: headerHit.kind === "row" ? headerHit.index : 0,
+          currentColumn: headerHit.kind === "col" ? headerHit.index : 0,
+          additive,
+          resizeStartSize: 0,
+          resizeIndex: 0,
+          floating: { id: headerHit.kind, handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
+        };
+        (event.target as Element).setPointerCapture?.(event.pointerId);
+        return;
+      }
+
+      // 3) 填充柄
+      const primaryRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+      if (primaryRange) {
+        const rect = skeleton.getRangeRect({
+          startRow: primaryRange.endRow,
+          endRow: primaryRange.endRow,
+          startColumn: primaryRange.endColumn,
+          endColumn: primaryRange.endColumn,
+        });
+        if (rect) {
+          const screen = engine.contentToMainScreen({ x: rect.x + rect.width, y: rect.y + rect.height });
+          const half = 5;
+          if (Math.abs(local.x - screen.x) <= half && Math.abs(local.y - screen.y) <= half) {
+            dragRef.current = {
+              kind: "fill",
+              startRow: primaryRange.startRow,
+              startColumn: primaryRange.startColumn,
+              anchorRow: primaryRange.endRow,
+              anchorColumn: primaryRange.endColumn,
+              currentRow: primaryRange.endRow,
+              currentColumn: primaryRange.endColumn,
+              additive: false,
+              resizeStartSize: 0,
+              resizeIndex: 0,
+            };
+            (event.target as Element).setPointerCapture?.(event.pointerId);
+            return;
+          }
+        }
+      }
+
+      // 4) 普通单元格选择/拖选
+      const cell = engine.cellAtLocalPoint(local);
+      if (!cell) return;
+      const additive = event.ctrlKey || event.metaKey;
+      dragRef.current = {
+        kind: "select",
+        startRow: cell.row,
+        startColumn: cell.column,
+        anchorRow: cell.row,
+        anchorColumn: cell.column,
+        currentRow: cell.row,
+        currentColumn: cell.column,
+        additive,
+        resizeStartSize: 0,
+        resizeIndex: 0,
+        floating: undefined,
+      };
+      onSelectionChange({
+        ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }],
+        primaryRowIndex: cell.row,
+        primaryColumnIndex: cell.column,
+        primaryRangeIndex: 0,
+      });
+      (event.target as Element).setPointerCapture?.(event.pointerId);
     },
-    [editing, onSelectCell, phase],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [floatables, localPointOf, onFloatingSelect, onSelectAll, onSelectColumns, onSelectRows, onSelectionChange, phase, selection, sheet.filterColumns, sheetId, skeleton],
   );
 
-  const handleDoubleClick = useCallback(() => {
-    if (phase === 'ready') {
-      setEditing(true);
-    }
-  }, [phase]);
+  const handlePointerMove = useCallback(
+    (event: React.PointerEvent) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const local = localPointOf(event);
+      const drag = dragRef.current;
+
+      if (!drag) {
+        // 悬停光标提示
+        const headerHit = engine.headerHitAtLocal(local);
+        const host = containerRef.current;
+        if (host) {
+          host.style.cursor = headerHit?.resizeBoundaryPx !== undefined
+            ? (headerHit.kind === "col" ? "col-resize" : "row-resize")
+            : "default";
+        }
+        return;
+      }
+
+      if (drag.kind === "col-resize" || drag.kind === "row-resize") {
+        const content = engine.localToContent(local);
+        const boundary = drag.kind === "col-resize"
+          ? skeleton.getColumnLeft(drag.resizeIndex)
+          : skeleton.getRowTop(drag.resizeIndex);
+        const size = Math.max(24, (drag.kind === "col-resize" ? content.x : content.y) - boundary);
+        const nextChrome = createEmptyChromeState();
+        nextChrome.resizePreview = { axis: drag.kind === "col-resize" ? "column" : "row", index: drag.resizeIndex, sizePx: size };
+        engine.setChrome({ ...chromeState, resizePreview: nextChrome.resizePreview });
+        return;
+      }
+
+      if (drag.kind === "floating-move" && drag.floating) {
+        const deltaX = local.x - drag.floating.startLocal.x;
+        const deltaY = local.y - drag.floating.startLocal.y;
+        const content = engine.localToContent(local);
+        void content;
+        onFloatingMove(
+          drag.kind === "floating-move" ? "shape" : "shape",
+          drag.floating.id,
+          {
+            x: drag.floating.startBounds.x + deltaX,
+            y: drag.floating.startBounds.y + deltaY,
+            width: drag.floating.startBounds.width,
+            height: drag.floating.startBounds.height,
+          },
+        );
+        return;
+      }
+
+      if (drag.kind === "floating-resize" && drag.floating?.handle) {
+        const handle = drag.floating.handle;
+        const start = drag.floating.startBounds;
+        const deltaX = local.x - drag.floating.startLocal.x;
+        const deltaY = local.y - drag.floating.startLocal.y;
+        let x = start.x;
+        let y = start.y;
+        let width = start.width;
+        let height = start.height;
+        if (handle.includes("e")) width = Math.max(40, start.width + deltaX);
+        if (handle.includes("s")) height = Math.max(30, start.height + deltaY);
+        if (handle.includes("w")) { width = Math.max(40, start.width - deltaX); x = start.x + (start.width - width); }
+        if (handle.includes("n")) { height = Math.max(30, start.height - deltaY); y = start.y + (start.height - height); }
+        onFloatingMove("shape", drag.floating.id, { x, y, width, height });
+        return;
+      }
+
+      // select / fill:更新当前行列
+      const cell = engine.cellAtLocalPoint(local);
+      if (!cell) return;
+      if (drag.kind === "fill") {
+        const vertical = Math.abs(cell.row - drag.anchorRow) >= Math.abs(cell.column - drag.anchorColumn);
+        drag.currentRow = vertical ? cell.row : drag.anchorRow;
+        drag.currentColumn = vertical ? drag.anchorColumn : cell.column;
+        setFillPreview({
+          startRow: Math.min(drag.startRow, drag.currentRow),
+          endRow: Math.max(drag.anchorRow, drag.currentRow),
+          startColumn: Math.min(drag.startColumn, drag.currentColumn),
+          endColumn: Math.max(drag.anchorColumn, drag.currentColumn),
+        });
+        return;
+      }
+      drag.currentRow = cell.row;
+      drag.currentColumn = cell.column;
+      const startRow = Math.min(drag.anchorRow, cell.row);
+      const endRow = Math.max(drag.anchorRow, cell.row);
+      const startColumn = Math.min(drag.anchorColumn, cell.column);
+      const endColumn = Math.max(drag.anchorColumn, cell.column);
+      const isRowDrag = drag.floating?.id === "row";
+      const isColDrag = drag.floating?.id === "col";
+      onSelectionChange({
+        ranges: [{
+          sheetId,
+          startRow: isRowDrag || isColDrag ? drag.startRow : startRow,
+          endRow: isRowDrag ? drag.currentRow : isColDrag ? Math.max(0, skeleton.rowCount - 1) : endRow,
+          startColumn: isColDrag ? drag.startColumn : startColumn,
+          endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : endColumn,
+        }],
+        primaryRowIndex: isRowDrag || isColDrag ? drag.anchorRow : drag.anchorRow,
+        primaryColumnIndex: drag.anchorColumn,
+        primaryRangeIndex: 0,
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chromeState, localPointOf, onFloatingMove, onSelectionChange, sheetId, skeleton],
+  );
+
+  const handlePointerUp = useCallback(
+    (event: React.PointerEvent) => {
+      const drag = dragRef.current;
+      dragRef.current = null;
+      const engine = engineRef.current;
+      if (!drag || !engine) return;
+      (event.target as Element).releasePointerCapture?.(event.pointerId);
+
+      if (drag.kind === "col-resize") {
+        const content = engine.localToContent(localPointOf(event));
+        const width = Math.max(24, content.x - skeleton.getColumnLeft(drag.resizeIndex));
+        onResizeColumn(drag.resizeIndex, Math.round(width / (zoom / 100)));
+        return;
+      }
+      if (drag.kind === "row-resize") {
+        const content = engine.localToContent(localPointOf(event));
+        const height = Math.max(18, content.y - skeleton.getRowTop(drag.resizeIndex));
+        onResizeRow(drag.resizeIndex, Math.round(height / (zoom / 100)));
+        return;
+      }
+      if (drag.kind === "fill") {
+        setFillPreview(null);
+        const target = {
+          startRow: Math.min(drag.startRow, drag.currentRow),
+          endRow: Math.max(drag.anchorRow, drag.currentRow),
+          startColumn: Math.min(drag.startColumn, drag.currentColumn),
+          endColumn: Math.max(drag.anchorColumn, drag.currentColumn),
+        };
+        if (target.endRow !== drag.anchorRow || target.endColumn !== drag.anchorColumn) {
+          onFillRange(target);
+        }
+        return;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [localPointOf, onFillRange, onResizeColumn, onResizeRow, skeleton, zoom],
+  );
+
+  const handleDoubleClick = useCallback(
+    (event: React.PointerEvent | React.MouseEvent) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const local = localPointOf(event);
+      const headerHit = engine.headerHitAtLocal(local);
+      if (headerHit?.resizeBoundaryPx !== undefined) {
+        // 双击边界 = 自适应内容宽(近似:取列内最长显示文本)
+        const column = headerHit.index;
+        let maxWidth = 60;
+        const context = engine.getCanvas("content")?.getContext("2d");
+        if (context) {
+          context.font = "13px Inter, sans-serif";
+          for (const row of sheet.rows) {
+            const cell = row.cells[column];
+            if (cell?.value) maxWidth = Math.max(maxWidth, context.measureText(cell.value).width + 16);
+          }
+        }
+        onResizeColumn(column, Math.round(maxWidth / (zoom / 100)));
+        return;
+      }
+      const cell = engine.cellAtLocalPoint(local);
+      if (!cell) return;
+      const validationList = getValidationList(cell.row, cell.column);
+      if (validationList && validationList.length > 0) {
+        setValidationDropdown({ row: cell.row, column: cell.column, options: validationList });
+        return;
+      }
+      onBeginEdit();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [getValidationList, localPointOf, onBeginEdit, onResizeColumn, sheet.rows, zoom],
+  );
 
   const handleWheel = useCallback(
-    (event: React.WheelEvent<HTMLDivElement>) => {
+    (event: React.WheelEvent) => {
       const engine = engineRef.current;
-      if (!engine || phase !== 'ready') return;
+      if (!engine) return;
       event.preventDefault();
       engine.scrollBy(event.deltaX, event.deltaY);
-      engine.requestRender();
     },
-    [phase],
+    [],
   );
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (phase !== 'ready' || editing) return;
+  // ---------- 键盘 ----------
 
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      onMoveCell(selectedCell, 'up');
-    } else if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      onMoveCell(selectedCell, 'down');
-    } else if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      onMoveCell(selectedCell, 'left');
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      onMoveCell(selectedCell, 'right');
-    } else if (event.key === 'Tab') {
-      event.preventDefault();
-      onMoveCell(selectedCell, event.shiftKey ? 'left' : 'right');
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      onMoveCell(selectedCell, event.shiftKey ? 'up' : 'down');
-    } else if (event.key === 'F2') {
-      event.preventDefault();
-      setEditing(true);
-    } else if (event.key === 'Delete' || event.key === 'Backspace') {
-      event.preventDefault();
-      onAction('clear-range');
-    } else if (event.ctrlKey || event.metaKey) {
-      if (event.key === 'z') {
-        event.preventDefault();
-        onAction('undo');
-      } else if (event.key === 'y') {
-        event.preventDefault();
-        onAction('redo');
-      } else if (event.key === 'c') {
-        event.preventDefault();
-        onAction('copy');
-      } else if (event.key === 'x') {
-        event.preventDefault();
-        onAction('cut');
-      } else if (event.key === 'v') {
-        event.preventDefault();
-        onAction('paste');
-      } else if (event.key === 'b') {
-        event.preventDefault();
-        onAction('bold');
-      } else if (event.key === 'i') {
-        event.preventDefault();
-        onAction('italic');
-      } else if (event.key === 'u') {
-        event.preventDefault();
-        onAction('underline');
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (phase !== "ready") return;
+      const key = event.key;
+      const ctrl = event.ctrlKey || event.metaKey;
+
+      if (editingCell) {
+        // 编辑态按键由 CellEditor 处理;此处仅拦截 Escape 兜底
+        if (key === "Escape") {
+          event.preventDefault();
+          onCancelEdit();
+        }
+        return;
       }
-    } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      // Start typing directly in cell
-      setEditing(true);
-    }
-  };
 
-  const handleContextMenu = (event: React.MouseEvent) => {
-    event.preventDefault();
-    if (phase !== 'ready') return;
-    setContextMenu({
-      x: event.clientX,
-      y: event.clientY,
-      open: true,
-    });
-  };
+      if (ctrl && (key === "z" || key === "Z")) { event.preventDefault(); onAction("undo"); return; }
+      if (ctrl && (key === "y" || key === "Y")) { event.preventDefault(); onAction("redo"); return; }
+      if (ctrl && (key === "c" || key === "C")) { event.preventDefault(); onAction("copy"); return; }
+      if (ctrl && (key === "x" || key === "X")) { event.preventDefault(); onAction("cut"); return; }
+      if (ctrl && (key === "v" || key === "V")) { event.preventDefault(); onAction("paste"); return; }
+      if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onAction("bold"); return; }
+      if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onAction("italic"); return; }
+      if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onAction("underline"); return; }
+      if (key === "F2") { event.preventDefault(); onBeginEdit(); return; }
+      if (key === "F4") { event.preventDefault(); onToggleAbsolute(); return; }
+      if (key === "Delete" || key === "Backspace") { event.preventDefault(); onAction("clear-range"); return; }
+      if (key === "Enter") { event.preventDefault(); onBeginEdit(); return; }
 
-  const selected = parseAddress(selectedCell);
-  const selectedRect = selected ? skeleton.getCellRect(selected.row, selected.column) : null;
-  const isSheetEmpty = phase === 'empty' || sheet.isEmpty;
+      const moves: Record<string, [number, number]> = {
+        ArrowUp: [-1, 0],
+        ArrowDown: [1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+        Tab: [0, event.shiftKey ? -1 : 1],
+      };
+      if (key in moves && !ctrl) {
+        event.preventDefault();
+        const [dr, dc] = moves[key]!;
+        onSelectionChange({
+          ...selection,
+          primaryRowIndex: selection.primaryRowIndex + dr,
+          primaryColumnIndex: selection.primaryColumnIndex + dc,
+        });
+        return;
+      }
+      if (key in moves && ctrl) {
+        event.preventDefault();
+        const direction = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "ArrowLeft" ? "left" : "right";
+        onJumpEdge(direction, event.shiftKey);
+        return;
+      }
+      if (key === "Home") {
+        event.preventDefault();
+        onSelectionChange({ ...selection, primaryColumnIndex: 0, primaryRangeIndex: 0 });
+        return;
+      }
+      if (key === "PageDown" || key === "PageUp") {
+        event.preventDefault();
+        const rows = Math.max(1, Math.floor((containerRef.current?.clientHeight ?? 600) / (28 * zoomFactor)) - 2);
+        const delta = key === "PageDown" ? rows : -rows;
+        onSelectionChange({ ...selection, primaryRowIndex: selection.primaryRowIndex + delta, primaryRangeIndex: 0 });
+        return;
+      }
+      // 直接输入进入编辑
+      if (key.length === 1 && !ctrl && !event.altKey) {
+        event.preventDefault();
+        onBeginEdit(key);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editingCell, onCancelEdit, onBeginEdit, onInsertRef, onJumpEdge, onAction, onSelectionChange, phase, selection, zoomFactor],
+  );
 
-  const contextMenuItems: ContextMenuItem[] = [
-    { id: 'cut', label: 'Cut', icon: 'scissors', shortcut: 'Ctrl+X', onSelect: () => onAction('cut') },
-    { id: 'copy', label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C', onSelect: () => onAction('copy') },
-    { id: 'paste', label: 'Paste', icon: 'clipboard', shortcut: 'Ctrl+V', onSelect: () => onAction('paste') },
-    { id: 'sep-1', label: '', separator: true },
-    { id: 'insert-row', label: 'Insert Row Above', icon: 'rows', onSelect: () => onAction('insert-row') },
-    { id: 'insert-col', label: 'Insert Column Left', icon: 'columns', onSelect: () => onAction('insert-column') },
-    { id: 'delete-row', label: 'Delete Row', icon: 'trash', onSelect: () => onAction('delete-row'), danger: true },
-    { id: 'delete-col', label: 'Delete Column', icon: 'trash', onSelect: () => onAction('delete-column'), danger: true },
-    { id: 'sep-2', label: '', separator: true },
-    { id: 'clear', label: 'Clear Contents', icon: 'trash', shortcut: 'Del', onSelect: () => onAction('clear-range') },
-    { id: 'conditional-format', label: 'Conditional Format', icon: 'sparkles', onSelect: () => onAction('open-conditional-format') },
-    { id: 'data-validation', label: 'Data Validation', icon: 'check-circle', onSelect: () => onAction('open-data-validation') },
-  ];
+  // ---------- 右键菜单 ----------
+
+  const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
+    const items: ContextMenuItem[] = [
+      { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: () => onAction("cut") },
+      { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: () => onAction("copy") },
+      { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => onAction("paste") },
+      { id: "sep-1", label: "", separator: true },
+      { id: "insert-row", label: "Insert row above", onSelect: () => onAction("insert-row") },
+      { id: "insert-column", label: "Insert column left", onSelect: () => onAction("insert-column") },
+      { id: "delete-row", label: "Delete row", danger: true, onSelect: () => onAction("delete-row") },
+      { id: "delete-column", label: "Delete column", danger: true, onSelect: () => onAction("delete-column") },
+      { id: "sep-2", label: "", separator: true },
+      { id: "hide-row", label: "Hide rows", onSelect: () => onAction("hide-row") },
+      { id: "hide-col", label: "Hide columns", onSelect: () => onAction("hide-column") },
+      { id: "unhide-all", label: "Unhide all", onSelect: () => onAction("unhide-all") },
+      { id: "sep-3", label: "", separator: true },
+      { id: "clear", label: "Clear contents", onSelect: () => onAction("clear-range") },
+      { id: "clear-formats", label: "Clear formats", onSelect: () => onAction("clear-formats") },
+      { id: "comment-add", label: "Add comment", onSelect: () => onAction("open-comments") },
+    ];
+    return items;
+  }, [onAction]);
+
+  // ---------- 编辑器定位(随滚动更新) ----------
+
+  // 编辑器随滚动重定位:依赖 scrollTick 触发重算
+  const editorRect = useMemo(() => {
+    void scrollTick;
+    const engine = engineRef.current;
+    if (!engine || !editingCell) return null;
+    const rect = skeleton.getCellRect(editingCell.row, editingCell.column);
+    if (!rect) return null;
+    const topLeft = engine.contentToMainScreen({ x: rect.x, y: rect.y });
+    return {
+      x: topLeft.x,
+      y: topLeft.y,
+      width: rect.width,
+      height: rect.height,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingCell, skeleton, scrollTick]);
+
+  if (phase === "empty") {
+    return (
+      <Panel className="m-4 flex-1">
+        <StatePanel
+          kind="empty"
+          description="Create a workbook to start editing cells."
+          actionLabel="Create workbook"
+          onAction={onCreateSheet}
+          title="No workbook loaded"
+        />
+      </Panel>
+    );
+  }
+
+  if (phase === "error") {
+    return (
+      <Panel className="m-4 flex-1">
+        <StatePanel
+          kind="error"
+          description="The workbook engine failed to initialize. Retry to recover."
+          actionLabel="Retry"
+          onAction={onRetry}
+          title="Engine error"
+        />
+      </Panel>
+    );
+  }
 
   return (
-    <Panel className="flex h-full min-h-0 flex-col overflow-hidden rounded-none border-0 bg-white shadow-none">
-      <PanelHeader className="h-10 shrink-0 border-b border-slate-200 px-4">
-        <Inline gap="sm">
-          <Box className="flex h-6 w-6 items-center justify-center rounded bg-blue-50 text-blue-600">
-            <Icon name="grid" size="xs" />
+    <Panel className="flex-1 overflow-hidden">
+      <Stack gap="none" className="h-full">
+        <Inline gap="xs" className="items-center justify-between border-b border-slate-100 px-3 py-1.5">
+          <Inline gap="xs" className="items-center">
+            <Text size="xs" tone="muted">Sheet</Text>
+            <Text size="xs" weight="semibold">{sheet.name}</Text>
+            {sheet.freeze.xSplit > 0 || sheet.freeze.ySplit > 0 ? (
+              <Text size="xs" tone="subtle">frozen {sheet.freeze.xSplit}x{sheet.freeze.ySplit}</Text>
+            ) : null}
+          </Inline>
+          <Text size="xs" tone="subtle">{activeCell}</Text>
+        </Inline>
+        <Box className="relative min-h-0 flex-1">
+          <Box
+            ref={containerRef}
+            role="grid"
+            aria-label="Spreadsheet canvas"
+            tabIndex={0}
+            className="absolute inset-0 outline-none"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onDoubleClick={handleDoubleClick}
+            onWheel={handleWheel}
+            onKeyDown={handleKeyDown}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu({ x: event.clientX, y: event.clientY, open: true });
+            }}
+          >
+            <CanvasRenderSurface
+              onReady={(engine) => {
+                engineRef.current = engine;
+                engine.setCells(cellsMap);
+                engine.setSkeleton(skeleton);
+                engine.setFloating(floatables, selectedFloatingId);
+                engine.setChrome(chromeState);
+              }}
+              className="absolute inset-0"
+            />
           </Box>
-          <PanelTitle as="h2" size="sm">
-            {sheet.name}
-          </PanelTitle>
-          <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-            {sheet.columns.length} × {Math.max(sheet.rows.length, 100)}
-          </span>
-        </Inline>
-        <Inline gap="sm" className="ml-auto">
-          <Text size="xs" tone="muted">
-            {zoom}%
-          </Text>
-        </Inline>
-      </PanelHeader>
 
-      <div
-        ref={containerRef}
-        tabIndex={0}
-        onKeyDown={handleKeyDown}
-        onPointerDown={handlePointerDown}
-        onDoubleClick={handleDoubleClick}
-        onWheel={handleWheel}
-        onContextMenu={handleContextMenu}
-        className="relative min-h-0 flex-1 overflow-hidden bg-slate-100/60 p-2 outline-hidden focus:ring-1 focus:ring-blue-400"
-        role="grid"
-        aria-label={`${sheet.name} spreadsheet surface`}
-      >
-        {phase === 'loading' ? (
-          <StatePanel kind="loading" description="Preparing worksheet canvas..." />
-        ) : null}
-        {phase === 'error' ? (
-          <StatePanel actionLabel="Try again" description="Worksheet failed to render." kind="error" onAction={onRetry} />
-        ) : null}
-        {isSheetEmpty ? (
-          <StatePanel actionLabel="Create a sheet" description="No worksheet data found." kind="empty" onAction={onCreateSheet} />
-        ) : null}
-
-        {phase === 'ready' && !isSheetEmpty ? (
-          <Box className="relative h-full min-h-[420px] overflow-hidden rounded-lg border border-slate-300 bg-white shadow-xs">
-            <CanvasRenderSurface ref={engineRef} onReady={handleReady} className="absolute inset-0" />
-
-            {/* In-Cell Editor Overlay */}
-            {editing && selectedRect ? (
+          {editorRect && editingCell ? (
+            <Box
+              className="absolute z-20 border-2 border-blue-600 bg-white shadow-lg"
+              style={{ left: editorRect.x - 1, top: editorRect.y - 1, minWidth: Math.max(editorRect.width + 2, 120) }}
+            >
               <CellEditor
-                initialValue={formulaDraft}
-                rect={selectedRect}
-                onCommit={(val) => {
-                  setEditing(false);
-                  onCommitCell(val);
-                }}
-                onCancel={() => setEditing(false)}
-                onNavigate={(dir) => onMoveCell(selectedCell, dir)}
+                initialText={formulaDraft}
+                onCancel={onCancelEdit}
+                onChange={onFormulaDraftChange}
+                onCommit={onCommitEdit}
+                onInsertRef={onInsertRef}
               />
-            ) : null}
+            </Box>
+          ) : null}
 
-            {/* Selection Outline with Fill Handle */}
-            {!editing && selectedRect ? (
-              <div
-                aria-label={`Selected cell ${selectedCell}`}
-                className="pointer-events-none absolute border-2 border-blue-600 bg-blue-500/10"
-                style={{
-                  left: selectedRect.x,
-                  top: selectedRect.y,
-                  width: selectedRect.width,
-                  height: selectedRect.height,
-                }}
-              >
-                {/* Fill Handle Corner Box */}
-                <div className="absolute -bottom-1.5 -right-1.5 h-2.5 w-2.5 cursor-crosshair rounded-xs border border-white bg-blue-600 pointer-events-auto" />
-              </div>
-            ) : null}
-          </Box>
-        ) : null}
-      </div>
+          {fillPreview ? (
+            <FillPreviewOverlay skeleton={skeleton} engine={engineRef.current} preview={fillPreview} />
+          ) : null}
 
-      {/* Context Menu */}
+          {validationDropdown ? (
+            <ValidationDropdown
+              options={validationDropdown.options}
+              onPick={(value) => {
+                onCommitCell(value);
+                setValidationDropdown(null);
+              }}
+              onClose={() => setValidationDropdown(null)}
+            />
+          ) : null}
+
+          {filterPopover ? (
+            <FilterPopover
+              column={filterPopover.column}
+              sheet={sheet}
+              onApply={(patch) => {
+                onApplyFilter(filterPopover.column, patch);
+                setFilterPopover(null);
+              }}
+              onClose={() => setFilterPopover(null)}
+            />
+          ) : null}
+        </Box>
+      </Stack>
+
       <ContextMenu
         x={contextMenu.x}
         y={contextMenu.y}
         open={contextMenu.open}
         items={contextMenuItems}
-        onClose={() => setContextMenu((prev) => ({ ...prev, open: false }))}
+        onClose={() => setContextMenu((previous) => ({ ...previous, open: false }))}
       />
     </Panel>
+  );
+}
+
+function parseCellValue(cell: SheetCell): string | number | boolean | null {
+  const numeric = Number(cell.value.replace(/[$,]/g, ""));
+  if (cell.value !== "" && Number.isFinite(numeric) && /\d/.test(cell.value)) return numeric;
+  if (cell.value === "TRUE") return true;
+  if (cell.value === "FALSE") return false;
+  return cell.value;
+}
+
+function FillPreviewOverlay({
+  skeleton,
+  engine,
+  preview,
+}: {
+  skeleton: SheetSkeleton;
+  engine: CanvasRenderEngine | null;
+  preview: { startRow: number; endRow: number; startColumn: number; endColumn: number };
+}): React.ReactElement | null {
+  if (!engine) return null;
+  const rect = skeleton.getRangeRect(preview);
+  if (!rect) return null;
+  const screen = engine.contentToMainScreen(rect);
+  return (
+    <Box
+      className="pointer-events-none absolute z-10 border-2 border-dashed border-blue-500 bg-blue-500/5"
+      style={{ left: screen.x, top: screen.y, width: rect.width, height: rect.height }}
+    />
+  );
+}
+
+function ValidationDropdown({
+  options,
+  onPick,
+  onClose,
+}: {
+  options: string[];
+  onPick: (value: string) => void;
+  onClose: () => void;
+}): React.ReactElement {
+  return (
+    <Box className="absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+      <Stack gap="none">
+        {options.map((option) => (
+          <Button
+            key={option}
+            size="sm"
+            variant="ghost"
+            className="justify-start"
+            onClick={() => onPick(option)}
+          >
+            {option}
+          </Button>
+        ))}
+        <Button size="sm" variant="ghost" className="justify-start text-slate-400" onClick={onClose}>
+          Cancel
+        </Button>
+      </Stack>
+    </Box>
   );
 }

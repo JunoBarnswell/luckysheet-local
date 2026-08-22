@@ -1,81 +1,62 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { Rect } from '@react-sheets/render-engine';
+import React, { useEffect, useRef } from 'react';
+import { Stack } from '@react-sheets/ui-system';
 
 export interface CellEditorProps {
-  initialValue: string;
-  rect: Rect;
-  onCommit: (value: string) => void;
+  initialText: string;
+  onChange: (value: string) => void;
+  onCommit: (moveAfter?: 'down' | 'up' | 'left' | 'right' | 'none') => void;
   onCancel: () => void;
-  onNavigate?: (direction: 'down' | 'up' | 'left' | 'right') => void;
+  /** 向草稿插入引用文本(编辑中点击单元格/F4 由画布侧转发) */
+  onInsertRef?: (refText: string) => void;
 }
 
-export function CellEditor({
-  initialValue,
-  rect,
-  onCommit,
-  onCancel,
-  onNavigate,
-}: CellEditorProps) {
-  const [value, setValue] = useState(initialValue);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+/**
+ * 行内浮动编辑器。多行受控输入,回车提交(Shift+Enter 反向),
+ * Tab 横向提交,Escape 取消。
+ */
+export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEditorProps): React.ReactElement {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    setValue(initialValue);
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-      textareaRef.current.select();
-    }
-  }, [initialValue]);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter') {
-      if (e.shiftKey) {
-        // Multiline support in cell editor
-        return;
-      }
-      e.preventDefault();
-      onCommit(value);
-      onNavigate?.('down');
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      onCancel();
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      onCommit(value);
-      onNavigate?.(e.shiftKey ? 'left' : 'right');
-    }
-  };
-
-  const handleBlur = () => {
-    onCommit(value);
-  };
-
-  const minWidth = Math.max(rect.width, 100);
-  const minHeight = Math.max(rect.height, 28);
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    // 自动长高
+    textarea.style.height = '0px';
+    textarea.style.height = Math.max(28, textarea.scrollHeight + 2) + 'px';
+  }, [initialText]);
 
   return (
-    <div
-      className="absolute z-30 shadow-lg"
-      style={{
-        left: rect.x - 1,
-        top: rect.y - 1,
-        minWidth,
-        minHeight,
-      }}
-    >
+    <Stack gap="none" className="w-full">
       <textarea
         ref={textareaRef}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onBlur={handleBlur}
-        rows={1}
-        className="w-full resize-none overflow-hidden rounded-xs border-2 border-blue-600 bg-white p-1 text-xs font-medium text-slate-900 outline-hidden font-sans"
-        style={{
-          minWidth,
-          minHeight,
+        aria-label="Cell editor"
+        className="w-full resize-none border-0 bg-transparent px-1 py-0.5 text-[13px] leading-5 text-slate-800 outline-none"
+        defaultValue={initialText}
+        onBlur={() => onCommit('none')}
+        onChange={(event) => {
+          onChange(event.target.value);
+          event.currentTarget.style.height = '0px';
+          event.currentTarget.style.height = Math.max(28, event.currentTarget.scrollHeight + 2) + 'px';
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            onCommit('down');
+          } else if (event.key === 'Enter' && event.shiftKey) {
+            event.preventDefault();
+            onCommit('up');
+          } else if (event.key === 'Tab') {
+            event.preventDefault();
+            onCommit(event.shiftKey ? 'left' : 'right');
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          }
+          event.stopPropagation();
         }}
       />
-    </div>
+    </Stack>
   );
 }

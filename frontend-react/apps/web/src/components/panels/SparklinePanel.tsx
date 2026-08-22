@@ -5,6 +5,7 @@ import type { SparklineModel } from '@react-sheets/core-model';
 export interface SparklinePanelProps {
   sheetId: string;
   sparklines: SparklineModel[];
+  defaultRange?: string;
   onAddSparkline: (sparkline: SparklineModel) => void;
   onRemoveSparkline: (id: string) => void;
   onClose?: () => void;
@@ -13,12 +14,13 @@ export interface SparklinePanelProps {
 export function SparklinePanel({
   sheetId,
   sparklines,
+  defaultRange,
   onAddSparkline,
   onRemoveSparkline,
   onClose,
 }: SparklinePanelProps) {
   const [type, setType] = useState<SparklineModel['type']>('line');
-  const [sourceRange, setSourceRange] = useState('B2:E2');
+  const [sourceRange, setSourceRange] = useState(defaultRange ?? 'B2:E2');
   const [targetCell, setTargetCell] = useState('F2');
   const [color, setColor] = useState('#2563eb');
   const [highlightMax, setHighlightMax] = useState(true);

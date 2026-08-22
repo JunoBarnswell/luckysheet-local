@@ -1,18 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  CellMatrix,
-  WorkbookModel,
+        row.map((value) => {
+          if (value === '') return { value: null };
+          const numeric = /^-?\d+(\.\\d+)?\$/.test(value) ? Number(value) : null;
+          return { value: numeric ?? value };
+        }),
   type CellData,
   type CellStyle,
   type ChartModel,
   type ConditionalFormatRule,
   type DataValidationRule,
+  type FilterModel,
   type FreezeModel,
   type MergeSpan,
   type PivotModel,
   type RangeRef,
   type ShapeModel,
-  type SheetId,
   type SparklineModel,
   type WorksheetModel,
 } from '@react-sheets/core-model';
@@ -22,15 +23,19 @@ import {
   parseTsv,
   formatTsv,
   registerSheetCommands,
+  computeConditionalOverlays,
+  computeFilterHiddenRows,
+  collectFindReplacements,
+  validateDataInput,
+  normalizeRangeRef,
+  findValidationRule,
+  validationList,
+  type ConditionalOverlay,
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, type FormulaValue } from '@react-sheets/formula-engine';
-import { WorkbookApiClient, type CollaborationMutation } from '@react-sheets/protocol';
-import {
-  exportSnapshotToXlsxXml,
-  paginateRange,
-  registerProSheetCommands,
-  type PrintLayout,
-} from '@react-sheets/pro-features';
+import { formatValue as formatNumberValue } from '@react-sheets/number-format';
+import { WorkbookApiClient, type CollaborationMutation, type SnapshotResponse } from '@react-sheets/protocol';
+import { buildXlsxArchiveBase64, registerProSheetCommands, type PrintLayout } from '@react-sheets/pro-features';
 
 export type WorkspacePhase = 'empty' | 'error' | 'loading' | 'ready';
 export type RibbonTabId = 'data' | 'home' | 'insert' | 'review' | 'view';
@@ -47,21 +52,43 @@ export type SidebarPanelId =
   | 'comments'
   | 'data'
   | 'automations';
-export type SaveState = 'saved' | 'saving' | 'offline';
-export type CellTone = 'accent' | 'header' | 'muted' | 'plain' | 'total';
+export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing';
+
+/** 多选区状态:ranges 均已归一化且属于当前活动工作表 */
+export interface SelectionState {
+  ranges: RangeRef[];
+  primaryRowIndex: number;
+  primaryColumnIndex: number;
+  primaryRangeIndex: number;
+}
+
+export function createInitialSelection(): SelectionState {
+  return {
+    ranges: [],
+    primaryRowIndex: 0,
+    primaryColumnIndex: 0,
+    primaryRangeIndex: 0,
+  };
+}
 
 export interface SheetCell {
   address: string;
   displayValue?: string;
   formula?: string;
   style?: CellStyle;
-  tone?: CellTone;
   value: string;
+  /** 单元格级标记(由视图构建阶段计算) */
+  hasComment?: boolean;
+  invalid?: boolean;
+  hyperlink?: string;
+  /** 条件格式覆盖 */
+  overlay?: ConditionalOverlay;
 }
 
 export interface SheetRow {
   cells: SheetCell[];
   rowNumber: number;
+  height: number;
 }
 
 export interface SheetView {
@@ -78,13 +105,34 @@ export interface SheetView {
   dataValidations: DataValidationRule[];
   merges: MergeSpan[];
   freeze: FreezeModel;
+  rowHeights: Record<number, number>;
+  columnWidths: Record<number, number>;
+  /** 手工隐藏 ∪ 筛选隐藏后的行号列表 */
+  hiddenRows: number[];
+  /** 开启筛选的列(显示漏斗按钮) */
+  filterColumns: number[];
+  rowCount: number;
+}
+
+export interface PeerCursor {
+  actorId: string;
+  name: string;
+  color: string;
+  sheetId: string;
+  row: number;
+  column: number;
 }
 
 export interface WorkspaceState {
+  selection: SelectionState;
+  /** 主单元格地址(派生,供公式栏/状态栏使用) */
   activeCell: string;
   activePanel: SidebarPanelId;
   activeSheetId: string;
   formulaDraft: string;
+  /** 正在编辑的单元格;null 表示非编辑态 */
+  editingCell: { row: number; column: number } | null;
+  selectedFloatingId: string | null;
   notice: string;
   phase: WorkspacePhase;
   ribbonTab: RibbonTabId;
@@ -95,30 +143,49 @@ export interface WorkspaceState {
   historyEntries: readonly HistoryEntry[];
   showFunctionWizard: boolean;
   showSortDialog: boolean;
+  showFindReplace: boolean;
+  showPrintPreview: boolean;
+  peers: PeerCursor[];
+  collabStatus: 'connecting' | 'open' | 'closed';
+  actorId: string;
 }
 
 export interface WorkspaceActions {
-  addSheet: () => void;
-  deleteSheet: (sheetId: string) => void;
-  renameSheet: (sheetId: string, name: string) => void;
+  // 选区
+  selectCell: (address: string) => void;
+  selectRange: (range: { startRow: number; startColumn: number; endRow: number; endColumn: number }, mode?: 'replace' | 'add') => void;
+  movePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
+  jumpEdge: (direction: 'up' | 'down' | 'left' | 'right', extend?: boolean) => void;
+  selectAll: () => void;
+  selectRowHeader: (row: number, mode?: 'replace' | 'add') => void;
+  selectColumnHeader: (column: number, mode?: 'replace' | 'add') => void;
+  // 编辑
+  beginEdit: (initialText?: string) => void;
+  cancelEdit: () => void;
+  commitEdit: (moveAfter?: 'down' | 'up' | 'left' | 'right' | 'none') => void;
+  setFormulaDraft: (value: string) => void;
+  insertRefIntoDraft: (refText: string) => void;
+  toggleAbsoluteReference: () => void;
   commitFormula: (overrideValue?: string) => void;
   moveCell: (address: string, direction: 'down' | 'left' | 'right' | 'up') => void;
   notify: (message: string) => void;
   redo: () => void;
   retry: () => void;
-  selectCell: (address: string) => void;
   selectSheet: (sheetId: string) => void;
   setActivePanel: (panel: SidebarPanelId) => void;
-  setFormulaDraft: (value: string) => void;
   setRibbonTab: (tab: RibbonTabId) => void;
   setZoom: (zoom: number) => void;
   undo: () => void;
   handleRibbonAction: (action: string, payload?: unknown) => void;
+  // Pro 模型
   addChart: (chart: ChartModel) => void;
+  updateChartBounds: (id: string, bounds: ChartModel['bounds']) => void;
   removeChart: (id: string) => void;
   addPivot: (pivot: PivotModel) => void;
+  refreshPivot: (id: string) => void;
   removePivot: (id: string) => void;
   addShape: (shape: ShapeModel) => void;
+  updateShapeBounds: (id: string, bounds: ShapeModel['bounds']) => void;
   removeShape: (id: string) => void;
   addSparkline: (sparkline: SparklineModel) => void;
   removeSparkline: (id: string) => void;
@@ -126,15 +193,65 @@ export interface WorkspaceActions {
   removeConditionalFormat: (id: string) => void;
   addDataValidation: (rule: DataValidationRule) => void;
   removeDataValidation: (id: string) => void;
+  // 数据功能
+  addComment: (text: string) => void;
+  removeComment: () => void;
+  setHyperlink: (url: string) => void;
+  removeHyperlink: () => void;
+  applyFilter: (column: number, patch: { selectedValues?: string[] | null; conditionOperator?: string; conditionValue?: string }) => void;
+  clearFilter: () => void;
+  findReplace: (params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }) => number;
+  // 结构操作
+  insertRowsAtPrimary: (count: number) => void;
+  deleteRowsAtPrimary: () => void;
+  insertColumnsAtPrimary: (count: number) => void;
+  deleteColumnsAtPrimary: () => void;
+  hideRowsAtPrimary: () => void;
+  hideColumnsAtPrimary: () => void;
+  unhideAll: () => void;
+  toggleBandedRows: () => void;
+  transposeSelection: () => void;
+  flipSelection: (axis: 'h' | 'v') => void;
+  splitByDelimiter: (delimiter: string) => void;
+  // 名称与打印与导入
+  defineName: (name: string, reference: string) => void;
+  removeName: (name: string) => void;
   printWorkbook: (layout: PrintLayout) => void;
   exportPdf: (layout: PrintLayout) => void;
+  setShowPrintPreview: (open: boolean) => void;
+  importXlsxBase64: (base64: string) => Promise<void>;
   closeFunctionWizard: () => void;
   closeSortDialog: () => void;
-  sortRange: (colIdx: number, ascending: boolean, hasHeader: boolean) => void;
+  closeFindReplace: () => void;
+  sortRange: (criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader: boolean) => void;
+  // 面板数据访问
+  getRangeMatrix: (range: RangeRef) => CellData[][];
+  getRangeNumbers: (range: RangeRef) => number[];
+  getValidationForPrimary: () => DataValidationRule | undefined;
+  getValidationAt: (row: number, column: number) => string[] | undefined;
+  addSheet: () => void;
+  renameSheet: (sheetId: string, name: string) => void;
+  cut: () => void;
+  copy: () => void;
+  paste: () => void;
+  clearFormats: () => void;
+  deleteSheet: (sheetId: string) => void;
+  resizeRow: (row: number, heightPx: number) => void;
+  resizeColumn: (column: number, widthPx: number) => void;
+  fillRange: (targetRange: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
+  setSelectedFloatingId: (id: string | null) => void;
+  removeFloatingObject: (kind: 'chart' | 'shape', id: string) => void;
+  getActiveSheetName: () => string;
 }
 
 export interface UseWorkspaceStateOptions {
   initialPhase?: WorkspacePhase;
+}
+
+interface RuntimeHandlers {
+  onSaveState?: (state: SaveState) => void;
+  onNotice?: (message: string) => void;
+  onMutationsApplied?: () => void;
 }
 
 interface WorkspaceRuntime {
@@ -144,6 +261,37 @@ interface WorkspaceRuntime {
   commands: CommandRuntime;
   remoteConnected: boolean;
   remoteRevision: number;
+  pendingMutations: CollaborationMutation[];
+  detachers: Array<() => void>;
+  handlers: RuntimeHandlers;
+  ownOperationIds: Set<string>;
+}
+
+const UNIT_ID_STORAGE_KEY = 'react-sheets:unitId';
+const ACTOR_ID_STORAGE_KEY = 'react-sheets:actorId';
+
+const PEER_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+function resolveUnitId(): string {
+  if (typeof window === 'undefined') return 'wb-server-default';
+  const existing = window.localStorage.getItem(UNIT_ID_STORAGE_KEY);
+  if (existing) return existing;
+  const generated = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'wb-' + Date.now().toString(36);
+  window.localStorage.setItem(UNIT_ID_STORAGE_KEY, generated);
+  return generated;
+}
+
+function resolveActorId(): string {
+  if (typeof window === 'undefined') return 'actor-server';
+  const existing = window.localStorage.getItem(ACTOR_ID_STORAGE_KEY);
+  if (existing) return existing;
+  const generated = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID().slice(0, 8)
+    : 'actor-' + Date.now().toString(36);
+  window.localStorage.setItem(ACTOR_ID_STORAGE_KEY, generated);
+  return generated;
 }
 
 const columns = Array.from({ length: 26 }, (_, index) => columnLabel(index));
@@ -244,7 +392,7 @@ function seedWorkbook(runtime: WorkspaceRuntime): void {
       if (!cell) continue;
       const address = { sheetId: 'sheet-1', row, column };
       if (cell.formula) runtime.formula.setFormula(address, cell.formula);
-      else runtime.formula.setValue(address, cell.value == null ? null : cell.value);
+      else if (cell.value != null) runtime.formula.setValue(address, cell.value);
     }
   }
 
@@ -252,24 +400,187 @@ function seedWorkbook(runtime: WorkspaceRuntime): void {
 }
 
 function createWorkspaceRuntime(): WorkspaceRuntime {
-  const model = new WorkbookModel(
-    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'wb-default',
-    'Q3 Growth Planning',
-  );
+  const model = new WorkbookModel(resolveUnitId(), 'Q3 Growth Planning');
   const commands = new CommandRuntime(model);
   registerSheetCommands(commands);
   registerProSheetCommands(commands);
-  const runtime = {
+  const runtime: WorkspaceRuntime = {
     api: new WorkbookApiClient(),
+    formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
     model,
     commands,
-    formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
     remoteConnected: false,
     remoteRevision: 0,
+    pendingMutations: [],
+    detachers: [],
+    handlers: {},
+    ownOperationIds: new Set(),
   };
+  attachCoreListeners(runtime);
   seedWorkbook(runtime);
   return runtime;
 }
+
+// ---------- 引擎同步:任何来源的 cell 级变更都镜像到 FormulaEngine ----------
+
+function syncEngineCell(
+  engine: FormulaEngine,
+  sheetId: string,
+  row: number,
+  column: number,
+  data: CellData | undefined,
+): void {
+  const address = { sheetId, row, column };
+  const hasContent = data !== undefined && (data.formula !== undefined || data.value != null);
+  if (!hasContent) {
+    engine.clearCell(address);
+    return;
+  }
+  if (data!.formula) {
+    engine.setFormula(address, data!.formula);
+  } else {
+    engine.setValue(address, data!.value as never);
+  }
+}
+
+function attachCoreListeners(runtime: WorkspaceRuntime): void {
+  detachCoreListeners(runtime);
+
+  // 1) 公式引擎同步(command/undo/redo/remote 全部来源)
+  runtime.detachers.push(
+    runtime.commands.onMutation((mutation) => {
+      switch (mutation.id) {
+        case 'cell.set': {
+          const params = mutation.params as { row: number; column: number; value: CellData };
+          syncEngineCell(runtime.formula, mutation.sheetId, params.row, params.column, params.value);
+          break;
+        }
+        case 'cell.restore': {
+          const params = mutation.params as { row: number; column: number; previous?: CellData };
+          syncEngineCell(runtime.formula, mutation.sheetId, params.row, params.column, params.previous);
+          break;
+        }
+        case 'range.set': {
+          const params = mutation.params as { startRow: number; startColumn: number; values: CellData[][] };
+          params.values.forEach((rowValues, rowOffset) =>
+            rowValues.forEach((value, columnOffset) => {
+              syncEngineCell(
+                runtime.formula,
+                mutation.sheetId,
+                params.startRow + rowOffset,
+                params.startColumn + columnOffset,
+                value,
+              );
+            }),
+          );
+          break;
+        }
+        case 'range.clear': {
+          const params = mutation.params as {
+            range: RangeRef;
+            mode?: 'all' | 'contents' | 'formats';
+          };
+          if (params.mode === 'formats') break;
+          for (let r = params.range.startRow; r <= params.range.endRow; r++) {
+            for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
+              runtime.formula.clearCell({ sheetId: mutation.sheetId, row: r, column: c });
+            }
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }),
+  );
+
+  // 2) 正向命令的变更缓冲(undo/redo/remote 不上报协同)
+  runtime.detachers.push(
+    runtime.commands.onMutation((mutation, source) => {
+      if (source !== 'command') return;
+      runtime.pendingMutations.push({
+        id: mutation.id,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges: mutation.affectedRanges,
+      });
+    }),
+  );
+
+  // 3) 根命令结束:冲刷为 changeset;并触发筛选重应用
+  runtime.detachers.push(
+    runtime.commands.onCommand((_commandId, _params, result) => {
+      if (runtime.commands.activeDepth > 0) return; // 嵌套子命令不冲刷
+      const batch = runtime.pendingMutations;
+      runtime.pendingMutations = [];
+      runtime.handlers.onMutationsApplied?.();
+      if (batch.length === 0) return;
+      submitChangeset(runtime, result.operationId, batch);
+    }),
+  );
+}
+
+function detachCoreListeners(runtime: WorkspaceRuntime): void {
+  for (const detach of runtime.detachers) detach();
+  runtime.detachers = [];
+  runtime.pendingMutations = [];
+}
+
+function submitChangeset(
+  runtime: WorkspaceRuntime,
+  operationId: string,
+  mutations: CollaborationMutation[],
+): void {
+  if (!runtime.remoteConnected) return;
+  runtime.ownOperationIds.add(operationId);
+  const changeSet = {
+    schema: 'CollaborationChangeSetV1' as const,
+    operationId,
+    unitId: runtime.model.unitId,
+    actorId: resolveActorId(),
+    baseRevision: runtime.remoteRevision,
+    mutations,
+    createdAt: new Date().toISOString(),
+  };
+  runtime.handlers.onSaveState?.('saving');
+  void runtime.api
+    .submitChangeSet(changeSet)
+    .then((result) => {
+      runtime.remoteRevision = Math.max(runtime.remoteRevision, result.revision);
+      runtime.handlers.onSaveState?.('saved');
+    })
+    .catch(() => {
+      runtime.handlers.onSaveState?.('offline');
+    });
+}
+
+// ---------- 启动恢复 ----------
+
+function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula) engine.setFormula(address, cell.formula);
+      else if (cell.value != null) engine.setValue(address, cell.value as never);
+    });
+  }
+  return engine;
+}
+
+function hydrateRuntime(runtime: WorkspaceRuntime, response: SnapshotResponse): void {
+  const workbook = WorkbookModel.fromSnapshot(response.snapshot);
+  detachCoreListeners(runtime);
+  runtime.model = workbook;
+  runtime.commands = new CommandRuntime(workbook);
+  registerSheetCommands(runtime.commands);
+  registerProSheetCommands(runtime.commands);
+  runtime.formula = rebuildFormulaEngine(workbook);
+  attachCoreListeners(runtime);
+  runtime.remoteRevision = response.revision;
+}
+
+// ---------- 视图构建 ----------
 
 function formatDisplayValue(
   cell: CellData | undefined,
@@ -284,47 +595,60 @@ function formatDisplayValue(
     return toFormulaDisplay(computed);
   }
   if (cell.value == null) return '';
-  if (typeof cell.value === 'number' && cell.numberFormat === '0%') {
-    return `${Math.round(cell.value * 100)}%`;
-  }
-  if (typeof cell.value === 'number' && cell.numberFormat === '$#,##0') {
-    return `$${cell.value.toLocaleString('en-US')}`;
+  if (typeof cell.value === 'number') {
+    return formatNumberValue(cell.value, cell.numberFormat ?? cell.style?.numberFormat);
   }
   return String(cell.value);
 }
 
-function toSheetView(sheet: WorksheetModel, formula: FormulaEngine): SheetView {
+function toSheetView(
+  sheet: WorksheetModel,
+  formula: FormulaEngine,
+  showInvalid: boolean,
+): SheetView {
+  const overlays = computeConditionalOverlays(sheet);
+  const filterHidden = computeFilterHiddenRows(sheet);
+  const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden]);
+  const filterColumns = sheet.filter ? Object.keys(sheet.filter.criteria).map(Number) : [];
   const rows: SheetRow[] = [];
-  for (let row = 0; row < Math.max(30, sheet.rowCount); row += 1) {
+
+  const totalRows = Math.max(60, sheet.rowCount);
+  for (let row = 0; row < totalRows; row += 1) {
+    if (hiddenRows.has(row)) continue;
     const cells: SheetCell[] = [];
     for (let column = 0; column < columns.length; column += 1) {
       const modelCell = sheet.cells.get(row, column);
       const value = formatDisplayValue(modelCell, formula, sheet.id, row, column);
-      const tone: CellTone | undefined =
-        row === 0
-          ? 'header'
-          : modelCell?.value === 'On track'
-            ? 'accent'
-            : modelCell?.value === 'At risk' || modelCell?.value === 'Needs review'
-              ? 'total'
-              : undefined;
+      const key = `${row}:${column}`;
+      const overlay = overlays.get(key);
+      const style = overlay?.style
+        ? { ...(modelCell?.style ?? {}), ...overlay.style }
+        : modelCell?.style;
+
+      const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
 
       cells.push({
         address: cellAddress(row, column),
         formula: modelCell?.formula,
-        style: modelCell?.style,
-        tone,
+        style,
         value,
+        hasComment: Boolean(modelCell?.comment),
+        invalid: showInvalid && modelCell?.value != null && !validation.valid,
+        hyperlink: modelCell?.hyperlink,
+        overlay,
       });
     }
-    rows.push({ rowNumber: row + 1, cells });
+    rows.push({ rowNumber: row + 1, cells, height: sheet.rowHeights[row] ?? 28 });
   }
+
+  const isEmpty = sheet.cells.count() === 0;
 
   return {
     id: sheet.id,
     name: sheet.name,
     columns,
     rows,
+    isEmpty,
     charts: [...sheet.charts],
     pivots: [...sheet.pivots],
     shapes: [...sheet.shapes],
@@ -333,6 +657,11 @@ function toSheetView(sheet: WorksheetModel, formula: FormulaEngine): SheetView {
     dataValidations: [...sheet.dataValidations],
     merges: [...sheet.merges],
     freeze: { ...sheet.freeze },
+    rowHeights: { ...sheet.rowHeights },
+    columnWidths: { ...sheet.columnWidths },
+    hiddenRows: [...hiddenRows].sort((a, b) => a - b),
+    filterColumns,
+    rowCount: totalRows,
   };
 }
 
@@ -344,6 +673,8 @@ export function getInitialWorkspacePhase(): WorkspacePhase {
     : 'ready';
 }
 
+// ---------- Hook ----------
+
 export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateOptions = {}): {
   actions: WorkspaceActions;
   state: WorkspaceState;
@@ -353,9 +684,12 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const runtime = runtimeRef.current;
 
   const [phase, setPhase] = useState<WorkspacePhase>(initialPhase);
-  const [activeSheetId, setActiveSheetId] = useState(runtime.model.activeSheetId);
-  const [activeCell, setActiveCell] = useState('E4');
-  const [formulaDraft, setFormulaDraft] = useState('132000');
+  const [selection, setSelection] = useState<SelectionState>(() => ({
+    ...createInitialSelection(),
+    ranges: [normalizeRangeRef({ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })],
+  }));
+  const [formulaDraft, setFormulaDraft] = useState('');
+  const [editingCell, setEditingCell] = useState<{ row: number; column: number } | null>(null);
   const [ribbonTab, setRibbonTab] = useState<RibbonTabId>('home');
   const [activePanel, setActivePanel] = useState<SidebarPanelId>('inspector');
   const [zoom, setZoomState] = useState(100);
@@ -363,60 +697,62 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const [notice, setNotice] = useState('Workbook engine ready');
   const [modelVersion, setModelVersion] = useState(0);
 
+  const [activeSheetId, setActiveSheetId] = useState(runtime.model.activeSheetId);
+
   const [showFunctionWizard, setShowFunctionWizard] = useState(false);
   const [showSortDialog, setShowSortDialog] = useState(false);
+  const [showFindReplace, setShowFindReplace] = useState(false);
+  const [showPrintPreview, setShowPrintPreviewState] = useState(false);
+  const [peers, setPeers] = useState<PeerCursor[]>([]);
+  const [collabStatus, setCollabStatus] = useState<'connecting' | 'open' | 'closed'>('closed');
+
+  const actorId = useMemo(() => resolveActorId(), []);
 
   const refresh = useCallback(() => setModelVersion((version) => version + 1), []);
 
+  // 将回调注入 runtime(每次渲染更新,保持最新闭包)
+  useEffect(() => {
+    runtime.handlers.onSaveState = setSaveState;
+    runtime.handlers.onNotice = setNotice;
+    runtime.handlers.onMutationsApplied = () => refresh();
+  }, [runtime, refresh]);
+
+  // 启动恢复 / 创建 / 离线回退
   useEffect(() => {
     let active = true;
-    void runtime.api
-      .createWorkbook(runtime.model.snapshot())
-      .then((response) => {
-        if (!active) return;
+    void (async () => {
+      try {
+        const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
+        hydrateRuntime(runtime, snapshotResponse);
         runtime.remoteConnected = true;
-        runtime.remoteRevision = response.revision;
-        setNotice('SQLite sync connected');
-      })
-      .catch(() => {
         if (!active) return;
-        setSaveState('offline');
-        setNotice('Running local in-memory & WAL engine');
-      });
+        runtime.handlers.onSaveState?.('saved');
+        runtime.handlers.onNotice?.('Workbook restored from server');
+        setActiveSheetId(runtime.model.activeSheetId);
+        refresh();
+      } catch {
+        try {
+          const created = await runtime.api.createWorkbook(runtime.model.snapshot());
+          runtime.remoteConnected = true;
+          runtime.remoteRevision = Math.max(runtime.remoteRevision, created.revision);
+          if (!active) return;
+          runtime.handlers.onSaveState?.('saved');
+          runtime.handlers.onNotice?.('SQLite sync connected');
+          refresh();
+        } catch {
+          if (!active) return;
+          runtime.handlers.onSaveState?.('offline');
+          runtime.handlers.onNotice?.('Running local in-memory engine');
+        }
+      }
+    })();
     return () => {
       active = false;
     };
-  }, [runtime]);
-
-  const persistMutation = useCallback(
-    (operationId: string, mutations: CollaborationMutation[]) => {
-      if (!runtime.remoteConnected) {
-        return;
-      }
-      const changeSet = {
-        schema: 'CollaborationChangeSetV1' as const,
-        operationId,
-        unitId: runtime.model.unitId,
-        actorId: 'react-sheets-user',
-        baseRevision: runtime.remoteRevision,
-        mutations,
-        createdAt: new Date().toISOString(),
-      };
-      void runtime.api
-        .submitChangeSet(changeSet)
-        .then((result) => {
-          runtime.remoteRevision = result.revision;
-          setSaveState('saved');
-        })
-        .catch(() => {
-          setSaveState('offline');
-        });
-    },
-    [runtime],
-  );
+  }, [runtime, refresh]);
 
   const sheets = useMemo(
-    () => runtime.model.getSheets().map((sheet) => toSheetView(sheet, runtime.formula)),
+    () => runtime.model.getSheets().map((sheet) => toSheetView(sheet, runtime.formula, true)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [modelVersion, runtime],
   );
@@ -426,34 +762,205 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     [activeSheetId, sheets],
   );
 
-  const selectCell = useCallback(
-    (address: string) => {
-      const parsed = parseAddress(address);
-      if (!parsed) return;
-      setActiveCell(address);
-      const cell = runtime.model.getSheet(activeSheetId).cells.get(parsed.row, parsed.column);
+  const activeCell = useMemo(
+    () => cellAddress(selection.primaryRowIndex, selection.primaryColumnIndex),
+    [selection],
+  );
+
+  // ---- 选区 ----
+
+  const clampRow = useCallback(
+    (row: number) => Math.max(0, Math.min(selectedSheet.rowCount - 1, row)),
+    [selectedSheet.rowCount],
+  );
+  const clampColumn = useCallback(
+    (column: number) => Math.max(0, Math.min(columns.length - 1, column)),
+    [],
+  );
+
+  const syncDraftFromCell = useCallback(
+    (row: number, column: number) => {
+      const cell = runtime.model.getSheet(activeSheetId).cells.get(row, column);
       setFormulaDraft(cell?.formula ?? (cell?.value == null ? '' : String(cell.value)));
     },
     [activeSheetId, runtime],
   );
 
+  const setPrimaryAndSync = useCallback(
+    (row: number, column: number) => {
+      setSelection((previous) => ({
+        ranges: [normalizeRangeRef({
+          sheetId: activeSheetId,
+          startRow: row,
+          endRow: row,
+          startColumn: column,
+          endColumn: column,
+        })],
+        primaryRowIndex: row,
+        primaryColumnIndex: column,
+        primaryRangeIndex: 0,
+      }));
+      syncDraftFromCell(row, column);
+    },
+    [activeSheetId, syncDraftFromCell],
+  );
+
+  const selectCell = useCallback(
+    (address: string) => {
+      // 编辑态下点击其他单元格 = 向公式草稿插入引用
+      if (editingCell) {
+        const parsed = parseAddress(address);
+        if (parsed) {
+          const reference = `${columnLabel(parsed.column)}${parsed.row + 1}`;
+          setFormulaDraft((draft) => draft + reference);
+        }
+        return;
+      }
+      const parsed = parseAddress(address);
+      if (!parsed) return;
+      setPrimaryAndSync(clampRow(parsed.row), clampColumn(parsed.column));
+    },
+    [clampColumn, clampRow, editingCell, setPrimaryAndSync],
+  );
+
+  const selectRange = useCallback(
+    (range: { startRow: number; startColumn: number; endRow: number; endColumn: number }, mode: 'replace' | 'add' = 'replace') => {
+      const normalized = normalizeRangeRef({
+        sheetId: activeSheetId,
+        startRow: clampRow(Math.min(range.startRow, range.endRow)),
+        endRow: clampRow(Math.max(range.startRow, range.endRow)),
+        startColumn: clampColumn(Math.min(range.startColumn, range.endColumn)),
+        endColumn: clampColumn(Math.max(range.startColumn, range.endColumn)),
+      });
+      setSelection((previous) => {
+        if (mode === 'add' && previous.ranges.length > 0) {
+          return { ...previous, ranges: [...previous.ranges, normalized], primaryRangeIndex: previous.ranges.length };
+        }
+        return {
+          ranges: [normalized],
+          primaryRowIndex: normalized.startRow,
+          primaryColumnIndex: normalized.startColumn,
+          primaryRangeIndex: 0,
+        };
+      });
+      syncDraftFromCell(normalized.startRow, normalized.startColumn);
+    },
+    [activeSheetId, clampColumn, clampRow, syncDraftFromCell],
+  );
+
+  const movePrimary = useCallback(
+    (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => {
+      setSelection((previous) => {
+        const targetRow = clampRow(previous.primaryRowIndex + rowDelta);
+        const targetColumn = clampColumn(previous.primaryColumnIndex + columnDelta);
+        if (opts?.extend && previous.ranges.length > 0) {
+          const range = previous.ranges[previous.primaryRangeIndex] ?? previous.ranges[0]!;
+          const anchorRow = previous.primaryRowIndex <= (range.startRow + range.endRow) / 2 ? range.endRow : range.startRow;
+          const anchorColumn = previous.primaryColumnIndex <= (range.startColumn + range.endColumn) / 2 ? range.endColumn : range.startColumn;
+          const next = normalizeRangeRef({
+            sheetId: activeSheetId,
+            startRow: Math.min(anchorRow, targetRow),
+            endRow: Math.max(anchorRow, targetRow),
+            startColumn: Math.min(anchorColumn, targetColumn),
+            endColumn: Math.max(anchorColumn, targetColumn),
+          });
+          const ranges = [...previous.ranges];
+          ranges[previous.primaryRangeIndex] = next;
+          return { ...previous, ranges, primaryRowIndex: targetRow, primaryColumnIndex: targetColumn };
+        }
+        return {
+          ranges: [normalizeRangeRef({
+            sheetId: activeSheetId,
+            startRow: targetRow,
+            endRow: targetRow,
+            startColumn: targetColumn,
+            endColumn: targetColumn,
+          })],
+          primaryRowIndex: targetRow,
+          primaryColumnIndex: targetColumn,
+          primaryRangeIndex: 0,
+        };
+      });
+    },
+    [activeSheetId, clampColumn, clampRow],
+  );
+
+  const jumpEdge = useCallback(
+    (direction: 'up' | 'down' | 'left' | 'right', extend = false) => {
+      const sheet = runtime.model.getSheet(activeSheetId);
+      let row = selection.primaryRowIndex;
+      let column = selection.primaryColumnIndex;
+      const step = direction === 'up' ? -1 : direction === 'down' ? 1 : direction === 'left' ? -1 : 1;
+      const horizontal = direction === 'left' || direction === 'right';
+      let cursor = horizontal ? column : row;
+      cursor += step;
+      while (
+        cursor >= 0 &&
+        (horizontal ? cursor < columns.length : cursor < sheet.rowCount)
+      ) {
+        const cellValue = horizontal
+          ? sheet.cells.get(row, cursor)?.value
+          : sheet.cells.get(cursor, column)?.value;
+        if (cellValue != null && cellValue !== '') break;
+        cursor += step;
+      }
+      // 越界则停在最后一个非空或边界
+      if (horizontal) column = Math.max(0, Math.min(columns.length - 1, cursor));
+      else row = Math.max(0, Math.min(sheet.rowCount - 1, cursor));
+
+      if (extend) {
+        movePrimary(row - selection.primaryRowIndex, column - selection.primaryColumnIndex, { extend: true });
+      } else {
+        setPrimaryAndSync(row, column);
+      }
+    },
+    [activeSheetId, movePrimary, selection.primaryColumnIndex, selection.primaryRowIndex, runtime.model, setPrimaryAndSync],
+  );
+
+  const selectAll = useCallback(() => {
+    selectRange({ startRow: 0, startColumn: 0, endRow: selectedSheet.rowCount - 1, endColumn: columns.length - 1 }, 'replace');
+  }, [selectRange, selectedSheet.rowCount]);
+
+  const selectRowHeader = useCallback(
+    (row: number, mode: 'replace' | 'add' = 'replace') => {
+      selectRange({ startRow: row, startColumn: 0, endRow: row, endColumn: columns.length - 1 }, mode);
+    },
+    [selectRange],
+  );
+
+  const selectColumnHeader = useCallback(
+    (column: number, mode: 'replace' | 'add' = 'replace') => {
+      selectRange({ startRow: 0, startColumn: column, endRow: selectedSheet.rowCount - 1, endColumn: column }, mode);
+    },
+    [selectRange, selectedSheet.rowCount],
+  );
+
+  // ---- 编辑 ----
+
+  const beginEdit = useCallback(
+    (initialText?: string) => {
+      const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+      setFormulaDraft(initialText ?? cell?.formula ?? (cell?.value == null ? '' : String(cell.value)));
+      setEditingCell({ row: selection.primaryRowIndex, column: selection.primaryColumnIndex });
+    },
+    [activeSheetId, runtime, selection.primaryColumnIndex, selection.primaryRowIndex],
+  );
+
+  const cancelEdit = useCallback(() => {
+    setEditingCell(null);
+    syncDraftFromCell(selection.primaryRowIndex, selection.primaryColumnIndex);
+  }, [selection.primaryColumnIndex, selection.primaryRowIndex, syncDraftFromCell]);
+
   const commitFormula = useCallback(
     (overrideValue?: string) => {
-      if (phase !== 'ready') return;
-      const parsed = parseAddress(activeCell);
-      if (!parsed) return;
-
+      if (phase !== 'ready') return false;
+      const row = overrideTargetRef.current?.row ?? selection.primaryRowIndex;
+      const column = overrideTargetRef.current?.column ?? selection.primaryColumnIndex;
       const raw = (overrideValue !== undefined ? overrideValue : formulaDraft).trim();
+
+      const sheet = runtime.model.getSheet(activeSheetId);
+      const existingStyle = sheet.cells.get(row, column)?.style;
       const isFormula = raw.startsWith('=');
-      const address = { sheetId: activeSheetId, row: parsed.row, column: parsed.column };
-
-      const result = isFormula
-        ? runtime.formula.setFormula(address, raw)
-        : runtime.formula.setValue(
-            address,
-            raw === '' ? null : Number.isFinite(Number(raw)) ? Number(raw) : raw,
-          );
-
       const value = isFormula
         ? null
         : raw === ''
@@ -462,111 +969,91 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
             ? Number(raw)
             : raw;
 
-      const sheet = runtime.model.getSheet(activeSheetId);
-      const existingStyle = sheet.cells.get(parsed.row, parsed.column)?.style;
+      // 数据验证拦截
+      const candidate: CellData = { value, formula: isFormula ? raw : undefined, style: existingStyle };
+      const validation = validateDataInput(sheet, row, column, value);
+      if (!validation.valid) {
+        if (validation.blocking) {
+          runtime.handlers.onNotice?.(validation.message ?? '输入不符合数据验证规则');
+          return false;
+        }
+        runtime.handlers.onNotice?.(`警告: ${validation.message ?? '数据验证未通过'}`);
+      }
 
-      const commandResult = runtime.commands.execute('sheet.cell.set', {
+      const cellData: CellData = isFormula ? { value: null, formula: raw, style: existingStyle } : candidate;
+      runtime.commands.execute('sheet.cell.set', {
         sheetId: activeSheetId,
-        row: parsed.row,
-        column: parsed.column,
-        value: {
-          value,
-          formula: isFormula ? raw : undefined,
-          displayValue: toFormulaDisplay(result.value),
-          style: existingStyle,
-        },
+        row,
+        column,
+        value: cellData,
       });
 
-      persistMutation(commandResult.operationId, [
-        {
-          id: 'cell.set',
-          sheetId: activeSheetId,
-          params: {
-            row: parsed.row,
-            column: parsed.column,
-            value: {
-              value,
-              formula: isFormula ? raw : undefined,
-              displayValue: toFormulaDisplay(result.value),
-              style: existingStyle,
-            },
-          },
-          affectedRanges: [
-            {
-              sheetId: activeSheetId,
-              startRow: parsed.row,
-              endRow: parsed.row,
-              startColumn: parsed.column,
-              endColumn: parsed.column,
-            },
-          ],
-        },
-      ]);
-
       refresh();
-      setSaveState('saving');
-      window.setTimeout(() => setSaveState('saved'), 200);
+      return true;
     },
-    [activeCell, activeSheetId, formulaDraft, phase, persistMutation, refresh, runtime],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeSheetId, formulaDraft, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex],
   );
+
+  const overrideTargetRef = useRef<{ row: number; column: number } | null>(null);
+
+  const commitEdit = useCallback(
+    (moveAfter: 'down' | 'up' | 'left' | 'right' | 'none' = 'down') => {
+      if (!editingCell) return;
+      overrideTargetRef.current = { row: editingCell.row, column: editingCell.column };
+      const committed = commitFormula(formulaDraft.trim());
+      overrideTargetRef.current = null;
+      setEditingCell(null);
+      if (!committed) return; // 验证拦截:保持编辑值留在草稿
+      const deltas = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] } as const;
+      const [dr, dc] = deltas[moveAfter];
+      movePrimary(dr, dc);
+      const targetRow = clampRow(editingCell.row + dr);
+      const targetColumn = clampColumn(editingCell.column + dc);
+      syncDraftFromCell(targetRow, targetColumn);
+    },
+    [clampColumn, clampRow, commitFormula, editingCell, formulaDraft, movePrimary, syncDraftFromCell],
+  );
+
+  const insertRefIntoDraft = useCallback((refText: string) => {
+    setFormulaDraft((draft) => {
+      const needsSeparator = /[A-Za-z0-9)]$/.test(draft) && /^[A-Za-z0-9]/.test(refText);
+      return draft + (needsSeparator ? '' : '') + refText;
+    });
+  }, []);
+
+  const toggleAbsoluteReference = useCallback(() => {
+    setFormulaDraft((draft) =>
+      draft.replace(/(\$?)([A-Za-z]+)(\$?)(\d+)/g, (_match, dCol, col, dRow, row) => {
+        const nextDCol = dCol ? '' : '$';
+        const nextDRow = dRow ? '' : '$';
+        return `${nextDCol}${col}${nextDRow}${row}`;
+      }),
+    );
+  }, []);
 
   const moveCell = useCallback(
     (address: string, direction: 'down' | 'left' | 'right' | 'up') => {
       const parsed = parseAddress(address);
       if (!parsed) return;
-      const offsets = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] } as const;
-      const [columnOffset, rowOffset] = offsets[direction];
-      const column = Math.max(0, Math.min(columns.length - 1, parsed.column + columnOffset));
-      const row = Math.max(
-        0,
-        Math.min(runtime.model.getSheet(activeSheetId).rowCount - 1, parsed.row + rowOffset),
-      );
-      selectCell(cellAddress(row, column));
+      const offsets = { left: [0, -1], right: [0, 1], up: [-1, 0], down: [1, 0] } as const;
+      const [rowOffset, columnOffset] = offsets[direction];
+      const targetRow = clampRow(parsed.row + rowOffset);
+      const targetColumn = clampColumn(parsed.column + columnOffset);
+      setPrimaryAndSync(targetRow, targetColumn);
     },
-    [activeSheetId, runtime, selectCell],
+    [clampColumn, clampRow, setPrimaryAndSync],
   );
 
-  const addSheet = useCallback(() => {
-    const id = `sheet-${runtime.model.getSheets().length + 1}`;
-    const name = `Sheet ${runtime.model.getSheets().length + 1}`;
-    const commandResult = runtime.commands.execute('sheet.add', { id, name });
-    persistMutation(commandResult.operationId, [
-      { id: 'sheet.add', sheetId: id, params: { id, name }, affectedRanges: [] },
-    ]);
-    runtime.model.activeSheetId = id;
-    setActiveSheetId(id);
-    setActiveCell('A1');
-    setFormulaDraft('');
-    refresh();
-    setNotice('Worksheet added');
-  }, [persistMutation, refresh, runtime]);
-
-  const deleteSheet = useCallback(
-    (sheetId: string) => {
-      if (runtime.model.getSheets().length <= 1) return;
-      runtime.commands.execute('sheet.remove', { sheetId });
-      const first = runtime.model.getSheets()[0]!;
-      setActiveSheetId(first.id);
-      refresh();
-    },
-    [refresh, runtime],
-  );
-
-  const renameSheet = useCallback(
-    (sheetId: string, name: string) => {
-      runtime.commands.execute('sheet.rename', { sheetId, name });
-      refresh();
-    },
-    [refresh, runtime],
-  );
+  // ---- 工作表管理 ----
 
   const selectSheet = useCallback(
-    (sheetId: SheetId) => {
-      const sheet = runtime.model.getSheet(sheetId);
+    (sheetId: string) => {
       runtime.model.activeSheetId = sheetId;
       setActiveSheetId(sheetId);
-      setActiveCell('A1');
-      setFormulaDraft(sheet.cells.get(0, 0)?.formula ?? '');
+      setSelection(createInitialSelection());
+      setEditingCell(null);
+      setFormulaDraft('');
       refresh();
     },
     [refresh, runtime],
@@ -593,447 +1080,335 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     setNotice('Workspace ready');
   }, []);
 
+  // ---- Ribbon 动作 ----
+
   const handleRibbonAction = useCallback(
     (action: string, payload?: unknown) => {
-      const parsed = parseAddress(activeCell);
-      if (!parsed) return;
-
-      const activeRange: RangeRef = {
-        sheetId: activeSheetId,
-        startRow: parsed.row,
-        endRow: parsed.row,
-        startColumn: parsed.column,
-        endColumn: parsed.column,
+      const sheet = runtime.model.getSheet(activeSheetId);
+      const primaryRange = selection.ranges[selection.primaryRangeIndex]
+        ?? normalizeRangeRef({
+          sheetId: activeSheetId,
+          startRow: selection.primaryRowIndex,
+          endRow: selection.primaryRowIndex,
+          startColumn: selection.primaryColumnIndex,
+          endColumn: selection.primaryColumnIndex,
+        });
+      const applyStyleToPrimary = (style: Partial<CellStyle>) => {
+        runtime.commands.execute('sheet.style.set', { sheetId: activeSheetId, range: primaryRange, style });
+        refresh();
       };
+      const readStyle = (): CellStyle | undefined =>
+        sheet.cells.get(selection.primaryRowIndex, selection.primaryColumnIndex)?.style;
 
-      if (action === 'undo') undo();
-      else if (action === 'redo') redo();
-      else if (action === 'bold') {
-        const currentStyle = runtime.model.getSheet(activeSheetId).cells.get(parsed.row, parsed.column)?.style;
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { bold: !currentStyle?.bold },
-        });
-        refresh();
-      } else if (action === 'italic') {
-        const currentStyle = runtime.model.getSheet(activeSheetId).cells.get(parsed.row, parsed.column)?.style;
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { italic: !currentStyle?.italic },
-        });
-        refresh();
-      } else if (action === 'underline') {
-        const currentStyle = runtime.model.getSheet(activeSheetId).cells.get(parsed.row, parsed.column)?.style;
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { underline: !currentStyle?.underline },
-        });
-        refresh();
-      } else if (action === 'strikethrough') {
-        const currentStyle = runtime.model.getSheet(activeSheetId).cells.get(parsed.row, parsed.column)?.style;
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { strikethrough: !currentStyle?.strikethrough },
-        });
-        refresh();
-      } else if (action === 'align-left' || action === 'align-center' || action === 'align-right') {
-        const align = action.replace('align-', '') as 'left' | 'center' | 'right';
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { horizontalAlignment: align },
-        });
-        refresh();
-      } else if (action === 'wrap-text') {
-        const currentStyle = runtime.model.getSheet(activeSheetId).cells.get(parsed.row, parsed.column)?.style;
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { wrapText: !currentStyle?.wrapText },
-        });
-        refresh();
-      } else if (action === 'merge-cells') {
-        runtime.commands.execute('sheet.merge.set', {
-          sheetId: activeSheetId,
-          range: {
-            sheetId: activeSheetId,
-            startRow: parsed.row,
-            endRow: parsed.row,
-            startColumn: parsed.column,
-            endColumn: parsed.column + 1,
-          },
-        });
-        refresh();
-      } else if (action === 'textColor' && typeof payload === 'string') {
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { textColor: payload },
-        });
-        refresh();
-      } else if (action === 'background' && typeof payload === 'string') {
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { background: payload },
-        });
-        refresh();
-      } else if (action === 'numberFormat' && typeof payload === 'string') {
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { numberFormat: payload },
-        });
-        refresh();
-      } else if (action === 'format-currency') {
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { numberFormat: '$#,##0' },
-        });
-        refresh();
-      } else if (action === 'format-percent') {
-        runtime.commands.execute('sheet.style.set', {
-          sheetId: activeSheetId,
-          range: activeRange,
-          style: { numberFormat: '0%' },
-        });
-        refresh();
-      } else if (action === 'clear-range') {
-        runtime.commands.execute('sheet.range.clear', {
-          sheetId: activeSheetId,
-          range: activeRange,
-        });
-        runtime.formula.clearCell({ sheetId: activeSheetId, row: parsed.row, column: parsed.column });
-        setFormulaDraft('');
-        refresh();
-      } else if (action === 'autosum') {
-        const formula = `=SUM(A${parsed.row + 1}:${columnLabel(Math.max(0, parsed.column - 1))}${parsed.row + 1})`;
-        setFormulaDraft(formula);
-        commitFormula(formula);
-      } else if (action === 'function-wizard') {
-        setShowFunctionWizard(true);
-      } else if (action === 'sort-dialog') {
-        setShowSortDialog(true);
-      } else if (action === 'sort-asc') {
-        runtime.commands.execute('sheet.sort', {
-          sheetId: activeSheetId,
-          range: { sheetId: activeSheetId, startRow: 0, endRow: 20, startColumn: 0, endColumn: 5 },
-          sortColumn: parsed.column,
-          ascending: true,
-          hasHeader: true,
-        });
-        refresh();
-      } else if (action === 'sort-desc') {
-        runtime.commands.execute('sheet.sort', {
-          sheetId: activeSheetId,
-          range: { sheetId: activeSheetId, startRow: 0, endRow: 20, startColumn: 0, endColumn: 5 },
-          sortColumn: parsed.column,
-          ascending: false,
-          hasHeader: true,
-        });
-        refresh();
-      } else if (action === 'copy') {
-        const data = copyRangeToClipboardData(runtime.model, activeRange);
-        if (typeof navigator !== 'undefined' && navigator.clipboard) {
-          navigator.clipboard.writeText(formatTsv(data.values));
+      switch (action) {
+        case 'undo': undo(); break;
+        case 'redo': redo(); break;
+        case 'copy': {
+          const data = copyRangeToClipboardData(runtime.model, primaryRange);
+          void navigator.clipboard?.writeText(formatTsv(data.values));
           setNotice('Copied to clipboard');
+          break;
         }
-      } else if (action === 'paste') {
-        if (typeof navigator !== 'undefined' && navigator.clipboard) {
-          navigator.clipboard.readText().then((text) => {
-            const values = parseTsv(text);
-            if (values.length > 0) {
+        case 'cut': {
+          const data = copyRangeToClipboardData(runtime.model, primaryRange);
+          void navigator.clipboard?.writeText(formatTsv(data.values));
+          runtime.commands.execute('sheet.range.clear', { sheetId: activeSheetId, range: primaryRange });
+          setFormulaDraft('');
+          refresh();
+          setNotice('Cut to clipboard');
+          break;
+        }
+        case 'paste': {
+          void navigator.clipboard
+            ?.readText()
+            .then((text) => {
+              const parsed = parseTsv(text);
+              if (parsed.length === 0) return;
               runtime.commands.execute('sheet.range.set', {
                 sheetId: activeSheetId,
-                startRow: parsed.row,
-                startColumn: parsed.column,
-                values,
+                startRow: selection.primaryRowIndex,
+                startColumn: selection.primaryColumnIndex,
+                values: parsed.map((row) => row.map((cell) => ({ ...cell, style: undefined, comment: undefined }))),
               });
               refresh();
               setNotice('Pasted from clipboard');
-            }
-          });
+            })
+            .catch(() => setNotice('Clipboard unavailable'));
+          break;
         }
-      } else if (action === 'open-chart') setActivePanel('chart');
-      else if (action === 'open-pivot') setActivePanel('pivot');
-      else if (action === 'open-shape') setActivePanel('shape');
-      else if (action === 'open-sparkline') setActivePanel('sparkline');
-      else if (action === 'open-conditional-format') setActivePanel('conditionalFormat');
-      else if (action === 'open-data-validation') setActivePanel('dataValidation');
-      else if (action === 'open-print') setActivePanel('print');
-      else if (action === 'open-history') setActivePanel('history');
-      else if (action === 'freeze-top-row') {
-        runtime.commands.execute('sheet.freeze.set', {
-          sheetId: activeSheetId,
-          freeze: { xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0 },
-        });
-        refresh();
-      } else if (action === 'freeze-first-col') {
-        runtime.commands.execute('sheet.freeze.set', {
-          sheetId: activeSheetId,
-          freeze: { xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 },
-        });
-        refresh();
-      } else if (action === 'unfreeze') {
-        runtime.commands.execute('sheet.freeze.set', {
-          sheetId: activeSheetId,
-          freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
-        });
-        refresh();
-      } else if (action === 'zoom-in') setZoomState((z) => Math.min(125, z + 5));
-      else if (action === 'zoom-out') setZoomState((z) => Math.max(75, z - 5));
-      else if (action === 'zoom-100') setZoomState(100);
-    },
-    [activeCell, activeSheetId, commitFormula, redo, refresh, runtime, undo],
-  );
-
-  const addChart = useCallback(
-    (chart: ChartModel) => {
-      runtime.commands.execute('pro.chart.add', chart);
-      refresh();
-      setNotice('Chart added to sheet');
-    },
-    [refresh, runtime],
-  );
-
-  const removeChart = useCallback(
-    (id: string) => {
-      runtime.commands.execute('chart.remove', id);
-      refresh();
-    },
-    [refresh, runtime],
-  );
-
-  const addPivot = useCallback(
-    (pivot: PivotModel) => {
-      runtime.commands.execute('pro.pivot.add', pivot);
-      refresh();
-      setNotice('Pivot table generated');
-    },
-    [refresh, runtime],
-  );
-
-  const removePivot = useCallback(
-    (id: string) => {
-      runtime.commands.execute('pivot.remove', id);
-      refresh();
-    },
-    [refresh, runtime],
-  );
-
-  const addShape = useCallback(
-    (shape: ShapeModel) => {
-      runtime.commands.execute('pro.shape.add', shape);
-      refresh();
-      setNotice('Shape added to canvas');
-    },
-    [refresh, runtime],
-  );
-
-  const removeShape = useCallback(
-    (id: string) => {
-      runtime.commands.execute('shape.remove', id);
-      refresh();
-    },
-    [refresh, runtime],
-  );
-
-  const addSparkline = useCallback(
-    (sparkline: SparklineModel) => {
-      runtime.commands.execute('pro.sparkline.add', sparkline);
-      refresh();
-      setNotice('Sparkline attached to cell');
-    },
-    [refresh, runtime],
-  );
-
-  const removeSparkline = useCallback(
-    (id: string) => {
-      runtime.commands.execute('sparkline.remove', id);
-      refresh();
-    },
-    [refresh, runtime],
-  );
-
-  const addConditionalFormat = useCallback(
-    (rule: ConditionalFormatRule) => {
-      const sheet = runtime.model.getSheet(activeSheetId);
-      sheet.conditionalFormats.push(rule);
-      refresh();
-      setNotice('Conditional format rule applied');
-    },
-    [activeSheetId, refresh, runtime],
-  );
-
-  const removeConditionalFormat = useCallback(
-    (id: string) => {
-      const sheet = runtime.model.getSheet(activeSheetId);
-      const idx = sheet.conditionalFormats.findIndex((r) => r.id === id);
-      if (idx >= 0) sheet.conditionalFormats.splice(idx, 1);
-      refresh();
-    },
-    [activeSheetId, refresh, runtime],
-  );
-
-  const addDataValidation = useCallback(
-    (rule: DataValidationRule) => {
-      const sheet = runtime.model.getSheet(activeSheetId);
-      sheet.dataValidations.push(rule);
-      refresh();
-      setNotice('Data validation rule added');
-    },
-    [activeSheetId, refresh, runtime],
-  );
-
-  const removeDataValidation = useCallback(
-    (id: string) => {
-      const sheet = runtime.model.getSheet(activeSheetId);
-      const idx = sheet.dataValidations.findIndex((r) => r.id === id);
-      if (idx >= 0) sheet.dataValidations.splice(idx, 1);
-      refresh();
-    },
-    [activeSheetId, refresh, runtime],
-  );
-
-  const printWorkbook = useCallback(
-    (layout: PrintLayout) => {
-      if (typeof window !== 'undefined') {
-        window.print();
-      }
-    },
-    [],
-  );
-
-  const exportPdf = useCallback(
-    (layout: PrintLayout) => {
-      if (typeof window !== 'undefined') {
-        window.print();
-      }
-    },
-    [],
-  );
-
-  const sortRange = useCallback(
-    (colIdx: number, ascending: boolean, hasHeader: boolean) => {
-      runtime.commands.execute('sheet.sort', {
-        sheetId: activeSheetId,
-        range: { sheetId: activeSheetId, startRow: 0, endRow: 20, startColumn: 0, endColumn: 10 },
-        sortColumn: colIdx,
-        ascending,
-        hasHeader,
-      });
-      refresh();
-    },
-    [activeSheetId, refresh, runtime],
-  );
-
-  const historyEntries = useMemo(() => runtime.commands.getUndoEntries(), [modelVersion, runtime]);
-
-  const actions = useMemo<WorkspaceActions>(
-    () => ({
-      addSheet,
-      deleteSheet,
-      renameSheet,
-      commitFormula,
-      moveCell,
-      notify: setNotice,
-      redo,
-      retry,
-      selectCell,
-      selectSheet,
-      setActivePanel,
-      setFormulaDraft,
-      setRibbonTab,
-      setZoom: (nextZoom) => setZoomState(Math.max(75, Math.min(125, nextZoom))),
-      undo,
-      handleRibbonAction,
-      addChart,
-      removeChart,
-      addPivot,
-      removePivot,
-      addShape,
-      removeShape,
-      addSparkline,
-      removeSparkline,
-      addConditionalFormat,
-      removeConditionalFormat,
-      addDataValidation,
-      removeDataValidation,
-      printWorkbook,
-      exportPdf,
-      closeFunctionWizard: () => setShowFunctionWizard(false),
-      closeSortDialog: () => setShowSortDialog(false),
-      sortRange,
-    }),
-    [
-      addChart,
-      addConditionalFormat,
-      addDataValidation,
-      addPivot,
-      addShape,
-      addSheet,
-      addSparkline,
-      commitFormula,
-      deleteSheet,
-      exportPdf,
-      handleRibbonAction,
-      moveCell,
-      printWorkbook,
-      redo,
-      removeChart,
-      removeConditionalFormat,
-      removeDataValidation,
-      removePivot,
-      removeShape,
-      removeSparkline,
-      renameSheet,
-      retry,
-      selectCell,
-      selectSheet,
-      sortRange,
-      undo,
-    ],
-  );
-
-  const state = useMemo<WorkspaceState>(
-    () => ({
-      activeCell,
-      activePanel,
-      activeSheetId,
-      formulaDraft,
-      notice,
-      phase,
-      ribbonTab,
-      saveState,
-      selectedSheet,
-      sheets,
-      zoom,
-      historyEntries,
-      showFunctionWizard,
-      showSortDialog,
-    }),
-    [
-      activeCell,
-      activePanel,
-      activeSheetId,
-      formulaDraft,
-      historyEntries,
-      notice,
-      phase,
-      ribbonTab,
-      saveState,
-      selectedSheet,
-      sheets,
-      showFunctionWizard,
-      showSortDialog,
-      zoom,
-    ],
-  );
-
-  return { actions, state };
-}
+        case 'bold':
+          applyStyleToPrimary({ bold: !readStyle()?.bold });
+          break;
+        case 'italic':
+          applyStyleToPrimary({ italic: !readStyle()?.italic });
+          break;
+        case 'underline':
+          applyStyleToPrimary({ underline: !readStyle()?.underline });
+          break;
+        case 'strikethrough':
+          applyStyleToPrimary({ strikethrough: !readStyle()?.strikethrough });
+          break;
+        case 'align-left':
+        case 'align-center':
+        case 'align-right':
+          applyStyleToPrimary({ horizontalAlignment: action.replace('align-', '') as 'left' | 'center' | 'right' });
+          break;
+        case 'v-align-top':
+        case 'v-align-middle':
+        case 'v-align-bottom':
+          applyStyleToPrimary({ verticalAlignment: action.replace('v-align-', '') as 'top' | 'middle' | 'bottom' });
+          break;
+        case 'wrap-text':
+          applyStyleToPrimary({ wrapText: !readStyle()?.wrapText });
+          break;
+        case 'rotate': {
+          const degrees = typeof payload === 'number' ? payload : Number(payload);
+          if (Number.isFinite(degrees)) applyStyleToPrimary({ textRotate: degrees });
+          break;
+        }
+        case 'font-family':
+          if (typeof payload === 'string') applyStyleToPrimary({ fontFamily: payload });
+          break;
+        case 'font-size': {
+          const size = Number(payload);
+          if (Number.isFinite(size) && size > 0) applyStyleToPrimary({ fontSize: size });
+          break;
+        }
+        case 'merge-cells': {
+          const range = primaryRange;
+          if (range.startRow === range.endRow && range.startColumn === range.endColumn) {
+            // 无选区时退化为两列合并(保留旧行为语义)
+            runtime.commands.execute('sheet.merge.set', {
+              sheetId: activeSheetId,
+              range: { ...range, endColumn: range.endColumn + 1 },
+            });
+          } else {
+            runtime.commands.execute('sheet.merge.set', { sheetId: activeSheetId, range });
+          }
+          refresh();
+          break;
+        }
+        case 'unmerge-cells': {
+          for (const range of selection.ranges) {
+            runtime.commands.execute('sheet.merge.remove', { sheetId: activeSheetId, range });
+          }
+          refresh();
+          break;
+        }
+        case 'textColor':
+          if (typeof payload === 'string') applyStyleToPrimary({ textColor: payload });
+          break;
+        case 'background':
+          if (typeof payload === 'string') applyStyleToPrimary({ background: payload });
+          break;
+        case 'numberFormat':
+          if (typeof payload === 'string') applyStyleToPrimary({ numberFormat: payload });
+          break;
+        case 'format-currency':
+          applyStyleToPrimary({ numberFormat: '$#,##0' });
+          break;
+        case 'format-percent':
+          applyStyleToPrimary({ numberFormat: '0%' });
+          break;
+        case 'border-all':
+          applyStyleToPrimary({
+            borders: {
+              top: { style: 'thin', color: '#334155' },
+              right: { style: 'thin', color: '#334155' },
+              bottom: { style: 'thin', color: '#334155' },
+              left: { style: 'thin', color: '#334155' },
+            },
+          });
+          break;
+        case 'border-outer':
+          applyStyleToPrimary({
+            borders: {
+              top: { style: 'medium', color: '#334155' },
+              right: { style: 'medium', color: '#334155' },
+              bottom: { style: 'medium', color: '#334155' },
+              left: { style: 'medium', color: '#334155' },
+            },
+          });
+          break;
+        case 'border-none':
+          applyStyleToPrimary({ borders: undefined });
+          break;
+        case 'clear-range':
+          runtime.commands.execute('sheet.range.clear', { sheetId: activeSheetId, range: primaryRange });
+          setFormulaDraft('');
+          refresh();
+          break;
+        case 'clear-formats':
+          runtime.commands.execute('sheet.style.clear', { sheetId: activeSheetId, range: primaryRange });
+          refresh();
+          break;
+        case 'autosum': {
+          const rowLabel = selection.primaryRowIndex + 1;
+          const endLabel = columnLabel(Math.max(0, selection.primaryColumnIndex - 1));
+          const formula = ` =SUM(A${rowLabel}:${endLabel}${rowLabel})`.trim();
+          setFormulaDraft(formula);
+          overrideTargetRef.current = { row: selection.primaryRowIndex, column: selection.primaryColumnIndex };
+          commitFormula(formula);
+          overrideTargetRef.current = null;
+          break;
+        }
+        case 'function-wizard':
+          setShowFunctionWizard(true);
+          break;
+        case 'sort-dialog':
+          setShowSortDialog(true);
+          break;
+        case 'sort-asc':
+        case 'sort-desc': {
+          const ascending = action === 'sort-asc';
+          runtime.commands.execute('sheet.sort.multi', {
+            sheetId: activeSheetId,
+            range: primaryRange.endRow > primaryRange.startRow || primaryRange.endColumn > primaryRange.startColumn
+              ? primaryRange
+              : normalizeRangeRef({
+                  sheetId: activeSheetId,
+                  startRow: 0,
+                  endRow: Math.min(sheet.rowCount - 1, 30),
+                  startColumn: 0,
+                  endColumn: Math.min(columns.length - 1, 6),
+                }),
+            criteria: [{ column: selection.primaryColumnIndex, ascending }],
+            hasHeader: true,
+          });
+          refresh();
+          break;
+        }
+        case 'insert-row':
+          actionsProxy.current.insertRowsAtPrimary?.(1);
+          break;
+        case 'insert-column':
+          actionsProxy.current.insertColumnsAtPrimary?.(1);
+          break;
+        case 'delete-row':
+          actionsProxy.current.deleteRowsAtPrimary?.();
+          break;
+        case 'delete-column':
+          actionsProxy.current.deleteColumnsAtPrimary?.();
+          break;
+        case 'hide-row':
+          actionsProxy.current.hideRowsAtPrimary?.();
+          break;
+        case 'hide-column':
+          actionsProxy.current.hideColumnsAtPrimary?.();
+          break;
+        case 'unhide-all':
+          actionsProxy.current.unhideAll?.();
+          break;
+        case 'transpose':
+          actionsProxy.current.transposeSelection?.();
+          break;
+        case 'flip-h':
+          actionsProxy.current.flipSelection?.('h');
+          break;
+        case 'flip-v':
+          actionsProxy.current.flipSelection?.('v');
+          break;
+        case 'split-column':
+          if (typeof payload === 'string') actionsProxy.current.splitByDelimiter?.(payload);
+          break;
+        case 'banded-toggle':
+          actionsProxy.current.toggleBandedRows?.();
+          break;
+        case 'freeze-top-row':
+          runtime.commands.execute('sheet.freeze.set', {
+            sheetId: activeSheetId,
+            freeze: { xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0 },
+          });
+          refresh();
+          break;
+        case 'freeze-first-col':
+          runtime.commands.execute('sheet.freeze.set', {
+            sheetId: activeSheetId,
+            freeze: { xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 },
+          });
+          refresh();
+          break;
+        case 'freeze-at-primary':
+          runtime.commands.execute('sheet.freeze.set', {
+            sheetId: activeSheetId,
+            freeze: {
+              xSplit: selection.primaryColumnIndex,
+              ySplit: selection.primaryRowIndex,
+              startRow: selection.primaryRowIndex,
+              startColumn: selection.primaryColumnIndex,
+            },
+          });
+          refresh();
+          break;
+        case 'unfreeze':
+          runtime.commands.execute('sheet.freeze.set', {
+            sheetId: activeSheetId,
+            freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
+          });
+          refresh();
+          break;
+        case 'filter-clear':
+          actionsProxy.current.clearFilter?.();
+          break;
+        case 'apply-filter-selection': {
+          const activeRange = selection.ranges[selection.primaryRangeIndex];
+          if (activeRange) {
+            const sheetModel = runtime.model.getSheet(activeSheetId);
+            runtime.commands.execute('sheet.filter.set', {
+              sheetId: activeSheetId,
+              filter: {
+                sheetId: activeSheetId,
+                range: {
+                  sheetId: activeSheetId,
+                  startRow: 0,
+                  endRow: Math.max(0, sheetModel.rowCount - 1),
+                  startColumn: 0,
+                  endColumn: Math.max(0, sheetModel.columnCount - 1),
+                },
+                criteria: {},
+              },
+            });
+            refresh();
+          }
+          break;
+        }
+        case 'export-xlsx': {
+          void (async () => {
+            try {
+              const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
+              const base64 = buildXlsxArchiveBase64(snapshotResponse.snapshot);
+              const link = document.createElement('a');
+              link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + base64;
+              link.download = (runtime.model.name || 'workbook') + '.xlsx';
+              link.click();
+              setNotice('Workbook exported as .xlsx');
+            } catch {
+              setNotice('Export failed');
+            }
+          })();
+          break;
+        }
+        case 'import-xlsx': {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.xlsx';
+          input.onchange = () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            void file.arrayBuffer().then((buffer) => {
+              let binary = '';
+              const bytes = new Uint8Array(buffer);
+              const chunkSize = 0x8000;
+              for (let i = 0; i < bytes.length; i += chunkSize) {
+                binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+              }
+              return btoa(binary);
+            }).then((base64) => actionsProxy.current.importXlsxBase64?.(base64));
+          };
+          input.click();
+          break;
+        }
+        case 'find-replace':
+          setShowFindReplace(true);
+          break;
+        case 'banded':

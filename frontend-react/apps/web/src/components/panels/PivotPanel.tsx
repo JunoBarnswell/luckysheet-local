@@ -5,6 +5,8 @@ import type { PivotModel } from '@react-sheets/core-model';
 export interface PivotPanelProps {
   sheetId: string;
   pivots: PivotModel[];
+  defaultSourceRange?: string;
+  onRefreshPivot?: (id: string) => void;
   onAddPivot: (pivot: PivotModel) => void;
   onRemovePivot: (id: string) => void;
   onClose?: () => void;
@@ -13,11 +15,13 @@ export interface PivotPanelProps {
 export function PivotPanel({
   sheetId,
   pivots,
+  defaultSourceRange,
+  onRefreshPivot,
   onAddPivot,
   onRemovePivot,
   onClose,
 }: PivotPanelProps) {
-  const [sourceRange, setSourceRange] = useState('A1:E10');
+  const [sourceRange, setSourceRange] = useState(defaultSourceRange ?? 'A1:E10');
   const [rowField, setRowField] = useState('Status');
   const [valField, setValField] = useState('Target');
 

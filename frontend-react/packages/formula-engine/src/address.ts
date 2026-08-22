@@ -28,6 +28,17 @@ export function parseCellReferenceText(text: string): ParsedCellReference {
   return reference;
 }
 
+export function columnToLabel(column: number): string {
+  let label = '';
+  let remaining = column + 1;
+  while (remaining > 0) {
+    const modulo = (remaining - 1) % 26;
+    label = String.fromCharCode(65 + modulo) + label;
+    remaining = Math.floor((remaining - 1) / 26);
+  }
+  return label;
+}
+
 export function parseCellAddress(input: string, defaultSheetId = 'Sheet1'): CellAddress {
   const text = input.trim();
   if (!text) throw new FormulaReferenceError('Cell address cannot be empty');

@@ -1,18 +1,29 @@
-import { Box, Inline } from '@react-sheets/ui-system';
-import { AppShell } from './components/AppShell';
-import { FeatureSidebar } from './components/FeatureSidebar';
-import { FormulaBar } from './components/FormulaBar';
-import { Ribbon } from './components/Ribbon';
-import { SheetCanvas } from './components/SheetCanvas';
-import { SheetTabs } from './components/SheetTabs';
-import { StatusBar } from './components/StatusBar';
-import { FunctionWizardDialog } from './components/dialogs/FunctionWizardDialog';
-import { SortDialog } from './components/dialogs/SortDialog';
-import { getInitialWorkspacePhase, useWorkspaceState } from './state/workspace';
+import { Box, Inline } from "@react-sheets/ui-system";
+import { AppShell } from "./components/AppShell";
+import { FeatureSidebar } from "./components/FeatureSidebar";
+import { FormulaBar } from "./components/FormulaBar";
+import { Ribbon } from "./components/Ribbon";
+import { SheetCanvas } from "./components/SheetCanvas";
+import { SheetTabs } from "./components/SheetTabs";
+import { StatusBar } from "./components/StatusBar";
+import { FunctionWizardDialog } from "./components/dialogs/FunctionWizardDialog";
+import { SortDialog } from "./components/dialogs/SortDialog";
+import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
+import { getInitialWorkspacePhase, useWorkspaceState, type SelectionState } from "./state/workspace";
 
 export default function App() {
   const { actions, state } = useWorkspaceState({ initialPhase: getInitialWorkspacePhase() });
-  const isBusy = state.phase !== 'ready';
+  const isBusy = state.phase !== "ready";
+
+  /** 画布选区 → workspace 多选区模型 */
+  const applySelection = (selection: SelectionState) => {
+    const range = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+    if (!range) return;
+    actions.selectRange(
+      { startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn },
+      selection.ranges.length > 1 ? "add" : "replace",
+    );
+  };
 
   return (
     <>
@@ -22,17 +33,17 @@ export default function App() {
             cellName={state.activeCell}
             disabled={isBusy}
             formula={state.formulaDraft}
-            onCancel={() => actions.notify('Formula edit cancelled')}
+            onCancel={() => actions.notify("Formula edit cancelled")}
             onChange={actions.setFormulaDraft}
             onCommit={() => actions.commitFormula()}
-            onOpenWizard={() => actions.handleRibbonAction('function-wizard')}
+            onOpenWizard={() => actions.handleRibbonAction("function-wizard")}
             phase={state.phase}
           />
         }
         isBusy={isBusy}
         notice={state.notice}
-        onMenu={() => actions.notify('Workbook menu opened')}
-        onShare={() => actions.notify('Share link copied to clipboard')}
+        onMenu={() => actions.notify("Workbook menu opened")}
+        onShare={() => actions.notify("Share link copied to clipboard")}
         ribbon={
           <Ribbon
             activeTab={state.ribbonTab}
@@ -56,7 +67,7 @@ export default function App() {
         statusBar={
           <StatusBar
             activeCell={state.activeCell}
-            onOpenShortcuts={() => actions.notify('Shortcuts: Arrows / Tab / Enter / F2 / Ctrl+C / Ctrl+V / Ctrl+Z')}
+            onOpenShortcuts={() => actions.notify("Shortcuts: Arrows / Tab / Enter / F2 / F4 / Ctrl+C/X/V/Z/Y/B/I/U")}
             onZoomChange={actions.setZoom}
             phase={state.phase}
             saveState={state.saveState}
@@ -72,17 +83,48 @@ export default function App() {
             <SheetCanvas
               sheet={state.selectedSheet}
               sheetId={state.activeSheetId}
-              selectedCell={state.activeCell}
+              selection={state.selection}
+              activeCell={state.activeCell}
               formulaDraft={state.formulaDraft}
+              editingCell={state.editingCell}
               phase={state.phase}
               zoom={state.zoom}
+              peers={state.peers}
+              selectedFloatingId={state.selectedFloatingId}
               charts={state.selectedSheet.charts}
               shapes={state.selectedSheet.shapes}
               sparklines={state.selectedSheet.sparklines}
-              onSelectCell={actions.selectCell}
-              onCommitCell={(val) => actions.commitFormula(val)}
-              onMoveCell={actions.moveCell}
+              onSelectionChange={applySelection}
+              onCommitCell={(value) => actions.commitFormula(value)}
+              onBeginEdit={(initialText) => {
+                if (initialText !== undefined) actions.setFormulaDraft(initialText);
+                actions.beginEdit(initialText);
+              }}
+              onCancelEdit={actions.cancelEdit}
+              onCommitEdit={(moveAfter) => actions.commitEdit(moveAfter ?? "down")}
+              onFormulaDraftChange={actions.setFormulaDraft}
+              onInsertRef={actions.insertRefIntoDraft}
+              onToggleAbsolute={actions.toggleAbsoluteReference}
+              onJumpEdge={(direction, extend) => actions.jumpEdge(direction, extend)}
+              onSelectAll={actions.selectAll}
+              onSelectRows={(startRow, _endRow, additive) => actions.selectRowHeader(startRow, additive ? "add" : "replace")}
+              onSelectColumns={(startColumn, _endColumn, additive) => actions.selectColumnHeader(startColumn, additive ? "add" : "replace")}
+              onResizeRow={actions.resizeRow}
+              onResizeColumn={actions.resizeColumn}
+              onFillRange={actions.fillRange}
+              onFloatingSelect={(hit) => actions.setSelectedFloatingId(hit ? hit.id : null)}
+              onFloatingMove={(kind, id, bounds) => {
+                const chart = state.selectedSheet.charts.find((entry) => entry.id === id);
+                if (chart) actions.updateChartBounds(id, bounds);
+                else actions.updateShapeBounds(id, bounds);
+              }}
+              onFloatingRemove={(kind, id) =>
+                actions.removeFloatingObject(kind === "chart" ? "chart" : "shape", id)
+              }
               onAction={actions.handleRibbonAction}
+              onApplyFilter={(column, patch) => actions.applyFilter(column, patch)}
+              onFilterColumn={() => undefined}
+              getValidationList={actions.getValidationAt}
               onRetry={actions.retry}
               onCreateSheet={actions.addSheet}
             />
@@ -90,6 +132,9 @@ export default function App() {
           <FeatureSidebar
             activeCell={state.activeCell}
             activePanel={state.activePanel}
+            selectedRange={state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0]}
+            getRangeMatrix={actions.getRangeMatrix}
+            getRangeNumbers={actions.getRangeNumbers}
             onPanelChange={actions.setActivePanel}
             onRetry={actions.retry}
             phase={state.phase}
@@ -105,6 +150,7 @@ export default function App() {
             onAddChart={actions.addChart}
             onRemoveChart={actions.removeChart}
             onAddPivot={actions.addPivot}
+            onRefreshPivot={actions.refreshPivot}
             onRemovePivot={actions.removePivot}
             onAddShape={actions.addShape}
             onRemoveShape={actions.removeShape}
@@ -134,7 +180,13 @@ export default function App() {
         open={state.showSortDialog}
         columns={state.selectedSheet.columns}
         onClose={actions.closeSortDialog}
-        onSort={actions.sortRange}
+        onSort={(criteria, hasHeader) => actions.sortRange(criteria, hasHeader)}
+      />
+
+      <FindReplaceDialog
+        open={state.showFindReplace}
+        onClose={actions.closeFindReplace}
+        onReplaceAll={(params) => actions.findReplace(params)}
       />
     </>
   );
