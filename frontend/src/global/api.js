@@ -42,11 +42,26 @@ import dayjs from "dayjs";
 import {getRangetxt } from '../methods/get';
 import {luckysheetupdateCell} from '../controllers/updateCell';
 import luckysheetSearchReplace from "../controllers/searchReplace";
-import { cloneSheetData, cloneSheetDataForMutation, materializeGridData, snapshotSheetFile } from "./sparseGrid";
+import { cloneSheetData, cloneSheetDataForMutation, materializeGridData, snapshotSheetFile, sparseGridToCelldata } from "./sparseGrid";
 import { beginWorkbookMutation, commitWorkbookMutation, recordChangedCell } from "./workbookMutation";
 import { listUnits, getUnit, focusUnit, withInstance } from "../store/registry";
 
 const IDCardReg = /^\d{6}(18|19|20)?\d{2}(0[1-9]|1[12])(0[1-9]|[12]\d|3[01])\d{3}(\d|X)$/i;
+
+function readFormulaText(value) {
+    if (typeof value !== "string") return value;
+    if (value.indexOf("<") < 0) return value;
+    if (typeof document !== "undefined") {
+        const holder = document.createElement("div");
+        holder.innerHTML = value;
+        return holder.textContent || holder.innerText || "";
+    }
+    return value.replace(/<[^>]*>/g, "");
+}
+
+function escapeSearchLiteral(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
  * 获取单元格的值
@@ -496,34 +511,35 @@ export function find(content, options = {}) {
         isWholeWord = false,
         isCaseSensitive = false,
         order = curSheetOrder,
-        type = "m"
+        type = "m",
+        scope = "sheet"
     } = { ...options };
-    let targetSheetData = Store.luckysheetfile[order].data;
-
-    let result = [];
-    for (let i = 0; i < targetSheetData.length; i++) {
-        const rowArr = targetSheetData[i];
-
-        for (let j = 0; j < rowArr.length; j++) {
-            const cell = rowArr[j];
-
-            if (!cell) {
-                continue;
-            }
-
-            // 添加cell的row, column属性
-            // replace方法中的setCellValue中需要使用该属性
-            cell.row = i;
-            cell.column = j;
+    if (["v", "m", "f"].indexOf(type) < 0) {
+        return tooltip.info("Search type must be one of v, m or f.", "");
+    }
+    const files = scope === "workbook" ? Store.luckysheetfile : [Store.luckysheetfile[order]];
+    const result = [];
+    files.forEach(function (file) {
+        if (!file || (scope === "workbook" && file.hide === 1)) return;
+        const targetSheetData = String(file.index) === String(Store.currentSheetIndex)
+            ? Store.flowdata
+            : (file.data || []);
+        const cells = sparseGridToCelldata(targetSheetData);
+        cells.forEach(function (entry) {
+            const cell = entry.v;
+            const i = entry.r;
+            const j = entry.c;
+            const candidate = type === "f" ? readFormulaText(cell && cell.f) : cell && cell[type];
+            if (candidate == null) return;
 
             if (isWholeWord) {
                 if (isCaseSensitive) {
-                    if (content.toString() == cell[type]) {
-                        result.push(cell)
+                    if (content.toString() == candidate) {
+                        result.push(Object.assign({}, cell, { row: i, column: j, sheetIndex: file.index, searchValue: candidate }))
                     }
                 } else {
-                    if (cell[type] && content.toString().toLowerCase() == cell[type].toLowerCase()) {
-                        result.push(cell)
+                    if (String(content).toLowerCase() == String(candidate).toLowerCase()) {
+                        result.push(Object.assign({}, cell, { row: i, column: j, sheetIndex: file.index, searchValue: candidate }))
                     }
                 }
             } else if (isRegularExpression) {
@@ -533,22 +549,22 @@ export function find(content, options = {}) {
                 } else {
                     reg = new RegExp(func_methods.getRegExpStr(content), 'ig')
                 }
-                if (reg.test(cell[type])) {
-                    result.push(cell)
+                if (reg.test(candidate)) {
+                    result.push(Object.assign({}, cell, { row: i, column: j, sheetIndex: file.index, searchValue: candidate }))
                 }
             } else if (isCaseSensitive) {
-                let reg = new RegExp(func_methods.getRegExpStr(content), 'g');
-                if (reg.test(cell[type])) {
-                    result.push(cell);
+                let reg = new RegExp(escapeSearchLiteral(content), 'g');
+                if (reg.test(candidate)) {
+                    result.push(Object.assign({}, cell, { row: i, column: j, sheetIndex: file.index, searchValue: candidate }));
                 }
             } else {
-                let reg = new RegExp(func_methods.getRegExpStr(content), 'ig');
-                if (reg.test(cell[type])) {
-                    result.push(cell);
+                let reg = new RegExp(escapeSearchLiteral(content), 'ig');
+                if (reg.test(candidate)) {
+                    result.push(Object.assign({}, cell, { row: i, column: j, sheetIndex: file.index, searchValue: candidate }));
                 }
             }
-        }
-    }
+        });
+    });
 
     return result;
 }
@@ -576,21 +592,39 @@ export function replace(content, replaceContent, options = {}) {
     if(file == null){
         return tooltip.info("The order parameter is invalid.", "");
     }
-    let sheetData = cloneSheetData(file.data);
-
-    matchCells.forEach(cell => {
-        cell.m = replaceContent;
-        setCellValue(cell.row, cell.column, replaceContent, {order: order, isRefresh: false});
-    })
-
-    let fileData = cloneSheetData(file.data);
-    file.data.length = 0;
-    file.data.push(...sheetData);
-
-    if(file.index == Store.currentSheetIndex){
-        jfrefreshgrid(fileData, undefined, undefined, true, false);
-    }
-
+    const type = options.type || "m";
+    const activeMutation = beginWorkbookMutation("replace", file.index);
+    const groups = {};
+    matchCells.forEach(function (cell) {
+        const sheetIndex = cell.sheetIndex == null ? file.index : cell.sheetIndex;
+        groups[sheetIndex] = groups[sheetIndex] || [];
+        groups[sheetIndex].push(cell);
+    });
+    Object.keys(groups).forEach(function (sheetIndex) {
+        const sheetOrder = getSheetIndex(sheetIndex);
+        const target = Store.luckysheetfile[sheetOrder];
+        if (!target) return;
+        const rows = groups[sheetIndex].map(function (cell) { return cell.row; });
+        target.data = cloneSheetDataForMutation(target.data, rows);
+        const ranges = [];
+        groups[sheetIndex].forEach(function (cell) {
+            const source = target.data[cell.row] && target.data[cell.row][cell.column];
+            if (!source) return;
+            const value = type === "f" ? readFormulaText(source.f) : source[type];
+            const pattern = options.isRegularExpression ? String(content) : escapeSearchLiteral(content);
+            const next = options.isWholeWord ? replaceContent : String(value).replace(new RegExp(pattern, options.isCaseSensitive ? "g" : "ig"), replaceContent);
+            if (type === "f") {
+                setCellValue(cell.row, cell.column, { f: next }, { order: sheetOrder, isRefresh: false, mutation: activeMutation });
+            } else {
+                setCellValue(cell.row, cell.column, next, { order: sheetOrder, isRefresh: false, mutation: activeMutation });
+            }
+            ranges.push({ row: [cell.row, cell.row], column: [cell.column, cell.column] });
+        });
+        if (String(target.index) === String(Store.currentSheetIndex) && ranges.length) {
+            jfrefreshgrid(target.data, ranges, undefined, true, false);
+        }
+    });
+    commitWorkbookMutation(activeMutation);
     luckysheetrefreshgrid();
 
     if (options.success && typeof options.success === 'function') {

@@ -1,0 +1,37 @@
+{
+  "name": "react-sheets-reimplementation",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:server\"",
+    "dev:web": "vite --config vite.config.ts --host 127.0.0.1 --port 4180",
+    "dev:server": "tsx apps/server/src/main.ts",
+    "build": "npm run typecheck && vite build --config vite.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts",
+    "check:boundaries": "node tools/check-boundaries.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "rxjs": "7.8.2",
+    "ws": "8.20.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.8",
+    "@types/react-dom": "19.2.3",
+    "@types/ws": "^8.18.1",
+    "autoprefixer": "10.4.21",
+    "concurrently": "9.2.1",
+    "postcss": "8.5.3",
+    "tailwindcss": "3.4.17",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "vite": "6.1.0"
+  }
+}

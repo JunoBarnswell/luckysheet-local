@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "ignoreDeprecations": "6.0",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@react-sheets/core-model": ["packages/core-model/src/index.ts"],
+      "@react-sheets/command-runtime": ["packages/command-runtime/src/index.ts"],
+      "@react-sheets/protocol": ["packages/protocol/src/index.ts"],
+      "@react-sheets/render-engine": ["packages/render-engine/src/index.ts"],
+      "@react-sheets/formula-engine": ["packages/formula-engine/src/index.ts"],
+      "@react-sheets/ui-system": ["packages/ui-system/src/index.ts"],
+      "@react-sheets/sheet-features": ["packages/sheet-features/src/index.ts"],
+      "@react-sheets/storage": ["packages/storage/src/index.ts"],
+      "@react-sheets/*": ["packages/*/src/index.ts"]
+    }
+  },
+  "include": ["apps", "packages", "tools", "vite.config.ts"]
+}

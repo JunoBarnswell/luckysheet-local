@@ -1,6 +1,7 @@
 import {
     asSparseGrid,
     cloneSheetData,
+    cloneSheetDataForMutation,
     createSparseGrid,
     createSparseGridFromCelldata,
     ensureSparseSize,
@@ -62,6 +63,11 @@ const clone = cloneSheetData(grid);
 clone[0][0] = { v: 99 };
 assert(grid[0][0].v === 1, "cloneSheetData is isolated");
 assertEqual(occupiedCellCount(clone), 3, "clone does not densify");
+
+const rowCopy = cloneSheetDataForMutation(grid, [0]);
+rowCopy[0][0] = { v: 77 };
+assertEqual(grid[0][0].v, 1, "row-level copy-on-write isolates changed rows");
+assert(rowCopy[99999][3] === grid[99999][3], "copy-on-write retains untouched sparse rows");
 
 grid[2][5] = { v: "grow" };
 assertEqual(grid.length, 100000, "in-range write does not grow logical rows");
