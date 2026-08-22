@@ -131,14 +131,19 @@ function fetchAndDownloadXlsx({url,order}, success, fail) {
         }).then(async (response) => {
             if (!response.ok) {
                 let detail = '';
+                let parsedError = '';
                 try {
                     detail = await response.text();
+                    const json = JSON.parse(detail);
+                    if (json && json.error) {
+                        parsedError = json.error;
+                    }
                 } catch (err) {
-                    detail = '';
+                    detail = detail || '';
                 }
                 throw exportFail(
                     'HTTP',
-                    (texts.httpError || texts.serverError || '') + ' HTTP ' + response.status,
+                    parsedError || ((texts.httpError || texts.serverError || '') + ' HTTP ' + response.status),
                     { status: response.status, body: detail }
                 );
             }

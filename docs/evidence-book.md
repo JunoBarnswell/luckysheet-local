@@ -258,8 +258,8 @@
 |---|---|---|
 | 1 | `expendPlugins/exportXlsx/plugin.js:10-12` | 插件只摘 asyncLoad |
 | 2 | `exportXlsx/plugin.js:30-31` | `fetchAndDownloadXlsx` 调 `toJson()` |
-| 3 | `luckyexcel-node/controllers/luckyToXlsx.js` | Node 转 xlsx |
-| 4 | `luckyexcel-node/controllers/luckyexcel.js` | 导入方向 |
+| 3 | `backend/luckysheet/.../ExcelIoController.java` | Java 转 xlsx / 导入 |
+| 4 | `backend/luckysheet/.../ExcelIoService.java` | luckysheet-lib 适配 |
 | 5 | `backend/README-zh.md` | Java 后端说明 |
 | 6 | `expendPlugins/print/plugin.js:2` | import 空壳 `print.js` |
 | 7 | `expendPlugins/print/print.js` | **0 字节** |

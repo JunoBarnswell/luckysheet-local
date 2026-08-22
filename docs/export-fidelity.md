@@ -1,12 +1,12 @@
 # 导出保真度（LuckySheet → xlsx）
 
-> Phase 4。本地导出走 `luckyexcel-node` 的 `POST /luckyToXlsx`（ExcelJS），**不依赖 Univer Server / `@univerjs-pro`**。
+> Phase 4。本地导出走 Java `POST /luckysheet/luckyToXlsx`（luckysheet-lib），**不依赖 Univer Server / `@univerjs-pro` / Node**。
 
 ## 1. 当前链路
 
-1. 前端插件 `frontend/src/expendPlugins/exportXlsx/plugin.js` 把 `luckysheet.toJson()` POST 到 `plugins[{name:'exportXlsx'}].config.url`。
-2. `luckyexcel-node/controllers/luckyToXlsx.js` 用 ExcelJS 写 `.xlsx` 并返回二进制。
-3. 失败时插件走真实回调：空 url、HTTP 非 2xx、空/非表格响应、网络错误，不再静默成功。
+1. 前端插件 `frontend/src/expendPlugins/exportXlsx/plugin.js` 把 `luckysheet.toJson()` POST 到 `plugins[{name:'exportXlsx'}].config.url`（默认 `/luckysheet/luckyToXlsx`）。
+2. Java `ExcelIoService` 用 luckysheet-lib 写 `.xlsx` 并返回二进制。
+3. 失败时插件走真实回调：空 url、HTTP 非 2xx（含 `{ error }` JSON）、空/非表格响应、网络错误，不再静默成功。
 
 ## 2. 本轮已覆盖
 
@@ -45,6 +45,6 @@
 
 ## 4. 验收
 
-- 带公式、合并、背景色、加粗、边框的 sheet POST 到 `/luckyToXlsx`，用 Excel / WPS 打开后公式栏可见公式、合并区正确、颜色和加粗在。
+- 带公式、合并、背景色、加粗、边框的 sheet POST 到 `/luckysheet/luckyToXlsx`，用 Excel / WPS 打开后公式栏可见公式、合并区正确、颜色和加粗在。
 - `config.url` 为空：对话框不发出请求，提示「未配置导出地址」。
 - 服务不可达或返回 HTML/空 body：失败回调触发，loading 关闭，不下载坏文件。

@@ -33,6 +33,7 @@
 - **图表**：`expendPlugins/chart` 去掉 unpkg；vue@2.6 / vuex@3.4 / element-ui@2.13 / echarts@4.8 本地 vendor。
 - **透视**：源数据变更触发 `pivotDatas` 重算；占位框用 `pivotTableBoundary`，禁止写死 12×6。
 - **导出**：`luckyexcel-node` 补样式 / 公式 / 合并；`exportXlsx` 插件失败回调。不依赖 Univer Server。差距见 `docs/export-fidelity.md`。
+- **Excel 并入 Java**：`POST /luckysheet/luckyToXlsx` 与 `POST /luckysheet/luckyexcel/upload` 由 `ExcelIoController` + luckysheet-lib 提供；本地开发不再需要 Node :3002。`luckyexcel-node` 标记 deprecated。
 - **协同加固**：消息版本号、切 sheet 边界、断线重连。协议见 `docs/collab-protocol.md`。**不实现 Pro OT**。
 
 ### Docs

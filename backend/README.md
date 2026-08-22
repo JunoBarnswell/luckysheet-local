@@ -15,6 +15,13 @@ English| [简体中文](./README-zh.md)
 ## Deploy
 - [LuckysheetServer Starter](https://github.com/mengshukeji/LuckysheetServerStarter)
 
+Production only needs the **Java jar + MySQL + Redis**. Excel import/export is built into this service:
+
+- `POST /luckysheet/luckyToXlsx`
+- `POST /luckysheet/luckyexcel/upload`
+
+`luckyexcel-node` and an extra Nginx route to port 3002 are no longer required.
+
 ## Requirements
 
 jdk >= 1.8
@@ -183,6 +190,7 @@ com.xc.luckysheet.WebApplication Project startup
 com.xc.luckysheet.controller
 ```
 JfGridFileController Table data loading class
+ExcelIoController Excel import/export (replaces luckyexcel-node)
 TestController  postgre redis Test class 
 ```
 com.xc.luckysheet.entity
@@ -207,6 +215,7 @@ RedisMessagePublish Pipeline release class
 com.xc.luckysheet.service
 ```
 ConfigerService Configuration class
+ExcelIoService Excel import/export adapter (luckysheet-lib)
 ScheduleService Initialize the timing database
 ```
 com.xc.luckysheet.utils

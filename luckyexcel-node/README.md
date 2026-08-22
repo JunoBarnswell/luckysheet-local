@@ -1,5 +1,12 @@
 # Luckyexcel-node
 
+> **Deprecated.** Excel import/export now lives in the Java backend. Do not start this Node service.
+>
+> - Export: `POST /luckysheet/luckyToXlsx`
+> - Import: `POST /luckysheet/luckyexcel/upload`
+>
+> See `ExcelIoController` / `ExcelIoService` in `backend/luckysheet` (luckysheet-lib). This directory is kept for one observation period.
+
 English| [简体中文](./README-zh.md)
 
 ## Introduction

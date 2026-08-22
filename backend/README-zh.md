@@ -11,6 +11,13 @@
 ## 部署
 - [LuckysheetServer Starter](https://github.com/mengshukeji/LuckysheetServerStarter)
 
+生产只需 **Java 单 jar + MySQL + Redis**。Excel 导入/导出已内置在本服务：
+
+- `POST /luckysheet/luckyToXlsx`
+- `POST /luckysheet/luckyexcel/upload`
+
+不再需要 `luckyexcel-node` 或 Nginx 转发到 3002。
+
 ## 环境
 
 jdk >= 1.8
@@ -179,6 +186,7 @@ com.xc.luckysheet.WebApplication 项目启动类
 com.xc.luckysheet.controller
 ```
 JfGridFileController 表格数据加载类
+ExcelIoController  Excel 导入/导出（替代 luckyexcel-node）
 TestController  postgre redis 测试类 
 ```
 com.xc.luckysheet.entity
@@ -203,6 +211,7 @@ RedisMessagePublish 管道发布类
 com.xc.luckysheet.service
 ```
 ConfigerService 配置类
+ExcelIoService Excel 导入/导出适配（luckysheet-lib）
 ScheduleService 对定时数据库初始化
 ```
 com.xc.luckysheet.utils

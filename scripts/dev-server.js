@@ -4,7 +4,6 @@ const path = require('path');
 
 const dist = path.join(__dirname, '..', 'frontend', 'dist');
 const backend = { host: '127.0.0.1', port: 9004 };
-const luckyexcel = { host: '127.0.0.1', port: 3002 };
 const PORT = 3000;
 
 const types = {
@@ -62,9 +61,6 @@ const server = http.createServer((req, res) => {
   if (req.url.startsWith('/luckysheet/')) {
     return proxyHttp(req, res, backend);
   }
-  if (req.url.startsWith('/luckyToXlsx') || req.url.startsWith('/luckyexcel')) {
-    return proxyHttp(req, res, luckyexcel);
-  }
   return serveStatic(req, res);
 });
 
@@ -105,4 +101,5 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(
     `Collaboration: http://127.0.0.1:${PORT}/?share=1&gridKey=1079500#-8803#7c45f52b7d01486d88bc53cb17dcd2c3`
   );
+  console.log('Excel import/export: Java /luckysheet/luckyToXlsx and /luckysheet/luckyexcel/upload');
 });

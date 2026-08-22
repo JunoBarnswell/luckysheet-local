@@ -43,7 +43,7 @@
 | Pivot（Pro `engine-pivot`） | 加固现有 `pivotTable.js` + `pivotTableBoundary`，不抄闭源引擎 |
 | Print（Pro） | **Blocked**：`frontend/src/expendPlugins/print/print.js` 为 **0 字节**，见 [`docs/print-blocked.md`](docs/print-blocked.md) |
 | OT 协同（Pro） | 现有 WebSocket + last-write-wins；不实现 OT。见 [`docs/collab-protocol.md`](docs/collab-protocol.md) |
-| Import/Export Server | 走本仓 `luckyexcel-node` / `exportXlsx`，**不依赖 Univer Server** |
+| Import/Export Server | 走 Java `POST /luckysheet/luckyToXlsx` 与 `POST /luckysheet/luckyexcel/upload`（luckysheet-lib），**不依赖 Univer Server / Node** |
 
 ---
 
@@ -104,10 +104,11 @@ node tests/regression/filter-phase3.mjs
 ```
 
 ```bash
-node luckyexcel-node/scripts/verify-export.js
+cd backend
+mvn -pl luckysheet -am test -Pmysql
 ```
 
-`verify-export.js` **不启 HTTP 服务**，只对 `luckyToXlsx` 写盘逻辑做断言。整页导出需自启 `luckyexcel-node` 再 POST `/luckyToXlsx`。
+Excel 导入/导出已并入 Java 后端。本地开发只需 **Java :9004 + `scripts/dev-server.js` :3000**，不再启动 `luckyexcel-node`。整页导出 POST `/luckysheet/luckyToXlsx`。
 
 浏览器 HTML（需先 `npm run build`，再用静态服务打开，避免 `file://` 拦脚本）：
 

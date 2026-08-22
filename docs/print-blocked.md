@@ -55,7 +55,7 @@ print.js       0 bytes   ← 空壳
 | A. 浏览器 `window.print()` | 对当前可见区或克隆后的表格 DOM 调用系统打印 | 小（1–3 天出占位） | 冻结/图表/canvas 失真；分页不可控 |
 | B. `html2canvas` + 分页 | 仓库已有 `frontend/src/plugins/js/html2canvas.min.js`；按 `visibledatarow` 切片画布再拼 PDF/打印页 | 中（1–2 周） | 大表内存；合并单元格跨页；与 Excel 页边距不对齐 |
 | C. 自研 `print.js` + 工具栏入口 | 补齐空壳 `print.js` 导出 `luckysheetPrint`，实现预览对话框、页眉页脚、缩放、选定区域 | 大（3–6 周） | 需新 JSON 字段（页边距/纸张）；协同广播未定义 |
-| D. 导出 xlsx 后交给 Excel 打印 | 走现有 `exportXlsx` / `luckyexcel-node` | 小 | 依赖导出保真度；不是应用内打印 |
+| D. 导出 xlsx 后交给 Excel 打印 | 走现有 `exportXlsx` / Java `/luckysheet/luckyToXlsx` | 小 | 依赖导出保真度；不是应用内打印 |
 | E. 采购 Univer Pro Print | 不在本 fork 范围 | — | 与「保留 LuckySheet API」目标冲突 |
 
 **建议（评估，非实施）**：短期用方案 D 满足「能打出来」；中期若必须应用内打印，选 B 作为最小自研，先做当前 sheet 可见区，再补分页。不要从 Univer Pro 搬打印引擎。
