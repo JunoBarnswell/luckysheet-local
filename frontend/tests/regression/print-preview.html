@@ -60,6 +60,8 @@
             }).then(function () {
                 H.assert(!!luckysheet.openPrintDialog, "openPrintDialog API");
                 H.assert(!!luckysheet.print, "print API");
+                H.assert(!!luckysheet.exportPrintPdf, "exportPrintPdf API");
+                H.assert(!!luckysheet.getPrintScreenshot, "getPrintScreenshot API");
                 H.assert(window.luckysheet && !!luckysheet.closePrintDialog, "closePrintDialog API");
                 var leftover = (luckysheet.flowdata && false);
                 var storePrintGone = true;

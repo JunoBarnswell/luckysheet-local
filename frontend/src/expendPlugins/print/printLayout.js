@@ -47,6 +47,7 @@ export const PrintPaperMargin = {
     Narrow: "Narrow",
     Wide: "Wide",
     None: "None",
+    Custom: "Custom",
 };
 
 export const PrintAlign = {
@@ -61,6 +62,24 @@ export const PrintHeaderFooter = {
     WorksheetTitle: "WorksheetTitle",
     Date: "Date",
     Time: "Time",
+};
+
+export const PrintHeaderFooterSymbol = {
+    WorkbookTitle: "@WorkbookTitle",
+    WorksheetTitle: "@WorksheetTitle",
+    DateA: "@DateA",
+    DateB: "@DateB",
+    DateC: "@DateC",
+    DateD: "@DateD",
+    DateE: "@DateE",
+    TimeA: "@TimeA",
+    TimeB: "@TimeB",
+    TimeC: "@TimeC",
+    TimeD: "@TimeD",
+    Page: "@Page",
+    SheetPage: "@SheetPage",
+    PageTotal: "@TotalPage",
+    SheetPageTotal: "@TotalSheetPage",
 };
 
 export const EXCEL_PAPER = {
@@ -139,11 +158,15 @@ export function defaultLayout() {
         customScale: 100,
         freeze: [],
         margin: PrintPaperMargin.Normal,
+        marginCustom: null,
         pageSizeCustom: null,
         maxRowsEachPage: 0,
         maxColumnsEachPage: 0,
+        pageOrder: 0,
+        subUnitIds: [],
         sheetIndex: null,
         range: null,
+        rangeText: null,
     };
 }
 
@@ -162,6 +185,8 @@ export function defaultRender() {
             bottomCenter: "",
             bottomRight: "",
         },
+        isCustomHeaderFooter: false,
+        watermark: null,
         draft: false,
     };
 }
@@ -203,6 +228,9 @@ export function normalizeLayoutFromPrintoptions(printoptions, overrides) {
         }
     }
     layout.margin = inferMarginPreset(po.pageMargins);
+    if (layout.margin === PrintPaperMargin.Custom || (overrides && overrides.marginCustom)) {
+        layout.marginCustom = marginCustomFromExcel(po.pageMargins);
+    }
     return Object.assign(layout, overrides || {});
 }
 
@@ -226,7 +254,7 @@ export function writePrintoptions(printoptions, layout, render) {
     const next = Object.assign({}, printoptions || {});
     const setup = Object.assign({}, next.pageSetup || {});
     const opts = Object.assign({}, next.printOptions || {});
-    const margins = Object.assign({}, next.pageMargins || {}, MARGIN_PRESET_IN[layout.margin] || {});
+    const margins = resolveMarginInches(layout, next.pageMargins);
 
     if (layout.rangeText) {
         next.PrintArea = layout.rangeText;
@@ -356,15 +384,17 @@ export function usedRange(data) {
             if (cell == null || cell === "") {
                 continue;
             }
-            if (typeof cell === "object" && cell.v == null && cell.m == null && !cell.f) {
+            if (typeof cell === "object") {
+                if (cell.v != null || cell.m != null || cell.f) {
+                    found = true;
+                    if (r > maxR) {
+                        maxR = r;
+                    }
+                    if (c > maxC) {
+                        maxC = c;
+                    }
+                }
                 continue;
-            }
-            found = true;
-            if (r > maxR) {
-                maxR = r;
-            }
-            if (c > maxC) {
-                maxC = c;
             }
         }
     }
@@ -410,7 +440,7 @@ export function resolvePaperPx(layout, printoptions) {
         w = h;
         h = t;
     }
-    const margins = (printoptions && printoptions.pageMargins) || MARGIN_PRESET_IN[layout.margin] || MARGIN_PRESET_IN.Normal;
+    const margins = resolveMarginInches(layout, printoptions && printoptions.pageMargins);
     const pad = {
         left: inchToPx(margins.left),
         right: inchToPx(margins.right),
@@ -424,6 +454,171 @@ export function resolvePaperPx(layout, printoptions) {
         innerH: Math.max(40, h - pad.top - pad.bottom),
         pad: pad,
     };
+}
+
+export function resolveMarginInches(layout, pageMargins) {
+    if (layout.margin === PrintPaperMargin.Custom && layout.marginCustom) {
+        return Object.assign({ left: 0.7, right: 0.7, top: 0.75, bottom: 0.75 }, layout.marginCustom);
+    }
+    if (layout.margin && MARGIN_PRESET_IN[layout.margin]) {
+        return Object.assign({}, MARGIN_PRESET_IN[layout.margin]);
+    }
+    return Object.assign({}, MARGIN_PRESET_IN.Normal, pageMargins || {});
+}
+
+export function marginCustomFromExcel(pageMargins) {
+    if (!pageMargins) {
+        return null;
+    }
+    return {
+        left: Number(pageMargins.left) || 0,
+        right: Number(pageMargins.right) || 0,
+        top: Number(pageMargins.top) || 0,
+        bottom: Number(pageMargins.bottom) || 0,
+    };
+}
+
+export function parsePrintTitles(file, layout) {
+    const po = getPrintOptions(file);
+    const titles = po.PrintTitles || {};
+    const result = { row: null, column: null };
+    if (titles.row) {
+        result.row = parseTitleRange(titles.row);
+    }
+    if (titles.column) {
+        result.column = parseTitleRange(titles.column);
+    }
+    if (layout && layout.freeze) {
+        if (layout.freeze.indexOf(PrintFreeze.Row) > -1 && !result.row) {
+            result.row = [0, 0];
+        }
+        if (layout.freeze.indexOf(PrintFreeze.Column) > -1 && !result.column) {
+            result.column = [0, 0];
+        }
+    }
+    return result;
+}
+
+function parseTitleRange(text) {
+    if (!text) {
+        return null;
+    }
+    let raw = String(text).replace(/\$/g, "");
+    if (raw.indexOf("!") > -1) {
+        raw = raw.split("!").pop();
+    }
+    const parts = raw.split(":");
+    if (parts.length !== 2) {
+        return null;
+    }
+    const a = parts[0];
+    const b = parts[1];
+    const aNum = /^\d+$/.test(a);
+    const bNum = /^\d+$/.test(b);
+    if (aNum && bNum) {
+        const r0 = Number(a) - 1;
+        const r1 = Number(b) - 1;
+        return [Math.min(r0, r1), Math.max(r0, r1)];
+    }
+    if (!aNum && !bNum) {
+        const c0 = colLabelToIndex(a);
+        const c1 = colLabelToIndex(b);
+        return [Math.min(c0, c1), Math.max(c0, c1)];
+    }
+    return null;
+}
+
+function colLabelToIndex(label) {
+    let n = 0;
+    const s = String(label || "A").toUpperCase();
+    for (let i = 0; i < s.length; i++) {
+        n = n * 26 + (s.charCodeAt(i) - 64);
+    }
+    return Math.max(0, n - 1);
+}
+
+export function resolveHeaderFooterText(text, ctx) {
+    if (!text) {
+        return "";
+    }
+    const now = new Date();
+    const map = {
+        "@WorkbookTitle": ctx.workbookTitle || "",
+        "@WorksheetTitle": ctx.worksheetTitle || "",
+        "@DateA": now.toLocaleDateString(),
+        "@DateB": now.toISOString().slice(0, 10),
+        "@DateC": now.getFullYear() + "/" + (now.getMonth() + 1) + "/" + now.getDate(),
+        "@DateD": now.toLocaleDateString("en-US"),
+        "@DateE": now.toLocaleDateString("zh-CN"),
+        "@TimeA": now.toLocaleTimeString(),
+        "@TimeB": now.toTimeString().slice(0, 8),
+        "@TimeC": now.toLocaleTimeString("en-US", { hour12: false }),
+        "@TimeD": now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0"),
+        "@Page": String(ctx.page || 1),
+        "@SheetPage": String(ctx.sheetPage || ctx.page || 1),
+        "@TotalPage": String(ctx.pageTotal || 1),
+        "@TotalSheetPage": String(ctx.sheetPageTotal || ctx.pageTotal || 1),
+        PageSize: String(ctx.page || 1),
+        PageNumber: String(ctx.page || 1),
+        WorkbookTitle: ctx.workbookTitle || "",
+        WorksheetTitle: ctx.worksheetTitle || "",
+        Date: now.toLocaleDateString(),
+        Time: now.toLocaleTimeString(),
+    };
+    return String(text).replace(/@[A-Za-z]+|[A-Za-z]+/g, function (token) {
+        return map[token] != null ? map[token] : token;
+    });
+}
+
+export function adjustPaginationForMerge(pages, merge, visibledatarow, visibledatacolumn) {
+    if (!merge || !pages || !pages.length) {
+        return pages;
+    }
+    const keys = Object.keys(merge);
+    if (!keys.length) {
+        return pages;
+    }
+    return pages.map(function (page) {
+        let r0 = page.row[0];
+        let r1 = page.row[1];
+        let c0 = page.column[0];
+        let c1 = page.column[1];
+        keys.forEach(function (key) {
+            const parts = key.split("_");
+            const mr = Number(parts[0]);
+            const mc = Number(parts[1]);
+            const span = merge[key];
+            const mre = mr + span.rs - 1;
+            const mce = mc + span.cs - 1;
+            const overlapRow = mr <= r1 && mre >= r0;
+            const overlapCol = mc <= c1 && mce >= c0;
+            const splitRow = mr < r0 && mre >= r0 && mre <= r1;
+            const splitCol = mc < c0 && mce >= c0 && mce <= c1;
+            if (overlapRow && splitRow) {
+                r0 = mre + 1;
+            }
+            if (overlapCol && splitCol) {
+                c0 = mce + 1;
+            }
+            if (overlapRow && mr > r1) {
+                r1 = Math.max(r0, mr - 1);
+            }
+            if (overlapCol && mc > c1) {
+                c1 = Math.max(c0, mc - 1);
+            }
+        });
+        if (r0 > r1) {
+            r0 = page.row[0];
+            r1 = page.row[0];
+        }
+        if (c0 > c1) {
+            c0 = page.column[0];
+            c1 = page.column[0];
+        }
+        return { row: [r0, r1], column: [c0, c1] };
+    }).filter(function (page) {
+        return page.row[0] <= page.row[1] && page.column[0] <= page.column[1];
+    });
 }
 
 function advanceAxis(start, end, sizes, startPxFn, limitPx, maxCount) {
@@ -492,6 +687,9 @@ export function paginateByPaper(range, visibledatarow, visibledatacolumn, paper,
                 });
             }
         }
+    }
+    if (layout && layout.merge) {
+        return adjustPaginationForMerge(pages, layout.merge, visibledatarow, visibledatacolumn);
     }
     return pages;
 }

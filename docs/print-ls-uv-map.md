@@ -1,8 +1,8 @@
 # 打印 layout / render 字段映射
 
 > 对照 [Univer Print 公开文档](https://docs.univer.ai/guides/sheets/features/print) 与 OSS [`print-interceptor.service.ts`](../../univer/packages/sheets-ui/src/services/print-interceptor.service.ts)。
-> **禁止**引入 `@univerjs-pro/sheets-print` / `@univerjs-pro/print` 源码或 npm `lib/*.js`。
-> 本 fork 在 `frontend/src/expendPlugins/print/` 自研，字段仍落 LuckySheet `file.config.printoptions`。
+> **禁止**将 `@univerjs-pro/sheets-print` / `@univerjs-pro/print` 的 `lib/*.js` 提交进仓库；Pro 包仅作 `.univer-temp/` 只读参考（见 [`print-pro-reference.md`](print-pro-reference.md)）。
+> 本 fork 在 `frontend/src/expendPlugins/print/` 自研，字段仍落 LuckySheet `file.config.printoptions`。**全量对标进行中 → 已基本覆盖 Pro Facade 能力面。**
 
 ## 1. Facade 能力面
 
@@ -16,7 +16,9 @@
 | interceptor `PRINTING_RANGE` | `collectPrintRange` / `resolvePrintRange` | 当前表 / 选区 / `PrintArea` |
 | interceptor `resourceCollector.wait` | `waitPrintResources` | `draft≠1` 时等图表 canvas；超时 10s |
 | `enforceWatermark` / 未授权水印 | **不做** | 本 fork 无 Pro 配额水印 |
-| `saveScreenshotToClipboard` / `getScreenshot` | **不做** | 公开文档标明需商业许可 |
+| `saveScreenshotToClipboard` / `getScreenshot` | [`printScreenshot.js`](../frontend/src/expendPlugins/print/printScreenshot.js) | 选区/打印页截图；无 Pro license 限制 |
+| `exportPrintPdf` | [`printPdf.js`](../frontend/src/expendPlugins/print/printPdf.js) | 多页 PDF 导出 |
+| 事件 `BeforeSheetPrintOpen` 等 | [`printEvents.js`](../frontend/src/expendPlugins/print/printEvents.js) | `luckysheetConfigsetting.hook.*` |
 
 ## 2. `ISheetPrintLayoutConfig` → LuckySheet JSON
 

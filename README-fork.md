@@ -41,7 +41,7 @@
 |---|---|
 | Chart（Pro） | 沿用 ChartMix；依赖改为本地 vendor，离线可加载 |
 | Pivot（Pro `engine-pivot`） | 加固现有 `pivotTable.js` + `pivotTableBoundary`，不抄闭源引擎 |
-| Print（Pro） | **Blocked**：`frontend/src/expendPlugins/print/print.js` 为 **0 字节**，见 [`docs/print-blocked.md`](docs/print-blocked.md) |
+| Print | **已实现**：自研 `expendPlugins/print/`（对标 Univer Pro Facade），见 [`docs/print-pro-reference.md`](docs/print-pro-reference.md) |
 | OT 协同（Pro） | 现有 WebSocket + last-write-wins；不实现 OT。见 [`docs/collab-protocol.md`](docs/collab-protocol.md) |
 | Import/Export Server | 走 Java `POST /luckysheet/luckyToXlsx` 与 `POST /luckysheet/luckyexcel/upload`（luckysheet-lib），**不依赖 Univer Server / Node** |
 
@@ -79,7 +79,7 @@
 
 - 图表 CDN → `frontend/src/expendPlugins/chart/vendor/`。
 - 导出增强 + 错误处理；协同版本号 / 切表 / 重连。
-- 打印 Blocked；多实例仅评估。
+- 打印已解 Blocked（PDF/截图/事件钩子）；多实例仅评估。
 
 ---
 

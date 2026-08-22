@@ -65,8 +65,8 @@ setFocusHook(focusWorkbook);
 let luckysheet = {};
 
 // mount api
-// luckysheet.api = api;
-// Object.assign(luckysheet, api);
+luckysheet.api = api;
+Object.assign(luckysheet, api);
 
 luckysheet = common_extend(api, luckysheet);
 

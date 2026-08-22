@@ -7069,6 +7069,36 @@ export function updatePrintRenderConfig(config){
     return Store.luckysheetPrint.updatePrintRenderConfig(config);
 }
 
+/**
+ * 导出当前打印配置为 PDF
+ */
+export function exportPrintPdf(filename){
+    if(!Store.luckysheetPrint){
+        return tooltip.info("Print plugin is not enabled. Add plugins:[{name:'print'}].", "");
+    }
+    return Store.luckysheetPrint.exportPrintPdf(filename);
+}
+
+/**
+ * 将打印/选区截图保存到剪贴板（Univer Facade 对标）
+ */
+export function savePrintScreenshotToClipboard(range){
+    if(!Store.luckysheetPrint){
+        return Promise.resolve({ ok: false, reason: "plugin_disabled" });
+    }
+    return Store.luckysheetPrint.saveScreenshotToClipboard(range);
+}
+
+/**
+ * 获取选区或当前打印页截图 base64（Univer Facade 对标）
+ */
+export function getPrintScreenshot(range){
+    if(!Store.luckysheetPrint){
+        return Promise.resolve(null);
+    }
+    return Store.luckysheetPrint.getScreenshot(range);
+}
+
 export function use(instanceId){
     return focusWorkbook(instanceId) ? instanceId : null;
 }
