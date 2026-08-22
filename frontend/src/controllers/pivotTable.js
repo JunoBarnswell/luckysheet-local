@@ -38,8 +38,9 @@ import { cloneSheetData } from "../global/sparseGrid";
 import locale from "../locale/locale";
 import numeral from "numeral";
 import { luckysheetlodingHTML } from "../controllers/constant";
+import { createContextualModule } from "../store/runtimeModules";
 
-const pivotTable = {
+const pivotTable = createContextualModule("pivotTable", {
     pivotDatas: null,
     pivotSheetIndex: 0,
     pivotDataSheetIndex: 0,
@@ -3830,6 +3831,6 @@ const pivotTable = {
         selectHightlightShow();
         Store.clearjfundo = true;
     },
-};
+});
 
 export default pivotTable;

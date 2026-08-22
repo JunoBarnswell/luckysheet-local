@@ -27,9 +27,9 @@ import { zoomInitial } from "./controllers/zoom";
 // import { printInitial } from "./controllers/print";
 import method from "./global/method";
 import { createWorkbookContext, generateInstanceId } from "./store/context";
-import { createUnit, listUnits, getUnit } from "./store/registry";
-import { snapshotModules, resetModulesForNewInstance, focusWorkbook, bindIsolateModules } from "./store/isolate";
-import { installDomScopeHooks, bindContainerFocus, setFocusHook } from "./store/domScope";
+import { createUnit, listUnits, getUnit, focusUnit, withInstance } from "./store/registry";
+import { bindContainerFocus, setFocusHook } from "./store/domScope";
+import scopedJQuery from "./store/jqueryScope";
 import luckysheetformula from "./global/formula";
 import pivotTable from "./controllers/pivotTable";
 import imageCtrl from "./controllers/imageCtrl";
@@ -48,19 +48,7 @@ import { hideloading, showloading } from "./global/loading.js";
 import { luckysheetextendData } from "./global/extend.js";
 import { initChat } from './demoData/chat.js'
 
-bindIsolateModules({
-    formula: luckysheetformula,
-    server: server,
-    sheet: sheetmanage,
-    pivot: pivotTable,
-    image: imageCtrl,
-    dv: dataVerificationCtrl,
-    freezen: luckysheetFreezen,
-    config: luckysheetConfigsetting,
-    getScrollFlags: getScrollFlags,
-    setScrollFlags: setScrollFlags,
-});
-setFocusHook(focusWorkbook);
+setFocusHook(focusUnit);
 
 let luckysheet = {};
 
@@ -73,7 +61,9 @@ luckysheet = common_extend(api, luckysheet);
 //创建luckysheet表格
 luckysheet.create = function (setting) {
     setting = setting || {};
-    installDomScopeHooks();
+    if (typeof window !== "undefined" && window.jQuery && window.$ !== scopedJQuery) {
+        window.$ = scopedJQuery;
+    }
     if (!setting.multi) {
         if (typeof method.destroyAll === "function") {
             method.destroyAll();
@@ -87,9 +77,6 @@ luckysheet.create = function (setting) {
         method.destroy(instanceId);
     }
     const existing = listUnits();
-    if (existing.length) {
-        snapshotModules(getUnit(existing[existing.length - 1]) || Store.__ctx);
-    }
     const ctx = createWorkbookContext({
         instanceId: instanceId,
         container: setting.container,
@@ -97,8 +84,7 @@ luckysheet.create = function (setting) {
         domPrefix: (setting.multi || existing.length > 0) ? (instanceId + "-") : "",
     });
     createUnit(ctx);
-    focusWorkbook(instanceId);
-    resetModulesForNewInstance();
+    focusUnit(instanceId);
 
     // Store original parameters for api: toJson
     Store.toJsonOptions = {};
@@ -302,6 +288,47 @@ luckysheet.selectHightlightShow = selectHightlightShow;
 
 // Reset parameters after destroying the table
 luckysheet.destroy = method.destroy;
+
+function createBoundInstanceFacade(instanceId) {
+    const context = getUnit(instanceId);
+    if (!context || context.disposed) {
+        return null;
+    }
+    const facade = {
+        instanceId: context.instanceId,
+        container: context.container,
+        use: function () { return focusUnit(instanceId) ? instanceId : null; },
+        destroy: function () { return method.destroy(instanceId); },
+    };
+    Object.keys(api).forEach(function (name) {
+        if (["create", "destroy", "getInstance", "listInstances", "use"].indexOf(name) > -1 || typeof api[name] !== "function") {
+            return;
+        }
+        facade[name] = function () {
+            const args = arguments;
+            return withInstance(instanceId, function () {
+                return api[name].apply(null, args);
+            });
+        };
+    });
+    return facade;
+}
+
+luckysheet.use = function (instanceId) {
+    return focusUnit(instanceId) ? instanceId : null;
+};
+luckysheet.getInstance = createBoundInstanceFacade;
+luckysheet.listInstances = function () {
+    return listUnits().map(function (instanceId) {
+        const context = getUnit(instanceId);
+        return {
+            instanceId: instanceId,
+            container: context.container,
+            focused: Store.instanceId === instanceId,
+            state: context.disposed ? "disposed" : "ready",
+        };
+    });
+};
 
 luckysheet.showLoadingProgress = showloading;
 luckysheet.hideLoadingProgress = hideloading;

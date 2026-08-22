@@ -1,4 +1,4 @@
-import { getFocusedContext, getFocusedId, focusUnit } from "./registry";
+import { getFocusedContext, getFocusedId, focusUnit, requireFocusedContext, getUnit } from "./registry";
 
 let focusHook = function (id) {
     return focusUnit(id);
@@ -26,7 +26,7 @@ export function isWidgetId(id) {
     if (!id) {
         return false;
     }
-    return /^(luckysheet[-_]|luckysheetTableContent|luckysheetcoltable|luckysheetrowHeader)/.test(id);
+    return /^(luckysheet|testdpidiv|cellDatePickerBtn)/.test(id);
 }
 
 export function lsId(name) {
@@ -51,44 +51,41 @@ export function $ls(selOrName) {
     if (!selOrName) {
         return $([]);
     }
+    const ctx = requireFocusedContext();
     if (selOrName.charAt(0) === ".") {
-        const ctx = getFocusedContext();
-        if (ctx && ctx.container) {
-            return $("#" + ctx.container).find(selOrName);
-        }
-        return $(selOrName);
+        return $("#" + ctx.container).find(selOrName);
     }
     const id = selOrName.charAt(0) === "#" ? selOrName.slice(1) : selOrName;
     return $("#" + lsId(id));
 }
 
 export function prefixHtmlIds(html, prefix) {
-    if (!html || !prefix) {
+    const actualPrefix = prefix == null ? currentPrefix() : prefix;
+    if (!html || !actualPrefix) {
         return html;
     }
-    return String(html).replace(/\b(id|for|aria-controls)="([^"]*)"/g, function (match, attr, id) {
-        if (!isWidgetId(id) || id.indexOf(prefix) === 0) {
+    return String(html).replace(/\b(id|for|aria-controls)=(["'])([^"']*)\2/g, function (match, attr, quote, id) {
+        if (!id || !isWidgetId(id) || id.indexOf(actualPrefix) === 0) {
             return match;
         }
-        return attr + '="' + prefix + id + '"';
+        return attr + "=" + quote + actualPrefix + id + quote;
     });
 }
 
 export function scopeSelector(selector) {
-    if (typeof selector !== "string" || selector.charAt(0) !== "#") {
+    if (typeof selector !== "string") {
         return selector;
     }
     const prefix = currentPrefix();
     if (!prefix) {
         return selector;
     }
-    const hashEnd = selector.search(/[\s\[\.:,>+~]/);
-    const id = hashEnd === -1 ? selector.slice(1) : selector.slice(1, hashEnd);
-    const rest = hashEnd === -1 ? "" : selector.slice(hashEnd);
-    if (!isWidgetId(id) || id.indexOf(prefix) === 0) {
-        return selector;
-    }
-    return "#" + prefix + id + rest;
+    return selector.replace(/#([A-Za-z_][A-Za-z0-9_-]*)/g, function (match, id) {
+        if (!isWidgetId(id) || id.indexOf(prefix) === 0) {
+            return match;
+        }
+        return "#" + prefix + id;
+    });
 }
 
 export function markInstanceNodes($nodes, instanceId) {
@@ -104,60 +101,13 @@ export function markInstanceNodes($nodes, instanceId) {
     return $nodes;
 }
 
-export function installDomScopeHooks() {
-    if (typeof window === "undefined" || installDomScopeHooks.done) {
-        return;
-    }
-    const $ = window.jQuery;
-    if (!$) {
-        return;
-    }
-    installDomScopeHooks.done = true;
-
-    const rawInit = $.fn.init;
-    $.fn.init = function (selector, context, root) {
-        if (typeof selector === "string" && selector.charAt(0) === "#" && context == null) {
-            selector = scopeSelector(selector);
-        }
-        return rawInit.call(this, selector, context, root);
-    };
-    $.fn.init.prototype = rawInit.prototype;
-
-    ["append", "prepend", "before", "after"].forEach(function (name) {
-        const raw = $.fn[name];
-        $.fn[name] = function () {
-            const prefix = currentPrefix();
-            const args = Array.prototype.slice.call(arguments).map(function (arg) {
-                return typeof arg === "string" ? prefixHtmlIds(arg, prefix) : arg;
-            });
-            return raw.apply(this, args);
-        };
-    });
-
-    const rawHtml = $.fn.html;
-    $.fn.html = function (value) {
-        if (arguments.length && typeof value === "string") {
-            return rawHtml.call(this, prefixHtmlIds(value, currentPrefix()));
-        }
-        return rawHtml.apply(this, arguments);
-    };
-
-    if (window.Document && Document.prototype.getElementById && !Document.prototype.getElementById.__lsScoped) {
-        const rawGet = Document.prototype.getElementById;
-        Document.prototype.getElementById = function (id) {
-            if (isWidgetId(id)) {
-                const prefix = currentPrefix();
-                if (prefix && id.indexOf(prefix) !== 0) {
-                    const scoped = rawGet.call(this, prefix + id);
-                    if (scoped) {
-                        return scoped;
-                    }
-                }
-            }
-            return rawGet.call(this, id);
-        };
-        Document.prototype.getElementById.__lsScoped = true;
-    }
+export function appendInstancePortal(node) {
+    const context = requireFocusedContext();
+    const element = node && node.jquery ? node : $(node);
+    markInstanceNodes(element, context.instanceId);
+    $("body").append(element);
+    element.each(function () { context.portals.add(this); });
+    return element;
 }
 
 export function bindContainerFocus(instanceId, container) {
@@ -173,7 +123,7 @@ export function bindContainerFocus(instanceId, container) {
         return;
     }
     el.__lsFocusBound = true;
-    el.addEventListener("pointerdown", function () {
+    const onPointerDown = function () {
         const id = el.getAttribute("data-ls-host");
         if (!id) {
             return;
@@ -181,5 +131,13 @@ export function bindContainerFocus(instanceId, container) {
         if (getFocusedId() !== id) {
             focusHook(id);
         }
-    }, true);
+    };
+    el.addEventListener("pointerdown", onPointerDown, true);
+    const context = getUnit(instanceId);
+    if (context) {
+        context.disposers.push(function () {
+            el.removeEventListener("pointerdown", onPointerDown, true);
+            delete el.__lsFocusBound;
+        });
+    }
 }

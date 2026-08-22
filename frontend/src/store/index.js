@@ -1,11 +1,11 @@
-import { getFocusedContext } from "./registry";
+import { requireFocusedContext } from "./registry";
 
 /**
  * Store 默认导出是 Proxy → focused 实例上下文。
  * 禁止 `const { flowdata } = Store` 后长期持有；必须每次从 Store 读。
  */
 function target() {
-    return getFocusedContext();
+    return requireFocusedContext();
 }
 
 const Store = new Proxy({}, {

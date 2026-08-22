@@ -14,7 +14,7 @@ import luckysheetcreatesheet from './createsheet';
 import Store from '../store';
 import defaultConfig from '../store/defaults';
 import { getFocusedId, getUnit, listUnits, disposeUnit, getFocusedContext } from '../store/registry';
-import { closeServerSocket, resetModulesForNewInstance, focusWorkbook } from '../store/isolate';
+import { focusUnit } from '../store/registry';
 
 export { defaultConfig };
 
@@ -165,7 +165,7 @@ const method = {
     destroy:function(id){
         const targetId = id != null ? id : getFocusedId();
         if (targetId && getUnit(targetId) && getFocusedId() !== targetId) {
-            focusWorkbook(targetId);
+            focusUnit(targetId);
         }
 
         if (Store.luckysheetfile != null && $("#luckysheet-scrollbar-x").length && $("#luckysheet-scrollbar-y").length) {
@@ -174,7 +174,27 @@ const method = {
 
         const container = Store.container;
         const instId = Store.instanceId || targetId;
-        closeServerSocket();
+        if (server.websocket != null) {
+            try {
+                server.intentionalClose = true;
+                server.websocket.onopen = null;
+                server.websocket.onmessage = null;
+                server.websocket.onerror = null;
+                server.websocket.onclose = null;
+                if (server.websocket.readyState === 0 || server.websocket.readyState === 1) {
+                    server.websocket.close(1000, "instance destroy");
+                }
+            } catch (e) { /* best-effort socket teardown */ }
+            server.websocket = null;
+        }
+        if (server.retryTimer) {
+            clearInterval(server.retryTimer);
+            server.retryTimer = null;
+        }
+        if (server.reconnectTimer) {
+            clearTimeout(server.reconnectTimer);
+            server.reconnectTimer = null;
+        }
 
         if (container) {
             $("#" + container).empty();
@@ -190,19 +210,23 @@ const method = {
             $(".chartSetting, .luckysheet-modal-dialog-slider").remove();
         }
 
+        const targetContext = targetId ? getUnit(targetId) : null;
+        if (targetContext && targetContext.portals) {
+            targetContext.portals.forEach(function (node) {
+                if (node && node.parentNode) {
+                    node.parentNode.removeChild(node);
+                }
+            });
+            targetContext.portals.clear();
+        }
+
         if (targetId) {
             disposeUnit(targetId);
         }
 
         const remaining = listUnits();
-        if (remaining.length === 0) {
-            $(document).off(".luckysheetEvent");
-            $(document).off(".luckysheetProtection");
-            resetModulesForNewInstance();
-            luckysheetFreezen.initialHorizontal = true;
-            luckysheetFreezen.initialVertical = true;
-        } else {
-            focusWorkbook(remaining[remaining.length - 1]);
+        if (remaining.length > 0) {
+            focusUnit(remaining[remaining.length - 1]);
         }
     },
     destroyAll:function(){

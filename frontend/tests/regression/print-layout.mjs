@@ -13,7 +13,9 @@ import {
     PrintScale,
     PrintPaperMargin,
     clampScale,
+    paperSizeToMm,
 } from "../../src/expendPlugins/print/printLayout.js";
+import { PrintResourceCollector } from "../../src/expendPlugins/print/printResourceCollector.js";
 
 function assert(cond, name) {
     if (!cond) {
@@ -51,6 +53,15 @@ const pages = paginateByPaper(
 assert(pages.length > 0, "paginate emits pages");
 assert(pages[0].row[1] >= pages[0].row[0], "page rows are ordered");
 
+const hiddenPages = paginateByPaper(
+    { row: [0, 2], column: [0, 0] },
+    [20, 20, 40],
+    [80],
+    { innerW: 80, innerH: 40 },
+    {}
+);
+assert(hiddenPages.length === 1 && hiddenPages[0].row[1] === 2, "hidden rows do not consume page capacity");
+
 const layout = normalizeLayoutFromPrintoptions({
     PrintArea: "$A$1:$C$4",
     pageSetup: { paperSize: 9, orientation: 1, scale: 120 },
@@ -76,6 +87,24 @@ assert(written.pageSetup.paperSize === 1, "Letter writes excel code 1");
 assert(written.printOptions.gridLines === 0, "gridlines false → 0");
 assert(clampScale(5) === 10 && clampScale(900) === 400, "scale clamped 10-400");
 assert(PrintArea.CurrentSheet === "CurrentSheet", "PrintArea enum");
+assert(paperSizeToMm(PrintPaperSize.Folio).hmm === 330.2, "Folio uses 8.5x13 dimensions");
+
+const customPaper = writePrintoptions(
+    {},
+    {
+        paperSize: PrintPaperSize.A4,
+        direction: PrintDirection.Portrait,
+        scale: PrintScale.Origin,
+        customScale: 100,
+        margin: PrintPaperMargin.Custom,
+        marginCustom: { left: 0.2, right: 0.3, top: 0.4, bottom: 0.5 },
+        pageSizeCustom: { w: 100, h: 200 },
+        rangeText: null,
+    },
+    { gridlines: true, draft: false, hAlign: "Start", vAlign: "Start" }
+);
+assert(customPaper.pageSetup.paperWidth === "100mm" && customPaper.pageSetup.paperHeight === "200mm", "custom paper persists");
+assert(customPaper.pageMargins.left === 0.2 && customPaper.pageMargins.bottom === 0.5, "custom margins persist");
 
 const hf = resolveHeaderFooterText("@Page/@TotalPage @WorksheetTitle", {
     page: 2,
@@ -101,5 +130,13 @@ const merged = adjustPaginationForMerge(
     visibledatacolumn
 );
 assert(merged.length >= 0, "merge adjust returns pages");
+
+const collector = new PrintResourceCollector();
+let lateResourceDrained = false;
+collector.add(Promise.resolve().then(function () {
+    collector.add(Promise.resolve().then(function () { lateResourceDrained = true; }), "late");
+}), "first");
+const resourceResult = await collector.wait(100);
+assert(!resourceResult.timedOut && lateResourceDrained, "resource collector drains late registrations");
 
 console.log("print-layout.mjs all passed");

@@ -33,8 +33,9 @@ import method from "../global/method";
 import { initialEvent } from "./protection";
 import luckysheetformula from "../global/formula";
 import { asSparseGrid, createSparseGrid, ensureSparseSize, isSparseGrid, sparseGridToCelldata } from "../global/sparseGrid";
+import { createContextualModule } from "../store/runtimeModules";
 
-const sheetmanage = {
+const sheetmanage = createContextualModule("sheetmanage", {
     generateRandomSheetIndex: function(prefix) {
         if (prefix == null) {
             prefix = "Sheet";
@@ -1274,7 +1275,7 @@ const sheetmanage = {
         $("#luckysheet-filter-selected-sheet" + index + ", #luckysheet-filter-options-sheet" + index).show();
 
         // 存储当前index，在远程公式里能识别，如果不是当前页就不要刷新（远程公式只能刷新当前页）
-        window.luckysheetCurrentIndex = index;
+        Store.runtime.formula.current.index = index;
 
         _this.storeSheetParamALL();
         _this.setCurSheet(index);
@@ -2170,6 +2171,6 @@ const sheetmanage = {
             }, 2000);
         }
     },
-};
+});
 
 export default sheetmanage;

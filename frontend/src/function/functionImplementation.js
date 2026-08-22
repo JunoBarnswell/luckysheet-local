@@ -435,11 +435,11 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
-            var birthday = window.luckysheet_function.BIRTHDAY_BY_IDCARD.f(UUserCard);
+            var birthday = Store.runtime.formula.functions.BIRTHDAY_BY_IDCARD.f(UUserCard);
             if(valueIsError(birthday)){
                 return birthday;
             }
@@ -493,7 +493,7 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
@@ -533,7 +533,7 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
@@ -605,7 +605,7 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
@@ -647,7 +647,7 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
@@ -692,11 +692,11 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
-            var birthday = window.luckysheet_function.BIRTHDAY_BY_IDCARD.f(UUserCard);
+            var birthday = Store.runtime.formula.functions.BIRTHDAY_BY_IDCARD.f(UUserCard);
             if(valueIsError(birthday)){
                 return birthday;
             }
@@ -759,11 +759,11 @@ const functionImplementation = {
                 return UUserCard;
             }
 
-            if (!window.luckysheet_function.ISIDCARD.f(UUserCard)) {
+            if (!Store.runtime.formula.functions.ISIDCARD.f(UUserCard)) {
                 return formula.error.v;
             }
 
-            var birthday = window.luckysheet_function.BIRTHDAY_BY_IDCARD.f(UUserCard);
+            var birthday = Store.runtime.formula.functions.BIRTHDAY_BY_IDCARD.f(UUserCard);
             if(valueIsError(birthday)){
                 return birthday;
             }
@@ -840,9 +840,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //任意需要分词的文本
             var text = func_methods.getFirstValue(arguments[0], "text");
@@ -906,9 +906,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //任意需要分词的文本
             var text = func_methods.getFirstValue(arguments[0], "text");
@@ -992,9 +992,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //任意需要分词的文本
             var text = func_methods.getFirstValue(arguments[0], "text");
@@ -1078,9 +1078,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //股票代码
             var stockcode = func_methods.getFirstValue(arguments[0]);
@@ -1178,9 +1178,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //股票代码
             var stockcode = func_methods.getFirstValue(arguments[0]);
@@ -1274,9 +1274,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //股票代码
             var stockcode = func_methods.getFirstValue(arguments[0]);
@@ -1370,9 +1370,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //股票代码
             var stockcode = func_methods.getFirstValue(arguments[0]);
@@ -1466,9 +1466,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //股票代码
             var stockcode = func_methods.getFirstValue(arguments[0]);
@@ -1562,9 +1562,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             //股票代码
             var stockcode = func_methods.getFirstValue(arguments[0]);
@@ -2373,11 +2373,11 @@ const functionImplementation = {
                     var cellrange = formula.getcellrange(data.startCell);
                     var str = cellrange.row[0];
 
-                    if(window.luckysheetCurrentRow < str || window.luckysheetCurrentRow > str + data.rowl - 1){
+                    if(Store.runtime.formula.current.row < str || Store.runtime.formula.current.row > str + data.rowl - 1){
                         return formula.error.v;
                     }
 
-                    var cell = data.data[window.luckysheetCurrentRow - str][0];
+                    var cell = data.data[Store.runtime.formula.current.row - str][0];
                 }
                 else{
                     var cell = data.data;
@@ -3195,47 +3195,47 @@ const functionImplementation = {
                 switch(function_num){
                     case 1:    //AVERAGE
                     case 101:
-                        return window.luckysheet_function.AVERAGE.f.apply(window.luckysheet_function.AVERAGE, arr);
+                        return Store.runtime.formula.functions.AVERAGE.f.apply(Store.runtime.formula.functions.AVERAGE, arr);
                         break;
                     case 2:    //COUNT
                     case 102:
-                        return window.luckysheet_function.COUNT.f.apply(window.luckysheet_function.COUNT, arr);
+                        return Store.runtime.formula.functions.COUNT.f.apply(Store.runtime.formula.functions.COUNT, arr);
                         break;
                     case 3:    //COUNTA
                     case 103:
-                        return window.luckysheet_function.COUNTA.f.apply(window.luckysheet_function.COUNTA, arr);
+                        return Store.runtime.formula.functions.COUNTA.f.apply(Store.runtime.formula.functions.COUNTA, arr);
                         break;
                     case 4:    //MAX
                     case 104:
-                        return window.luckysheet_function.MAX.f.apply(window.luckysheet_function.MAX, arr);
+                        return Store.runtime.formula.functions.MAX.f.apply(Store.runtime.formula.functions.MAX, arr);
                         break;
                     case 5:    //MIN
                     case 105:
-                        return window.luckysheet_function.MIN.f.apply(window.luckysheet_function.MIN, arr);
+                        return Store.runtime.formula.functions.MIN.f.apply(Store.runtime.formula.functions.MIN, arr);
                         break;
                     case 6:    //PRODUCT
                     case 106:
-                        return window.luckysheet_function.PRODUCT.f.apply(window.luckysheet_function.PRODUCT, arr);
+                        return Store.runtime.formula.functions.PRODUCT.f.apply(Store.runtime.formula.functions.PRODUCT, arr);
                         break;
                     case 7:    //STDEV
                     case 107:
-                        return window.luckysheet_function.STDEVA.f.apply(window.luckysheet_function.STDEVA, arr);
+                        return Store.runtime.formula.functions.STDEVA.f.apply(Store.runtime.formula.functions.STDEVA, arr);
                         break;
                     case 8:    //STDEVP
                     case 108:
-                        return window.luckysheet_function.STDEVP.f.apply(window.luckysheet_function.STDEVP, arr);
+                        return Store.runtime.formula.functions.STDEVP.f.apply(Store.runtime.formula.functions.STDEVP, arr);
                         break;
                     case 9:    //SUM
                     case 109:
-                        return window.luckysheet_function.SUM.f.apply(window.luckysheet_function.SUM, arr);
+                        return Store.runtime.formula.functions.SUM.f.apply(Store.runtime.formula.functions.SUM, arr);
                         break;
                     case 10:   //VAR
                     case 110:
-                        return window.luckysheet_function.VAR_S.f.apply(window.luckysheet_function.VAR_S, arr);
+                        return Store.runtime.formula.functions.VAR_S.f.apply(Store.runtime.formula.functions.VAR_S, arr);
                         break;
                     case 11:   //VARP
                     case 111:
-                        return window.luckysheet_function.VAR_P.f.apply(window.luckysheet_function.VAR_P, arr);
+                        return Store.runtime.formula.functions.VAR_P.f.apply(Store.runtime.formula.functions.VAR_P, arr);
                         break;
                 }
             }
@@ -3533,7 +3533,7 @@ const functionImplementation = {
                 }
             }
 
-            return window.luckysheet_function.UNIQUE.f(dataArr);
+            return Store.runtime.formula.functions.UNIQUE.f(dataArr);
         }
         catch (e) {
             var err = e;
@@ -4719,20 +4719,20 @@ const functionImplementation = {
     },
     "GET_TARGET": function() {
         try {   
-                var luckysheetCurrentIndex = window.luckysheetCurrentIndex;
+                var luckysheetCurrentIndex = Store.runtime.formula.current.index;
                 var currentSheetIndex = Store.currentSheetIndex;
                 if(luckysheetCurrentIndex !== currentSheetIndex){
                     return
                 }
-                var startRow = window.luckysheetCurrentRow;
-                var startColumn = window.luckysheetCurrentColumn;
+                var startRow = Store.runtime.formula.current.row;
+                var startColumn = Store.runtime.formula.current.column;
                 
                 // const {row, column} = Store.luckysheet_select_save[0];
                 // const startRow = row[0]
                 // const endRow = row[1]
                 // const startColumn = column[0]
                 // const endColumn = column[1]
-                var cell_fp = window.luckysheetCurrentFunction;
+                var cell_fp = Store.runtime.formula.current.formula;
 
                 setTimeout(() => {
                     var d = editor.deepCopyFlowData(Store.flowdata);
@@ -4809,14 +4809,14 @@ const functionImplementation = {
         }
 
         try {
-            var luckysheetCurrentIndex = window.luckysheetCurrentIndex;
+            var luckysheetCurrentIndex = Store.runtime.formula.current.index;
             var currentSheetIndex = Store.currentSheetIndex;
             if(luckysheetCurrentIndex !== currentSheetIndex){
                 return
             }
 
-            var startRow = window.luckysheetCurrentRow;
-            var startColumn = window.luckysheetCurrentColumn;
+            var startRow = Store.runtime.formula.current.row;
+            var startColumn = Store.runtime.formula.current.column;
 
             // airtable url
             const url = func_methods.getFirstValue(arguments[0]);
@@ -4829,7 +4829,7 @@ const functionImplementation = {
             // const endRow = row[1]
             // const startColumn = column[0]
             // const endColumn = column[1]
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_fp = Store.runtime.formula.current.formula;
 
             var d = editor.deepCopyFlowData(Store.flowdata);
 
@@ -4906,19 +4906,19 @@ const functionImplementation = {
             }
         }
         try {   
-                let luckysheetCurrentIndex = window.luckysheetCurrentIndex;
+                let luckysheetCurrentIndex = Store.runtime.formula.current.index;
                 let currentSheetIndex = Store.currentSheetIndex;
                 if(luckysheetCurrentIndex !== currentSheetIndex){
                     return
                 }
-                var startRow = window.luckysheetCurrentRow;
-                var startColumn = window.luckysheetCurrentColumn;
+                var startRow = Store.runtime.formula.current.row;
+                var startColumn = Store.runtime.formula.current.column;
                 // const {row, column} = Store.luckysheet_select_save[0];
                 // const startRow = row[0]
                 // const endRow = row[1]
                 // const startColumn = column[0]
                 // const endColumn = column[1]
-                var cell_fp = window.luckysheetCurrentFunction;
+                var cell_fp = Store.runtime.formula.current.formula;
 
                 var args = arguments;
                 var targetText =  func_methods.getFirstValue(arguments[0]);
@@ -6111,7 +6111,7 @@ const functionImplementation = {
             ref_n = ref_n.sort(function(a, b) {
                 return a - b;
             });
-            var uniques = window.luckysheet_function.UNIQUE.f(ref_n)[0];
+            var uniques = Store.runtime.formula.functions.UNIQUE.f(ref_n)[0];
 
             var n = ref_n.length;
             var m = uniques.length;
@@ -6240,7 +6240,7 @@ const functionImplementation = {
             ref_n = ref_n.sort(function(a, b) {
                 return a - b;
             });
-            var uniques = window.luckysheet_function.UNIQUE.f(ref_n)[0];
+            var uniques = Store.runtime.formula.functions.UNIQUE.f(ref_n)[0];
 
             var n = ref_n.length;
             var m = uniques.length;
@@ -7673,7 +7673,7 @@ const functionImplementation = {
                 return a - b;
             })
 
-            var trim = window.luckysheet_function.FLOOR.f(dataArr_n.length * percent, 2) / 2;
+            var trim = Store.runtime.formula.functions.FLOOR.f(dataArr_n.length * percent, 2) / 2;
 
             var result = rest(dataArr_n, trim);
             result = initial(result, trim);
@@ -8708,9 +8708,9 @@ const functionImplementation = {
 
             //计算
             var n = dataArr_n.length;
-            var mean = window.luckysheet_function.AVERAGE.f.apply(window.luckysheet_function.AVERAGE, dataArr_n);
+            var mean = Store.runtime.formula.functions.AVERAGE.f.apply(Store.runtime.formula.functions.AVERAGE, dataArr_n);
 
-            return 1 - window.luckysheet_function.NORM_S_DIST.f((mean - x) / (sigma / Math.sqrt(n)), "true");
+            return 1 - Store.runtime.formula.functions.NORM_S_DIST.f((mean - x) / (sigma / Math.sqrt(n)), "true");
         }
         catch (e) {
             var err = e;
@@ -8909,11 +8909,11 @@ const functionImplementation = {
             //计算
             switch (quart) {
                 case 1:
-                    return window.luckysheet_function.PERCENTILE_EXC.f(array, 0.25);
+                    return Store.runtime.formula.functions.PERCENTILE_EXC.f(array, 0.25);
                 case 2:
-                    return window.luckysheet_function.PERCENTILE_EXC.f(array, 0.5);
+                    return Store.runtime.formula.functions.PERCENTILE_EXC.f(array, 0.5);
                 case 3:
-                    return window.luckysheet_function.PERCENTILE_EXC.f(array, 0.75);
+                    return Store.runtime.formula.functions.PERCENTILE_EXC.f(array, 0.75);
             }
         }
         catch (e) {
@@ -8994,11 +8994,11 @@ const functionImplementation = {
                 case 0:
                     return Math.min.apply(Math, array);
                 case 1:
-                    return window.luckysheet_function.PERCENTILE_INC.f(array, 0.25);
+                    return Store.runtime.formula.functions.PERCENTILE_INC.f(array, 0.25);
                 case 2:
-                    return window.luckysheet_function.PERCENTILE_INC.f(array, 0.5);
+                    return Store.runtime.formula.functions.PERCENTILE_INC.f(array, 0.5);
                 case 3:
-                    return window.luckysheet_function.PERCENTILE_INC.f(array, 0.75);
+                    return Store.runtime.formula.functions.PERCENTILE_INC.f(array, 0.75);
                 case 4:
                     return Math.max.apply(Math, array);
             }
@@ -9149,7 +9149,7 @@ const functionImplementation = {
                 return formula.error.d;
             }
 
-            return Math.pow(window.luckysheet_function.PEARSON.f(data_y, data_x), 2);
+            return Math.pow(Store.runtime.formula.functions.PEARSON.f(data_y, data_x), 2);
         }
         catch (e) {
             var err = e;
@@ -9563,10 +9563,10 @@ const functionImplementation = {
             }
 
             if(tails == 1){
-                var result = window.luckysheet_function.T_DIST_RT.f(t, df);
+                var result = Store.runtime.formula.functions.T_DIST_RT.f(t, df);
             }
             else if(tails == 2){
-                var result = window.luckysheet_function.T_DIST_2T.f(t, df);
+                var result = Store.runtime.formula.functions.T_DIST_2T.f(t, df);
             }
 
             return result;
@@ -9784,7 +9784,7 @@ const functionImplementation = {
 
             var n = dataArr_n.length;
             var sigma = 0;
-            var mean = window.luckysheet_function.AVERAGE.f.apply(window.luckysheet_function.AVERAGE, dataArr_n);
+            var mean = Store.runtime.formula.functions.AVERAGE.f.apply(Store.runtime.formula.functions.AVERAGE, dataArr_n);
             for (var i = 0; i < n; i++) {
                 sigma += Math.pow(dataArr_n[i] - mean, 2);
             }
@@ -9853,7 +9853,7 @@ const functionImplementation = {
 
             var n = dataArr_n.length;
             var sigma = 0;
-            var mean = window.luckysheet_function.AVERAGE.f.apply(window.luckysheet_function.AVERAGE, dataArr_n);
+            var mean = Store.runtime.formula.functions.AVERAGE.f.apply(Store.runtime.formula.functions.AVERAGE, dataArr_n);
             for (var i = 0; i < n; i++) {
                 sigma += Math.pow(dataArr_n[i] - mean, 2);
             }
@@ -9933,7 +9933,7 @@ const functionImplementation = {
 
             var n = dataArr_n.length;
             var sigma = 0;
-            var mean = window.luckysheet_function.AVERAGE.f.apply(window.luckysheet_function.AVERAGE, dataArr_n);
+            var mean = Store.runtime.formula.functions.AVERAGE.f.apply(Store.runtime.formula.functions.AVERAGE, dataArr_n);
             for (var i = 0; i < n; i++) {
                 sigma += Math.pow(dataArr_n[i] - mean, 2);
             }
@@ -10013,7 +10013,7 @@ const functionImplementation = {
 
             var n = dataArr_n.length;
             var sigma = 0;
-            var mean = window.luckysheet_function.AVERAGE.f.apply(window.luckysheet_function.AVERAGE, dataArr_n);
+            var mean = Store.runtime.formula.functions.AVERAGE.f.apply(Store.runtime.formula.functions.AVERAGE, dataArr_n);
             for (var i = 0; i < n; i++) {
                 sigma += Math.pow(dataArr_n[i] - mean, 2);
             }
@@ -10776,7 +10776,7 @@ const functionImplementation = {
                 }
             }
             else{
-                return window.luckysheetCurrentRow + 1;
+                return Store.runtime.formula.current.row + 1;
             }
         }
         catch (e) {
@@ -10863,7 +10863,7 @@ const functionImplementation = {
                 }
             }
             else{
-                return window.luckysheetCurrentColumn + 1;
+                return Store.runtime.formula.current.column + 1;
             }
         }
         catch (e) {
@@ -11374,8 +11374,8 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
             var searchkey = arguments[0];
 
             if(typeof(searchkey) == "object"){
@@ -11449,8 +11449,8 @@ const functionImplementation = {
             //完成矢量形式（数组形式不推荐，未做）
             //=LOOKUP(4.19, A2:A6, B2:B6)
             //=LOOKUP(0, A2:A6, B2:B6)
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
             var searchkey = arguments[0];
 
             if(typeof(searchkey) == "object"){
@@ -12183,10 +12183,10 @@ const functionImplementation = {
 
         try {
             if(arguments.length == 3){
-                var result = window.luckysheet_function.NETWORKDAYS_INTL.f(arguments[0], arguments[1], 1, arguments[2]);
+                var result = Store.runtime.formula.functions.NETWORKDAYS_INTL.f(arguments[0], arguments[1], 1, arguments[2]);
             }
             else{
-                var result = window.luckysheet_function.NETWORKDAYS_INTL.f(arguments[0], arguments[1], 1);
+                var result = Store.runtime.formula.functions.NETWORKDAYS_INTL.f(arguments[0], arguments[1], 1);
             }
 
             return result;
@@ -12441,7 +12441,7 @@ const functionImplementation = {
             }
 
             if(return_type == 21){
-                return window.luckysheet_function.ISOWEEKNUM.f(arguments[0]);
+                return Store.runtime.formula.functions.ISOWEEKNUM.f(arguments[0]);
             }
 
             if([1,2,11,12,13,14,15,16,17].indexOf(return_type) == -1){
@@ -12842,7 +12842,7 @@ const functionImplementation = {
             var endDate = dayjs(arguments[1]);
             var unit = arguments[2];
             var result = formula.error.v;
-            if(window.luckysheet_function.DAYS.f(endDate,startDate) < 0){
+            if(Store.runtime.formula.functions.DAYS.f(endDate,startDate) < 0){
                 return formula.error.v;
             }
 
@@ -12900,10 +12900,10 @@ const functionImplementation = {
 
         try {
             if(arguments.length == 3){
-                var result = window.luckysheet_function.WORKDAY_INTL.f(arguments[0], arguments[1], 1, arguments[2]);
+                var result = Store.runtime.formula.functions.WORKDAY_INTL.f(arguments[0], arguments[1], 1, arguments[2]);
             }
             else{
-                var result = window.luckysheet_function.WORKDAY_INTL.f(arguments[0], arguments[1], 1);
+                var result = Store.runtime.formula.functions.WORKDAY_INTL.f(arguments[0], arguments[1], 1);
             }
 
             return result;
@@ -13978,7 +13978,7 @@ const functionImplementation = {
             }
 
             //计算
-            var payment = window.luckysheet_function.PMT.f(rate, nper, pv, 0, type);
+            var payment = Store.runtime.formula.functions.PMT.f(rate, nper, pv, 0, type);
             var principal = 0;
 
             if (start_period === 1) {
@@ -13993,10 +13993,10 @@ const functionImplementation = {
 
             for (var i = start_period; i <= end_period; i++) {
                 if (type > 0) {
-                    principal += payment - (window.luckysheet_function.FV.f(rate, i - 2, payment, pv, 1) - payment) * rate;
+                    principal += payment - (Store.runtime.formula.functions.FV.f(rate, i - 2, payment, pv, 1) - payment) * rate;
                 }
                 else {
-                    principal += payment - window.luckysheet_function.FV.f(rate, i - 1, payment, pv, 0) * rate;
+                    principal += payment - Store.runtime.formula.functions.FV.f(rate, i - 1, payment, pv, 0) * rate;
                 }
             }
 
@@ -15822,7 +15822,7 @@ const functionImplementation = {
             }
 
             //计算
-            var num = window.luckysheet_function.COUPNUM.f(settlement, maturity, frequency, basis);
+            var num = Store.runtime.formula.functions.COUPNUM.f(settlement, maturity, frequency, basis);
 
             if(num > 1){
                 var a = 1;
@@ -15830,7 +15830,7 @@ const functionImplementation = {
                 var yld = a;
 
                 for(var i = 1; i <= 100; i++){
-                    var price = window.luckysheet_function.PRICE.f(settlement, maturity, rate, yld, redemption, frequency, basis);
+                    var price = Store.runtime.formula.functions.PRICE.f(settlement, maturity, rate, yld, redemption, frequency, basis);
 
                     if(Math.abs(price - pr) < 0.000001){
                         break;
@@ -15849,9 +15849,9 @@ const functionImplementation = {
                 var result = yld;
             }
             else{
-                var DSR = window.luckysheet_function.COUPDAYSNC.f(settlement, maturity, frequency, basis);
-                var E = window.luckysheet_function.COUPDAYS.f(settlement, maturity, frequency, basis);
-                var A = window.luckysheet_function.COUPDAYBS.f(settlement, maturity, frequency, basis);
+                var DSR = Store.runtime.formula.functions.COUPDAYSNC.f(settlement, maturity, frequency, basis);
+                var E = Store.runtime.formula.functions.COUPDAYS.f(settlement, maturity, frequency, basis);
+                var A = Store.runtime.formula.functions.COUPDAYBS.f(settlement, maturity, frequency, basis);
 
                 var T1 = redemption / 100 + rate / frequency;
                 var T2 = pr / 100 + (A / E) * (rate / frequency);
@@ -15955,7 +15955,7 @@ const functionImplementation = {
                 return formula.error.nm;
             }
 
-            var yearfrac = window.luckysheet_function.YEARFRAC.f(settlement, maturity, basis);
+            var yearfrac = Store.runtime.formula.functions.YEARFRAC.f(settlement, maturity, basis);
 
             return (redemption / pr - 1) / yearfrac;
         }
@@ -16120,7 +16120,7 @@ const functionImplementation = {
                 var result = values[0];
 
                 for (var i = 1; i < values.length; i++) {
-                    result += values[i] / Math.pow(r, window.luckysheet_function.DAYS.f(dates[i], dates[0]) / 365);
+                    result += values[i] / Math.pow(r, Store.runtime.formula.functions.DAYS.f(dates[i], dates[0]) / 365);
                 }
 
                 return result;
@@ -16131,7 +16131,7 @@ const functionImplementation = {
                 var result = 0;
 
                 for (var i = 1; i < values.length; i++) {
-                    var frac = window.luckysheet_function.DAYS.f(dates[i], dates[0]) / 365;
+                    var frac = Store.runtime.formula.functions.DAYS.f(dates[i], dates[0]) / 365;
                     result -= frac * values[i] / Math.pow(r, frac + 1);
                 }
 
@@ -16249,8 +16249,8 @@ const functionImplementation = {
                 return formula.error.d;
             }
 
-            var num = -window.luckysheet_function.NPV.f(reinvest_rate, incomes) * Math.pow(1 + reinvest_rate, n - 1);
-            var den = window.luckysheet_function.NPV.f(finance_rate, payments) * (1 + finance_rate);
+            var num = -Store.runtime.formula.functions.NPV.f(reinvest_rate, incomes) * Math.pow(1 + reinvest_rate, n - 1);
+            var den = Store.runtime.formula.functions.NPV.f(finance_rate, payments) * (1 + finance_rate);
 
             return Math.pow(num / den, 1 / (n - 1)) - 1;
         }
@@ -16347,7 +16347,7 @@ const functionImplementation = {
                 var result = values[0];
 
                 for (var i = 1; i < values.length; i++) {
-                    // result += values[i] / Math.pow(r, window.luckysheet_function.DAYS.f(dates[i], dates[0]) / 365);
+                    // result += values[i] / Math.pow(r, Store.runtime.formula.functions.DAYS.f(dates[i], dates[0]) / 365);
                     result += values[i] / Math.pow(r, (dates[i] - dates[0]) / 365);
                 }
 
@@ -16359,7 +16359,7 @@ const functionImplementation = {
                 var result = 0;
 
                 for (var i = 1; i < values.length; i++) {
-                    // var frac = window.luckysheet_function.DAYS.f(dates[i], dates[0]) / 365;
+                    // var frac = Store.runtime.formula.functions.DAYS.f(dates[i], dates[0]) / 365;
                     var frac = (dates[i] - dates[0]) / 365;
                     result -= frac * values[i] / Math.pow(r, frac + 1);
                 }
@@ -16543,7 +16543,7 @@ const functionImplementation = {
             //计算
             var result = 0;
             for (var i = 0; i < values_n.length; i++) {
-                result += values_n[i] / Math.pow(1 + rate, window.luckysheet_function.DAYS.f(dates[i], dates[0]) / 365);
+                result += values_n[i] / Math.pow(1 + rate, Store.runtime.formula.functions.DAYS.f(dates[i], dates[0]) / 365);
             }
 
             return result;
@@ -16655,7 +16655,7 @@ const functionImplementation = {
             }
 
             //计算
-            var payment = window.luckysheet_function.PMT.f(rate, nper, pv, 0, type);
+            var payment = Store.runtime.formula.functions.PMT.f(rate, nper, pv, 0, type);
             var interest = 0;
 
             if (start_period === 1) {
@@ -16667,10 +16667,10 @@ const functionImplementation = {
 
             for (var i = start_period; i <= end_period; i++) {
                 if (type === 1) {
-                    interest += window.luckysheet_function.FV.f(rate, i - 2, payment, pv, 1) - payment;
+                    interest += Store.runtime.formula.functions.FV.f(rate, i - 2, payment, pv, 1) - payment;
                 }
                 else {
-                    interest += window.luckysheet_function.FV.f(rate, i - 1, payment, pv, 0);
+                    interest += Store.runtime.formula.functions.FV.f(rate, i - 1, payment, pv, 0);
                 }
             }
 
@@ -16898,7 +16898,7 @@ const functionImplementation = {
             }
 
             //计算
-            var payment = window.luckysheet_function.PMT.f(rate, nper, pv, fv, type);
+            var payment = Store.runtime.formula.functions.PMT.f(rate, nper, pv, fv, type);
             var interest;
 
             if (per === 1) {
@@ -16911,10 +16911,10 @@ const functionImplementation = {
             }
             else {
                 if (type === 1) {
-                    interest = window.luckysheet_function.FV.f(rate, per - 2, payment, pv, 1) - payment;
+                    interest = Store.runtime.formula.functions.FV.f(rate, per - 2, payment, pv, 1) - payment;
                 }
                 else {
-                    interest = window.luckysheet_function.FV.f(rate, per - 1, payment, pv, 0);
+                    interest = Store.runtime.formula.functions.FV.f(rate, per - 1, payment, pv, 0);
                 }
             }
 
@@ -17031,8 +17031,8 @@ const functionImplementation = {
             }
 
             //计算
-            var payment = window.luckysheet_function.PMT.f(rate, nper, pv, fv, type);
-            var payment2 = window.luckysheet_function.IPMT.f(rate, per, nper, pv, fv, type);
+            var payment = Store.runtime.formula.functions.PMT.f(rate, nper, pv, fv, type);
+            var payment2 = Store.runtime.formula.functions.IPMT.f(rate, per, nper, pv, fv, type);
 
             return payment - payment2;
         }
@@ -17318,10 +17318,10 @@ const functionImplementation = {
             }
 
             //计算
-            var DSC = window.luckysheet_function.COUPDAYSNC.f(settlement, maturity, frequency, basis);
-            var E = window.luckysheet_function.COUPDAYS.f(settlement, maturity, frequency, basis);
-            var A = window.luckysheet_function.COUPDAYBS.f(settlement, maturity, frequency, basis);
-            var num = window.luckysheet_function.COUPNUM.f(settlement, maturity, frequency, basis);
+            var DSC = Store.runtime.formula.functions.COUPDAYSNC.f(settlement, maturity, frequency, basis);
+            var E = Store.runtime.formula.functions.COUPDAYS.f(settlement, maturity, frequency, basis);
+            var A = Store.runtime.formula.functions.COUPDAYBS.f(settlement, maturity, frequency, basis);
+            var num = Store.runtime.formula.functions.COUPNUM.f(settlement, maturity, frequency, basis);
 
             if(num > 1){
                 var T1 = redemption / Math.pow(1 + yld / frequency, num - 1 + DSC / E);
@@ -18282,7 +18282,7 @@ const functionImplementation = {
                 return formula.error.nm;
             }
 
-            var nper = window.luckysheet_function.COUPNUM.f(settlement, maturity, frequency, basis);
+            var nper = Store.runtime.formula.functions.COUPNUM.f(settlement, maturity, frequency, basis);
 
             var sum1 = 0;
             var sum2 = 0;
@@ -18405,7 +18405,7 @@ const functionImplementation = {
                 return formula.error.nm;
             }
 
-            var duration = window.luckysheet_function.DURATION.f(settlement, maturity, coupon, yld, frequency, basis);
+            var duration = Store.runtime.formula.functions.DURATION.f(settlement, maturity, coupon, yld, frequency, basis);
 
             return duration / (1 + yld / frequency);
         }
@@ -19411,12 +19411,12 @@ const functionImplementation = {
 
             inumber = inumber.toString();
 
-            var x = window.luckysheet_function.IMREAL.f(inumber);
+            var x = Store.runtime.formula.functions.IMREAL.f(inumber);
             if(valueIsError(x)){
                 return x;
             }
 
-            var y = window.luckysheet_function.IMAGINARY.f(inumber);
+            var y = Store.runtime.formula.functions.IMAGINARY.f(inumber);
             if(valueIsError(y)){
                 return y;
             }
@@ -19424,7 +19424,7 @@ const functionImplementation = {
             var unit = inumber.substring(inumber.length - 1);
             unit = (unit === 'i' || unit === 'j') ? unit : 'i';
 
-            return (y !== 0) ? window.luckysheet_function.COMPLEX.f(x, -y, unit) : inumber;
+            return (y !== 0) ? Store.runtime.formula.functions.COMPLEX.f(x, -y, unit) : inumber;
         }
         catch (e) {
             var err = e;
@@ -19448,12 +19448,12 @@ const functionImplementation = {
         }
 
         try {
-            var x = window.luckysheet_function.IMREAL.f(arguments[0]);
+            var x = Store.runtime.formula.functions.IMREAL.f(arguments[0]);
             if(valueIsError(x)){
                 return x;
             }
 
-            var y = window.luckysheet_function.IMAGINARY.f(arguments[0]);
+            var y = Store.runtime.formula.functions.IMAGINARY.f(arguments[0]);
             if(valueIsError(y)){
                 return y;
             }
@@ -19533,12 +19533,12 @@ const functionImplementation = {
         }
 
         try {
-            var x = window.luckysheet_function.IMREAL.f(arguments[0]);
+            var x = Store.runtime.formula.functions.IMREAL.f(arguments[0]);
             if(valueIsError(x)){
                 return x;
             }
 
-            var y = window.luckysheet_function.IMAGINARY.f(arguments[0]);
+            var y = Store.runtime.formula.functions.IMAGINARY.f(arguments[0]);
             if(valueIsError(y)){
                 return y;
             }
@@ -19546,27 +19546,27 @@ const functionImplementation = {
             var result = arguments[0];
 
             for(var i = 1; i < arguments.length; i++){
-                var a = window.luckysheet_function.IMREAL.f(result);
+                var a = Store.runtime.formula.functions.IMREAL.f(result);
                 if(valueIsError(a)){
                     return a;
                 }
 
-                var b = window.luckysheet_function.IMAGINARY.f(result);
+                var b = Store.runtime.formula.functions.IMAGINARY.f(result);
                 if(valueIsError(b)){
                     return b;
                 }
 
-                var c = window.luckysheet_function.IMREAL.f(arguments[i]);
+                var c = Store.runtime.formula.functions.IMREAL.f(arguments[i]);
                 if(valueIsError(c)){
                     return c;
                 }
 
-                var d = window.luckysheet_function.IMAGINARY.f(arguments[i]);
+                var d = Store.runtime.formula.functions.IMAGINARY.f(arguments[i]);
                 if(valueIsError(d)){
                     return d;
                 }
 
-                result = window.luckysheet_function.COMPLEX.f(a + c, b + d);
+                result = Store.runtime.formula.functions.COMPLEX.f(a + c, b + d);
             }
 
             return result;
@@ -19605,12 +19605,12 @@ const functionImplementation = {
                 return formula.error.v;
             }
 
-            var a = window.luckysheet_function.IMREAL.f(inumber1);
+            var a = Store.runtime.formula.functions.IMREAL.f(inumber1);
             if(valueIsError(a)){
                 return a;
             }
 
-            var b = window.luckysheet_function.IMAGINARY.f(inumber1);
+            var b = Store.runtime.formula.functions.IMAGINARY.f(inumber1);
             if(valueIsError(b)){
                 return b;
             }
@@ -19627,12 +19627,12 @@ const functionImplementation = {
                 return formula.error.v;
             }
 
-            var c = window.luckysheet_function.IMREAL.f(inumber2);
+            var c = Store.runtime.formula.functions.IMREAL.f(inumber2);
             if(valueIsError(c)){
                 return c;
             }
 
-            var d = window.luckysheet_function.IMAGINARY.f(inumber2);
+            var d = Store.runtime.formula.functions.IMAGINARY.f(inumber2);
             if(valueIsError(d)){
                 return d;
             }
@@ -19650,7 +19650,7 @@ const functionImplementation = {
                 unit = 'j';
             }
 
-            return window.luckysheet_function.COMPLEX.f(a - c, b - d, unit);
+            return Store.runtime.formula.functions.COMPLEX.f(a - c, b - d, unit);
         }
         catch (e) {
             var err = e;
@@ -19674,12 +19674,12 @@ const functionImplementation = {
         }
 
         try {
-            var x = window.luckysheet_function.IMREAL.f(arguments[0]);
+            var x = Store.runtime.formula.functions.IMREAL.f(arguments[0]);
             if(valueIsError(x)){
                 return x;
             }
 
-            var y = window.luckysheet_function.IMAGINARY.f(arguments[0]);
+            var y = Store.runtime.formula.functions.IMAGINARY.f(arguments[0]);
             if(valueIsError(y)){
                 return y;
             }
@@ -19687,27 +19687,27 @@ const functionImplementation = {
             var result = arguments[0];
 
             for(var i = 1; i < arguments.length; i++){
-                var a = window.luckysheet_function.IMREAL.f(result);
+                var a = Store.runtime.formula.functions.IMREAL.f(result);
                 if(valueIsError(a)){
                     return a;
                 }
 
-                var b = window.luckysheet_function.IMAGINARY.f(result);
+                var b = Store.runtime.formula.functions.IMAGINARY.f(result);
                 if(valueIsError(b)){
                     return b;
                 }
 
-                var c = window.luckysheet_function.IMREAL.f(arguments[i]);
+                var c = Store.runtime.formula.functions.IMREAL.f(arguments[i]);
                 if(valueIsError(c)){
                     return c;
                 }
 
-                var d = window.luckysheet_function.IMAGINARY.f(arguments[i]);
+                var d = Store.runtime.formula.functions.IMAGINARY.f(arguments[i]);
                 if(valueIsError(d)){
                     return d;
                 }
 
-                result = window.luckysheet_function.COMPLEX.f(a * c - b * d, a * d + b * c);
+                result = Store.runtime.formula.functions.COMPLEX.f(a * c - b * d, a * d + b * c);
             }
 
             return result;
@@ -19746,12 +19746,12 @@ const functionImplementation = {
                 return formula.error.v;
             }
 
-            var a = window.luckysheet_function.IMREAL.f(inumber1);
+            var a = Store.runtime.formula.functions.IMREAL.f(inumber1);
             if(valueIsError(a)){
                 return a;
             }
 
-            var b = window.luckysheet_function.IMAGINARY.f(inumber1);
+            var b = Store.runtime.formula.functions.IMAGINARY.f(inumber1);
             if(valueIsError(b)){
                 return b;
             }
@@ -19768,12 +19768,12 @@ const functionImplementation = {
                 return formula.error.v;
             }
 
-            var c = window.luckysheet_function.IMREAL.f(inumber2);
+            var c = Store.runtime.formula.functions.IMREAL.f(inumber2);
             if(valueIsError(c)){
                 return c;
             }
 
-            var d = window.luckysheet_function.IMAGINARY.f(inumber2);
+            var d = Store.runtime.formula.functions.IMAGINARY.f(inumber2);
             if(valueIsError(d)){
                 return d;
             }
@@ -19797,7 +19797,7 @@ const functionImplementation = {
 
             var den = c * c + d * d;
 
-            return window.luckysheet_function.COMPLEX.f((a * c + b * d) / den, (b * c - a * d) / den, unit);
+            return Store.runtime.formula.functions.COMPLEX.f((a * c + b * d) / den, (b * c - a * d) / den, unit);
         }
         catch (e) {
             var err = e;
@@ -25228,7 +25228,7 @@ const functionImplementation = {
                 targetValues[i] = targetFields[resultIndexes[i]];
             }
 
-            return window.luckysheet_function.COUNT.f.apply(window.luckysheet_function.COUNT, targetValues);
+            return Store.runtime.formula.functions.COUNT.f.apply(Store.runtime.formula.functions.COUNT, targetValues);
         }
         catch (e) {
             var err = e;
@@ -25313,7 +25313,7 @@ const functionImplementation = {
                 targetValues[i] = targetFields[resultIndexes[i]];
             }
 
-            return window.luckysheet_function.COUNTA.f.apply(window.luckysheet_function.COUNTA, targetValues);
+            return Store.runtime.formula.functions.COUNTA.f.apply(Store.runtime.formula.functions.COUNTA, targetValues);
         }
         catch (e) {
             var err = e;
@@ -25493,7 +25493,7 @@ const functionImplementation = {
 
             targetValues = func_methods.compact(targetValues);
 
-            return window.luckysheet_function.STDEVA.f.apply(window.luckysheet_function.STDEVA, targetValues);
+            return Store.runtime.formula.functions.STDEVA.f.apply(Store.runtime.formula.functions.STDEVA, targetValues);
         }
         catch (e) {
             var err = e;
@@ -25580,7 +25580,7 @@ const functionImplementation = {
 
             targetValues = func_methods.compact(targetValues);
 
-            return window.luckysheet_function.STDEVP.f.apply(window.luckysheet_function.STDEVP, targetValues);
+            return Store.runtime.formula.functions.STDEVP.f.apply(Store.runtime.formula.functions.STDEVP, targetValues);
         }
         catch (e) {
             var err = e;
@@ -25760,7 +25760,7 @@ const functionImplementation = {
 
             targetValues = func_methods.compact(targetValues);
 
-            return window.luckysheet_function.VAR_S.f.apply(window.luckysheet_function.VAR_S, targetValues);
+            return Store.runtime.formula.functions.VAR_S.f.apply(Store.runtime.formula.functions.VAR_S, targetValues);
         }
         catch (e) {
             var err = e;
@@ -25847,7 +25847,7 @@ const functionImplementation = {
 
             targetValues = func_methods.compact(targetValues);
 
-            return window.luckysheet_function.VAR_P.f.apply(window.luckysheet_function.VAR_P, targetValues);
+            return Store.runtime.formula.functions.VAR_P.f.apply(Store.runtime.formula.functions.VAR_P, targetValues);
         }
         catch (e) {
             var err = e;
@@ -25871,9 +25871,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -25938,16 +25938,16 @@ const functionImplementation = {
                     normalValue = normalValue.toLowerCase();
                     var nv = null;
                     if(normalValue=="min"){
-                        nv = window.luckysheet_function.MIN.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.MIN.f({"data":dataformat});
                     }
                     else if(normalValue=="max"){
-                        nv = window.luckysheet_function.MAX.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.MAX.f({"data":dataformat});
                     }
                     else if(normalValue=="avg" || normalValue=="mean"){
-                        nv = window.luckysheet_function.AVERAGE.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.AVERAGE.f({"data":dataformat});
                     }
                     else if(normalValue=="median"){
-                        nv = window.luckysheet_function.MEDIAN.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.MEDIAN.f({"data":dataformat});
                     }
 
                     if(!!nv){
@@ -26011,9 +26011,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26081,16 +26081,16 @@ const functionImplementation = {
                     normalValue = normalValue.toLowerCase();
                     var nv = null;
                     if(normalValue=="min"){
-                        nv = window.luckysheet_function.MIN.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.MIN.f({"data":dataformat});
                     }
                     else if(normalValue=="max"){
-                        nv = window.luckysheet_function.MAX.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.MAX.f({"data":dataformat});
                     }
                     else if(normalValue=="avg" || normalValue=="mean"){
-                        nv = window.luckysheet_function.AVERAGE.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.AVERAGE.f({"data":dataformat});
                     }
                     else if(normalValue=="median"){
-                        nv = window.luckysheet_function.MEDIAN.f({"data":dataformat});
+                        nv = Store.runtime.formula.functions.MEDIAN.f({"data":dataformat});
                     }
 
                     if(!!nv){
@@ -26154,9 +26154,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26255,9 +26255,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26391,9 +26391,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26492,9 +26492,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26627,9 +26627,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26716,9 +26716,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26815,9 +26815,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26908,9 +26908,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来���用到
             var colorList = formula.colorList;
             var rangeValue = arguments[0];
@@ -26998,9 +26998,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var cell_fp = window.luckysheetCurrentFunction;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var cell_fp = Store.runtime.formula.current.formula;
             //色表，接下来会用到
             var colorList = formula.colorList;
             //var rangeValue = arguments[0];
@@ -27944,9 +27944,9 @@ const functionImplementation = {
         }
 
         try {
-            var cell_r = window.luckysheetCurrentRow;
-            var cell_c = window.luckysheetCurrentColumn;
-            var sheetindex_now = window.luckysheetCurrentIndex;
+            var cell_r = Store.runtime.formula.current.row;
+            var cell_c = Store.runtime.formula.current.column;
+            var sheetindex_now = Store.runtime.formula.current.index;
             //公式文本
             var strtext = func_methods.getFirstValue(arguments[0]).toString();
             if(valueIsError(strtext)){
@@ -27974,9 +27974,9 @@ const functionImplementation = {
         }
 
         try {
-            const cellRow = window.luckysheetCurrentRow;
-            const cellColumn = window.luckysheetCurrentColumn;
-            const cellFunction = window.luckysheetCurrentFunction;
+            const cellRow = Store.runtime.formula.current.row;
+            const cellColumn = Store.runtime.formula.current.column;
+            const cellFunction = Store.runtime.formula.current.formula;
 
             const remoteFunction = func_methods.getFirstValue(arguments[0]);
             if(valueIsError(remoteFunction)){

@@ -8,8 +8,9 @@ import tooltip from '../global/tooltip'
 import { $$, getObjType, camel2split } from "../utils/util";
 import { defaultToolbar, toolbarIdMap } from './toolbar';
 
-let gridW = 0,
-    gridH = 0;
+function resizeState() {
+    return Store.runtime.resize;
+}
 
 export default function luckysheetsizeauto(isRefreshCanvas=true) {
     if (!luckysheetConfigsetting.showinfobar) {
@@ -68,20 +69,20 @@ export default function luckysheetsizeauto(isRefreshCanvas=true) {
 
     $("#" + Store.container).find(".luckysheet-grid-container").css("top", Store.toolbarHeight + Store.infobarHeight + Store.calculatebarHeight);
 
-    gridW = $("#" + Store.container).width();
+    resizeState().gridW = $("#" + Store.container).width();
 
     if(luckysheetConfigsetting.showConfigWindowResize){//数据透视表  图表  交替颜色 Protection
         if($("#luckysheet-modal-dialog-slider-pivot").is(":visible")){
-            gridW -= $("#luckysheet-modal-dialog-slider-pivot").outerWidth();
+            resizeState().gridW -= $("#luckysheet-modal-dialog-slider-pivot").outerWidth();
         }
         else if($(".chartSetting").is(":visible")){
-            gridW -= $(".chartSetting").outerWidth();
+            resizeState().gridW -= $(".chartSetting").outerWidth();
         }
         else if($("#luckysheet-modal-dialog-slider-alternateformat").is(":visible")){
-            gridW -= $("#luckysheet-modal-dialog-slider-alternateformat").outerWidth();
+            resizeState().gridW -= $("#luckysheet-modal-dialog-slider-alternateformat").outerWidth();
         }
         if($("#luckysheet-modal-dialog-slider-protection").is(":visible")){
-            gridW -= $("#luckysheet-modal-dialog-slider-protection").outerWidth();
+            resizeState().gridW -= $("#luckysheet-modal-dialog-slider-protection").outerWidth();
         }
     }
 
@@ -137,7 +138,7 @@ export default function luckysheetsizeauto(isRefreshCanvas=true) {
     for (let index = toobarWidths.length - 1; index >= 0; index--) {
 
         // #luckysheet-icon-morebtn button width plus right is 83px
-        if(toobarWidths[index] < gridW - 90){
+        if(toobarWidths[index] < resizeState().gridW - 90){
             moreButtonIndex = index;
             if(moreButtonIndex < toobarWidths.length - 1){
 
@@ -251,11 +252,11 @@ export default function luckysheetsizeauto(isRefreshCanvas=true) {
     });
 
     // When adding elements to the luckysheet-icon-morebtn-div element of the toolbar, it will affect the height of the entire workbook area, so the height is obtained here
-    gridH = $("#" + Store.container).height();
+    resizeState().gridH = $("#" + Store.container).height();
 
-    $("#" + Store.container).find(".luckysheet").height(gridH - 2).width(gridW - 2);
+    $("#" + Store.container).find(".luckysheet").height(resizeState().gridH - 2).width(resizeState().gridW - 2);
 
-    changeSheetContainerSize(gridW, gridH)
+    changeSheetContainerSize(resizeState().gridW, resizeState().gridH)
 
     if(isRefreshCanvas){
         luckysheetrefreshgrid($("#luckysheet-cell-main").scrollLeft(), $("#luckysheet-cell-main").scrollTop());

@@ -16,8 +16,9 @@ import { getSheetIndex, getRangetxt } from '../methods/get';
 import locale from '../locale/locale';
 import Store from '../store';
 import { ensureLsItem, normalizeDataVerificationMap } from './dvAdapter';
+import { createContextualModule } from '../store/runtimeModules';
 
-const dataVerificationCtrl = {
+const dataVerificationCtrl = createContextualModule('dataVerificationCtrl', {
     defaultItem: {
         type: 'dropdown',  //类型
         type2: null,  //
@@ -1745,7 +1746,7 @@ const dataVerificationCtrl = {
             luckysheetrefreshgrid();
         }, 1);
     },
-}
+});
 
 function validateIdCard(idCard) {
     // 15位和18位身份证号码的正则表达式

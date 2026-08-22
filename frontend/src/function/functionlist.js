@@ -30,9 +30,8 @@ const functionlist = function(customFunctions){
         luckysheet_function[func.n] = func;
     }
 
-    window.luckysheet_function = luckysheet_function; //Mount window for eval() calculation formula
-    
     Store.luckysheet_function = luckysheet_function;
+    Store.runtime.formula.functions = luckysheet_function;
 }
 
 export default functionlist;

@@ -46,7 +46,22 @@ export function createStoreFields() {
     store.instanceId = null;
     store.domPrefix = "";
     store.multi = false;
-    store.moduleSnap = null;
+    store.modules = {};
+    store.disposers = [];
+    store.portals = new Set();
+    store.timers = new Set();
+    store.runtime = {
+        formula: {
+            functions: {},
+            current: { row: null, column: null, index: null, formula: null },
+        },
+        scroll: { requestAnimationFrameIni: true, requestId: false, timeoutId: null },
+        refresh: { timeoutId: null, dirtyCells: [] },
+        listener: { undoTimer: null, redoTimer: null },
+        keyboard: { shiftDown: false },
+        sheetBar: { initialized: false, currentItem: null, doubleClickTimer: null, oldSheetName: "" },
+        resize: { gridW: 0, gridH: 0 },
+    };
     return store;
 }
 
@@ -61,6 +76,7 @@ export function createWorkbookContext(overrides) {
     if (!ctx.jfredo) {
         ctx.jfredo = [];
     }
+    ctx.disposed = false;
     return ctx;
 }
 

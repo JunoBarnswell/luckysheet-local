@@ -10,8 +10,9 @@ import Store from '../store';
 import locale from '../locale/locale';
 import tooltip from '../global/tooltip';
 import method from '../global/method';
+import { createContextualModule } from '../store/runtimeModules';
 
-const imageCtrl = {
+const imageCtrl = createContextualModule('imageCtrl', {
     imgItem: {
         type: '3',  //1移动并调整单元格大小 2移动并且不调整单元格的大小 3不要移动单元格并调整其大小
         src: '',  //图片url
@@ -1141,6 +1142,6 @@ const imageCtrl = {
         file.images = $.extend(true, {}, images);
         server.saveParam("all", Store.currentSheetIndex, file.images, { "k": "images" });
     },
-}
+});
 
 export default imageCtrl;

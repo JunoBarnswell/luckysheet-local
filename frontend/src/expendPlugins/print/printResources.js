@@ -1,6 +1,7 @@
 import Store from "../../store";
+import { PrintResourceCollector, RESOURCE_WAIT_MS } from "./printResourceCollector";
 
-export const RESOURCE_WAIT_MS = 10000;
+export { PrintResourceCollector, RESOURCE_WAIT_MS };
 
 const imageCache = new Map();
 
@@ -47,6 +48,30 @@ export function waitPrintResources(draft) {
             setTimeout(resolve, RESOURCE_WAIT_MS);
         }),
     ]);
+}
+
+export function waitForCanvasReady(canvas, timeout) {
+    const started = Date.now();
+    return new Promise(function (resolve) {
+        const check = function () {
+            if (canvas && canvas.width > 0 && canvas.height > 0) {
+                // Rendering a chart canvas is async in some engines. Two
+                // animation frames make the bitmap stable without assuming a
+                // vendor-specific chart lifecycle.
+                const frame = typeof requestAnimationFrame === "function"
+                    ? requestAnimationFrame
+                    : function (callback) { return setTimeout(callback, 0); };
+                frame(function () { frame(resolve); });
+                return;
+            }
+            if (Date.now() - started >= (timeout || RESOURCE_WAIT_MS)) {
+                resolve();
+                return;
+            }
+            setTimeout(check, 25);
+        };
+        check();
+    });
 }
 
 export function loadImage(src) {

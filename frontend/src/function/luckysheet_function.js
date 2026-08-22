@@ -1,4 +1,5 @@
 import functionlist from './functionlist';
+import Store from '../store';
 
 const luckysheet_function = {};
 
@@ -7,6 +8,6 @@ for (let i = 0; i < functionlist.length; i++) {
     luckysheet_function[func.n] = func;
 }
 
-window.luckysheet_function = luckysheet_function; //挂载window 用于 eval() 计算公式
+Store.runtime.formula.functions = luckysheet_function;
 
 export default luckysheet_function;

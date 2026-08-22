@@ -3612,11 +3612,6 @@ const menuButton = {
                         value: "print",
                         example: '<i class="iconfont-luckysheet luckysheet-iconfont-dayin" aria-hidden="true"></i>',
                     },
-                    {
-                        text: locale_print.exportPdf || "Export PDF",
-                        value: "exportPdf",
-                        example: '<i class="iconfont-luckysheet luckysheet-iconfont-daochu" aria-hidden="true"></i>',
-                    },
                     { text: "", value: "split", example: "" },
                     {
                         text: locale_print.menuItemAreas,
@@ -3655,12 +3650,6 @@ const menuButton = {
                             const plugin = Store.plugins && Store.plugins.find((item) => item.name === "print");
                             printer.createDialog();
                             printer.init(plugin && plugin.config && plugin.config.license);
-                        }
-                    } else if (itemvalue == "exportPdf") {
-                        if (Store.luckysheetPrint) {
-                            Store.luckysheetPrint.createDialog();
-                            Store.luckysheetPrint.init();
-                            Store.luckysheetPrint.exportPrintPdf();
                         }
                     } else if (itemvalue == "areas") {
                         if (Store.luckysheetPrint) {

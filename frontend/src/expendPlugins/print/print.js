@@ -12,6 +12,7 @@ import {
     renderOf,
     persist,
     buildAllPageCanvases,
+    createPreparedPrintSession,
 } from "./printManager";
 import { paginateByPaper } from "./printLayout";
 import {
@@ -23,9 +24,7 @@ import {
     DIALOG_ID,
 } from "./printDialog";
 import { ensurePrintStyleTag, createPrintStyle } from "./printBrowser";
-import { exportPdf } from "./printPdf";
-import { saveScreenshotToClipboard, getScreenshot } from "./printScreenshot";
-import { drawPageCanvas } from "./printRenderer";
+import { runInPrintSession } from "./printSession";
 import {
     emitBeforeSheetPrintOpen,
     emitAfterSheetPrintOpen,
@@ -68,9 +67,6 @@ function init(license) {
     $dlg.on("click.lsPrint", "#luckysheet-print-do-btn", function () {
         print();
     });
-    $dlg.on("click.lsPrint", "#luckysheet-print-pdf-btn", function () {
-        exportPrintPdf();
-    });
     $dlg.on("click.lsPrint", ".luckysheet-modal-dialog-title-close,.luckysheet-model-close-btn", function () {
         closeDialog();
     });
@@ -88,37 +84,44 @@ function print(options) {
         return Promise.resolve({ pageCount: 0, canceled: true });
     }
     ensurePrintStyleTag();
-    const pair =
-        options && (options.layout || options.render)
-            ? {
-                  layout: layoutOf(file, options.layout),
-                  render: renderOf(file, options.render),
-              }
-            : readDialogLayout(file);
+    const pair = options
+        ? {
+              layout: layoutOf(file, options.layout || options),
+              render: renderOf(file, options.render || options),
+          }
+        : readDialogLayout(file);
     persist(file, pair.layout, pair.render);
-    return preparePrint(file, pair.layout, pair.render).then(function () {
-        const pack = buildPages(file, pair.layout, pair.render);
-        mountPreviewPages(pack, file, pair.layout, pair.render, instanceAttr());
-        const style = createPrintStyle(pack.paper.pageW, pack.paper.pageH, pair.layout.direction);
-        document.head.appendChild(style);
-        if (typeof window !== "undefined" && typeof window.print === "function") {
-            window.print();
-        }
-        emitAfterSheetPrintConfirm({ pageCount: pack.pages.length, range: pack.range });
-        return { pageCount: pack.pages.length, range: pack.range };
-    });
-}
-
-function exportPrintPdf(filename) {
-    const file = currentFile();
-    if (!file) {
-        return Promise.resolve({ pageCount: 0 });
-    }
-    const pair = readDialogLayout(file);
-    persist(file, pair.layout, pair.render);
-    return preparePrint(file, pair.layout, pair.render).then(function () {
-        const pack = buildPages(file, pair.layout, pair.render);
-        return exportPdf(pack, pair.layout, pair.render, drawPageCanvas, filename);
+    return createPreparedPrintSession(pair.layout, pair.render).then(function (prepared) {
+        return runInPrintSession(prepared.session, function () {
+            const plan = prepared.plan;
+            mountPreviewPages(plan, prepared.session.instanceId);
+            const style = createPrintStyle(plan.paper.pageW, plan.paper.pageH, prepared.session.layout.direction, prepared.session.id);
+            document.head.appendChild(style);
+            const finish = function () {
+                style.remove();
+                window.removeEventListener("afterprint", finish);
+                runInPrintSession(prepared.session, function () {
+                    closeDialogDom();
+                    emitAfterSheetPrintConfirm({
+                        pageCount: plan.pageCount,
+                        resource: prepared.resource,
+                        instanceId: prepared.session.instanceId,
+                    });
+                });
+            };
+            window.addEventListener("afterprint", finish);
+            if (typeof window !== "undefined" && typeof window.print === "function") {
+                window.print();
+            } else {
+                finish();
+            }
+            return {
+                pageCount: plan.pageCount,
+                instanceId: prepared.session.instanceId,
+                diagnostics: prepared.resource.diagnostics,
+                resourceTimedOut: prepared.resource.timedOut,
+            };
+        });
     });
 }
 
@@ -127,15 +130,12 @@ export const luckysheetPrint = {
     closeDialog: closeDialog,
     init: init,
     print: print,
-    exportPrintPdf: exportPrintPdf,
     updatePrintConfig: updatePrintConfig,
     updatePrintRenderConfig: updatePrintRenderConfig,
     setPrintTitles: setPrintTitles,
     resolvePrintRange: resolvePrintRange,
     collectPrintRange: collectPrintRange,
     paginateByPaper: paginateByPaper,
-    saveScreenshotToClipboard: saveScreenshotToClipboard,
-    getScreenshot: getScreenshot,
     buildPages: buildPages,
     buildAllPageCanvases: buildAllPageCanvases,
 };

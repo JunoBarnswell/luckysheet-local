@@ -93,6 +93,7 @@ export const EXCEL_PAPER = {
     11: { name: PrintPaperSize.A5, wmm: 148, hmm: 210 },
     12: { name: PrintPaperSize.B4, wmm: 250, hmm: 353 },
     13: { name: PrintPaperSize.B5, wmm: 176, hmm: 250 },
+    14: { name: PrintPaperSize.Folio, wmm: 215.9, hmm: 330.2 },
 };
 
 export const PAPER_TO_EXCEL = {
@@ -101,7 +102,7 @@ export const PAPER_TO_EXCEL = {
     Legal: 5,
     Statement: 6,
     Executive: 7,
-    Folio: 5,
+    Folio: 14,
     A3: 8,
     A4: 9,
     A5: 11,
@@ -186,7 +187,6 @@ export function defaultRender() {
             bottomRight: "",
         },
         isCustomHeaderFooter: false,
-        watermark: null,
         draft: false,
     };
 }
@@ -258,9 +258,18 @@ export function writePrintoptions(printoptions, layout, render) {
 
     if (layout.rangeText) {
         next.PrintArea = layout.rangeText;
+    } else if (layout.rangeText === null) {
+        delete next.PrintArea;
     }
     if (layout.paperSize && PAPER_TO_EXCEL[layout.paperSize] != null) {
         setup.paperSize = PAPER_TO_EXCEL[layout.paperSize];
+    }
+    if (layout.pageSizeCustom && layout.pageSizeCustom.w && layout.pageSizeCustom.h) {
+        setup.paperWidth = layout.pageSizeCustom.w + "mm";
+        setup.paperHeight = layout.pageSizeCustom.h + "mm";
+    } else {
+        delete setup.paperWidth;
+        delete setup.paperHeight;
     }
     if (layout.direction === PrintDirection.Landscape) {
         setup.orientation = 1;
@@ -625,22 +634,31 @@ function advanceAxis(start, end, sizes, startPxFn, limitPx, maxCount) {
     let cursor = start;
     let used = 0;
     let count = 0;
+    let lastVisible = null;
     while (cursor <= end) {
-        const size = Math.max(1, (sizes[cursor] || 0) - startPxFn(sizes, cursor));
+        const size = Math.max(0, (sizes[cursor] || 0) - startPxFn(sizes, cursor));
+        if (size === 0) {
+            cursor += 1;
+            continue;
+        }
         if (count > 0 && used + size > limitPx) {
             break;
         }
         used += size;
         count += 1;
+        lastVisible = cursor;
         cursor += 1;
         if (maxCount && count >= maxCount) {
             break;
         }
     }
     if (count === 0) {
-        return start;
+        while (cursor <= end && ((sizes[cursor] || 0) - startPxFn(sizes, cursor)) <= 0) {
+            cursor += 1;
+        }
+        return cursor > end ? end : cursor;
     }
-    return cursor - 1;
+    return lastVisible;
 }
 
 export function paginateByPaper(range, visibledatarow, visibledatacolumn, paper, layout) {
@@ -659,14 +677,14 @@ export function paginateByPaper(range, visibledatarow, visibledatacolumn, paper,
     while (r <= range.row[1]) {
         const r2 = advanceAxis(r, range.row[1], visibledatarow, rowStartPx, innerH, maxR);
         rowBands.push([r, r2]);
-        r = r2 + 1;
+        r = Math.max(r2 + 1, r + 1);
     }
     const colBands = [];
     let c = range.column[0];
     while (c <= range.column[1]) {
         const c2 = advanceAxis(c, range.column[1], visibledatacolumn, colStartPx, innerW, maxC);
         colBands.push([c, c2]);
-        c = c2 + 1;
+        c = Math.max(c2 + 1, c + 1);
     }
 
     if (pageOrder === 1) {

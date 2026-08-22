@@ -28,8 +28,9 @@ import {
 import { luckysheet_searcharray } from '../controllers/sheetSearch';
 import { growSparseToRect, isSparseGrid } from './sparseGrid';
 
-let refreshCanvasTimeOut = null;
-let formulaDirtyCells = [];
+function refreshState() {
+    return Store.runtime.refresh;
+}
 
 function markFormulaDirty(r, c, index) {
     if (r == null || c == null) {
@@ -38,15 +39,15 @@ function markFormulaDirty(r, c, index) {
     if (index == null) {
         index = Store.currentSheetIndex;
     }
-    formulaDirtyCells.push({ "r": r, "c": c, "i": index });
+    refreshState().dirtyCells.push({ "r": r, "c": c, "i": index });
 }
 
 function drainFormulaDirtyCells() {
-    if (formulaDirtyCells.length == 0) {
+    if (refreshState().dirtyCells.length == 0) {
         return [];
     }
-    let cells = formulaDirtyCells;
-    formulaDirtyCells = [];
+    let cells = refreshState().dirtyCells;
+    refreshState().dirtyCells = [];
     return cells;
 }
 
@@ -91,7 +92,7 @@ function jfrefreshgrid(data, range, allParam, isRunExecFunction = true, isRefres
     }
     range = JSON.parse(JSON.stringify(range));
 
-    clearTimeout(refreshCanvasTimeOut);
+    clearTimeout(refreshState().timeoutId);
 
     //关联参数
     if(allParam == null){
@@ -221,9 +222,9 @@ function jfrefreshgrid(data, range, allParam, isRunExecFunction = true, isRefres
         let c1 = range[s].column[0];
 
         if(Store.flowdata[r1][c1] != null && Store.flowdata[r1][c1].spl != null){
-            window.luckysheetCurrentRow = r1;
-            window.luckysheetCurrentColumn = c1;
-            window.luckysheetCurrentFunction = Store.flowdata[r1][c1].f;
+            Store.runtime.formula.current.row = r1;
+            Store.runtime.formula.current.column = c1;
+            Store.runtime.formula.current.formula = Store.flowdata[r1][c1].f;
 
             let fp = $.trim(formula.functionParserExe(Store.flowdata[r1][c1].f));
             let sparklines = new Function("return " +fp)();
@@ -245,7 +246,7 @@ function jfrefreshgrid(data, range, allParam, isRunExecFunction = true, isRefres
     //刷新表格
     dirtyRect = resolveRefreshDirtyRect(range, dirtyRect);
     if(isRefreshCanvas){
-        refreshCanvasTimeOut = setTimeout(function () {
+        refreshState().timeoutId = setTimeout(function () {
             luckysheetrefreshgrid(null, null, dirtyRect);
         }, 1);
     }
@@ -257,7 +258,7 @@ function jfrefreshgrid(data, range, allParam, isRunExecFunction = true, isRefres
 
 function jfrefreshgridall(colwidth, rowheight, data, cfg, range, ctrlType, ctrlValue, cdformat, isRefreshCanvas=true) {
     let redo = {}, isRunExecFunction=false;
-    clearTimeout(refreshCanvasTimeOut);
+    clearTimeout(refreshState().timeoutId);
     if (ctrlType == "cellRowChange") {
         redo["type"] = "cellRowChange";
         redo["config"] = $.extend(true, {}, Store.config);
@@ -388,7 +389,7 @@ function jfrefreshgridall(colwidth, rowheight, data, cfg, range, ctrlType, ctrlV
 
     if(isRefreshCanvas){
         let allDirty = resolveRefreshDirtyRect(range);
-        refreshCanvasTimeOut = setTimeout(function () {
+        refreshState().timeoutId = setTimeout(function () {
             luckysheetrefreshgrid(null, null, allDirty);
         }, 1);
     }
@@ -400,7 +401,7 @@ function jfrefreshgridall(colwidth, rowheight, data, cfg, range, ctrlType, ctrlV
 }
 
 function jfrefreshrange(data, range, cdformat) {
-    clearTimeout(refreshCanvasTimeOut);
+    clearTimeout(refreshState().timeoutId);
 
     if (Store.clearjfundo) {
         Store.jfundo.length  = 0;
@@ -432,7 +433,7 @@ function jfrefreshrange(data, range, cdformat) {
 
     //刷新表格
     let rangeDirty = resolveRefreshDirtyRect(range);
-    refreshCanvasTimeOut = setTimeout(function () {
+    refreshState().timeoutId = setTimeout(function () {
         luckysheetrefreshgrid(null, null, rangeDirty);
     }, 1);
 
@@ -674,7 +675,7 @@ function jfrefreshgrid_adRC(data, cfg, ctrlType, ctrlValue, calc, filterObj, cf,
 //删除单元格 刷新表格
 function jfrefreshgrid_deleteCell(data, cfg, ctrl, calc, filterObj, cf, dataVerification, hyperlink){
     let file = Store.luckysheetfile[getSheetIndex(Store.currentSheetIndex)];
-    clearTimeout(refreshCanvasTimeOut);
+    clearTimeout(refreshState().timeoutId);
     collaborativeEditBox();
     //merge改变对应的单元格值改变
     let mcData = [];
@@ -871,7 +872,7 @@ function jfrefreshgrid_deleteCell(data, cfg, ctrl, calc, filterObj, cf, dataVeri
     file.hyperlink = hyperlink;
     server.saveParam("all", Store.currentSheetIndex, file.hyperlink, { "k": "hyperlink" });
 
-    refreshCanvasTimeOut = setTimeout(function () {
+    refreshState().timeoutId = setTimeout(function () {
         luckysheetrefreshgrid();
     }, 1);
 }
@@ -881,7 +882,7 @@ function jfrefreshgrid_pastcut(source, target, RowlChange){
     //单元格数据更新联动
     let execF_rc = {};
     formula.execFunctionExist = [];
-    clearTimeout(refreshCanvasTimeOut);
+    clearTimeout(refreshState().timeoutId);
     for(let r = source["range"].row[0]; r <= source["range"].row[1]; r++){
         for(let c = source["range"].column[0]; c <= source["range"].column[1]; c++){
             if((r + "_" + c + "_" + source["sheetIndex"]) in execF_rc){
@@ -1015,7 +1016,7 @@ function jfrefreshgrid_pastcut(source, target, RowlChange){
     
     sheetmanage.showSheet();
 
-    refreshCanvasTimeOut = setTimeout(function () {
+    refreshState().timeoutId = setTimeout(function () {
         luckysheetrefreshgrid();
     }, 1);
 
@@ -1046,7 +1047,7 @@ function jfrefreshgrid_pastcut(source, target, RowlChange){
 //行高、列宽改变 刷新表格
 function jfrefreshgrid_rhcw(rowheight, colwidth, isRefreshCanvas=true){
     rhchInit(rowheight, colwidth);
-    clearTimeout(refreshCanvasTimeOut);
+    clearTimeout(refreshState().timeoutId);
     sheetmanage.storeSheetParam();
 
     //行高列宽改变时 重新计算sparklines
@@ -1065,9 +1066,9 @@ function jfrefreshgrid_rhcw(rowheight, colwidth, isRefreshCanvas=true){
             let r = calcChain[i].r, c = calcChain[i].c, index = calcChain[i].index;
 
             if(index == Store.currentSheetIndex && Store.flowdata[r][c] != null && Store.flowdata[r][c].spl != null && ((r in Store.config["rowlen"]) || (c in Store.config["columnlen"]))){
-                window.luckysheetCurrentRow = r;
-                window.luckysheetCurrentColumn = c;
-                window.luckysheetCurrentFunction = Store.flowdata[r][c].f;
+                Store.runtime.formula.current.row = r;
+                Store.runtime.formula.current.column = c;
+                Store.runtime.formula.current.formula = Store.flowdata[r][c].f;
 
                 let fp = $.trim(formula.functionParserExe(Store.flowdata[r][c].f));
                 let sparklines = new Function("return " + fp)();
@@ -1198,7 +1199,7 @@ function jfrefreshgrid_rhcw(rowheight, colwidth, isRefreshCanvas=true){
     sheetmanage.showSheet();
 
     if(isRefreshCanvas){
-        refreshCanvasTimeOut = setTimeout(function () {
+        refreshState().timeoutId = setTimeout(function () {
             luckysheetrefreshgrid();
         }, 1);
     }

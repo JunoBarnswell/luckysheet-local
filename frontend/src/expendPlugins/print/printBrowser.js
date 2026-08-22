@@ -3,10 +3,9 @@ import { PrintDirection } from "./printLayout";
 export const PRINT_CONTAINER_CLASS = "printing-canvas-container";
 export const PRINT_CANVAS_CLASS = "printing-canvas";
 
-export function createPrintStyle(w, h, direction) {
-    const portrait = direction !== PrintDirection.Landscape;
-    const pageW = portrait ? w : h;
-    const pageH = portrait ? h : w;
+export function createPrintStyle(w, h, direction, sessionId) {
+    const pageW = w;
+    const pageH = h;
     const css = [
         "." + PRINT_CANVAS_CLASS + " {",
         "  page-break-after: always!important;",
@@ -19,7 +18,7 @@ export function createPrintStyle(w, h, direction) {
         "  body { overflow: auto!important; width: fit-content; }",
         "  @page { size: " + pageW + "px " + pageH + "px; margin: 0; visibility: hidden; }",
         "  body > * { display: none!important; }",
-        "  ." + PRINT_CONTAINER_CLASS + ", ." + PRINT_CONTAINER_CLASS + " * {",
+        "  ." + PRINT_CONTAINER_CLASS + '[data-print-session="' + sessionId + '"], .' + PRINT_CONTAINER_CLASS + '[data-print-session="' + sessionId + '"] * {',
         "    display: block!important;",
         "    height: fit-content;",
         "    overflow: visible;",
@@ -60,7 +59,6 @@ export function ensurePrintStyleTag(extraRules) {
         ".luckysheet-print-row input[type=text],.luckysheet-print-row input[type=number],.luckysheet-print-row select{flex:1;min-width:120px;height:28px;font-size:12px;}",
         ".luckysheet-print-radio{display:flex;gap:12px;flex-wrap:wrap;}",
         ".luckysheet-print-preview{position:fixed;inset:0;background:#fff;z-index:100010;overflow:auto;}",
-        ".luckysheet-print-watermark-preview{opacity:.15;pointer-events:none;}",
         extraRules || "",
     ].join("");
     document.head.appendChild(style);

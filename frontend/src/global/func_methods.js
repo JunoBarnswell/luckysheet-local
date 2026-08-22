@@ -2,6 +2,7 @@ import { getObjType } from '../utils/util';
 import { isRealNum, isRealNull, valueIsError } from './validate';
 import { update } from './format';
 import formula from './formula';
+import Store from '../store';
 import dayjs from "dayjs";
 
 const error = {
@@ -250,8 +251,8 @@ const func_methods = {
                 }
             }
             else{
-                let cell_r = window.luckysheetCurrentRow;
-                let cell_c = window.luckysheetCurrentColumn;
+                let cell_r = Store.runtime.formula.current.row;
+                let cell_c = Store.runtime.formula.current.column;
 
                 if(data.rowl == 1 && data.coll == 1){
                     value = data.data;

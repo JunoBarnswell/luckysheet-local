@@ -113,7 +113,7 @@
 | 1 | `function/functionListDescriptor.js` | 数组长度 **375**（node require 实测） |
 | 2 | `function/functionlist.js:8-16` | locale 列表绑定 `functionImplementation[func.n]` |
 | 3 | `function/functionlist.js:19-21` | `customFunctions` push |
-| 4 | `function/functionlist.js:33` | `window.luckysheet_function` 供 eval |
+| 4 | `function/functionlist.js` | 函数表与当前计算坐标存于 `Store.runtime.formula`，不再写入 `window` |
 | 5 | `function/functionImplementation.js:2976` | `SUBTOTAL` 实现入口 |
 | 6 | `functionImplementation.js` SUBTOTAL 段 | **无** `rowhidden`（模块内 grep 零命中） |
 | 7 | `global/api.js:189-194` | 仅 `f!=null && v==null` 走 `updatecell` |

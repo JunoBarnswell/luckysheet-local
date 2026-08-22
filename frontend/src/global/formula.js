@@ -39,8 +39,9 @@ import Store from "../store";
 import locale from "../locale/locale";
 import json from "./json";
 import method from "./method";
+import { createContextualModule } from "../store/runtimeModules";
 
-const luckysheetformula = {
+const luckysheetformula = createContextualModule("formula", {
     error: {
         v: "#VALUE!", //错误的参数或运算符
         n: "#NAME?", //公式名称错误
@@ -5927,10 +5928,10 @@ const luckysheetformula = {
         // let spl;
         // if(v[3]!=null){
         //     if(v[3].type=="sparklines"){
-        //         window.luckysheetCurrentRow = u.r;
-        //         window.luckysheetCurrentColumn = u.c;
-        //         window.luckysheetCurrentIndex = u.index;
-        //         window.luckysheetCurrentFunction = calc_funcStr;
+        //         Store.runtime.formula.current.row = u.r;
+        //         Store.runtime.formula.current.column = u.c;
+        //         Store.runtime.formula.current.index = u.index;
+        //         Store.runtime.formula.current.formula = calc_funcStr;
 
         //         let fp = $.trim(_this.functionParserExe(calc_funcStr));
         //         let sparklines = eval(fp);
@@ -6064,10 +6065,10 @@ const luckysheetformula = {
         }
 
         let result = null;
-        window.luckysheetCurrentRow = r;
-        window.luckysheetCurrentColumn = c;
-        window.luckysheetCurrentIndex = index;
-        window.luckysheetCurrentFunction = txt;
+        Store.runtime.formula.current.row = r;
+        Store.runtime.formula.current.column = c;
+        Store.runtime.formula.current.index = index;
+        Store.runtime.formula.current.formula = txt;
 
         let sparklines = null;
 
@@ -6164,10 +6165,10 @@ const luckysheetformula = {
             }
         }
 
-        window.luckysheetCurrentRow = null;
-        window.luckysheetCurrentColumn = null;
-        window.luckysheetCurrentIndex = null;
-        window.luckysheetCurrentFunction = null;
+        Store.runtime.formula.current.row = null;
+        Store.runtime.formula.current.column = null;
+        Store.runtime.formula.current.index = null;
+        Store.runtime.formula.current.formula = null;
 
         if (r != null && c != null) {
             if (isrefresh) {
@@ -6271,6 +6272,6 @@ const luckysheetformula = {
     hideButton: function() {
         $("#luckysheet-formula-refresh").hide()
     }
-};
+});
 
 export default luckysheetformula;

@@ -14,9 +14,13 @@ import {
     computeFitScale,
     clampScale,
     usedRange,
+    parsePrintTitles,
+    rowStartPx,
+    colStartPx,
 } from "./printLayout";
 import { drawPageCanvas, preloadPrintImages } from "./printRenderer";
 import { waitPrintResources } from "./printResources";
+import { createPrintSession, preparePrintSession, runInPrintSession } from "./printSession";
 
 export function currentFile() {
     const index = getSheetIndex(Store.currentSheetIndex);
@@ -180,6 +184,89 @@ export function buildPagesForFile(file, layout, render) {
     };
 }
 
+function buildPagesForTarget(target, layout, render) {
+    const file = target.file;
+    const range = target.range;
+    const visibledatarow = target.visibledatarow;
+    const visibledatacolumn = target.visibledatacolumn;
+    const po = getPrintOptions(file);
+    const paper = resolvePaperPx(layout, po);
+    let scale = 1;
+    if (layout.scale === PrintScale.Custom) {
+        scale = clampScale(layout.customScale) / 100;
+    } else if (layout.scale !== PrintScale.Origin) {
+        scale = computeFitScale(range, visibledatarow, visibledatacolumn, paper, layout.scale);
+    }
+    const titles = parsePrintTitles(file, layout);
+    const titleH = titles.row
+        ? rowStartPx(visibledatarow, titles.row[1] + 1) - rowStartPx(visibledatarow, titles.row[0])
+        : 0;
+    const titleW = titles.column
+        ? colStartPx(visibledatacolumn, titles.column[1] + 1) - colStartPx(visibledatacolumn, titles.column[0])
+        : 0;
+    const scaledPaper = {
+        pageW: paper.pageW,
+        pageH: paper.pageH,
+        innerW: Math.max(20, paper.innerW / scale - titleW),
+        innerH: Math.max(20, paper.innerH / scale - titleH),
+        pad: paper.pad,
+    };
+    const pages = paginateByPaper(range, visibledatarow, visibledatacolumn, scaledPaper, Object.assign({}, layout, {
+        merge: ((file && file.config) || {}).merge || {},
+    }));
+    return {
+        file: file,
+        range: range,
+        paper: paper,
+        pages: pages,
+        scale: scale,
+        visibledatarow: visibledatarow,
+        visibledatacolumn: visibledatacolumn,
+        titles: titles,
+    };
+}
+
+export function buildSessionPages(session) {
+    const entries = [];
+    session.targets.forEach(function (target) {
+        target.ranges.forEach(function (range) {
+            const pack = buildPagesForTarget({
+                file: target.file,
+                range: range,
+                visibledatarow: target.visibledatarow,
+                visibledatacolumn: target.visibledatacolumn,
+            }, session.layout, session.render);
+            pack.pages.forEach(function (page, sheetPage) {
+                entries.push({ file: pack.file, page: page, pack: pack, sheetPage: sheetPage + 1 });
+            });
+        });
+    });
+    return {
+        session: session,
+        entries: entries,
+        pageCount: entries.length,
+        paper: entries.length ? entries[0].pack.paper : resolvePaperPx(session.layout, {}),
+    };
+}
+
+export function createPreparedPrintSession(layout, render) {
+    const session = createPrintSession(layout, render, function (area, snapshotFile, sourceFile) {
+        if (area === PrintArea.CurrentSelection || area === PrintArea.AllSelection) {
+            return null;
+        }
+        const po = getPrintOptions(snapshotFile);
+        if (po.PrintArea) {
+            return parseRangeText(po.PrintArea);
+        }
+        return usedRange(snapshotFile.data || []);
+    });
+    return preparePrintSession(session).then(function (prepared) {
+        return runInPrintSession(session, function () {
+            return { session: session, resource: prepared.resource, plan: buildSessionPages(session) };
+        });
+    });
+}
+
 export function buildPages(file, layout, render) {
     const files = file ? [file] : resolveTargetFiles(layout);
     if (!files.length) {
@@ -271,6 +358,12 @@ export function updatePrintConfig(config) {
         if (config.marginCustom) {
             layout.marginCustom = config.marginCustom;
         }
+        if (config.pageSizeCustom) {
+            layout.pageSizeCustom = config.pageSizeCustom;
+        }
+        if (config.freeze) {
+            layout.freeze = config.freeze.slice ? config.freeze.slice() : config.freeze;
+        }
         if (config.subUnitIds) {
             layout.subUnitIds = config.subUnitIds;
         }
@@ -282,6 +375,9 @@ export function updatePrintConfig(config) {
         }
         if (config.pageOrder != null) {
             layout.pageOrder = config.pageOrder;
+        }
+        if (config.rangeText === null || config.printArea === null || config.PrintArea === null) {
+            layout.rangeText = null;
         }
         if (config.area === "selection" || config.area === PrintArea.CurrentSelection) {
             const sel = selectionRange();

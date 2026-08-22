@@ -121,7 +121,7 @@ function textBaselineFromCell(cell, render, h) {
     return { baseline: "top", y: 2 };
 }
 
-function drawCellText(ctx, cell, x, y, w, h) {
+function drawCellText(ctx, cell, x, y, w, h, render) {
     const text = cellDisplayValue(cell);
     if (!text) {
         return;
@@ -135,9 +135,9 @@ function drawCellText(ctx, cell, x, y, w, h) {
     const italic = cell && cell.it ? "italic " : "";
     const bold = cell && cell.bl ? "bold " : "";
     ctx.font = italic + bold + fs + "px sans-serif";
-    const align = textAlignFromCell(cell, {});
+    const align = textAlignFromCell(cell, render || {});
     ctx.textAlign = align;
-    const base = textBaselineFromCell(cell, {}, h);
+    const base = textBaselineFromCell(cell, render || {}, h);
     ctx.textBaseline = base.baseline;
     let tx = x + 3;
     if (align === "center") {
@@ -174,9 +174,9 @@ function drawCellText(ctx, cell, x, y, w, h) {
 }
 
 function drawSheetRegion(ctx, file, page, pack, render, options) {
-    const data = (file && file.data) || Store.flowdata || [];
-    const merge = mergeMap((file && file.config) || Store.config);
-    const sheetIndex = file && file.index != null ? file.index : Store.currentSheetIndex;
+    const data = (file && file.data) || [];
+    const merge = mergeMap((file && file.config) || {});
+    const sheetIndex = file && file.index != null ? file.index : null;
     let borderInfoCompute = {};
     try {
         borderInfoCompute = getBorderInfoCompute(sheetIndex) || {};
@@ -223,7 +223,7 @@ function drawSheetRegion(ctx, file, page, pack, render, options) {
                 ctx.strokeRect(x + 0.5, y + 0.5, Math.max(w - 1, 0), Math.max(h - 1, 0));
             }
             drawCellBorders(ctx, borders, x, y, w, h);
-            drawCellText(ctx, cell, x, y, w, h);
+            drawCellText(ctx, cell, x, y, w, h, render);
         }
     }
 }
@@ -279,15 +279,14 @@ function drawImagesSync(ctx, file, pack, page, headingW, headingH, originX, orig
     });
 }
 
-function drawChartsSync(ctx, pack, page, headingW, headingH, originX, originY, containerRect) {
-    const charts = collectChartCanvases();
+function drawChartsSync(ctx, pack, page, headingW, headingH, originX, originY, containerRect, charts) {
     const r0 = page.row[0];
     const r1 = page.row[1];
     const c0 = page.column[0];
     const c1 = page.column[1];
     const regionRight = colStartPx(pack.visibledatacolumn, c1 + 1);
     const regionBottom = rowStartPx(pack.visibledatarow, r1 + 1);
-    charts.forEach(function (item) {
+    (charts || collectChartCanvases()).forEach(function (item) {
         const nodeRect = item.node.getBoundingClientRect();
         const relLeft = nodeRect.left - containerRect.left;
         const relTop = nodeRect.top - containerRect.top;
@@ -301,31 +300,10 @@ function drawChartsSync(ctx, pack, page, headingW, headingH, originX, originY, c
     });
 }
 
-function drawWatermark(ctx, watermark, pageW, pageH, enforce) {
-    if (!watermark && !enforce) {
-        return;
-    }
-    const text = typeof watermark === "string" ? watermark : watermark && watermark.text;
-    const content = text || (enforce ? "LuckySheet" : "");
-    if (!content) {
-        return;
-    }
-    ctx.save();
-    ctx.globalAlpha = (watermark && watermark.opacity) || 0.12;
-    ctx.fillStyle = (watermark && watermark.color) || "#6b7280";
-    ctx.font = "bold 48px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.translate(pageW / 2, pageH / 2);
-    ctx.rotate(-Math.PI / 6);
-    ctx.fillText(content, 0, 0);
-    ctx.restore();
-}
-
-function drawHeaderFooter(ctx, pack, render, file, pageMeta) {
+function drawHeaderFooter(ctx, pack, render, file, pageMeta, session) {
     const setting = render.headerFooterSetting || {};
     const ctxInfo = {
-        workbookTitle: (Store.toJsonOptions && Store.toJsonOptions.title) || "",
+        workbookTitle: (session && session.workbookTitle) || "",
         worksheetTitle: (file && file.name) || "",
         page: (pageMeta && pageMeta.pageIndex != null ? pageMeta.pageIndex : 0) + 1,
         pageTotal: (pageMeta && pageMeta.pageTotal) || pack.pages.length,
@@ -389,8 +367,8 @@ export function preloadPrintImages(file) {
     return Promise.all(tasks);
 }
 
-export function drawPageCanvas(page, file, layout, render, pack, pageMeta) {
-    const dpr = Math.max(1, Store.devicePixelRatio || 1);
+export function drawPageCanvas(page, file, layout, render, pack, pageMeta, session) {
+    const dpr = Math.max(1, (session && session.devicePixelRatio) || Store.devicePixelRatio || 1);
     const canvas = document.createElement("canvas");
     canvas.width = Math.ceil(pack.paper.pageW * dpr);
     canvas.height = Math.ceil(pack.paper.pageH * dpr);
@@ -484,18 +462,15 @@ export function drawPageCanvas(page, file, layout, render, pack, pageMeta) {
     });
 
     if (!render.draft) {
-        const root = Store.container ? document.getElementById(Store.container) : null;
+        const root = session && session.container ? document.getElementById(session.container) : (Store.container ? document.getElementById(Store.container) : null);
         const containerRect = root ? root.getBoundingClientRect() : { left: 0, top: 0 };
         page.renderDraft = false;
         drawImagesSync(ctx, file, pack, page, headingW + titleColW, headingH + titleRowH, contentOriginX, contentOriginY);
-        drawChartsSync(ctx, pack, page, headingW + titleColW, headingH + titleRowH, contentOriginX, contentOriginY, containerRect);
+        drawChartsSync(ctx, pack, page, headingW + titleColW, headingH + titleRowH, contentOriginX, contentOriginY, containerRect, session && session.charts);
     }
 
     ctx.restore();
-    drawHeaderFooter(ctx, pack, render, file, pageMeta);
-
-    const enforce = Store.printPluginConfig && Store.printPluginConfig.enforceWatermark;
-    drawWatermark(ctx, render.watermark, pack.paper.pageW, pack.paper.pageH, enforce);
+    drawHeaderFooter(ctx, pack, render, file, pageMeta, session);
 
     return canvas;
 }

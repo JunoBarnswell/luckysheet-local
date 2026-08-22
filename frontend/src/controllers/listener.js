@@ -7,16 +7,18 @@ import method from '../global/method';
 import { getluckysheetfile } from '../methods/get'
 import { toJson } from '../global/api';
 
-let undoTimer,redoTimer;
+function listenerState() {
+    return Store.runtime.listener;
+}
 function undoAccessible(len) {
-    clearTimeout(undoTimer);
-    undoTimer = setTimeout(() => {
+    clearTimeout(listenerState().undoTimer);
+    listenerState().undoTimer = setTimeout(() => {
         $('#luckysheet-icon-undo')[len ? 'removeClass' : 'addClass']('disabled');
     }, 10);
 }
 function redoAccessible(len) {
-    clearTimeout(redoTimer);
-    redoTimer = setTimeout(() => {
+    clearTimeout(listenerState().redoTimer);
+    listenerState().redoTimer = setTimeout(() => {
         $('#luckysheet-icon-redo')[len ? 'removeClass' : 'addClass']('disabled');
     }, 10);
 }

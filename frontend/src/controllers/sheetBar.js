@@ -22,10 +22,12 @@ import luckysheetsizeauto from './resize';
 import {openProtectionModal} from "./protection";
 
 //表格底部名称栏区域 相关事件（增、删、改、隐藏显示、颜色等等）
-let isInitialSheetConfig = false, luckysheetcurrentSheetitem = null, jfdbclicklagTimeout = null,oldSheetFileName = "";
+function sheetBarState() {
+    return Store.runtime.sheetBar;
+}
 function showsheetconfigmenu() {
-    if (!isInitialSheetConfig) {
-        isInitialSheetConfig = true;
+    if (!sheetBarState().initialized) {
+        sheetBarState().initialized = true;
         const _locale = locale();
         let locale_toolbar = _locale.toolbar;
         $("#luckysheetsheetconfigcolorur").spectrum({
@@ -55,12 +57,12 @@ function showsheetconfigmenu() {
                 }
 
                 let oldcolor = null;
-                if(luckysheetcurrentSheetitem.find(".luckysheet-sheets-item-color").length>0){
-                    oldcolor = luckysheetcurrentSheetitem.find(".luckysheet-sheets-item-color").css("background-color");
+                if(sheetBarState().currentItem.find(".luckysheet-sheets-item-color").length>0){
+                    oldcolor = sheetBarState().currentItem.find(".luckysheet-sheets-item-color").css("background-color");
                 }
 
-                luckysheetcurrentSheetitem.find(".luckysheet-sheets-item-color").remove();
-                luckysheetcurrentSheetitem.append('<div class="luckysheet-sheets-item-color" style=" position: absolute; width: 100%; height: 3px; bottom: 0px; left: 0px; background-color: ' + color + ';"></div>');
+                sheetBarState().currentItem.find(".luckysheet-sheets-item-color").remove();
+                sheetBarState().currentItem.append('<div class="luckysheet-sheets-item-color" style=" position: absolute; width: 100%; height: 3px; bottom: 0px; left: 0px; background-color: ' + color + ';"></div>');
                 let index = getSheetIndex(Store.currentSheetIndex);
                 Store.luckysheetfile[index].color = color;
                 server.saveParam("all", Store.currentSheetIndex, color, { "k": "color" });
@@ -81,11 +83,11 @@ function showsheetconfigmenu() {
 
         $("#luckysheetsheetconfigcolorreset").click(function () {
             let oldcolor = null;
-            if(luckysheetcurrentSheetitem.find(".luckysheet-sheets-item-color").length>0){
-                oldcolor = luckysheetcurrentSheetitem.find(".luckysheet-sheets-item-color").css("background-color");
+            if(sheetBarState().currentItem.find(".luckysheet-sheets-item-color").length>0){
+                oldcolor = sheetBarState().currentItem.find(".luckysheet-sheets-item-color").css("background-color");
             }
 
-            luckysheetcurrentSheetitem.find(".luckysheet-sheets-item-color").remove();
+            sheetBarState().currentItem.find(".luckysheet-sheets-item-color").remove();
             let index = getSheetIndex(Store.currentSheetIndex);
             Store.luckysheetfile[index].color = null;
             server.saveParam("all", Store.currentSheetIndex, null, { "k": "color" } );
@@ -120,7 +122,7 @@ function showsheetconfigmenu() {
     }
 
     setTimeout(function(){
-        mouseclickposition($("#luckysheet-rightclick-sheet-menu"), luckysheetcurrentSheetitem.offset().left + luckysheetcurrentSheetitem.width(), luckysheetcurrentSheetitem.offset().top - 18, "leftbottom");
+        mouseclickposition($("#luckysheet-rightclick-sheet-menu"), sheetBarState().currentItem.offset().left + sheetBarState().currentItem.width(), sheetBarState().currentItem.offset().top - 18, "leftbottom");
     },1);
 }
 
@@ -132,7 +134,7 @@ let luckysheetsheetrightclick = function ($t, $cur, e) {
         window.alert("选择单元格范围窗口打开时，不能切换sheet!");
         return;
     }
-    clearTimeout(jfdbclicklagTimeout);
+    clearTimeout(sheetBarState().doubleClickTimer);
     if ($cur.hasClass("luckysheet-sheets-item-name") && $cur.attr("contenteditable") == "true") {
         return;
     }
@@ -162,7 +164,7 @@ let luckysheetsheetrightclick = function ($t, $cur, e) {
     $("#luckysheet-sheet-list, #luckysheet-rightclick-sheet-menu").hide();
 
     if ($cur.hasClass("luckysheet-sheets-item-menu") || $cur.hasClass("fa-sort-desc") || e.which == "3") {
-        luckysheetcurrentSheetitem = $cur.closest(".luckysheet-sheets-item");
+        sheetBarState().currentItem = $cur.closest(".luckysheet-sheets-item");
         showsheetconfigmenu();
     }
         //切换完成后，如果工作表内容保护页面打开，则刷新页面，否则等用户打开时会刷新
@@ -190,7 +192,7 @@ export function refreshProtectionContent() {
 export function initialSheetBar(){
     const _locale = locale();
     const locale_sheetconfig = _locale.sheetconfig;
-    isInitialSheetConfig = false
+    sheetBarState().initialized = false
 
     $ls("luckysheet-sheet-area").on("mousedown", "div.luckysheet-sheets-item", function (e) {
         if(isEditMode()){
@@ -203,14 +205,14 @@ export function initialSheetBar(){
         if (e.which == "3") {
             setTimeout(() => {
                 luckysheetsheetrightclick($t, $cur, e);
-                luckysheetcurrentSheetitem = $item;
+                sheetBarState().currentItem = $item;
                 showsheetconfigmenu();
                 return;
             }, 0);
         }
 
         if ($item.hasClass("luckysheet-sheets-item-active") && $item.find(".luckysheet-sheets-item-name").attr("contenteditable") == "false") {
-            jfdbclicklagTimeout = setTimeout(function () {
+            sheetBarState().doubleClickTimer = setTimeout(function () {
                 Store.luckysheet_sheet_move_status = true;
                 Store.luckysheet_sheet_move_data = {};
                 Store.luckysheet_sheet_move_data.widthlist = [];
@@ -362,19 +364,19 @@ export function initialSheetBar(){
         let $t = $(this);
         if (kcode == keycode.ENTER) {
             let index = getSheetIndex(Store.currentSheetIndex);
-            oldSheetFileName = Store.luckysheetfile[index].name || oldSheetFileName;
+            sheetBarState().oldSheetName = Store.luckysheetfile[index].name || sheetBarState().oldSheetName;
             Store.luckysheetfile[index].name = $t.text();
             $t.attr("contenteditable", "false");
         }
     });
 
     $("#luckysheetsheetconfigrename").click(function () {
-        var $name = luckysheetcurrentSheetitem.find("span.luckysheet-sheets-item-name")
+        var $name = sheetBarState().currentItem.find("span.luckysheet-sheets-item-name")
         // 钩子 sheetEditNameBefore
-        if (!method.createHookFunction('sheetEditNameBefore', { i: luckysheetcurrentSheetitem.data('index') , name: $name.text() })){
+        if (!method.createHookFunction('sheetEditNameBefore', { i: sheetBarState().currentItem.data('index') , name: $name.text() })){
             return;
         }
-        luckysheetsheetnameeditor(luckysheetcurrentSheetitem.find("span.luckysheet-sheets-item-name"));
+        luckysheetsheetnameeditor(sheetBarState().currentItem.find("span.luckysheet-sheets-item-name"));
         $("#luckysheet-input-box").removeAttr("style");
         $("#luckysheet-sheet-list, #luckysheet-rightclick-sheet-menu").hide();
     });
@@ -386,8 +388,8 @@ export function initialSheetBar(){
     });
 
     $("#luckysheetsheetconfigmoveleft").click(function () {
-        if (luckysheetcurrentSheetitem.prevAll(":visible").length > 0) {
-            luckysheetcurrentSheetitem.insertBefore(luckysheetcurrentSheetitem.prevAll(":visible").eq(0));
+        if (sheetBarState().currentItem.prevAll(":visible").length > 0) {
+            sheetBarState().currentItem.insertBefore(sheetBarState().currentItem.prevAll(":visible").eq(0));
             sheetmanage.reOrderAllSheet();
         }
         $("#luckysheet-input-box").removeAttr("style");
@@ -395,8 +397,8 @@ export function initialSheetBar(){
     });
 
     $("#luckysheetsheetconfigmoveright").click(function () {
-        if (luckysheetcurrentSheetitem.nextAll(":visible").length > 0) {
-            luckysheetcurrentSheetitem.insertAfter(luckysheetcurrentSheetitem.nextAll(":visible").eq(0));
+        if (sheetBarState().currentItem.nextAll(":visible").length > 0) {
+            sheetBarState().currentItem.insertAfter(sheetBarState().currentItem.nextAll(":visible").eq(0));
             sheetmanage.reOrderAllSheet();
         }
         $("#luckysheet-input-box").removeAttr("style");
@@ -420,14 +422,14 @@ export function initialSheetBar(){
         let index = getSheetIndex(Store.currentSheetIndex);
 
         tooltip.confirm(locale_sheetconfig.confirmDelete+"【" + Store.luckysheetfile[index].name + "】？", "<span style='color:#9e9e9e;font-size:12px;'>"+locale_sheetconfig.redoDelete+"</span>", function () {
-            sheetmanage.deleteSheet(luckysheetcurrentSheetitem.data("index"));
+            sheetmanage.deleteSheet(sheetBarState().currentItem.data("index"));
         }, null);
 
         $("#luckysheet-input-box").removeAttr("style");
     });
 
     $("#luckysheetsheetconfigcopy").click(function (e) {
-        sheetmanage.copySheet(luckysheetcurrentSheetitem.data("index"), e);
+        sheetmanage.copySheet(sheetBarState().currentItem.data("index"), e);
         $("#luckysheet-input-box").removeAttr("style");
         $("#luckysheet-sheet-list, #luckysheet-rightclick-sheet-menu").hide();
     });
@@ -442,7 +444,7 @@ export function initialSheetBar(){
             }
             return;
         }
-        sheetmanage.setSheetHide(luckysheetcurrentSheetitem.data("index"));
+        sheetmanage.setSheetHide(sheetBarState().currentItem.data("index"));
         $("#luckysheet-input-box").removeAttr("style");
         $("#luckysheet-sheet-list, #luckysheet-rightclick-sheet-menu").hide();
     });

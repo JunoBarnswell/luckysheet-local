@@ -22,8 +22,29 @@ import json from '../global/json';
 import luckysheetConfigsetting from './luckysheetConfigsetting';
 import {customImageUpdate} from './imageUpdateCtrl';
 import method from '../global/method';
+import { createContextualModule } from '../store/runtimeModules';
+import { getUnit, withInstance } from '../store/registry';
 
-const server = {
+function runInServerInstance(instanceId, callback) {
+    return function () {
+        if (!getUnit(instanceId)) {
+            return undefined;
+        }
+        const args = arguments;
+        return withInstance(instanceId, function () {
+            return callback.apply(null, args);
+        });
+    };
+}
+
+function registerServerDisposer(instanceId, disposer) {
+    const context = getUnit(instanceId);
+    if (context) {
+        context.disposers.push(disposer);
+    }
+}
+
+const server = createContextualModule('server', {
     gridKey: null,
     loadUrl: null,
     updateUrl: null,
@@ -239,6 +260,7 @@ const server = {
     },
     scheduleReconnect: function(){
         let _this = this;
+        const instanceId = Store.instanceId;
         if(_this.intentionalClose){
             return;
         }
@@ -252,24 +274,29 @@ const server = {
         const delay = Math.min(_this.reconnectBaseDelay * Math.pow(2, _this.reconnectAttempt), 30000);
         _this.reconnectAttempt++;
         showloading(locale().websocket.reconnecting || locale().websocket.wait);
-        _this.reconnectTimer = setTimeout(function(){
+        _this.reconnectTimer = setTimeout(runInServerInstance(instanceId, function(){
             _this.reconnectTimer = null;
             _this.openWebSocket();
-        }, delay);
+        }), delay);
     },
     bindOnlineListener: function(){
         let _this = this;
+        const instanceId = Store.instanceId;
         if(_this.onlineListenerBound || typeof window === "undefined"){
             return;
         }
         _this.onlineListenerBound = true;
-        window.addEventListener("online", function(){
+        const onOnline = runInServerInstance(instanceId, function(){
             if(_this.allowUpdate && !_this.intentionalClose){
                 if(_this.websocket == null || _this.websocket.readyState > 1){
                     _this.reconnectAttempt = 0;
                     _this.openWebSocket();
                 }
             }
+        });
+        window.addEventListener("online", onOnline);
+        registerServerDisposer(instanceId, function(){
+            window.removeEventListener("online", onOnline);
         });
     },
     cellClockKey: function(index, r, c){
@@ -289,6 +316,7 @@ const server = {
     },
     openWebSocket: function(){
         let _this = this;
+        const instanceId = Store.instanceId;
 
         if('WebSocket' in window){
 			_this.bindOnlineListener();
@@ -311,7 +339,7 @@ const server = {
 	        _this.websocket = new WebSocket(wxUrl);
 
 	        //连接建立时触发
-	        _this.websocket.onopen = function() {
+            _this.websocket.onopen = runInServerInstance(instanceId, function() {
 	        	console.info(locale().websocket.success);
 	        	hideloading();
 				_this.wxErrorCount = 0;
@@ -322,16 +350,16 @@ const server = {
 				if(_this.retryTimer){
 					clearInterval(_this.retryTimer);
 				}
-				_this.retryTimer = setInterval(function(){
-					if(_this.websocket != null && _this.websocket.readyState === 1){
-						_this.websocket.send("rub");
-					}
-	            }, 60000);
+                _this.retryTimer = setInterval(runInServerInstance(instanceId, function(){
+                    if(_this.websocket != null && _this.websocket.readyState === 1){
+                        _this.websocket.send("rub");
+                    }
+                }), 60000);
 				_this.flushOutboundQueue();
-	        }
+            });
 
 	        //客户端接收服务端数据时触发
-	        _this.websocket.onmessage = function(result){
+            _this.websocket.onmessage = runInServerInstance(instanceId, function(result){
 				Store.result = result
 				let data = new Function("return " + result.data)();
         method.createHookFunction('cooperativeMessage', data)
@@ -364,7 +392,7 @@ const server = {
                 const oldIndex = ackPayload.v.index;
                 const sheetToUpdate = Store.luckysheetfile.filter((sheet)=> sheet.index === oldIndex)[0];
                 if (sheetToUpdate) {
-                  setTimeout(() => {
+                  setTimeout(runInServerInstance(instanceId, function() {
                     const index = ackPayload.i;
                     sheetToUpdate.index = index;
                     Store.currentSheetIndex = index;
@@ -372,7 +400,7 @@ const server = {
                     $(`#luckysheet-sheets-item${oldIndex}`).attr('data-index', index);
                     $(`#luckysheet-sheets-item${oldIndex}`).prop('id', `luckysheet-sheets-item${index}`);
                     $(`#luckysheet-datavisual-selection-set-${oldIndex}`).prop('id', `luckysheet-datavisual-selection-set-${index}`);
-                  }, 1);
+                  }), 1);
                 }
                 }
 	            }
@@ -497,16 +525,16 @@ const server = {
               } else if (type == 6) {
                 hideloading();
               }
-	        }
+            });
 
 	        //通信发生错误时触发：不叠开新 socket，交给 onclose 统一重连
-	        _this.websocket.onerror = function(){
+            _this.websocket.onerror = runInServerInstance(instanceId, function(){
 	            _this.wxErrorCount++;
 	            showloading(locale().websocket.reconnecting || locale().websocket.wait);
-	        }
+            });
 
 	        //连接关闭时触发
-	        _this.websocket.onclose = function(e){
+            _this.websocket.onclose = runInServerInstance(instanceId, function(e){
 				console.info(locale().websocket.close);
 				if(_this.retryTimer){
 					clearInterval(_this.retryTimer);
@@ -517,7 +545,7 @@ const server = {
 					return;
 				}
 				_this.scheduleReconnect();
-	        }
+	        });
 	    }
 	    else{
 	        alert(locale().websocket.support);
@@ -1569,6 +1597,6 @@ const server = {
             }
         })
     }
-}
+});
 
 export default server;

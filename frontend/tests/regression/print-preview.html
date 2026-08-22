@@ -60,11 +60,9 @@
             }).then(function () {
                 H.assert(!!luckysheet.openPrintDialog, "openPrintDialog API");
                 H.assert(!!luckysheet.print, "print API");
-                H.assert(!!luckysheet.exportPrintPdf, "exportPrintPdf API");
-                H.assert(!!luckysheet.getPrintScreenshot, "getPrintScreenshot API");
                 H.assert(window.luckysheet && !!luckysheet.closePrintDialog, "closePrintDialog API");
-                var leftover = (luckysheet.flowdata && false);
-                var storePrintGone = true;
+                window.__printCalls = 0;
+                window.print = function () { window.__printCalls += 1; };
                 luckysheet.openPrintDialog();
                 return H.wait(200);
             }).then(function () {
@@ -74,6 +72,11 @@
                 H.assert(canvases.length > 0, "preview page count > 0", "pages=" + canvases.length);
                 var printer = luckysheet.updatePrintConfig && luckysheet.updatePrintConfig({ area: "CurrentSelection" });
                 H.assert(!!printer, "updatePrintConfig returns layout");
+                H.assert(!!luckysheet.updatePrintConfig({ area: "AllSelection", paperSize: "Folio", pageSizeCustom: { w: 100, h: 200 } }), "full public layout fields update");
+                return luckysheet.print({ layout: { area: "CurrentSheet", paperSize: "A4" } });
+            }).then(function (result) {
+                H.assert(result.pageCount > 0, "print returns page count");
+                H.assert(window.__printCalls === 1, "system print invoked once");
                 if (luckysheet.closePrintDialog) {
                     luckysheet.closePrintDialog();
                 }

@@ -32,7 +32,9 @@ import {enterKeyControll} from './inlineString';
 import Store from '../store';
 
 
-let luckysheet_shiftkeydown = false;
+function keyboardState() {
+    return Store.runtime.keyboard;
+}
 
 function formulaMoveEvent(dir, ctrlKey, shiftKey, event){
     if ($("#luckysheet-formula-search-c").is(":visible") && (dir=="up" || dir=="down") ) {
@@ -407,9 +409,9 @@ export function keyboardInitial(){
         else {
             if (ctrlKey || event.metaKey) {
                 if (shiftKey) {
-                    if (!luckysheet_shiftkeydown) {
+                    if (!keyboardState().shiftDown) {
                         Store.luckysheet_shiftpositon = $.extend(true, {}, Store.luckysheet_select_save[Store.luckysheet_select_save.length - 1]);
-                        Store.luckysheet_shiftkeydown = true;
+                        keyboardState().shiftDown = true;
                     }
 
                     //Ctrl + shift + 方向键  调整选区
@@ -748,9 +750,9 @@ export function keyboardInitial(){
                     return;
                 }
 
-                if (!luckysheet_shiftkeydown) {
+                if (!keyboardState().shiftDown) {
                     Store.luckysheet_shiftpositon = $.extend(true, {}, Store.luckysheet_select_save[Store.luckysheet_select_save.length - 1]);
-                    Store.luckysheet_shiftkeydown = true;
+                    keyboardState().shiftDown = true;
                 }
 
                 //shift + 方向键 调整选区
@@ -939,7 +941,7 @@ export function keyboardInitial(){
         let kcode = e.keyCode;
         
         if (!e.shiftKey && kcode == 16) {
-            Store.luckysheet_shiftkeydown = false;
+            keyboardState().shiftDown = false;
             Store.luckysheet_shiftpositon = null;
         }
 

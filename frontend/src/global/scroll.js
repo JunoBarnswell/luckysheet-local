@@ -4,13 +4,15 @@ import { luckysheetrefreshgrid } from '../global/refresh';
 import Store from '../store';
 import method from '../global/method'
 
-let scrollRequestAnimationFrameIni = true,scrollRequestAnimationFrame = false, scrollTimeOutCancel=null;
+function scrollState() {
+    return Store.runtime.scroll;
+}
 
 export function getScrollFlags() {
     return {
-        scrollRequestAnimationFrameIni: scrollRequestAnimationFrameIni,
-        scrollRequestAnimationFrame: scrollRequestAnimationFrame,
-        scrollTimeOutCancel: scrollTimeOutCancel,
+        scrollRequestAnimationFrameIni: scrollState().requestAnimationFrameIni,
+        scrollRequestAnimationFrame: scrollState().requestId,
+        scrollTimeOutCancel: scrollState().timeoutId,
     };
 }
 
@@ -19,13 +21,13 @@ export function setScrollFlags(flags) {
         return;
     }
     if (flags.scrollRequestAnimationFrameIni != null) {
-        scrollRequestAnimationFrameIni = flags.scrollRequestAnimationFrameIni;
+        scrollState().requestAnimationFrameIni = flags.scrollRequestAnimationFrameIni;
     }
     if (flags.scrollRequestAnimationFrame != null) {
-        scrollRequestAnimationFrame = flags.scrollRequestAnimationFrame;
+        scrollState().requestId = flags.scrollRequestAnimationFrame;
     }
     if (flags.scrollTimeOutCancel !== undefined) {
-        scrollTimeOutCancel = flags.scrollTimeOutCancel;
+        scrollState().timeoutId = flags.scrollTimeOutCancel;
     }
 }
 
@@ -33,7 +35,7 @@ function execScroll(){
     let scrollLeft = $("#luckysheet-scrollbar-x").scrollLeft(), 
         scrollTop = $("#luckysheet-scrollbar-y").scrollTop();
     luckysheetrefreshgrid(scrollLeft, scrollTop);
-    scrollRequestAnimationFrame = window.requestAnimationFrame(execScroll);
+    scrollState().requestId = window.requestAnimationFrame(execScroll);
 }
 
 //全局滚动事件

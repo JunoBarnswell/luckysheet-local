@@ -9,6 +9,7 @@
   function log(ok, name, detail) {
     results.push({ ok: ok, name: name, detail: detail || "" });
     var box = el("assert-log");
+    if (!box) box = el("report");
     if (!box) return;
     var line = document.createElement("div");
     line.className = ok ? "pass" : "fail";
@@ -32,6 +33,7 @@
     var pass = results.filter(function (r) { return r.ok; }).length;
     var fail = results.length - pass;
     var head = el("assert-summary");
+    if (!head) head = el("report");
     if (head) {
       head.textContent = "断言 " + pass + " 通过 / " + fail + " 失败 / 共 " + results.length +
         "（" + (Date.now() - start) + "ms）";

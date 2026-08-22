@@ -1,4 +1,6 @@
-const luckysheetConfigsetting = {
+import { createContextualModule } from '../store/runtimeModules';
+
+const luckysheetConfigsetting = createContextualModule('config', {
     autoFormatw: false,
     accuracy: undefined,
     total: 0,
@@ -39,6 +41,6 @@ const luckysheetConfigsetting = {
 
     defaultTextColor: '#000',
     defaultCellColor: '#fff',
-}
+});
 
 export default luckysheetConfigsetting;
