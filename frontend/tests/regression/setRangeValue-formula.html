@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>回归：setRangeValue 含 f+v 联动</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; }
+    .pass { color: #0a7; } .fail { color: #c00; font-weight: 600; }
+    #luckysheet { width: 100%; height: 420px; position: relative; border: 1px solid #ccc; }
+    pre, .box { background: #f6f6f6; padding: 12px; overflow: auto; }
+    h1 { font-size: 18px; }
+  </style>
+</head>
+<body>
+  <h1>P0 回归：setRangeValue / setCellValue 公式 f+v 联动（#1004）</h1>
+  <div class="box">
+    <p><strong>前置条件</strong></p>
+    <ol>
+      <li>已构建 UMD：在 <code>frontend</code> 执行 <code>npm run build</code>，或用 <code>?lib=</code> 指定脚本。</li>
+      <li>浏览器打开本页（建议静态服务，避免 file:// 拦截脚本）。</li>
+      <li>页面内调用 <code>luckysheet.create</code>，A1=1，B1=<code>{f:'=A1*2', v:2, m:'2'}</code>。</li>
+    </ol>
+    <p><strong>步骤</strong></p>
+    <ol>
+      <li><code>setRangeValue</code> 写入 A1:B1（B1 同时带 f 与 v）。</li>
+      <li><code>setCellValue(0,0,10)</code> 把 A1 改为 10。</li>
+      <li>读取 B1 的 <code>v</code> / <code>m</code>。</li>
+    </ol>
+    <p><strong>期望</strong></p>
+    <ul>
+      <li>修复后：B1 的值为 <code>20</code>。</li>
+      <li>当前 2.1.13 未修：B1 仍为 <code>2</code>（本脚手架应 FAIL，作为基线）。</li>
+    </ul>
+  </div>
+  <p id="assert-summary">运行中…</p>
+  <div id="assert-log"></div>
+  <div id="luckysheet"></div>
+  <script src="./harness.js"></script>
+  <script>
+    (function () {
+      var R = window.LsRegression;
+      R.tryLoadLuckysheet().then(function (src) {
+        R.assert(true, "加载 luckysheet", src);
+        luckysheet.create({
+          container: "luckysheet",
+          lang: "zh",
+          showtoolbar: false,
+          showinfobar: false,
+          data: [{
+            name: "FormulaLink",
+            index: "0",
+            status: 1,
+            order: 0,
+            row: 20,
+            column: 10,
+            celldata: [{ r: 0, c: 0, v: { v: 1, m: "1", ct: { fa: "General", t: "n" } } }]
+          }]
+        });
+        return R.wait(400);
+      }).then(function () {
+        luckysheet.setRangeValue([
+          [{ v: 1, m: "1" }, { f: "=A1*2", v: 2, m: "2" }]
+        ], { range: { row: [0, 0], column: [0, 1] }, isRefresh: true });
+        return R.wait(300);
+      }).then(function () {
+        luckysheet.setCellValue(0, 0, 10, { isRefresh: true });
+        return R.wait(400);
+      }).then(function () {
+        var b = luckysheet.getCellValue(0, 1, { type: "v" });
+        R.assertEqual(Number(b), 20, "改 A1=10 后 B1(=A1*2) 应为 20");
+        var a = luckysheet.getCellValue(0, 0, { type: "v" });
+        R.assertEqual(Number(a), 10, "A1 已写入 10");
+        R.summary();
+      }).catch(function (err) {
+        R.assert(false, "运行失败", String(err && err.message || err));
+        R.summary();
+      });
+    })();
+  </script>
+</body>
+</html>

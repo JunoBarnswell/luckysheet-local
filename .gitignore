@@ -1,0 +1,60 @@
+# OS / editor
+.DS_Store
+.cursor/
+.idea/
+.history/
+.vs/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+dist/
+docs/.vuepress/dist
+
+# Frontend build artifact copied into backend
+backend/luckysheet/src/main/resources/static/
+
+# Java / Maven
+target/
+logs/
+HELP.md
+!.mvn/wrapper/maven-wrapper.jar
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache
+*.iws
+*.iml
+*.ipr
+/nbproject/private/
+/nbbuild/
+/nbdist/
+/.nb-gradle/
+/build/
+
+# Local env
+.env.local
+.env.*.local
+
+# Local temp / cache
+.univer-temp/
+
+# Local tools (download separately)
+tools/apache-maven-3.9.9/
+
+# Frontend plugin build output
+frontend/src/expendPlugins/print/print.js

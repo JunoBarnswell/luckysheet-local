@@ -1,0 +1,5 @@
+vue@2.6.11 vue.min.js
+vuex@3.4.0 vuex.min.js
+echarts@4.8.0 echarts.min.js
+element-ui@2.13.2 element-ui/index.js + theme-chalk
+Copied from npm packages. Offline chart plugin must not load unpkg.
