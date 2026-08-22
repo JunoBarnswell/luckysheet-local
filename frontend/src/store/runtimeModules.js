@@ -34,7 +34,15 @@ export function createContextualModule(name, template) {
     let facade;
     facade = new Proxy(template, {
         get: function (_, property) {
-            const value = getRuntime(getFocusedContext(), name, template)[property];
+            const context = getFocusedContext();
+            // Core exports legacy function references before the first
+            // workbook exists. Returning template functions here is safe:
+            // their eventual execution still resolves state through Store.
+            if (!context) {
+                const templateValue = template[property];
+                return typeof templateValue === "function" ? templateValue.bind(facade) : templateValue;
+            }
+            const value = getRuntime(context, name, template)[property];
             return typeof value === "function" ? value.bind(facade) : value;
         },
         set: function (_, property, value) {

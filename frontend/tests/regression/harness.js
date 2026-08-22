@@ -36,7 +36,7 @@
     if (!head) head = el("report");
     if (head) {
       head.textContent = "断言 " + pass + " 通过 / " + fail + " 失败 / 共 " + results.length +
-        "（" + (Date.now() - start) + "ms）";
+        "（" + (Date.now() - start) + "ms）" + (fail ? "\n" + results.filter(function (r) { return !r.ok; }).map(function (r) { return "FAIL " + r.name + (r.detail ? " — " + r.detail : ""); }).join("\n") : "");
       head.className = fail ? "fail" : "pass";
     }
     return { pass: pass, fail: fail, results: results };

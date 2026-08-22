@@ -191,6 +191,11 @@ export function renderPreview() {
             });
             return plan;
         });
+    }).catch(function (error) {
+        if (error && /Print instance was destroyed/.test(error.message || "")) {
+            return { canceled: true, pages: [] };
+        }
+        throw error;
     });
 }
 

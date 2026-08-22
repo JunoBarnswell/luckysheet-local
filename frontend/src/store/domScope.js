@@ -64,7 +64,7 @@ export function prefixHtmlIds(html, prefix) {
     if (!html || !actualPrefix) {
         return html;
     }
-    return String(html).replace(/\b(id|for|aria-controls)=(["'])([^"']*)\2/g, function (match, attr, quote, id) {
+    return String(html).replace(/\b(id|for|aria-controls)\s*=\s*(["'])([^"']*)\2/g, function (match, attr, quote, id) {
         if (!id || !isWidgetId(id) || id.indexOf(actualPrefix) === 0) {
             return match;
         }

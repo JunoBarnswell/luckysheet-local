@@ -102,11 +102,14 @@ function wrapCollection(collection) {
             }
             if (["append", "prepend", "before", "after", "html", "replaceWith"].indexOf(property) > -1) {
                 return function () {
+                    if (property === "html" && arguments.length === 0) {
+                        return value.call(target);
+                    }
                     const instanceId = ownerForRegistration();
                     const args = Array.prototype.slice.call(arguments).map(normalizeMarkup);
                     const result = value.apply(target, args);
                     registerInsertedPortals(target, instanceId);
-                    return result === target ? facade : wrapCollection(result);
+                    return result === target ? facade : (result && result.jquery ? wrapCollection(result) : result);
                 };
             }
             if (property === "on" || property === "one" || property === "off") {

@@ -71,6 +71,7 @@ import Store from "../store";
 import { createLuckyChart, hideAllNeedRangeShow } from "../expendPlugins/chart/plugin";
 import luckysheetformula from "../global/formula";
 import {createExportDialog,fetchAndDownloadXlsx} from "../expendPlugins/exportXlsx/plugin";
+import { lsId } from "../store/domScope";
 
 //, columeflowset, rowflowset
 export default function luckysheetHandler() {
@@ -1717,7 +1718,7 @@ export default function luckysheetHandler() {
         });
 
     //监听拖拽
-    document.getElementById("luckysheet-cell-main").addEventListener(
+    document.getElementById(lsId("luckysheet-cell-main")).addEventListener(
         "drop",
         function(e) {
             e.preventDefault();
@@ -1736,7 +1737,7 @@ export default function luckysheetHandler() {
         },
         false,
     );
-    document.getElementById("luckysheet-cell-main").addEventListener(
+    document.getElementById(lsId("luckysheet-cell-main")).addEventListener(
         "dragover",
         function(e) {
             e.preventDefault();
@@ -5933,8 +5934,9 @@ export default function luckysheetHandler() {
     //表格格式处理
     menuButton.initialMenuButton();
 
-    let dpi_x = document.getElementById("testdpidiv").offsetWidth * Store.devicePixelRatio;
-    let dpi_y = document.getElementById("testdpidiv").offsetHeight * Store.devicePixelRatio;
+    const dpiNode = document.getElementById(lsId("testdpidiv"));
+    let dpi_x = dpiNode.offsetWidth * Store.devicePixelRatio;
+    let dpi_y = dpiNode.offsetHeight * Store.devicePixelRatio;
 
     //粘贴事件处理
     $(document).on("paste.luckysheetEvent", function(e) {

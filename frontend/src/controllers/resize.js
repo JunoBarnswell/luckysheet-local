@@ -7,6 +7,7 @@ import sheetmanage from './sheetmanage';
 import tooltip from '../global/tooltip'
 import { $$, getObjType, camel2split } from "../utils/util";
 import { defaultToolbar, toolbarIdMap } from './toolbar';
+import { lsId } from '../store/domScope';
 
 function resizeState() {
     return Store.runtime.resize;
@@ -20,7 +21,7 @@ export default function luckysheetsizeauto(isRefreshCanvas=true) {
     else {
         $("#luckysheet_info_detail").show();
         // Store.infobarHeight = 56;
-        Store.infobarHeight = document.querySelector('#luckysheet_info_detail').offsetHeight;
+        Store.infobarHeight = document.querySelector('#' + lsId('luckysheet_info_detail')).offsetHeight;
     }
 
     if (!!Store.toobarObject && !!Store.toobarObject.toobarElements && Store.toobarObject.toobarElements.length === 0) {
@@ -111,7 +112,10 @@ export default function luckysheetsizeauto(isRefreshCanvas=true) {
     }
 
     // $("#luckysheet-icon-morebtn-div").hide();
-    $$("#luckysheet-icon-morebtn-div").style.visibility = 'hidden';
+    const moreButtonHost = document.getElementById(lsId('luckysheet-icon-morebtn-div'));
+    if (moreButtonHost) {
+        moreButtonHost.style.visibility = 'hidden';
+    }
     // $("#luckysheet-icon-morebtn-div > div").appendTo($("#luckysheet-wa-editor"));
 
     $("#luckysheet-icon-morebtn-div > div").each(function(){

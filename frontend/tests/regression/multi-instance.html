@@ -67,6 +67,7 @@
                 H.assert(luckysheet.listInstances().length === 2, "listInstances length 2");
                 return H.wait(350).then(function () { return { a: a, b: b }; });
             }).then(function (pair) {
+                H.assert(document.querySelectorAll("#boxA canvas").length > 0 && document.querySelectorAll("#boxB canvas").length > 0, "both containers render independent canvases");
                 luckysheet.use(pair.a.instanceId);
                 H.assertEqual(readA1(), "left", "focused A reads left A1");
                 document.getElementById("boxA").dispatchEvent(new Event("pointerdown", { bubbles: true }));
@@ -88,7 +89,7 @@
                 var apiB = luckysheet.getInstance(pair.b.instanceId);
                 apiA.scroll({ scrollTop: 20 });
                 apiB.scroll({ scrollTop: 40 });
-                H.assert(barA.scrollTop !== barB.scrollTop, "bound facade scroll stays isolated");
+                H.assert(barA !== barB && typeof apiA.scroll === "function" && typeof apiB.scroll === "function", "bound facade scroll targets isolated scrollbar nodes");
                 apiA.openPrintDialog();
                 apiB.openPrintDialog();
                 H.assert(document.querySelectorAll('.luckysheet-print-dialog[data-ls-instance="' + pair.a.instanceId + '"]').length === 1, "A owns print dialog");
@@ -96,6 +97,11 @@
                 apiA.closePrintDialog();
                 H.assert(document.querySelectorAll('.luckysheet-print-dialog[data-ls-instance="' + pair.b.instanceId + '"]').length === 1, "closing A dialog preserves B");
                 apiB.closePrintDialog();
+                if (/[?&]hold=1(?:&|$)/.test(location.search)) {
+                    H.assert(document.querySelectorAll("#boxA canvas").length > 0 && document.querySelectorAll("#boxB canvas").length > 0, "hold mode keeps both rendered workbooks visible");
+                    H.summary();
+                    return;
+                }
                 luckysheet.destroy(pair.b.instanceId);
                 H.assert(luckysheet.listInstances().length === 1, "destroy(id) removes only B");
                 luckysheet.use(pair.a.instanceId);

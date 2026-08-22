@@ -164,6 +164,9 @@ const method = {
     },
     destroy:function(id){
         const targetId = id != null ? id : getFocusedId();
+        if (!targetId || !getUnit(targetId)) {
+            return false;
+        }
         if (targetId && getUnit(targetId) && getFocusedId() !== targetId) {
             focusUnit(targetId);
         }
@@ -228,16 +231,17 @@ const method = {
         if (remaining.length > 0) {
             focusUnit(remaining[remaining.length - 1]);
         }
+        return true;
     },
     destroyAll:function(){
         const ids = listUnits().slice();
         if (!ids.length) {
-            this.destroy();
-            return;
+            return false;
         }
         for (let i = 0; i < ids.length; i++) {
             this.destroy(ids[i]);
         }
+        return true;
     },
     editorChart:function(c){
         let chart_selection_color = luckyColor[0];

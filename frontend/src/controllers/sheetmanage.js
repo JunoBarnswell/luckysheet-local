@@ -34,6 +34,7 @@ import { initialEvent } from "./protection";
 import luckysheetformula from "../global/formula";
 import { asSparseGrid, createSparseGrid, ensureSparseSize, isSparseGrid, sparseGridToCelldata } from "../global/sparseGrid";
 import { createContextualModule } from "../store/runtimeModules";
+import { getUnit, withInstance } from "../store/registry";
 
 const sheetmanage = createContextualModule("sheetmanage", {
     generateRandomSheetIndex: function(prefix) {
@@ -829,6 +830,13 @@ const sheetmanage = createContextualModule("sheetmanage", {
     },
     initialjfFile: function(menu, title) {
         let _this = this;
+        const instanceId = Store.instanceId;
+        const runInInstance = function (callback) {
+            if (!getUnit(instanceId)) {
+                return undefined;
+            }
+            return withInstance(instanceId, callback);
+        };
 
         _this.getCurSheet();
         let file = Store.luckysheetfile[_this.getSheetIndex(Store.currentSheetIndex)];
@@ -886,6 +894,7 @@ const sheetmanage = createContextualModule("sheetmanage", {
         luckysheetcreatedom(colwidth, rowheight, data, menu, title);
 
         setTimeout(function() {
+            runInInstance(function() {
             tooltip.createHoverTip(
                 "#luckysheet_info_detail",
                 ".luckysheet_info_detail_back, .luckysheet_info_detail_input, .luckysheet_info_detail_update",
@@ -915,6 +924,7 @@ const sheetmanage = createContextualModule("sheetmanage", {
             let cahce_key = key + "__qkcache";
 
             let ini = function() {
+                return runInInstance(function() {
                 file["load"] = "1";
 
                 _this.createSheet();
@@ -961,11 +971,11 @@ const sheetmanage = createContextualModule("sheetmanage", {
 
                     if (luckysheetConfigsetting.pointEdit) {
                         setTimeout(function() {
-                            Store.loadingObj.close();
+                            runInInstance(function() { Store.loadingObj.close(); });
                         }, 0);
                     } else {
                         setTimeout(function() {
-                            Store.loadingObj.close();
+                            runInInstance(function() { Store.loadingObj.close(); });
                         }, 500);
                     }
                 };
@@ -1010,6 +1020,7 @@ const sheetmanage = createContextualModule("sheetmanage", {
                         return;
                     }
                     $.post(loadSheetUrl, { gridKey: server.gridKey, index: sheetindex.join(",") }, function(d) {
+                        return runInInstance(function() {
                         let dataset = new Function("return " + d)();
 
                         for (let item in dataset) {
@@ -1027,23 +1038,28 @@ const sheetmanage = createContextualModule("sheetmanage", {
                         }
 
                         execF();
+                        });
                     });
                 }
+                });
             };
 
             try {
                 localforage.getItem(cahce_key).then(function(readValue) {
+                    return runInInstance(function() {
                     if (readValue != null) {
                         _this.CacheNotLoadControll = readValue;
                     }
                     server.clearcachelocaldata(function() {
                         ini();
                     });
+                    });
                 });
             } catch (e) {
                 ini();
                 console.log("缓存操作失败");
             }
+            });
         }, 1);
     },
     storeSheetParam: function(persistScroll) {
