@@ -15,8 +15,17 @@ import sheetmanage from './sheetmanage';
 import { getSheetIndex, getRangetxt } from '../methods/get';
 import locale from '../locale/locale';
 import Store from '../store';
-import { ensureLsItem, normalizeDataVerificationMap } from './dvAdapter';
 import { createContextualModule } from '../store/runtimeModules';
+
+// Data validation is native LuckySheet state. Keep one normalized LS shape at
+// every UI/write boundary; there is intentionally no external DTO adapter.
+function ensureLsItem(item) {
+    return item;
+}
+
+function normalizeDataVerificationMap(map) {
+    return map || {};
+}
 
 const dataVerificationCtrl = createContextualModule('dataVerificationCtrl', {
     defaultItem: {

@@ -583,6 +583,36 @@ export function cloneSheetData(data) {
     return createSparseGridFromDense(data);
 }
 
+/**
+ * Creates a mutation working copy without cloning unrelated sparse rows. The
+ * selected rows receive independent maps and cells; callers that may mutate
+ * formula dependents must deliberately request the full clone instead.
+ */
+export function cloneSheetDataForMutation(data, rows) {
+    if (!isSparseGrid(data)) {
+        return cloneSheetData(data);
+    }
+    const src = getSparseState(data);
+    const grid = createSparseGrid(src.rowCount, src.colCount);
+    const dst = getSparseState(grid);
+    src.store.forEach(function (rowMap, r) {
+        dst.store.set(r, rowMap);
+    });
+    const selected = new Set(rows || []);
+    selected.forEach(function (r) {
+        const rowMap = src.store.get(r);
+        if (rowMap == null) {
+            return;
+        }
+        const copy = new Map();
+        rowMap.forEach(function (cell, c) {
+            copy.set(c, cloneCell(cell));
+        });
+        dst.store.set(r, copy);
+    });
+    return grid;
+}
+
 export function sparseGridToCelldata(data) {
     const ret = [];
     if (data == null) {
@@ -629,6 +659,60 @@ export function sparseGridToCelldata(data) {
         }
     }
     return ret;
+}
+
+/**
+ * Returns the legacy, materialized `data[][]` shape. This is intentionally an
+ * explicit compatibility boundary: production code must keep SparseGrid
+ * internal and use `sparseGridToCelldata` for scalable persistence.
+ */
+export function materializeGridData(data) {
+    if (data == null) {
+        return [];
+    }
+    if (!isSparseGrid(data)) {
+        return Array.isArray(data) ? data.map(function (row) {
+            return Array.isArray(row) ? row.map(cloneCell) : [];
+        }) : [];
+    }
+    const state = getSparseState(data);
+    const result = new Array(state.rowCount);
+    for (let r = 0; r < state.rowCount; r++) {
+        result[r] = new Array(state.colCount).fill(null);
+    }
+    state.store.forEach(function (rowMap, r) {
+        const row = result[r];
+        rowMap.forEach(function (cell, c) {
+            row[c] = cloneCell(cell);
+        });
+    });
+    return result;
+}
+
+export function snapshotSheetFile(file) {
+    if (file == null || typeof file !== "object") {
+        return file;
+    }
+    const snapshot = {};
+    Object.keys(file).forEach(function (key) {
+        if (key === "data") {
+            snapshot.data = materializeGridData(file.data);
+            return;
+        }
+        if (key === "celldata" && isSparseGrid(file.data)) {
+            snapshot.celldata = sparseGridToCelldata(file.data).map(function (item) {
+                return { r: item.r, c: item.c, v: cloneCell(item.v) };
+            });
+            return;
+        }
+        snapshot[key] = cloneCell(file[key]);
+    });
+    if (snapshot.celldata == null && isSparseGrid(file.data)) {
+        snapshot.celldata = sparseGridToCelldata(file.data).map(function (item) {
+            return { r: item.r, c: item.c, v: cloneCell(item.v) };
+        });
+    }
+    return snapshot;
 }
 
 export function occupiedCellCount(data) {

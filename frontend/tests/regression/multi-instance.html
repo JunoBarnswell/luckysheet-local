@@ -46,17 +46,17 @@
             }
 
             H.tryLoadLuckysheet().then(function () {
-                var a = luckysheet.create({
+                var a = luckysheet.createInstance({
                     container: "boxA",
                     lang: "zh",
                     multi: true,
                     plugins: [{ name: "print" }],
                     data: makeSheet("A", "left")
                 });
-                H.assert(!!a && !!a.instanceId, "create({multi:true}) returns instanceId");
+                H.assert(!!a && !!a.instanceId, "createInstance() returns an instance handle");
                 return H.wait(350).then(function () { return a; });
             }).then(function (a) {
-                var b = luckysheet.create({
+                var b = luckysheet.createInstance({
                     container: "boxB",
                     lang: "zh",
                     multi: true,

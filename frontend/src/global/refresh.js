@@ -15,6 +15,7 @@ import sheetmanage from '../controllers/sheetmanage';
 import luckysheetPostil from '../controllers/postil';
 import dataVerificationCtrl from '../controllers/dataVerificationCtrl';
 import hyperlinkCtrl from '../controllers/hyperlinkCtrl';
+import tableCtrl from '../controllers/tableCtrl';
 import { selectHightlightShow, selectionCopyShow, collaborativeEditBox } from '../controllers/select';
 import { createFilterOptions } from '../controllers/filter';
 import { getSheetIndex } from '../methods/get';
@@ -69,6 +70,21 @@ function runExecFunction(range, index, data){
     formula.execFunctionExist.reverse();
     formula.execFunctionGroup(null, null, null, null, data);
     formula.execFunctionGlobalData = null;
+    // execFunctionGroup queues formula values for groupValuesRefresh(). Preserve
+    // the complete affected set so the draw phase refreshes dependent cells,
+    // not only the user-edited source range.
+    const seen = {};
+    return (formula.groupValuesRefreshData || []).reduce(function (ranges, item) {
+        if (item == null || (item.index != null && String(item.index) !== String(Store.currentSheetIndex))) {
+            return ranges;
+        }
+        const key = item.r + "_" + item.c;
+        if (!seen[key]) {
+            seen[key] = true;
+            ranges.push({ row: [item.r, item.r], column: [item.c, item.c] });
+        }
+        return ranges;
+    }, []);
 }
 
 function resolveRefreshDirtyRect(range, dirtyRect) {
@@ -240,11 +256,12 @@ function jfrefreshgrid(data, range, allParam, isRunExecFunction = true, isRefres
         }
     }
     //单元格数据更新联动
+    let formulaRanges = [];
     if (isRunExecFunction) {
-        runExecFunction(range, Store.currentSheetIndex, data);
+        formulaRanges = runExecFunction(range, Store.currentSheetIndex, data);
     }
     //刷新表格
-    dirtyRect = resolveRefreshDirtyRect(range, dirtyRect);
+    dirtyRect = resolveRefreshDirtyRect(range.concat(formulaRanges), dirtyRect);
     if(isRefreshCanvas){
         refreshState().timeoutId = setTimeout(function () {
             luckysheetrefreshgrid(null, null, dirtyRect);
@@ -583,6 +600,13 @@ function jfrefreshgrid_adRC(data, cfg, ctrlType, ctrlValue, calc, filterObj, cf,
     Store.flowdata = data;
     editor.webWorkerFlowDataCache(Store.flowdata);//worker存数据
     file.data = data;
+    tableCtrl.transformForRowColumn({
+        type: ctrlType === "addRC" ? "add" : "delete",
+        rc: rc,
+        index: index,
+        len: len,
+        direction: ctrlValue.direction,
+    }, Store.currentSheetIndex);
 
     //config
     Store.config = cfg;

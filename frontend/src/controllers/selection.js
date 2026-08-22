@@ -24,18 +24,11 @@ function pickPasteValueOnly(cell) {
         return null;
     }
     if (typeof cell !== "object") {
-        const mask = genarate(cell);
-        return { v: mask[2], ct: mask[1], m: mask[0] };
+        return { v: cell };
     }
     const next = {};
     if (cell.v != null) {
         next.v = cell.v;
-    }
-    if (cell.m != null) {
-        next.m = cell.m;
-    }
-    if (cell.ct != null && cell.ct.t) {
-        next.ct = { t: cell.ct.t, fa: cell.ct.fa || "General" };
     }
     return next;
 }
@@ -56,10 +49,17 @@ function mergePasteFormatOnly(dest, source) {
 
 function applyPasteMode(dest, source, mode) {
     if (mode == "value") {
-        const next = pickPasteValueOnly(source);
-        if (next != null && dest != null && typeof dest === "object" && dest.mc != null) {
-            next.mc = $.extend(true, {}, dest.mc);
-        }
+        const copied = pickPasteValueOnly(source);
+        if (copied == null) return null;
+        // "Values only" keeps every target formatting decision, including
+        // number/date format. A pasted value must never retain a source formula
+        // or preformatted display string.
+        const next = dest != null && typeof dest === "object" ? $.extend(true, {}, dest) : {};
+        delete next.f;
+        delete next.spl;
+        delete next.m;
+        if (copied.v == null) delete next.v;
+        else next.v = copied.v;
         return next;
     }
     if (mode == "format") {

@@ -20,6 +20,35 @@ import numeral from 'numeral';
 import {getAirTable,companyTargetData,companyTargetData10,companyTargetData11,companyTargetData12,excelToLuckyArray,excelToArray,askAIData} from '../demoData/getTargetData'
 import { setcellvalue } from "../global/setdata";
 
+function nativeModernMatrix(value) {
+    if (getObjType(value) === "object" && value.startCell != null) {
+        return func_methods.getCellDataDyadicArr(value, "text");
+    }
+    if (getObjType(value) !== "array") {
+        return [[func_methods.getFirstValue(value)]];
+    }
+    if (value.length === 0) return [];
+    return getObjType(value[0]) === "array" ? value.map(function (row) { return row.slice(); }) : [value.slice()];
+}
+
+function nativeModernFlat(value, byColumn) {
+    const matrix = nativeModernMatrix(value);
+    const result = [];
+    if (byColumn) {
+        const width = matrix.reduce(function (max, row) { return Math.max(max, row.length); }, 0);
+        for (let c = 0; c < width; c++) for (let r = 0; r < matrix.length; r++) if (matrix[r][c] != null) result.push(matrix[r][c]);
+    } else {
+        matrix.forEach(function (row) { row.forEach(function (item) { if (item != null) result.push(item); }); });
+    }
+    return result;
+}
+
+function nativeModernCompare(a, b) {
+    if (a === b || String(a).toLowerCase() === String(b).toLowerCase()) return 0;
+    if (isRealNum(a) && isRealNum(b)) return Number(a) - Number(b);
+    return String(a).localeCompare(String(b));
+}
+
 //公式函数计算
 const functionImplementation = {
     "SUM": function() {
@@ -27927,6 +27956,108 @@ const functionImplementation = {
             err = formula.errorInfo(err);
             return [formula.error.v, err];
         }
+    },
+    "XMATCH": function() {
+        const lookup = func_methods.getFirstValue(arguments[0]);
+        const values = nativeModernFlat(arguments[1], false);
+        const matchMode = arguments.length > 2 ? Number(func_methods.getFirstValue(arguments[2])) : 0;
+        const searchMode = arguments.length > 3 ? Number(func_methods.getFirstValue(arguments[3])) : 1;
+        const indexes = values.map(function (_, index) { return index; });
+        if (searchMode === -1) indexes.reverse();
+        let nearest = -1;
+        for (let i = 0; i < indexes.length; i++) {
+            const index = indexes[i];
+            const compare = nativeModernCompare(values[index], lookup);
+            if (compare === 0) return index + 1;
+            if ((matchMode === -1 && compare < 0) || (matchMode === 1 && compare > 0)) {
+                if (nearest < 0 || Math.abs(compare) < Math.abs(nativeModernCompare(values[nearest], lookup))) nearest = index;
+            }
+        }
+        return nearest >= 0 ? nearest + 1 : formula.error.na;
+    },
+    "XLOOKUP": function() {
+        const lookup = func_methods.getFirstValue(arguments[0]);
+        const lookupValues = nativeModernFlat(arguments[1], false);
+        const returnValues = nativeModernFlat(arguments[2], false);
+        if (lookupValues.length !== returnValues.length) return formula.error.v;
+        const notFound = arguments.length > 3 ? func_methods.getFirstValue(arguments[3]) : formula.error.na;
+        const matchMode = arguments.length > 4 ? Number(func_methods.getFirstValue(arguments[4])) : 0;
+        const searchMode = arguments.length > 5 ? Number(func_methods.getFirstValue(arguments[5])) : 1;
+        const indexes = lookupValues.map(function (_, index) { return index; });
+        if (searchMode === -1) indexes.reverse();
+        let nearest = -1;
+        for (let i = 0; i < indexes.length; i++) {
+            const index = indexes[i];
+            const compare = nativeModernCompare(lookupValues[index], lookup);
+            if (compare === 0) return returnValues[index];
+            if ((matchMode === -1 && compare < 0) || (matchMode === 1 && compare > 0)) {
+                if (nearest < 0 || Math.abs(compare) < Math.abs(nativeModernCompare(lookupValues[nearest], lookup))) nearest = index;
+            }
+        }
+        return nearest >= 0 ? returnValues[nearest] : notFound;
+    },
+    "TEXTBEFORE": function() {
+        const text = String(func_methods.getFirstValue(arguments[0]));
+        const delimiter = String(func_methods.getFirstValue(arguments[1]));
+        const count = arguments.length > 2 ? Number(func_methods.getFirstValue(arguments[2])) : 1;
+        let index = -1, from = count < 0 ? text.length : 0;
+        for (let i = 0; i < Math.abs(count); i++) {
+            index = count < 0 ? text.lastIndexOf(delimiter, from - 1) : text.indexOf(delimiter, from);
+            if (index < 0) return formula.error.na;
+            from = index + (count < 0 ? 0 : delimiter.length);
+        }
+        return text.slice(0, index);
+    },
+    "TEXTAFTER": function() {
+        const text = String(func_methods.getFirstValue(arguments[0]));
+        const delimiter = String(func_methods.getFirstValue(arguments[1]));
+        const count = arguments.length > 2 ? Number(func_methods.getFirstValue(arguments[2])) : 1;
+        let index = -1, from = count < 0 ? text.length : 0;
+        for (let i = 0; i < Math.abs(count); i++) {
+            index = count < 0 ? text.lastIndexOf(delimiter, from - 1) : text.indexOf(delimiter, from);
+            if (index < 0) return formula.error.na;
+            from = index + (count < 0 ? 0 : delimiter.length);
+        }
+        return text.slice(index + delimiter.length);
+    },
+    "TEXTSPLIT": function() {
+        const text = String(func_methods.getFirstValue(arguments[0]));
+        const columnDelimiter = arguments.length > 1 && arguments[1] != null ? String(func_methods.getFirstValue(arguments[1])) : null;
+        const rowDelimiter = arguments.length > 2 && arguments[2] != null ? String(func_methods.getFirstValue(arguments[2])) : null;
+        const rows = rowDelimiter ? text.split(rowDelimiter) : [text];
+        return rows.map(function (row) { return columnDelimiter ? row.split(columnDelimiter) : [row]; });
+    },
+    "TOCOL": function() { return nativeModernFlat(arguments[0], arguments.length > 1 && Number(func_methods.getFirstValue(arguments[1])) === 1).map(function (item) { return [item]; }); },
+    "TOROW": function() { return [nativeModernFlat(arguments[0], arguments.length > 1 && Number(func_methods.getFirstValue(arguments[1])) === 1)]; },
+    "TAKE": function() {
+        const matrix = nativeModernMatrix(arguments[0]);
+        const rows = Number(func_methods.getFirstValue(arguments[1]));
+        const columns = arguments.length > 2 ? Number(func_methods.getFirstValue(arguments[2])) : null;
+        const slicedRows = rows >= 0 ? matrix.slice(0, rows) : matrix.slice(rows);
+        return columns == null ? slicedRows : slicedRows.map(function (row) { return columns >= 0 ? row.slice(0, columns) : row.slice(columns); });
+    },
+    "DROP": function() {
+        const matrix = nativeModernMatrix(arguments[0]);
+        const rows = Number(func_methods.getFirstValue(arguments[1]));
+        const columns = arguments.length > 2 ? Number(func_methods.getFirstValue(arguments[2])) : 0;
+        const slicedRows = rows >= 0 ? matrix.slice(rows) : matrix.slice(0, rows);
+        return slicedRows.map(function (row) { return columns >= 0 ? row.slice(columns) : row.slice(0, columns); });
+    },
+    "VSTACK": function() {
+        const output = [];
+        for (let i = 0; i < arguments.length; i++) output.push.apply(output, nativeModernMatrix(arguments[i]));
+        return output;
+    },
+    "HSTACK": function() {
+        const matrices = Array.prototype.map.call(arguments, nativeModernMatrix);
+        const height = matrices.reduce(function (max, matrix) { return Math.max(max, matrix.length); }, 0);
+        const output = [];
+        for (let row = 0; row < height; row++) {
+            const next = [];
+            matrices.forEach(function (matrix) { next.push.apply(next, matrix[row] || []); });
+            output.push(next);
+        }
+        return output;
     },
     "EVALUATE": function() {
         //必要参数个数错误检测

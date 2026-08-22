@@ -53,5 +53,9 @@ HELP.md
 # Local temp / cache
 .univer-temp/
 
+# Univer competitive analysis (local clone + npm mirror)
+vendor/univer/
+analysis/univer-npm/node_modules/
+
 # Local tools (download separately)
 tools/apache-maven-3.9.9/

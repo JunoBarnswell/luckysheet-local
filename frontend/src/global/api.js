@@ -1,6 +1,6 @@
 import Store from "../store";
 import { replaceHtml, getObjType, chatatABC, luckysheetactiveCell } from "../utils/util";
-import { getSheetIndex, getluckysheet_select_save, getluckysheetfile } from "../methods/get";
+import { getSheetIndex, getluckysheet_select_save, getluckysheetfile, getluckysheetfileSnapshot } from "../methods/get";
 import locale from "../locale/locale";
 import method from './method';
 import formula from './formula';
@@ -42,7 +42,8 @@ import dayjs from "dayjs";
 import {getRangetxt } from '../methods/get';
 import {luckysheetupdateCell} from '../controllers/updateCell';
 import luckysheetSearchReplace from "../controllers/searchReplace";
-import { cloneSheetData } from "./sparseGrid";
+import { cloneSheetData, cloneSheetDataForMutation, materializeGridData, snapshotSheetFile } from "./sparseGrid";
+import { beginWorkbookMutation, commitWorkbookMutation, recordChangedCell } from "./workbookMutation";
 import { listUnits, getUnit, focusUnit, withInstance } from "../store/registry";
 
 const IDCardReg = /^\d{6}(18|19|20)?\d{2}(0[1-9]|1[12])(0[1-9]|[12]\d|3[01])\d{3}(\d|X)$/i;
@@ -124,7 +125,8 @@ export function setCellValue(row, column, value, options = {}) {
         isRefresh = true,
         triggerBeforeUpdate = true,
         triggerUpdated = true,
-        success
+        success,
+        mutation
     } = {...options}
 
     let file = Store.luckysheetfile[order];
@@ -132,6 +134,7 @@ export function setCellValue(row, column, value, options = {}) {
     if(file == null){
         return tooltip.info("The order parameter is invalid.", "");
     }
+    const activeMutation = mutation || beginWorkbookMutation("setCellValue", file.index);
 
     /* cell更新前触发  */
     if (triggerBeforeUpdate && !method.createHookFunction("cellUpdateBefore", row, column, value, isRefresh)) {
@@ -139,9 +142,12 @@ export function setCellValue(row, column, value, options = {}) {
         return;
     }
 
+    const formulaInput = isFormulaString(value && value.f) || (typeof value === "string" && value.charAt(0) === "=");
     let data = file.data;
     if(isRefresh) {
-      data = cloneSheetData(file.data);
+        // Normal value/format edits copy only their row. Formula execution can
+        // mutate dependent cells, so it deliberately keeps the safe full copy.
+        data = formulaInput ? cloneSheetData(file.data) : cloneSheetDataForMutation(file.data, [row]);
     }
     if(data.length == 0){
         data = sheetmanage.buildGridData(file);
@@ -281,6 +287,11 @@ export function setCellValue(row, column, value, options = {}) {
         file.data = data;
     }
 
+    recordChangedCell(activeMutation, row, column, oldValue ? JSON.parse(oldValue) : null, data[row] && data[row][column], file.index);
+    if (!mutation) {
+        commitWorkbookMutation(activeMutation);
+    }
+
     if (success && typeof success === 'function') {
         success(data);
     }
@@ -302,7 +313,8 @@ export function clearCell(row, column, options = {}) {
     let curSheetOrder = getSheetIndex(Store.currentSheetIndex);
     let {
         order = curSheetOrder,
-        success
+        success,
+        mutation
     } = {...options}
 
     let targetSheetData = cloneSheetData(Store.luckysheetfile[order].data);
@@ -410,6 +422,7 @@ export function setCellFormat(row, column, attr, value, options = {}) {
     if(file == null){
         return tooltip.info("The order parameter is invalid.", "");
     }
+    const activeMutation = mutation || beginWorkbookMutation("setRangeValue", file.index);
 
     let targetSheetData = cloneSheetData(file.data);
     if(targetSheetData.length == 0){
@@ -2894,7 +2907,16 @@ export function setRangeValue(data, options = {}) {
     if(file == null){
         return tooltip.info("The order parameter is invalid.", "");
     }
-    let workingData = cloneSheetData(file.data);
+    const containsFormula = data.some(function (sourceRow) {
+        return Array.isArray(sourceRow) && sourceRow.some(function (cell) {
+            return isFormulaString(cell && cell.f) || (typeof cell === "string" && cell.charAt(0) === "=");
+        });
+    });
+    const changedRows = [];
+    for (let r = range.row[0]; r <= range.row[1]; r++) {
+        changedRows.push(r);
+    }
+    let workingData = containsFormula ? cloneSheetData(file.data) : cloneSheetDataForMutation(file.data, changedRows);
     if(workingData.length == 0){
         workingData = sheetmanage.buildGridData(file);
     }
@@ -2904,7 +2926,7 @@ export function setRangeValue(data, options = {}) {
         for (let j = 0; j < columnCount; j++) {
             let row = range.row[0] + i,
                 column = range.column[0] + j;
-            setCellValue(row, column, data[i][j], {order: order, isRefresh: false})
+            setCellValue(row, column, data[i][j], {order: order, isRefresh: false, mutation: activeMutation})
         }
     }
 
@@ -2943,6 +2965,9 @@ export function setRangeValue(data, options = {}) {
 
     if (success && typeof success === 'function') {
         success();
+    }
+    if (!mutation) {
+        commitWorkbookMutation(activeMutation);
     }
 }
 
@@ -6030,15 +6055,17 @@ export function getSheet(options = {}){
         name
     } = {...options};
 
+    let file;
     if(index != null){
-        return sheetmanage.getSheetByIndex(index);
+        file = sheetmanage.getSheetByIndex(index);
     }else if(order != null){
-        return Store.luckysheetfile[order];
+        file = Store.luckysheetfile[order];
     }else if(name != null){
-        return sheetmanage.getSheetByName(name);
+        file = sheetmanage.getSheetByName(name);
+    }else{
+        file = sheetmanage.getSheetByIndex();
     }
-
-    return sheetmanage.getSheetByIndex();
+    return snapshotSheetFile(file);
 
 }
 
@@ -6064,7 +6091,7 @@ export function getSheetData(options = {}) {
         data = cloneSheetData(sheetmanage.buildGridData(file));
     }
 
-    return data;
+    return materializeGridData(data);
 }
 
 /**
@@ -6133,7 +6160,7 @@ export function setConfig(cfg, options = {}) {
  * 返回所有表格数据结构的一维数组luckysheetfile
  */
 export function getLuckysheetfile(){
-    return getluckysheetfile();
+    return getluckysheetfileSnapshot();
 }
 
 
@@ -6761,9 +6788,9 @@ export function transToData(celldata, options = {}){
         }
     },0)
 
-    return sheetmanage.buildGridData({
+    return materializeGridData(sheetmanage.buildGridData({
         celldata: celldata
-    })
+    }));
 }
 
 /**
@@ -7091,7 +7118,7 @@ export function getInstance(instanceId){
         },
         getSheet: function(){
             return withInstance(ctx.instanceId, function(){
-                return Store.luckysheetfile;
+                return getluckysheetfileSnapshot();
             });
         },
     };

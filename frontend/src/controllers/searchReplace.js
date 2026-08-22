@@ -8,6 +8,7 @@ import { valueShowEs } from "../global/format";
 import { setcellvalue } from "../global/setdata";
 import { jfrefreshgrid } from "../global/refresh";
 import editor from "../global/editor";
+import formula from "../global/formula";
 import tooltip from "../global/tooltip";
 import func_methods from "../global/func_methods";
 import Store from "../store";
@@ -532,11 +533,11 @@ const luckysheetSearchReplace = {
             return arr;
         }
 
-        const addResult = (r, c) => {
+        const addResult = (r, c, matchType) => {
             const key = (sheetIndex != null ? sheetIndex + "_" : "") + r + "_" + c;
             if (!(key in obj)) {
                 obj[key] = 0;
-                arr.push({ r: r, c: c, sheetIndex: sheetIndex != null ? sheetIndex : Store.currentSheetIndex });
+                arr.push({ r: r, c: c, matchType: matchType || "value", sheetIndex: sheetIndex != null ? sheetIndex : Store.currentSheetIndex });
             }
         };
 
@@ -547,11 +548,11 @@ const luckysheetSearchReplace = {
             }
             let value = valueShowEs(r, c, data);
             if (this.matchSearchText(value, searchText, options)) {
-                addResult(r, c);
+                addResult(r, c, "value");
                 return;
             }
             if (options.formulaCheck && cell.f != null && this.matchSearchText(cell.f, searchText, options)) {
-                addResult(r, c);
+                addResult(r, c, "formula");
             }
         };
 
@@ -707,20 +708,7 @@ const luckysheetSearchReplace = {
         }
 
         let d = editor.deepCopyFlowData(Store.flowdata);
-        if (wordCheck) {
-            setcellvalue(hit.r, hit.c, d, replaceText);
-        } else {
-            let reg;
-            if (caseCheck) {
-                reg = new RegExp(func_methods.getRegExpStr(searchText), "g");
-            } else {
-                reg = new RegExp(func_methods.getRegExpStr(searchText), "ig");
-            }
-            let v = valueShowEs(hit.r, hit.c, d)
-                .toString()
-                .replace(reg, replaceText);
-            setcellvalue(hit.r, hit.c, d, v);
-        }
+        _this.replaceHitValue(d, hit, searchText, replaceText, { wordCheck, caseCheck });
 
         Store.luckysheet_select_save = [{ row: [hit.r, hit.r], column: [hit.c, hit.c] }];
 
@@ -830,20 +818,7 @@ const luckysheetSearchReplace = {
                     continue;
                 }
 
-                if (wordCheck) {
-                    setcellvalue(r, c, d, replaceText);
-                } else {
-                    let reg;
-                    if (caseCheck) {
-                        reg = new RegExp(func_methods.getRegExpStr(searchText), "g");
-                    } else {
-                        reg = new RegExp(func_methods.getRegExpStr(searchText), "ig");
-                    }
-                    let v = valueShowEs(r, c, d)
-                        .toString()
-                        .replace(reg, replaceText);
-                    setcellvalue(r, c, d, v);
-                }
+                _this.replaceHitValue(d, groups[sheetIndex][i], searchText, replaceText, { wordCheck, caseCheck });
 
                 sheetRange.push({ row: [r, r], column: [c, c] });
                 replaceCount++;
@@ -868,6 +843,25 @@ const luckysheetSearchReplace = {
         } else {
             tooltip.info(succeedInfo, "");
         }
+    },
+    replaceHitValue: function(data, hit, searchText, replaceText, options) {
+        const cell = data[hit.r] && data[hit.r][hit.c];
+        const source = hit.matchType === "formula" && cell && cell.f != null
+            ? String(cell.f)
+            : valueShowEs(hit.r, hit.c, data).toString();
+        const next = options.wordCheck
+            ? replaceText
+            : source.replace(new RegExp(func_methods.getRegExpStr(searchText), options.caseCheck ? "g" : "ig"), replaceText);
+
+        if (hit.matchType === "formula" && cell && cell.f != null) {
+            const formulaCell = Object.assign({}, cell, { f: next });
+            delete formulaCell.m;
+            delete formulaCell.v;
+            data[hit.r][hit.c] = formulaCell;
+            formula.insertUpdateFunctionGroup(hit.r, hit.c, hit.sheetIndex != null ? hit.sheetIndex : Store.currentSheetIndex);
+            return;
+        }
+        setcellvalue(hit.r, hit.c, data, next);
     },
 };
 

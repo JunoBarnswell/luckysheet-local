@@ -4,7 +4,9 @@ import {
     createSparseGrid,
     createSparseGridFromCelldata,
     ensureSparseSize,
+    materializeGridData,
     occupiedCellCount,
+    snapshotSheetFile,
     sparseGridToCelldata,
 } from "../../src/global/sparseGrid.js";
 import {
@@ -47,6 +49,14 @@ const exported = sparseGridToCelldata(grid);
 assertEqual(exported.length, 3, "toCelldata exports sparse {r,c,v}");
 assert(exported[0].r === 0 && exported[0].c === 0, "first exported cell is A1");
 assert(exported[2].r === 99999 && exported[2].c === 3, "last exported cell keeps coordinates");
+
+const materialized = materializeGridData(grid);
+assert(Array.isArray(materialized) && Array.isArray(materialized[0]), "public compatibility data is a real two-dimensional array");
+assertEqual(materialized[0][0].v, 1, "materialized grid preserves cell values");
+materialized[0][0].v = 88;
+assertEqual(grid[0][0].v, 1, "materialized grid does not leak internal cells");
+const fileSnapshot = snapshotSheetFile({ name: "S1", data: grid });
+assert(Array.isArray(fileSnapshot.data) && fileSnapshot.data[99999][3].v === "tail", "sheet snapshot materializes sparse data");
 
 const clone = cloneSheetData(grid);
 clone[0][0] = { v: 99 };

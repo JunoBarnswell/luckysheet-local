@@ -1,5 +1,6 @@
 import { chatatABC } from '../utils/util';
 import Store from '../store';
+import { snapshotSheetFile } from '../global/sparseGrid';
 
 function getSheetIndex(index) {
     for (let i = 0; i < Store.luckysheetfile.length; i++) {
@@ -75,6 +76,12 @@ function getluckysheetfile(plugin) {
     return Store.luckysheetfile;
 }
 
+function getluckysheetfileSnapshot() {
+    // The internal getter above is widely used by formula, refresh and server
+    // code. Public APIs must call this explicit boundary instead.
+    return (Store.luckysheetfile || []).map(snapshotSheetFile);
+}
+
 function getconfig() {
     return Store.config;
 }
@@ -97,6 +104,7 @@ export {
     getluckysheet_select_save,
     getluckysheet_scroll_status,
     getluckysheetfile,
+    getluckysheetfileSnapshot,
     getconfig,
     getvisibledatarow,
     getvisibledatacolumn,

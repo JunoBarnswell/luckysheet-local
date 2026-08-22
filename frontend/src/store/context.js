@@ -57,6 +57,7 @@ export function createStoreFields() {
         },
         scroll: { requestAnimationFrameIni: true, requestId: false, timeoutId: null },
         refresh: { timeoutId: null, dirtyCells: [] },
+        mutations: { sequence: 0, last: null },
         listener: { undoTimer: null, redoTimer: null },
         keyboard: { shiftDown: false },
         sheetBar: { initialized: false, currentItem: null, doubleClickTimer: null, oldSheetName: "" },

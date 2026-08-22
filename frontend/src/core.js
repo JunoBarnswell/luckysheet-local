@@ -15,7 +15,7 @@ import { rowColumnOperationInitial } from "./controllers/rowColumnOperation";
 import { keyboardInitial } from "./controllers/keyboard";
 import { orderByInitial } from "./controllers/orderBy";
 import { initPlugins } from "./controllers/expendPlugins";
-import { getluckysheetfile, getluckysheet_select_save, getconfig, getConditionFormatCells } from "./methods/get";
+import { getluckysheetfileSnapshot, getluckysheet_select_save, getconfig, getConditionFormatCells } from "./methods/get";
 import { setluckysheet_select_save } from "./methods/set";
 import { luckysheetrefreshgrid, jfrefreshgrid } from "./global/refresh";
 import functionlist from "./function/functionlist";
@@ -58,8 +58,9 @@ Object.assign(luckysheet, api);
 
 luckysheet = common_extend(api, luckysheet);
 
-//创建luckysheet表格
-luckysheet.create = function (setting) {
+// Creates a workbook and returns its private identity. Public callers use the
+// legacy create() wrapper (void) or the explicit createInstance() API.
+function createWorkbook(setting) {
     setting = setting || {};
     if (typeof window !== "undefined" && window.jQuery && window.$ !== scopedJQuery) {
         window.$ = scopedJQuery;
@@ -225,6 +226,19 @@ luckysheet.create = function (setting) {
     initChat();
     bindContainerFocus(instanceId, container);
     return { instanceId: instanceId };
+}
+
+// Preserve the legacy create() return contract. Multi-instance callers must
+// opt into the explicit handle API rather than relying on an implementation
+// detail of create().
+luckysheet.create = function (setting) {
+    createWorkbook(setting);
+};
+
+luckysheet.createInstance = function (setting) {
+    const options = Object.assign({}, setting || {}, { multi: true });
+    const result = createWorkbook(options);
+    return createBoundInstanceFacade(result.instanceId);
 };
 
 function initialWorkBook() {
@@ -244,7 +258,7 @@ function initialWorkBook() {
 }
 
 //获取所有表格数据
-luckysheet.getluckysheetfile = getluckysheetfile;
+luckysheet.getluckysheetfile = getluckysheetfileSnapshot;
 
 //获取当前表格 选区
 luckysheet.getluckysheet_select_save = getluckysheet_select_save;

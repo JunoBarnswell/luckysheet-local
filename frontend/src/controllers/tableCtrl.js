@@ -182,6 +182,59 @@ const tableCtrl = {
             server.saveParam("all", current, file.table || [], { k: "table" });
         }
     },
+    transformForRowColumn: function(change, sheetIndex) {
+        const current = sheetIndex != null ? sheetIndex : Store.currentSheetIndex;
+        const tables = this.getSheetTables(current);
+        if (!change || !tables.length || (change.rc !== "r" && change.rc !== "c")) {
+            return tables;
+        }
+        const start = change.type === "add" && change.direction === "rightbottom" ? change.index + 1 : change.index;
+        const length = Math.max(0, Number(change.len) || 0);
+        if (!length) return tables;
+        const end = start + length - 1;
+        const axis = change.rc === "r" ? "row" : "column";
+        const kept = [];
+
+        tables.forEach((table) => {
+            const range = table.range[axis];
+            if (change.type === "add") {
+                if (start <= range[0]) {
+                    range[0] += length;
+                    range[1] += length;
+                } else if (start <= range[1]) {
+                    range[1] += length;
+                    if (axis === "column") {
+                        const file = Store.luckysheetfile[getSheetIndex(current)];
+                        const newColumns = columnsFromRange({ row: table.range.row, column: [start, start + length - 1] }, file.data, table.hasHeader);
+                        table.columns.splice.apply(table.columns, [start - range[0], 0].concat(newColumns));
+                    }
+                }
+            } else {
+                if (end < range[0]) {
+                    range[0] -= length;
+                    range[1] -= length;
+                } else if (start <= range[1]) {
+                    const removedStart = Math.max(start, range[0]);
+                    const removedEnd = Math.min(end, range[1]);
+                    const removed = removedEnd - removedStart + 1;
+                    range[0] = Math.min(range[0], start);
+                    range[1] -= removed;
+                    if (axis === "column") {
+                        table.columns.splice(removedStart - table.range.column[0], removed);
+                    }
+                    if (range[1] < range[0]) return;
+                }
+            }
+            if (axis === "column") {
+                table.columns.forEach((column, index) => { column.index = index; });
+            }
+            kept.push(table);
+        });
+        const file = Store.luckysheetfile[getSheetIndex(current)];
+        file.table = kept;
+        this.persist(current);
+        return kept;
+    },
     init: function() {
         if (!Store.luckysheetfile) {
             return;

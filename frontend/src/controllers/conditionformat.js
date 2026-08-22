@@ -14,7 +14,19 @@ import locale from '../locale/locale';
 import {checkProtectionFormatCells} from './protection';
 import Store from '../store';
 import dayjs from 'dayjs'
-import { normalizeConditionFormatSave, toLsRule } from './cfAdapter';
+
+// Conditional formatting is stored and executed natively in LuckySheet. The
+// normalizer only discards invalid entries; it never translates another engine
+// DTO into this workbook's JSON contract.
+function toLsRule(rule) {
+    return rule;
+}
+
+function normalizeConditionFormatSave(rules) {
+    return Array.isArray(rules) ? rules.filter(function (rule) {
+        return rule && typeof rule.type === "string";
+    }) : [];
+}
 
 function isCfCellStopped(computeMap, r, c) {
     return !!(computeMap[r + "_" + c] && computeMap[r + "_" + c]._stopIfTrue);
