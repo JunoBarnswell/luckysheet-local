@@ -17,11 +17,11 @@ const types = {
   '.ttf': 'font/ttf',
 };
 
-function proxyHttp(req, res, target = backend) {
+function proxyHttp(req, res, target = backend, backendPath) {
   const options = {
     hostname: target.host,
     port: target.port,
-    path: req.url,
+    path: backendPath || req.url,
     method: req.method,
     headers: { ...req.headers, host: `${target.host}:${target.port}` },
   };
@@ -60,6 +60,13 @@ function serveStatic(req, res) {
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/luckysheet/')) {
     return proxyHttp(req, res, backend);
+  }
+  // 兼容旧 dist 仍请求 /luckyToXlsx、/luckyexcel/*
+  if (req.url.startsWith('/luckyToXlsx') || req.url.startsWith('/luckyexcel')) {
+    const queryIndex = req.url.indexOf('?');
+    const pathname = queryIndex >= 0 ? req.url.slice(0, queryIndex) : req.url;
+    const query = queryIndex >= 0 ? req.url.slice(queryIndex) : '';
+    return proxyHttp(req, res, backend, `/luckysheet${pathname}${query}`);
   }
   return serveStatic(req, res);
 });

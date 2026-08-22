@@ -3645,18 +3645,26 @@ const menuButton = {
                         itemvalue = $t.attr("itemvalue");
 
                     if (itemvalue == "print") {
-                        //Print config
                         if (Store.luckysheetPrint) {
-                            luckysheetPrint = Store.luckysheetPrint;
-                            const plugin = Store.plugins.find((item) => item.name === "print");
-                            if (plugin && plugin.config) {
-                                luckysheetPrint.createDialog();
-                                luckysheetPrint.init(plugin.config.license);
-                            }
+                            const printer = Store.luckysheetPrint;
+                            const plugin = Store.plugins && Store.plugins.find((item) => item.name === "print");
+                            printer.createDialog();
+                            printer.init(plugin && plugin.config && plugin.config.license);
                         }
-                    } else if (itemvalue == "areas" || itemvalue == "rows" || itemvalue == "columns") {
-                        //range
-                        alert("areas");
+                    } else if (itemvalue == "areas") {
+                        if (Store.luckysheetPrint) {
+                            Store.luckysheetPrint.updatePrintConfig({ area: "CurrentSelection" });
+                            Store.luckysheetPrint.createDialog();
+                            Store.luckysheetPrint.init();
+                        }
+                    } else if (itemvalue == "rows") {
+                        if (Store.luckysheetPrint) {
+                            Store.luckysheetPrint.setPrintTitles("rows");
+                        }
+                    } else if (itemvalue == "columns") {
+                        if (Store.luckysheetPrint) {
+                            Store.luckysheetPrint.setPrintTitles("columns");
+                        }
                     }
                 });
             }

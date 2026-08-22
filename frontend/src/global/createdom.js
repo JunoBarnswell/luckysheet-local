@@ -19,6 +19,7 @@ import rhchInit from './rhchInit';
 import { replaceHtml } from '../utils/util';
 import Store from '../store';
 import locale from '../locale/locale';
+import { prefixHtmlIds, getLsPrefix, markInstanceNodes, $ls } from '../store/domScope';
 
 export default function luckysheetcreatedom(colwidth, rowheight, data, menu, title) {
     // //最少30行
@@ -98,26 +99,36 @@ export default function luckysheetcreatedom(colwidth, rowheight, data, menu, tit
 
     gh = replaceHtml(gh, { "flow": flowHTML, "rowHeader": "<div style='height:" + Store.rh_height + "px' id='luckysheetrowHeader_0' class='luckysheetsheetchange'></div>", "columnHeader": colsheader, "functionButton": luckysheetConfigsetting.functionButton });//设置需要显示的菜单
 
+    const prefix = getLsPrefix();
+    gh = prefixHtmlIds(gh, prefix);
     $("#" + Store.container).append(gh);
 
-    $("#luckysheet-scrollbar-x div").width(Store.ch_width);
-    $("#luckysheet-scrollbar-y div").height(Store.rh_height + Store.columnHeaderHeight - Store.cellMainSrollBarSize - 3);
+    $ls("luckysheet-scrollbar-x").find("div").width(Store.ch_width);
+    $ls("luckysheet-scrollbar-y").find("div").height(Store.rh_height + Store.columnHeaderHeight - Store.cellMainSrollBarSize - 3);
 
-    //新建行菜单
-    $("body").append(maskHTML);
-    $("body").append(colsmenuHTML);
-    $("body").append(rightclickHTML());
-    $("body").append(inputHTML);
-    $("body").append(replaceHtml(filtermenuHTML(), { "menuid": "filter" }));
-    $("body").append(replaceHtml(filtersubmenuHTML(), { "menuid": "filter" }));
-    $("body").append(sheetconfigHTML());
+    function appendBodyScoped(html) {
+        if (!html) {
+            return;
+        }
+        const $nodes = $(prefixHtmlIds(String(html), prefix));
+        markInstanceNodes($nodes, Store.instanceId);
+        $("body").append($nodes);
+    }
 
-    $("#luckysheet-rows-h").width((Store.rowHeaderWidth-1.5));
-    $("#luckysheet-cols-h-c").height((Store.columnHeaderHeight-1.5));
-    $("#luckysheet-left-top").css({width:Store.rowHeaderWidth-1.5, height:Store.columnHeaderHeight-1.5});
+    appendBodyScoped(maskHTML);
+    appendBodyScoped(colsmenuHTML);
+    appendBodyScoped(rightclickHTML());
+    appendBodyScoped(inputHTML);
+    appendBodyScoped(replaceHtml(filtermenuHTML(), { "menuid": "filter" }));
+    appendBodyScoped(replaceHtml(filtersubmenuHTML(), { "menuid": "filter" }));
+    appendBodyScoped(sheetconfigHTML());
+
+    $ls("luckysheet-rows-h").width((Store.rowHeaderWidth-1.5));
+    $ls("luckysheet-cols-h-c").height((Store.columnHeaderHeight-1.5));
+    $ls("luckysheet-left-top").css({width:Store.rowHeaderWidth-1.5, height:Store.columnHeaderHeight-1.5});
 
     // //批注
     // luckysheetPostil.buildAllPs(Store.flowdata);
 
-    $("#luckysheet_info_detail_input").val(luckysheetConfigsetting.title);
+    $ls("luckysheet_info_detail_input").val(luckysheetConfigsetting.title);
 }

@@ -55,6 +55,3 @@ HELP.md
 
 # Local tools (download separately)
 tools/apache-maven-3.9.9/
-
-# Frontend plugin build output
-frontend/src/expendPlugins/print/print.js

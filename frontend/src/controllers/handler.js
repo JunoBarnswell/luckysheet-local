@@ -74,6 +74,9 @@ import {createExportDialog,fetchAndDownloadXlsx} from "../expendPlugins/exportXl
 
 //, columeflowset, rowflowset
 export default function luckysheetHandler() {
+    $(document).off(".luckysheetEvent");
+    $(document).off(".luckysheetProtection");
+
     const os = browser.detectOS(),
         isMobile = browser.mobilecheck();
 

@@ -11,10 +11,10 @@ import { isEditMode } from '../global/validate';
 import formula from '../global/formula';
 import cleargridelement from '../global/cleargridelement';
 import tooltip from '../global/tooltip';
-    selectTextDom
 import {selectTextDom} from '../global/cursorPos';
 import locale from '../locale/locale';
 import Store from '../store';
+import { $ls } from '../store/domScope';
 import luckysheetConfigsetting from './luckysheetConfigsetting';
 import {pagerInit} from '../global/api'
 import method from '../global/method';
@@ -192,7 +192,7 @@ export function initialSheetBar(){
     const locale_sheetconfig = _locale.sheetconfig;
     isInitialSheetConfig = false
 
-    $("#luckysheet-sheet-area").on("mousedown", "div.luckysheet-sheets-item", function (e) {
+    $ls("luckysheet-sheet-area").on("mousedown", "div.luckysheet-sheets-item", function (e) {
         if(isEditMode()){
             // alert("非编辑模式下不允许该操作！");
             return;

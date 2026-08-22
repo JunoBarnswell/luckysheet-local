@@ -43,6 +43,8 @@ import {getRangetxt } from '../methods/get';
 import {luckysheetupdateCell} from '../controllers/updateCell';
 import luckysheetSearchReplace from "../controllers/searchReplace";
 import { cloneSheetData } from "./sparseGrid";
+import { listUnits, getUnit } from "../store/registry";
+import { focusWorkbook, withWorkbook } from "../store/isolate";
 
 const IDCardReg = /^\d{6}(18|19|20)?\d{2}(0[1-9]|1[12])(0[1-9]|[12]\d|3[01])\d{3}(\d|X)$/i;
 
@@ -6804,7 +6806,20 @@ export function changLang(lang = 'zh'){
 
     let options = toJson();
     options.lang = lang;
-    luckysheet.create(options);
+    const creator = (typeof window !== "undefined" && window.luckysheet && window.luckysheet.create) || (typeof luckysheet !== "undefined" && luckysheet.create);
+    if (listUnits().length > 1) {
+        options.multi = true;
+        options.instanceId = Store.instanceId;
+        options.container = Store.container;
+        method.destroy(Store.instanceId);
+        if (creator) {
+            creator(options);
+        }
+        return;
+    }
+    if (creator) {
+        creator(options);
+    }
 }
 
 
@@ -7001,4 +7016,95 @@ export function openSearchDialog(source = 1){
     luckysheetSearchReplace.createDialog(source);
     luckysheetSearchReplace.init();
     $("#luckysheet-search-replace #searchInput input").focus();
+}
+
+/**
+ * 打开打印预览/设置对话框（focused 实例）
+ */
+export function openPrintDialog(){
+    if(!Store.luckysheetPrint){
+        return tooltip.info("Print plugin is not enabled. Add plugins:[{name:'print'}].", "");
+    }
+    Store.luckysheetPrint.createDialog();
+    Store.luckysheetPrint.init();
+}
+
+/**
+ * 关闭打印对话框
+ */
+export function closePrintDialog(){
+    if(Store.luckysheetPrint){
+        Store.luckysheetPrint.closeDialog();
+    }
+}
+
+/**
+ * 按当前 printoptions 打印 focused 实例
+ * @param {Object} options 可选 layout/render 覆盖
+ */
+export function print(options){
+    if(!Store.luckysheetPrint){
+        return tooltip.info("Print plugin is not enabled. Add plugins:[{name:'print'}].", "");
+    }
+    return Store.luckysheetPrint.print(options);
+}
+
+/**
+ * 更新打印布局配置（对照 Univer updatePrintConfig 语义）
+ */
+export function updatePrintConfig(config){
+    if(!Store.luckysheetPrint){
+        return null;
+    }
+    return Store.luckysheetPrint.updatePrintConfig(config);
+}
+
+/**
+ * 更新打印渲染配置
+ */
+export function updatePrintRenderConfig(config){
+    if(!Store.luckysheetPrint){
+        return null;
+    }
+    return Store.luckysheetPrint.updatePrintRenderConfig(config);
+}
+
+export function use(instanceId){
+    return focusWorkbook(instanceId) ? instanceId : null;
+}
+
+export function getInstance(instanceId){
+    const ctx = getUnit(instanceId);
+    if(!ctx){
+        return null;
+    }
+    return {
+        instanceId: ctx.instanceId,
+        container: ctx.container,
+        use: function(){
+            return use(ctx.instanceId);
+        },
+        destroy: function(){
+            method.destroy(ctx.instanceId);
+        },
+        toJson: function(){
+            return withWorkbook(ctx.instanceId, toJson);
+        },
+        getSheet: function(){
+            return withWorkbook(ctx.instanceId, function(){
+                return Store.luckysheetfile;
+            });
+        },
+    };
+}
+
+export function listInstances(){
+    return listUnits().map(function(id){
+        const ctx = getUnit(id);
+        return {
+            instanceId: id,
+            container: ctx && ctx.container,
+            focused: Store.instanceId === id,
+        };
+    });
 }

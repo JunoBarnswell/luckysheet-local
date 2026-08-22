@@ -26,6 +26,16 @@ import { selectHightlightShow } from "./controllers/select";
 import { zoomInitial } from "./controllers/zoom";
 // import { printInitial } from "./controllers/print";
 import method from "./global/method";
+import { createWorkbookContext, generateInstanceId } from "./store/context";
+import { createUnit, listUnits, getUnit } from "./store/registry";
+import { snapshotModules, resetModulesForNewInstance, focusWorkbook, bindIsolateModules } from "./store/isolate";
+import { installDomScopeHooks, bindContainerFocus, setFocusHook } from "./store/domScope";
+import luckysheetformula from "./global/formula";
+import pivotTable from "./controllers/pivotTable";
+import imageCtrl from "./controllers/imageCtrl";
+import dataVerificationCtrl from "./controllers/dataVerificationCtrl";
+import luckysheetFreezen from "./controllers/freezen";
+import { getScrollFlags, setScrollFlags } from "./global/scroll";
 
 import * as api from "./global/api";
 
@@ -38,6 +48,20 @@ import { hideloading, showloading } from "./global/loading.js";
 import { luckysheetextendData } from "./global/extend.js";
 import { initChat } from './demoData/chat.js'
 
+bindIsolateModules({
+    formula: luckysheetformula,
+    server: server,
+    sheet: sheetmanage,
+    pivot: pivotTable,
+    image: imageCtrl,
+    dv: dataVerificationCtrl,
+    freezen: luckysheetFreezen,
+    config: luckysheetConfigsetting,
+    getScrollFlags: getScrollFlags,
+    setScrollFlags: setScrollFlags,
+});
+setFocusHook(focusWorkbook);
+
 let luckysheet = {};
 
 // mount api
@@ -48,7 +72,34 @@ luckysheet = common_extend(api, luckysheet);
 
 //创建luckysheet表格
 luckysheet.create = function (setting) {
-    method.destroy();
+    setting = setting || {};
+    installDomScopeHooks();
+    if (!setting.multi) {
+        if (typeof method.destroyAll === "function") {
+            method.destroyAll();
+        } else {
+            method.destroy();
+        }
+    }
+
+    const instanceId = setting.instanceId || generateInstanceId();
+    if (getUnit(instanceId)) {
+        method.destroy(instanceId);
+    }
+    const existing = listUnits();
+    if (existing.length) {
+        snapshotModules(getUnit(existing[existing.length - 1]) || Store.__ctx);
+    }
+    const ctx = createWorkbookContext({
+        instanceId: instanceId,
+        container: setting.container,
+        multi: !!setting.multi,
+        domPrefix: (setting.multi || existing.length > 0) ? (instanceId + "-") : "",
+    });
+    createUnit(ctx);
+    focusWorkbook(instanceId);
+    resetModulesForNewInstance();
+
     // Store original parameters for api: toJson
     Store.toJsonOptions = {};
     for (let c in setting) {
@@ -185,7 +236,9 @@ luckysheet.create = function (setting) {
         });
     }
 
-    initChat()
+    initChat();
+    bindContainerFocus(instanceId, container);
+    return { instanceId: instanceId };
 };
 
 function initialWorkBook() {

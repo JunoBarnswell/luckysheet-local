@@ -18,6 +18,7 @@ import { isInlineStringCell } from "../controllers/inlineString";
 import method from "./method";
 import Store from "../store";
 import locale from "../locale/locale";
+import { $ls } from "../store/domScope";
 import sheetmanage from "../controllers/sheetmanage";
 import noteCtrl from "../controllers/noteCtrl";
 import { expandDirtyRectForMerges, intersectDirtyRect, normalizeDirtyRect } from "./dirtyRect";
@@ -35,7 +36,7 @@ function luckysheetDrawgridRowTitle(scrollHeight, drawHeight, offsetTop) {
         offsetTop = Store.columnHeaderHeight;
     }
 
-    let luckysheetTableContent = $("#luckysheetTableContent")
+    let luckysheetTableContent = $ls("luckysheetTableContent")
         .get(0)
         .getContext("2d");
     luckysheetTableContent.save();
@@ -219,7 +220,7 @@ function luckysheetDrawgridColumnTitle(scrollWidth, drawWidth, offsetLeft) {
         offsetLeft = Store.rowHeaderWidth;
     }
 
-    let luckysheetTableContent = $("#luckysheetTableContent")
+    let luckysheetTableContent = $ls("luckysheetTableContent")
         .get(0)
         .getContext("2d");
     luckysheetTableContent.save();
@@ -436,7 +437,7 @@ function luckysheetDrawMain(
     //表格canvas
     let luckysheetTableContent = null;
     if (mycanvas == null) {
-        luckysheetTableContent = $("#luckysheetTableContent")
+        luckysheetTableContent = $ls("luckysheetTableContent")
             .get(0)
             .getContext("2d");
     } else {

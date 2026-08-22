@@ -114,6 +114,7 @@ const luckysheetSearchReplace = {
         let scrollLeft = $(document).scrollLeft(),
             scrollTop = $(document).scrollTop();
         $("#luckysheet-search-replace")
+            .attr("data-ls-instance", Store.instanceId || "")
             .css({ left: (winw + scrollLeft - myw) / 2, top: (winh + scrollTop - myh) / 3 })
             .show();
 

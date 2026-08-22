@@ -17,6 +17,7 @@ import {isInlineStringCell} from './inlineString';
 import Store from '../store';
 import server from './server';
 import method from '../global/method';
+import { $ls } from '../store/domScope';
 
 export function luckysheetupdateCell(row_index1, col_index1, d, cover, isnotfocus) {
     if(!checkProtectionLocked(row_index1, col_index1, Store.currentSheetIndex)){
@@ -59,8 +60,8 @@ export function luckysheetupdateCell(row_index1, col_index1, d, cover, isnotfocu
 
     let winH = $(window).height(), winW = $(window).width();
     let container_offset = $("#" + Store.container).offset();
-    let scrollLeft = $("#luckysheet-cell-main").scrollLeft();
-    let scrollTop = $("#luckysheet-cell-main").scrollTop();
+    let scrollLeft = $ls("luckysheet-cell-main").scrollLeft();
+    let scrollTop = $ls("luckysheet-cell-main").scrollTop();
 
     if (pivotTable.isPivotRange(row_index, col_index)) {
         return;
@@ -96,7 +97,7 @@ export function luckysheetupdateCell(row_index1, col_index1, d, cover, isnotfocu
     Store.luckysheetCellUpdate = [row_index, col_index];
     formula.bindIMEComposition();
     if (!isnotfocus) {
-        focusEditor($("#luckysheet-rich-text-editor"), { select: true, preventScroll: true });
+        focusEditor($ls("luckysheet-rich-text-editor"), { select: true, preventScroll: true });
     }
 
     $("#luckysheet-input-box").removeAttr("style").css({ 
@@ -220,13 +221,13 @@ export function luckysheetupdateCell(row_index1, col_index1, d, cover, isnotfocu
     // }
     value = formula.xssDeal(value);
     if(!checkProtectionCellHidden(row_index, col_index, Store.currentSheetIndex) && value.length>0 && value.substr(0, 63)=='<span dir="auto" class="luckysheet-formula-text-color">=</span>'){
-        $("#luckysheet-rich-text-editor").html("");
+        $ls("luckysheet-rich-text-editor").html("");
     }
     else{
         value = formula.ltGtSignDeal(value);
-        $("#luckysheet-rich-text-editor").html(value);
+        $ls("luckysheet-rich-text-editor").html(value);
         if (!isnotfocus) {
-            luckysheetRangeLast($("#luckysheet-rich-text-editor")[0]);
+            luckysheetRangeLast($ls("luckysheet-rich-text-editor")[0]);
         }
     }
 
@@ -249,7 +250,7 @@ export function luckysheetupdateCell(row_index1, col_index1, d, cover, isnotfocu
     }
 
     $("#luckysheet-input-box").css(input_postition);
-    $("#luckysheet-rich-text-editor").css(inputContentScale);
+    $ls("luckysheet-rich-text-editor").css(inputContentScale);
 
     //日期
     if(d[row_index1][col_index1] && d[row_index1][col_index1].ct && d[row_index1][col_index1].ct.t == 'd'){
@@ -258,7 +259,7 @@ export function luckysheetupdateCell(row_index1, col_index1, d, cover, isnotfocu
 
     formula.rangetosheet = Store.currentSheetIndex;
     formula.createRangeHightlight();
-    formula.rangeResizeTo = $("#luckysheet-rich-text-editor");
+    formula.rangeResizeTo = $ls("luckysheet-rich-text-editor");
     cleargridelement();
 }
 
@@ -280,8 +281,8 @@ export function setCenterInputPosition(row_index, col_index, d){
 
     let winH = $(window).height(), winW = $(window).width();
     let container_offset = $("#" + Store.container).offset();
-    let scrollLeft = $("#luckysheet-cell-main").scrollLeft();
-    let scrollTop = $("#luckysheet-cell-main").scrollTop();
+    let scrollLeft = $ls("luckysheet-cell-main").scrollLeft();
+    let scrollTop = $ls("luckysheet-cell-main").scrollTop();
 
     let input_postition = { 
         "min-width": col - col_pre + 1 - 8, 

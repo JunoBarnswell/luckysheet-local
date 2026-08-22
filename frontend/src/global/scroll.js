@@ -6,6 +6,29 @@ import method from '../global/method'
 
 let scrollRequestAnimationFrameIni = true,scrollRequestAnimationFrame = false, scrollTimeOutCancel=null;
 
+export function getScrollFlags() {
+    return {
+        scrollRequestAnimationFrameIni: scrollRequestAnimationFrameIni,
+        scrollRequestAnimationFrame: scrollRequestAnimationFrame,
+        scrollTimeOutCancel: scrollTimeOutCancel,
+    };
+}
+
+export function setScrollFlags(flags) {
+    if (!flags) {
+        return;
+    }
+    if (flags.scrollRequestAnimationFrameIni != null) {
+        scrollRequestAnimationFrameIni = flags.scrollRequestAnimationFrameIni;
+    }
+    if (flags.scrollRequestAnimationFrame != null) {
+        scrollRequestAnimationFrame = flags.scrollRequestAnimationFrame;
+    }
+    if (flags.scrollTimeOutCancel !== undefined) {
+        scrollTimeOutCancel = flags.scrollTimeOutCancel;
+    }
+}
+
 function execScroll(){
     let scrollLeft = $("#luckysheet-scrollbar-x").scrollLeft(), 
         scrollTop = $("#luckysheet-scrollbar-y").scrollTop();

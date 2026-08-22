@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <title>Multi-instance A+B regression</title>
+    <link rel="stylesheet" href="../../dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="../../dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="../../dist/css/luckysheet.css" />
+    <style>
+        html, body { height: 100%; margin: 0; font-family: sans-serif; }
+        #report { height: 96px; overflow: auto; background: #111827; color: #f9fafb; padding: 8px 12px; font-size: 13px; }
+        #wrap { position: absolute; left: 0; top: 96px; right: 0; bottom: 0; display: flex; }
+        #boxA, #boxB { flex: 1; position: relative; border-right: 1px solid #d1d5db; }
+        .pass { color: #34d399; }
+        .fail { color: #f87171; }
+    </style>
+</head>
+<body>
+    <div id="report">multi-instance 回归：等待运行…</div>
+    <div id="wrap">
+        <div id="boxA"></div>
+        <div id="boxB"></div>
+    </div>
+    <script src="../../dist/plugins/js/plugin.js"></script>
+    <script src="../../dist/luckysheet.umd.js"></script>
+    <script src="./harness.js"></script>
+    <script>
+        (function () {
+            var H = window.LsRegression;
+
+            function makeSheet(name, a1) {
+                return [{
+                    name: name,
+                    index: "0",
+                    status: 1,
+                    order: 0,
+                    row: 40,
+                    column: 10,
+                    celldata: [{ r: 0, c: 0, v: { v: a1, m: String(a1) } }],
+                    scrollTop: 80
+                }];
+            }
+
+            function readA1() {
+                return luckysheet.getCellValue(0, 0, { type: "v" });
+            }
+
+            H.tryLoadLuckysheet().then(function () {
+                var a = luckysheet.create({
+                    container: "boxA",
+                    lang: "zh",
+                    multi: true,
+                    data: makeSheet("A", "left")
+                });
+                H.assert(!!a && !!a.instanceId, "create({multi:true}) returns instanceId");
+                return H.wait(350).then(function () { return a; });
+            }).then(function (a) {
+                var b = luckysheet.create({
+                    container: "boxB",
+                    lang: "zh",
+                    multi: true,
+                    data: makeSheet("B", "right")
+                });
+                H.assert(!!b && b.instanceId !== a.instanceId, "second instance has distinct id");
+                H.assert(luckysheet.listInstances().length === 2, "listInstances length 2");
+                return H.wait(350).then(function () { return { a: a, b: b }; });
+            }).then(function (pair) {
+                luckysheet.use(pair.a.instanceId);
+                H.assertEqual(readA1(), "left", "focused A reads left A1");
+                luckysheet.setCellValue(0, 0, "L2");
+                luckysheet.use(pair.b.instanceId);
+                H.assertEqual(readA1(), "right", "focused B still right after A edit");
+                luckysheet.setCellValue(0, 0, "R2");
+                luckysheet.use(pair.a.instanceId);
+                H.assertEqual(readA1(), "L2", "A A1 not overwritten by B");
+                var ids = [pair.a.instanceId + "-luckysheet-scrollbar-y", pair.b.instanceId + "-luckysheet-scrollbar-y"];
+                var barA = document.getElementById(ids[0]) || document.querySelector("#boxA [id$='luckysheet-scrollbar-y']");
+                var barB = document.getElementById(ids[1]) || document.querySelector("#boxB [id$='luckysheet-scrollbar-y']");
+                H.assert(!!barA && !!barB && barA !== barB, "each instance has own scrollbar");
+                H.assert(typeof luckysheet.getInstance(pair.a.instanceId).toJson === "function", "getInstance facade");
+                luckysheet.destroy(pair.b.instanceId);
+                H.assert(luckysheet.listInstances().length === 1, "destroy(id) removes only B");
+                luckysheet.use(pair.a.instanceId);
+                H.assertEqual(readA1(), "L2", "A survives destroy(B)");
+                H.summary();
+            }).catch(function (err) {
+                H.assert(false, "runtime", String(err && err.message || err));
+                H.summary();
+            });
+        })();
+    </script>
+</body>
+</html>

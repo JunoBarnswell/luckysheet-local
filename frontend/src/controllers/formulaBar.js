@@ -17,6 +17,7 @@ import tooltip from '../global/tooltip';
 import locale from '../locale/locale';
 import Store from '../store';
 import { focusEditor } from '../utils/util';
+import { $ls } from '../store/domScope';
 
 export function formulaBarInitial(){
     //公式栏处理
@@ -25,7 +26,7 @@ export function formulaBarInitial(){
     const _locale = locale();
     const locale_formula= _locale.formula;
 
-    $("#luckysheet-functionbox-cell").focus(function () {
+    $ls("luckysheet-functionbox-cell").focus(function () {
         if(isEditMode()){//此模式下禁用公式栏
             return;
         }
@@ -66,7 +67,7 @@ export function formulaBarInitial(){
                 Store.luckysheet_select_save = [{ "row": [Store.luckysheetCellUpdate[0], Store.luckysheetCellUpdate[0]], "column": [Store.luckysheetCellUpdate[1], Store.luckysheetCellUpdate[1]], "row_focus": Store.luckysheetCellUpdate[0], "column_focus": Store.luckysheetCellUpdate[1] }];
                 luckysheetMoveHighlightCell("down", 1, "rangeOfSelect");
                 //$("#luckysheet-functionbox-cell").blur();
-                focusEditor($("#luckysheet-rich-text-editor"), { preventScroll: true });
+                focusEditor($ls("luckysheet-rich-text-editor"), { preventScroll: true });
             }
             event.preventDefault();
         }
@@ -74,7 +75,7 @@ export function formulaBarInitial(){
             formula.dontupdate();
             luckysheetMoveHighlightCell("down", 0, "rangeOfSelect");
             //$("#luckysheet-functionbox-cell").blur();
-            focusEditor($("#luckysheet-rich-text-editor"), { preventScroll: true });
+            focusEditor($ls("luckysheet-rich-text-editor"), { preventScroll: true });
             event.preventDefault();
         }
         else if (kcode == keycode.F4 && parseInt($inputbox.css("top")) > 0) {
