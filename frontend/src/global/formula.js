@@ -6036,6 +6036,14 @@ const luckysheetformula = createContextualModule("formula", {
     execfunction: function(txt, r, c, index, isrefresh, notInsertFunc) {
         let _this = this;
 
+        // Formula expressions are evaluated through Function for legacy
+        // compatibility. Publish the focused workbook's native function table
+        // immediately before evaluation so new Function never resolves a stale
+        // instance or an undefined global.
+        if (typeof globalThis !== "undefined") {
+            globalThis.luckysheet_function = Store.luckysheet_function;
+        }
+
         let _locale = locale();
         let locale_formulaMore = _locale.formulaMore;
         // console.log(txt,r,c)

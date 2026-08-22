@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>回归：原生现代公式</title>
+  <style>html,body,#luckysheet{height:100%;margin:0}.pass{color:#087f23}.fail{color:#b00020}</style>
+</head>
+<body>
+  <div id="assert-summary"></div><div id="assert-log"></div><div id="luckysheet"></div>
+  <script src="../../dist/plugins/js/plugin.js"></script>
+  <script src="../../dist/luckysheet.umd.js"></script>
+  <script src="./harness.js"></script>
+  <script>
+    (function () {
+      var H = window.LsRegression;
+      luckysheet.create({
+        container: 'luckysheet',
+        data: [{ name: 'ModernFormula', index: '0', status: 1, order: 0, row: 40, column: 12, celldata: [] }]
+      });
+      H.wait(350).then(function () {
+        luckysheet.setRangeValue([[1, 'a'], [2, 'b'], [3, 'c']], { range: 'A1:B3' });
+        luckysheet.setCellValue(0, 3, '=XLOOKUP(2,A1:A3,B1:B3)');
+        luckysheet.setCellValue(1, 3, '=XMATCH("b",B1:B3,0)');
+        luckysheet.setCellValue(2, 3, '=TEXTAFTER("north-south","-")');
+        luckysheet.setCellValue(3, 3, '=TEXTBEFORE("north-south","-")');
+        return H.wait(600);
+      }).then(function () {
+        H.assertEqual(H.cellV(0, 3), 'b', 'XLOOKUP 返回匹配值');
+        H.assertEqual(H.cellV(1, 3), 2, 'XMATCH 返回一基索引');
+        H.assertEqual(H.cellV(2, 3), 'south', 'TEXTAFTER 返回分隔符后文本');
+        H.assertEqual(H.cellV(3, 3), 'north', 'TEXTBEFORE 返回分隔符前文本');
+        H.summary();
+      }).catch(function (error) {
+        H.assert(false, '运行失败', String(error && error.message || error));
+        H.summary();
+      });
+    })();
+  </script>
+</body>
+</html>

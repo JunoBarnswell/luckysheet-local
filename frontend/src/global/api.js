@@ -422,8 +422,6 @@ export function setCellFormat(row, column, attr, value, options = {}) {
     if(file == null){
         return tooltip.info("The order parameter is invalid.", "");
     }
-    const activeMutation = mutation || beginWorkbookMutation("setRangeValue", file.index);
-
     let targetSheetData = cloneSheetData(file.data);
     if(targetSheetData.length == 0){
         targetSheetData = sheetmanage.buildGridData(file);
@@ -2880,7 +2878,8 @@ export function setRangeValue(data, options = {}) {
         range = curRange,
         isRefresh = true,
         order = curSheetOrder,
-        success
+        success,
+        mutation
     } = {...options}
 
     if (data == null) {
@@ -2907,6 +2906,7 @@ export function setRangeValue(data, options = {}) {
     if(file == null){
         return tooltip.info("The order parameter is invalid.", "");
     }
+    const activeMutation = mutation || beginWorkbookMutation("setRangeValue", file.index);
     const containsFormula = data.some(function (sourceRow) {
         return Array.isArray(sourceRow) && sourceRow.some(function (cell) {
             return isFormulaString(cell && cell.f) || (typeof cell === "string" && cell.charAt(0) === "=");

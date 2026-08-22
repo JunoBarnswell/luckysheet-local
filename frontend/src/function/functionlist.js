@@ -46,6 +46,9 @@ const functionlist = function(customFunctions){
 
     Store.luckysheet_function = luckysheet_function;
     Store.runtime.formula.functions = luckysheet_function;
+    if (typeof globalThis !== "undefined") {
+        globalThis.luckysheet_function = luckysheet_function;
+    }
 }
 
 export default functionlist;
