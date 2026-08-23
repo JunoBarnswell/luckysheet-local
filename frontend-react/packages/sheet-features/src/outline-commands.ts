@@ -1,6 +1,5 @@
 import type { OutlineGroup, OutlineModel, RangeRef } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
-import { computeOutlineHiddenRows } from './data-features';
 
 function emptyOutline(): OutlineModel {
   return { groups: [] };
@@ -18,6 +17,14 @@ function rowRange(group: OutlineGroup, columnCount: number, sheetId: string): Ra
     startColumn: 0,
     endColumn: Math.max(0, columnCount - 1),
   };
+}
+
+function validateGroup(group: OutlineGroup, sheet: { rowCount: number; columnCount: number }): void {
+  if (!group.id.trim()) throw new Error('Outline group id is required');
+  if (group.start < 0 || group.end < group.start) throw new Error('Outline group range is invalid');
+  if (group.level < 1 || group.level > 3 || !Number.isInteger(group.level)) throw new Error('Outline level must be 1, 2, or 3');
+  const limit = group.axis === 'row' ? sheet.rowCount : sheet.columnCount;
+  if (group.end >= limit) throw new Error('Outline group exceeds the worksheet boundary');
 }
 
 export interface OutlineGroupParams {
@@ -41,7 +48,9 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     id: 'outline.group.add',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      validateGroup(params.group, sheet);
       const previous = structuredClone(outlineOf(sheet));
+      if (previous.groups.some((group) => group.id === params.group.id)) throw new Error(`Outline group already exists: ${params.group.id}`);
       const outline = structuredClone(outlineOf(sheet));
       outline.groups.push(structuredClone(params.group));
       const affectedRanges: RangeRef[] = [rowRange(params.group, sheet.columnCount, params.sheetId)];
@@ -127,26 +136,4 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerCommand<{ sheetId: string }>({
-    id: 'outline.applyHiddenRows',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const hidden = computeOutlineHiddenRows(sheet);
-      const previous = [...sheet.hiddenRows];
-      const affectedRanges: RangeRef[] = [];
-      context.applyMutation({
-        id: 'rows.hidden.restore',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { sheetId: params.sheetId, indices: [...hidden] },
-        affectedRanges,
-        inverse: [{ id: 'rows.hidden.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, indices: previous }, affectedRanges }],
-        apply: () => {
-          sheet.hiddenRows.clear();
-          for (const row of hidden) sheet.hiddenRows.add(row);
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
 }

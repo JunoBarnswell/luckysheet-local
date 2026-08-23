@@ -46,6 +46,8 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext): Eval
       return node.value;
     case 'boolean-literal':
       return node.value;
+    case 'invalid-reference':
+      return createFormulaError('#REF!', 'Reference was deleted by a structural mutation');
     case 'cell-reference':
       return context.readCell(resolveCellReference(node.reference, context.currentCell));
     case 'range-reference':

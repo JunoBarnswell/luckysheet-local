@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { SpreadsheetApplication } from './application';
-import { SAMPLE_AUTOMATION_SCRIPT } from './automation-bridge';
+import { SAMPLE_AUTOMATION_SCRIPT } from './features/automation';
 
 describe('SpreadsheetApplication automation integration', () => {
   it('runs scripts through automation.run command path', () => {

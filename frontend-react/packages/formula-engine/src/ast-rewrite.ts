@@ -7,7 +7,12 @@ export interface StructuralShift {
   op: 'insert' | 'delete';
 }
 
-export type FormulaReferenceMapper = (reference: ParsedCellReference) => ParsedCellReference;
+/**
+ * A structural reference transform can invalidate a reference.  `undefined`
+ * is deliberately distinct from a surviving coordinate: callers must render
+ * it as a real `#REF!` AST node rather than clamping it to an arbitrary cell.
+ */
+export type FormulaReferenceMapper = (reference: ParsedCellReference) => ParsedCellReference | undefined;
 
 /**
  * Apply a reference mapper to every cell reference in an AST.
@@ -23,15 +28,29 @@ export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMappe
     case 'boolean-literal':
     case 'name-reference':
     case 'table-reference':
+    case 'invalid-reference':
       return node;
-    case 'cell-reference':
-      return { ...node, reference: mapper(node.reference) };
-    case 'range-reference':
+    case 'cell-reference': {
+      const mapped = mapper(node.reference);
+      return mapped === undefined
+        ? { type: 'invalid-reference', code: '#REF!', span: node.span, parenthesized: node.parenthesized }
+        : { ...node, reference: mapped };
+    }
+    case 'range-reference': {
+      const mappedStart = mapper(node.start.reference);
+      const mappedEnd = mapper(node.end.reference);
+      // A range endpoint which no longer exists invalidates the range.  This
+      // avoids the old clamp behaviour (`A2:A2`) which silently changes the
+      // meaning of formulas after row/column deletion.
+      if (mappedStart === undefined || mappedEnd === undefined) {
+        return { type: 'invalid-reference', code: '#REF!', span: node.span, parenthesized: node.parenthesized };
+      }
       return {
         ...node,
-        start: { ...node.start, reference: mapper(node.start.reference) },
-        end: { ...node.end, reference: mapper(node.end.reference) },
+        start: { ...node.start, reference: mappedStart },
+        end: { ...node.end, reference: mappedEnd },
       };
+    }
     case 'unary-expression':
       return { ...node, operand: mapAstReferences(node.operand, mapper) };
     case 'binary-expression':
@@ -50,7 +69,7 @@ export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMappe
  * Absolute markers affect copy/fill operations, not workbook structure
  * changes, so both absolute and relative references move with the structure.
  */
-export function remapReference(ref: ParsedCellReference, shift: StructuralShift): ParsedCellReference {
+export function remapReference(ref: ParsedCellReference, shift: StructuralShift): ParsedCellReference | undefined {
   if (shift.op === 'insert') {
     const before = shift.axis === 'row' ? ref.row : ref.column;
     if (before >= shift.at) {
@@ -68,9 +87,9 @@ export function remapReference(ref: ParsedCellReference, shift: StructuralShift)
       : { ...ref, column: ref.column - shift.count };
   }
   if (position >= shift.at) {
-    // Keep the engine contract for references into a deleted region: clamp to
-    // the first surviving coordinate so recalculation stays deterministic.
-    return shift.axis === 'row' ? { ...ref, row: shift.at } : { ...ref, column: shift.at };
+    // A reference into the deleted region is invalid.  Returning undefined is
+    // handled by mapAstReferences and produces a first-class #REF! node.
+    return undefined;
   }
   return ref;
 }

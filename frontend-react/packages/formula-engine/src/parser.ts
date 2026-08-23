@@ -172,6 +172,11 @@ class Parser {
       return node;
     }
 
+    if (token.kind === 'error-reference') {
+      this.advance();
+      return { type: 'invalid-reference', code: '#REF!', span: token.span };
+    }
+
     if (token.kind === 'string' && !this.checkNext('bang')) {
       this.advance();
       const node: StringLiteralNode = { type: 'string-literal', value: token.value ?? '', span: token.span };

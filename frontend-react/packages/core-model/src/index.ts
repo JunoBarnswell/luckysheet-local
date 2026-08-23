@@ -14,7 +14,10 @@ import type {
   OutlineModel,
   SpillRange,
   ProtectionRule,
+  DefinedNameModel,
+  DefinedNameScope,
 } from './domain';
+import { normalizeDefinedNameModel } from './domain';
 
 export type CellValue = string | number | boolean | null;
 
@@ -125,14 +128,17 @@ export type {
   SpillRange,
   SpillState,
   ProtectionRule,
+  DefinedNameModel,
+  DefinedNameScope,
   ProtectionScope,
   FormulaErrorCode,
   FormulaValue,
   StructuralOpKind,
   StructuralTransformParams,
 } from './domain';
-export { createEmptySelection, isFormulaError, createFormulaError } from './domain';
+export { createEmptySelection, isFormulaError, createFormulaError, normalizeDefinedNameModel } from './domain';
 export { StructuralTransform, type StructuralTransformResult, ensureDrawing } from './structural-transform';
+export { applyRowPermutation, validatePermutationMetadata, type RowPermutation } from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
 export {
   migrateSnapshot,
@@ -216,7 +222,7 @@ export interface BandedRule {
   secondColor: string;
 }
 
-export type ConditionalFormatType = 'highlight' | 'dataBar' | 'colorScale' | 'iconSet';
+export type ConditionalFormatType = 'highlight' | 'dataBar' | 'colorScale' | 'iconSet' | 'topBottom';
 export type ConditionalFormatOperator =
   | 'greaterThan'
   | 'lessThan'
@@ -227,13 +233,26 @@ export type ConditionalFormatOperator =
   | 'notContainsText'
   | 'duplicate'
   | 'unique'
-  | 'formula';
+  | 'formula'
+  | 'top'
+  | 'bottom';
+
+export interface ConditionalFormatTopBottom {
+  direction: 'top' | 'bottom';
+  /** Number of values, or a percentage when `percent` is true. */
+  rank: number;
+  percent?: boolean;
+}
 
 export interface ConditionalFormatRule {
   id: string;
   sheetId: SheetId;
   ranges: RangeRef[];
   type: ConditionalFormatType;
+  /** Lower values are evaluated first. Excel defaults to the insertion order. */
+  priority?: number;
+  /** Stop evaluating lower-priority rules after this rule matches a cell. */
+  stopIfTrue?: boolean;
   operator?: ConditionalFormatOperator;
   value1?: string | number;
   value2?: string | number;
@@ -242,6 +261,7 @@ export interface ConditionalFormatRule {
   midColor?: string;
   maxColor?: string;
   barColor?: string;
+  topBottom?: ConditionalFormatTopBottom;
 }
 
 export type DataValidationType = 'list' | 'whole' | 'decimal' | 'date' | 'time' | 'checkbox' | 'textLength' | 'custom';
@@ -256,7 +276,19 @@ export interface DataValidationRule {
   formula1?: string;
   formula2?: string;
   allowBlank?: boolean;
+  /** Excel error alert style. Only STOP blocks a write. */
+  alertStyle?: 'stop' | 'warning' | 'information';
+  showErrorMessage?: boolean;
+  showInputMessage?: boolean;
+  inputTitle?: string;
+  inputMessage?: string;
   showDropdown?: boolean;
+  /** Allows comma-separated values for list validation when enabled. */
+  multiSelect?: boolean;
+  listSource?:
+    | { kind: 'values'; values: string[] }
+    | { kind: 'range'; range: RangeRef }
+    | { kind: 'formula'; formula: string };
   promptTitle?: string;
   promptMessage?: string;
   errorTitle?: string;
@@ -553,6 +585,7 @@ export interface WorkbookSnapshotV1 {
   name: string;
   activeSheetId: SheetId;
   definedNames?: Record<string, string>;
+  definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
   sheets: SheetSnapshotV1[];
 }
@@ -563,6 +596,9 @@ export class WorkbookModel {
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
   activeSheetId: SheetId;
+  /** Canonical scoped name definitions. `definedNames` remains the workbook-level formula view used by the formula runtime. */
+  readonly definedNameModels: DefinedNameModel[] = [];
+  /** @deprecated use definedNameModels and setDefinedName/getDefinedName. */
   definedNames: Record<string, string> = {};
 
   constructor(readonly unitId: UnitId, public name: string) {
@@ -601,6 +637,55 @@ export class WorkbookModel {
     return table;
   }
 
+  getDefinedName(name: string, sheetId?: SheetId): DefinedNameModel | undefined {
+    const normalized = name.trim().toLocaleLowerCase();
+    if (sheetId) {
+      const local = this.definedNameModels.find((entry) => entry.scope === 'sheet'
+        && entry.sheetId === sheetId
+        && entry.name.toLocaleLowerCase() === normalized);
+      if (local) return structuredClone(local);
+    }
+    const global = this.definedNameModels.find((entry) => entry.scope === 'workbook'
+      && entry.name.toLocaleLowerCase() === normalized);
+    return global ? structuredClone(global) : undefined;
+  }
+
+  getDefinedNameExact(name: string, scope: DefinedNameScope, sheetId?: SheetId): DefinedNameModel | undefined {
+    const normalized = name.trim().toLocaleLowerCase();
+    const exact = this.definedNameModels.find((entry) => entry.scope === scope
+      && entry.sheetId === sheetId
+      && entry.name.toLocaleLowerCase() === normalized);
+    return exact ? structuredClone(exact) : undefined;
+  }
+
+  listDefinedNames(sheetId?: SheetId): DefinedNameModel[] {
+    return this.definedNameModels
+      .filter((entry) => entry.scope === 'workbook' || entry.sheetId === sheetId)
+      .map((entry) => structuredClone(entry));
+  }
+
+  setDefinedName(input: DefinedNameModel): DefinedNameModel {
+    const model = normalizeDefinedNameModel(input);
+    const index = this.definedNameModels.findIndex((entry) => entry.scope === model.scope
+      && entry.sheetId === model.sheetId
+      && entry.name.toLocaleLowerCase() === model.name.toLocaleLowerCase());
+    if (index >= 0) this.definedNameModels[index] = structuredClone(model);
+    else this.definedNameModels.push(structuredClone(model));
+    if (model.scope === 'workbook') this.definedNames[model.name] = model.formula;
+    return structuredClone(model);
+  }
+
+  removeDefinedName(name: string, scope: DefinedNameScope = 'workbook', sheetId?: SheetId): DefinedNameModel | undefined {
+    const normalized = name.trim().toLocaleLowerCase();
+    const index = this.definedNameModels.findIndex((entry) => entry.scope === scope
+      && entry.sheetId === sheetId
+      && entry.name.toLocaleLowerCase() === normalized);
+    const previous = index >= 0 ? this.definedNameModels[index] : undefined;
+    if (index >= 0) this.definedNameModels.splice(index, 1);
+    if (scope === 'workbook' && previous) delete this.definedNames[previous.name];
+    return previous ? structuredClone(previous) : undefined;
+  }
+
   addTable(table: WorkbookTableModel): void {
     if (this.tables.has(table.id)) throw new Error(`Table already exists: ${table.id}`);
     this.tables.set(table.id, structuredClone(table));
@@ -624,6 +709,10 @@ export class WorkbookModel {
     const source = this.getSheet(sourceSheetId);
     const copy = source.cloneWithIdentity(newId, newName);
     this.sheets.set(newId, copy);
+    const scopedNames = this.definedNameModels
+      .filter((entry) => entry.scope === 'sheet' && entry.sheetId === sourceSheetId)
+      .map((entry) => ({ ...entry, sheetId: newId }));
+    this.definedNameModels.push(...structuredClone(scopedNames));
     const sourceIndex = this.sheetOrder.indexOf(sourceSheetId);
     this.sheetOrder.splice(sourceIndex + 1, 0, newId);
     return copy;
@@ -641,6 +730,11 @@ export class WorkbookModel {
     if (this.sheets.size <= 1) throw new Error('A workbook must keep at least one worksheet');
     const sheet = this.getSheet(sheetId);
     this.sheets.delete(sheetId);
+    for (let index = this.definedNameModels.length - 1; index >= 0; index -= 1) {
+      if (this.definedNameModels[index]?.scope === 'sheet' && this.definedNameModels[index]?.sheetId === sheetId) {
+        this.definedNameModels.splice(index, 1);
+      }
+    }
     this.sheetOrder = this.sheetOrder.filter((id) => id !== sheetId);
     if (this.activeSheetId === sheetId) {
       const firstSheet = this.getSheets()[0];
@@ -656,6 +750,9 @@ export class WorkbookModel {
       name: this.name,
       activeSheetId: this.activeSheetId,
       definedNames: { ...this.definedNames },
+      definedNameModels: this.definedNameModels.length > 0
+        ? structuredClone(this.definedNameModels)
+        : Object.entries(this.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const })),
       tables: [...this.tables.values()].map((table) => structuredClone(table)),
       sheets: this.getSheets().map((sheet) => ({
         id: sheet.id,
@@ -704,6 +801,10 @@ export class WorkbookModel {
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
     workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
+    workbook.definedNameModels.push(...structuredClone(snapshot.definedNameModels ?? Object.entries(workbook.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }))));
+    for (const entry of workbook.definedNameModels) {
+      if (entry.scope === 'workbook' && workbook.definedNames[entry.name] === undefined) workbook.definedNames[entry.name] = entry.formula;
+    }
     for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);

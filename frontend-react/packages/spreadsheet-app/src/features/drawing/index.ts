@@ -5,6 +5,8 @@ import { DRAWING_MUTATION_IDS, registerDrawingCommands } from './commands';
 
 export * from './runtime';
 export * from './commands';
+export * from './geometry';
+export * from './chart-payload';
 
 export function registerDrawingFeature(runtime: CommandRuntime, runtimeState = new DrawingRuntime()): SpreadsheetFeatureManifest {
   const commandIds = registerDrawingCommands(runtime, runtimeState);

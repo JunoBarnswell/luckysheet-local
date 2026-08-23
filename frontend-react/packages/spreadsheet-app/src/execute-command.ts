@@ -159,10 +159,7 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
           clipboard: internal,
           mode: pasteParams?.mode ?? 'all',
         });
-        if (internal.isCut) {
-          app.runCommand('sheet.range.clear', { sheetId: activeSheetId, range: internal.range, mode: 'contents' });
-          app.clearClipboard();
-        }
+        if (internal.isCut) app.clearClipboard();
         app.syncDraftFromPrimary();
         app.notify('Pasted from clipboard');
         return true;

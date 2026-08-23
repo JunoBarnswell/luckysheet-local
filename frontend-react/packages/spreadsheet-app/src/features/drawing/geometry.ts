@@ -6,7 +6,7 @@ import type {
   ShapeModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import type { DrawingAddParams } from './features/drawing/commands';
+import type { DrawingAddParams } from './commands';
 
 export function findDrawingByPayloadId(sheet: WorksheetModel, payloadId: string): DrawingObject | undefined {
   return sheet.drawings.find((entry) => entry.payloadId === payloadId || entry.id === payloadId);

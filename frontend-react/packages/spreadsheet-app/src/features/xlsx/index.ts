@@ -34,3 +34,5 @@ export function registerXlsxCommands(registry: CommandRegistry): void {
     },
   });
 }
+
+export * from './exchange';

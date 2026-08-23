@@ -1,8 +1,8 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import type { WorkbookModel } from '@react-sheets/core-model';
-import { CommandRecorder } from './features/automation/command-recorder';
-import { FacadeScriptRuntime, type ScriptRunResult } from './features/automation';
-import { ScriptSandbox } from './features/automation/sandbox';
+import { CommandRecorder } from './command-recorder';
+import { FacadeScriptRuntime, type ScriptRunResult } from './index';
+import { ScriptSandbox } from './sandbox';
 
 export interface AutomationRunParams {
   source: string;

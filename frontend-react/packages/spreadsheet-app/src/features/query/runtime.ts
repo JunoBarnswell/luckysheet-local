@@ -1,10 +1,10 @@
 import type { CellData, RangeRef } from '@react-sheets/core-model';
-import type { ConnectorRegistry, QueryResult } from './features/query';
+import type { ConnectorRegistry, QueryResult } from './index';
 import {
   QueryStepPipeline,
   type LoadTarget,
   type QueryDefinition,
-} from './features/query/query-steps';
+} from './query-steps';
 
 export interface QueryResultSnapshot {
   queryId: string;

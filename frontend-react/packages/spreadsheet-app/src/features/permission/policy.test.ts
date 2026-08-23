@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { PermissionService } from './permission-service';
-import { buildPermissionCapabilities, canExecuteCommand, resolveCommandAction } from './permission-bridge';
+import { PermissionService } from '../../permission-service';
+import { buildPermissionCapabilities, canExecuteCommand, resolveCommandAction } from './policy';
 
-describe('permission-bridge', () => {
+describe('permission policy', () => {
   it('maps review and drawing commands to permission actions', () => {
     assert.equal(resolveCommandAction('comment.add'), 'comment');
     assert.equal(resolveCommandAction('hyperlink.set'), 'edit-cell');

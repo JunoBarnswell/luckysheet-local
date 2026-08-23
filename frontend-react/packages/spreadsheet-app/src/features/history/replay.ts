@@ -1,9 +1,9 @@
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
 import type { RevisionRecord } from '@react-sheets/protocol';
-import { DrawingRuntime } from './features/drawing';
-import { registerSpreadsheetFeatures } from './feature-registry';
-import type { HistoryEntryMeta, RestoreCommandParams } from './features/history';
+import { DrawingRuntime } from '../drawing';
+import { registerSpreadsheetFeatures } from '../../feature-registry';
+import type { HistoryEntryMeta, RestoreCommandParams } from './index';
 
 export function describeRevisionMutations(record: RevisionRecord): string {
   const labels = record.payload.mutations.map((mutation) => mutation.id);

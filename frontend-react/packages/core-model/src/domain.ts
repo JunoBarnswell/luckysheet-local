@@ -1,5 +1,46 @@
 import type { CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
 
+/**
+ * A defined name is scoped either to the workbook or to one worksheet.
+ * `formula` intentionally keeps the authored formula/reference text instead
+ * of compiling it to an A1 range; this is required for dynamic names and for
+ * round-tripping OOXML name definitions.
+ */
+export type DefinedNameScope = 'workbook' | 'sheet';
+
+export interface DefinedNameModel {
+  name: string;
+  formula: string;
+  scope: DefinedNameScope;
+  sheetId?: SheetId;
+  hidden?: boolean;
+  comment?: string;
+}
+
+export function normalizeDefinedNameModel(input: DefinedNameModel): DefinedNameModel {
+  const name = input.name.trim();
+  if (!name) throw new Error('Defined name is required');
+  if (!/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(name)) {
+    throw new Error(`Invalid defined name: ${input.name}`);
+  }
+  if (input.scope === 'sheet' && !input.sheetId) {
+    throw new Error(`Sheet-scoped defined name ${name} requires a sheetId`);
+  }
+  if (input.scope === 'workbook' && input.sheetId !== undefined) {
+    throw new Error(`Workbook-scoped defined name ${name} cannot specify sheetId`);
+  }
+  const formula = input.formula.trim();
+  if (!formula) throw new Error(`Defined name ${name} requires a formula`);
+  return {
+    name,
+    formula,
+    scope: input.scope,
+    ...(input.sheetId ? { sheetId: input.sheetId } : {}),
+    ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
+    ...(input.comment === undefined ? {} : { comment: input.comment }),
+  };
+}
+
 /** 公式引擎错误值 — CellData.formulaValue 是唯一真相，禁止再用 error: string */
 export type FormulaErrorCode =
   | '#NULL!'

@@ -13,6 +13,7 @@ import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime
 import { formatFormula, parseFormula, renameAstSheetReferences } from '@react-sheets/formula-engine';
 import {
   copyRangeToClipboardData,
+  parseClipboardPayload,
   shiftFormula,
   type ClipboardPayload,
 } from '../clipboard';
@@ -38,6 +39,11 @@ export interface PasteRangeParams {
   targetOrigin: { row: number; column: number };
   clipboard: ClipboardPayload;
   mode?: PasteMode;
+}
+
+export interface CutPasteRangeParams extends PasteRangeParams {
+  /** Explicit source range is required for a cut transaction. */
+  sourceRange: RangeRef;
 }
 
 export interface FormatCellsParams {
@@ -187,14 +193,11 @@ function applyPasteCell(
   mode: PasteMode,
   source: CellData,
   target: CellData | undefined,
-  rowOffset: number,
-  colOffset: number,
-  transposed: boolean,
+  rowDelta: number,
+  colDelta: number,
 ): CellData {
   const destination = target ? structuredClone(target) : { value: null };
-  const sourceFormula = source.formula
-    ? shiftFormula(source.formula, transposed ? colOffset : rowOffset, transposed ? rowOffset : colOffset)
-    : undefined;
+  const sourceFormula = source.formula ? shiftFormula(source.formula, rowDelta, colDelta) : undefined;
 
   if (mode === 'values') {
     // Values means values only: no formula, style, number format or cached
@@ -221,13 +224,35 @@ function applyPasteCell(
 
 export function registerEditingCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation('range.paste', (item, context) => {
-    const params = item.params as PasteRangeParams & { values: CellData[][]; startRow: number; startColumn: number };
-    const sheet = context.workbook.getSheet(params.sheetId);
+    const params = item.params as PasteRangeParams & {
+      values: CellData[][];
+      startRow: number;
+      startColumn: number;
+      sourceRange?: RangeRef;
+      clearSource?: boolean;
+    };
+    const targetSheet = context.workbook.getSheet(params.sheetId);
+    const sourceSheet = params.sourceRange
+      ? context.workbook.getSheet(params.sourceRange.sheetId)
+      : undefined;
+    const sourceCells = params.clearSource && params.sourceRange && sourceSheet
+      ? sourceSheet.cells.extractRegion(
+        params.sourceRange.startRow,
+        params.sourceRange.endRow,
+        params.sourceRange.startColumn,
+        params.sourceRange.endColumn,
+      )
+      : [];
+    for (const entry of sourceCells) {
+      // A source region is extracted before target writes, so overlapping
+      // same-sheet cuts never erase the newly-pasted values.
+      sourceSheet!.cells.delete(entry.row, entry.column);
+    }
     for (let rowOffset = 0; rowOffset < params.values.length; rowOffset++) {
       const rowValues = params.values[rowOffset] ?? [];
       for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset++) {
         const value = rowValues[columnOffset];
-        if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, value);
+        if (value) targetSheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
       }
     }
   });
@@ -237,17 +262,28 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const mode = params.mode ?? 'all';
-      let sourceValues = params.clipboard.values;
+      const sourceValues = parseClipboardPayload(params.clipboard);
+      const sourceRange = params.clipboard.range;
+      const isCut = Boolean(params.clipboard.isCut);
+      if (isCut && (!sourceRange || sourceRange.sheetId.length === 0)) {
+        throw new Error('Cut clipboard payload must include a source range');
+      }
       if (mode === 'transpose') {
-        sourceValues = [];
-        const src = params.clipboard.values;
+        const transposed: CellData[][] = [];
+        const src = sourceValues;
         for (let c = 0; c < (src[0]?.length ?? 0); c++) {
-          sourceValues.push(src.map((row) => structuredClone(row[c] ?? { value: null })));
+          transposed.push(src.map((row) => structuredClone(row[c] ?? { value: null })));
         }
+        // TypeScript keeps the source matrix immutable for the rest of the
+        // calculation; transpose is a presentation of the same payload.
+        (sourceValues as CellData[][]).splice(0, sourceValues.length, ...transposed);
       }
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
+      const sourcePrevious: Array<{ row: number; column: number; value?: CellData }> = [];
       const affectedRanges: RangeRef[] = [];
       const values: CellData[][] = [];
+      const sourceRow = sourceRange?.startRow ?? 0;
+      const sourceColumn = sourceRange?.startColumn ?? 0;
       for (let rowOffset = 0; rowOffset < sourceValues.length; rowOffset++) {
         const rowValues = sourceValues[rowOffset] ?? [];
         const outRow: CellData[] = [];
@@ -261,29 +297,60 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
                   mode === 'transpose' ? 'all' : mode,
                   rowValues[columnOffset] ?? { value: null },
                   sheet.cells.get(row, column),
-                  rowOffset,
-                  columnOffset,
-                  mode === 'transpose',
+                  mode === 'transpose'
+                    ? params.targetOrigin.row + rowOffset - sourceRow - columnOffset
+                    : params.targetOrigin.row - sourceRow,
+                  mode === 'transpose'
+                    ? params.targetOrigin.column + columnOffset - sourceColumn - rowOffset
+                    : params.targetOrigin.column - sourceColumn,
                 ),
               );
         }
         values.push(outRow);
+      }
+      if (isCut && sourceRange) {
+        const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
+        forEachCell(sourceSheet, sourceRange, (row, column, cell) => {
+          sourcePrevious.push({ row, column, value: cell ? structuredClone(cell) : undefined });
+          affectedRanges.push({ sheetId: sourceRange.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column });
+        });
       }
       const pasteMode = mode === 'transpose' ? 'all' : mode;
       context.applyMutation({
         id: 'range.paste',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params: { ...params, values, startRow: params.targetOrigin.row, startColumn: params.targetOrigin.column, mode: pasteMode },
+        params: {
+          ...params,
+          values,
+          startRow: params.targetOrigin.row,
+          startColumn: params.targetOrigin.column,
+          mode: pasteMode,
+          sourceRange: isCut ? structuredClone(sourceRange) : undefined,
+          clearSource: isCut,
+        },
         affectedRanges,
-        inverse: previous.map((item) => ({
-          id: 'cell.restore' as const,
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { row: item.row, column: item.column, previous: item.value },
-          affectedRanges: [{ sheetId: params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
-        })),
+        inverse: [
+          ...previous.map((item) => ({
+            id: 'cell.restore' as const,
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { row: item.row, column: item.column, previous: item.value },
+            affectedRanges: [{ sheetId: params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
+          })),
+          ...sourcePrevious.map((item) => ({
+            id: 'cell.restore' as const,
+            unitId: context.workbook.unitId,
+            sheetId: sourceRange?.sheetId ?? params.sheetId,
+            params: { row: item.row, column: item.column, previous: item.value },
+            affectedRanges: [{ sheetId: sourceRange?.sheetId ?? params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
+          })),
+        ],
         apply: () => {
+          if (isCut && sourceRange) {
+            const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
+            forEachCell(sourceSheet, sourceRange, (row, column) => sourceSheet.cells.delete(row, column));
+          }
           for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {
             for (let columnOffset = 0; columnOffset < (values[rowOffset]?.length ?? 0); columnOffset++) {
               const cell = values[rowOffset]![columnOffset]!;
@@ -477,9 +544,26 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     const params = item.params as {
       sheetId: string;
       range: RangeRef;
+      direction?: ShiftCellsParams['direction'];
       cells: Array<{ row: number; column: number; cell: CellData }>;
     };
     const sheet = context.workbook.getSheet(params.sheetId);
+    if (params.direction) {
+      const reverse: ShiftCellsParams['direction'] = params.direction === 'down'
+        ? 'up'
+        : params.direction === 'up'
+          ? 'down'
+          : params.direction === 'right'
+            ? 'left'
+            : 'right';
+      StructuralTransform.apply(context.workbook, {
+        kind: shiftKind(reverse),
+        sheetId: params.sheetId,
+        at: 0,
+        count: 0,
+        sourceRange: params.range,
+      });
+    }
     forEachCell(sheet, params.range, (row, column) => sheet.cells.delete(row, column));
     for (const entry of params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   });
@@ -503,7 +587,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
           id: 'cells.shifted.restore' as const,
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, range: params.range, cells: snapshot },
+          params: { sheetId: params.sheetId, range: params.range, direction: params.direction, cells: snapshot },
           affectedRanges,
         }],
         apply: () => {

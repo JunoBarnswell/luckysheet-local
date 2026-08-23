@@ -1,5 +1,5 @@
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
-import type { PrintAreaSetCommandParams, PrintPreviewCommandParams } from '../../print-bridge';
+import type { PrintAreaSetCommandParams, PrintPreviewCommandParams } from './layout';
 
 export function registerPrintCommands(registry: CommandRegistry): void {
   registry.registerCommand({

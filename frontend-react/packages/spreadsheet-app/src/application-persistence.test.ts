@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { SpreadsheetApplication } from './application';
-import { buildLocalDraftRecord } from './persistence-bridge';
+import { buildLocalDraftRecord } from './features/persistence';
 
 describe('SpreadsheetApplication persistence integration', () => {
   it('exposes persistence metadata in ui snapshot', () => {

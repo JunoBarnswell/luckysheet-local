@@ -113,3 +113,4 @@ export function computePrintPages(layout: PrintLayoutModel, rowHeight = 20, colW
 
 export * from './pdf-export';
 export { registerPrintCommands } from './commands';
+export * from './layout';

@@ -7,9 +7,9 @@ import {
   describeRevisionMutations,
   replayRevisionsToSnapshot,
   revisionToHistoryMeta,
-} from './history-bridge';
+} from './replay';
 
-describe('history-bridge', () => {
+describe('history replay', () => {
   it('maps revision records to history metadata', () => {
     const record: RevisionRecord = {
       operationId: 'op-1',

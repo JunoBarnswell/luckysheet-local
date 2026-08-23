@@ -6,9 +6,9 @@ import {
   resolveCommandAction,
   syncProtectionRulesFromWorkbook,
   type PermissionCapabilities,
-} from './permission-bridge';
+} from './features/permission';
 
-export { inferAffectedRanges } from './permission-bridge';
+export { inferAffectedRanges } from './features/permission';
 
 /** 共享角色 — 与 Excel Share 语义对齐 */
 export type ShareRole = 'owner' | 'editor' | 'commenter' | 'viewer';

@@ -2,15 +2,27 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { registerProSheetCommands } from './index';
+import { registerChartFeature } from '../../../spreadsheet-app/src/features/chart';
+import { registerPivotFeature } from '../../../spreadsheet-app/src/features/pivot';
+import { registerSparklineFeature } from '../../../spreadsheet-app/src/features/sparkline';
 import { buildPivotPanelState, setPivotAggregate } from './pivot-panel-state';
-import { P1_CHART_COMMAND_IDS } from './chart-commands';
+import { CHART_COMMAND_IDS } from '../../../spreadsheet-app/src/features/chart';
 
-describe('M6-M8 pro sheet commands', () => {
+function registerSheetFeatures(runtime: CommandRuntime): void {
+  registerChartFeature(runtime);
+  registerPivotFeature(runtime);
+  registerSparklineFeature(runtime);
+}
+
+describe('M6-M8 sheet feature commands', () => {
   it('inserts chart drawing objects and exposes P1 chart command ids', () => {
     const workbook = new WorkbookModel('chart-test', 'Charts');
     const runtime = new CommandRuntime(workbook);
-    registerProSheetCommands(runtime);
+    registerSheetFeatures(runtime);
+
+    assert.equal(runtime.registry.hasCommand('pro.chart.add'), false);
+    assert.equal(runtime.registry.hasCommand('pro.pivot.add'), false);
+    assert.equal(runtime.registry.hasCommand('pro.sparkline.add'), false);
 
     runtime.execute('chart.insert.column', {
       sheetId: 'sheet-1',
@@ -25,13 +37,13 @@ describe('M6-M8 pro sheet commands', () => {
     assert.equal(sheet.drawings[0]?.kind, 'chart');
     assert.equal(sheet.charts.length, 0);
     assert.equal(sheet.drawingPayloads.get('chart-1')?.kind, 'chart');
-    assert.ok(P1_CHART_COMMAND_IDS.every((commandId) => runtime.registry.hasCommand(commandId)));
+    assert.ok(CHART_COMMAND_IDS.every((commandId) => runtime.registry.hasCommand(commandId)));
   });
 
   it('preserves combo and stacked chart semantics in the canonical payload', () => {
     const workbook = new WorkbookModel('chart-fidelity-test', 'Chart Fidelity');
     const runtime = new CommandRuntime(workbook);
-    registerProSheetCommands(runtime);
+    registerSheetFeatures(runtime);
     const sourceRanges = [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }];
 
     runtime.execute('chart.insert.combo', {
@@ -58,7 +70,7 @@ describe('M6-M8 pro sheet commands', () => {
   it('restores a removed chart drawing and payload exactly on undo', () => {
     const workbook = new WorkbookModel('chart-remove-test', 'Chart Remove');
     const runtime = new CommandRuntime(workbook);
-    registerProSheetCommands(runtime);
+    registerSheetFeatures(runtime);
     runtime.execute('chart.insert.column', {
       sheetId: 'sheet-1',
       chartId: 'chart-1',
@@ -80,7 +92,7 @@ describe('M6-M8 pro sheet commands', () => {
   it('updates pivot layout through direct PivotModel helpers and commands', () => {
     const workbook = new WorkbookModel('pivot-ext-test', 'Pivot Ext');
     const runtime = new CommandRuntime(workbook);
-    registerProSheetCommands(runtime);
+    registerSheetFeatures(runtime);
     const pivot = {
       id: 'pivot-1',
       sheetId: 'sheet-1',
@@ -96,7 +108,7 @@ describe('M6-M8 pro sheet commands', () => {
         repeatLabels: false,
       },
     };
-    runtime.execute('pro.pivot.add', pivot);
+    runtime.execute('pivot.add', pivot);
     runtime.execute('pivot.setAggregate', { sheetId: 'sheet-1', pivotId: pivot.id, field: 'Amount', summarizeBy: 'average' });
     runtime.execute('pivot.slicer.set', {
       sheetId: 'sheet-1',
@@ -115,7 +127,7 @@ describe('M6-M8 pro sheet commands', () => {
   it('creates sparkline groups and inserts by data/location ranges', () => {
     const workbook = new WorkbookModel('sparkline-test', 'Sparkline');
     const runtime = new CommandRuntime(workbook);
-    registerProSheetCommands(runtime);
+    registerSheetFeatures(runtime);
 
     runtime.execute('sparkline.insertDataLocation', {
       sheetId: 'sheet-1',

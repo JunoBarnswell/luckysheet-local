@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorksheetModel } from '@react-sheets/core-model';
-import { extractSparklineValues } from './sparkline-bridge';
+import { extractSparklineValues } from './helpers';
 
-describe('sparkline-bridge', () => {
+describe('sparkline helpers', () => {
   it('extractSparklineValues reads numeric source cells in range order', () => {
     const sheet = new WorksheetModel('s1', 'Sheet1');
     sheet.cells.set(0, 0, { value: 1 });

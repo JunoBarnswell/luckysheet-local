@@ -103,6 +103,27 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       const linkedTable = findSheetTableForFilter(sheet);
       let mutationCount = 0;
 
+      // A total row is a real worksheet row. Insert/delete it through the
+      // structural command so data immediately below the table is shifted and
+      // all formula/object/range participants are updated atomically. The old
+      // implementation merely expanded the table range and overwrote the
+      // next row, which was silent data loss.
+      if (params.enabled) {
+        const result = runtime.execute('sheet.rows.insert', {
+          sheetId: params.sheetId,
+          at: plan.totalRow,
+          count: 1,
+        });
+        mutationCount += result.mutationCount;
+      } else {
+        const result = runtime.execute('sheet.rows.delete', {
+          sheetId: params.sheetId,
+          at: plan.totalRow,
+          count: 1,
+        });
+        mutationCount += result.mutationCount;
+      }
+
       context.applyMutation({
         id: 'sheetTable.update',
         unitId: context.workbook.unitId,
@@ -123,26 +144,10 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       mutationCount += 1;
 
       if (plan.clearTotalRow) {
-        context.applyMutation({
-          id: 'range.clear',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { range: cellRange, mode: 'contents' as const },
-          affectedRanges: [cellRange],
-          inverse: cellSnapshots.map((entry) => ({
-            id: 'cell.restore',
-            unitId: context.workbook.unitId,
-            sheetId: params.sheetId,
-            params: { row: entry.row, column: entry.column, previous: entry.previous },
-            affectedRanges: [cellRange],
-          })),
-          apply: () => {
-            for (let column = plan.startColumn; column <= plan.endColumn; column++) {
-              sheet.cells.delete(plan.totalRow, column);
-            }
-          },
-        });
-        mutationCount += 1;
+        // The row deletion above already removed the total-row cells. Keep
+        // the snapshot solely as an integrity check for the command plan; no
+        // second clear/write is allowed to create a stale-cell fallback.
+        void cellSnapshots;
       } else {
         context.applyMutation({
           id: 'range.set',

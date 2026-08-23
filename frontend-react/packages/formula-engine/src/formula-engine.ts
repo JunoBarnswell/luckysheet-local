@@ -12,6 +12,13 @@ import { normalizeDefinedNames, resolveDefinedNameSource } from './defined-names
 import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import {
+  assertCalculationTaskRequest,
+  InlineCalculationTaskPort,
+  type CalculationTaskPort,
+  type CalculationTaskReport,
+  type CalculationTaskRequest,
+} from './calculation-task-port';
+import {
   anchorDisplayValue,
   isSpillMatrix,
   resolveSpill,
@@ -143,6 +150,48 @@ export class FormulaEngine {
 
   getRecalculationMode(): RecalculationMode {
     return this.recalculationMode;
+  }
+
+  /**
+   * Expose the calculation boundary used by a future Worker host.  The
+   * default host is explicitly inline and synchronous; it shares the same
+   * versioned, serializable request/result shape without pretending to offer
+   * worker isolation.
+   */
+  createCalculationTaskPort(): CalculationTaskPort {
+    return new InlineCalculationTaskPort((request) => this.executeCalculationTask(request));
+  }
+
+  executeCalculationTask(request: CalculationTaskRequest): CalculationTaskReport {
+    assertCalculationTaskRequest(request);
+    const reports = request.roots && request.roots.length > 0
+      ? request.roots.map((root) => this.recalculate(root))
+      : [this.recalculate()];
+    const recalculated: CellAddress[] = [];
+    const seen = new Set<string>();
+    const results = new Map<string, FormulaResult>();
+    for (const report of reports) {
+      for (const address of report.recalculated) {
+        const key = cellAddressKey(address);
+        if (!seen.has(key)) {
+          seen.add(key);
+          recalculated.push({ ...address });
+        }
+      }
+      for (const [key, result] of report.results) results.set(key, result);
+    }
+    const taskResults: CalculationTaskReport['results'][number][] = [];
+    for (const [key, result] of results) {
+      const address = this.cells.get(key)?.address;
+      if (!address) continue;
+      taskResults.push({
+        address: { ...address },
+        value: result.value,
+        ...(result.formula === undefined ? {} : { formula: result.formula }),
+        dependencies: result.dependencies,
+      });
+    }
+    return { recalculated, results: taskResults };
   }
 
   setRecalculationMode(mode: RecalculationMode): void {

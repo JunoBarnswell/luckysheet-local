@@ -6,6 +6,7 @@ import {
   registerSheetCommands,
   formatTsv,
   parseTsv,
+  parseClipboardPayload,
   shiftFormula,
   copyRangeToClipboardData,
 } from './index';
@@ -192,6 +193,82 @@ test('clipboard payload carries provenance and paste modes preserve their contra
   assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
   assert.equal(sheet.cells.get(0, 1)?.style?.bold, true);
   assert.equal(sheet.cells.get(0, 1)?.numberFormat, '0.00');
+});
+
+test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
+  const text = formatTsv([[{ value: 'a\tb' }, { value: 'line\nnext' }, { value: '"quoted"' }]]);
+  assert.deepEqual(parseTsv(text).map((row) => row.map((cell) => cell.value)), [['a\tb', 'line\nnext', '"quoted"']]);
+  const payload = {
+    range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    values: [],
+    representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
+  };
+  assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
+  assert.equal(parseClipboardPayload(payload)[0]?.[1]?.formula, '=A1+1');
+});
+
+test('cut paste is one cross-sheet transaction and offsets formulas from source to target', () => {
+  const workbook = new WorkbookModel('unit-cut', 'Cut');
+  const target = workbook.addSheet('sheet-2', 'Target');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const source = workbook.getSheet('sheet-1');
+  source.cells.set(1, 1, { value: null, formula: '=A1+$B$1' });
+  target.cells.set(4, 4, { value: 'old' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: source.id,
+    startRow: 1,
+    endRow: 1,
+    startColumn: 1,
+    endColumn: 1,
+  });
+  payload.isCut = true;
+  const result = runtime.execute('sheet.range.paste', {
+    sheetId: target.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard: payload,
+  });
+  assert.equal(result.mutationCount, 1);
+  assert.equal(source.cells.get(1, 1), undefined);
+  assert.equal(target.cells.get(4, 4)?.formula, '=D4+$B$1');
+  assert.equal(target.cells.get(4, 4)?.value, null);
+  runtime.undo();
+  assert.equal(source.cells.get(1, 1)?.formula, '=A1+$B$1');
+  assert.equal(target.cells.get(4, 4)?.value, 'old');
+  runtime.redo();
+  assert.equal(source.cells.get(1, 1), undefined);
+  assert.equal(target.cells.get(4, 4)?.formula, '=D4+$B$1');
+});
+
+test('range clear modes are independent and restore auxiliary metadata', () => {
+  const workbook = new WorkbookModel('unit-clear-modes', 'Clear Modes');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, {
+    value: 10,
+    formula: '=A1',
+    style: { bold: true },
+    hyperlink: 'https://example.com',
+    note: { id: 'cell-note', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true },
+  });
+  sheet.notes.set('0:0', { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'formats' });
+  assert.equal(sheet.cells.get(0, 0)?.value, 10);
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
+  assert.equal(sheet.cells.get(0, 0)?.style, undefined);
+  assert.equal(sheet.cells.get(0, 0)?.hyperlink, 'https://example.com');
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'notes' });
+  assert.equal(sheet.cells.get(0, 0)?.note, undefined);
+  assert.equal(sheet.notes.has('0:0'), false);
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'hyperlinks' });
+  assert.equal(sheet.cells.get(0, 0)?.value, 10);
+  assert.equal(sheet.cells.get(0, 0)?.hyperlink, undefined);
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'all' });
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  runtime.undo();
+  assert.equal(sheet.cells.get(0, 0)?.value, 10);
 });
 
 function sheetId(workbook: WorkbookModel): string {

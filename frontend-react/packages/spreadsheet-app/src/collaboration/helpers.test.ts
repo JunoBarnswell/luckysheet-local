@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { CollaborationSession } from './collaboration/collaboration-session';
+import { CollaborationSession } from './collaboration-session';
 import {
   buildCollaborationSnapshot,
   mapPeerCursor,
   updatePresenceFromPeer,
-} from './collaboration-bridge';
+} from './helpers';
 
-describe('collaboration-bridge', () => {
+describe('collaboration helpers', () => {
   it('builds collaboration snapshot from V2 session state', () => {
     const workbook = new WorkbookModel('wb-1', 'Collab');
     const runtime = new CommandRuntime(workbook);

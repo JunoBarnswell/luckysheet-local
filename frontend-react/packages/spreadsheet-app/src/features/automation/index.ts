@@ -190,6 +190,7 @@ export interface ScriptRunResult {
 export { CommandRecorder, type RecordedStatement } from './command-recorder';
 export { ScriptSandbox, DEFAULT_SANDBOX_POLICY, type SandboxPolicy } from './sandbox';
 export { registerAutomationCommands } from './commands';
+export * from './runtime';
 export {
   buildFacadePlan,
   parseA1Range,

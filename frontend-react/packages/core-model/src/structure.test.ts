@@ -124,4 +124,47 @@ describe('structural operations', () => {
     assert.deepEqual(payload.series?.[0]?.range, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 1, endColumn: 1 });
     assert.equal(sheet.charts.length, 0);
   });
+
+  it('move-range clears stale destinations, offsets formulas, and rewrites external references', () => {
+    const workbook = new WorkbookModel('unit-move-range', 'Move Range');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 7 });
+    sheet.cells.set(0, 1, { value: null, formula: '=A1' });
+    sheet.cells.set(2, 3, { value: 'stale' });
+    sheet.cells.set(0, 3, { value: null, formula: '=A1' });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(sheet.cells.get(2, 2)?.value, 7);
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=C3');
+    assert.equal(sheet.cells.get(0, 0), undefined);
+    assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
+  });
+
+  it('rejects a bounded shift that would silently drop an anchored object', () => {
+    const workbook = new WorkbookModel('unit-shift-reject', 'Shift Reject');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(1, 0, { value: 'keep' });
+    sheet.drawings.push({
+      id: 'drawing-edge',
+      sheetId: sheet.id,
+      kind: 'shape',
+      payloadId: 'shape-edge',
+      anchor: { kind: 'one-cell', row: 1, column: 0 },
+      transform: { x: 0, y: 0, width: 20, height: 20 },
+      zIndex: 0,
+    });
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'shift-cells-down',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    }), /drawing drawing-edge would leave/);
+    assert.equal(sheet.cells.get(1, 0)?.value, 'keep');
+    assert.equal(sheet.drawings[0]?.anchor.row, 1);
+  });
 });

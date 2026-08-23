@@ -379,10 +379,10 @@ function WorkspaceApp() {
               zoom={state.zoom}
               peers={state.peers}
               selectedFloatingId={state.selectedFloatingId}
-              charts={state.selectedSheet.charts}
+              drawings={state.selectedSheet.drawings}
+              drawingPayloads={state.selectedSheet.drawingPayloads}
+              allSheets={state.sheets}
               pivotResults={state.selectedSheet.pivotResults}
-              shapes={state.selectedSheet.shapes}
-              images={state.selectedSheet.images}
               sparklines={state.selectedSheet.sparklines}
               onSelectionChange={applySelection}
               onExtendSelection={(row, column) => app.extendSelectionTo(row, column)}
@@ -401,12 +401,14 @@ function WorkspaceApp() {
               onResizeColumn={app.resizeColumn}
               onFillRange={app.fillRange}
               onFloatingSelect={(hit) => app.setSelectedFloatingId(hit ? hit.id : null)}
-              onFloatingMove={(kind, id, bounds) => {
-                if (kind === "chart") app.updateChartBounds(id, bounds);
-                else if (kind === "image") app.updateImageBounds(id, bounds);
-                else app.updateShapeBounds(id, bounds);
-              }}
-              onFloatingRemove={(kind, id) => app.removeFloatingObject(kind, id)}
+              onFloatingMove={(drawingId, bounds, rotation) => executeCommand({
+                commandId: "drawing.move",
+                params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } },
+              })}
+              onFloatingRemove={(drawingId) => executeCommand({
+                commandId: "drawing.remove",
+                params: { sheetId: state.activeSheetId, drawingId },
+              })}
               onCommand={executeCommand}
               onApplyFilter={(column, patch) => app.applyFilter(column, patch)}
               onToggleOutline={(groupId) => app.toggleOutlineGroup(groupId)}
@@ -430,7 +432,8 @@ function WorkspaceApp() {
             phase={state.phase}
             sheet={state.selectedSheet}
             sheetId={state.activeSheetId}
-            charts={state.selectedSheet.charts}
+            drawings={state.selectedSheet.drawings}
+            drawingPayloads={state.selectedSheet.drawingPayloads}
             pivot={activePivot}
             pivotList={state.selectedSheet.pivots.map((pivot) => ({ id: pivot.id, label: pivot.id }))}
             activePivotId={activePivot?.id}
@@ -441,7 +444,6 @@ function WorkspaceApp() {
             }}
             pivotPanelState={pivotPanelState}
             pivotCallbacks={pivotCallbacks}
-            shapes={state.selectedSheet.shapes}
             sparklines={state.selectedSheet.sparklines}
             conditionalFormats={state.selectedSheet.conditionalFormats}
             dataValidations={state.selectedSheet.dataValidations}
@@ -459,10 +461,7 @@ function WorkspaceApp() {
             tables={state.tables}
             onReadDataRows={app.readDataTable.bind(app)}
             onRemoveDataTable={app.removeDataTable.bind(app)}
-            onAddChart={app.addChart}
-            onRemoveChart={app.removeChart}
-            onAddShape={app.addShape}
-            onRemoveShape={app.removeShape}
+            onCommand={executeCommand}
             onAddSparkline={app.addSparkline}
             onRemoveSparkline={app.removeSparkline}
             onAddConditionalFormat={app.addConditionalFormat}

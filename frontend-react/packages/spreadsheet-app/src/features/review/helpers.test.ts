@@ -5,12 +5,13 @@ import {
   buildCellNote,
   buildCommentThread,
   findCommentThreadAt,
+  getCellHyperlink,
   parseUrlHyperlink,
   resolveHyperlinkDisplay,
   threadToCellComment,
-} from './review-bridge';
+} from './helpers';
 
-describe('review-bridge', () => {
+describe('review helpers', () => {
   it('builds comment threads and maps them to cell comment snapshots', () => {
     const thread = buildCommentThread('sheet-1', 2, 3, 'Alice', 'Please review @bob', 'thread-1');
     assert.equal(thread.mentions?.[0], 'bob');
@@ -32,7 +33,7 @@ describe('review-bridge', () => {
     assert.equal(email.target.kind, 'email');
     const named = parseUrlHyperlink('#name:SalesTotal', 'link-2');
     assert.equal(named.target.kind, 'name');
-    const display = resolveHyperlinkDisplay(undefined, named);
+    const display = resolveHyperlinkDisplay(named);
     assert.equal(display, '#name:SalesTotal');
   });
 

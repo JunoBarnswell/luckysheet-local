@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { SpreadsheetApplication } from './application';
-import { buildRestoreParams } from './history-bridge';
+import { buildRestoreParams } from './features/history';
 
 describe('SpreadsheetApplication history integration', () => {
   it('restores workbook state through history.restore and rebuilds formulas', () => {

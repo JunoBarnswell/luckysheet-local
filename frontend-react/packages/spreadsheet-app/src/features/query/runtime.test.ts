@@ -10,11 +10,11 @@ import {
   queryResultToRangeValues,
   resolveLoadTarget,
   summarizeQueryResult,
-} from './query-bridge';
-import { createDefaultConnectorRegistry } from './features/query';
-import { registerQueryCommands } from './features/query/commands';
+} from './runtime';
+import { createDefaultConnectorRegistry } from './index';
+import { registerQueryCommands } from './commands';
 
-describe('query-bridge', () => {
+describe('query runtime', () => {
   it('executes json connector queries with pipeline filters', async () => {
     const connectors = createDefaultConnectorRegistry();
     const query = createInlineJsonQuery('q-1', 'Sales', [

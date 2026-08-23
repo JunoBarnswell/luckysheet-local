@@ -1,4 +1,4 @@
-import { WorkbookModel, type CellData, type RangeRef } from '@react-sheets/core-model';
+import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
@@ -13,11 +13,10 @@ import { DrawingRuntime } from './features/drawing';
 import { createDefaultConnectorRegistry, type ConnectorRegistry } from './features/query';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from './features/extended';
 import { CollaborationSession } from './collaboration/collaboration-session';
-import { mapPeerCursor, updatePresenceFromPeer } from './collaboration-bridge';
+import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
   configureFormulaSpillEnvironment,
   configureWorkbookSpillEnvironments,
-  syncFormulaSpillsToSheet,
   syncWorkbookSheetTables,
   syncWorkbookSpills,
 } from './formula-spill-sync';
@@ -26,7 +25,7 @@ import {
   buildLocalDraftRecord,
   isDraftNewerThanServer,
   scheduleDebounced,
-} from './persistence-bridge';
+} from './features/persistence';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -67,16 +66,6 @@ export interface SpreadsheetRuntime {
 
 const UNIT_ID_STORAGE_KEY = 'react-sheets:unitId';
 const ACTOR_ID_STORAGE_KEY = 'react-sheets:actorId';
-
-export const PEER_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
-
-export function hashCode(input: string): number {
-  let hash = 0;
-  for (let i = 0; i < input.length; i++) {
-    hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
-  }
-  return hash;
-}
 
 export function resolveUnitId(): string {
   if (typeof window === 'undefined') return 'wb-server-default';
@@ -142,34 +131,123 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
   return runtime;
 }
 
-function syncEngineCell(
-  engine: FormulaEngine,
-  sheet: import('@react-sheets/core-model').WorksheetModel,
-  row: number,
-  column: number,
-  data: CellData | undefined,
+const FORMULA_SYNC_MUTATIONS = new Set([
+  'cell.set',
+  'cell.restore',
+  'range.set',
+  'range.clear',
+  'range.paste',
+  'cells.shifted',
+  'cells.shifted.restore',
+  'rows.inserted',
+  'rows.deleted',
+  'columns.inserted',
+  'columns.deleted',
+  'sheet.rename',
+  'sheet.remove',
+  'sheet.restore',
+  'sheet.add',
+  'sheet.duplicated',
+  'sheetTable.add',
+  'sheetTable.remove',
+  'sheetTable.update',
+  'table.add',
+  'table.remove',
+  'name.set',
+  'name.remove',
+]);
+
+const DIRECT_CELL_WRITE_MUTATIONS = new Set([
+  'cell.set',
+  'cell.restore',
+  'range.set',
+  'range.clear',
+  'range.paste',
+  'cells.shifted',
+  'cells.shifted.restore',
+]);
+
+function synchronizeManualCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): void {
+  for (const range of mutation.affectedRanges) {
+    const sheet = workbook.getSheet(range.sheetId);
+    configureFormulaSpillEnvironment(engine, sheet);
+    for (let row = range.startRow; row <= range.endRow; row += 1) {
+      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+        const cell = sheet.cells.get(row, column);
+        const address = { sheetId: sheet.id, row, column };
+        if (!cell || (cell.formula === undefined && cell.value == null)) engine.clearCell(address);
+        else if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
+        else engine.setValue(address, cell.value as never);
+      }
+    }
+  }
+  syncWorkbookSpills(engine, workbook);
+}
+
+/**
+ * Rehydrate one stable FormulaEngine instance from the canonical workbook
+ * model.  Structural transforms move formula owners as well as references;
+ * rebuilding the dependency index here avoids leaving an old owner address
+ * behind after rows/columns or bounded shifts.
+ */
+function synchronizeFormulaEngine(engine: FormulaEngine, workbook: WorkbookModel): void {
+  const mode = engine.getRecalculationMode();
+  engine.reset();
+  engine.setRecalculationMode('manual');
+  engine.setDefinedNames(workbook.definedNames);
+  configureWorkbookSpillEnvironments(engine, workbook);
+  syncWorkbookSheetTables(engine, workbook);
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
+      else if (cell.value != null) engine.setValue(address, cell.value as never);
+    });
+  }
+  engine.setRecalculationMode(mode);
+  engine.recalculate();
+  syncWorkbookSpills(engine, workbook);
+}
+
+function assertNoSpillChildWrite(
+  workbook: WorkbookModel,
+  mutation: MutationInfo,
 ): void {
-  configureFormulaSpillEnvironment(engine, sheet);
-  const address = { sheetId: sheet.id, row, column };
-  const hasContent = data !== undefined && (data.formula !== undefined || data.value != null);
-  if (!hasContent) {
-    engine.clearCell(address);
-    syncFormulaSpillsToSheet(engine, sheet);
-    return;
+  const sheet = workbook.getSheet(mutation.sheetId);
+  for (const range of mutation.affectedRanges) {
+    if (range.sheetId !== sheet.id) continue;
+    for (const spill of sheet.spillRanges) {
+      const startRow = Math.max(range.startRow, spill.range.startRow);
+      const endRow = Math.min(range.endRow, spill.range.endRow);
+      const startColumn = Math.max(range.startColumn, spill.range.startColumn);
+      const endColumn = Math.min(range.endColumn, spill.range.endColumn);
+      if (startRow > endRow || startColumn > endColumn) continue;
+      const overlapCells = (endRow - startRow + 1) * (endColumn - startColumn + 1);
+      const includesAnchor = spill.anchor.row >= startRow
+        && spill.anchor.row <= endRow
+        && spill.anchor.column >= startColumn
+        && spill.anchor.column <= endColumn;
+      if (overlapCells - (includesAnchor ? 1 : 0) > 0) {
+        throw new Error('Spill cells are read-only');
+      }
+    }
   }
-  if (data!.formula) {
-    engine.setFormula(address, data!.formula);
-  } else {
-    engine.setValue(address, data!.value as never);
-  }
-  syncFormulaSpillsToSheet(engine, sheet);
 }
 
 export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   detachCoreListeners(runtime);
 
   runtime.detachers.push(
-    runtime.commands.onMutation((mutation) => {
+    runtime.commands.onMutation((mutation, source) => {
+      // CommandRuntime invokes listeners after the mutation handler.  Throwing
+      // here still causes the command transaction to run its inverse, so a
+      // direct write into a dynamic-array child cannot leave partial model or
+      // formula state behind.  Undo/redo replay is allowed to restore the
+      // exact prior snapshot.
+      if (source === 'command' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
+        assertNoSpillChildWrite(runtime.model, mutation);
+      }
+
       const changedSheet = runtime.model.getSheets().find((sheet) => sheet.id === mutation.sheetId);
       for (const pivot of changedSheet?.pivots ?? []) {
         delete runtime.pivotResults[pivot.id];
@@ -178,6 +256,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           mutation.id === 'cell.restore' ||
           mutation.id === 'range.set' ||
           mutation.id === 'range.clear' ||
+          mutation.id === 'range.paste' ||
+          mutation.id === 'cells.shifted' ||
+          mutation.id === 'cells.shifted.restore' ||
           mutation.id === 'rows.inserted' ||
           mutation.id === 'rows.deleted' ||
           mutation.id === 'columns.inserted' ||
@@ -186,79 +267,12 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           pivot.fieldCatalog = undefined;
         }
       }
-      switch (mutation.id) {
-        case 'cell.set': {
-          const params = mutation.params as { row: number; column: number; value: CellData };
-          const sheet = runtime.model.getSheet(mutation.sheetId);
-          syncEngineCell(runtime.formula, sheet, params.row, params.column, params.value);
-          break;
+      if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
+        if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
+          synchronizeManualCellMutation(runtime.formula, runtime.model, mutation);
+        } else {
+          synchronizeFormulaEngine(runtime.formula, runtime.model);
         }
-        case 'cell.restore': {
-          const params = mutation.params as { row: number; column: number; previous?: CellData };
-          const sheet = runtime.model.getSheet(mutation.sheetId);
-          syncEngineCell(runtime.formula, sheet, params.row, params.column, params.previous);
-          break;
-        }
-        case 'range.set': {
-          const params = mutation.params as { startRow: number; startColumn: number; values: CellData[][] };
-          const sheet = runtime.model.getSheet(mutation.sheetId);
-          params.values.forEach((rowValues, rowOffset) =>
-            rowValues.forEach((value, columnOffset) => {
-              syncEngineCell(
-                runtime.formula,
-                sheet,
-                params.startRow + rowOffset,
-                params.startColumn + columnOffset,
-                value,
-              );
-            }),
-          );
-          break;
-        }
-        case 'range.clear': {
-          const params = mutation.params as { range: RangeRef; mode?: 'all' | 'contents' | 'formats' };
-          const sheet = runtime.model.getSheet(mutation.sheetId);
-          if (params.mode === 'formats') break;
-          for (let r = params.range.startRow; r <= params.range.endRow; r++) {
-            for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
-              syncEngineCell(runtime.formula, sheet, r, c, undefined);
-            }
-          }
-          break;
-        }
-        case 'rows.inserted':
-        case 'rows.deleted': {
-          const params = mutation.params as { at: number; count: number };
-          runtime.formula.remapStructure(mutation.sheetId, {
-            axis: 'row',
-            at: params.at,
-            count: params.count,
-            op: mutation.id === 'rows.inserted' ? 'insert' : 'delete',
-          });
-          break;
-        }
-        case 'columns.inserted':
-        case 'columns.deleted': {
-          const params = mutation.params as { at: number; count: number };
-          runtime.formula.remapStructure(mutation.sheetId, {
-            axis: 'column',
-            at: params.at,
-            count: params.count,
-            op: mutation.id === 'columns.inserted' ? 'insert' : 'delete',
-          });
-          break;
-        }
-        case 'name.set':
-        case 'name.remove':
-          runtime.formula.setDefinedNames(runtime.model.definedNames);
-          break;
-        case 'sheetTable.add':
-        case 'sheetTable.remove':
-        case 'sheetTable.update':
-          syncWorkbookSheetTables(runtime.formula, runtime.model);
-          break;
-        default:
-          break;
       }
     }),
   );
@@ -323,18 +337,7 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
 
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
-  engine.setDefinedNames(workbook.definedNames);
-  configureWorkbookSpillEnvironments(engine, workbook);
-  for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
-      const address = { sheetId: sheet.id, row, column };
-      if (cell.formula) engine.setFormula(address, cell.formula);
-      else if (cell.value != null) engine.setValue(address, cell.value as never);
-    });
-  }
-  engine.recalculate();
-  syncWorkbookSpills(engine, workbook);
-  syncWorkbookSheetTables(engine, workbook);
+  synchronizeFormulaEngine(engine, workbook);
   return engine;
 }
 

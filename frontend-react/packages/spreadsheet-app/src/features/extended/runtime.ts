@@ -4,7 +4,7 @@ import {
   CapabilityRegistry,
   type CapabilityDescriptor,
   type PlatformCapability,
-} from './features/extended';
+} from './index';
 import type {
   GoalSeekParams,
   GoalSeekResult,
@@ -14,7 +14,7 @@ import type {
   DataTableResult,
   DataTableCellWrite,
   ScenarioCellOutput,
-} from './features/extended/what-if';
+} from './what-if';
 
 export interface ExtendedSnapshot {
   capabilities: CapabilityDescriptor[];

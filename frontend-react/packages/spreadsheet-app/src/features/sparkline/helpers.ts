@@ -1,4 +1,4 @@
-import type { RangeRef, SparklineGroup, SparklineModel, WorksheetModel } from '@react-sheets/core-model';
+import type { RangeRef, SparklineGroup, SparklineModel, WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
 
 export interface SparklineInsertLocationParams {
   sheetId: string;
@@ -31,7 +31,10 @@ export function buildSparklineDataLocationParams(
   return {
     sheetId,
     sparklineId,
-    dataRange: { ...dataRange, sheetId },
+    // The destination sheet owns the sparkline, while the source range may
+    // intentionally live on another worksheet.  Do not rewrite the source
+    // sheet id during command construction.
+    dataRange: { ...dataRange },
     location,
     type,
     color: options?.color,
@@ -60,9 +63,15 @@ export function resolveQuickSparklinePlacement(range: RangeRef): { dataRange: Ra
   };
 }
 
-export function extractSparklineValues(sheet: WorksheetModel, sparkline: SparklineModel): number[] {
+export function extractSparklineValues(workbookOrSheet: WorkbookModel | WorksheetModel, sparkline: SparklineModel): number[] {
   const values: number[] = [];
   const source = sparkline.sourceRange;
+  const sheet = 'getSheet' in workbookOrSheet
+    ? workbookOrSheet.getSheet(source.sheetId)
+    : workbookOrSheet.id === source.sheetId
+      ? workbookOrSheet
+      : undefined;
+  if (!sheet) return values;
   for (let row = source.startRow; row <= source.endRow; row++) {
     for (let column = source.startColumn; column <= source.endColumn; column++) {
       const cell = sheet.cells.get(row, column);

@@ -48,12 +48,12 @@ import { executeUiCommand, isUiCommand } from './execute-command';
 import {
   buildCollaborationSnapshot,
   type CollaborationSnapshot,
-} from './collaboration-bridge';
+} from './collaboration';
 import { PermissionService, type PermissionCapabilities, type ShareRole } from './permission-service';
 import {
   canExecuteCommand,
   findProtectionRuleCoveringRange,
-} from './permission-bridge';
+} from './features/permission';
 import {
   createSpreadsheetRuntime,
   hydrateRuntime,
@@ -73,48 +73,48 @@ import {
   buildShapeDrawingAdd,
   findDrawingByPayloadId,
   resolveDrawingMoveTransform,
-} from './drawing-bridge';
+} from './features/drawing';
 import {
   buildChartInsertParams,
   buildChartMetadataPatch,
   resolveChartInsertCommandId,
-} from './chart-bridge';
+} from './features/drawing';
 import {
   buildPivotModel,
   connectedPivotIdsForSource,
-} from './pivot-bridge';
+} from './features/pivot';
 import {
   buildCellNote,
   buildCommentReply,
   buildCommentThread,
   findCommentThreadAt,
   parseUrlHyperlink,
-} from './review-bridge';
+} from './features/review';
 import {
   buildSparklineDataLocationParams,
   buildSparklineGroup,
   buildSparklineInsertParams,
   resolveQuickSparklinePlacement,
-} from './sparkline-bridge';
+} from './features/sparkline';
 import {
   buildRestoreParams,
   revisionToHistoryMeta,
-} from './history-bridge';
+} from './features/history';
 import {
   buildPersistenceMeta,
   buildLocalDraftRecord,
   type PersistenceSnapshotMeta,
-} from './persistence-bridge';
+} from './features/persistence';
 import {
   exchangeExportXlsx,
   summarizeCompatibilityReport,
-} from './xlsx-bridge';
+} from './features/xlsx';
 import {
   buildPrintSnapshot,
   summarizePrintSnapshot,
   type PrintPageSnapshot,
   type PrintSnapshot,
-} from './print-bridge';
+} from './features/print';
 import { browserPrintHook, PdfExportService } from './features/print';
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
 import {
@@ -124,13 +124,13 @@ import {
   summarizeQueryResult,
   type QueryResultSnapshot,
   type QuerySessionEntry,
-} from './query-bridge';
+} from './features/query';
 import {
   createCommandRecorder,
   SAMPLE_AUTOMATION_SCRIPT,
   summarizeScriptResult,
   type AutomationSnapshot,
-} from './automation-bridge';
+} from './features/automation';
 import { CommandRecorder } from './features/automation/command-recorder';
 import type { ScriptRunResult } from './features/automation';
 import type { CapabilityDescriptor, PlatformCapability } from './features/extended';
@@ -143,7 +143,7 @@ import type {
   ScenarioResult,
 } from './features/extended/what-if';
 import type { WhatIfPlan } from './features/extended';
-import type { CompatibilityReport } from './xlsx-bridge';
+import type { CompatibilityReport } from './features/xlsx';
 import {
   HistoryPreviewSession,
   type HistoryEntryMeta,
@@ -1373,11 +1373,15 @@ export class SpreadsheetApplication {
       return;
     }
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const chart = sheet.charts.find((entry) => entry.id === this.selectedFloatingId);
-    const image = sheet.images.find((entry) => entry.id === this.selectedFloatingId);
-    if (chart) this.removeChart(chart.id);
-    else if (image) this.removeImage(image.id);
-    else this.removeShape(this.selectedFloatingId);
+    const drawing = findDrawingByPayloadId(sheet, this.selectedFloatingId);
+    if (!drawing) {
+      this.notify('Selected object is not registered as a drawing');
+      return;
+    }
+    this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
+    this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
+    this.selectedFloatingId = null;
+    this.refresh();
   }
   private resolveSelectedDrawingId(): string | undefined {
     if (!this.selectedFloatingId) return undefined;
@@ -1611,10 +1615,7 @@ export class SpreadsheetApplication {
         clipboard: internal,
         mode: 'all',
       });
-      if (internal.isCut) {
-        this.runCommand('sheet.range.clear', { sheetId: this.activeSheetId, range: internal.range, mode: 'contents' });
-        this.clearClipboard();
-      }
+      if (internal.isCut) this.clearClipboard();
       this.syncDraftFromPrimary();
       this.notify('Pasted from clipboard');
       return;
@@ -2417,7 +2418,12 @@ export class SpreadsheetApplication {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
     if (!thread || thread.resolved) return;
-    this.runCommand('comment.resolve', { sheetId: this.activeSheetId, threadId: thread.id, resolved: true });
+    this.runCommand('comment.resolve', {
+      sheetId: this.activeSheetId,
+      threadId: thread.id,
+      resolved: true,
+      resolvedAt: new Date().toISOString(),
+    });
     this.notify('Comment resolved');
     this.refresh();
   }

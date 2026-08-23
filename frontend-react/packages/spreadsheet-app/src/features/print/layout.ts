@@ -1,6 +1,6 @@
 import type { RangeRef, SheetId, WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/pro-features';
-import { usedRangeOfSheet } from './application-helpers';
+import { usedRangeOfSheet } from '../../application-helpers';
 import {
   computePrintPages,
   createDefaultPrintLayout,
@@ -8,7 +8,7 @@ import {
   type PaperSize,
   type PrintLayoutModel,
   type PrintPageInfo,
-} from './features/print';
+} from './index';
 
 const MM_TO_PT = 72 / 25.4;
 

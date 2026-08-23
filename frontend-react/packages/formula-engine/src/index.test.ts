@@ -41,6 +41,20 @@ test('AST formatter preserves explicit grouping and qualified sheet names', () =
   assert.equal(formatFormula(offsetAst(parseFormula('=A1+$B$1'), 2, 3)), '=D3+$B$1');
 });
 
+test('structural deletion invalidates references instead of clamping them', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setValue('A1', 10);
+  engine.setValue('A2', 20);
+  engine.setFormula('B1', '=A2+1');
+  const report = engine.remapStructure('Sheet1', { axis: 'row', at: 1, count: 1, op: 'delete' });
+
+  assert.equal(formatFormula(parseFormula('=#REF!')), '=#REF!');
+  assert.equal(engine.getCellResult('B1')?.formula, '=#REF!+1');
+  assertError(engine.getCellValue('B1'), '#REF!');
+  assert.equal(report.recalculated.some((address) => address.row === 0 && address.column === 1), true);
+  assert.deepEqual(engine.getDependencies('B1'), []);
+});
+
 test('A1 addresses support zero-based engine coordinates and qualified sheets', () => {
   assert.deepEqual(parseCellAddress("'Annual Plan'!$C$4"), { sheetId: 'Annual Plan', row: 3, column: 2 });
   assert.equal(formatCellAddress({ sheetId: 'Sheet1', row: 0, column: 0 }), 'A1');
@@ -161,6 +175,27 @@ test('FormulaEngine returns explicit errors and propagates them through formulas
   assertError(stringArithmetic, '#VALUE!');
   assertError(unknownFunction, '#NAME?');
   assertError(parseError, '#PARSE!');
+});
+
+test('calculation task port is versioned and serializable without pretending to be a Worker', async () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setValue('A1', 2);
+  engine.setFormula('B1', '=A1*3');
+  const port = engine.createCalculationTaskPort();
+  const result = await port.submit({
+    protocol: 'react-sheets.formula-calculation',
+    version: 1,
+    taskId: 'task-1',
+    kind: 'recalculate',
+    revision: 4,
+    roots: [{ sheetId: 'Sheet1', row: 0, column: 0 }],
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.protocol, 'react-sheets.formula-calculation');
+  assert.equal(result.version, 1);
+  assert.equal(result.revision, 4);
+  assert.equal(result.report?.results.some((entry) => entry.value === 6), true);
 });
 
 test('FormulaEngine supports qualified references and detects cycles', () => {

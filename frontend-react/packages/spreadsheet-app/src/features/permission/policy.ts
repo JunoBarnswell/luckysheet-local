@@ -1,5 +1,5 @@
 import type { ProtectionRule, RangeRef, WorkbookModel } from '@react-sheets/core-model';
-import type { PermissionService, ShareRole } from './permission-service';
+import type { PermissionService, ShareRole } from '../../permission-service';
 
 export type PermissionAction =
   | 'navigate'

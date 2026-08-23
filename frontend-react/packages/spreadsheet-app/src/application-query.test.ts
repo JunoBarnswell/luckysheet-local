@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { SpreadsheetApplication } from './application';
-import { createInlineJsonQuery } from './query-bridge';
+import { createInlineJsonQuery } from './features/query';
 
 describe('SpreadsheetApplication query integration', () => {
   it('loads inline json queries into the active sheet', async () => {

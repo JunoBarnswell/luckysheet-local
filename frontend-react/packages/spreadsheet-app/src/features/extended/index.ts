@@ -61,3 +61,4 @@ export function createDefaultCapabilityRegistry(): CapabilityRegistry {
 
 export * from './what-if';
 export { registerExtendedCommands } from './commands';
+export * from './runtime';

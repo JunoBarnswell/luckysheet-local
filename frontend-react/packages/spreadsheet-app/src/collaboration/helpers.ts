@@ -1,9 +1,18 @@
 import type { MutationInfo } from '@react-sheets/command-runtime';
 import type { CollaborationChangeSet, CollaborationMutation } from '@react-sheets/protocol';
-import type { CollaborationSession } from './collaboration/collaboration-session';
-import type { PresenceSnapshot } from './collaboration/presence';
-import type { PeerCursor } from './types';
-import { hashCode, PEER_COLORS } from './runtime';
+import type { CollaborationSession } from './collaboration-session';
+import type { PresenceSnapshot } from './presence';
+import type { PeerCursor } from '../types';
+
+export const PEER_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+export function hashCode(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
 
 export interface CollaborationSnapshot {
   revision: number;

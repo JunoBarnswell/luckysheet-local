@@ -7,9 +7,9 @@ import {
   printLayoutToPageSetup,
   resolvePrintArea,
   summarizePrintSnapshot,
-} from './print-bridge';
+} from './layout';
 
-describe('print-bridge', () => {
+describe('print layout', () => {
   it('builds print snapshots from workbook content', () => {
     const workbook = new WorkbookModel('wb-print', 'Print');
     const sheetId = workbook.activeSheetId;

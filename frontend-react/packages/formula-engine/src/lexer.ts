@@ -5,6 +5,7 @@ export type TokenKind =
   | 'number'
   | 'string'
   | 'identifier'
+  | 'error-reference'
   | 'plus'
   | 'minus'
   | 'star'
@@ -98,6 +99,11 @@ export function lexFormula(source: string): readonly Token[] {
 
     if (character === '#') {
       const rest = source.slice(index);
+      if (/^#REF!(?![A-Za-z0-9_])/i.test(rest)) {
+        tokens.push({ kind: 'error-reference', lexeme: '#REF!', span: { start: index, end: index + 5 } });
+        index += 5;
+        continue;
+      }
       const match = /^#(ALL|HEADERS|DATA|TOTALS)(?![A-Za-z0-9_])/i.exec(rest);
       if (match) {
         const lexeme = source.slice(index, index + match[0].length);

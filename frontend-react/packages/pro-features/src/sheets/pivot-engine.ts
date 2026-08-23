@@ -1,7 +1,7 @@
 import type {
   PivotAggregateFunction, PivotDataSource, PivotFieldCatalog, PivotFieldDataType, PivotFieldPlacement,
   PivotFilter, PivotGroup, PivotModel, PivotResultCell, PivotResultNode, PivotResultTree, PivotScalar,
-  PivotSourceRowPath, PivotValueField, WorkbookModel, WorksheetModel,
+  PivotSourceRowPath, PivotValueField, RangeRef, WorkbookModel, WorksheetModel,
   PivotCalculatedField, PivotCalculatedItem,
 } from '@react-sheets/core-model';
 import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
@@ -14,6 +14,88 @@ export interface PivotResultTable {
   rows: Array<{ keys: string[]; values: PivotScalar[] }>;
   grandTotal: PivotScalar[];
   tree: PivotResultTree;
+}
+
+/**
+ * The result cache is keyed by the three semantic revisions of a pivot.  The
+ * model deliberately does not carry mutable runtime counters, so revisions
+ * are deterministic fingerprints of the source, layout and filter inputs.
+ * This keeps a persisted PivotModel pure while still preventing stale results
+ * after a source cell, layout, slicer or timeline changes.
+ */
+export interface PivotRevisionKey {
+  pivotId: string;
+  sourceRevision: string;
+  layoutRevision: string;
+  filterRevision: string;
+}
+
+const pivotResultCache = new WeakMap<WorkbookModel, Map<string, PivotResultTree>>();
+
+function stableSerialize(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key])}`).join(',')}}`;
+}
+
+function fingerprint(value: unknown): string {
+  const input = stableSerialize(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
+  const ranges = sourceRanges(pivot);
+  return fingerprint(ranges.map((range) => {
+    const sheet = workbook.getSheet(range.sheetId);
+    const cells: Array<{ row: number; column: number; value: unknown; formula?: string; formulaValue?: unknown }> = [];
+    for (let row = range.startRow; row <= range.endRow; row += 1) {
+      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+        const cell = sheet.cells.get(row, column);
+        if (cell) cells.push({ row, column, value: cell.value, formula: cell.formula, formulaValue: cell.formulaValue });
+      }
+    }
+    return { range, cells };
+  }));
+}
+
+function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): unknown[] {
+  return workbook.getSheets()
+    .flatMap((sheet) => sheet.pivots)
+    .filter((candidate) => candidate.id !== pivot.id)
+    .filter((candidate) => (candidate.slicers ?? []).some((slicer) => slicer.connectedPivotIds?.includes(pivot.id))
+      || (candidate.timelines ?? []).some((timeline) => timeline.connectedPivotIds?.includes(pivot.id)))
+    .map((candidate) => ({ id: candidate.id, slicers: candidate.slicers, timelines: candidate.timelines }));
+}
+
+export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel): PivotRevisionKey {
+  return {
+    pivotId: pivot.id,
+    sourceRevision: sourceRevision(workbook, pivot),
+    layoutRevision: fingerprint({ sourceRange: pivot.sourceRange, dataSource: pivot.dataSource, layout: pivot.layout }),
+    filterRevision: fingerprint({ filters: pivot.layout.filters, slicers: pivot.slicers, timelines: pivot.timelines, linked: linkedFilterDefinitions(workbook, pivot) }),
+  };
+}
+
+function revisionCacheKey(key: PivotRevisionKey): string {
+  return `${key.pivotId}|${key.sourceRevision}|${key.layoutRevision}|${key.filterRevision}`;
+}
+
+/** Drop derived results for one workbook without mutating its persisted model. */
+export function clearPivotResultCache(workbook: WorkbookModel, pivotId?: string): void {
+  const cache = pivotResultCache.get(workbook);
+  if (!cache) return;
+  if (!pivotId) {
+    cache.clear();
+    return;
+  }
+  for (const key of cache.keys()) if (key.startsWith(`${pivotId}|`)) cache.delete(key);
 }
 
 const jsonKey = (values: PivotScalar[]): string => JSON.stringify(values);
@@ -48,6 +130,11 @@ function inferType(values: PivotScalar[]): PivotFieldDataType {
 
 function sourceRange(pivot: PivotModel): PivotDataSource {
   return pivot.dataSource ?? { kind: 'worksheet-range', range: pivot.sourceRange };
+}
+
+function sourceRanges(pivot: PivotModel): RangeRef[] {
+  const source = sourceRange(pivot);
+  return source.kind === 'worksheet-range' ? [source.range] : source.ranges;
 }
 
 function readTable(sheet: WorksheetModel, range: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number }): SourceRow[] {
@@ -141,14 +228,26 @@ function readSource(workbook: WorkbookModel, pivot: PivotModel): SourceRow[] {
 }
 
 export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel): PivotFieldCatalog {
-  if (pivot.fieldCatalog) return structuredClone(pivot.fieldCatalog);
   const rows = readSource(workbook, pivot); const names = new Set<string>();
   rows.forEach((row) => Object.keys(row.values).forEach((name) => names.add(name)));
-  return { fields: [...names].map((name, ordinal) => {
+  const inferred: PivotFieldCatalog = { fields: [...names].map((name, ordinal) => {
     const values = rows.map((row) => row.values[name] ?? null);
     const distinct = [...new Map(values.filter((value) => value != null).map((value) => [JSON.stringify(value), value])).values()];
     return { id: name, name, ordinal, dataType: inferType(values), values: distinct.slice(0, 10_000) };
   }) };
+  // A persisted catalog is metadata, not a second source of truth.  Preserve
+  // its explicit field identity/order only when it still describes the live
+  // source; values and data types are always refreshed from current rows.
+  if (!pivot.fieldCatalog) return inferred;
+  const inferredNames = new Set(inferred.fields.map((field) => field.name));
+  const declaredNames = new Set(pivot.fieldCatalog.fields.map((field) => field.name));
+  if (inferredNames.size !== declaredNames.size || [...inferredNames].some((name) => !declaredNames.has(name))) return inferred;
+  return {
+    fields: pivot.fieldCatalog.fields
+      .map((declared) => inferred.fields.find((field) => field.name === declared.name))
+      .filter((field): field is PivotFieldCatalog['fields'][number] => field !== undefined)
+      .map((field, ordinal) => ({ ...field, id: pivot.fieldCatalog!.fields[ordinal]?.id ?? field.id, ordinal })),
+  };
 }
 
 function matchesFilter(row: SourceRow, filter: PivotFilter): boolean {
@@ -233,7 +332,10 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
 }
 
 function matchesSlicersAndTimelines(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel): SourceRow[] {
-  const linked = workbook.getSheet(pivot.sheetId).pivots.filter((candidate) => candidate.id !== pivot.id);
+  // Slicers and timelines are workbook features.  A linked pivot may live on
+  // another sheet, so looking only at the pivot's display sheet silently
+  // ignored cross-sheet connections.
+  const linked = workbook.getSheets().flatMap((sheet) => sheet.pivots).filter((candidate) => candidate.id !== pivot.id);
   const slicers = [...(pivot.slicers ?? []), ...linked.flatMap((candidate) => (candidate.slicers ?? []).filter((slicer) => slicer.connectedPivotIds?.includes(pivot.id)))];
   const timelines = [...(pivot.timelines ?? []), ...linked.flatMap((candidate) => (candidate.timelines ?? []).filter((timeline) => timeline.connectedPivotIds?.includes(pivot.id)))];
   return rows.filter((row) => slicers.every((slicer) => slicer.selected.length === 0 || slicer.selected.some((value) => same(value, row.values[slicer.field] ?? null))) && timelines.every((timeline) => {
@@ -276,10 +378,32 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
   }); visit(tree.rows);
 }
 
-export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
+function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
   const definition = pivot; let rows = matchesSlicersAndTimelines(workbook, readSource(workbook, definition), definition); rows = rows.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter))); rows = topItems(rows, definition.layout.filters);
   const catalog = getPivotFieldCatalog(workbook, definition); const columns = definition.layout.columns.length ? axisGroups(rows, definition.layout.columns) : [{ values: [], rows }]; const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? { kind: 'grand-total', columnPath: [], values: definition.layout.values.map((field) => aggregate(rows, field.field, field.summarizeBy)), sourceRowPaths: rows.flatMap((row) => row.paths) } : null;
   const tree: PivotResultTree = { schema: 'PivotResultTreeV1', pivotId: definition.id, fields: catalog, columnPaths: columns.map((column) => column.values), rows: resultNodes(rows, definition.layout.rows, 0, columns, definition.layout.values, definition.layout.showSubtotals), grandTotal, sourceRowPaths: rows.flatMap((row) => row.paths) }; applyShowAs(tree, definition.layout.values); return tree;
+}
+
+export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
+  const revision = getPivotRevisionKey(workbook, pivot);
+  const key = revisionCacheKey(revision);
+  let cache = pivotResultCache.get(workbook);
+  if (!cache) {
+    cache = new Map();
+    pivotResultCache.set(workbook, cache);
+  }
+  const cached = cache.get(key);
+  if (cached) return structuredClone(cached);
+
+  const result = computePivotResultUncached(workbook, pivot);
+  // Keep one derived result per pivot.  Old revisions are never authoritative
+  // after a source/layout/filter change and are removed to avoid unbounded
+  // growth during long editing sessions.
+  for (const existingKey of cache.keys()) {
+    if (existingKey.startsWith(`${pivot.id}|`)) cache.delete(existingKey);
+  }
+  cache.set(key, structuredClone(result));
+  return structuredClone(result);
 }
 
 export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): PivotResultTable {

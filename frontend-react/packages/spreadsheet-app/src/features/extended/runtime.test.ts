@@ -4,10 +4,10 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { CapabilityRegistry } from './features/extended';
-import { evaluateCapability, runDataTable, runGoalSeek, runScenario, summarizeGoalSeekResult } from './extended-bridge';
+import { CapabilityRegistry } from './index';
+import { evaluateCapability, runDataTable, runGoalSeek, runScenario, summarizeGoalSeekResult } from './runtime';
 
-describe('extended-bridge', () => {
+describe('extended runtime', () => {
   it('evaluates disabled platform capabilities with reasons', () => {
     const registry = new CapabilityRegistry();
     const solver = evaluateCapability(registry, 'solver');

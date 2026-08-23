@@ -3,17 +3,16 @@ import type {
   CellNote,
   CellData,
   CellStyle,
-  ChartModel,
   ConditionalFormatRule,
   DataValidationRule,
+  DrawingObject,
+  DrawingPayload,
   FreezeModel,
   MergeSpan,
   OutlineGroup,
   PivotModel,
   PivotResultTree,
   RangeRef,
-  ShapeModel,
-  FloatingImage,
   SheetTableModel,
   SparklineModel,
   WorkbookModel,
@@ -40,8 +39,13 @@ import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { computePivotResult } from '@react-sheets/pro-features';
 import { cellAddress, columnLabel } from './address';
-import { findCommentThreadAt, resolveHyperlinkDisplay, threadToCellComment } from './review-bridge';
 import { getCellNote } from '@react-sheets/core-model';
+import {
+  findCommentThreadAt,
+  getCellHyperlink,
+  resolveHyperlinkDisplay,
+  threadToCellComment,
+} from './features/review';
 
 /** Canvas-friendly cell snapshot — no row-array projection */
 export interface CanvasCellSnapshot {
@@ -77,11 +81,12 @@ export interface CanvasSheetSnapshot {
   occupiedCellCount: number;
   getCell: (row: number, column: number) => CanvasCellSnapshot | undefined;
   usedRange: RangeRef;
-  charts: ChartModel[];
+  /** Canonical floating-object aggregate. UI never consumes legacy projections. */
+  drawings: DrawingObject[];
+  /** Read-only payload projection keyed by DrawingObject.payloadId. */
+  drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
-  shapes: ShapeModel[];
-  images: FloatingImage[];
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -188,14 +193,11 @@ export function buildCanvasSheetSnapshot(
         ? { ...(modelCell?.style ?? {}), ...presentation }
         : modelCell?.style;
     const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
-    const thread = findCommentThreadAt(sheet, row, column);
+    const thread = sheet.commentThreads.find((entry) => entry.row === row && entry.column === column);
     const note = getCellNote(sheet, row, column);
-    const comment = thread
-      ? threadToCellComment(thread)
-      : modelCell?.comment
-        ? structuredClone(modelCell.comment)
-        : undefined;
-    const hyperlink = resolveHyperlinkDisplay(modelCell?.hyperlink, modelCell?.hyperlinkDetail);
+    const comment = thread ? threadToCellComment(thread) : undefined;
+    const hyperlinkDetail = getCellHyperlink(sheet, row, column);
+    const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
     return {
       address: cellAddress(row, column),
       formula: modelCell?.formula,
@@ -242,11 +244,12 @@ export function buildCanvasSheetSnapshot(
     occupiedCellCount: sheet.cells.count(),
     getCell,
     usedRange,
-    charts: [...sheet.charts],
+    drawings: structuredClone(sheet.drawings),
+    drawingPayloads: new Map(
+      [...sheet.drawingPayloads.entries()].map(([payloadId, payload]) => [payloadId, structuredClone(payload)]),
+    ),
     pivots: [...sheet.pivots],
     pivotResults,
-    shapes: [...sheet.shapes],
-    images: [...sheet.images],
     sparklines: [...sheet.sparklines],
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],

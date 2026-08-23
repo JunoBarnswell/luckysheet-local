@@ -14,6 +14,7 @@ import type {
   SparklineModel,
   UnitId,
   WorkbookTableModel,
+  DefinedNameModel,
 } from './index';
 import type { CommentThread, CellNote, DrawingObject, ProtectionRule, SheetTableModel, SpillRange } from './domain';
 import { WorkbookModel } from './index';
@@ -55,6 +56,7 @@ export interface WorkbookSnapshotV2 {
   name: string;
   activeSheetId: SheetId;
   definedNames?: Record<string, string>;
+  definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
   protectionRules?: ProtectionRule[];
   sheets: SheetSnapshotV2[];
@@ -67,6 +69,7 @@ export interface WorkbookSnapshotV1 {
   name: string;
   activeSheetId: SheetId;
   definedNames?: Record<string, string>;
+  definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
   sheets: Array<Omit<SheetSnapshotV2, 'sheetTables' | 'drawings' | 'notes' | 'commentThreads' | 'spillRanges' | 'protectionRules'>>;
 }
@@ -82,6 +85,7 @@ export function migrateSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookSnapshot
     name: snapshot.name,
     activeSheetId: snapshot.activeSheetId,
     definedNames: snapshot.definedNames ? { ...snapshot.definedNames } : undefined,
+    definedNameModels: snapshot.definedNameModels?.map((entry) => structuredClone(entry)),
     tables: snapshot.tables?.map((t) => structuredClone(t)),
     sheets: snapshot.sheets.map((sheet) => ({
       ...structuredClone(sheet),
@@ -103,6 +107,7 @@ export function loadWorkbookFromSnapshot(snapshot: AnyWorkbookSnapshot): Workboo
     name: v2.name,
     activeSheetId: v2.activeSheetId,
     definedNames: v2.definedNames,
+    definedNameModels: v2.definedNameModels,
     tables: v2.tables,
     sheets: v2.sheets,
   });

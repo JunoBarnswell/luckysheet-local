@@ -5,7 +5,7 @@ export interface PersistenceSaveParams {
   baseRevision?: number;
 }
 
-/** 显式保存为审计命令；实际 flush 由 Application + persistence-bridge 执行 */
+/** 显式保存为审计命令；实际 flush 由 Application + persistence feature 执行 */
 export function registerPersistenceCommands(registry: CommandRegistry): void {
   registry.registerCommand({
     id: 'persistence.save',
@@ -30,3 +30,5 @@ export function registerPersistenceCommands(registry: CommandRegistry): void {
     },
   });
 }
+
+export * from './storage';

@@ -84,6 +84,9 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       content = prefix + formatReference(node.reference);
       break;
     }
+    case 'invalid-reference':
+      content = node.code;
+      break;
     case 'range-reference':
       content = formatNode(node.start) + ':' + formatNode(node.end);
       break;

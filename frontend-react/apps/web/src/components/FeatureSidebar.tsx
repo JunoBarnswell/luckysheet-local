@@ -19,10 +19,10 @@ import {
 } from '@react-sheets/ui-system';
 import type {
   CellComment,
-  ChartModel,
   ConditionalFormatRule,
   DataValidationRule,
-  ShapeModel,
+  DrawingObject,
+  DrawingPayload,
   SparklineModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
@@ -47,6 +47,7 @@ import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
+import type { CommandDescriptor } from '../domain/command-descriptor';
 
 export interface FeatureSidebarProps {
   activePanel: SidebarPanelId;
@@ -59,7 +60,8 @@ export interface FeatureSidebarProps {
   phase: AppPhase;
   sheet: CanvasSheetSnapshot;
   sheetId: string;
-  charts: ChartModel[];
+  drawings: readonly DrawingObject[];
+  drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   pivot?: PivotModel;
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
@@ -68,7 +70,6 @@ export interface FeatureSidebarProps {
   onShowPivotDetails?: (paths: import('@react-sheets/core-model').PivotSourceRowPath[]) => void;
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
-  shapes: ShapeModel[];
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -86,10 +87,7 @@ export interface FeatureSidebarProps {
   tables: readonly WorkbookTableModel[];
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
-  onAddChart: (chart: ChartModel) => void;
-  onRemoveChart: (id: string) => void;
-  onAddShape: (shape: ShapeModel) => void;
-  onRemoveShape: (id: string) => void;
+  onCommand: (descriptor: CommandDescriptor) => void;
   onAddSparkline: (sparkline: SparklineModel) => void;
   onRemoveSparkline: (id: string) => void;
   onAddConditionalFormat: (rule: ConditionalFormatRule) => void;
@@ -265,7 +263,8 @@ export function FeatureSidebar({
   phase,
   sheet,
   sheetId,
-  charts,
+  drawings,
+  drawingPayloads,
   pivot,
   pivotList,
   activePivotId,
@@ -274,7 +273,6 @@ export function FeatureSidebar({
   onShowPivotDetails,
   pivotPanelState,
   pivotCallbacks,
-  shapes,
   sparklines,
   conditionalFormats,
   dataValidations,
@@ -292,10 +290,7 @@ export function FeatureSidebar({
   tables,
   onReadDataRows,
   onRemoveDataTable,
-  onAddChart,
-  onRemoveChart,
-  onAddShape,
-  onRemoveShape,
+  onCommand,
   onAddSparkline,
   onRemoveSparkline,
   onAddConditionalFormat,
@@ -430,10 +425,10 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'chart' ? (
           <ChartPanel
             sheetId={sheetId}
-            charts={charts}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
             defaultRange={selectionText}
-            onAddChart={onAddChart}
-            onRemoveChart={onRemoveChart}
+            onCommand={onCommand}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'pivot' ? (
@@ -451,9 +446,9 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'shape' ? (
           <ShapeEditorPanel
             sheetId={sheetId}
-            shapes={shapes}
-            onAddShape={onAddShape}
-            onRemoveShape={onRemoveShape}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
+            onCommand={onCommand}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'sparkline' ? (
@@ -717,7 +712,5 @@ function CommentHyperlinkForms({
     </Stack>
   );
 }
-
-
 
 

@@ -65,6 +65,11 @@ function visit(
       return;
     case 'name-reference':
       return;
+    case 'invalid-reference':
+      // An invalidated reference has no dependency target.  Keeping it out
+      // of the index prevents a later write to the deleted coordinate from
+      // resurrecting a formula which must remain #REF!.
+      return;
     case 'table-reference': {
       if (!sheetTables) return;
       const resolved = resolveSheetTableReference(

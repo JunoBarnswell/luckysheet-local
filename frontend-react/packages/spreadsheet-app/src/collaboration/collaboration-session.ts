@@ -14,6 +14,9 @@ export interface CollaborationSessionOptions {
   /** Sends an envelope over the authenticated V2 transport. */
   send?: (operation: OperationEnvelopeV2) => boolean;
   createOperationId?: () => string;
+  /** Durable operation journal; workbook snapshots are not stored here. */
+  loadPending?: () => { operations: readonly OperationEnvelopeV2[]; nextClientSequence: number } | null;
+  persistPending?: (operations: readonly OperationEnvelopeV2[], nextClientSequence: number) => void;
 }
 
 interface AckWaiter {
@@ -30,11 +33,12 @@ export class CollaborationSession {
   readonly collaborativeUndo = new CollaborativeUndoStack();
 
   private runtime: CommandRuntime;
-  private readonly send?: (operation: OperationEnvelopeV2) => boolean;
+  private send?: (operation: OperationEnvelopeV2) => boolean;
   private readonly createOperationId: () => string;
   private clientSequence = 0;
   private baseRevision = 0;
   private readonly committedMutations: ReturnType<typeof classifyMutation>[] = [];
+  private readonly committedOperationIds = new Set<string>();
   private readonly localClassified = new Map<string, ReturnType<typeof classifyMutation>[]>();
   private readonly ackWaiters = new Map<string, AckWaiter>();
 
@@ -45,11 +49,28 @@ export class CollaborationSession {
       if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
       return `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     });
-    this.offlineQueue = new OfflineQueue({ flush: (operation) => this.flushOperation(operation) });
+    const restored = options.loadPending?.() ?? null;
+    this.clientSequence = Math.max(
+      restored?.nextClientSequence ?? 0,
+      ...(restored?.operations.map((operation) => operation.clientSequence) ?? []),
+    );
+    this.offlineQueue = new OfflineQueue({
+      load: () => restored?.operations ?? [],
+      persist: (operations) => options.persistPending?.(operations, this.clientSequence),
+      flush: (operation) => this.flushOperation(operation),
+    });
+    for (const operation of restored?.operations ?? []) {
+      this.localClassified.set(operation.operationId, this.classifyEnvelope(operation));
+    }
+    this.offlineQueue.setOnline(false);
   }
 
   rebindCommands(runtime: CommandRuntime): void {
     this.runtime = runtime;
+  }
+
+  attachTransport(send?: (operation: OperationEnvelopeV2) => boolean): void {
+    this.send = send;
   }
 
   setRevision(revision: number): void {

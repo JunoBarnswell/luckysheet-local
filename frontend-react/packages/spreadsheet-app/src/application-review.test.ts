@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { getCellNote } from '@react-sheets/core-model';
 import { SpreadsheetApplication } from './application';
-import { findCommentThreadAt } from './review-bridge';
+import { findCommentThreadAt } from './features/review';
 
 function selectCell(app: SpreadsheetApplication, row: number, column: number): void {
   const sheetId = app.getActiveSheetId();

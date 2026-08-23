@@ -12,12 +12,13 @@ import type {
   WorkbookModel,
   WorksheetModel,
   StructuralTransformParams,
+  DefinedNameModel,
 } from '@react-sheets/core-model';
-import { StructuralTransform } from '@react-sheets/core-model';
+import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { shiftFormula } from './clipboard';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
-import { registerDataToolCommands } from './data-features';
+import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
 import { registerOutlineCommands } from './outline-commands';
 
@@ -69,7 +70,15 @@ export interface SetRangeValuesParams {
 export interface ClearRangeParams {
   sheetId: string;
   range: RangeRef;
-  mode?: 'all' | 'contents' | 'formats';
+  mode?: 'all' | 'contents' | 'formats' | 'notes' | 'hyperlinks';
+}
+
+interface ClearRangeRestoreParams {
+  sheetId: string;
+  range: RangeRef;
+  cells: Array<{ row: number; column: number; value?: CellData }>;
+  notes: Array<{ row: number; column: number; note: import('@react-sheets/core-model').CellNote }>;
+  comments: import('@react-sheets/core-model').CommentThread[];
 }
 
 export interface AddSheetParams {
@@ -506,6 +515,25 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
       for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
         const current = sheet.cells.get(row, column);
+        if (params.mode === 'notes') {
+          if (current?.note || current?.comment) {
+            const next = { ...current };
+            delete next.note;
+            delete next.comment;
+            sheet.cells.set(row, column, next);
+          }
+          sheet.notes.delete(`${row}:${column}`);
+          continue;
+        }
+        if (params.mode === 'hyperlinks') {
+          if (current?.hyperlink !== undefined || current?.hyperlinkDetail !== undefined) {
+            const next = { ...current };
+            delete next.hyperlink;
+            delete next.hyperlinkDetail;
+            sheet.cells.set(row, column, next);
+          }
+          continue;
+        }
         if (!current) continue;
         if (params.mode === 'formats') {
           const next = { ...current };
@@ -525,6 +553,39 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         }
       }
     }
+    if (params.mode === undefined || params.mode === 'all') {
+      sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) =>
+        thread.row < params.range.startRow
+        || thread.row > params.range.endRow
+        || thread.column < params.range.startColumn
+        || thread.column > params.range.endColumn));
+      for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
+        for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
+          sheet.notes.delete(`${row}:${column}`);
+        }
+      }
+    }
+  });
+
+  runtime.registry.registerMutation('range.clear.restore', (item, context) => {
+    const params = item.params as ClearRangeRestoreParams;
+    const sheet = context.workbook.getSheet(params.sheetId);
+    for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
+      for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
+        sheet.cells.delete(row, column);
+        sheet.notes.delete(`${row}:${column}`);
+      }
+    }
+    sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) =>
+      thread.row < params.range.startRow
+      || thread.row > params.range.endRow
+      || thread.column < params.range.startColumn
+      || thread.column > params.range.endColumn));
+    for (const item of params.cells) {
+      if (item.value) sheet.cells.set(item.row, item.column, structuredClone(item.value));
+    }
+    for (const item of params.notes) sheet.notes.set(`${item.row}:${item.column}`, structuredClone(item.note));
+    sheet.commentThreads.push(...structuredClone(params.comments));
   });
 
   runtime.registry.registerMutation('style.set', (item, context) => {
@@ -552,39 +613,44 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
-      const affectedRanges: RangeRef[] = [params.range];
+      const notes: ClearRangeRestoreParams['notes'] = [];
+      const comments: ClearRangeRestoreParams['comments'] = [];
+      const range = {
+        ...params.range,
+        startRow: Math.min(params.range.startRow, params.range.endRow),
+        endRow: Math.max(params.range.startRow, params.range.endRow),
+        startColumn: Math.min(params.range.startColumn, params.range.endColumn),
+        endColumn: Math.max(params.range.startColumn, params.range.endColumn),
+      };
+      const affectedRanges: RangeRef[] = [range];
 
-      for (let r = params.range.startRow; r <= params.range.endRow; r++) {
-        for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
-          const cell = sheet.cells.get(r, c);
-          if (cell) {
-            previous.push({ row: r, column: c, value: structuredClone(cell) });
-          }
+      for (let r = range.startRow; r <= range.endRow; r++) {
+        for (let c = range.startColumn; c <= range.endColumn; c++) {
+          previous.push({ row: r, column: c, value: structuredClone(sheet.cells.get(r, c)) });
+          const note = sheet.notes.get(`${r}:${c}`);
+          if (note) notes.push({ row: r, column: c, note: structuredClone(note) });
         }
       }
+      comments.push(...structuredClone(sheet.commentThreads.filter((thread) =>
+        thread.row >= range.startRow
+        && thread.row <= range.endRow
+        && thread.column >= range.startColumn
+        && thread.column <= range.endColumn)));
 
       context.applyMutation({
         id: 'range.clear',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: { ...params, range },
         affectedRanges,
-        inverse: previous.map((item) => ({
-          id: 'cell.restore',
+        inverse: [{
+          id: 'range.clear.restore',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { row: item.row, column: item.column, previous: item.value },
-          affectedRanges: [
-            {
-              sheetId: params.sheetId,
-              startRow: item.row,
-              endRow: item.row,
-              startColumn: item.column,
-              endColumn: item.column,
-            },
-          ],
-        })),
-        apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),
+          params: { sheetId: params.sheetId, range, cells: previous, notes, comments },
+          affectedRanges,
+        }],
+        apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, range }, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -830,49 +896,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   // 9. Range Sorting
   runtime.registry.registerCommand<SortRangeParams>({
     id: 'sheet.sort',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const { range, sortColumn, ascending, hasHeader } = params;
-      const startR = hasHeader ? range.startRow + 1 : range.startRow;
-      const rowCount = range.endRow - startR + 1;
-      if (rowCount <= 1)
-        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-
-      // Collect rows
-      const rows: Array<{ originalIndex: number; cells: Array<CellData | undefined> }> = [];
-      for (let r = startR; r <= range.endRow; r++) {
-        const rowCells: Array<CellData | undefined> = [];
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          rowCells.push(sheet.cells.get(r, c));
-        }
-        rows.push({ originalIndex: r, cells: rowCells });
-      }
-
-      // Sort
-      const colOffset = sortColumn - range.startColumn;
-      rows.sort((a, b) => {
-        const valA = a.cells[colOffset]?.value;
-        const valB = b.cells[colOffset]?.value;
-        if (valA === valB) return 0;
-        if (valA === null || valA === undefined) return 1;
-        if (valB === null || valB === undefined) return -1;
-        if (typeof valA === 'number' && typeof valB === 'number') {
-          return ascending ? valA - valB : valB - valA;
-        }
-        return ascending
-          ? String(valA).localeCompare(String(valB))
-          : String(valB).localeCompare(String(valA));
-      });
-
-      // Build values matrix
-      const values: CellData[][] = rows.map((r) => r.cells.map((c) => c ?? { value: null }));
-      return runtime.execute('sheet.range.set', {
-        sheetId: params.sheetId,
-        startRow: startR,
-        startColumn: range.startColumn,
-        values,
-      });
-    },
+    execute: (params, context) => runtime.execute('data.sort.rows', {
+      sheetId: params.sheetId,
+      range: params.range,
+      criteria: [{ column: params.sortColumn, ascending: params.ascending }],
+      hasHeader: params.hasHeader,
+    }),
   });
 
   // 10. AutoFill Sequence / Formula shift
@@ -1209,101 +1238,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     hasHeader: boolean;
   }>({
     id: 'sheet.sort.multi',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const startR = params.hasHeader ? params.range.startRow + 1 : params.range.startRow;
-      const rowCount = params.range.endRow - startR + 1;
-      if (rowCount <= 1 || params.criteria.length === 0) {
-        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      }
-      const width = params.range.endColumn - params.range.startColumn + 1;
-      const rowsData: CellData[][] = [];
-      for (let r = startR; r <= params.range.endRow; r++) {
-        const rowCells: CellData[] = [];
-        for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
-          rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
-        }
-        rowsData.push(rowCells);
-      }
-      rowsData.sort((a, b) => {
-        for (const criterion of params.criteria) {
-          const offset = criterion.column - params.range.startColumn;
-          const valA = a[offset]?.value;
-          const valB = b[offset]?.value;
-          if (valA === valB) continue;
-          if (valA == null) return 1;
-          if (valB == null) return -1;
-          let result: number;
-          if (typeof valA === 'number' && typeof valB === 'number') result = valA - valB;
-          else result = String(valA).localeCompare(String(valB));
-          return criterion.ascending ? result : -result;
-        }
-        return 0;
-      });
-      return runtime.execute('sheet.range.set', {
-        sheetId: params.sheetId,
-        startRow: startR,
-        startColumn: params.range.startColumn,
-        values: rowsData.map((row) => row.slice(0, width)),
-      });
-    },
-  });
-
-  runtime.registry.registerCommand<{ sheetId: string; range: RangeRef }>({
-    id: 'matrix.transpose',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const range = params.range;
-      const source: CellData[][] = [];
-      for (let r = range.startRow; r <= range.endRow; r++) {
-        const rowCells: CellData[] = [];
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
-        }
-        source.push(rowCells);
-      }
-      const transposed: CellData[][] = [];
-      for (let c = 0; c < source[0]!.length; c++) {
-        transposed.push(source.map((row) => structuredClone(row[c] ?? { value: null })));
-      }
-      // 先清空原区域再写转置结果(非方形时形状不同)
-      runtime.execute('sheet.range.clear', {
-        sheetId: params.sheetId,
-        range,
-        mode: 'contents',
-      });
-      return runtime.execute('sheet.range.set', {
-        sheetId: params.sheetId,
-        startRow: range.startRow,
-        startColumn: range.startColumn,
-        values: transposed,
-      });
-    },
-  });
-
-  runtime.registry.registerCommand<{ sheetId: string; range: RangeRef; direction: 'horizontal' | 'vertical' }>({
-    id: 'matrix.flip',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const range = params.range;
-      const source: CellData[][] = [];
-      for (let r = range.startRow; r <= range.endRow; r++) {
-        const rowCells: CellData[] = [];
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
-        }
-        source.push(rowCells);
-      }
-      const flipped = params.direction === 'horizontal'
-        ? source.map((row) => [...row].reverse())
-        : [...source].reverse();
-      return runtime.execute('sheet.range.set', {
-        sheetId: params.sheetId,
-        startRow: range.startRow,
-        startColumn: range.startColumn,
-        values: flipped,
-      });
-    },
+    execute: (params, context) => runtime.execute('data.sort.rows', params),
   });
 
   runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
@@ -1416,27 +1351,30 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<AddConditionalFormatParams>({
     id: 'sheet.cf.add',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = structuredClone(params.rule.ranges);
+      const sheet = context.workbook.getSheet(params.rule.sheetId);
+      const normalizedRule = normalizeConditionalFormatRule(params.rule, sheet.conditionalFormats.length + 1);
+      const normalizedParams = { ...params, rule: normalizedRule };
+      const affectedRanges: RangeRef[] = structuredClone(normalizedRule.ranges);
       context.applyMutation({
         id: 'cf.add',
         unitId: context.workbook.unitId,
         sheetId: params.rule.sheetId,
-        params,
+        params: normalizedParams,
         affectedRanges,
         inverse: [
           {
             id: 'cf.remove',
             unitId: context.workbook.unitId,
             sheetId: params.rule.sheetId,
-            params: { sheetId: params.rule.sheetId, ruleId: params.rule.id },
+            params: { sheetId: normalizedRule.sheetId, ruleId: normalizedRule.id },
             affectedRanges,
           },
         ],
         apply: () => {
-          const sheet = context.workbook.getSheet(params.rule.sheetId);
-          const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.rule.id);
-          if (index >= 0) sheet.conditionalFormats[index] = structuredClone(params.rule);
-          else sheet.conditionalFormats.push(structuredClone(params.rule));
+          const target = context.workbook.getSheet(normalizedRule.sheetId);
+          const index = target.conditionalFormats.findIndex((rule) => rule.id === normalizedRule.id);
+          if (index >= 0) target.conditionalFormats[index] = structuredClone(normalizedRule);
+          else target.conditionalFormats.push(structuredClone(normalizedRule));
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -1520,27 +1458,29 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<AddDataValidationParams>({
     id: 'sheet.dv.add',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = structuredClone(params.rule.ranges);
+      const normalizedRule = normalizeDataValidationRule(params.rule);
+      const normalizedParams = { ...params, rule: normalizedRule };
+      const affectedRanges: RangeRef[] = structuredClone(normalizedRule.ranges);
       context.applyMutation({
         id: 'dv.add',
         unitId: context.workbook.unitId,
         sheetId: params.rule.sheetId,
-        params,
+        params: normalizedParams,
         affectedRanges,
         inverse: [
           {
             id: 'dv.remove',
             unitId: context.workbook.unitId,
             sheetId: params.rule.sheetId,
-            params: { sheetId: params.rule.sheetId, ruleId: params.rule.id },
+            params: { sheetId: normalizedRule.sheetId, ruleId: normalizedRule.id },
             affectedRanges,
           },
         ],
         apply: () => {
-          const sheet = context.workbook.getSheet(params.rule.sheetId);
-          const index = sheet.dataValidations.findIndex((rule) => rule.id === params.rule.id);
-          if (index >= 0) sheet.dataValidations[index] = structuredClone(params.rule);
-          else sheet.dataValidations.push(structuredClone(params.rule));
+          const sheet = context.workbook.getSheet(normalizedRule.sheetId);
+          const index = sheet.dataValidations.findIndex((rule) => rule.id === normalizedRule.id);
+          if (index >= 0) sheet.dataValidations[index] = structuredClone(normalizedRule);
+          else sheet.dataValidations.push(structuredClone(normalizedRule));
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -1614,39 +1554,58 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
 
   runtime.registry.registerMutation('name.set', (item, context) => {
-    const params = item.params as { name: string; value: string };
-    context.workbook.definedNames[params.name] = params.value;
+    const params = item.params as { model: DefinedNameModel };
+    context.workbook.setDefinedName(params.model);
   });
   runtime.registry.registerMutation('name.remove', (item, context) => {
-    const params = item.params as { name: string };
-    delete context.workbook.definedNames[params.name];
+    const params = item.params as { name: string; scope?: 'workbook' | 'sheet'; sheetId?: string };
+    context.workbook.removeDefinedName(params.name, params.scope ?? 'workbook', params.sheetId);
   });
-  runtime.registry.registerCommand<{ name: string; value: string }>({
+  runtime.registry.registerCommand<{
+    name: string;
+    value?: string;
+    formula?: string;
+    scope?: 'workbook' | 'sheet';
+    sheetId?: string;
+    hidden?: boolean;
+    comment?: string;
+  }>({
     id: 'workbook.name.set',
     execute: (params, context) => {
-      const previous = context.workbook.definedNames[params.name];
+      const model: DefinedNameModel = {
+        name: params.name,
+        formula: params.formula ?? params.value ?? '',
+        scope: params.scope ?? 'workbook',
+        ...(params.sheetId ? { sheetId: params.sheetId } : {}),
+        ...(params.hidden === undefined ? {} : { hidden: params.hidden }),
+        ...(params.comment === undefined ? {} : { comment: params.comment }),
+      };
+      // Validate before opening a mutation so invalid scope/name input cannot
+      // create a history entry or leave the legacy formula view half updated.
+      const normalized = normalizeDefinedNameModel(model);
+      const previous = context.workbook.getDefinedNameExact(normalized.name, normalized.scope, normalized.sheetId);
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({
         id: 'name.set',
         unitId: context.workbook.unitId,
         sheetId: context.workbook.activeSheetId,
-        params,
+        params: { model: normalized },
         affectedRanges,
         inverse: previous !== undefined
-          ? [{ id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: params.name, value: previous }, affectedRanges }]
-          : [{ id: 'name.remove', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: params.name }, affectedRanges }],
+          ? [{ id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { model: previous }, affectedRanges }]
+          : [{ id: 'name.remove', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: normalized.name, scope: normalized.scope, sheetId: normalized.sheetId }, affectedRanges }],
         apply: () => {
-          context.workbook.definedNames[params.name] = params.value;
+          context.workbook.setDefinedName(normalized);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
-  runtime.registry.registerCommand<{ name: string }>({
+  runtime.registry.registerCommand<{ name: string; scope?: 'workbook' | 'sheet'; sheetId?: string }>({
     id: 'workbook.name.remove',
     execute: (params, context) => {
-      const previous = context.workbook.definedNames[params.name];
-      if (previous === undefined) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const previous = context.workbook.getDefinedNameExact(params.name, params.scope ?? 'workbook', params.sheetId);
+      if (previous === undefined || previous.scope !== (params.scope ?? 'workbook') || previous.sheetId !== params.sheetId) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({
         id: 'name.remove',
@@ -1655,10 +1614,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [
-          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: params.name, value: previous }, affectedRanges },
+          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { model: previous }, affectedRanges },
         ],
         apply: () => {
-          delete context.workbook.definedNames[params.name];
+          context.workbook.removeDefinedName(params.name, previous.scope, previous.sheetId);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

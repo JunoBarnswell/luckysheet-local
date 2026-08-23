@@ -115,3 +115,5 @@ export class HistoryPanelStore {
     return this.entries.find((e) => e.revision === revision);
   }
 }
+
+export * from './replay';

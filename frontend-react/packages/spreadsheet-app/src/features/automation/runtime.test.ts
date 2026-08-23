@@ -7,11 +7,11 @@ import {
   runAutomationScript,
   SAMPLE_AUTOMATION_SCRIPT,
   summarizeScriptResult,
-} from './automation-bridge';
-import { CommandRecorder } from './features/automation/command-recorder';
-import { ScriptSandbox } from './features/automation/sandbox';
+} from './runtime';
+import { CommandRecorder } from './command-recorder';
+import { ScriptSandbox } from './sandbox';
 
-describe('automation-bridge', () => {
+describe('automation runtime', () => {
   it('runs facade scripts through command runtime', () => {
     const model = new WorkbookModel('wb-auto', 'Automation');
     const runtime = new CommandRuntime(model);

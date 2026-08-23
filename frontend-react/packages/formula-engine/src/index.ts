@@ -15,6 +15,7 @@ export * from './range-index';
 export * from './values';
 export { type SpillModel, spillBlocked, STANDARD_FORMULA_ERRORS } from './spill';
 export * from './sheet-table-resolver';
+export * from './calculation-task-port';
 export {
   anchorDisplayValue,
   isSpillChild,

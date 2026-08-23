@@ -17,21 +17,21 @@ export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
 export { PermissionService, type ShareRole, type ActorContext, type PermissionCheckInput, type PermissionResult, type PermissionCapabilities } from './permission-service';
-export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './permission-bridge';
-export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration-bridge';
-export { buildRestoreParams, revisionToHistoryMeta } from './history-bridge';
+export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './features/permission';
+export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
+export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
   exchangeExportXlsx,
   exchangeImportXlsx,
   summarizeCompatibilityReport,
-} from './xlsx-bridge';
+} from './features/xlsx';
 export {
   buildPersistenceMeta,
   buildLocalDraftRecord,
   LocalDraftStore,
   type PersistenceSnapshotMeta,
   type LocalDraftRecord,
-} from './persistence-bridge';
+} from './features/persistence';
 export {
   buildPrintSnapshot,
   summarizePrintSnapshot,
@@ -44,7 +44,7 @@ export {
   type PrintPageSnapshot,
   type PrintPreviewCommandParams,
   type PrintAreaSetCommandParams,
-} from './print-bridge';
+} from './features/print';
 export {
   buildQueryResultSnapshot,
   summarizeQueryResult,
@@ -55,7 +55,7 @@ export {
   type QueryResultSnapshot,
   type QuerySessionEntry,
   type QueryLoadCommandPayload,
-} from './query-bridge';
+} from './features/query';
 export type { QueryDefinition, LoadTarget, QueryStep } from './features/query/query-steps';
 export type { ConnectorKind, QueryResult, DataConnector } from './features/query';
 export {
@@ -63,7 +63,7 @@ export {
   summarizeScriptResult,
   SAMPLE_AUTOMATION_SCRIPT,
   type AutomationSnapshot,
-} from './automation-bridge';
+} from './features/automation';
 export type { ScriptRunResult } from './features/automation';
 export type { PlatformCapability, CapabilityDescriptor } from './features/extended';
 export type { GoalSeekParams, GoalSeekResult } from './features/extended/what-if';
@@ -72,7 +72,7 @@ export {
   summarizeGoalSeekResult,
   evaluateCapability,
   type ExtendedSnapshot,
-} from './extended-bridge';
+} from './features/extended';
 export { HistoryPreviewSession, type HistoryEntryMeta } from './features/history';
 export { CollaborationSession } from './collaboration';
 export { executeUiCommand, isUiCommand, type UiCommandId } from './execute-command';

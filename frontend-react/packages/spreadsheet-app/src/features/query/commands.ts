@@ -1,7 +1,7 @@
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import type { SetRangeValuesParams } from '@react-sheets/sheet-features';
 import type { QueryResult } from './index';
-import { queryResultToRangeValues } from '../../query-bridge';
+import { queryResultToRangeValues } from './runtime';
 import { type LoadTarget, type QueryDefinition } from './query-steps';
 
 export interface QueryLoadParams {

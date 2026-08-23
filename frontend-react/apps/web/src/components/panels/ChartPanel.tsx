@@ -1,55 +1,58 @@
 import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import type { ChartModel } from '@react-sheets/core-model';
+import type { ChartDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
+import type { CommandDescriptor } from '../../domain/command-descriptor';
 
 export interface ChartPanelProps {
   sheetId: string;
-  charts: ChartModel[];
-  activeChart?: ChartModel;
+  drawings: readonly DrawingObject[];
+  drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   /** 当前选区的 A1 文本,作为默认数据范围 */
   defaultRange?: string;
-  onAddChart: (chart: ChartModel) => void;
-  onRemoveChart: (id: string) => void;
+  onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
 }
 
 export function ChartPanel({
   sheetId,
-  charts,
-  activeChart,
+  drawings,
+  drawingPayloads,
   defaultRange,
-  onAddChart,
-  onRemoveChart,
+  onCommand,
   onClose,
 }: ChartPanelProps) {
-  const [type, setType] = useState<ChartModel['type']>(activeChart?.type ?? 'column');
-  const [title, setTitle] = useState(activeChart?.title ?? 'Sales Overview');
+  const [type, setType] = useState<ChartDrawingPayload['chartType']>('column');
+  const [stacked, setStacked] = useState<NonNullable<ChartDrawingPayload['stacked']>>('none');
+  const [title, setTitle] = useState('Sales Overview');
   const [rangeInput, setRangeInput] = useState(defaultRange ?? 'A1:C5');
   const sourceRange = parseRangeInput(rangeInput, sheetId);
+  const chartEntries = drawings
+    .filter((drawing) => drawing.kind === 'chart')
+    .map((drawing) => ({ drawing, payload: drawingPayloads.get(drawing.payloadId) }))
+    .filter((entry): entry is { drawing: DrawingObject; payload: Extract<DrawingPayload, { kind: 'chart' }> } => entry.payload?.kind === 'chart');
+
+  const createId = (prefix: string): string => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
+    return `${prefix}-${Date.now().toString(36)}`;
+  };
 
   const handleCreate = () => {
     const source = parseRangeInput(rangeInput, sheetId);
     if (!source) return;
-    const newChart: ChartModel = {
-      id: 'chart-' + Math.random().toString(36).substring(2, 7),
-      sheetId,
-      type,
-      title,
-      sourceRanges: [
-        {
-          sheetId,
-          ...source,
-        },
-      ],
-      bounds: {
-        x: 100,
-        y: 100,
-        width: 480,
-        height: 280,
+    const chartId = createId('chart');
+    onCommand({
+      commandId: `chart.insert.${type}`,
+      params: {
+        sheetId,
+        chartId,
+        drawingId: createId('drawing'),
+        title,
+        sourceRanges: [{ sheetId, ...source }],
+        bounds: { x: 100, y: 100, width: 480, height: 280 },
+        stacked: stacked === 'none' ? undefined : stacked,
       },
-    };
-    onAddChart(newChart);
+    });
   };
 
   return (
@@ -77,7 +80,7 @@ export function ChartPanel({
             </Text>
             <Select
               value={type}
-              onChange={(e) => setType(e.target.value as ChartModel['type'])}
+              onChange={(e) => setType(e.target.value as ChartDrawingPayload['chartType'])}
               sizeVariant="sm"
             >
               <option value="column">Column Chart</option>
@@ -87,6 +90,18 @@ export function ChartPanel({
               <option value="pie">Pie Chart</option>
               <option value="doughnut">Doughnut Chart</option>
               <option value="scatter">Scatter Plot</option>
+              <option value="combo">Combo Chart</option>
+            </Select>
+          </div>
+
+          <div>
+            <Text size="xs" weight="medium" className="mb-1 text-slate-700">
+              Stacking
+            </Text>
+            <Select value={stacked} onChange={(e) => setStacked(e.target.value as NonNullable<ChartDrawingPayload['stacked']>)} sizeVariant="sm">
+              <option value="none">Grouped</option>
+              <option value="stacked">Stacked</option>
+              <option value="percent">100% Stacked</option>
             </Select>
           </div>
 
@@ -105,27 +120,30 @@ export function ChartPanel({
             Insert Chart to Canvas
           </Button>
 
-          {charts.length > 0 ? (
+          {chartEntries.length > 0 ? (
             <div className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
-                Worksheet Charts ({charts.length})
+                Worksheet Charts ({chartEntries.length})
               </Text>
               <Stack gap="xs">
-                {charts.map((c) => (
+                {chartEntries.map(({ drawing, payload }) => (
                   <div
-                    key={c.id}
+                    key={drawing.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
                     <div>
-                      <div className="font-medium text-slate-800">{c.title || c.type}</div>
-                      <div className="text-[10px] text-slate-500">{c.type.toUpperCase()} Chart</div>
+                      <div className="font-medium text-slate-800">{payload.title || payload.chartType}</div>
+                      <div className="text-[10px] text-slate-500">{payload.chartType.toUpperCase()} Chart</div>
                     </div>
                     <Button
                       variant="ghost"
                       size="xs"
                       icon="trash"
                       iconOnly
-                      onClick={() => onRemoveChart(c.id)}
+                      onClick={() => onCommand({
+                        commandId: 'chart.remove',
+                        params: { sheetId, chartId: payload.chartId },
+                      })}
                       className="text-rose-600 hover:bg-rose-50"
                     />
                   </div>

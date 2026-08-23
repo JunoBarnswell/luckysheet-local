@@ -46,6 +46,21 @@ export interface CellReferenceNode {
   readonly parenthesized?: boolean;
 }
 
+/**
+ * A reference which was invalidated by a structural mutation.
+ *
+ * Keeping this as an AST node (instead of clamping the coordinate to a
+ * surviving cell) is important: the formula text remains round-trippable as
+ * `#REF!`, dependency collection stays fail-closed, and a subsequent
+ * recalculation cannot silently read a different cell.
+ */
+export interface InvalidReferenceNode {
+  readonly type: 'invalid-reference';
+  readonly code: '#REF!';
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
 export interface RangeReferenceNode {
   readonly type: 'range-reference';
   readonly start: CellReferenceNode;
@@ -117,6 +132,7 @@ export type FormulaAst =
   | StringLiteralNode
   | BooleanLiteralNode
   | CellReferenceNode
+  | InvalidReferenceNode
   | RangeReferenceNode
   | NameReferenceNode
   | TableReferenceNode

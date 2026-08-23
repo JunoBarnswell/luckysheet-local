@@ -1,46 +1,64 @@
 import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import type { ShapeModel } from '@react-sheets/core-model';
+import type { DrawingObject, DrawingPayload, ShapeDrawingPayload } from '@react-sheets/core-model';
+import type { CommandDescriptor } from '../../domain/command-descriptor';
 
 export interface ShapeEditorPanelProps {
   sheetId: string;
-  shapes: ShapeModel[];
-  onAddShape: (shape: ShapeModel) => void;
-  onRemoveShape: (id: string) => void;
+  drawings: readonly DrawingObject[];
+  drawingPayloads: ReadonlyMap<string, DrawingPayload>;
+  onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
 }
 
 export function ShapeEditorPanel({
   sheetId,
-  shapes,
-  onAddShape,
-  onRemoveShape,
+  drawings,
+  drawingPayloads,
+  onCommand,
   onClose,
 }: ShapeEditorPanelProps) {
-  const [type, setType] = useState<ShapeModel['type']>('rounded-rectangle');
+  const [type, setType] = useState<ShapeDrawingPayload['type']>('rounded-rectangle');
   const [text, setText] = useState('Process Step');
   const [fill, setFill] = useState('#dbeafe');
   const [stroke, setStroke] = useState('#2563eb');
+  const shapeEntries = drawings
+    .filter((drawing) => drawing.kind === 'shape')
+    .map((drawing) => ({ drawing, payload: drawingPayloads.get(drawing.payloadId) }))
+    .filter((entry): entry is { drawing: DrawingObject; payload: Extract<DrawingPayload, { kind: 'shape' }> } => entry.payload?.kind === 'shape');
+
+  const createId = (prefix: string): string => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
+    return `${prefix}-${Date.now().toString(36)}`;
+  };
 
   const handleCreate = () => {
-    const newShape: ShapeModel = {
-      id: 'shape-' + Math.random().toString(36).substring(2, 7),
-      sheetId,
-      type,
-      text,
-      fill,
-      stroke,
-      strokeWidth: 2,
-      textColor: '#1e3a8a',
-      fontSize: 13,
-      bounds: {
-        x: 120,
-        y: 120,
-        width: 160,
-        height: 60,
+    const payloadId = createId('shape');
+    onCommand({
+      commandId: 'drawing.add',
+      params: {
+        sheetId,
+        drawing: {
+          id: createId('drawing'),
+          sheetId,
+          kind: 'shape',
+          anchor: { kind: 'absolute' },
+          transform: { x: 120, y: 120, width: 160, height: 60, rotation: 0 },
+          zIndex: 0,
+          payloadId,
+        },
+        payload: {
+          kind: 'shape',
+          type,
+          text,
+          fill,
+          stroke,
+          strokeWidth: 2,
+          textColor: '#1e3a8a',
+          fontSize: 13,
+        },
       },
-    };
-    onAddShape(newShape);
+    });
   };
 
   return (
@@ -57,7 +75,7 @@ export function ShapeEditorPanel({
             </Text>
             <Select
               value={type}
-              onChange={(e) => setType(e.target.value as ShapeModel['type'])}
+              onChange={(e) => setType(e.target.value as ShapeDrawingPayload['type'])}
               sizeVariant="sm"
             >
               <option value="rounded-rectangle">Rounded Rectangle</option>
@@ -116,27 +134,27 @@ export function ShapeEditorPanel({
             Place Shape on Canvas
           </Button>
 
-          {shapes.length > 0 ? (
+          {shapeEntries.length > 0 ? (
             <div className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
-                Floating Shapes ({shapes.length})
+                Floating Shapes ({shapeEntries.length})
               </Text>
               <Stack gap="xs">
-                {shapes.map((s) => (
+                {shapeEntries.map(({ drawing, payload }) => (
                   <div
-                    key={s.id}
+                    key={drawing.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
                     <div>
-                      <div className="font-medium text-slate-800">{s.text || s.type}</div>
-                      <div className="text-[10px] text-slate-500">{s.type}</div>
+                      <div className="font-medium text-slate-800">{payload.text || payload.type}</div>
+                      <div className="text-[10px] text-slate-500">{payload.type}</div>
                     </div>
                     <Button
                       variant="ghost"
                       size="xs"
                       icon="trash"
                       iconOnly
-                      onClick={() => onRemoveShape(s.id)}
+                      onClick={() => onCommand({ commandId: 'drawing.remove', params: { sheetId, drawingId: drawing.id } })}
                       className="text-rose-600 hover:bg-rose-50"
                     />
                   </div>

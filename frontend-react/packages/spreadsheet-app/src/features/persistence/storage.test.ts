@@ -7,9 +7,9 @@ import {
   buildPersistenceMeta,
   isDraftNewerThanServer,
   verifyLocalDraft,
-} from './persistence-bridge';
+} from './storage';
 
-describe('persistence-bridge', () => {
+describe('persistence storage', () => {
   it('builds local draft records with checksum verification', () => {
     const snapshot = new WorkbookModel('wb-draft', 'Draft').snapshot();
     const record = buildLocalDraftRecord(snapshot, 3);

@@ -15,6 +15,9 @@ export interface OfflineQueueOptions {
   maxRetries?: number;
   flush?: (operation: OperationEnvelopeV2) => Promise<number>;
   now?: () => number;
+  /** Durable journal for pending operations. */
+  load?: () => readonly OperationEnvelopeV2[];
+  persist?: (operations: readonly OperationEnvelopeV2[]) => void;
 }
 
 /**
@@ -31,12 +34,29 @@ export class OfflineQueue {
   private readonly maxRetries: number;
   private readonly flush?: (operation: OperationEnvelopeV2) => Promise<number>;
   private readonly now: () => number;
+  private readonly persist?: OfflineQueueOptions['persist'];
   private flushPromise: Promise<{ flushed: number; failed: number }> | null = null;
 
   constructor(options: OfflineQueueOptions = {}) {
     this.maxRetries = Math.max(1, options.maxRetries ?? 5);
     this.flush = options.flush;
     this.now = options.now ?? Date.now;
+    this.persist = options.persist;
+    const restored = options.load?.() ?? [];
+    const seen = new Set<string>();
+    for (const operation of restored) {
+      if (seen.has(operation.operationId)) continue;
+      seen.add(operation.operationId);
+      // A process may have terminated after sending but before receiving ACK.
+      // Resubmission of the same operationId is server-side idempotent.
+      this.queue.push({
+        operation: structuredClone(operation),
+        enqueuedAt: this.now(),
+        retryCount: 0,
+        status: 'pending',
+      });
+    }
+    this.queue.sort((a, b) => a.operation.clientSequence - b.operation.clientSequence);
   }
 
   getState(): OfflineQueueState {
@@ -60,6 +80,7 @@ export class OfflineQueue {
       status: 'pending',
     });
     this.queue.sort((a, b) => a.operation.clientSequence - b.operation.clientSequence);
+    this.persistQueue();
   }
 
   /** Remove only after the matching server ACK has been received. */
@@ -67,6 +88,7 @@ export class OfflineQueue {
     const index = this.queue.findIndex((item) => item.operation.operationId === operationId);
     if (index < 0) return false;
     this.queue.splice(index, 1);
+    this.persistQueue();
     if (this.queue.length === 0 && this.state === 'syncing') this.state = 'idle';
     return true;
   }
@@ -77,6 +99,7 @@ export class OfflineQueue {
     if (!item) return false;
     item.status = 'rejected';
     item.rejection = cause instanceof Error ? cause : new Error(String(cause));
+    this.persistQueue();
     this.state = 'error';
     return true;
   }
@@ -86,6 +109,7 @@ export class OfflineQueue {
     const index = this.queue.findIndex((item) => item.operation.operationId === operationId);
     if (index < 0) return false;
     this.queue.splice(index, 1);
+    this.persistQueue();
     if (this.queue.length === 0) this.state = 'idle';
     return true;
   }
@@ -93,6 +117,37 @@ export class OfflineQueue {
   setOnline(online: boolean): void {
     this.state = online ? 'idle' : 'offline';
     if (online) void this.flushAll();
+  }
+
+  /** Replace one operation after a structural OT transform. */
+  replace(operationId: string, operation: OperationEnvelopeV2): boolean {
+    const item = this.queue.find((entry) => entry.operation.operationId === operationId);
+    if (!item) return false;
+    item.operation = structuredClone(operation);
+    item.status = 'pending';
+    item.rejection = undefined;
+    this.persistQueue();
+    return true;
+  }
+
+  /** Rewrite all queued operations in sequence and persist one journal image. */
+  rewrite(operations: readonly OperationEnvelopeV2[]): void {
+    const byId = new Map(this.queue.map((entry) => [entry.operation.operationId, entry]));
+    const rewritten: QueuedOperation[] = [];
+    for (const operation of operations) {
+      const previous = byId.get(operation.operationId);
+      rewritten.push({
+        operation: structuredClone(operation),
+        enqueuedAt: previous?.enqueuedAt ?? this.now(),
+        retryCount: previous?.retryCount ?? 0,
+        status: previous?.status === 'rejected' ? 'rejected' : 'pending',
+        rejection: previous?.status === 'rejected' ? previous.rejection : undefined,
+      });
+    }
+    this.queue.length = 0;
+    this.queue.push(...rewritten);
+    this.queue.sort((a, b) => a.operation.clientSequence - b.operation.clientSequence);
+    this.persistQueue();
   }
 
   async flushAll(): Promise<{ flushed: number; failed: number }> {
@@ -129,6 +184,7 @@ export class OfflineQueue {
         }
         if (this.queue[0]?.operation.operationId !== item.operation.operationId) continue;
         this.queue.shift();
+        this.persistQueue();
         flushed += 1;
       } catch (cause) {
         if ((item as QueuedOperation).status === 'rejected') {
@@ -146,11 +202,16 @@ export class OfflineQueue {
         } else {
           this.state = 'error';
         }
+        this.persistQueue();
         break;
       }
     }
 
     if (this.queue.length === 0) this.state = 'idle';
     return { flushed, failed };
+  }
+
+  private persistQueue(): void {
+    this.persist?.(this.queue.map((item) => structuredClone(item.operation)));
   }
 }

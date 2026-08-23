@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { exchangeExportXlsx, summarizeCompatibilityReport } from './xlsx-bridge';
+import { exchangeExportXlsx, summarizeCompatibilityReport } from './features/xlsx';
 import { SpreadsheetApplication } from './application';
 
-describe('xlsx-bridge', () => {
+describe('xlsx exchange', () => {
   it('exports workbook snapshots with compatibility summary', async () => {
     const workbook = new WorkbookModel('wb-export', 'Export');
     workbook.getSheet(workbook.activeSheetId).cells.set(0, 0, { value: 99 });
