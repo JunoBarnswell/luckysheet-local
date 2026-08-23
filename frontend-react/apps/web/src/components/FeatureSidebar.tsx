@@ -50,6 +50,7 @@ import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
+import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
   FormulaAuditPanel,
   type FormulaAuditPanelCallbacks,
@@ -71,6 +72,11 @@ export interface FeatureSidebarProps {
   sheetId: string;
   drawings: readonly DrawingObject[];
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
+  selectedDrawingIds?: readonly string[];
+  onSelectDrawing?: (drawingId: string, mode: DrawingSelectionMode) => void;
+  onSetDrawingVisibility?: (drawingId: string, visible: boolean) => void;
+  onRenameDrawing?: (drawingId: string, name: string) => void;
+  onReorderDrawing?: (drawingId: string, direction: 'forward' | 'backward') => void;
   pivot?: PivotModel;
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
@@ -159,6 +165,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
+  { id: 'selectionPane', label: 'Selection', icon: 'shape-square' },
   { id: 'sparkline', label: 'Spark', icon: 'sparkline' },
   { id: 'conditionalFormat', label: 'Format', icon: 'sparkles' },
   { id: 'dataValidation', label: 'Validate', icon: 'check-circle' },
@@ -282,6 +289,11 @@ export function FeatureSidebar({
   sheetId,
   drawings,
   drawingPayloads,
+  selectedDrawingIds = [],
+  onSelectDrawing,
+  onSetDrawingVisibility,
+  onRenameDrawing,
+  onReorderDrawing,
   pivot,
   pivotList,
   activePivotId,
@@ -491,6 +503,26 @@ export function FeatureSidebar({
             drawings={drawings}
             drawingPayloads={drawingPayloads}
             onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'selectionPane' && onSelectDrawing && onSetDrawingVisibility ? (
+          <SelectionPane
+            locale={locale}
+            disabled={disabled}
+            items={drawings.map((drawing) => ({
+              id: drawing.id,
+              kind: drawing.kind === 'slicer' || drawing.kind === 'timeline'
+                ? 'pivot-control'
+                : drawing.kind,
+              name: drawing.name,
+              visible: drawing.visible !== false,
+              zIndex: drawing.zIndex,
+            }))}
+            selectedIds={selectedDrawingIds}
+            onSelect={onSelectDrawing}
+            onVisibilityChange={onSetDrawingVisibility}
+            onRename={onRenameDrawing}
+            onReorder={onReorderDrawing}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'sparkline' ? (

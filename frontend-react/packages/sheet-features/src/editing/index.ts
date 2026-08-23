@@ -25,8 +25,14 @@ export type GoToSpecialKind =
   | 'constants'
   | 'formulas'
   | 'comments'
+  | 'comments-notes'
   | 'visible'
-  | 'errors';
+  | 'errors'
+  | 'conditional-format'
+  | 'data-validation'
+  | 'current-region'
+  | 'last-cell'
+  | 'objects';
 
 export interface MultiRangeStyleParams {
   sheetId: string;
@@ -217,13 +223,64 @@ export function rewriteFormulasForSheetRename(
 }
 
 export function resolveGoTo(workbook: WorkbookModel, params: GoToParams): { row: number; column: number } | null {
-  const named = workbook.definedNames[params.reference];
-  if (named) {
-    const ref = named.includes('!') ? named.split('!').pop() ?? named : named;
-    const parsed = parseA1Reference(ref.replace(/\$/g, ''));
-    if (parsed) return parsed;
+  const resolved = resolveGoToRange(workbook, params);
+  return resolved ? { row: resolved.startRow, column: resolved.startColumn } : null;
+}
+
+/** Resolve a Go To reference without losing a multi-cell selection. */
+export function resolveGoToRange(workbook: WorkbookModel, params: GoToParams): RangeRef | null {
+  let reference = params.reference.trim();
+  let sheetId = params.sheetId;
+  const named = workbook.definedNames[reference];
+  if (named) reference = named;
+  const qualified = reference.match(/^(?:'([^']+)'|([^!]+))!(.+)$/);
+  if (qualified) {
+    const sheetName = (qualified[1] ?? qualified[2] ?? '').trim();
+    const targetSheet = workbook.getSheets().find((sheet) => sheet.name.toLocaleLowerCase() === sheetName.toLocaleLowerCase() || sheet.id.toLocaleLowerCase() === sheetName.toLocaleLowerCase());
+    if (!targetSheet) return null;
+    sheetId = targetSheet.id;
+    reference = qualified[3]!.trim();
   }
-  return parseA1Reference(params.reference);
+  const parts = reference.replace(/\$/g, '').split(':');
+  const start = parseA1Reference(parts[0] ?? '');
+  if (!start) return null;
+  const end = parts.length > 1 ? parseA1Reference(parts[1] ?? '') : start;
+  if (!end) return null;
+  return {
+    sheetId,
+    startRow: Math.min(start.row, end.row),
+    endRow: Math.max(start.row, end.row),
+    startColumn: Math.min(start.column, end.column),
+    endColumn: Math.max(start.column, end.column),
+  };
+}
+
+function detectCurrentRegion(sheet: WorksheetModel, row: number, column: number): RangeRef {
+  const hasValue = (targetRow: number, targetColumn: number): boolean => {
+    const cell = sheet.cells.get(targetRow, targetColumn);
+    return Boolean(cell && (cell.value !== null && cell.value !== undefined && cell.value !== '' || cell.formula));
+  };
+  if (!hasValue(row, column)) return { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column };
+  let startRow = row;
+  let endRow = row;
+  let startColumn = column;
+  let endColumn = column;
+  while (startRow > 0 && hasValue(startRow - 1, column)) startRow -= 1;
+  while (endRow + 1 < sheet.rowCount && hasValue(endRow + 1, column)) endRow += 1;
+  while (startColumn > 0 && hasValue(row, startColumn - 1)) startColumn -= 1;
+  while (endColumn + 1 < sheet.columnCount && hasValue(row, endColumn + 1)) endColumn += 1;
+  // Expand through rows/columns that are connected to the first discovered
+  // rectangle. This handles a populated rectangular table with an empty
+  // corner in the active row without scanning the full worksheet.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    if (startRow > 0 && Array.from({ length: endColumn - startColumn + 1 }, (_, offset) => hasValue(startRow - 1, startColumn + offset)).some(Boolean)) { startRow -= 1; changed = true; }
+    if (endRow + 1 < sheet.rowCount && Array.from({ length: endColumn - startColumn + 1 }, (_, offset) => hasValue(endRow + 1, startColumn + offset)).some(Boolean)) { endRow += 1; changed = true; }
+    if (startColumn > 0 && Array.from({ length: endRow - startRow + 1 }, (_, offset) => hasValue(startRow + offset, startColumn - 1)).some(Boolean)) { startColumn -= 1; changed = true; }
+    if (endColumn + 1 < sheet.columnCount && Array.from({ length: endRow - startRow + 1 }, (_, offset) => hasValue(startRow + offset, endColumn + 1)).some(Boolean)) { endColumn += 1; changed = true; }
+  }
+  return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
 }
 
 export function resolveGoToSpecial(
@@ -231,9 +288,57 @@ export function resolveGoToSpecial(
   params: GoToSpecialParams,
 ): RangeRef[] {
   const sheet = workbook.getSheet(params.sheetId);
+  const normalizedRange: RangeRef = {
+    sheetId: params.sheetId,
+    startRow: Math.min(params.range.startRow, params.range.endRow),
+    endRow: Math.max(params.range.startRow, params.range.endRow),
+    startColumn: Math.min(params.range.startColumn, params.range.endColumn),
+    endColumn: Math.max(params.range.startColumn, params.range.endColumn),
+  };
+  if (params.kind === 'current-region') {
+    const anchor = { row: normalizedRange.startRow, column: normalizedRange.startColumn };
+    return [detectCurrentRegion(sheet, anchor.row, anchor.column)];
+  }
+  if (params.kind === 'last-cell') {
+    let lastRow = 0;
+    let lastColumn = 0;
+    sheet.cells.forEach((cell, row, column) => {
+      if (cell && (cell.value !== null && cell.value !== undefined || cell.formula || cell.style || cell.numberFormat)) {
+        if (row > lastRow || (row === lastRow && column > lastColumn)) {
+          lastRow = row;
+          lastColumn = column;
+        }
+      }
+    });
+    return [{ sheetId: params.sheetId, startRow: lastRow, endRow: lastRow, startColumn: lastColumn, endColumn: lastColumn }];
+  }
   const hits: RangeRef[] = [];
-  for (let row = params.range.startRow; row <= params.range.endRow; row++) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column++) {
+  const conditionalCells = new Set<string>();
+  if (params.kind === 'conditional-format') {
+    for (const rule of sheet.conditionalFormats) {
+      for (const range of rule.ranges) {
+        const startRow = Math.max(normalizedRange.startRow, range.startRow);
+        const endRow = Math.min(normalizedRange.endRow, range.endRow);
+        const startColumn = Math.max(normalizedRange.startColumn, range.startColumn);
+        const endColumn = Math.min(normalizedRange.endColumn, range.endColumn);
+        for (let row = startRow; row <= endRow; row += 1) for (let column = startColumn; column <= endColumn; column += 1) conditionalCells.add(`${row}:${column}`);
+      }
+    }
+  }
+  const validationCells = new Set<string>();
+  if (params.kind === 'data-validation') {
+    for (const rule of sheet.dataValidations) {
+      for (const range of rule.ranges) {
+        const startRow = Math.max(normalizedRange.startRow, range.startRow);
+        const endRow = Math.min(normalizedRange.endRow, range.endRow);
+        const startColumn = Math.max(normalizedRange.startColumn, range.startColumn);
+        const endColumn = Math.min(normalizedRange.endColumn, range.endColumn);
+        for (let row = startRow; row <= endRow; row += 1) for (let column = startColumn; column <= endColumn; column += 1) validationCells.add(`${row}:${column}`);
+      }
+    }
+  }
+  for (let row = normalizedRange.startRow; row <= normalizedRange.endRow; row++) {
+    for (let column = normalizedRange.startColumn; column <= normalizedRange.endColumn; column++) {
       const cell = sheet.cells.get(row, column);
       let match = false;
       switch (params.kind) {
@@ -247,6 +352,7 @@ export function resolveGoToSpecial(
           match = Boolean(cell?.formula);
           break;
         case 'comments':
+        case 'comments-notes':
           match = Boolean(cell?.comment)
             || sheet.commentThreads.some((thread) => thread.row === row && thread.column === column)
             || sheet.notes.has(noteCellKey(row, column));
@@ -256,6 +362,18 @@ export function resolveGoToSpecial(
           break;
         case 'visible':
           match = !sheet.hiddenRows.has(row) && !sheet.hiddenColumns.has(column);
+          break;
+        case 'conditional-format':
+          match = conditionalCells.has(`${row}:${column}`);
+          break;
+        case 'data-validation':
+          match = validationCells.has(`${row}:${column}`);
+          break;
+        case 'objects':
+          match = sheet.drawings.some((drawing) => drawing.anchor.kind !== 'absolute'
+            && drawing.anchor.row !== undefined && drawing.anchor.column !== undefined
+            && drawing.anchor.row >= row && drawing.anchor.row <= row
+            && drawing.anchor.column >= column && drawing.anchor.column <= column);
           break;
       }
       if (match) {
@@ -872,18 +990,12 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<GoToParams>({
     id: 'navigation.goto',
     execute: (params, context) => {
-      const target = resolveGoTo(context.workbook, params);
+      const target = resolveGoToRange(context.workbook, params);
       if (!target) throw new Error(`Invalid reference: ${params.reference}`);
       return {
         operationId: context.operationId,
         mutationCount: 0,
-        affectedRanges: [{
-          sheetId: params.sheetId,
-          startRow: target.row,
-          endRow: target.row,
-          startColumn: target.column,
-          endColumn: target.column,
-        }],
+        affectedRanges: [target],
       };
     },
   });

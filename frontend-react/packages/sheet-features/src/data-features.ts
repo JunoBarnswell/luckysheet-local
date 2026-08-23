@@ -32,7 +32,23 @@ export function normalizeRangeRef(range: RangeRef): RangeRef {
   };
 }
 
-function isRowsPermutedMutation(value: unknown): value is { sheetId: string; range: RangeRef; sourceRows: number[] } {
+export interface AppliedSortState {
+  sheetId: string;
+  range: RangeRef;
+  criteria: Array<{ column: number; ascending: boolean }>;
+  hasHeader?: boolean;
+  revision: number;
+}
+
+interface RowsPermutedMutationParams {
+  sheetId: string;
+  range: RangeRef;
+  sourceRows: number[];
+  sortState?: AppliedSortState;
+  previousSortState?: AppliedSortState;
+}
+
+function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationParams {
   if (!value || typeof value !== 'object') return false;
   const params = value as Record<string, unknown>;
   const range = params.range;
@@ -47,6 +63,12 @@ function isRowsPermutedMutation(value: unknown): value is { sheetId: string; ran
     && Array.isArray(params.sourceRows)
     && params.sourceRows.length === Number(candidate.endRow) - Number(candidate.startRow) + 1
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
+}
+
+function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | undefined): void {
+  const target = sheet as WorksheetModel & { appliedSortState?: AppliedSortState };
+  if (state === undefined) delete target.appliedSortState;
+  else target.appliedSortState = structuredClone(state);
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -1019,6 +1041,13 @@ function selectedRange(params: { sheetId: string; range: RangeRef }): RangeRef {
   return normalizeRangeRef({ ...params.range, sheetId: params.sheetId });
 }
 
+function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, operation: string): void {
+  const region = sheet.dataRegions.find((candidate) => candidate.range.sheetId === range.sheetId
+    && candidate.range.startRow <= range.endRow && candidate.range.endRow >= range.startRow
+    && candidate.range.startColumn <= range.endColumn && candidate.range.endColumn >= range.startColumn);
+  if (region) throw new Error(`${operation} does not support data-region ${region.id} without the canonical resolved-cell transaction`);
+}
+
 function subtotalFormula(functionName: SubtotalParams['functionName'], column: number, startRow: number, endRow: number): string {
   const code = functionName === 'SUM' ? 9 : functionName === 'COUNT' ? 3 : 1;
   return `=SUBTOTAL(${code},${columnLabel(column)}${startRow + 1}:${columnLabel(column)}${endRow + 1})`;
@@ -1157,7 +1186,7 @@ function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<
 }
 
 export function registerDataToolCommands(runtime: CommandRuntime): void {
-  runtime.registry.registerMutation<{ sheetId: string; range: RangeRef; sourceRows: number[] }>({
+  runtime.registry.registerMutation<RowsPermutedMutationParams>({
     id: 'rows.permuted',
     handler: (item, context) => {
       if (!isRowsPermutedMutation(item.params)) throw new Error('Invalid rows.permuted mutation payload');
@@ -1166,6 +1195,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       validatePermutationMetadata(sheet, range);
       applyRowPermutation(sheet, { range, sourceRows: params.sourceRows });
+      setAppliedSortState(sheet, params.sortState);
     },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
@@ -1180,6 +1210,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const range = selectedRange(params);
       const sheet = context.workbook.getSheet(params.sheetId);
+      assertNoDataRegionIntersection(sheet, range, 'Sort');
       if (params.criteria.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const sourceRows = sortedSourceRows(sheet, { ...params, range });
       if (sourceRows.length <= 1 || sourceRows.every((row, offset) => row === range.startRow + (params.hasHeader ? 1 : 0) + offset)) {
@@ -1194,13 +1225,37 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         id: 'rows.permuted',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params: { ...params, range: bodyRange, sourceRows },
+        params: {
+          ...params,
+          range: bodyRange,
+          sourceRows,
+          sortState: {
+            sheetId: params.sheetId,
+            range,
+            criteria: structuredClone(params.criteria),
+            hasHeader: params.hasHeader,
+            revision: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState?.revision ?? 0) + 1,
+          },
+          previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
+            ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
+            : undefined),
+        },
         affectedRanges,
         inverse: [{
           id: 'rows.permuted',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { ...params, range: bodyRange, sourceRows: inverseRows },
+          params: {
+            ...params,
+            range: bodyRange,
+            sourceRows: inverseRows,
+            sortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
+              ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
+              : undefined),
+            previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
+              ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
+              : undefined),
+          },
           affectedRanges,
         }],
         apply: () => applyRowPermutation(sheet, { range: bodyRange, sourceRows }),

@@ -90,6 +90,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     id: 'shape-1',
     sheetId: 'sheet-1',
     kind: 'shape',
+    visible: false,
     anchor: { kind: 'absolute' },
     transform: { x: 10, y: 10, width: 100, height: 50 },
     zIndex: 1,
@@ -128,6 +129,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restoredSheet.drawingPayloads.get('chart-1')?.kind, 'chart');
   assert.equal((restoredSheet.drawingPayloads.get('chart-1') as { title?: string }).title, 'Revenue');
   assert.equal(restoredSheet.drawingPayloads.get('shape-1')?.kind, 'shape');
+  assert.equal(restoredSheet.drawings.find((drawing) => drawing.id === 'shape-1')?.visible, false);
   assert.equal(restoredSheet.sparklines.length, 1);
   assert.equal(restored.definedNames['TaxRate'], '0.15');
 });

@@ -23,6 +23,7 @@ import { registerEditingCommands, rewriteFormulasForSheetRename } from './editin
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
 import { registerOutlineCommands } from './outline-commands';
+import { registerHomeCommands } from './home-commands';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -52,6 +53,7 @@ export * from './sheet-table-commands';
 export * from './outline-commands';
 export * from './outline-features';
 export * from './text-input';
+export * from './home-commands';
 
 
 export interface SetCellValueParams {
@@ -434,6 +436,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   registerDataToolCommands(runtime);
   registerSheetTableCommands(runtime);
   registerOutlineCommands(runtime);
+  registerHomeCommands(runtime);
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',

@@ -687,6 +687,11 @@ export class CommandRuntime {
     return [...this.undoStack];
   }
 
+  /** Read-only projection used by hosts to preflight a permission-safe redo. */
+  getRedoEntries(): readonly HistoryEntry[] {
+    return [...this.redoStack];
+  }
+
   clearHistory(): void {
     this.undoStack.length = 0;
     this.redoStack.length = 0;

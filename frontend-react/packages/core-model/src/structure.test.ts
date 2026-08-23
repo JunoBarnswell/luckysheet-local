@@ -197,4 +197,109 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(1, 0)?.value, 'keep');
     assert.equal(sheet.drawings[0]?.anchor.row, 1);
   });
+
+  it('moves complete data regions when rows are inserted before them and keeps manifest coordinates aligned', () => {
+    const workbook = new WorkbookModel('unit-data-region-shift', 'Data Region Shift');
+    const sheet = workbook.getSheet('sheet-1');
+    const sourceId = 'source-structure';
+    workbook.addDataSource({
+      schema: 'DataSourceManifest',
+      version: 1,
+      id: sourceId,
+      name: 'Structure source',
+      kind: 'worksheet-range',
+      sourceSheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
+      rowCount: 2,
+      fields: [
+        { id: 'f0', name: 'Code', ordinal: 0, type: 'text' },
+        { id: 'f1', name: 'Value', ordinal: 1, type: 'number' },
+      ],
+      blockRowCount: 65_536,
+      blocks: [{
+        id: 'structure-block', dataSourceId: sourceId, startRow: 0, rowCount: 2,
+        storageKey: 'structure-block', checksum: 'checksum', byteLength: 0,
+        encoding: 'columnar-v1', revision: 0,
+      }],
+      revision: 0,
+    });
+    sheet.dataRegions.push({
+      id: 'structure-region',
+      sourceId,
+      range: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
+      headerRow: 5,
+      revision: 0,
+    });
+    sheet.cells.set(6, 2, { value: 999, style: { bold: true } });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 2 });
+
+    assert.deepEqual(sheet.dataRegions[0]?.range, {
+      sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(sheet.dataRegions[0]?.headerRow, 7);
+    assert.deepEqual(workbook.getDataSource(sourceId).sourceRange, {
+      sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(sheet.cells.get(8, 2)?.value, 999);
+  });
+
+  it('rejects row or column edits that intersect a block-backed region until a block transaction is supplied', () => {
+    const workbook = new WorkbookModel('unit-data-region-reject', 'Data Region Reject');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.dataRegions.push({
+      id: 'region-reject',
+      sourceId: 'source-reject',
+      range: { sheetId: sheet.id, startRow: 5, endRow: 8, startColumn: 2, endColumn: 4 },
+      headerRow: 5,
+      revision: 0,
+    });
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 6, count: 1 }),
+      /data region region-reject requires a data-block transaction/,
+    );
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'delete-columns', sheetId: sheet.id, at: 3, count: 1 }),
+      /data region region-reject requires a data-block transaction/,
+    );
+    assert.deepEqual(sheet.dataRegions[0]?.range, {
+      sheetId: sheet.id, startRow: 5, endRow: 8, startColumn: 2, endColumn: 4,
+    });
+  });
+
+  it('moves a complete block-backed region as metadata while preserving its immutable source rows', () => {
+    const workbook = new WorkbookModel('unit-data-region-move', 'Data Region Move');
+    const sheet = workbook.getSheet('sheet-1');
+    const sourceId = 'source-move';
+    workbook.addDataSource({
+      schema: 'DataSourceManifest', version: 1, id: sourceId, name: 'Move source', kind: 'worksheet-range',
+      sourceSheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 1 },
+      rowCount: 2,
+      fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }],
+      blockRowCount: 65_536,
+      blocks: [{ id: 'move-block', dataSourceId: sourceId, startRow: 0, rowCount: 2, storageKey: 'move-block', checksum: 'checksum', byteLength: 0, encoding: 'columnar-v1', revision: 0 }],
+      revision: 0,
+    });
+    sheet.dataRegions.push({
+      id: 'region-move', sourceId,
+      range: { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 1 }, headerRow: 2, revision: 0,
+    });
+    sheet.cells.set(3, 0, { value: null, style: { italic: true } });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 1 },
+      targetOrigin: { row: 10, column: 2 },
+    });
+
+    assert.deepEqual(sheet.dataRegions[0]?.range, {
+      sheetId: sheet.id, startRow: 10, endRow: 12, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(sheet.dataRegions[0]?.headerRow, 10);
+    assert.deepEqual(workbook.getDataSource(sourceId).sourceRange, {
+      sheetId: sheet.id, startRow: 10, endRow: 12, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(sheet.cells.get(11, 2)?.style?.italic, true);
+  });
 });

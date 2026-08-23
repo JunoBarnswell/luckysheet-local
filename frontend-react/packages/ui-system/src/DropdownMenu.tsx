@@ -7,9 +7,10 @@ export interface DropdownMenuProps {
   children: ReactNode | ((helpers: { close: () => void }) => ReactNode);
   align?: 'left' | 'right';
   className?: string;
+  disabled?: boolean;
 }
 
-export function DropdownMenu({ trigger, children, align = 'left', className }: DropdownMenuProps) {
+export function DropdownMenu({ trigger, children, align = 'left', className, disabled = false }: DropdownMenuProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -25,9 +26,14 @@ export function DropdownMenu({ trigger, children, align = 'left', className }: D
   };
 
   const toggle = () => {
+    if (disabled) return;
     updatePosition();
     setOpen((prev) => !prev);
   };
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   useEffect(() => {
     if (!open) return;
@@ -57,7 +63,7 @@ export function DropdownMenu({ trigger, children, align = 'left', className }: D
 
   return (
     <div className="relative inline-flex" ref={triggerRef}>
-      <div onClick={toggle} className="cursor-pointer">
+      <div onClick={toggle} aria-disabled={disabled || undefined} className={disabled ? 'cursor-not-allowed' : 'cursor-pointer'}>
         {trigger}
       </div>
       {open && typeof document !== 'undefined'

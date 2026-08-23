@@ -316,6 +316,8 @@ export interface DrawingObject {
   sheetId: SheetId;
   kind: DrawingKind;
   name?: string;
+  /** Persisted visibility state; omitted means visible for legacy snapshots. */
+  visible?: boolean;
   anchor: DrawingAnchor;
   transform: DrawingTransform;
   zIndex: number;

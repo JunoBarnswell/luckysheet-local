@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, type ReactNode } from 'react';
+import React, { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from './cn';
 import { Button } from './Button';
@@ -12,6 +12,11 @@ export interface DialogProps {
   footer?: ReactNode;
   onClose: () => void;
   maxWidth?: 'sm' | 'md' | 'lg' | 'xl';
+  /** Localized accessible label for the close affordance. */
+  closeLabel?: string;
+  /** Stable hook for browser-level interaction tests. */
+  testId?: string;
+  bodyClassName?: string;
 }
 
 const maxWidths = {
@@ -29,8 +34,12 @@ export function Dialog({
   footer,
   onClose,
   maxWidth = 'md',
+  closeLabel = 'Close dialog',
+  testId,
+  bodyClassName,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -57,6 +66,8 @@ export function Dialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        data-testid={testId}
         className={cn(
           'relative z-10 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl animate-in zoom-in-95 duration-150',
           maxWidths[maxWidth],
@@ -65,7 +76,7 @@ export function Dialog({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+            <h3 id={titleId} className="text-base font-semibold text-slate-900">{title}</h3>
             {description ? <p className="mt-0.5 text-xs text-slate-500">{description}</p> : null}
           </div>
           <Button
@@ -74,13 +85,13 @@ export function Dialog({
             icon="x"
             iconOnly
             onClick={onClose}
-            aria-label="Close dialog"
+            aria-label={closeLabel}
             className="text-slate-400 hover:text-slate-700"
           />
         </div>
 
         {/* Body */}
-        <div className="max-h-[calc(85vh-130px)] overflow-y-auto px-5 py-4 text-sm text-slate-600">
+        <div className={cn('max-h-[calc(85vh-130px)] overflow-y-auto px-5 py-4 text-sm text-slate-600', bodyClassName)}>
           {children}
         </div>
 

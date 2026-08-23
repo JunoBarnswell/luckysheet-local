@@ -49,6 +49,7 @@ function WorkspaceApp() {
   };
 
   const dispatchSessionIntent = (intent: UiSessionIntent) => {
+    if (intent.type === 'panel.open') setSidebarOpen(true);
     session.dispatchUiSessionIntent(intent);
   };
 
@@ -87,6 +88,8 @@ function WorkspaceApp() {
   };
 
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
+  const currentDataRange = session.getCurrentRegion();
+  const sortColumns = state.selectedSheet.columns.slice(currentDataRange.startColumn, currentDataRange.endColumn + 1);
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
     : state.selectedSheet.usedRange;
@@ -198,8 +201,8 @@ function WorkspaceApp() {
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
   const buildFilterSelectionCommand = (): CommandDescriptor => ({
-    commandId: "sheet.filter.set",
-    params: { sheetId: state.activeSheetId, filter: { sheetId: state.activeSheetId, range: session.getCurrentRegion(), criteria: {} } },
+    commandId: "sheet.filter.toggle",
+    params: { sheetId: state.activeSheetId, range: session.getCurrentRegion() },
   });
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
     const range = session.getCurrentRegion();
@@ -208,11 +211,11 @@ function WorkspaceApp() {
       return undefined;
     }
     return {
-      commandId: "data.sort.rows",
+      commandId: "data.sort.quick",
       params: {
         sheetId: state.activeSheetId,
         range,
-        criteria: [{ column: state.selection.activeCell.column, ascending }],
+        sortColumn: state.selection.activeCell.column,
         hasHeader: true,
       },
     };
@@ -293,7 +296,7 @@ function WorkspaceApp() {
       default: return false;
     }
   };
-  const buildClearFilterCommand = (): CommandDescriptor => ({ commandId: "sheet.filter.remove", params: { sheetId: state.activeSheetId } });
+  const buildClearFilterCommand = (): CommandDescriptor => ({ commandId: "sheet.filter.clearCriteria", params: { sheetId: state.activeSheetId, range: session.getCurrentRegion() } });
   const [activePivotId, setActivePivotId] = useState<string>();
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
@@ -471,7 +474,8 @@ function WorkspaceApp() {
       dispatchSessionIntent({ type: "panel.open", panel, notice: panelNotice });
       return;
     }
-    if (panel === "inspector" || panel === "chart" || panel === "pivot" || panel === "shape" || panel === "sparkline" || panel === "conditionalFormat" || panel === "dataValidation" || panel === "history" || panel === "data") {
+    if (panel === "inspector" || panel === "chart" || panel === "pivot" || panel === "shape" || panel === "selectionPane" || panel === "sparkline" || panel === "conditionalFormat" || panel === "dataValidation" || panel === "history" || panel === "data") {
+      if (panel === 'selectionPane') session.setDrawingSelectionMode(true);
       dispatchSessionIntent({ type: "panel.open", panel });
       return;
     }
@@ -487,14 +491,13 @@ function WorkspaceApp() {
   };
 
   const formatCellsInitial = useMemo(() => {
-    const cell = state.selectedSheet.getCell(state.selection.activeCell.row, state.selection.activeCell.column);
-    const style = cell?.style ?? {};
+    const style = state.homeRibbon.style;
     return {
       numberFormat: style.numberFormat ?? "general",
       style: { ...style },
     };
-  }, [state.showFormatCells, state.selection.activeCell.row, state.selection.activeCell.column, state.selectedSheet, state.version]);
-  const selectedCellStyle = state.selectedSheet.getCell(state.selection.activeCell.row, state.selection.activeCell.column)?.style ?? {};
+  }, [state.homeRibbon.style, state.showFormatCells, state.version]);
+  const selectedCellStyle = state.homeRibbon.style;
 
   return (
     <>
@@ -626,6 +629,9 @@ function WorkspaceApp() {
             onOpenDefinedNames={() => dispatchSessionIntent({ type: 'panel.open', panel: 'definedNames' })}
             onTabChange={(tab) => session.setRibbonTab(tab)}
             phase={state.phase}
+            homeState={state.homeRibbon}
+            formatPainterActive={state.formatPainter !== null}
+            onBeginFormatPainter={(locked) => session.beginFormatPainter(Boolean(locked))}
             canExecute={session.canExecute.bind(session)}
           />
         }
@@ -732,7 +738,9 @@ function WorkspaceApp() {
               onResizeRow={session.resizeRow.bind(session)}
               onResizeColumn={session.resizeColumn.bind(session)}
               onFillRange={session.fillRange.bind(session)}
-              onFloatingSelect={(hit) => session.setSelectedFloatingId(hit ? hit.id : null)}
+              drawingSelectionMode={state.drawingSelectionMode}
+              onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
+              onFloatingSelect={(hit, mode) => session.setDrawingSelection(hit ? [hit.id] : [], mode)}
               onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({
                 commandId: "drawing.move",
                 params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } },
@@ -743,6 +751,8 @@ function WorkspaceApp() {
               })}
               onCommand={dispatchCommand}
               onClearSelection={(mode) => session.clearSelection(mode)}
+              formatPainterActive={state.formatPainter !== null}
+              onCancelFormatPainter={() => session.cancelFormatPainter()}
               onCopy={() => session.copy()}
               onCut={() => session.cut()}
               onPaste={() => session.paste()}
@@ -777,6 +787,14 @@ function WorkspaceApp() {
             sheetId={state.activeSheetId}
             drawings={state.selectedSheet.drawings}
             drawingPayloads={state.selectedSheet.drawingPayloads}
+            selectedDrawingIds={state.selectedDrawingIds}
+            onSelectDrawing={(drawingId, mode) => session.setDrawingSelection([drawingId], mode === 'extend' ? 'add' : mode)}
+            onSetDrawingVisibility={(drawingId, visible) => session.setDrawingVisibility(drawingId, visible)}
+            onRenameDrawing={(drawingId, name) => session.renameDrawing(drawingId, name)}
+            onReorderDrawing={(drawingId, direction) => dispatchCommand({
+              commandId: 'drawing.zorder',
+              params: { sheetId: state.activeSheetId, drawingId, direction },
+            })}
             pivot={activePivot}
             pivotList={state.selectedSheet.pivots.map((pivot) => ({ id: pivot.id, label: pivot.id }))}
             activePivotId={activePivot?.id}
@@ -902,7 +920,8 @@ function WorkspaceApp() {
 
       <SortDialog
         open={state.showSortDialog}
-        columns={state.selectedSheet.columns}
+        columns={sortColumns}
+        locale={locale}
         onClose={session.closeSortDialog.bind(session)}
         onSort={(criteria, hasHeader) => session.sortRange(criteria, hasHeader)}
       />
@@ -910,6 +929,7 @@ function WorkspaceApp() {
       <FindReplaceDialog
         open={state.showFindReplace}
         initialFind={state.findQuery}
+        locale={locale}
         onClose={session.closeFindReplace.bind(session)}
         onReplaceAll={(params) => session.findReplace(params)}
       />
@@ -923,6 +943,7 @@ function WorkspaceApp() {
 
       <PasteSpecialDialog
         open={state.showPasteSpecial}
+        locale={locale}
         onClose={session.closePasteSpecial.bind(session)}
         onPaste={(mode) => session.pasteSpecial(mode)}
       />
@@ -930,12 +951,14 @@ function WorkspaceApp() {
       <FormatCellsDialog
         open={state.showFormatCells}
         initial={formatCellsInitial}
+        locale={locale}
         onClose={session.closeFormatCells.bind(session)}
         onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
       />
 
       <ShiftCellsDialog
         open={state.showShiftCells}
+        locale={locale}
         onClose={session.closeShiftCells.bind(session)}
         onShift={(direction) => session.shiftCells(direction)}
       />

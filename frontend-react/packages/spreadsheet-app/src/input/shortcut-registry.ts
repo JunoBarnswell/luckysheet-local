@@ -71,6 +71,8 @@ export function createSpreadsheetShortcutRegistry(): ShortcutRegistry {
   registry.register({ id: 'clipboard.copy', scopes: grid, key: 'c', primary: true });
   registry.register({ id: 'clipboard.cut', scopes: grid, key: 'x', primary: true });
   registry.register({ id: 'clipboard.paste', scopes: grid, key: 'v', primary: true });
+  registry.register({ id: 'clipboard.pasteSpecial', scopes: grid, key: 'v', primary: true, alt: true });
+  registry.register({ id: 'clipboard.cancel', scopes: grid, key: 'Escape' });
   registry.register({ id: 'workbook.save', scopes: grid, key: 's', primary: true });
   registry.register({ id: 'format.bold', scopes: grid, key: 'b', primary: true });
   registry.register({ id: 'format.italic', scopes: grid, key: 'i', primary: true });
@@ -79,6 +81,13 @@ export function createSpreadsheetShortcutRegistry(): ShortcutRegistry {
   registry.register({ id: 'replace.open', scopes: grid, key: 'h', primary: true });
   registry.register({ id: 'name.goto', scopes: grid, key: 'g', primary: true });
   registry.register({ id: 'format.cells', scopes: grid, key: '1', primary: true });
+  registry.register({ id: 'range.fillDown', scopes: grid, key: 'd', primary: true });
+  registry.register({ id: 'range.clearContents', scopes: grid, key: 'Delete' });
+  registry.register({ id: 'cells.insert', scopes: grid, key: '+', primary: true, shift: true });
+  registry.register({ id: 'cells.delete', scopes: grid, key: '-', primary: true });
+  registry.register({ id: 'filter.toggle', scopes: grid, key: 'l', primary: true, shift: true });
+  registry.register({ id: 'navigation.goto', scopes: grid, key: 'F5' });
+  registry.register({ id: 'ribbon.home.keyTips', scopes: grid, key: 'h', alt: true });
   registry.register({ id: 'hyperlink.insert', scopes: grid, key: 'k', primary: true });
   registry.register({ id: 'column.select', scopes: grid, key: ' ', primary: true });
   registry.register({ id: 'row.select', scopes: grid, key: ' ', shift: true });

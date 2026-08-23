@@ -613,11 +613,16 @@ export interface SheetCanvasProps {
   onResizeRow: (row: number, heightPx: number) => void;
   onResizeColumn: (column: number, widthPx: number) => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
-  onFloatingSelect: (hit: FloatingHit | null) => void;
+  drawingSelectionMode?: boolean;
+  onExitDrawingSelectionMode?: () => void;
+  onFloatingSelect: (hit: FloatingHit | null, mode?: 'replace' | 'add' | 'toggle') => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onFloatingRemove: (drawingId: string) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClearSelection?: (mode: "contents" | "formats") => void;
+  /** Format painter is a transient session interaction, never canvas-local state. */
+  formatPainterActive?: boolean;
+  onCancelFormatPainter?: () => void;
   onCopy: () => void;
   onCut: () => void;
   onPaste: () => void;
@@ -860,11 +865,15 @@ export function SheetCanvas({
   onResizeRow,
   onResizeColumn,
   onFillRange,
+  drawingSelectionMode = false,
+  onExitDrawingSelectionMode,
   onFloatingSelect,
   onFloatingMove,
   onFloatingRemove,
   onCommand,
   onClearSelection,
+  formatPainterActive = false,
+  onCancelFormatPainter,
   onCopy,
   onCut,
   onPaste,
@@ -991,6 +1000,7 @@ export function SheetCanvas({
       sheets.find((candidate) => candidate.id === sheetId) ?? (sheet.id === sheetId ? sheet : undefined);
     const canonicalPayloads = drawingPayloads;
     for (const drawing of [...drawings].sort((left, right) => left.zIndex - right.zIndex)) {
+      if (drawing.visible === false) continue;
       const payload = canonicalPayloads.get(drawing.payloadId);
       if (!payload) continue;
       const bounds = drawing.transform;
@@ -1330,12 +1340,17 @@ export function SheetCanvas({
               startLocal: local,
             },
           };
-          onFloatingSelect(floatingHit);
+          onFloatingSelect(floatingHit, event.shiftKey ? 'add' : event.ctrlKey || event.metaKey ? 'toggle' : 'replace');
           (event.target as Element).setPointerCapture?.(event.pointerId);
           return;
         }
       }
       onFloatingSelect(null);
+      if (drawingSelectionMode) {
+        // Object-selection mode intentionally leaves cell selection unchanged
+        // when the click misses a Drawing object.
+        return;
+      }
 
       // 2) 表头区
       const headerHit = engine.headerHitAtLocal(local);
@@ -1487,7 +1502,7 @@ export function SheetCanvas({
       (event.target as Element).setPointerCapture?.(event.pointerId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editingCell, floatables, localPointOf, onCommitEdit, onFloatingSelect, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton, stopAutoScroll],
+    [drawingSelectionMode, editingCell, floatables, localPointOf, onCommitEdit, onFloatingSelect, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton, stopAutoScroll],
   );
 
   const handlePointerMove = useCallback(
@@ -1833,6 +1848,18 @@ export function SheetCanvas({
         return;
       }
 
+      if (key === "Escape" && formatPainterActive) {
+        event.preventDefault();
+        onCancelFormatPainter?.();
+        return;
+      }
+
+      if (key === 'Escape' && drawingSelectionMode) {
+        event.preventDefault();
+        onExitDrawingSelectionMode?.();
+        return;
+      }
+
       const activeScope = activePivotContextHit
         ? 'pivot' as const
         : selectedFloatingId
@@ -1937,7 +1964,7 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canRepeat, cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selectedFloatingId, selection, sheet, sheetId, skeleton],
+    [canRepeat, cellStyle.bold, cellStyle.italic, cellStyle.underline, drawingSelectionMode, editingCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCancelFormatPainter, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selectedFloatingId, selection, sheet, sheetId, skeleton],
   );
 
   // ---------- 右键菜单 ----------

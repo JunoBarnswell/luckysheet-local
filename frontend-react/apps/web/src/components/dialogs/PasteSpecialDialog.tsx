@@ -1,51 +1,54 @@
 import React from 'react';
 import type { PasteMode } from '@react-sheets/sheet-features';
-import { Box, Button, Inline, Stack, Text } from '@react-sheets/ui-system';
+import { Button, Dialog, Stack } from '@react-sheets/ui-system';
+import type { Locale } from '../../i18n';
+import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
 
-const PASTE_OPTIONS: Array<{ mode: PasteMode; label: string }> = [
-  { mode: 'all', label: 'All' },
-  { mode: 'values', label: 'Values' },
-  { mode: 'formats', label: 'Formats' },
-  { mode: 'formulas', label: 'Formulas' },
-  { mode: 'transpose', label: 'Transpose' },
+const PASTE_OPTIONS: Array<{ mode: PasteMode; labelKey: HomeUiTextKey }> = [
+  { mode: 'all', labelKey: 'pasteAll' },
+  { mode: 'values', labelKey: 'pasteValues' },
+  { mode: 'formats', labelKey: 'pasteFormats' },
+  { mode: 'formulas', labelKey: 'pasteFormulas' },
+  { mode: 'transpose', labelKey: 'pasteTranspose' },
 ];
 
 export interface PasteSpecialDialogProps {
   open: boolean;
+  locale?: Locale;
   onClose: () => void;
   onPaste: (mode: PasteMode) => void;
 }
 
-export function PasteSpecialDialog({ open, onClose, onPaste }: PasteSpecialDialogProps): React.ReactElement | null {
-  if (!open) return null;
+export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpecialDialogProps): React.ReactElement | null {
+  const activeLocale = resolveHomeLocale(locale);
 
   return (
-    <Box className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/30 pt-24">
-      <Box className="w-80 rounded-xl border border-slate-200 bg-white p-4 shadow-2xl" data-testid="paste-special-dialog">
-        <Stack gap="md">
-          <Text size="sm" weight="semibold">Paste Special</Text>
-          <Stack gap="xs">
-            {PASTE_OPTIONS.map((option) => (
-              <Button
-                key={option.mode}
-                size="sm"
-                variant="ghost"
-                className="justify-start"
-                data-testid={`paste-special-${option.mode}`}
-                onClick={() => {
-                  onPaste(option.mode);
-                  onClose();
-                }}
-              >
-                {option.label}
-              </Button>
-            ))}
-          </Stack>
-          <Inline gap="sm" className="justify-end">
-            <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
-          </Inline>
-        </Stack>
-      </Box>
-    </Box>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={homeText(activeLocale, 'pasteSpecial')}
+      description={homeText(activeLocale, 'pasteSpecialDescription')}
+      closeLabel={homeText(activeLocale, 'close')}
+      testId="paste-special-dialog"
+      footer={<Button size="sm" variant="ghost" onClick={onClose}>{homeText(activeLocale, 'cancel')}</Button>}
+    >
+      <Stack gap="xs">
+        {PASTE_OPTIONS.map((option) => (
+          <Button
+            key={option.mode}
+            size="sm"
+            variant={option.mode === 'all' ? 'secondary' : 'ghost'}
+            className="justify-start"
+            data-testid={`paste-special-${option.mode}`}
+            onClick={() => {
+              onPaste(option.mode);
+              onClose();
+            }}
+          >
+            {homeText(activeLocale, option.labelKey)}
+          </Button>
+        ))}
+      </Stack>
+    </Dialog>
   );
 }

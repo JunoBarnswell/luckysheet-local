@@ -131,6 +131,64 @@ function validateAxisMetadataPreservation(
   }
 }
 
+/**
+ * Block bytes are immutable during a worksheet structural transform.  A row
+ * or column insertion/deletion may therefore move a complete data region when
+ * it is entirely before the operation, but it must reject an operation that
+ * would add/remove rows or columns inside the region.  Silently expanding a
+ * metadata range without rewriting the block would expose the wrong records.
+ */
+function validateDataRegionAxisPreservation(
+  sheet: WorksheetModel,
+  axis: 'row' | 'column',
+  at: number,
+  count: number,
+  direction: 1 | -1,
+): void {
+  for (const region of sheet.dataRegions) {
+    const start = axis === 'row' ? region.range.startRow : region.range.startColumn;
+    const end = axis === 'row' ? region.range.endRow : region.range.endColumn;
+    const operationEnd = at + count - 1;
+    const shiftsEntireRegion = direction === 1 ? at <= start : operationEnd < start;
+    const isAfterRegion = direction === 1 ? at > end : at > end;
+    if (shiftsEntireRegion || isAfterRegion) continue;
+    throw new Error(`Cannot structurally transform ${axis} ${at}: data region ${region.id} requires a data-block transaction`);
+  }
+}
+
+function shiftDataRegionAxis(
+  workbook: WorkbookModel,
+  sheet: WorksheetModel,
+  axis: 'row' | 'column',
+  at: number,
+  count: number,
+  direction: 1 | -1,
+): void {
+  for (const region of sheet.dataRegions) {
+    const start = axis === 'row' ? region.range.startRow : region.range.startColumn;
+    const shouldShift = direction === 1 ? at <= start : at + count - 1 < start;
+    if (!shouldShift) continue;
+    const delta = direction * count;
+    if (axis === 'row') {
+      region.range.startRow += delta;
+      region.range.endRow += delta;
+      region.headerRow += delta;
+    } else {
+      region.range.startColumn += delta;
+      region.range.endColumn += delta;
+    }
+    const source = workbook.dataSources.get(region.sourceId);
+    if (source?.sourceRange?.sheetId !== sheet.id) continue;
+    if (axis === 'row') {
+      source.sourceRange.startRow += delta;
+      source.sourceRange.endRow += delta;
+    } else {
+      source.sourceRange.startColumn += delta;
+      source.sourceRange.endColumn += delta;
+    }
+  }
+}
+
 function validateShiftPreservation(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
@@ -200,6 +258,7 @@ function applyAxis(
 ): StructuralTransformResult {
   validateAxisBounds(sheet, axis, at, count, direction);
   validateAxisMetadataPreservation(workbook, sheet, axis, at, count, direction);
+  validateDataRegionAxisPreservation(sheet, axis, at, count, direction);
   if (count <= 0) return { removedCells: [] };
   const end = at + count - 1;
   let removed: Array<{ row: Row; column: Column; cell: CellData }> = [];
@@ -221,6 +280,10 @@ function applyAxis(
     sheet.cells.shiftColumns(end + 1, count, -1);
     sheet.columnCount = Math.max(1, sheet.columnCount - count);
   }
+
+  // Only complete regions outside the structural edit are moved.  Any
+  // intersecting edit was rejected above because it needs a block rewrite.
+  shiftDataRegionAxis(workbook, sheet, axis, at, count, direction);
 
   shiftMerges(sheet, axis, at, count, direction);
   shiftRuleRanges(sheet.conditionalFormats, axis, at, count, direction);
@@ -268,6 +331,7 @@ function applyShiftCells(
     endColumn,
   };
   validateShiftPreservation(workbook, sheet, selection, kind);
+  validateDataRegionShiftPreservation(sheet, selection);
   const isVertical = kind === 'shift-cells-down' || kind === 'shift-cells-up';
   const delta = kind === 'shift-cells-down' || kind === 'shift-cells-right' ? 1 : -1;
   const rowDelta = isVertical ? delta : 0;
@@ -311,6 +375,14 @@ function applyShiftCells(
     endColumn: selection.endColumn + columnDelta,
   }, rowDelta, columnDelta);
   return { removedCells };
+}
+
+function validateDataRegionShiftPreservation(sheet: WorksheetModel, selection: RangeRef): void {
+  for (const region of sheet.dataRegions) {
+    if (rangesIntersect(region.range, selection)) {
+      throw new Error(`Cannot shift cells across data region ${region.id}: requires a data-block transaction`);
+    }
+  }
 }
 
 function offsetFormulaText(formula: string, rowOffset: number, columnOffset: number): string {
@@ -862,6 +934,7 @@ function applyMoveRange(
     throw new Error('Move range target is outside worksheet bounds');
   }
   validateMoveMetadataPreservation(workbook, sheet, normalizedSource, target);
+  validateDataRegionMovePreservation(sheet, normalizedSource, target);
 
   const rowDelta = target.startRow - normalizedSource.startRow;
   const colDelta = target.startColumn - normalizedSource.startColumn;
@@ -897,6 +970,7 @@ function applyMoveRange(
       merge.anchor.column += colDelta;
     }
   }
+  relocateDataRegions(workbook, sheet, normalizedSource, rowDelta, colDelta);
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
     for (const range of rule.ranges) relocate(range);
   }
@@ -959,6 +1033,47 @@ function applyMoveRange(
   }
   rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta);
   return { removedCells: extracted };
+}
+
+function validateDataRegionMovePreservation(sheet: WorksheetModel, source: RangeRef, target: RangeRef): void {
+  for (const region of sheet.dataRegions) {
+    const sourceContains = rangeContains(source, region.range);
+    const sourceIntersects = rangesIntersect(source, region.range);
+    const targetContains = rangeContains(target, region.range);
+    const targetIntersects = rangesIntersect(target, region.range);
+    if (sourceIntersects && !sourceContains) {
+      throw new Error(`Cannot move range: data region ${region.id} is partially intersected and requires a data-block transaction`);
+    }
+    if (targetIntersects && !(sourceContains && targetContains)) {
+      throw new Error(`Cannot move range: data region ${region.id} would be overwritten and requires a data-block transaction`);
+    }
+    if (sourceContains && targetContains && sourceIntersects) {
+      throw new Error(`Cannot move range: data region ${region.id} cannot be moved onto itself`);
+    }
+  }
+}
+
+function relocateDataRegions(
+  workbook: WorkbookModel,
+  sheet: WorksheetModel,
+  source: RangeRef,
+  rowDelta: number,
+  columnDelta: number,
+): void {
+  for (const region of sheet.dataRegions) {
+    if (!rangeContains(source, region.range)) continue;
+    region.range.startRow += rowDelta;
+    region.range.endRow += rowDelta;
+    region.range.startColumn += columnDelta;
+    region.range.endColumn += columnDelta;
+    region.headerRow += rowDelta;
+    const manifest = workbook.dataSources.get(region.sourceId);
+    if (!manifest?.sourceRange || manifest.sourceRange.sheetId !== sheet.id || !rangeContains(source, manifest.sourceRange)) continue;
+    manifest.sourceRange.startRow += rowDelta;
+    manifest.sourceRange.endRow += rowDelta;
+    manifest.sourceRange.startColumn += columnDelta;
+    manifest.sourceRange.endColumn += columnDelta;
+  }
 }
 
 function normalizeRange(range: RangeRef): RangeRef {

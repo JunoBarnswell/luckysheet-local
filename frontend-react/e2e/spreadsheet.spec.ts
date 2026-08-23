@@ -271,4 +271,74 @@ test.describe('spreadsheet baseline', () => {
     expect(apiRequests).toEqual([]);
     expect(socketCount).toBe(0);
   });
+
+  test('Home ribbon opens shared format, sort, find, and paste dialogs without rendering Add-ins', async ({ page }) => {
+    await waitForWorkspace(page);
+    await page.getByTestId('ribbon-tab-home').click();
+    await expect(page.getByTestId('home-ribbon-groups')).toBeVisible();
+    await expect(page.getByRole('button', { name: /add-ins/i })).toHaveCount(0);
+
+    await page.getByTestId('ribbon-format-cells').click();
+    const formatDialog = page.getByTestId('format-cells-dialog');
+    await expect(formatDialog).toBeVisible();
+    await formatDialog.getByTestId('format-tab-font').click();
+    await expect(formatDialog.getByLabel(/(font size|字号)/i)).toBeVisible();
+    await formatDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
+
+    await page.getByRole('button', { name: /(sort range|排序区域)/i }).click();
+    const sortDialog = page.getByTestId('sort-dialog');
+    await expect(sortDialog).toBeVisible();
+    await sortDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
+
+    await page.getByRole('button', { name: /(find & replace|查找与替换)/i }).click();
+    const findDialog = page.getByTestId('find-replace-dialog');
+    await expect(findDialog).toBeVisible();
+    await findDialog.getByLabel(/^(Find|查找)$/).fill('home-dialog-check');
+    await expect(findDialog.getByRole('button', { name: /(replace all|全部替换)/i })).toBeEnabled();
+    await findDialog.getByRole('button', { name: /^(Close|关闭)$/ }).click();
+
+    await page.getByRole('button', { name: /(paste special|选择性粘贴)/i }).click();
+    const pasteDialog = page.getByTestId('paste-special-dialog');
+    await expect(pasteDialog).toBeVisible();
+    await expect(pasteDialog.getByTestId('paste-special-formats')).toBeVisible();
+    await pasteDialog.getByRole('button', { name: /^(Cancel|取消)$/ }).click();
+
+    await page.getByTestId('home-selection-pane').click();
+    await expect(page.getByTestId('selection-pane')).toBeVisible();
+  });
+
+  test('Selection Pane selects, renames, and toggles a drawing through host callbacks', async ({ page }) => {
+    await waitForWorkspace(page);
+    await page.getByTestId('ribbon-tab-insert').click();
+    await page.getByRole('button', { name: /(rectangle|矩形)/i }).click();
+
+    await page.getByTestId('ribbon-tab-home').click();
+    await page.getByTestId('home-selection-pane').click();
+    const pane = page.getByTestId('selection-pane');
+    await expect(pane).toBeVisible();
+
+    await pane.getByRole('button', { name: /^(Rename|重命名)$/ }).click();
+    const rename = pane.getByLabel(/^(Rename|重命名)$/);
+    await rename.fill('KPI tile');
+    await rename.press('Enter');
+    await expect(pane.getByRole('button', { name: 'KPI tile', exact: true })).toBeVisible();
+
+    const visibility = pane.getByLabel(/KPI tile: (Visible|可见)/);
+    await expect(visibility).toBeChecked();
+    await visibility.uncheck();
+    await expect(visibility).not.toBeChecked();
+  });
+
+  test('Format Painter enters a transient Home state and completes after one target selection', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    await canvas.press('Control+B');
+
+    const painter = page.getByTestId('home-format-painter');
+    await painter.click();
+    await expect(painter).toHaveAttribute('aria-pressed', 'true');
+
+    await canvas.click({ position: { x: 210, y: 38 } });
+    await expect(painter).toHaveAttribute('aria-pressed', 'false');
+  });
 });

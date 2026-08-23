@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { FormulaEngine } from '@react-sheets/formula-engine';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { WorkbookModel, type DataSourceManifest, type DataBlockRef } from '@react-sheets/core-model';
 import { buildCanvasSheetSnapshot } from './ui-snapshot';
 import { setCellHyperlink } from './features/review';
+import { LocalDataBlockStore } from './features/persistence/data-block-store';
+import {
+  computeColumnarBlockChecksum,
+  encodeColumnarBlock,
+  DataSourceContentQuery,
+  migrateDataRegionCellPatches,
+} from './features/data-source';
 
 describe('canonical drawing UI projection', () => {
   it('exposes only DrawingObject and DrawingPayload to consumers', () => {
@@ -34,6 +41,71 @@ describe('canonical drawing UI projection', () => {
     assert.equal('charts' in snapshot, false);
     assert.equal('shapes' in snapshot, false);
     assert.equal('images' in snapshot, false);
+  });
+
+  it('renders block values and sparse styles through the same resolved-cell surface', async () => {
+    const workbook = new WorkbookModel('snapshot-block', 'Snapshot Block');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 3;
+    sheet.columnCount = 2;
+    const fields = [
+      { id: 'code', name: 'Code', ordinal: 0, type: 'text' as const },
+      { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' as const },
+    ];
+    const payload = await encodeColumnarBlock({ fields, rows: [['A', 10], ['B', 20]] });
+    const sourceId = 'snapshot-block-source';
+    const ref: DataBlockRef = {
+      id: 'snapshot-block-0',
+      dataSourceId: sourceId,
+      startRow: 0,
+      rowCount: 2,
+      storageKey: 'snapshot-block-source/snapshot-block-0',
+      checksum: await computeColumnarBlockChecksum(payload),
+      byteLength: payload.byteLength,
+      encoding: 'columnar-v1',
+      revision: 0,
+    };
+    const manifest: DataSourceManifest = {
+      schema: 'DataSourceManifest',
+      version: 1,
+      id: sourceId,
+      name: 'Snapshot block source',
+      kind: 'chunked-table',
+      rowCount: 2,
+      fields,
+      blockRowCount: 65_536,
+      blocks: [ref],
+      revision: 0,
+    };
+    const store = new LocalDataBlockStore();
+    await store.put(ref, payload);
+    const query = new DataSourceContentQuery(manifest, store);
+    workbook.addDataSource(manifest);
+    sheet.dataRegions.push({
+      id: 'snapshot-block-region',
+      sourceId,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+      headerRow: 0,
+      revision: 0,
+    });
+    // Legacy sparse metadata entry contains the source value but must not
+    // shadow the immutable block value after the block is loaded.
+    sheet.cells.set(1, 1, { value: 999, style: { bold: true } });
+    migrateDataRegionCellPatches(sheet);
+    await query.getRowValues(0);
+
+    const snapshot = buildCanvasSheetSnapshot(
+      workbook,
+      sheet,
+      new FormulaEngine({ defaultSheetId: sheet.id }),
+      true,
+      {},
+      new Map([[sourceId, query]]),
+    );
+    const cell = snapshot.getCell(1, 1);
+    assert.equal(cell?.value, '10');
+    assert.equal(cell?.displayValue, '10');
+    assert.equal(cell?.style?.bold, true);
   });
 
   it('projects review metadata from canonical sheet stores only', () => {

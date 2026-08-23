@@ -1,3 +1,5 @@
+import type { CellStyle, RangeRef } from '@react-sheets/core-model';
+
 export type AppPhase = 'empty' | 'error' | 'loading' | 'ready';
 export type RibbonTabId =
   | 'file'
@@ -20,6 +22,7 @@ export type SidebarPanelId =
   | 'shape'
   | 'sparkline'
   | 'conditionalFormat'
+  | 'selectionPane'
   | 'dataValidation'
   | 'print'
   | 'query'
@@ -51,6 +54,48 @@ export interface PeerCursor {
   sheetId: string;
   row: number;
   column: number;
+}
+
+/** A derived Home-ribbon value. It is never persisted as workbook state. */
+export type HomeSelectionValue<T> =
+  | { kind: 'value'; value: T }
+  | { kind: 'mixed' }
+  | { kind: 'unset' };
+
+export type HomeStyleKey = keyof Pick<
+  CellStyle,
+  | 'fontFamily'
+  | 'fontSize'
+  | 'bold'
+  | 'italic'
+  | 'underline'
+  | 'strikethrough'
+  | 'textColor'
+  | 'background'
+  | 'horizontalAlignment'
+  | 'verticalAlignment'
+  | 'wrapText'
+  | 'numberFormat'
+  | 'borders'
+>;
+
+/**
+ * Read-only selection-derived state consumed by every Home entry point.
+ * The WorkbookSession recalculates it from the canonical model on snapshot
+ * creation; UI components must never keep a competing copy.
+ */
+export interface HomeRibbonState {
+  sheetId: string;
+  ranges: readonly RangeRef[];
+  activeCell: { row: number; column: number };
+  style: Partial<CellStyle>;
+  mixedStyleKeys: readonly HomeStyleKey[];
+  merge: 'none' | 'full' | 'mixed';
+  canFormat: boolean;
+  canEdit: boolean;
+  canStructure: boolean;
+  hasFilter: boolean;
+  hasFilterCriteria: boolean;
 }
 
 export type { SelectionState, SelectionSnapshot } from './selection-service';

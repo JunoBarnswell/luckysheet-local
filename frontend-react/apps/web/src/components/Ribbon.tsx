@@ -11,6 +11,7 @@ import {
   Select,
   Stack,
   Text,
+  TextInput,
   type RibbonTabId,
 } from '@react-sheets/ui-system';
 import {
@@ -21,6 +22,8 @@ import {
   isRibbonCommandEnabled,
   RIBBON_TEXT,
   type AppPhase,
+  type HomeRibbonState,
+  type HomeStyleKey,
   type RibbonCommandActions,
   type RibbonCommandContext,
   type RibbonCommandId,
@@ -30,6 +33,7 @@ import {
 } from '@react-sheets/spreadsheet-app';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import { localizeText, translate, translateRibbonTab, translateRibbonText, type Locale } from '../i18n';
+import { homeText } from './home/home-localization';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -39,6 +43,8 @@ export interface RibbonProps {
   onCopy: () => void;
   onCut: () => void;
   onPaste: () => void;
+  onBeginFormatPainter: (locked?: boolean) => void;
+  formatPainterActive?: boolean;
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
@@ -99,18 +105,8 @@ export interface RibbonProps {
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
-  cellStyle?: {
-    bold?: boolean;
-    italic?: boolean;
-    underline?: boolean;
-    strikethrough?: boolean;
-    align?: 'left' | 'center' | 'right';
-    verticalAlign?: 'top' | 'middle' | 'bottom';
-    wrapText?: boolean;
-    numberFormat?: string;
-    background?: string;
-    textColor?: string;
-  };
+  /** Canonical, selection-derived Home state. All Home controls read this one source. */
+  homeState: HomeRibbonState;
   canExecute?: (commandId: string, params?: unknown) => boolean;
 }
 
@@ -169,6 +165,7 @@ function CatalogButton({
   variant = 'ghost',
   className,
   testId,
+  mixed = false,
 }: {
   id: RibbonCommandId;
   context: RibbonCommandContext;
@@ -177,6 +174,7 @@ function CatalogButton({
   variant?: 'danger' | 'ghost' | 'outline' | 'primary' | 'secondary' | 'soft';
   className?: string;
   testId?: string;
+  mixed?: boolean;
 }) {
   const locale = useContext(RibbonLocaleContext);
   const layout = useContext(RibbonLayoutContext);
@@ -184,11 +182,15 @@ function CatalogButton({
   const enabled = isRibbonCommandEnabled(definition, context);
   const label = translateRibbonText(locale, definition.labelKey);
   const compactIcon = layout !== 'wide' && definition.display === 'small';
+  const active = !mixed && Boolean(definition.active?.(context));
+  const mixedLabel = mixed ? `${label} (${homeText(locale, 'mixed')})` : label;
   return (
     <Button
-      aria-label={label}
-      title={label}
+      aria-label={mixedLabel}
+      aria-pressed={definition.active ? active : undefined}
+      title={mixedLabel}
       data-testid={testId}
+      data-mixed={mixed || undefined}
       disabled={!enabled}
       icon={definition.icon}
       iconOnly={iconOnly || compactIcon}
@@ -197,8 +199,8 @@ function CatalogButton({
         if (result) onExecute(result);
       }}
       size="sm"
-      variant={definition.active?.(context) ? 'primary' : variant}
-      className={className}
+      variant={active ? 'primary' : variant}
+      className={[className, mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined].filter(Boolean).join(' ')}
     >
       {iconOnly || compactIcon ? null : label}
     </Button>
@@ -213,6 +215,8 @@ export function Ribbon({
   onCopy,
   onCut,
   onPaste,
+  onBeginFormatPainter,
+  formatPainterActive = false,
   onUndo,
   onRedo,
   onSave,
@@ -271,10 +275,17 @@ export function Ribbon({
   onTabChange,
   phase,
   activePivot,
-  cellStyle = {},
+  homeState,
   canExecute,
 }: RibbonProps) {
   const disabled = phase !== 'ready';
+  const cellStyle = homeState.style;
+  const canFormat = (style: Record<string, unknown>): boolean => !disabled && homeState.canFormat
+    && (!canExecute || canExecute('sheet.style.set', { style }));
+  const emitStyle = (style: Record<string, unknown>): void => {
+    if (canFormat(style)) onCommand({ commandId: 'sheet.style.set', params: { style } });
+  };
+  const isMixed = (field: HomeStyleKey): boolean => homeState.mixedStyleKeys.includes(field);
   const catalogActions: RibbonCommandActions = {
     onCopy,
     onCut,
@@ -453,81 +464,201 @@ export function Ribbon({
         ) : null}
 
         {activeTab === 'home' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="history">
+          <Inline gap="md" className="flex-wrap items-start" data-testid="home-ribbon-groups">
+            <RibbonGroup group="clipboard">
               <CatalogButton id="undo" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
               <CatalogButton id="redo" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="clipboard">
               <CatalogButton id="cut" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
               <CatalogButton id="copy" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
               <CatalogButton id="paste" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
               <CatalogButton id="pasteSpecial" context={catalogContext} onExecute={executeCatalogResult} />
+              <Button
+                size="sm"
+                variant={formatPainterActive ? 'secondary' : 'ghost'}
+                icon="palette"
+                disabled={disabled || !homeState.canFormat}
+                data-testid="home-format-painter"
+                aria-pressed={formatPainterActive}
+                title={homeText(locale, 'formatPainterHint')}
+                onClick={() => onBeginFormatPainter(false)}
+                onDoubleClick={() => onBeginFormatPainter(true)}
+              >
+                {homeText(locale, 'formatPainter')}
+              </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup group="font">
-              <CatalogButton id="bold" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="italic" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="underline" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="strikethrough" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-
+              <CatalogButton id="bold" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('bold')} />
+              <CatalogButton id="italic" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('italic')} />
+              <CatalogButton id="underline" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('underline')} />
+              <CatalogButton id="strikethrough" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('strikethrough')} />
               <DropdownMenu
-                trigger={
-                  <Button variant="ghost" size="sm" icon="type" iconOnly title={localizeText(locale, 'Text Color')} disabled={disabled} className="relative" />
-                }
+                disabled={disabled || !homeState.canFormat}
+                trigger={(
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="settings"
+                    iconOnly
+                    title={homeText(locale, 'fontOptions')}
+                    aria-label={homeText(locale, 'fontOptions')}
+                    disabled={disabled || !homeState.canFormat}
+                    className={isMixed('fontFamily') || isMixed('fontSize') ? 'border border-dashed border-slate-400' : undefined}
+                  />
+                )}
+              >
+                {({ close }) => (
+                  <Stack gap="sm" className="w-52 p-2">
+                    <Text size="xs" tone="subtle">{homeText(locale, 'fontFamily')}</Text>
+                    <Select
+                      aria-label={homeText(locale, 'fontFamily')}
+                      sizeVariant="sm"
+                      value={isMixed('fontFamily') ? '__mixed__' : cellStyle.fontFamily ?? 'Arial'}
+                      onChange={(event) => {
+                        if (event.target.value !== '__mixed__') emitStyle({ fontFamily: event.target.value });
+                      }}
+                    >
+                      {isMixed('fontFamily') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
+                      <option value="Arial">Arial</option>
+                      <option value="Calibri">Calibri</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Microsoft YaHei">Microsoft YaHei</option>
+                      <option value="Times New Roman">Times New Roman</option>
+                    </Select>
+                    <Text size="xs" tone="subtle">{homeText(locale, 'fontSize')}</Text>
+                    <TextInput
+                      key={`${cellStyle.fontSize ?? 'default'}-${isMixed('fontSize')}`}
+                      aria-label={homeText(locale, 'fontSize')}
+                      type="number"
+                      min={1}
+                      max={409}
+                      defaultValue={isMixed('fontSize') ? '' : String(cellStyle.fontSize ?? 11)}
+                      placeholder={isMixed('fontSize') ? homeText(locale, 'mixed') : undefined}
+                      onBlur={(event) => {
+                        const fontSize = Number(event.target.value);
+                        if (Number.isFinite(fontSize) && fontSize >= 1 && fontSize <= 409) emitStyle({ fontSize });
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.currentTarget.blur();
+                          close();
+                        }
+                      }}
+                    />
+                  </Stack>
+                )}
+              </DropdownMenu>
+              <DropdownMenu
+                disabled={!canFormat({ textColor: '#1e293b' })}
+                trigger={(
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="type"
+                    iconOnly
+                    title={`${homeText(locale, 'textColor')}${isMixed('textColor') ? ` (${homeText(locale, 'mixed')})` : ''}`}
+                    aria-label={homeText(locale, 'textColor')}
+                    disabled={!canFormat({ textColor: '#1e293b' })}
+                    className={isMixed('textColor') ? 'border border-dashed border-slate-400' : undefined}
+                  />
+                )}
               >
                 {({ close }) => (
                   <ColorPicker
                     color={cellStyle.textColor || '#1e293b'}
-                    onChange={(c) => {
-                      onCommand({ commandId: 'sheet.style.set', params: { style: { textColor: c } } });
+                    onChange={(color) => {
+                      emitStyle({ textColor: color });
                       close();
                     }}
                   />
                 )}
               </DropdownMenu>
-
               <DropdownMenu
-                trigger={
-                  <Button variant="ghost" size="sm" icon="paint-bucket" iconOnly title={localizeText(locale, 'Fill Background')} disabled={disabled} />
-                }
+                disabled={!canFormat({ background: '#ffffff' })}
+                trigger={(
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="paint-bucket"
+                    iconOnly
+                    title={`${homeText(locale, 'fillBackground')}${isMixed('background') ? ` (${homeText(locale, 'mixed')})` : ''}`}
+                    aria-label={homeText(locale, 'fillBackground')}
+                    disabled={!canFormat({ background: '#ffffff' })}
+                    className={isMixed('background') ? 'border border-dashed border-slate-400' : undefined}
+                  />
+                )}
               >
                 {({ close }) => (
                   <ColorPicker
                     color={cellStyle.background || '#ffffff'}
-                    onChange={(c) => {
-                      onCommand({ commandId: 'sheet.style.set', params: { style: { background: c } } });
+                    onChange={(color) => {
+                      emitStyle({ background: color });
                       close();
                     }}
                   />
                 )}
               </DropdownMenu>
-
               <CatalogButton id="allBorders" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup group="alignment">
-              <CatalogButton id="alignLeft" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="alignCenter" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="alignRight" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="wrapText" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="mergeCells" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
+              <CatalogButton id="alignLeft" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('horizontalAlignment')} />
+              <CatalogButton id="alignCenter" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('horizontalAlignment')} />
+              <CatalogButton id="alignRight" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('horizontalAlignment')} />
+              <DropdownMenu
+                disabled={!canFormat({ verticalAlignment: 'middle' })}
+                trigger={(
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="layout"
+                    iconOnly
+                    title={`${homeText(locale, 'vertical')}${isMixed('verticalAlignment') ? ` (${homeText(locale, 'mixed')})` : ''}`}
+                    aria-label={homeText(locale, 'vertical')}
+                    disabled={!canFormat({ verticalAlignment: 'middle' })}
+                    className={isMixed('verticalAlignment') ? 'border border-dashed border-slate-400' : undefined}
+                  />
+                )}
+              >
+                {({ close }) => (
+                  <Stack gap="xs" className="min-w-32 p-1">
+                    {(['top', 'middle', 'bottom'] as const).map((verticalAlignment) => (
+                      <Button
+                        key={verticalAlignment}
+                        size="sm"
+                        variant={cellStyle.verticalAlignment === verticalAlignment ? 'secondary' : 'ghost'}
+                        className="justify-start"
+                        onClick={() => {
+                          emitStyle({ verticalAlignment });
+                          close();
+                        }}
+                      >
+                        {homeText(locale, verticalAlignment)}
+                      </Button>
+                    ))}
+                  </Stack>
+                )}
+              </DropdownMenu>
+              <CatalogButton id="wrapText" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('wrapText')} />
+              <CatalogButton id="mergeCells" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={homeState.merge === 'mixed'} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup group="number">
-              <CatalogButton id="formatCells" context={catalogContext} onExecute={executeCatalogResult} testId="ribbon-format-cells" />
-              <Box className="w-28">
+              <Box className="w-32">
                 <Select
+                  aria-label={translateRibbonText(locale, RIBBON_TEXT.groups.number)}
+                  title={isMixed('numberFormat') ? homeText(locale, 'mixed') : undefined}
                   sizeVariant="sm"
-                  disabled={disabled}
-                  value={cellStyle.numberFormat || 'general'}
-                  onChange={(e) => onCommand({ commandId: 'sheet.style.set', params: { style: { numberFormat: e.target.value } } })}
+                  disabled={!canFormat({ numberFormat: 'general' })}
+                  value={isMixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'}
+                  onChange={(event) => {
+                    if (event.target.value !== '__mixed__') emitStyle({ numberFormat: event.target.value });
+                  }}
                 >
+                  {isMixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
                   <option value="general">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatGeneral)}</option>
                   <option value="$#,##0">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatCurrency)}</option>
                   <option value="0%">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatPercent)}</option>
@@ -535,21 +666,29 @@ export function Ribbon({
                   <option value="0.00">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatDecimal)}</option>
                 </Select>
               </Box>
-              <CatalogButton id="numberFormatCurrency" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="numberFormatPercent" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
+              <CatalogButton id="numberFormatCurrency" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('numberFormat')} />
+              <CatalogButton id="numberFormatPercent" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('numberFormat')} />
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+
+            <RibbonGroup label={homeText(locale, 'styles')}>
+              <CatalogButton id="conditionalFormat" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="formatAsTable" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="formatCells" context={catalogContext} onExecute={executeCatalogResult} testId="ribbon-format-cells" />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup group="cells">
-              <CatalogButton id="insertRow" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="insertColumn" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
+              <CatalogButton id="insertRowHome" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
+              <CatalogButton id="insertColumnHome" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
               <CatalogButton id="shiftCells" context={catalogContext} onExecute={executeCatalogResult} />
               <DropdownMenu
-                trigger={
-                  <Button size="sm" variant="ghost" disabled={disabled} icon="trash">
-                    {localizeText(locale, 'Clear')}
+                disabled={disabled}
+                trigger={(
+                  <Button size="sm" variant="ghost" disabled={disabled} icon="trash" title={homeText(locale, 'clear')}>
+                    {homeText(locale, 'clear')}
                   </Button>
-                }
+                )}
               >
                 {({ close }) => (
                   <Stack gap="xs" className="p-1">
@@ -565,7 +704,21 @@ export function Ribbon({
             <RibbonGroup group="editing">
               <CatalogButton id="autoSum" context={catalogContext} onExecute={executeCatalogResult} />
               <CatalogButton id="sortRange" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="conditionalFormat" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="filterSelection" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="clearFilter" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="findReplace" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="goTo" context={catalogContext} onExecute={executeCatalogResult} />
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="shape-square"
+                disabled={disabled}
+                data-testid="home-selection-pane"
+                title={homeText(locale, 'selectionPane')}
+                onClick={() => onSessionIntent({ type: 'panel.open', panel: 'selectionPane' })}
+              >
+                {homeText(locale, 'selectionPane')}
+              </Button>
             </RibbonGroup>
           </Inline>
         ) : null}

@@ -47,6 +47,7 @@ import {
 import { cellAddress, columnLabel } from './address';
 import { getCellNote } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from './features/data-source';
+import { resolveCell } from './features/data-source';
 import {
   findCommentThreadAt,
   getCellHyperlink,
@@ -171,25 +172,6 @@ function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
   };
 }
 
-function blockBackedCell(
-  sheet: WorksheetModel,
-  row: number,
-  column: number,
-  dataContent: ReadonlyMap<string, DataSourceContentQuery>,
-): CellData | undefined {
-  const region = sheet.dataRegions.find((candidate) => row > candidate.headerRow
-    && row <= candidate.range.endRow
-    && column >= candidate.range.startColumn
-    && column <= candidate.range.endColumn);
-  if (!region) return undefined;
-  const query = dataContent.get(region.sourceId);
-  if (!query) return { value: '#BLOCK!', style: { textColor: '#b91c1c' } };
-  const result = query.peekCellValue(row - region.headerRow - 1, column - region.range.startColumn);
-  if (result.value !== undefined) return { value: result.value };
-  if (result.state.availability === 'loading') return { value: 'Loading…', style: { textColor: '#64748b', italic: true } };
-  return { value: '#BLOCK!', style: { textColor: '#b91c1c', bold: true } };
-}
-
 function pivotSourceState(
   pivot: PivotModel,
   dataContent: ReadonlyMap<string, DataSourceContentQuery>,
@@ -233,7 +215,8 @@ export function buildCanvasSheetSnapshot(
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
     if (hiddenRows.has(row) || hiddenColumns.has(column)) return undefined;
-    const modelCell = sheet.cells.get(row, column) ?? blockBackedCell(sheet, row, column, dataContent);
+    const resolved = resolveCell(sheet, row, column, dataContent);
+    const modelCell = resolved?.cell;
     const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
     const key = `${row}:${column}`;
     const overlay = overlays.get(key);
@@ -249,9 +232,9 @@ export function buildCanvasSheetSnapshot(
         : modelCell?.style;
     const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
     const thread = sheet.commentThreads.find((entry) => entry.row === row && entry.column === column);
-    const note = getCellNote(sheet, row, column);
-    const comment = thread ? threadToCellComment(thread) : undefined;
-    const hyperlinkDetail = getCellHyperlink(sheet, row, column);
+    const note = getCellNote(sheet, row, column) ?? modelCell?.note;
+    const comment = thread ? threadToCellComment(thread) : modelCell?.comment;
+    const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
     const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
     return {
       address: cellAddress(row, column),

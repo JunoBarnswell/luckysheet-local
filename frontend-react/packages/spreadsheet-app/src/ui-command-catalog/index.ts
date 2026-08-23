@@ -703,7 +703,10 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   command('insertRowHome', 'home', 'cells', 'sheet.rows.insert', RIBBON_TEXT.commands.insertRowHome, 'rows', { count: 1 }),
   command('insertColumnHome', 'home', 'cells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumnHome, 'columns', { count: 1 }),
   intent('shiftCells', 'home', 'cells', RIBBON_TEXT.commands.shiftCells, () => ({ type: 'dialog.open', dialog: 'shift-cells' })),
-  command('clearContents', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearContents, 'trash'),
+  // Delete/Clear Contents must never fall through to the range command's
+  // historical default (`all`). The Home entry declares the semantic mode so
+  // keyboard, Ribbon and context-menu builders share the same contract.
+  command('clearContents', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearContents, 'trash', { mode: 'contents' }),
   command('clearFormats', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearFormats, undefined, { mode: 'formats' }),
   command('clearAll', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearAll, undefined, { mode: 'all' }),
   callback('autoSum', 'home', 'editing', RIBBON_TEXT.commands.autoSum, (context) => context.actions.onAutoSum(), 'calculator'),

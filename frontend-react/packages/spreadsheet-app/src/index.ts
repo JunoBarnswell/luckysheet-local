@@ -22,6 +22,7 @@ export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParam
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,

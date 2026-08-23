@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { CellBorders, CellStyle } from '@react-sheets/core-model';
-import { Box, Button, ColorPicker, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, ColorPicker, Dialog, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import type { Locale } from '../../i18n';
+import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
 
 export interface FormatCellsDraft {
   numberFormat: string;
@@ -10,31 +12,32 @@ export interface FormatCellsDraft {
 export interface FormatCellsDialogProps {
   open: boolean;
   initial: FormatCellsDraft;
+  locale?: Locale;
   onClose: () => void;
   onApply: (draft: FormatCellsDraft) => void;
 }
 
 type FormatTab = 'number' | 'alignment' | 'font' | 'border' | 'fill' | 'protection';
 
-const TABS: Array<{ id: FormatTab; label: string }> = [
-  { id: 'number', label: 'Number' },
-  { id: 'alignment', label: 'Alignment' },
-  { id: 'font', label: 'Font' },
-  { id: 'border', label: 'Border' },
-  { id: 'fill', label: 'Fill' },
-  { id: 'protection', label: 'Protection' },
+const TABS: Array<{ id: FormatTab; labelKey: HomeUiTextKey }> = [
+  { id: 'number', labelKey: 'number' },
+  { id: 'alignment', labelKey: 'alignment' },
+  { id: 'font', labelKey: 'font' },
+  { id: 'border', labelKey: 'border' },
+  { id: 'fill', labelKey: 'fill' },
+  { id: 'protection', labelKey: 'protection' },
 ];
 
-const NUMBER_PRESETS: Array<{ label: string; value: string }> = [
-  { label: 'General', value: 'general' },
-  { label: 'Number (0.00)', value: '0.00' },
-  { label: 'Comma (#,##0)', value: '#,##0' },
-  { label: 'Currency ($)', value: '$#,##0.00' },
-  { label: 'Percent (%)', value: '0%' },
-  { label: 'Scientific', value: '0.00E+00' },
-  { label: 'Date (yyyy-mm-dd)', value: 'yyyy-mm-dd' },
-  { label: 'Time (hh:mm)', value: 'hh:mm' },
-  { label: 'Text (@)', value: '@' },
+const NUMBER_PRESETS: Array<{ labelKey: HomeUiTextKey; value: string }> = [
+  { labelKey: 'numberPresetGeneral', value: 'general' },
+  { labelKey: 'numberPresetNumber', value: '0.00' },
+  { labelKey: 'numberPresetComma', value: '#,##0' },
+  { labelKey: 'numberPresetCurrency', value: '$#,##0.00' },
+  { labelKey: 'numberPresetPercent', value: '0%' },
+  { labelKey: 'numberPresetScientific', value: '0.00E+00' },
+  { labelKey: 'numberPresetDate', value: 'yyyy-mm-dd' },
+  { labelKey: 'numberPresetTime', value: 'hh:mm' },
+  { labelKey: 'numberPresetText', value: '@' },
 ];
 
 function borderSide(style: CellBorders['top']): CellBorders {
@@ -46,7 +49,7 @@ function borderSide(style: CellBorders['top']): CellBorders {
   };
 }
 
-export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCellsDialogProps): React.ReactElement | null {
+export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: FormatCellsDialogProps): React.ReactElement | null {
   const [tab, setTab] = useState<FormatTab>('number');
   const [draft, setDraft] = useState<FormatCellsDraft>(initial);
 
@@ -57,19 +60,38 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
     }
   }, [open, initial]);
 
-  if (!open) return null;
-
   const style = draft.style;
   const setStyle = (patch: Partial<CellStyle>) => setDraft((prev) => ({ ...prev, style: { ...prev.style, ...patch } }));
+  const activeLocale = resolveHomeLocale(locale);
 
   return (
-    <Box className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/30 pt-16">
-      <Box className="w-[36rem] rounded-xl border border-slate-200 bg-white shadow-2xl" data-testid="format-cells-dialog">
-        <Stack gap="none">
-          <Box className="border-b border-slate-200 px-4 py-3">
-            <Text size="sm" weight="semibold">Format Cells</Text>
-          </Box>
-          <Inline gap="none" className="min-h-[20rem]">
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={homeText(activeLocale, 'formatCells')}
+      description={homeText(activeLocale, 'formatCellsDescription')}
+      closeLabel={homeText(activeLocale, 'close')}
+      testId="format-cells-dialog"
+      maxWidth="lg"
+      bodyClassName="p-0"
+      footer={(
+        <>
+          <Button size="sm" variant="ghost" onClick={onClose}>{homeText(activeLocale, 'cancel')}</Button>
+          <Button
+            size="sm"
+            variant="primary"
+            data-testid="format-cells-apply"
+            onClick={() => {
+              onApply(draft);
+              onClose();
+            }}
+          >
+            {homeText(activeLocale, 'ok')}
+          </Button>
+        </>
+      )}
+    >
+      <Inline gap="none" className="min-h-[20rem]">
             <Stack gap="xs" className="w-36 shrink-0 border-r border-slate-200 bg-slate-50 p-2">
               {TABS.map((entry) => (
                 <Button
@@ -80,27 +102,27 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
                   data-testid={`format-tab-${entry.id}`}
                   onClick={() => setTab(entry.id)}
                 >
-                  {entry.label}
+                  {homeText(activeLocale, entry.labelKey)}
                 </Button>
               ))}
             </Stack>
             <Box className="min-w-0 flex-1 p-4">
               {tab === 'number' ? (
                 <Stack gap="md">
-                  <Text size="xs" tone="subtle">Category</Text>
+                  <Text size="xs" tone="subtle">{homeText(activeLocale, 'category')}</Text>
                   <Select
                     sizeVariant="sm"
                     value={draft.numberFormat}
                     onChange={(event) => setDraft((prev) => ({ ...prev, numberFormat: event.target.value }))}
                   >
                     {NUMBER_PRESETS.map((preset) => (
-                      <option key={preset.value} value={preset.value}>{preset.label}</option>
+                      <option key={preset.value} value={preset.value}>{homeText(activeLocale, preset.labelKey)}</option>
                     ))}
                   </Select>
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Custom format code</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'customFormat')}</Text>
                     <TextInput
-                      aria-label="Number format"
+                      aria-label={homeText(activeLocale, 'customFormat')}
                       data-testid="format-number-code"
                       value={draft.numberFormat}
                       onChange={(event) => setDraft((prev) => ({ ...prev, numberFormat: event.target.value }))}
@@ -112,41 +134,38 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
               {tab === 'alignment' ? (
                 <Stack gap="md">
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Horizontal</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'horizontal')}</Text>
                     <Select
                       sizeVariant="sm"
                       value={style.horizontalAlignment ?? 'left'}
                       onChange={(event) => setStyle({ horizontalAlignment: event.target.value as CellStyle['horizontalAlignment'] })}
                     >
-                      <option value="left">Left</option>
-                      <option value="center">Center</option>
-                      <option value="right">Right</option>
+                      <option value="left">{homeText(activeLocale, 'left')}</option>
+                      <option value="center">{homeText(activeLocale, 'center')}</option>
+                      <option value="right">{homeText(activeLocale, 'right')}</option>
                     </Select>
                   </Stack>
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Vertical</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'vertical')}</Text>
                     <Select
                       sizeVariant="sm"
                       value={style.verticalAlignment ?? 'bottom'}
                       onChange={(event) => setStyle({ verticalAlignment: event.target.value as CellStyle['verticalAlignment'] })}
                     >
-                      <option value="top">Top</option>
-                      <option value="middle">Middle</option>
-                      <option value="bottom">Bottom</option>
+                      <option value="top">{homeText(activeLocale, 'top')}</option>
+                      <option value="middle">{homeText(activeLocale, 'middle')}</option>
+                      <option value="bottom">{homeText(activeLocale, 'bottom')}</option>
                     </Select>
                   </Stack>
-                  <label className="flex items-center gap-2 text-xs text-slate-700">
-                    <input
-                      checked={Boolean(style.wrapText)}
-                      type="checkbox"
-                      onChange={(event) => setStyle({ wrapText: event.target.checked })}
-                    />
-                    Wrap text
-                  </label>
+                  <CheckToggle
+                    checked={Boolean(style.wrapText)}
+                    label={homeText(activeLocale, 'wrapText')}
+                    onChange={(event) => setStyle({ wrapText: event.target.checked })}
+                  />
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Text rotation (degrees)</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'rotation')}</Text>
                     <TextInput
-                      aria-label="Text rotation"
+                      aria-label={homeText(activeLocale, 'rotation')}
                       type="number"
                       value={String(style.textRotate ?? 0)}
                       onChange={(event) => setStyle({ textRotate: Number(event.target.value) || 0 })}
@@ -158,7 +177,7 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
               {tab === 'font' ? (
                 <Stack gap="md">
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Font family</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'fontFamily')}</Text>
                     <Select
                       sizeVariant="sm"
                       value={style.fontFamily ?? 'Segoe UI'}
@@ -172,34 +191,22 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
                     </Select>
                   </Stack>
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Font size</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'fontSize')}</Text>
                     <TextInput
-                      aria-label="Font size"
+                      aria-label={homeText(activeLocale, 'fontSize')}
                       type="number"
                       value={String(style.fontSize ?? 11)}
                       onChange={(event) => setStyle({ fontSize: Math.max(8, Number(event.target.value) || 11) })}
                     />
                   </Stack>
                   <Inline gap="sm" className="flex-wrap">
-                    <label className="flex items-center gap-1 text-xs">
-                      <input checked={Boolean(style.bold)} type="checkbox" onChange={(event) => setStyle({ bold: event.target.checked })} />
-                      Bold
-                    </label>
-                    <label className="flex items-center gap-1 text-xs">
-                      <input checked={Boolean(style.italic)} type="checkbox" onChange={(event) => setStyle({ italic: event.target.checked })} />
-                      Italic
-                    </label>
-                    <label className="flex items-center gap-1 text-xs">
-                      <input checked={Boolean(style.underline)} type="checkbox" onChange={(event) => setStyle({ underline: event.target.checked })} />
-                      Underline
-                    </label>
-                    <label className="flex items-center gap-1 text-xs">
-                      <input checked={Boolean(style.strikethrough)} type="checkbox" onChange={(event) => setStyle({ strikethrough: event.target.checked })} />
-                      Strikethrough
-                    </label>
+                    <CheckToggle checked={Boolean(style.bold)} label={homeText(activeLocale, 'bold')} onChange={(event) => setStyle({ bold: event.target.checked })} />
+                    <CheckToggle checked={Boolean(style.italic)} label={homeText(activeLocale, 'italic')} onChange={(event) => setStyle({ italic: event.target.checked })} />
+                    <CheckToggle checked={Boolean(style.underline)} label={homeText(activeLocale, 'underline')} onChange={(event) => setStyle({ underline: event.target.checked })} />
+                    <CheckToggle checked={Boolean(style.strikethrough)} label={homeText(activeLocale, 'strikethrough')} onChange={(event) => setStyle({ strikethrough: event.target.checked })} />
                   </Inline>
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Font color</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'textColor')}</Text>
                     <ColorPicker
                       color={style.textColor ?? '#0f172a'}
                       onChange={(color) => setStyle({ textColor: color })}
@@ -210,20 +217,19 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
 
               {tab === 'border' ? (
                 <Stack gap="md">
-                  <Text size="xs" tone="subtle">Presets</Text>
                   <Inline gap="sm" className="flex-wrap">
                     <Button size="sm" variant="ghost" onClick={() => setStyle({ borders: borderSide({ style: 'thin', color: '#334155' }) })}>
-                      All borders
+                      {homeText(activeLocale, 'allBorders')}
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setStyle({ borders: borderSide({ style: 'medium', color: '#0f172a' }) })}>
-                      Outline
+                      {homeText(activeLocale, 'outlineBorders')}
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setStyle({ borders: undefined })}>
-                      No border
+                      {homeText(activeLocale, 'noBorder')}
                     </Button>
                   </Inline>
                   <Stack gap="xs">
-                    <Text size="xs" tone="subtle">Border color</Text>
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'borderColor')}</Text>
                     <ColorPicker
                       color={style.borders?.top?.color ?? '#334155'}
                       onChange={(color) => {
@@ -237,7 +243,7 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
 
               {tab === 'fill' ? (
                 <Stack gap="md">
-                  <Text size="xs" tone="subtle">Background color</Text>
+                  <Text size="xs" tone="subtle">{homeText(activeLocale, 'fillBackground')}</Text>
                   <ColorPicker
                     color={style.background ?? '#ffffff'}
                     onChange={(color) => setStyle({ background: color })}
@@ -247,29 +253,11 @@ export function FormatCellsDialog({ open, initial, onClose, onApply }: FormatCel
 
               {tab === 'protection' ? (
                 <Stack gap="md">
-                  <Text size="xs" tone="subtle">
-                    Cell protection is applied at the sheet level. Use Review → Protect Sheet for locking cells.
-                  </Text>
+                  <Text size="xs" tone="subtle">{homeText(activeLocale, 'protectionHint')}</Text>
                 </Stack>
               ) : null}
             </Box>
-          </Inline>
-          <Inline gap="sm" className="justify-end border-t border-slate-200 px-4 py-3">
-            <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button
-              size="sm"
-              variant="primary"
-              data-testid="format-cells-apply"
-              onClick={() => {
-                onApply(draft);
-                onClose();
-              }}
-            >
-              OK
-            </Button>
-          </Inline>
-        </Stack>
-      </Box>
-    </Box>
+      </Inline>
+    </Dialog>
   );
 }
