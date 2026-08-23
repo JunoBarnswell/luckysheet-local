@@ -199,14 +199,26 @@ function readNativePivotControls(input: NativePivotReadInput, caches: NativePivo
       const partBytes = input.files[part];
       if (!partBytes) continue;
       const slicers = firstElement(parseXml(strFromU8(partBytes)), 'slicers');
-      for (const node of children(slicers, 'slicer')) controls.push(buildImportedControl('slicer', node, part, relation.id, sheetPart, cacheParts, caches, tables));
+      const drawingRelation = sheetRels.find((candidate) => candidate.type === REL_DRAWING || candidate.type.endsWith('/drawing'));
+      const drawingPart = drawingRelation ? resolveTarget(sheetPart, drawingRelation.target) : undefined;
+      for (const node of children(slicers, 'slicer')) {
+        const control = buildImportedControl('slicer', node, part, relation.id, sheetPart, cacheParts, caches, tables);
+        if (drawingPart && input.files[drawingPart] && strFromU8(input.files[drawingPart]!).includes(`name="${encodeXml(control.name)}"`)) { control.drawingPart = drawingPart; control.drawingRelationshipId = drawingRelation!.id; }
+        controls.push(control);
+      }
     }
     for (const relation of sheetRels.filter((candidate) => isTimelineRelation(candidate))) {
       const part = resolveTarget(sheetPart, relation.target);
       const partBytes = input.files[part];
       if (!partBytes) continue;
       const timelines = firstElement(parseXml(strFromU8(partBytes)), 'timelines');
-      for (const node of children(timelines, 'timeline')) controls.push(buildImportedControl('timeline', node, part, relation.id, sheetPart, cacheParts, caches, tables));
+      const drawingRelation = sheetRels.find((candidate) => candidate.type === REL_DRAWING || candidate.type.endsWith('/drawing'));
+      const drawingPart = drawingRelation ? resolveTarget(sheetPart, drawingRelation.target) : undefined;
+      for (const node of children(timelines, 'timeline')) {
+        const control = buildImportedControl('timeline', node, part, relation.id, sheetPart, cacheParts, caches, tables);
+        if (drawingPart && input.files[drawingPart] && strFromU8(input.files[drawingPart]!).includes(`name="${encodeXml(control.name)}"`)) { control.drawingPart = drawingPart; control.drawingRelationshipId = drawingRelation!.id; }
+        controls.push(control);
+      }
     }
     void root;
   }
@@ -306,6 +318,35 @@ export function mapNativePivotDefinition(
   };
 }
 
+export interface NativePivotFeatureStatus {
+  pivot: boolean;
+  slicer: boolean;
+  timeline: boolean;
+}
+
+/** Report capabilities of the canonical shapes accepted by the native writer. */
+export function nativePivotFeatureStatus(snapshot: WorkbookSnapshot, graph?: NativePivotGraph): NativePivotFeatureStatus {
+  const pivots = snapshot.sheets.flatMap((sheet) => sheet.pivots);
+  const pivot = pivots.some((candidate) => candidate.source.kind === 'worksheet-range' || candidate.source.kind === 'table');
+  const controls = snapshot.sheets.flatMap((sheet) => (sheet.drawings ?? []).flatMap((drawing) => {
+    const payload = sheet.drawingPayloads[drawing.payloadId];
+    return payload && (payload.kind === 'slicer' || payload.kind === 'timeline') ? [payload] : [];
+  }));
+  const exportable = (payload: { kind: 'slicer' | 'timeline'; pivotId: string; fieldId: string }): boolean => {
+    const target = pivots.find((candidate) => candidate.id === payload.pivotId);
+    const field = target?.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId);
+    return Boolean(target && (target.source.kind === 'worksheet-range' || target.source.kind === 'table') && field && (payload.kind === 'slicer' || field.dataType === 'date'));
+  };
+  const slicers = controls.filter((control) => control.kind === 'slicer');
+  const timelines = controls.filter((control) => control.kind === 'timeline');
+  const graphControls = graph?.controls ?? [];
+  return {
+    pivot,
+    slicer: slicers.length > 0 && slicers.every(exportable) && (graph ? graphControls.filter((control) => control.kind === 'slicer' && control.valid).length >= slicers.length : true),
+    timeline: timelines.length > 0 && timelines.every(exportable) && (graph ? graphControls.filter((control) => control.kind === 'timeline' && control.valid).length >= timelines.length : true),
+  };
+}
+
 /** Rebuild reachable native parts and relationships from current canonical pivots. */
 export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInput): NativePivotPackageUpdate {
   const files = cloneFiles(input.files);
@@ -396,6 +437,181 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
   return { graph: { schema: 'NativePivotGraph', caches, tables, ...(controlUpdate.controls.length ? { controls: controlUpdate.controls } : {}) }, files: controlUpdate.files, relationships, displayCellsBySheetPart };
 }
 
+interface NativeControlSyncInput {
+  files: Record<string, Uint8Array>;
+  relationships: Record<string, XlsxRelationship[]>;
+  existing: NativePivotControlDefinition[];
+  snapshot: WorkbookSnapshot;
+  sheetPartById: Record<string, string>;
+  caches: NativePivotCacheDefinition[];
+  tables: NativePivotTableDefinition[];
+}
+
+interface NativeControlSyncResult {
+  files: Record<string, Uint8Array>;
+  relationships: Record<string, XlsxRelationship[]>;
+  controls: NativePivotControlDefinition[];
+}
+
+function synchronizeNativeControls(input: NativeControlSyncInput): NativeControlSyncResult {
+  const files = input.files;
+  const originalRelationships = cloneRelationships(input.relationships);
+  const relationships = cloneRelationships(input.relationships);
+  const controls: NativePivotControlDefinition[] = [];
+  const partNumbers = nextControlPartNumbers(files);
+  const entries = input.snapshot.sheets.flatMap((sheet) => (sheet.drawings ?? []).flatMap((drawing) => {
+    const payload = sheet.drawingPayloads[drawing.payloadId];
+    return payload && (payload.kind === 'slicer' || payload.kind === 'timeline') ? [{ sheet, drawing, payload }] : [];
+  }));
+  const oldById = new Map(input.existing.map((control) => [control.id, control]));
+  type NativeControlDrawingEntry = { control: NativePivotControlDefinition; drawing: SheetSnapshot['drawings'][number] };
+  const drawingEntries = new Map<string, NativeControlDrawingEntry[]>();
+  for (const entry of entries) {
+    const pivot = input.snapshot.sheets.flatMap((sheet) => sheet.pivots).find((candidate) => candidate.id === entry.payload.pivotId);
+    const table = pivot ? input.tables.find((candidate) => candidate.pivotId === pivot.id || candidate.part === pivot.nativeMetadata?.pivotTablePart) : undefined;
+    const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === entry.payload.fieldId);
+    const cacheFieldIndex = pivot?.nativeMetadata?.fieldBindings?.[entry.payload.fieldId]?.cacheFieldIndex ?? field?.ordinal;
+    const cache = table ? input.caches.find((candidate) => candidate.cacheId === table.cacheId) : undefined;
+    if (!pivot || !table || !cache || !field || cacheFieldIndex === undefined || !input.sheetPartById[entry.sheet.id] || (entry.payload.kind === 'timeline' && field.dataType !== 'date')) continue;
+    const old = oldById.get(entry.drawing.id);
+    const kind = entry.payload.kind;
+    const name = old?.name ?? safeControlName(entry.drawing.id, kind);
+    const cacheName = old?.cacheName ?? `${kind === 'slicer' ? 'Slicer' : 'NativeTimeline'}_${safeControlName(entry.drawing.id, kind)}`;
+    const cachePart = old?.cachePart || (kind === 'slicer' ? `xl/slicerCaches/slicerCache${partNumbers.slicerCache++}.xml` : `xl/timelineCaches/timelineCache${partNumbers.timelineCache++}.xml`);
+    const part = old?.part || (kind === 'slicer' ? `xl/slicers/slicer${partNumbers.slicer++}.xml` : `xl/timelines/timeline${partNumbers.timeline++}.xml`);
+    const connectedPivotIds = [...new Set([entry.payload.pivotId, ...(entry.payload.connectedPivotIds ?? [])])];
+    const control: NativePivotControlDefinition = {
+      kind, id: entry.drawing.id, name, sheetPart: input.sheetPartById[entry.sheet.id]!, part, cachePart, cacheName,
+      relationshipId: old?.relationshipId ?? '', cacheRelationshipId: old?.cacheRelationshipId ?? '',
+      ...(old?.drawingPart ? { drawingPart: old.drawingPart } : {}), ...(old?.drawingRelationshipId ? { drawingRelationshipId: old.drawingRelationshipId } : {}),
+      pivotId: entry.payload.pivotId, fieldId: entry.payload.fieldId, fieldIndex: cacheFieldIndex, pivotCacheId: table.cacheId, connectedPivotIds,
+      valid: true,
+    };
+    if (entry.payload.kind === 'slicer') {
+      files[cachePart] = strToU8(buildSlicerCacheXml(control, entry.payload, pivot, cache, input.tables));
+      files[part] = strToU8(buildSlicerXml(control, entry.payload));
+    } else {
+      files[cachePart] = strToU8(buildTimelineCacheXml(control, entry.payload, pivot, input.tables));
+      files[part] = strToU8(buildTimelineXml(control, entry.payload));
+    }
+    controls.push(control);
+    const list = drawingEntries.get(control.sheetPart) ?? [];
+    list.push({ control, drawing: entry.drawing });
+    drawingEntries.set(control.sheetPart, list);
+  }
+  // Invalid imported controls stay byte-preserved and explicitly marked; valid
+  // controls absent from canonical drawings are deletions.
+  for (const old of input.existing) {
+    if (controls.some((control) => control.id === old.id)) continue;
+    const oldTable = old.pivotId ? input.tables.find((table) => nativePivotId(table) === old.pivotId) : undefined;
+    const oldCache = oldTable ? input.caches.find((cache) => cache.cacheId === oldTable.cacheId) : undefined;
+    if (old.part && old.cachePart && (!old.valid || oldCache?.source.kind === 'unsupported')) controls.push(structuredClone(old));
+  }
+  for (const name of Object.keys(files)) {
+    if (!isNativeControlPart(name)) continue;
+    if (!controls.some((control) => control.part === name || control.cachePart === name)) delete files[name];
+  }
+  for (const [sheetPart, entriesForSheet] of drawingEntries) {
+    const current = relationships[sheetPart] ?? [];
+    let drawingRelation = current.find((relation) => relation.type === REL_DRAWING || relation.type.endsWith('/drawing'));
+    let drawingPart = drawingRelation ? resolveTarget(sheetPart, drawingRelation.target) : `xl/drawings/drawing${partNumbers.drawing++}.xml`;
+    if (!drawingRelation) {
+      drawingRelation = { id: allocateId(current), type: REL_DRAWING, target: relativeTarget(sheetPart, drawingPart) };
+      relationships[sheetPart] = [...current, drawingRelation];
+    }
+    const oldDrawing = files[drawingPart];
+    const newEntries = oldDrawing ? entriesForSheet.filter((entry) => !strFromU8(oldDrawing).includes(`name="${encodeXml(entry.control.name)}"`)) : entriesForSheet;
+    if (newEntries.length) {
+      const drawingXml = buildControlDrawingXml(newEntries);
+      files[drawingPart] = oldDrawing ? appendControlDrawingXml(oldDrawing, drawingXml) : strToU8(drawingXml);
+    }
+    for (const entry of entriesForSheet) {
+      entry.control.drawingPart = drawingPart;
+      entry.control.drawingRelationshipId = drawingRelation.id;
+    }
+  }
+  for (const [source, list] of Object.entries(relationships)) {
+    relationships[source] = list.filter((relation) => source === 'xl/workbook.xml' ? !isSlicerCacheRelation(relation) && !isTimelineCacheRelation(relation) : !isSlicerRelation(relation) && !isTimelineRelation(relation));
+  }
+  for (const control of controls) {
+    const workbookList = relationships['xl/workbook.xml'] ?? [];
+    const oldCache = originalRelationships['xl/workbook.xml']?.find((relation) => (isSlicerCacheRelation(relation) || isTimelineCacheRelation(relation)) && resolveTarget('xl/workbook.xml', relation.target) === control.cachePart);
+    control.cacheRelationshipId = oldCache?.id ?? allocateId(workbookList);
+    relationships['xl/workbook.xml'] = [...workbookList, { id: control.cacheRelationshipId, type: control.kind === 'slicer' ? REL_SLICER_CACHE_MODERN : REL_TIMELINE_CACHE, target: relativeTarget('xl/workbook.xml', control.cachePart) }];
+    const sheetList = relationships[control.sheetPart] ?? [];
+    const oldPart = originalRelationships[control.sheetPart]?.find((relation) => (isSlicerRelation(relation) || isTimelineRelation(relation)) && resolveTarget(control.sheetPart, relation.target) === control.part);
+    control.relationshipId = oldPart?.id ?? allocateId(sheetList);
+    relationships[control.sheetPart] = [...sheetList, { id: control.relationshipId, type: control.kind === 'slicer' ? REL_SLICER : REL_TIMELINE, target: relativeTarget(control.sheetPart, control.part) }];
+  }
+  return { files, relationships, controls };
+}
+
+function buildSlicerCacheXml(control: NativePivotControlDefinition, payload: { kind: 'slicer'; pivotId: string; fieldId: string; filter: { mode: 'all' | 'include' | 'exclude'; memberKeys: Array<{ type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null }> }; connectedPivotIds?: string[] }, pivot: PivotModel, cache: NativePivotCacheDefinition, tables: NativePivotTableDefinition[]): string {
+  const field = cache.fields[control.fieldIndex ?? -1];
+  const values = field?.sharedItems ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId)?.values ?? [];
+  const selected = new Set(payload.filter.memberKeys.map((value) => `${value.type}:${JSON.stringify(value.value)}`));
+  const items = values.map((value, index) => {
+    const key = nativeMemberKey(value);
+    const keyValue = `${key.type}:${JSON.stringify(key.value)}`;
+    const checked = payload.filter.mode === 'include' ? selected.has(keyValue) : payload.filter.mode === 'exclude' ? !selected.has(keyValue) : false;
+    return `<i x="${index}"${checked ? ' s="1"' : ''}/>`;
+  }).join('');
+  const connected = [...new Set([payload.pivotId, ...(payload.connectedPivotIds ?? [])])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
+  return withXmlDeclaration(`<slicerCacheDefinition xmlns="${NS_X14}" xmlns:x="${NS_MAIN}" name="${encodeXml(control.cacheName)}" sourceName="${encodeXml(field?.name ?? payload.fieldId)}"><pivotTables>${connected}</pivotTables><data><tabular pivotCacheId="${control.pivotCacheId ?? cache.cacheId}"><items count="${values.length}">${items}</items></tabular></data></slicerCacheDefinition>`);
+}
+
+function buildSlicerXml(control: NativePivotControlDefinition, payload: { kind: 'slicer'; fieldId: string },): string {
+  void payload;
+  return withXmlDeclaration(`<slicers xmlns="${NS_X14}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${NS_MAIN}" mc:Ignorable="x"><slicer name="${encodeXml(control.name)}" cache="${encodeXml(control.cacheName)}" caption="${encodeXml(control.name)}" rowHeight="228600"/></slicers>`);
+}
+
+function buildTimelineCacheXml(control: NativePivotControlDefinition, payload: { kind: 'timeline'; pivotId: string; fieldId: string; period: { start?: string; end?: string }; connectedPivotIds?: string[] }, pivot: PivotModel, tables: NativePivotTableDefinition[]): string {
+  const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId);
+  const connected = [...new Set([payload.pivotId, ...(payload.connectedPivotIds ?? [])])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
+  const start = payload.period.start ?? '2000-01-01T00:00:00Z';
+  const end = payload.period.end ?? '2100-01-01T00:00:00Z';
+  const filterType = payload.period.start && payload.period.end ? 'dateBetween' : 'unknown';
+  return withXmlDeclaration(`<timelineCacheDefinition xmlns="${NS_X15}" xmlns:x15="${NS_X15}" name="${encodeXml(control.cacheName)}" sourceName="${encodeXml(field?.name ?? payload.fieldId)}"><pivotTables>${connected}</pivotTables><state minimalRefreshVersion="6" lastRefreshVersion="6" pivotCacheId="${control.pivotCacheId ?? 0}" filterType="${filterType}"><selection startDate="${encodeXml(start)}" endDate="${encodeXml(end)}"/><bounds startDate="2000-01-01T00:00:00Z" endDate="2100-01-01T00:00:00Z"/></state></timelineCacheDefinition>`);
+}
+
+function buildTimelineXml(control: NativePivotControlDefinition, payload: { kind: 'timeline'; period: { start?: string; end?: string } }): string {
+  return withXmlDeclaration(`<timelines xmlns="${NS_X15}" xmlns:x15="${NS_X15}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${NS_MAIN}" mc:Ignorable="x"><timeline name="${encodeXml(control.name)}" cache="${encodeXml(control.cacheName)}" caption="${encodeXml(control.name)}" showHeader="1" showSelectionLabel="1" showTimeLevel="1" showHorizontalScrollbar="1" level="2" selectionLevel="2"${payload.period.start ? ` scrollPosition="${encodeXml(payload.period.start)}"` : ''} style="TimelineStyleLight2"/></timelines>`);
+}
+
+function buildControlDrawingXml(entries: Array<{ control: NativePivotControlDefinition; drawing: { anchor: unknown; transform: { width: number; height: number } } }>): string {
+  const anchors = entries.map((entry, index) => buildControlDrawingAnchor(entry.control, entry.drawing, index)).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:r="${NS_DOC_REL}">${anchors}</xdr:wsDr>`;
+}
+
+function buildControlDrawingAnchor(control: NativePivotControlDefinition, drawing: { anchor: unknown; transform: { width: number; height: number } }, index: number): string {
+  const anchor = drawing.anchor as { kind?: string; row?: number; column?: number };
+  const row = anchor.row ?? index * 8;
+  const column = anchor.column ?? 0;
+  const width = Math.max(1, Math.round(drawing.transform.width / 80));
+  const height = Math.max(2, Math.round(drawing.transform.height / 20));
+  const requires = control.kind === 'slicer' ? 'x14' : 'tsle';
+  const namespace = control.kind === 'slicer' ? NS_SLICER_DRAWING : NS_TIMELINE_DRAWING;
+  const prefix = control.kind === 'slicer' ? 'sle' : 'tsle';
+  return `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${column + width}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${row + height}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><mc:AlternateContent><mc:Choice Requires="${requires}" xmlns:${requires}="${namespace}"><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${index + 1}" name="${encodeXml(control.name)}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="${namespace}"><${prefix}:${control.kind === 'slicer' ? 'slicer' : 'timeline'} xmlns:${prefix}="${namespace}" name="${encodeXml(control.name)}"/></a:graphicData></a:graphic></xdr:graphicFrame></mc:Choice><mc:Fallback><xdr:sp><xdr:nvSpPr><xdr:cNvPr id="${index + 1}" name="${encodeXml(control.name)}"/><xdr:cNvSpPr><a:spLocks noTextEdit="1"/></xdr:cNvSpPr></xdr:nvSpPr><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:sp></mc:Fallback></mc:AlternateContent><xdr:clientData/></xdr:twoCellAnchor>`;
+}
+
+function appendControlDrawingXml(existing: Uint8Array, generated: string): Uint8Array {
+  const root = firstElement(parseXml(strFromU8(existing)), 'wsDr');
+  const generatedRoot = firstElement(parseXml(generated), 'wsDr');
+  root.children.push(...generatedRoot.children);
+  return strToU8(withXmlDeclaration(serializeXml(root)));
+}
+
+function safeControlName(value: string, kind: 'slicer' | 'timeline'): string {
+  const normalized = value.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 200) || `${kind}_control`;
+  return normalized;
+}
+
+function nextControlPartNumbers(files: Record<string, Uint8Array>): { slicerCache: number; timelineCache: number; slicer: number; timeline: number; drawing: number } {
+  const max = (pattern: RegExp): number => Object.keys(files).reduce((result, name) => Math.max(result, Number(name.match(pattern)?.[1] ?? 0)), 0);
+  return { slicerCache: max(/slicerCache(\d+)\.xml$/i) + 1, timelineCache: max(/timelineCache(\d+)\.xml$/i) + 1, slicer: max(/slicer(\d+)\.xml$/i) + 1, timeline: max(/timeline(\d+)\.xml$/i) + 1, drawing: max(/drawing(\d+)\.xml$/i) + 1 };
+}
+
 /** Validate and patch source sheet names for callers that only have a graph. */
 export function synchronizeNativePivotGraph(input: NativePivotWriteInput): Record<string, Uint8Array> {
   const files = cloneFiles(input.files);
@@ -480,7 +696,7 @@ function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefin
 function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinition, part: string, sheetPart: string, old: NativePivotTableDefinition | undefined, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): NativePivotTableDefinition {
   const fieldIndex = (placement: PivotFieldPlacement | PivotValueField): number => {
     const id = placement.fieldId;
-    return pivot.fieldCatalog.fields.find((field) => field.fieldId === id || field.id === id || field.name === id)?.ordinal ?? source.fields.findIndex((field) => field.name === id);
+    return pivot.fieldCatalog.fields.find((field) => field.fieldId === id || field.name === id)?.ordinal ?? source.fields.findIndex((field) => field.name === id);
   };
   const rows = pivot.layout.rows.map(fieldIndex).filter((index) => index >= 0);
   const columns = pivot.layout.columns.map(fieldIndex).filter((index) => index >= 0);
@@ -597,6 +813,7 @@ function allocateId(list: XlsxRelationship[]): string { const used = new Set(lis
 function relativeTarget(source: string, target: string): string { const left = source.slice(0, source.lastIndexOf('/') + 1).split('/').filter(Boolean); const right = target.split('/').filter(Boolean); while (left.length && right.length && left[0] === right[0]) { left.shift(); right.shift(); } return `${'../'.repeat(left.length)}${right.join('/')}`; }
 function isPivotRelation(relation: XlsxRelationship): boolean { return relation.type.endsWith('/pivotCacheDefinition') || relation.type.endsWith('/pivotCacheRecords') || relation.type.endsWith('/pivotTable'); }
 function isNativePivotPart(name: string): boolean { return /^xl\/(pivotTables\/|pivotCache\/)/i.test(name); }
+function isNativeControlPart(name: string): boolean { return /^xl\/(slicers\/|slicerCaches\/|timelines\/|timelineCaches\/)/i.test(name); }
 function nextPartNumbers(files: Record<string, Uint8Array>): { cacheDefinition: number; records: number; table: number } { const max = (pattern: RegExp): number => Object.keys(files).reduce((value, name) => Math.max(value, Number(name.match(pattern)?.[1] ?? 0)), 0); return { cacheDefinition: max(/pivotCacheDefinition(\d+)\.xml$/i) + 1, records: max(/pivotCacheRecords(\d+)\.xml$/i) + 1, table: max(/pivotTable(\d+)\.xml$/i) + 1 }; }
 function nativeFieldId(cacheId: number, index: number): string { return `native:cache:${cacheId}:field:${index}`; }
 function nativePivotId(table: NativePivotTableDefinition): string { return `native:pivot:${table.part}`; }

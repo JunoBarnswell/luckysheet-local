@@ -18,16 +18,18 @@ import type {
   PivotDefinition,
   RangeRef,
   ShapeDrawingPayload,
+  SheetSnapshot,
   SheetTableModel,
   SheetDataRegion,
   SparklineModel,
   SparklineGroup,
   WorkbookTableModel,
+  WorkbookSnapshot,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider, TableRowsResponse } from '@react-sheets/protocol';
 import type { XlsxPackage, XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
-import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from './features/pivot/engine';
+import { computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
 import {
   collectFindReplacements,
   copyRangeToClipboardData,
@@ -83,6 +85,7 @@ import {
 import {
   buildPivotModel,
   connectedPivotIdsForSource,
+  readPivotBlockSource,
 } from './features/pivot';
 import {
   buildPivotSlicerDrawing,
@@ -90,6 +93,7 @@ import {
   listPivotControlsForPivot,
   type PivotControlRecord,
 } from './features/pivot-controls';
+import { encodeSheetDataRegion, type EncodedSheetDataBlock } from './features/data-source';
 import {
   buildCellNote,
   buildCommentReply,
@@ -238,6 +242,44 @@ export interface CreatePivotTableParams {
   destination: { kind: 'new-sheet' } | { kind: 'existing-sheet'; sheetId: string; anchor: { row: number; column: number } };
 }
 
+function snapshotUsedRange(sheet: SheetSnapshot): RangeRef | undefined {
+  let startRow = Number.POSITIVE_INFINITY;
+  let startColumn = Number.POSITIVE_INFINITY;
+  let endRow = -1;
+  let endColumn = -1;
+  for (const [rawRow, columns] of Object.entries(sheet.cells)) {
+    const row = Number(rawRow);
+    if (!Number.isSafeInteger(row)) continue;
+    for (const rawColumn of Object.keys(columns)) {
+      const column = Number(rawColumn);
+      if (!Number.isSafeInteger(column)) continue;
+      startRow = Math.min(startRow, row);
+      startColumn = Math.min(startColumn, column);
+      endRow = Math.max(endRow, row);
+      endColumn = Math.max(endColumn, column);
+    }
+  }
+  if (!Number.isFinite(startRow) || !Number.isFinite(startColumn)) return undefined;
+  return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
+}
+
+function preserveSparseOverlayCell(cell: CellData): boolean {
+  return cell.formula !== undefined || cell.style !== undefined || cell.numberFormat !== undefined
+    || cell.comment !== undefined || cell.note !== undefined || cell.hyperlinkDetail !== undefined;
+}
+
+function removeBlockMaterializedCells(sheet: SheetSnapshot, range: RangeRef): void {
+  for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+    const columns = sheet.cells[String(row)];
+    if (!columns) continue;
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const cell = columns[String(column)];
+      if (cell && !preserveSparseOverlayCell(cell)) delete columns[String(column)];
+    }
+    if (Object.keys(columns).length === 0) delete sheet.cells[String(row)];
+  }
+}
+
 export function getInitialSessionPhase(): AppPhase {
   if (typeof window === 'undefined') return 'ready';
   const queryPhase = new URLSearchParams(window.location.search).get('state');
@@ -299,6 +341,7 @@ export class WorkbookSession {
   private lastScriptResult: ScriptRunResult | null = null;
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
+  private readonly pivotTaskGeneration = new Map<string, number>();
 
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
@@ -452,7 +495,7 @@ export class WorkbookSession {
     if (this.cachedUiSnapshot && this.cachedUiSnapshotGeneration === this.snapshotGeneration) {
       return this.cachedUiSnapshot;
     }
-    const sheets = buildAllSheetSnapshots(this.runtime.model, this.runtime.formula, this.runtime.pivotResults);
+    const sheets = buildAllSheetSnapshots(this.runtime.model, this.runtime.formula, this.runtime.pivotResults, this.runtime.dataContent);
     const selectedSheet = sheets.find((sheet) => sheet.id === this.activeSheetId) ?? sheets[0]!;
     const selection = this.selectionService.getState();
     const collaboration = this.getCollaborationSnapshot();
@@ -759,8 +802,14 @@ export class WorkbookSession {
     const selection = this.selectionService.getState();
     const primary = this.getPrimaryRange();
     if (primary.startRow !== primary.endRow || primary.startColumn !== primary.endColumn) return primary;
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const blockRegion = sheet.dataRegions.find((region) => selection.activeCell.row >= region.range.startRow
+      && selection.activeCell.row <= region.range.endRow
+      && selection.activeCell.column >= region.range.startColumn
+      && selection.activeCell.column <= region.range.endColumn);
+    if (blockRegion) return structuredClone(blockRegion.range);
     return currentRegionOfSheet(
-      this.runtime.model.getSheet(this.activeSheetId),
+      sheet,
       selection.activeCell.row,
       selection.activeCell.column,
     );
@@ -1513,7 +1562,11 @@ export class WorkbookSession {
       }
     }
 
-    const source = { kind: 'worksheet-range' as const, range: { ...sourceRange } };
+    const sourceRegion = this.runtime.model.getSheet(sourceRange.sheetId).dataRegions.find((region) => region.range.startRow === sourceRange.startRow
+      && region.range.endRow === sourceRange.endRow && region.range.startColumn === sourceRange.startColumn && region.range.endColumn === sourceRange.endColumn);
+    const source = sourceRegion
+      ? { kind: 'data-source' as const, dataSourceId: sourceRegion.sourceId }
+      : { kind: 'worksheet-range' as const, range: { ...sourceRange } };
     const draft = {
       schema: 'PivotDefinition' as const,
       id: pivotId,
@@ -1660,6 +1713,7 @@ export class WorkbookSession {
   }
   removePivot(id: string): void {
     this.runCommand('pivot.remove', id);
+    this.pivotTaskGeneration.delete(id);
     delete this.runtime.pivotResults[id];
     this.refresh();
   }
@@ -1679,9 +1733,42 @@ export class WorkbookSession {
     this.refresh();
   }
   private recomputePivotResult(pivotId: string): void {
-    const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
-    if (!pivot) {
+    const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
+    const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
+    if (!pivot || !owner) {
       delete this.runtime.pivotResults[pivotId];
+      return;
+    }
+    if (pivot.source.kind === 'data-source') {
+      const query = this.runtime.dataContent.get(pivot.source.dataSourceId);
+      const region = this.runtime.model.getSheets()
+        .flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
+        .find(({ entry }) => entry.sourceId === pivot.source.dataSourceId);
+      if (!query || !region) {
+        delete this.runtime.pivotResults[pivotId];
+        this.notify(`PivotTable source ${pivot.source.dataSourceId} is unavailable`);
+        return;
+      }
+      const taskRevision = (this.pivotTaskGeneration.get(pivotId) ?? 0) + 1;
+      this.pivotTaskGeneration.set(pivotId, taskRevision);
+      void readPivotBlockSource(normalizePivotDefinition(this.runtime.model, pivot), query, {
+        sourceSheetId: region.sheet.id,
+        sourceRowStart: region.entry.headerRow + 1,
+      }).then((result) => {
+        if (this.pivotTaskGeneration.get(pivotId) !== taskRevision || result.status !== 'ready') {
+          if (result.status !== 'ready') this.notify(result.error);
+          return;
+        }
+        this.runtime.pivotResults[pivotId] = computePivotResultFromBlockSource(
+          this.runtime.model,
+          pivot,
+          result.source,
+          `${result.state.sourceId}:${result.sourceRevision}`,
+        );
+        this.refresh();
+      }).catch((error) => {
+        if (this.pivotTaskGeneration.get(pivotId) === taskRevision) this.notify(error instanceof Error ? error.message : 'PivotTable source failed to load');
+      });
       return;
     }
     try {
@@ -2648,6 +2735,40 @@ export class WorkbookSession {
     };
   }
 
+  private async prepareLargeDataRegions(snapshot: WorkbookSnapshot): Promise<EncodedSheetDataBlock[]> {
+    const preparedBlocks: EncodedSheetDataBlock[] = [];
+    snapshot.dataSources ??= [];
+    const existingSourceIds = new Set(snapshot.dataSources.map((source) => source.id));
+    for (const sheet of snapshot.sheets) {
+      if (sheet.dataRegions?.length) continue;
+      const range = snapshotUsedRange(sheet);
+      if (!range || range.endRow <= range.startRow) continue;
+      const sourceId = `source:${sheet.id}:${range.startRow}:${range.startColumn}:${range.endRow}:${range.endColumn}`;
+      if (existingSourceIds.has(sourceId)) continue;
+      const encoded = await encodeSheetDataRegion({
+        sheet,
+        range,
+        sourceId,
+        sourceName: `${sheet.name} data`,
+        regionId: `${sourceId}:region`,
+        revision: this.version,
+      });
+      if (!encoded) continue;
+      // Bytes are committed first. The snapshot is changed only after every
+      // referenced block has passed its local checksum write.
+      for (const block of encoded.blocks) {
+        await this.runtime.workspacePersistence.dataBlocks.put(block.ref, block.payload);
+      }
+      snapshot.dataSources.push(encoded.manifest);
+      sheet.dataRegions ??= [];
+      sheet.dataRegions.push(encoded.region);
+      removeBlockMaterializedCells(sheet, range);
+      preparedBlocks.push(...encoded.blocks);
+      existingSourceIds.add(sourceId);
+    }
+    return preparedBlocks;
+  }
+
   async importXlsxBuffer(buffer: ArrayBuffer, fileName = 'import.xlsx'): Promise<void> {
     if (!this.canExecute('xlsx.import')) {
       this.notify('You do not have permission to import workbooks');
@@ -2658,6 +2779,7 @@ export class WorkbookSession {
     try {
       const imported = await exchangeImportXlsx({ fileName, buffer, execution: this.xlsxExecution, revision: this.version });
       if (!imported.snapshot) throw new Error('XLSX import did not produce a workbook snapshot');
+      const preparedBlocks = await this.prepareLargeDataRegions(imported.snapshot);
       hydrateRuntime(this.runtime, {
         snapshot: imported.snapshot,
         revision: this.runtime.remoteRevision,
@@ -2674,6 +2796,11 @@ export class WorkbookSession {
       }
       this.activeSheetId = this.runtime.model.primarySheetId;
       this.selectionService.resetForSheet(this.activeSheetId);
+      for (const block of preparedBlocks) {
+        // The synchronizer uploads only metadata-addressed bytes; it never
+        // places bytes in an operation envelope.
+        await this.runtime.dataBlocks.put(block.ref, block.payload);
+      }
       await Promise.all([
         this.runtime.checkpointWorkspace(),
         imported.sourceArtifact

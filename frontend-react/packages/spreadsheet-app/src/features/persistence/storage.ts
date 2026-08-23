@@ -1,8 +1,21 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
+import type { XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { computeChecksum, verifyChecksum } from './checksum';
 import { LocalDataBlockStore } from './data-block-store';
-import { LocalXlsxArtifactStore } from './xlsx-artifact-store';
+import { buildXlsxArtifactRecord, LocalXlsxArtifactStore } from './xlsx-artifact-store';
+import {
+  openWorkspaceDatabase,
+  requestResult,
+  transactionComplete,
+  WORKSPACE_DATABASE_NAME,
+  WORKSPACE_STORE_NAME,
+  XLSX_ARTIFACT_STORE_NAME,
+  type IndexedDbStoreOptions,
+} from './indexed-db';
+
+/** Public options retained for all browser and runtime persistence callers. */
+export type IndexedDbWorkspaceStoreOptions = IndexedDbStoreOptions;
 
 /** The only browser-persistent workbook record. */
 export interface WorkspaceRecord {
@@ -168,46 +181,6 @@ export class OperationJournalStore {
   }
 }
 
-interface IndexedDbRequest<T> {
-  result: T;
-  onsuccess: (() => void) | null;
-  onerror: (() => void) | null;
-  error?: DOMException | null;
-}
-
-interface IndexedDbTransaction {
-  objectStore(name: string): {
-    get(key: string): IndexedDbRequest<WorkspaceRecord | undefined>;
-    getAll(): IndexedDbRequest<WorkspaceRecord[]>;
-    put(value: WorkspaceRecord): IndexedDbRequest<unknown>;
-    delete(key: string): IndexedDbRequest<unknown>;
-  };
-  oncomplete: (() => void) | null;
-  onerror: (() => void) | null;
-  onabort: (() => void) | null;
-}
-
-interface IndexedDbDatabase {
-  objectStoreNames: { contains(name: string): boolean };
-  createObjectStore(name: string, options?: { keyPath?: string }): unknown;
-  transaction(name: string, mode: 'readonly' | 'readwrite'): IndexedDbTransaction;
-  close(): void;
-}
-
-interface IndexedDbOpenRequest extends IndexedDbRequest<IndexedDbDatabase> {
-  onupgradeneeded: (() => void) | null;
-}
-
-interface IndexedDbFactory {
-  open(name: string): IndexedDbOpenRequest;
-}
-
-export interface IndexedDbWorkspaceStoreOptions {
-  databaseName?: string;
-  indexedDB?: IndexedDbFactory | null;
-}
-
-const WORKSPACE_STORE_NAME = 'workspaces';
 const memoryWorkspaceDatabases = new Map<string, Map<string, WorkspaceRecord>>();
 
 function memoryWorkspaceRecords(databaseName: string): Map<string, WorkspaceRecord> {
@@ -219,60 +192,24 @@ function memoryWorkspaceRecords(databaseName: string): Map<string, WorkspaceReco
   return records;
 }
 
-function resolveIndexedDb(explicit: IndexedDbFactory | null | undefined): IndexedDbFactory | null {
-  if (explicit !== undefined) return explicit;
-  if (typeof globalThis !== 'undefined' && 'indexedDB' in globalThis) {
-    return (globalThis as typeof globalThis & { indexedDB?: IndexedDbFactory }).indexedDB ?? null;
-  }
-  return null;
-}
-
-function requestResult<T>(request: IndexedDbRequest<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
-  });
-}
-
-function openDatabase(factory: IndexedDbFactory, name: string): Promise<IndexedDbDatabase> {
-  return new Promise<IndexedDbDatabase>((resolve, reject) => {
-    const request = factory.open(name);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(WORKSPACE_STORE_NAME)) {
-        request.result.createObjectStore(WORKSPACE_STORE_NAME, { keyPath: 'unitId' });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
-  });
-}
-
-function completeTransaction(transaction: IndexedDbTransaction): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(new Error('IndexedDB transaction failed'));
-    transaction.onabort = () => reject(new Error('IndexedDB transaction aborted'));
-  });
-}
-
 /** IndexedDB-backed WorkspaceRecord storage with a memory-only Node fallback. */
 export class IndexedDbWorkspaceStore {
+  private readonly options: IndexedDbWorkspaceStoreOptions;
   private readonly databaseName: string;
-  private readonly factory: IndexedDbFactory | null;
-  private databasePromise: Promise<IndexedDbDatabase> | null = null;
+  private databasePromise: Promise<IDBDatabase | null> | null = null;
 
   constructor(options: IndexedDbWorkspaceStoreOptions = {}) {
-    this.databaseName = options.databaseName ?? 'react-sheets-workspaces';
-    this.factory = resolveIndexedDb(options.indexedDB);
+    this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
+    this.options = options;
   }
 
   async load(unitId: string): Promise<WorkspaceRecord | null> {
-    if (!this.factory) return clone(memoryWorkspaceRecords(this.databaseName).get(unitId) ?? null);
     const database = await this.database();
+    if (!database) return clone(memoryWorkspaceRecords(this.databaseName).get(unitId) ?? null);
     const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
-    const transactionComplete = completeTransaction(transaction);
-    const value = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).get(unitId));
-    await transactionComplete;
+    const complete = transactionComplete(transaction);
+    const value = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).get(unitId)) as WorkspaceRecord | undefined;
+    await complete;
     if (!value) return null;
     if (!verifyWorkspaceRecord(value)) {
       await this.clear(unitId);
@@ -283,36 +220,36 @@ export class IndexedDbWorkspaceStore {
 
   async save(record: WorkspaceRecord): Promise<void> {
     if (!verifyWorkspaceRecord(record)) throw new Error(`Invalid WorkspaceRecord: ${record.unitId}`);
-    if (!this.factory) {
+    const database = await this.database();
+    if (!database) {
       memoryWorkspaceRecords(this.databaseName).set(record.unitId, clone(record));
       return;
     }
-    const database = await this.database();
     const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readwrite');
     transaction.objectStore(WORKSPACE_STORE_NAME).put(clone(record));
-    await completeTransaction(transaction);
+    await transactionComplete(transaction);
   }
 
   async clear(unitId: string): Promise<void> {
-    if (!this.factory) {
+    const database = await this.database();
+    if (!database) {
       memoryWorkspaceRecords(this.databaseName).delete(unitId);
       return;
     }
-    const database = await this.database();
     const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readwrite');
     transaction.objectStore(WORKSPACE_STORE_NAME).delete(unitId);
-    await completeTransaction(transaction);
+    await transactionComplete(transaction);
   }
 
   async list(): Promise<WorkspaceRecord[]> {
-    if (!this.factory) {
+    const database = await this.database();
+    if (!database) {
       return [...memoryWorkspaceRecords(this.databaseName).values()].map((record) => clone(record));
     }
-    const database = await this.database();
     const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
-    const transactionComplete = completeTransaction(transaction);
-    const values = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).getAll());
-    await transactionComplete;
+    const complete = transactionComplete(transaction);
+    const values = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).getAll()) as WorkspaceRecord[];
+    await complete;
     const valid: WorkspaceRecord[] = [];
     for (const value of values) {
       if (verifyWorkspaceRecord(value)) valid.push(clone(value));
@@ -321,8 +258,8 @@ export class IndexedDbWorkspaceStore {
     return valid;
   }
 
-  private database(): Promise<IndexedDbDatabase> {
-    if (!this.databasePromise) this.databasePromise = openDatabase(this.factory!, this.databaseName);
+  private database(): Promise<IDBDatabase | null> {
+    if (!this.databasePromise) this.databasePromise = openWorkspaceDatabase(this.options);
     return this.databasePromise;
   }
 }
@@ -404,11 +341,13 @@ export class WorkspacePersistence {
   readonly store: LocalWorkspaceStore;
   readonly dataBlocks: LocalDataBlockStore;
   readonly xlsxArtifacts: LocalXlsxArtifactStore;
+  private readonly options: IndexedDbWorkspaceStoreOptions;
 
   constructor(options: IndexedDbWorkspaceStoreOptions = {}, operationJournal = new OperationJournalStore()) {
+    this.options = options;
     this.store = new LocalWorkspaceStore(options);
-    this.dataBlocks = new LocalDataBlockStore();
-    this.xlsxArtifacts = new LocalXlsxArtifactStore();
+    this.dataBlocks = new LocalDataBlockStore(options);
+    this.xlsxArtifacts = new LocalXlsxArtifactStore(options);
     this.operationJournal = operationJournal;
   }
 
@@ -440,6 +379,45 @@ export class WorkspacePersistence {
       nextClientSequence: pendingJournal?.nextClientSequence ?? 0,
     });
     await this.store.save(record);
+    return record;
+  }
+
+  /**
+   * Commits the canonical workspace checkpoint and its source XLSX artifact
+   * in one IndexedDB transaction.  The memory-only runtime keeps the same
+   * public operation and applies both records through their normal stores.
+   */
+  async checkpointWithArtifact(
+    snapshot: WorkbookSnapshot,
+    localRevision: number,
+    serverRevision: number,
+    syncMode: 'remote' | 'local-only',
+    artifact: XlsxSourceArtifact,
+    pendingJournal = this.operationJournal.read(snapshot.unitId),
+  ): Promise<WorkspaceRecord> {
+    const record = buildWorkspaceRecord({
+      unitId: snapshot.unitId,
+      snapshot,
+      localRevision,
+      serverRevision,
+      syncMode,
+      operations: pendingJournal?.operations ?? [],
+      nextClientSequence: pendingJournal?.nextClientSequence ?? 0,
+    });
+    const artifactRecord = await buildXlsxArtifactRecord(snapshot.unitId, artifact);
+    const database = await openWorkspaceDatabase(this.options);
+    if (!database) {
+      await this.store.save(record);
+      await this.xlsxArtifacts.save(snapshot.unitId, artifact);
+      return record;
+    }
+    const transaction = database.transaction(
+      [WORKSPACE_STORE_NAME, XLSX_ARTIFACT_STORE_NAME],
+      'readwrite',
+    );
+    transaction.objectStore(WORKSPACE_STORE_NAME).put(clone(record));
+    transaction.objectStore(XLSX_ARTIFACT_STORE_NAME).put(artifactRecord);
+    await transactionComplete(transaction);
     return record;
   }
 

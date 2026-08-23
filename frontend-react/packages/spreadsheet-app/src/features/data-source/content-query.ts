@@ -180,6 +180,37 @@ export class DataSourceContentQuery {
     return { state: row.state, value: row.value[field.ordinal] ?? null };
   }
 
+  /** Synchronous viewport read. It starts a bounded block load when needed. */
+  peekCellValue(rowIndex: number, fieldRef: DataSourceFieldRef): DataSourceContentResult<TableScalar> {
+    const field = this.resolveField(fieldRef);
+    if (field === undefined) return this.errorResult(`Unknown data source field: ${String(fieldRef)}`);
+    if (!isSafeRowIndex(rowIndex) || rowIndex >= this.source.rowCount) return this.errorResult(`Data source row is outside range: ${String(rowIndex)}`);
+    const ref = this.findBlock(rowIndex);
+    if (ref === undefined) return this.missingResult(`No data block covers source row ${String(rowIndex)}`);
+    const loaded = this.loadedBlocks.get(ref.id);
+    if (loaded !== undefined) {
+      const row = loaded.rows[rowIndex - ref.startRow];
+      if (!row) return this.errorResult(`Data block ${ref.id} does not contain source row ${String(rowIndex)}`);
+      return { state: state(this.source.id, ref.id, 'ready'), value: row[field.ordinal] ?? null };
+    }
+    const current = this.loadStates.get(ref.id);
+    if (!this.loadPromises.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+    return { state: current ?? state(this.source.id, ref.id, 'loading') };
+  }
+
+  prefetchRows(startRow: number, rowCount: number): void {
+    const error = this.validateRange(startRow, rowCount);
+    if (error || rowCount === 0) return;
+    const scheduled = new Set<string>();
+    for (let row = startRow; row < startRow + rowCount; row += 1) {
+      const ref = this.findBlock(row);
+      if (ref && !scheduled.has(ref.id)) {
+        scheduled.add(ref.id);
+        if (!this.loadedBlocks.has(ref.id)) void this.loadBlock(ref).catch(() => undefined);
+      }
+    }
+  }
+
   async getRowValues(rowIndex: number): Promise<DataSourceContentResult<TableScalar[]>> {
     const result = await this.getRows(rowIndex, 1);
     if (result.value === undefined) return { state: result.state };

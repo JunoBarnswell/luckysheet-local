@@ -146,6 +146,45 @@ describe('exchange-xlsx', () => {
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
   });
 
+  it('writes and validates canonical Slicer and Timeline native parts', async () => {
+    const workbook = new WorkbookModel('wb-native-controls', 'Native Controls');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Category' });
+    sheet.cells.set(0, 1, { value: 'Date' });
+    sheet.cells.set(0, 2, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 'A' });
+    sheet.cells.set(1, 1, { value: 45292 });
+    sheet.cells.set(1, 2, { value: 10 });
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'control-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 2 } }, target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
+        { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
+        { fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 1 },
+        { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 2 },
+      ] },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    sheet.drawings.push(
+      { id: 'category-slicer', sheetId: sheet.id, kind: 'slicer', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 220, height: 180 }, zIndex: 1, payloadId: 'category-slicer' },
+      { id: 'date-timeline', sheetId: sheet.id, kind: 'timeline', anchor: { kind: 'one-cell', row: 10, column: 0 }, transform: { x: 0, y: 0, width: 420, height: 120 }, zIndex: 1, payloadId: 'date-timeline' },
+    );
+    sheet.drawingPayloads['category-slicer'] = { kind: 'slicer', pivotId: 'control-pivot', fieldId: 'category', filter: { mode: 'all', memberKeys: [] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } };
+    sheet.drawingPayloads['date-timeline'] = { kind: 'timeline', pivotId: 'control-pivot', fieldId: 'date', period: { start: '2024-01-01T00:00:00Z', end: '2024-12-31T00:00:00Z' }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } };
+    const output = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    assert.ok(output.files['xl/slicerCaches/slicerCache1.xml']);
+    assert.ok(output.files['xl/slicers/slicer1.xml']);
+    assert.ok(output.files['xl/timelineCaches/timelineCache1.xml']);
+    assert.ok(output.files['xl/timelines/timeline1.xml']);
+    assert.match(strFromU8(output.files['xl/workbook.xml']!), /slicerCaches/);
+    assert.match(strFromU8(output.files['xl/workbook.xml']!), /timelineCacheRefs/);
+    assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /slicerList/);
+    assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /timelineRefs/);
+    const imported = parseLoadedXlsx(output).snapshot;
+    assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'slicer').length, 1);
+    assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'timeline').length, 1);
+  });
+
   it('reads and rewrites native Pivot cache/table relationship graphs', async () => {
     const workbook = new WorkbookModel('wb-native-pivot', 'Native Pivot');
     const generated = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
@@ -165,7 +204,7 @@ describe('exchange-xlsx', () => {
     assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
-    assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'preserved-only');
+    assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'editable');
     const exported = await exportXlsx({ snapshot: imported.snapshot, package: imported.package, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadXlsxPackage(exported.buffer);
     assert.ok(output.package.nativePivotGraph?.tables.length === 1);

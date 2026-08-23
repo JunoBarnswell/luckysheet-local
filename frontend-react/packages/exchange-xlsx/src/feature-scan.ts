@@ -31,6 +31,8 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
     // cannot silently miss a chart/image created through the command runtime.
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'chart') features.add('charts');
+      else if (payload.kind === 'slicer') features.add('slicer');
+      else if (payload.kind === 'timeline') features.add('timeline');
       else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');
     }
     if (sheet.sparklines.length > 0 || sheet.sparklineGroups?.length) features.add('sparklines');

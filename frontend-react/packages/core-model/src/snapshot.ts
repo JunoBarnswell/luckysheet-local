@@ -17,41 +17,36 @@ import { WorkbookModel as WorkbookModelClass } from './index';
  */
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
-  /** Missing values are legacy v1 snapshots and are migrated on load. */
-  version?: 1 | 2;
+  /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
+  version: 2;
   unitId: UnitId;
   name: string;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
   /** Metadata only; large source bytes live in the local data-block store. */
-  dataSources?: DataSourceManifest[];
+  dataSources: DataSourceManifest[];
   printDocuments?: PrintDocumentSnapshot[];
   queryDefinitions?: QueryDefinitionSnapshot[];
   sheets: SheetSnapshot[];
 }
 
-export const CURRENT_WORKBOOK_SNAPSHOT_VERSION = 2 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 2 as const;
 
 /**
- * Keep migration at the snapshot boundary so callers never need a legacy
- * runtime branch. Feature-specific migrations are performed by their model
- * normalizers while this function guarantees the envelope shape.
+ * The application reads one Snapshot contract only. A non-canonical record
+ * must be repaired before it enters the workbook runtime.
  */
-export function migrateWorkbookSnapshot(snapshot: WorkbookSnapshot): WorkbookSnapshot {
-  const version = snapshot.version ?? 1;
-  if (version !== 1 && version !== CURRENT_WORKBOOK_SNAPSHOT_VERSION) {
+export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): WorkbookSnapshot {
+  if (snapshot.version !== WORKBOOK_SNAPSHOT_SCHEMA_REVISION) {
     throw new Error(`Unsupported workbook snapshot version: ${String(snapshot.version)}`);
   }
-  return {
-    ...structuredClone(snapshot),
-    version: CURRENT_WORKBOOK_SNAPSHOT_VERSION,
-    dataSources: structuredClone(snapshot.dataSources ?? []),
-  };
+  if (!Array.isArray(snapshot.dataSources)) throw new Error('Workbook snapshot dataSources must be an array');
+  return structuredClone(snapshot);
 }
 
 export function loadWorkbookFromSnapshot(snapshot: WorkbookSnapshot): WorkbookModelClass {
-  return WorkbookModelClass.fromSnapshot(migrateWorkbookSnapshot(snapshot));
+  return WorkbookModelClass.fromSnapshot(assertCanonicalWorkbookSnapshot(snapshot));
 }
 
 export function createWorkbookSnapshot(workbook: WorkbookModel): WorkbookSnapshot {

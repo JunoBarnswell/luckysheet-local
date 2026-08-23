@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
+import { createXlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
   LocalWorkspaceStore,
@@ -78,5 +79,21 @@ describe('persistence storage', () => {
     assert.equal(checkpoint.localRevision, 2);
     await store.delete(snapshot.unitId);
     assert.equal(await store.open(snapshot.unitId), null);
+  });
+
+  it('checkpoints the workspace and source artifact through the same persistence namespace', async () => {
+    const databaseName = `persistence-artifact-${Date.now()}-${Math.random()}`;
+    const persistence = new WorkspacePersistence({ databaseName, indexedDB: null });
+    const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
+    const artifact = await createXlsxSourceArtifact({
+      fileName: 'artifact.xlsx',
+      buffer: new Uint8Array([80, 75, 3, 4]).buffer,
+      dateSystem: '1900',
+      detectedFeatures: ['worksheet'],
+    });
+
+    const record = await persistence.checkpointWithArtifact(snapshot, 3, 0, 'local-only', artifact);
+    assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
+    assert.equal((await persistence.xlsxArtifacts.load(snapshot.unitId))?.checksum, artifact.checksum);
   });
 });

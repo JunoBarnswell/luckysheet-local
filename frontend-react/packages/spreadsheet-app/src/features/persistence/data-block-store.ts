@@ -1,10 +1,17 @@
 import type { DataBlockRef } from '@react-sheets/core-model';
 import { computeBinaryChecksum } from './checksum';
+import {
+  DATA_BLOCK_STORE_NAME,
+  openWorkspaceDatabase,
+  requestResult,
+  transactionComplete,
+  type IndexedDbStoreOptions,
+  WORKSPACE_DATABASE_NAME,
+  XLSX_ARTIFACT_STORE_NAME,
+} from './indexed-db';
 
-const DATABASE_NAME = 'react-sheets-workspaces';
-const DATABASE_SCHEMA_REVISION = 3;
-const DATA_BLOCK_STORE = 'dataBlocks';
-export const XLSX_ARTIFACT_STORE = 'xlsxArtifacts';
+/** Kept as a store-name export for callers that build explicit transactions. */
+export const XLSX_ARTIFACT_STORE = XLSX_ARTIFACT_STORE_NAME;
 
 export interface DataBlockRecord {
   schema: 'DataBlockRecord';
@@ -15,7 +22,16 @@ export interface DataBlockRecord {
   updatedAt: string;
 }
 
-const memoryRecords = new Map<string, DataBlockRecord>();
+const memoryDatabases = new Map<string, Map<string, DataBlockRecord>>();
+
+function memoryRecords(databaseName: string): Map<string, DataBlockRecord> {
+  let records = memoryDatabases.get(databaseName);
+  if (!records) {
+    records = new Map<string, DataBlockRecord>();
+    memoryDatabases.set(databaseName, records);
+  }
+  return records;
+}
 
 function recordKey(sourceId: string, blockId: string): string {
   return `${sourceId}:${blockId}`;
@@ -39,56 +55,23 @@ async function assertRecord(record: DataBlockRecord): Promise<void> {
   }
 }
 
-function resolveFactory(): IDBFactory | null {
-  return typeof indexedDB === 'undefined' ? null : indexedDB;
-}
-
-function request<T>(value: IDBRequest<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    value.onsuccess = () => resolve(value.result);
-    value.onerror = () => reject(value.error ?? new Error('IndexedDB request failed'));
-  });
-}
-
-function transactionComplete(transaction: IDBTransaction): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'));
-    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'));
-  });
-}
-
-async function openDatabase(factory: IDBFactory): Promise<IDBDatabase> {
-  const open = factory.open(DATABASE_NAME, DATABASE_SCHEMA_REVISION);
-  open.onupgradeneeded = () => {
-    const database = open.result;
-    if (!database.objectStoreNames.contains(DATA_BLOCK_STORE)) {
-      const store = database.createObjectStore(DATA_BLOCK_STORE, { keyPath: ['sourceId', 'blockId'] });
-      store.createIndex('sourceId', 'sourceId', { unique: false });
-    }
-    if (!database.objectStoreNames.contains(XLSX_ARTIFACT_STORE)) {
-      database.createObjectStore(XLSX_ARTIFACT_STORE, { keyPath: 'unitId' });
-    }
-  };
-  return request(open);
-}
-
 /**
  * Persistent bytes for block-backed sources. Snapshot/presence/history retain
  * only DataBlockRef metadata so a remote operation never serializes source
  * data into a JSON changeset.
  */
 export class LocalDataBlockStore {
-  private database: Promise<IDBDatabase> | null = null;
+  private readonly options: IndexedDbStoreOptions;
+  private readonly databaseName: string;
+  private database: Promise<IDBDatabase | null> | null = null;
 
-  private get factory(): IDBFactory | null {
-    return resolveFactory();
+  constructor(options: IndexedDbStoreOptions = {}) {
+    this.options = options;
+    this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
   }
 
   private async getDatabase(): Promise<IDBDatabase | null> {
-    const factory = this.factory;
-    if (!factory) return null;
-    this.database ??= openDatabase(factory);
+    this.database ??= openWorkspaceDatabase(this.options);
     return this.database;
   }
 
@@ -106,11 +89,11 @@ export class LocalDataBlockStore {
     await assertRecord(record);
     const database = await this.getDatabase();
     if (!database) {
-      memoryRecords.set(recordKey(record.sourceId, record.blockId), cloneRecord(record));
+      memoryRecords(this.databaseName).set(recordKey(record.sourceId, record.blockId), cloneRecord(record));
       return cloneRecord(record);
     }
-    const transaction = database.transaction(DATA_BLOCK_STORE, 'readwrite');
-    transaction.objectStore(DATA_BLOCK_STORE).put(record);
+    const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
+    transaction.objectStore(DATA_BLOCK_STORE_NAME).put(record);
     await transactionComplete(transaction);
     return cloneRecord(record);
   }
@@ -119,10 +102,10 @@ export class LocalDataBlockStore {
     const database = await this.getDatabase();
     let record: DataBlockRecord | undefined;
     if (!database) {
-      record = memoryRecords.get(recordKey(ref.dataSourceId, ref.id));
+      record = memoryRecords(this.databaseName).get(recordKey(ref.dataSourceId, ref.id));
     } else {
-      const transaction = database.transaction(DATA_BLOCK_STORE, 'readonly');
-      record = await request(transaction.objectStore(DATA_BLOCK_STORE).get([ref.dataSourceId, ref.id])) as DataBlockRecord | undefined;
+      const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readonly');
+      record = await requestResult(transaction.objectStore(DATA_BLOCK_STORE_NAME).get([ref.dataSourceId, ref.id])) as DataBlockRecord | undefined;
       await transactionComplete(transaction);
     }
     if (!record) return null;
@@ -139,26 +122,27 @@ export class LocalDataBlockStore {
   async remove(sourceId: string, blockId: string): Promise<void> {
     const database = await this.getDatabase();
     if (!database) {
-      memoryRecords.delete(recordKey(sourceId, blockId));
+      memoryRecords(this.databaseName).delete(recordKey(sourceId, blockId));
       return;
     }
-    const transaction = database.transaction(DATA_BLOCK_STORE, 'readwrite');
-    transaction.objectStore(DATA_BLOCK_STORE).delete([sourceId, blockId]);
+    const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
+    transaction.objectStore(DATA_BLOCK_STORE_NAME).delete([sourceId, blockId]);
     await transactionComplete(transaction);
   }
 
   async removeSource(sourceId: string): Promise<void> {
     const database = await this.getDatabase();
     if (!database) {
-      for (const key of memoryRecords.keys()) {
-        if (key.startsWith(`${sourceId}:`)) memoryRecords.delete(key);
+      const records = memoryRecords(this.databaseName);
+      for (const key of records.keys()) {
+        if (key.startsWith(`${sourceId}:`)) records.delete(key);
       }
       return;
     }
-    const transaction = database.transaction(DATA_BLOCK_STORE, 'readwrite');
-    const index = transaction.objectStore(DATA_BLOCK_STORE).index('sourceId');
-    const rows = await request(index.getAll(IDBKeyRange.only(sourceId))) as DataBlockRecord[];
-    for (const row of rows) transaction.objectStore(DATA_BLOCK_STORE).delete([row.sourceId, row.blockId]);
+    const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
+    const index = transaction.objectStore(DATA_BLOCK_STORE_NAME).index('sourceId');
+    const rows = await requestResult(index.getAll(IDBKeyRange.only(sourceId))) as DataBlockRecord[];
+    for (const row of rows) transaction.objectStore(DATA_BLOCK_STORE_NAME).delete([row.sourceId, row.blockId]);
     await transactionComplete(transaction);
   }
 }

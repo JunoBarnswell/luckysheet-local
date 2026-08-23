@@ -437,22 +437,20 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   }
   const input = value as Record<string, unknown>;
   if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-  if (input.version !== undefined && input.version !== 1 && input.version !== 2) throw new Error('Unsupported workbook snapshot version');
+  if (input.version !== 2) throw new Error('Unsupported workbook snapshot version');
   if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) {
     throw new Error('WorkbookSnapshot requires unitId and name');
   }
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
-  if (input.dataSources !== undefined) {
-    if (!Array.isArray(input.dataSources)) throw new Error('WorkbookSnapshot dataSources must be an array');
-    const sourceIds = new Set<string>();
-    for (const source of input.dataSources) {
-      validateDataSourceManifest(source);
-      const id = (source as { id: string }).id;
-      if (sourceIds.has(id)) throw new Error(`Duplicate data source: ${id}`);
-      sourceIds.add(id);
-    }
+  if (!Array.isArray(input.dataSources)) throw new Error('WorkbookSnapshot dataSources must be an array');
+  const sourceIds = new Set<string>();
+  for (const source of input.dataSources) {
+    validateDataSourceManifest(source);
+    const id = (source as { id: string }).id;
+    if (sourceIds.has(id)) throw new Error(`Duplicate data source: ${id}`);
+    sourceIds.add(id);
   }
   for (const [index, rawSheet] of input.sheets.entries()) {
     if (!rawSheet || typeof rawSheet !== 'object' || Array.isArray(rawSheet)) {

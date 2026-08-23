@@ -91,7 +91,7 @@ function validateAxisMetadataPreservation(
     if (deleted(position)) throw new Error(`Cannot delete ${axis} ${position}: sparkline ${sparkline.id} would be lost`);
   }
   for (const pivot of sheet.pivots) {
-    if (pivot.target?.sheetId === sheet.id) {
+    if (pivot.target.sheetId === sheet.id) {
       const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
       if (deleted(position)) throw new Error(`Cannot delete ${axis} ${position}: pivot ${pivot.id} would be lost`);
     }
@@ -362,11 +362,11 @@ function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, se
     for (const series of payload.series ?? []) shiftContainedRange(series.range, selection, rowDelta, columnDelta);
   }
   for (const pivot of sheet.pivots) {
-    if (pivot.source?.kind === 'worksheet-range') shiftContainedRange(pivot.source.range, selection, rowDelta, columnDelta);
-    if (pivot.source?.kind === 'worksheet-ranges') {
+    if (pivot.source.kind === 'worksheet-range') shiftContainedRange(pivot.source.range, selection, rowDelta, columnDelta);
+    if (pivot.source.kind === 'worksheet-ranges') {
       for (const range of pivot.source.ranges) shiftContainedRange(range, selection, rowDelta, columnDelta);
     }
-    if (pivot.target?.sheetId === sheet.id && pivot.target.anchor.row >= selection.startRow && pivot.target.anchor.row <= selection.endRow
+    if (pivot.target.sheetId === sheet.id && pivot.target.anchor.row >= selection.startRow && pivot.target.anchor.row <= selection.endRow
       && pivot.target.anchor.column >= selection.startColumn && pivot.target.anchor.column <= selection.endColumn) {
       pivot.target.anchor.row += rowDelta;
       pivot.target.anchor.column += columnDelta;
@@ -649,11 +649,11 @@ function shiftSparklines(sheet: WorksheetModel, axis: 'row' | 'column', at: numb
 
 function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   for (const pivot of sheet.pivots) {
-    if (pivot.source?.kind === 'worksheet-range') shiftRangeRef(pivot.source.range, axis, at, count, direction);
-    if (pivot.source?.kind === 'worksheet-ranges') {
+    if (pivot.source.kind === 'worksheet-range') shiftRangeRef(pivot.source.range, axis, at, count, direction);
+    if (pivot.source.kind === 'worksheet-ranges') {
       for (const range of pivot.source.ranges) shiftRangeRef(range, axis, at, count, direction);
     }
-    if (pivot.target?.sheetId === sheet.id) {
+    if (pivot.target.sheetId === sheet.id) {
       const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
       const shifted = shiftIndex(position, at, count, direction);
       if (shifted != null) {
@@ -912,9 +912,9 @@ function applyMoveRange(
     for (const series of payload.series ?? []) relocate(series.range);
   }
   for (const pivot of sheet.pivots) {
-    if (pivot.source?.kind === 'worksheet-range') relocate(pivot.source.range);
-    if (pivot.source?.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) relocate(range);
-    if (pivot.target?.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
+    if (pivot.source.kind === 'worksheet-range') relocate(pivot.source.range);
+    if (pivot.source.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) relocate(range);
+    if (pivot.target.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
       pivot.target.anchor.row += rowDelta;
       pivot.target.anchor.column += colDelta;
     }
@@ -1001,8 +1001,8 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
     if (table.sourceRange?.sheetId === sheet.id) validateRange(table.sourceRange, `workbook table ${table.id}`);
   }
   for (const pivot of sheet.pivots) {
-    if (pivot.source?.kind === 'worksheet-range') validateRange(pivot.source.range, `pivot ${pivot.id} source`);
-    if (pivot.source?.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) validateRange(range, `pivot ${pivot.id} source`);
+    if (pivot.source.kind === 'worksheet-range') validateRange(pivot.source.range, `pivot ${pivot.id} source`);
+    if (pivot.source.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) validateRange(range, `pivot ${pivot.id} source`);
   }
   for (const sparkline of sheet.sparklines) validateRange(sparkline.sourceRange, `sparkline ${sparkline.id} source`);
   for (const spill of sheet.spillRanges) validateRange(spill.range, 'spill range');

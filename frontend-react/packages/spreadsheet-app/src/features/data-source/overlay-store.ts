@@ -1,9 +1,16 @@
 import { computeChecksum } from '../persistence/checksum';
+import {
+  openWorkspaceDatabase,
+  requestResult,
+  resolveIndexedDbFactory,
+  transactionComplete,
+  OVERLAY_STORE_NAME,
+  WORKSPACE_DATABASE_NAME,
+  type IndexedDbFactoryLike,
+} from '../persistence/indexed-db';
 import type { SparseCellOverlayMetadata, SparseCellOverlayMetadataCell } from './import';
 
-const DEFAULT_DATABASE_NAME = 'react-sheets-sparse-overlays';
-const DATABASE_SCHEMA_REVISION = 1;
-const OVERLAY_STORE_NAME = 'sparseOverlays';
+const DEFAULT_DATABASE_NAME = WORKSPACE_DATABASE_NAME;
 
 export interface SparseOverlayRecord {
   schema: 'SparseCellOverlayRecord';
@@ -25,7 +32,7 @@ export interface SparseOverlayStore {
 
 export interface SparseOverlayStoreOptions {
   databaseName?: string;
-  indexedDB?: IDBFactory | null;
+  indexedDB?: IndexedDbFactoryLike | null;
 }
 
 const memoryDatabases = new Map<string, Map<string, SparseOverlayRecord>>();
@@ -204,54 +211,25 @@ export class MemorySparseOverlayStore implements SparseOverlayStore {
   }
 }
 
-function resolveFactory(explicit: IDBFactory | null | undefined): IDBFactory | null {
-  if (explicit !== undefined) return explicit;
-  return typeof indexedDB === 'undefined' ? null : indexedDB;
-}
-
-function requestResult<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
-  });
-}
-
-function transactionComplete(transaction: IDBTransaction): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'));
-    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'));
-  });
-}
-
-async function openDatabase(factory: IDBFactory, name: string): Promise<IDBDatabase> {
-  const open = factory.open(name, DATABASE_SCHEMA_REVISION);
-  open.onupgradeneeded = () => {
-    const database = open.result;
-    if (!database.objectStoreNames.contains(OVERLAY_STORE_NAME)) {
-      const store = database.createObjectStore(OVERLAY_STORE_NAME, { keyPath: ['sourceId', 'blockId', 'revision'] });
-      store.createIndex('sourceBlock', ['sourceId', 'blockId'], { unique: false });
-      store.createIndex('sourceId', 'sourceId', { unique: false });
-    }
-  };
-  return requestResult(open);
-}
-
 /** IndexedDB implementation; records are mirrored in memory only when unavailable. */
 export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
   private readonly databaseName: string;
-  private readonly factory: IDBFactory | null;
+  private readonly factory: IndexedDbFactoryLike | null;
   private databasePromise: Promise<IDBDatabase> | null = null;
 
   constructor(options: SparseOverlayStoreOptions = {}) {
     this.databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
     if (!this.databaseName.trim()) fail('database name cannot be empty');
-    this.factory = resolveFactory(options.indexedDB);
+    this.factory = resolveIndexedDbFactory(options.indexedDB);
     if (!this.factory) fail('requires IndexedDB');
   }
 
   private database(): Promise<IDBDatabase> {
-    this.databasePromise ??= openDatabase(this.factory!, this.databaseName);
+    this.databasePromise ??= openWorkspaceDatabase({ databaseName: this.databaseName, indexedDB: this.factory })
+      .then((database) => {
+        if (!database) fail('requires IndexedDB');
+        return database;
+      });
     return this.databasePromise;
   }
 
@@ -298,9 +276,10 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readwrite');
     const store = transaction.objectStore(OVERLAY_STORE_NAME);
+    const complete = transactionComplete(transaction);
     const rows = await requestResult(store.index('sourceBlock').getAll([sourceId, blockId])) as SparseOverlayRecord[];
     for (const row of rows) store.delete([row.sourceId, row.blockId, row.revision]);
-    await transactionComplete(transaction);
+    await complete;
   }
 
   async removeSource(sourceId: string): Promise<void> {
@@ -308,9 +287,10 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readwrite');
     const store = transaction.objectStore(OVERLAY_STORE_NAME);
+    const complete = transactionComplete(transaction);
     const rows = await requestResult(store.index('sourceId').getAll(IDBKeyRange.only(sourceId))) as SparseOverlayRecord[];
     for (const row of rows) store.delete([row.sourceId, row.blockId, row.revision]);
-    await transactionComplete(transaction);
+    await complete;
   }
 }
 
@@ -323,7 +303,7 @@ export class LocalSparseOverlayStore implements SparseOverlayStore {
     const databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
     if (!databaseName.trim()) fail('database name cannot be empty');
     this.records = memoryRecords(databaseName);
-    this.indexedDb = resolveFactory(options.indexedDB) === null
+    this.indexedDb = resolveIndexedDbFactory(options.indexedDB) === null
       ? null
       : new IndexedDbSparseOverlayStore({ ...options, databaseName });
   }

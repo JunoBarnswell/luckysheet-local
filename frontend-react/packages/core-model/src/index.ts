@@ -866,6 +866,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
+    if (snapshot.version !== 2) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
@@ -875,7 +876,7 @@ export class WorkbookModel {
       if (entry.scope === 'workbook' && workbook.definedNames[entry.name] === undefined) workbook.definedNames[entry.name] = entry.formula;
     }
     for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
-    for (const source of snapshot.dataSources ?? []) workbook.addDataSource(source);
+    for (const source of snapshot.dataSources) workbook.addDataSource(source);
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);

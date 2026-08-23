@@ -41,6 +41,7 @@ import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { buildPivotGridProjection, computePivotResult } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
 import { getCellNote } from '@react-sheets/core-model';
+import type { DataSourceContentQuery } from './features/data-source';
 import {
   findCommentThreadAt,
   getCellHyperlink,
@@ -150,6 +151,12 @@ function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
     maxRow = Math.max(maxRow, row);
     maxColumn = Math.max(maxColumn, column);
   });
+  for (const region of sheet.dataRegions) {
+    minRow = Math.min(minRow, region.range.startRow);
+    minColumn = Math.min(minColumn, region.range.startColumn);
+    maxRow = Math.max(maxRow, region.range.endRow);
+    maxColumn = Math.max(maxColumn, region.range.endColumn);
+  }
   return {
     sheetId: sheet.id,
     startRow: Number.isFinite(minRow) ? minRow : 0,
@@ -159,12 +166,32 @@ function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
   };
 }
 
+function blockBackedCell(
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  dataContent: ReadonlyMap<string, DataSourceContentQuery>,
+): CellData | undefined {
+  const region = sheet.dataRegions.find((candidate) => row > candidate.headerRow
+    && row <= candidate.range.endRow
+    && column >= candidate.range.startColumn
+    && column <= candidate.range.endColumn);
+  if (!region) return undefined;
+  const query = dataContent.get(region.sourceId);
+  if (!query) return { value: '#BLOCK!', style: { textColor: '#b91c1c' } };
+  const result = query.peekCellValue(row - region.headerRow - 1, column - region.range.startColumn);
+  if (result.value !== undefined) return { value: result.value };
+  if (result.state.availability === 'loading') return { value: 'Loading…', style: { textColor: '#64748b', italic: true } };
+  return { value: '#BLOCK!', style: { textColor: '#b91c1c', bold: true } };
+}
+
 export function buildCanvasSheetSnapshot(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
   formula: FormulaEngine,
   showInvalid: boolean,
   cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
+  dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const filterHidden = computeFilterHiddenRows(sheet);
@@ -181,7 +208,7 @@ export function buildCanvasSheetSnapshot(
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
     if (hiddenRows.has(row) || hiddenColumns.has(column)) return undefined;
-    const modelCell = sheet.cells.get(row, column);
+    const modelCell = sheet.cells.get(row, column) ?? blockBackedCell(sheet, row, column, dataContent);
     const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
     const key = `${row}:${column}`;
     const overlay = overlays.get(key);
@@ -252,8 +279,8 @@ export function buildCanvasSheetSnapshot(
     columns: viewColumns,
     columnCount: sheet.columnCount,
     rowCount: sheet.rowCount,
-    isEmpty: sheet.cells.count() === 0,
-    occupiedCellCount: sheet.cells.count(),
+    isEmpty: sheet.cells.count() === 0 && sheet.dataRegions.length === 0,
+    occupiedCellCount: sheet.cells.count() + sheet.dataRegions.reduce((count, region) => count + (region.range.endRow - region.range.startRow + 1) * (region.range.endColumn - region.range.startColumn + 1), 0),
     getCell,
     usedRange,
     drawings: structuredClone(sheet.drawings),
@@ -287,6 +314,7 @@ export function buildAllSheetSnapshots(
   workbook: WorkbookModel,
   formula: FormulaEngine,
   pivotResults: Readonly<Record<string, PivotResultTree>>,
+  dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
 ): CanvasSheetSnapshot[] {
-  return workbook.getSheets().map((sheet) => buildCanvasSheetSnapshot(workbook, sheet, formula, true, pivotResults));
+  return workbook.getSheets().map((sheet) => buildCanvasSheetSnapshot(workbook, sheet, formula, true, pivotResults, dataContent));
 }

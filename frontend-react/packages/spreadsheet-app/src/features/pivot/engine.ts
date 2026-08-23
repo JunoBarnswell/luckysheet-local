@@ -39,22 +39,26 @@ import {
 } from '@react-sheets/core-model';
 import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
 
-interface SourceRow {
+export interface PivotSourceRowInput {
   values: Record<string, PivotScalar>;
   paths: PivotSourceRowPath[];
 }
 
-interface SourceField {
+export interface PivotSourceFieldInput {
   fieldId: string;
   name: string;
   ordinal: number;
   dataType?: PivotFieldDataType;
 }
 
-interface SourceTable {
-  fields: SourceField[];
-  rows: SourceRow[];
+export interface PivotSourceTableInput {
+  fields: PivotSourceFieldInput[];
+  rows: PivotSourceRowInput[];
 }
+
+type SourceTable = PivotSourceTableInput;
+type SourceRow = PivotSourceRowInput;
+type SourceField = PivotSourceFieldInput;
 
 interface AxisGroup {
   values: PivotScalar[];
@@ -255,6 +259,9 @@ function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, 
 
 function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog): SourceTable {
   const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') {
+    throw new Error(`Block-backed data source ${source.dataSourceId} requires asynchronous Pivot computation`);
+  }
   const ranges = sourceRanges(workbook, pivot);
   if (source.kind === 'worksheet-ranges') {
     const tables = ranges.map((range, index) => readRange(workbook.getSheet(range.sheetId), range, source, index, catalog));
@@ -373,8 +380,9 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
 /** Canonicalize field catalog values against the live source. Calculation has one model shape. */
 export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel): PivotDefinition {
   const source = getPivotSource(pivot);
-  const rawTable = sourceTable(workbook, pivot, pivot.fieldCatalog);
-  const fieldCatalog = normalizeFieldCatalog(rawTable, pivot.fieldCatalog);
+  const fieldCatalog = source.kind === 'data-source'
+    ? getPivotFieldCatalog(workbook, pivot)
+    : normalizeFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog), pivot.fieldCatalog);
   const calculatedFields = [
     ...(pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
     ...(pivot.layout.calculatedItems ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
@@ -398,6 +406,19 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
 
 export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel): PivotFieldCatalog {
   const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') {
+    const manifest = workbook.getDataSource(source.dataSourceId);
+    return {
+      schema: 'PivotFieldCatalog',
+      fields: manifest.fields.map((field) => ({
+        fieldId: field.id,
+        name: field.name,
+        dataType: field.type,
+        ordinal: field.ordinal,
+        values: [],
+      })),
+    };
+  }
   return normalizeFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog), pivot.fieldCatalog);
 }
 
@@ -737,9 +758,13 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
   visit(tree.rows);
 }
 
-function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
-  const definition = normalizePivotDefinition(workbook, pivot);
-  const rawTable = sourceTable(workbook, pivot, definition.fieldCatalog);
+function computePivotResultFromTable(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  definition: PivotDefinition,
+  rawTable: PivotSourceTableInput,
+  sourceRevisionOverride?: string,
+): PivotResultTree {
   const rows = applyCalculatedData(rawTable.rows, definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
@@ -772,14 +797,32 @@ function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel):
   };
   applyShowAs(tree, definition.layout.values);
   const revisions = getPivotRevisionKey(workbook, pivot);
-  tree.sourceRevision = revisions.sourceRevision;
+  tree.sourceRevision = sourceRevisionOverride ?? revisions.sourceRevision;
   tree.layoutRevision = revisions.layoutRevision;
   tree.filterRevision = revisions.filterRevision;
   return tree;
 }
 
+function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
+  const definition = normalizePivotDefinition(workbook, pivot);
+  const rawTable = sourceTable(workbook, pivot, definition.fieldCatalog);
+  return computePivotResultFromTable(workbook, pivot, definition, rawTable);
+}
+
 export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
   return structuredClone(computePivotResultUncached(workbook, pivot));
+}
+
+/** Apply the normal Pivot calculation pipeline to asynchronously loaded block data. */
+export function computePivotResultFromBlockSource(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  source: PivotSourceTableInput,
+  sourceRevision: string,
+): PivotResultTree {
+  const definition = normalizePivotDefinition(workbook, pivot);
+  if (definition.source.kind !== 'data-source') throw new Error('Block source calculation requires a data-source Pivot');
+  return structuredClone(computePivotResultFromTable(workbook, pivot, definition, source, sourceRevision));
 }
 
 function nodeVisible(node: PivotResultNode, layout: PivotLayout, ancestorsVisible: boolean): boolean {

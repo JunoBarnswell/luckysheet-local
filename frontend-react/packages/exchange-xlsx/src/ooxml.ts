@@ -163,10 +163,12 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
+    version: 2,
     unitId: `imported-${randomId()}`,
     name: workbook.attrs.name ?? 'Imported Workbook',
     definedNames,
     definedNameModels,
+    dataSources: [],
     sheets,
   };
   attachNativePivots(snapshot, loaded.package.nativePivotGraph, loaded.package.sheetPartById);
@@ -210,7 +212,7 @@ export function exportSnapshotToXlsxPackage(
     for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
     const relationships = mergeRelationships(nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part])));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [])));
   }
 
   const workbookRelations = mergeRelationships(
@@ -250,6 +252,7 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
     if (lower.includes('vba') || lower.endsWith('.bin')) features.add('vba');
     if (lower.includes('externalconnections') || lower.includes('connections.xml')) features.add('external-connection');
     if (lower.includes('/slicers/') || lower.includes('slicer')) features.add('slicer');
+    if (lower.includes('/timelines/') || lower.includes('timeline')) features.add('timeline');
     if (lower.includes('/theme/')) features.add('theme');
     if (lower.includes('/comments')) features.add('comments');
     if (lower.includes('/drawings/')) features.add('images');
@@ -267,6 +270,8 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
       if (sheet.notes?.length || sheet.commentThreads?.length) features.add('comments');
       for (const payload of Object.values(sheet.drawingPayloads)) {
         if (payload.kind === 'chart') features.add('charts');
+        else if (payload.kind === 'slicer') features.add('slicer');
+        else if (payload.kind === 'timeline') features.add('timeline');
         else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');
       }
     }
@@ -652,6 +657,7 @@ function buildWorksheetXml(
   styleIndexes: Map<string, number>,
   includeCachedValues: boolean,
   nativeDisplayCells?: Record<string, Record<string, CellData>>,
+  nativeControls: NativePivotControlDefinition[] = [],
 ): string {
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
   if (sheet.tabColor) xml += `<sheetPr><tabColor rgb="${encodeXml(sheet.tabColor)}"/></sheetPr>`;
@@ -710,6 +716,8 @@ function buildWorksheetXml(
     });
     xml += `<pivotTableParts count="${pivotParts.length}">${pivotParts.join('')}</pivotTableParts>`;
   }
+  const drawingRelations = relationships.filter((relation) => relation.type === REL_DRAWING || relation.type.endsWith('/drawing'));
+  if (drawingRelations.length && !child(originalRoot, 'drawing')) xml += `<drawing r:id="${encodeXml(drawingRelations[0]!.id)}"/>`;
   // A drawing or other unsupported worksheet node is still emitted through its
   // original relationship. Native Pivot parts are rebuilt above from the
   // canonical graph and therefore never copied from a stale worksheet node.
@@ -719,10 +727,15 @@ function buildWorksheetXml(
       const name = localName(node.name);
       if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
     }
-    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts', 'extLst']) {
+    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts']) {
       const node = preservedNodes.get(name);
       if (node) xml += serializeXml(node);
     }
+    const extension = preservedNodes.get('extLst');
+    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart));
+    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid)) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart));
+  } else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid)) {
+    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart));
   }
   xml += '</worksheet>';
   return xml;
@@ -742,6 +755,49 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   if (typeof cell.value === 'boolean') return `<c r="${ref}"${styleAttr} t="b"><v>${cell.value ? '1' : '0'}</v></c>`;
   if (typeof cell.value === 'number') return `<c r="${ref}"${styleAttr}><v>${Number.isFinite(cell.value) ? cell.value : 0}</v></c>`;
   return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${encodeXml(cell.value)}</t></is></c>`;
+}
+
+function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[]): string {
+  const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
+  if (!controls.some((control) => !control.valid)) {
+    root.children = root.children.flatMap((extension) => {
+      const hasNativeControl = descendants(extension, 'slicerList').length > 0 || descendants(extension, 'timelineRefs').length > 0;
+      return hasNativeControl ? [] : [extension];
+    });
+  }
+  const slicers = controls.filter((control) => control.kind === 'slicer' && control.valid && control.relationshipId);
+  const timelines = controls.filter((control) => control.kind === 'timeline' && control.valid && control.relationshipId);
+  if (slicers.length) {
+    const node = firstElement(parseXml(`<ext uri="{A8765BA9-456A-4DAB-B4F3-ACF838C121DE}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:slicerList>${slicers.map((control) => `<x14:slicer r:id="${encodeXml(control.relationshipId)}"/>`).join('')}</x14:slicerList></ext>`), 'ext');
+    root.children.push(node);
+  }
+  if (timelines.length) {
+    const node = firstElement(parseXml(`<ext uri="{7E03D99C-DC04-49D9-9315-930204A7B6E9}" xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"><x15:timelineRefs>${timelines.map((control) => `<x15:timelineRef r:id="${encodeXml(control.relationshipId)}"/>`).join('')}</x15:timelineRefs></ext>`), 'ext');
+    root.children.push(node);
+  }
+  return serializeXml(root);
+}
+
+function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: XlsxRelationship[]): string {
+  const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
+  if (!controls.some((control) => !control.valid)) {
+    root.children = root.children.flatMap((extension) => {
+      const hasNativeControl = descendants(extension, 'slicerCaches').length > 0 || descendants(extension, 'timelineCacheRefs').length > 0;
+      return hasNativeControl ? [] : [extension];
+    });
+  }
+  const slicerCaches = [...new Map(controls.filter((control) => control.kind === 'slicer' && control.valid && control.cacheRelationshipId).map((control) => [control.cachePart, control])).values()];
+  const timelines = [...new Map(controls.filter((control) => control.kind === 'timeline' && control.valid && control.cacheRelationshipId).map((control) => [control.cachePart, control])).values()];
+  if (slicerCaches.length) {
+    const node = firstElement(parseXml(`<ext uri="{BBE1A952-AA13-448E-AADC-164F8A28A991}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:slicerCaches>${slicerCaches.map((control) => `<x14:slicerCache r:id="${encodeXml(control.cacheRelationshipId)}"/>`).join('')}</x14:slicerCaches></ext>`), 'ext');
+    root.children.push(node);
+  }
+  if (timelines.length) {
+    const node = firstElement(parseXml(`<ext uri="{D0CA8CA8-9F24-4464-BF8E-62219DCF47F9}" xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"><x15:timelineCacheRefs>${timelines.map((control) => `<x15:timelineCacheRef r:id="${encodeXml(control.cacheRelationshipId)}"/>`).join('')}</x15:timelineCacheRefs></ext>`), 'ext');
+    root.children.push(node);
+  }
+  void relationships;
+  return serializeXml(root);
 }
 
 function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: XlsxPackage): string {
@@ -773,10 +829,15 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
   // does not edit.  Sheet references and defined names above remain canonical.
   const originalRoot = preserved?.parts['xl/workbook.xml'] ? firstElement(parseXml(strFromU8(preserved.parts['xl/workbook.xml'])), 'workbook') : undefined;
   if (originalRoot) {
+    let hasExtensionList = false;
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'bookViews' || name === 'calcPr' || name === 'extLst' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
+      if (name === 'bookViews' || name === 'calcPr' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
+      else if (name === 'extLst') { hasExtensionList = true; xml += serializeWorkbookControlExtensions(node, nativePivotGraph?.controls ?? [], relationships); }
     }
+    if (!hasExtensionList && nativePivotGraph?.controls?.some((control) => control.valid)) xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
+  } else if (nativePivotGraph?.controls?.some((control) => control.valid)) {
+    xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
   }
   return `${xml}</workbook>`;
 }
@@ -804,6 +865,14 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved?: XlsxPa
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml');
     } else if (name.startsWith('xl/pivotCache/') && name.toLowerCase().includes('records') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml');
+    } else if (name.startsWith('xl/slicerCaches/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.slicerCache+xml');
+    } else if (name.startsWith('xl/slicers/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.slicer+xml');
+    } else if (name.startsWith('xl/timelineCaches/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.TimelineCache+xml');
+    } else if (name.startsWith('xl/timelines/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.timeline+xml');
     }
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${[...defaults.entries()].map(([extension, type]) => `<Default Extension="${encodeXml(extension)}" ContentType="${encodeXml(type)}"/>`).join('')}${[...overrides.entries()].filter(([part]) => files.has(part.slice(1))).map(([part, type]) => `<Override PartName="${encodeXml(part)}" ContentType="${encodeXml(type)}"/>`).join('')}</Types>`;
@@ -964,9 +1033,9 @@ function hasNativePivotMarkers(files: Record<string, Uint8Array>): boolean {
   for (const [name, bytes] of Object.entries(files)) {
     if (!name.endsWith('.xml')) continue;
     const lower = name.toLowerCase();
-    if (lower.includes('/pivottable') || lower.includes('/pivotcache/')) return true;
+    if (lower.includes('/pivottable') || lower.includes('/pivotcache/') || lower.includes('/slicers/') || lower.includes('/slicercaches/') || lower.includes('/timelines/') || lower.includes('/timelinecaches/')) return true;
     const xml = strFromU8(bytes);
-    if (xml.includes('<pivotCaches') || xml.includes(':pivotCaches') || xml.includes('<pivotTableParts') || xml.includes(':pivotTableParts')) return true;
+    if (xml.includes('<pivotCaches') || xml.includes(':pivotCaches') || xml.includes('<pivotTableParts') || xml.includes(':pivotTableParts') || xml.includes('slicerCaches') || xml.includes('timelineCacheRefs') || xml.includes('slicerList') || xml.includes('timelineRefs')) return true;
   }
   return false;
 }

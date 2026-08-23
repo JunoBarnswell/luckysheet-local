@@ -15,6 +15,7 @@ import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
 import { createDefaultConnectorRegistry, type ConnectorRegistry } from './features/query';
 import { FormulaAuditController, registerFormulaAuditCommands } from './features/formula-audit';
+import { DataSourceContentQuery } from './features/data-source';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
@@ -66,6 +67,7 @@ export interface SpreadsheetRuntime {
   operationJournal: OperationJournalStore;
   workspacePersistence: WorkspacePersistence;
   dataBlocks: DataBlockSynchronizer;
+  dataContent: Map<string, DataSourceContentQuery>;
   workspaceRecord: WorkspaceRecord | null;
   localRevision: number;
   localOnly: boolean;
@@ -142,6 +144,7 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     operationJournal,
     workspacePersistence,
     dataBlocks,
+    dataContent: new Map(),
     workspaceRecord: null,
     localRevision: 0,
     localOnly: options.localOnly ?? (!options.authTokenProvider && !options.shareTokenProvider),
@@ -387,23 +390,12 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       }
 
       const changedSheet = runtime.model.getSheets().find((sheet) => sheet.id === mutation.sheetId);
+      if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
+        || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove') {
+        initializeDataContent(runtime);
+      }
       for (const pivot of changedSheet?.pivots ?? []) {
         delete runtime.pivotResults[pivot.id];
-        if (
-          mutation.id === 'cell.set' ||
-          mutation.id === 'cell.restore' ||
-          mutation.id === 'range.set' ||
-          mutation.id === 'range.clear' ||
-          mutation.id === 'range.paste' ||
-          mutation.id === 'cells.shifted' ||
-          mutation.id === 'cells.shifted.restore' ||
-          mutation.id === 'rows.inserted' ||
-          mutation.id === 'rows.deleted' ||
-          mutation.id === 'columns.inserted' ||
-          mutation.id === 'columns.deleted'
-        ) {
-          pivot.fieldCatalog = undefined;
-        }
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
         if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
@@ -565,7 +557,24 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.collaboration?.setRevision(response.revision);
   runtime.collaboration?.rebindCommands(runtime.commands);
   runtime.pivotResults = {};
+  initializeDataContent(runtime);
   void scheduleFormulaRecalculation(runtime);
+}
+
+function initializeDataContent(runtime: SpreadsheetRuntime): void {
+  runtime.dataContent.clear();
+  for (const manifest of runtime.model.dataSources.values()) {
+    const query = new DataSourceContentQuery(manifest, {
+      get: async (reference) => {
+        const ref = manifest.blocks.find((block) => block.id === reference.id && block.dataSourceId === reference.dataSourceId && block.checksum === reference.checksum);
+        if (!ref) return null;
+        const bytes = await runtime.dataBlocks.get(ref);
+        return { sourceId: ref.dataSourceId, blockId: ref.id, checksum: ref.checksum, bytes };
+      },
+    });
+    query.subscribe(() => runtime.handlers.onMutationsApplied?.());
+    runtime.dataContent.set(manifest.id, query);
+  }
 }
 
 /** Replay durable local intent on top of the authoritative server snapshot. */

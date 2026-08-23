@@ -2,6 +2,7 @@ import { parseDateSystem } from './date-system';
 import { createCompatibilityReport, refreshCompatibilitySummary } from './compatibility-report';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import { detectPackageFeatures, loadXlsxPackage, parseLoadedXlsx } from './ooxml';
+import { nativePivotFeatureStatus } from './native-pivot';
 import { createXlsxSourceArtifact } from './source-artifact';
 import type { XlsxImportOptions, XlsxImportResult } from './types';
 
@@ -22,8 +23,13 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
   const snapshotFeatures = scanSnapshotFeatures(snapshot);
   const packageFeatures = detectPackageFeatures(parsed.package);
   const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures])];
+  const nativeStatus = nativePivotFeatureStatus(snapshot, parsed.package.nativePivotGraph);
   const editableFeatures = new Set(['cells', 'formulas', 'styles', 'merges', 'freeze', 'defined-names', 'hyperlinks', 'tables']);
+  if (nativeStatus.pivot) editableFeatures.add('pivot');
+  if (nativeStatus.slicer) editableFeatures.add('slicer');
+  if (nativeStatus.timeline) editableFeatures.add('timeline');
   const preservedFeatures = new Set(packageFeatures.filter((feature) => !editableFeatures.has(feature)));
+  for (const feature of ['slicer', 'timeline'] as const) if (snapshotFeatures.includes(feature) && !editableFeatures.has(feature)) preservedFeatures.add(feature);
   const report = createCompatibilityReport({
     fileName: request.fileName,
     importLevel: request.options.compatibilityTarget,
