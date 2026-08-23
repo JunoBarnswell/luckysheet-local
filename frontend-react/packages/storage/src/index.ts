@@ -121,6 +121,14 @@ export class WorkbookStorage {
     }));
   }
 
+  deleteWorkbook(unitId: string): void {
+    this.database.prepare('DELETE FROM changesets WHERE unit_id = ?').run(unitId);
+    const tables = this.database.prepare('SELECT table_id FROM data_tables WHERE unit_id = ?').all(unitId) as Array<{ table_id: string }>;
+    for (const table of tables) this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(table.table_id);
+    this.database.prepare('DELETE FROM data_tables WHERE unit_id = ?').run(unitId);
+    this.database.prepare('DELETE FROM workbooks WHERE unit_id = ?').run(unitId);
+  }
+
   createWorkbook(snapshot: WorkbookSnapshotV1): SnapshotResponse {
     const now = new Date().toISOString();
     this.database

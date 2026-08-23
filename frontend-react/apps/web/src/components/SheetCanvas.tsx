@@ -933,6 +933,7 @@ export function SheetCanvas({
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onDoubleClick={handleDoubleClick}
             onWheel={handleWheel}
             onKeyDown={handleKeyDown}

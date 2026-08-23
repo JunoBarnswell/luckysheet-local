@@ -109,6 +109,14 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'DELETE' && /^\/api\/v1\/workbooks\/[^/]+$/.test(url.pathname)) {
+      const unitId = url.pathname.split('/')[4];
+      if (!unitId) throw new Error('Workbook id is required');
+      storage.deleteWorkbook(unitId);
+      sendJson(response, 200, {});
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname.startsWith('/api/v1/workbooks/') && url.pathname.endsWith('/snapshot')) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');

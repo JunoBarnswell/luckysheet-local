@@ -53,6 +53,8 @@ export interface RenameSheetParams {
   name: string;
 }
 
+export interface RenameWorkbookParams { name: string; }
+
 export interface InsertRowParams {
   sheetId: string;
   row: number;
@@ -157,6 +159,30 @@ function restoreCell(
 }
 
 export function registerSheetCommands(runtime: CommandRuntime): void {
+  runtime.registry.registerMutation('workbook.renamed', (item, context) => {
+    const params = item.params as RenameWorkbookParams;
+    context.workbook.name = params.name;
+  });
+  runtime.registry.registerCommand<RenameWorkbookParams>({
+    id: 'workbook.rename',
+    execute: (params, context) => {
+      const name = params.name.trim();
+      if (!name) throw new Error('Workbook name is required');
+      const previous = context.workbook.name;
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'workbook.renamed',
+        unitId: context.workbook.unitId,
+        sheetId: context.workbook.activeSheetId,
+        params: { name },
+        affectedRanges,
+        inverse: [{ id: 'workbook.renamed', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: previous }, affectedRanges }],
+        apply: () => { context.workbook.name = name; },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
   // 1. Sheet mutations & commands
   runtime.registry.registerMutation('sheet.add', (item, context) => {
     const params = item.params as AddSheetParams;

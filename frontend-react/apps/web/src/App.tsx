@@ -243,18 +243,26 @@ function WorkspaceApp() {
       const next = clonePivotDefinition(pivotDefinition);
       next.slicers = enabled ? [...new Set([...next.slicers, fieldId])] : next.slicers.filter((field) => field !== fieldId);
       updatePivotDefinition(next);
-      actions.updatePivotConfiguration(activePivot.id, { slicers: next.slicers.map((field) => ({ id: `slicer-${field}`, field, selected: [], connectedPivotIds: state.selectedSheet.pivots.map((pivot) => pivot.id) })) });
+      const connectedPivotIds = state.selectedSheet.pivots.filter((pivot) => pivot.sourceRange.startRow === activePivot.sourceRange.startRow && pivot.sourceRange.endRow === activePivot.sourceRange.endRow && pivot.sourceRange.startColumn === activePivot.sourceRange.startColumn && pivot.sourceRange.endColumn === activePivot.sourceRange.endColumn).map((pivot) => pivot.id);
+      actions.updatePivotConfiguration(activePivot.id, { slicers: next.slicers.map((field) => ({ id: `slicer-${field}`, field, selected: [], connectedPivotIds })) });
     },
     onTimelineChange: (fieldId) => {
-      if (activePivot) actions.updatePivotConfiguration(activePivot.id, { timelines: fieldId ? [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds: state.selectedSheet.pivots.map((pivot) => pivot.id) }] : [] });
+      if (activePivot) {
+        const connectedPivotIds = state.selectedSheet.pivots.filter((pivot) => pivot.sourceRange.startRow === activePivot.sourceRange.startRow && pivot.sourceRange.endRow === activePivot.sourceRange.endRow && pivot.sourceRange.startColumn === activePivot.sourceRange.startColumn && pivot.sourceRange.endColumn === activePivot.sourceRange.endColumn).map((pivot) => pivot.id);
+        actions.updatePivotConfiguration(activePivot.id, { timelines: fieldId ? [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds }] : [] });
+      }
     },
     onTimelineRangeChange: (start, end) => {
-      if (activePivot && pivotDefinition.timelineFieldId) actions.updatePivotConfiguration(activePivot.id, { timelines: [{ id: `timeline-${pivotDefinition.timelineFieldId}`, field: pivotDefinition.timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds: state.selectedSheet.pivots.map((pivot) => pivot.id) }] });
+      if (activePivot && pivotDefinition.timelineFieldId) {
+        const connectedPivotIds = state.selectedSheet.pivots.filter((pivot) => pivot.sourceRange.startRow === activePivot.sourceRange.startRow && pivot.sourceRange.endRow === activePivot.sourceRange.endRow && pivot.sourceRange.startColumn === activePivot.sourceRange.startColumn && pivot.sourceRange.endColumn === activePivot.sourceRange.endColumn).map((pivot) => pivot.id);
+        actions.updatePivotConfiguration(activePivot.id, { timelines: [{ id: `timeline-${pivotDefinition.timelineFieldId}`, field: pivotDefinition.timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds }] });
+      }
     },
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
-      actions.addChart({ id: `pivot-chart-${activePivot.id}`, pivotId: activePivot.id, sheetId: activePivot.sheetId, type: chart.type, title: chart.title, sourceRanges: [activePivot.sourceRange], bounds: { x: 80, y: 80, width: 480, height: 280 } });
-      actions.updatePivotConfiguration(activePivot.id, { chartReferences: [{ chartId: `pivot-chart-${activePivot.id}`, role: "linked" }] });
+      const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
+      actions.addChart({ id: chartId, pivotId: activePivot.id, sheetId: activePivot.sheetId, type: chart.type, title: chart.title, sourceRanges: [activePivot.sourceRange], bounds: { x: 80, y: 80, width: 480, height: 280 } });
+      actions.updatePivotConfiguration(activePivot.id, { chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }] });
     },
   };
   const pivotPanelState: PivotPanelState = { disabled: isBusy, loading: state.phase === "loading", error: state.phase === "error" ? "Pivot data could not be loaded" : undefined, empty: pivotFields.length === 0 };
@@ -317,6 +325,13 @@ function WorkspaceApp() {
               <Stack gap="xs" className="min-w-44">
                 <Button size="sm" variant="ghost" className="justify-start" onClick={() => window.location.assign("/workbooks")}>
                   Open workbooks
+                </Button>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => {
+                  const nextName = window.prompt('Enter workbook name:', state.workbookName);
+                  if (nextName?.trim()) actions.renameWorkbook(nextName.trim());
+                  close();
+                }}>
+                  Rename workbook
                 </Button>
                 <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); copyWorkbookLink(); }}>
                   Copy workbook link

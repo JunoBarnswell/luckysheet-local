@@ -112,7 +112,9 @@ const LOCALE_STORAGE_KEY = 'react-sheets:locale';
 
 export function getInitialLocale(): Locale {
   if (typeof window === 'undefined') return 'en-US';
-  return window.localStorage.getItem(LOCALE_STORAGE_KEY) === 'zh-CN' ? 'zh-CN' : 'en-US';
+  const stored = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+  if (stored === 'zh-CN' || stored === 'en-US') return stored;
+  return window.navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US';
 }
 
 export function persistLocale(locale: Locale): void {

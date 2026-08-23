@@ -31,13 +31,22 @@ export function DataModelPanel({ onReadRows, onRemove, tables }: DataModelPanelP
                   <PanelTitle size="sm" className="truncate">{table.name}</PanelTitle>
                   <Text size="xs" tone="subtle">{table.rowCount.toLocaleString()} rows · revision {table.revision}</Text>
                 </Stack>
-                <Inline gap="xs">
+              <Inline gap="xs">
                 <Button size="xs" variant="outline" loading={loading === table.id} onClick={() => {
                   setLoading(table.id);
                   setError(null);
                   void onReadRows(table.id, 0, 20).then((response) => setPreview((current) => ({ ...current, [table.id]: response }))).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table query failed')).finally(() => setLoading(null));
                 }}>Preview rows</Button>
-                <Button size="xs" variant="danger" icon="trash" onClick={() => { void onRemove(table.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table deletion failed')); }}>Delete</Button>
+                {preview[table.id]?.nextOffset != null ? <Button size="xs" variant="ghost" loading={loading === table.id} onClick={() => {
+                  const offset = preview[table.id]?.nextOffset;
+                  if (offset == null) return;
+                  setLoading(table.id);
+                  void onReadRows(table.id, offset, 20).then((response) => setPreview((current) => {
+                    const previous = current[table.id];
+                    return { ...current, [table.id]: { ...response, rows: [...(previous?.rows ?? []), ...response.rows] } };
+                  })).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table query failed')).finally(() => setLoading(null));
+                }}>Load more</Button> : null}
+                <Button size="xs" variant="danger" icon="trash" onClick={() => { if (window.confirm(`Delete data table ${table.name}?`)) void onRemove(table.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table deletion failed')); }}>Delete</Button>
                 </Inline>
               </Inline>
             </PanelHeader>

@@ -187,8 +187,6 @@ export interface WorkspaceActions {
   movePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   jumpEdge: (direction: 'up' | 'down' | 'left' | 'right', extend?: boolean) => void;
   selectAll: () => void;
-  selectRowHeader: (startRow: number, endRow?: number, mode?: 'replace' | 'add') => void;
-  selectColumnHeader: (startColumn: number, endColumn?: number, mode?: 'replace' | 'add') => void;
   // 编辑
   beginEdit: (initialText?: string) => void;
   cancelEdit: () => void;
@@ -263,6 +261,7 @@ export interface WorkspaceActions {
   getValidationAt: (row: number, column: number) => string[] | undefined;
   addSheet: () => void;
   renameSheet: (sheetId: string, name: string) => void;
+  renameWorkbook: (name: string) => void;
   cut: () => void;
   copy: () => void;
   paste: () => void;
@@ -882,6 +881,8 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
       setCollabStatus(status);
       runtime.remoteConnected = status !== 'closed';
+      if (status === 'closed') runtime.handlers.onSaveState?.('offline');
+      else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
       if (status === 'open') client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
     });
     client.open();
@@ -1121,20 +1122,6 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const selectAll = useCallback(() => {
     selectRange({ startRow: 0, startColumn: 0, endRow: selectedSheet.rowCount - 1, endColumn: selectedSheet.columnCount - 1 }, 'replace');
   }, [selectRange, selectedSheet.rowCount]);
-
-  const selectRowHeader = useCallback(
-    (startRow: number, endRow = startRow, mode: 'replace' | 'add' = 'replace') => {
-      selectRange({ startRow, startColumn: 0, endRow, endColumn: selectedSheet.columnCount - 1 }, mode);
-    },
-    [selectRange],
-  );
-
-  const selectColumnHeader = useCallback(
-    (startColumn: number, endColumn = startColumn, mode: 'replace' | 'add' = 'replace') => {
-      selectRange({ startRow: 0, startColumn, endRow: selectedSheet.rowCount - 1, endColumn }, mode);
-    },
-    [selectRange, selectedSheet.rowCount],
-  );
 
   // ---- 编辑 ----
 
@@ -1583,8 +1570,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         case 'export-xlsx': {
           void (async () => {
             try {
-              const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
-              const base64 = buildXlsxArchiveBase64(snapshotResponse.snapshot);
+              const base64 = buildXlsxArchiveBase64(runtime.model.snapshot());
               const link = document.createElement('a');
               link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + base64;
               link.download = (runtime.model.name || 'workbook') + '.xlsx';
@@ -1637,25 +1623,6 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           break;
         case 'open-pivot':
           setActivePanel('pivot');
-          if (sheet.pivots.length === 0) {
-            const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn
-              ? primaryRange
-              : usedRangeOfSheet(sheet);
-            const fieldCatalog = buildPivotFieldCatalog(runtime.model, { id: 'pivot-source', sheetId: activeSheetId, sourceRange, layout: { rows: [], columns: [], filters: [], values: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false } }).fields;
-            const rowField = fieldCatalog.find((field) => field.dataType !== 'number')?.id ?? fieldCatalog[0]?.id;
-            const valueField = fieldCatalog.find((field) => field.dataType === 'number')?.id ?? fieldCatalog[0]?.id;
-            if (rowField && valueField) {
-              const summarizeBy = fieldCatalog.find((field) => field.id === valueField)?.dataType === 'number' ? 'sum' : 'count';
-              runtime.commands.execute('pro.pivot.add', {
-                id: 'pivot-' + Math.random().toString(36).slice(2, 8),
-                sheetId: activeSheetId,
-                sourceRange,
-                refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-                layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
-              });
-              refresh();
-            }
-          }
           break;
         case 'create-data-table': {
           const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn
@@ -2215,6 +2182,10 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     const result = (await response.json()) as SnapshotResponse;
     hydrateRuntime(runtime, result);
     runtime.remoteConnected = true;
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(UNIT_ID_STORAGE_KEY, result.snapshot.unitId);
+      window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(result.snapshot.unitId)}`);
+    }
     setActiveSheetId(runtime.model.activeSheetId);
     setSelection(createInitialSelection());
     refresh();
@@ -2347,6 +2318,12 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     refresh();
   }, [phase, refresh, runtime]);
 
+  const renameWorkbook = useCallback((name: string) => {
+    if (phase !== 'ready' || !name.trim()) return;
+    runtime.commands.execute('workbook.rename', { name });
+    refresh();
+  }, [phase, refresh, runtime]);
+
   const deleteSheet = useCallback((sheetId: string) => {
     if (phase !== 'ready') return;
     try {
@@ -2376,8 +2353,6 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       movePrimary,
       jumpEdge,
       selectAll,
-      selectRowHeader,
-      selectColumnHeader,
       beginEdit,
       cancelEdit,
       commitEdit,
@@ -2444,6 +2419,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       clearFormats,
       addSheet,
       renameSheet,
+      renameWorkbook,
       deleteSheet,
       resizeRow,
       resizeColumn,

@@ -95,6 +95,11 @@ export class WorkbookApiClient {
     return response.json() as Promise<WorkbookSummary[]>;
   }
 
+  async deleteWorkbook(unitId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(`Workbook deletion failed: ${response.status}`);
+  }
+
   async listRevisions(unitId: string): Promise<RevisionRecord[]> {
     const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions`);
     if (!response.ok) throw new Error(`Revision history fetch failed: ${response.status}`);

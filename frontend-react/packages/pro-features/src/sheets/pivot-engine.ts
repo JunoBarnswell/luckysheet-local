@@ -146,7 +146,8 @@ export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel)
   rows.forEach((row) => Object.keys(row.values).forEach((name) => names.add(name)));
   return { fields: [...names].map((name, ordinal) => {
     const values = rows.map((row) => row.values[name] ?? null);
-    return { id: name, name, ordinal, dataType: inferType(values), values: [...new Map(values.filter((value) => value != null).map((value) => [JSON.stringify(value), value])).values()] };
+    const distinct = [...new Map(values.filter((value) => value != null).map((value) => [JSON.stringify(value), value])).values()];
+    return { id: name, name, ordinal, dataType: inferType(values), values: distinct.slice(0, 10_000) };
   }) };
 }
 

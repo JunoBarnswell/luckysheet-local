@@ -40,7 +40,7 @@ export function drawChartOnCanvas(options: ChartRenderOptions): void {
   // Chart Title
   if (chart.title) {
     context.fillStyle = '#1e293b';
-    context.font = 'bold 14px Inter, sans-serif';
+    context.font = 'bold 14px Segoe UI, sans-serif';
     context.textAlign = 'left';
     context.textBaseline = 'top';
     context.fillText(chart.title, 16, 12);
@@ -69,7 +69,7 @@ export function drawChartOnCanvas(options: ChartRenderOptions): void {
   const gridLines = 4;
   context.strokeStyle = '#f1f5f9';
   context.lineWidth = 1;
-  context.font = '11px Inter, sans-serif';
+  context.font = '11px Segoe UI, sans-serif';
   context.fillStyle = '#64748b';
   context.textAlign = 'right';
   context.textBaseline = 'middle';
@@ -91,12 +91,38 @@ export function drawChartOnCanvas(options: ChartRenderOptions): void {
     drawLineChart(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight, maxVal, chart.type === 'area');
   } else if (chart.type === 'pie' || chart.type === 'doughnut') {
     drawPieChart(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight, chart.type === 'doughnut');
+  } else if (chart.type === 'scatter') {
+    drawScatterChart(context, categories, series, plotLeft, plotTop, plotWidth, plotHeight, maxVal);
   }
 
   // Draw Legend
   drawLegend(context, series, width, height, chart.legendPosition ?? 'top');
 
   context.restore();
+}
+
+function drawScatterChart(
+  ctx: CanvasRenderingContext2D,
+  categories: string[],
+  series: ChartDataSeries[],
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  maxVal: number,
+): void {
+  const step = width / Math.max(1, categories.length - 1);
+  for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex++) {
+    const current = series[seriesIndex]!;
+    ctx.fillStyle = current.color ?? DEFAULT_CHART_PALETTE[seriesIndex % DEFAULT_CHART_PALETTE.length]!;
+    for (let index = 0; index < current.values.length; index++) {
+      const x = left + index * step;
+      const y = top + height - (current.values[index]! / maxVal) * height;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 }
 
 function drawColumnChart(
@@ -128,7 +154,7 @@ function drawColumnChart(
 
     // Category Label
     ctx.fillStyle = '#64748b';
-    ctx.font = '11px Inter, sans-serif';
+    ctx.font = '11px Segoe UI, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillText(categories[c] ?? '', left + c * catWidth + catWidth / 2, top + height + 6);
@@ -198,7 +224,7 @@ function drawLineChart(
   // Draw category labels
   for (let c = 0; c < categories.length; c++) {
     ctx.fillStyle = '#64748b';
-    ctx.font = '11px Inter, sans-serif';
+    ctx.font = '11px Segoe UI, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillText(categories[c] ?? '', left + c * step, top + height + 6);
@@ -257,7 +283,7 @@ function drawLegend(
   position: 'top' | 'bottom' | 'left' | 'right' | 'none',
 ): void {
   if (position === 'none') return;
-  ctx.font = '11px Inter, sans-serif';
+  ctx.font = '11px Segoe UI, sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
