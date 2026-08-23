@@ -53,7 +53,7 @@ describe('SpreadsheetApplication data objects integration', () => {
       type: 'highlight',
       operator: 'greaterThan',
       value1: 100,
-      style: { fill: '#FFEB9C' },
+      style: { background: '#FFEB9C' },
     });
 
     const rules = app.getWorkbook().getSheet(sheetId).conditionalFormats;
