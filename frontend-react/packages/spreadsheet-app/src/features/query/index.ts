@@ -1,4 +1,4 @@
-import type { TableScalar, WorkbookTableModel } from '@react-sheets/core-model';
+import type { TableScalar } from '@react-sheets/core-model';
 
 export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'xlsx' | 'sqlite';
 
@@ -42,7 +42,48 @@ export class ConnectorRegistry {
   }
 }
 
-/** 内置 JSON REST connector */
+/** 内置 JSON connector — 支持内联数组或 JSON 字符串 */
+export class JsonDataConnector implements DataConnector {
+  readonly kind = 'json' as const;
+  readonly id = 'json';
+  private rows: Record<string, unknown>[] = [];
+
+  async connect(config: Record<string, unknown>): Promise<void> {
+    const data = config.data;
+    if (typeof data === 'string') {
+      const parsed = JSON.parse(data) as unknown;
+      if (!Array.isArray(parsed)) throw new Error('JSON data must be an array of objects');
+      this.rows = parsed as Record<string, unknown>[];
+      return;
+    }
+    if (!Array.isArray(data)) throw new Error('JSON connector requires data array');
+    this.rows = data as Record<string, unknown>[];
+  }
+
+  async disconnect(): Promise<void> {
+    this.rows = [];
+  }
+
+  async testConnection(config: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> {
+    try {
+      await this.connect(config);
+      return { ok: true, message: `${this.rows.length} record(s) ready` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Invalid JSON data' };
+    }
+  }
+
+  async executeQuery(_query: string): Promise<QueryResult> {
+    const columns = this.rows.length > 0 ? Object.keys(this.rows[0]!) : [];
+    return {
+      columns,
+      rows: this.rows.map((row) => columns.map((column) => (row[column] ?? null) as TableScalar)),
+      rowCount: this.rows.length,
+    };
+  }
+}
+
+/** 内置 REST connector */
 export class RestDataConnector implements DataConnector {
   readonly kind = 'rest' as const;
   readonly id = 'rest';
@@ -81,6 +122,7 @@ export class RestDataConnector implements DataConnector {
 
 export function createDefaultConnectorRegistry(): ConnectorRegistry {
   const registry = new ConnectorRegistry();
+  registry.register(new JsonDataConnector());
   registry.register(new RestDataConnector());
   return registry;
 }

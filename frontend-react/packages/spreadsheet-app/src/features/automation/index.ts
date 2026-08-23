@@ -1,6 +1,13 @@
-import type { WorkbookModel } from '@react-sheets/core-model';
+import type { WorkbookModel, CellData } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { ScriptSandbox } from './sandbox';
+
+function normalizeFacadeCellValue(value: unknown): CellData {
+  if (value != null && typeof value === 'object' && 'value' in (value as object)) {
+    return value as CellData;
+  }
+  return { value: value as CellData['value'] };
+}
 
 export interface FacadeRange {
   setValues(values: unknown[][]): void;
@@ -40,23 +47,30 @@ export class FacadeScriptRuntime {
     const createRange = (a1: string): FacadeRange => ({
       setValues(values: unknown[][]) {
         const ref = parseA1(a1);
-        for (let r = 0; r < values.length; r++) {
+        for (let r = 0; r < values.length; r += 1) {
           const row = values[r] ?? [];
-          for (let c = 0; c < row.length; c++) {
-            const value = row[c];
+          for (let c = 0; c < row.length; c += 1) {
             runtime.execute('sheet.cell.set', {
+              sheetId: activeSheetId(),
               row: ref.row + r,
               column: ref.column + c,
-              value,
+              value: normalizeFacadeCellValue(row[c]),
             });
           }
         }
       },
       setFontWeight(weight: 'normal' | 'bold') {
         const ref = parseA1(a1);
+        const sheetId = activeSheetId();
         runtime.execute('sheet.style.set', {
-          row: ref.row,
-          column: ref.column,
+          sheetId,
+          range: {
+            sheetId,
+            startRow: ref.row,
+            endRow: ref.endRow ?? ref.row,
+            startColumn: ref.column,
+            endColumn: ref.endColumn ?? ref.column,
+          },
           style: { bold: weight === 'bold' },
         });
       },
@@ -106,3 +120,7 @@ export interface ScriptRunResult {
   durationMs: number;
   error?: string;
 }
+
+export { CommandRecorder, type RecordedStatement } from './command-recorder';
+export { ScriptSandbox, DEFAULT_SANDBOX_POLICY, type SandboxPolicy } from './sandbox';
+export { registerAutomationCommands } from './commands';

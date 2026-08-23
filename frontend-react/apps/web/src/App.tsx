@@ -327,6 +327,9 @@ function WorkspaceApp() {
             onExecute={app.execute.bind(app)}
             onTabChange={app.setRibbonTab}
             phase={state.phase}
+            canExecute={app.canExecute.bind(app)}
+            shareRole={state.shareRole}
+            onRoleChange={(role) => app.execute('permission.role.set', { role })}
           />
         }
         saveState={state.saveState}
@@ -356,6 +359,10 @@ function WorkspaceApp() {
             saveState={state.saveState}
             sheetCount={state.sheets.length}
             zoom={state.zoom}
+            collabStatus={state.collabStatus}
+            pendingChangeSetCount={state.pendingChangeSetCount}
+            collabRevision={state.collabRevision}
+            hasLocalDraft={state.hasLocalDraft}
           />
         }
         title={state.workbookName}
@@ -442,6 +449,15 @@ function WorkspaceApp() {
             dataValidations={state.selectedSheet.dataValidations}
             historyEntries={state.historyEntries}
             remoteRevisions={state.remoteRevisions}
+            historyPreviewRevision={state.historyPreviewRevision}
+            canRestoreHistory={state.permissions.restore}
+            onUndoToHistory={app.undoToHistoryIndex.bind(app)}
+            onRestoreRevision={(revision) => { void app.restoreToRevision(revision); }}
+            onPreviewRevision={(revision) => { void app.previewRevision(revision); }}
+            onClearHistoryPreview={app.clearHistoryPreview.bind(app)}
+            onRefreshRevisions={() => { void app.refreshRevisionLog(); }}
+            compatibilityReport={state.compatibilityReport}
+            onClearCompatibilityReport={app.clearCompatibilityReport.bind(app)}
             tables={state.tables}
             onReadDataRows={app.readDataTable.bind(app)}
             onRemoveDataTable={app.removeDataTable.bind(app)}
@@ -457,6 +473,61 @@ function WorkspaceApp() {
             onRemoveDataValidation={app.removeDataValidation}
             onPrint={app.printWorkbook}
             onExportPdf={app.exportPdf}
+            printPageCount={state.printPageCount}
+            queryConnectors={state.queryConnectors}
+            loadedQueries={state.loadedQueries}
+            lastQueryResult={state.lastQueryResult}
+            canQuery={state.permissions.query}
+            onLoadQuery={app.loadQuery.bind(app)}
+            onRefreshQuery={app.refreshQuery.bind(app)}
+            onTestQueryConnection={app.testQueryConnection.bind(app)}
+            automationRecording={state.automationRecording}
+            recordedScript={state.recordedScript}
+            lastScriptResult={state.lastScriptResult}
+            canRunScripts={state.permissions.script}
+            onRunAutomationScript={app.runAutomationScript.bind(app)}
+            onStartAutomationRecording={app.startAutomationRecording.bind(app)}
+            onStopAutomationRecording={app.stopAutomationRecording.bind(app)}
+            platformCapabilities={state.platformCapabilities}
+            lastWhatIfMessage={
+              state.lastWhatIfResult && 'message' in state.lastWhatIfResult
+                ? state.lastWhatIfResult.message
+                : state.lastWhatIfResult && 'status' in state.lastWhatIfResult
+                  ? `${state.lastWhatIfResult.kind}: ${state.lastWhatIfResult.status}`
+                  : null
+            }
+            canRunExtended={state.permissions.script}
+            onGoalSeek={(params) => {
+              app.runGoalSeek({
+                setCell: { row: params.setRow, column: params.setColumn },
+                toValue: params.targetValue,
+                byChangingCell: { row: params.changingRow, column: params.changingColumn },
+              });
+            }}
+            onRunDataTable={(params) => {
+              app.runDataTableAnalysis({
+                tableRange: params.tableRange,
+                ...(params.inputMode === 'column'
+                  ? { columnInputCell: params.inputCell }
+                  : { rowInputCell: params.inputCell }),
+              });
+            }}
+            onRunScenario={(params) => {
+              app.runScenarioAnalysis({
+                id: `scenario-${Date.now()}`,
+                name: params.name,
+                changingCells: [{
+                  row: params.changingCell.row,
+                  column: params.changingCell.column,
+                  value: params.changingValue,
+                }],
+                resultCells: [{ row: params.resultCell.row, column: params.resultCell.column }],
+              });
+            }}
+            onEvaluateCapability={async (capability) => {
+              const result = app.evaluatePlatformCapability(capability as import('@react-sheets/spreadsheet-app').PlatformCapability);
+              return { ok: result.canEnable, message: result.reason };
+            }}
             onAddComment={app.addComment}
             onReplyComment={app.replyComment}
             onResolveComment={app.resolveComment}
@@ -529,6 +600,7 @@ function WorkspaceApp() {
         columns={state.selectedSheet.columns}
         rows={state.selectedSheet.previewRows}
         layout={state.printLayout}
+        pages={state.printPages}
         getRow={(row) => state.selectedSheet.previewRows[row] ?? {
           rowNumber: row + 1,
           cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({

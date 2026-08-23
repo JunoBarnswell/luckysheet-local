@@ -6,6 +6,7 @@
   "dependencies": {
     "@react-sheets/core-model": "workspace:*",
     "@react-sheets/command-runtime": "workspace:*",
+    "@react-sheets/exchange-xlsx": "workspace:*",
     "@react-sheets/sheet-features": "workspace:*"
   }
 }

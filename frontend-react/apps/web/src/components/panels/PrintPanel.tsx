@@ -5,10 +5,11 @@ import type { PrintLayout } from '@react-sheets/pro-features';
 export interface PrintPanelProps {
   onPrint: (layout: PrintLayout) => void;
   onExportPdf: (layout: PrintLayout) => void;
+  pageCount?: number;
   onClose?: () => void;
 }
 
-export function PrintPanel({ onPrint, onExportPdf, onClose }: PrintPanelProps) {
+export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: PrintPanelProps) {
   const [paper, setPaper] = useState<PrintLayout['paper']>('A4');
   const [orientation, setOrientation] = useState<PrintLayout['orientation']>('portrait');
   const [marginType, setMarginType] = useState<'normal' | 'narrow' | 'wide'>('normal');
@@ -82,7 +83,9 @@ export function PrintPanel({ onPrint, onExportPdf, onClose }: PrintPanelProps) {
           <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-800">
             <div className="font-semibold">Print Output Layout</div>
             <div className="mt-0.5 text-[11px] text-blue-600">
-              Automatic grid pagination with header row repeating is active.
+              {pageCount > 0
+                ? `${pageCount} page(s) will be generated from the current print area.`
+                : 'Automatic grid pagination with header row repeating is active.'}
             </div>
           </div>
 

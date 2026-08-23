@@ -11,20 +11,43 @@ export interface StatusBarProps {
   saveState: SaveState;
   sheetCount: number;
   zoom: number;
+  collabStatus?: 'connecting' | 'open' | 'closed';
+  pendingChangeSetCount?: number;
+  collabRevision?: number;
+  hasLocalDraft?: boolean;
 }
 
-export function StatusBar({ activeCell, locale, onOpenShortcuts, onZoomChange, phase, saveState, sheetCount, zoom }: StatusBarProps) {
+export function StatusBar({
+  activeCell,
+  locale,
+  onOpenShortcuts,
+  onZoomChange,
+  phase,
+  saveState,
+  sheetCount,
+  zoom,
+  collabStatus = 'closed',
+  pendingChangeSetCount = 0,
+  collabRevision = 0,
+  hasLocalDraft = false,
+}: StatusBarProps) {
   const disabled = phase !== 'ready';
   return (
     <Box aria-label="Workbook status bar" className="flex h-10 items-center justify-between gap-4 px-4">
       <Inline gap="md" className="min-w-0">
         <Inline gap="xs" className="shrink-0">
           <Icon name={saveState === 'saved' ? 'cloud-check' : 'loader'} size="xs" className={saveState === 'saved' ? 'text-emerald-400' : 'animate-spin text-amber-300'} />
-          <Text size="xs" tone="inverse">{locale === 'zh-CN' ? (saveState === 'saved' ? '已保存' : saveState === 'calculating' ? '计算中' : saveState === 'conflict' ? '存在冲突' : '保存中') : (saveState === 'saved' ? 'Saved locally' : saveState === 'calculating' ? 'Calculating' : saveState === 'conflict' ? 'Conflict' : 'Saving draft')}</Text>
+          <Text size="xs" tone="inverse">{locale === 'zh-CN' ? (saveState === 'saved' ? (hasLocalDraft ? '本地草稿' : '已保存') : saveState === 'calculating' ? '计算中' : saveState === 'conflict' ? '存在冲突' : '保存中') : (saveState === 'saved' ? (hasLocalDraft ? 'Local draft' : 'Saved locally') : saveState === 'calculating' ? 'Calculating' : saveState === 'conflict' ? 'Conflict' : 'Saving draft')}</Text>
         </Inline>
         <Box className="hidden h-3 w-px bg-slate-700 sm:block" />
         <Text size="xs" tone="subtle" className="hidden sm:inline">{locale === 'zh-CN' ? '单元格' : 'Cell'} {activeCell}</Text>
         <Text size="xs" tone="subtle" className="hidden lg:inline">{sheetCount} {locale === 'zh-CN' ? '个工作表' : 'worksheets'}</Text>
+        <Box className="hidden h-3 w-px bg-slate-700 lg:block" />
+        <Text size="xs" tone="subtle" className="hidden lg:inline">
+          {locale === 'zh-CN'
+            ? `协同 ${collabStatus === 'open' ? '在线' : collabStatus === 'connecting' ? '连接中' : '离线'} · rev ${collabRevision}${pendingChangeSetCount > 0 ? ` · 待同步 ${pendingChangeSetCount}` : ''}`
+            : `Collab ${collabStatus}${pendingChangeSetCount > 0 ? ` · ${pendingChangeSetCount} pending` : ''} · rev ${collabRevision}`}
+        </Text>
       </Inline>
       <Inline gap="sm" className="shrink-0">
         <Button aria-label="Open keyboard shortcuts" disabled={disabled} icon="keyboard" onClick={onOpenShortcuts} size="xs" variant="ghost" className="text-slate-300 hover:bg-slate-800 hover:text-white">

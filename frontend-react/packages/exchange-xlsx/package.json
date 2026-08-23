@@ -3,5 +3,8 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "dependencies": {}
+  "dependencies": {
+    "@react-sheets/core-model": "workspace:*",
+    "@react-sheets/pro-features": "workspace:*"
+  }
 }

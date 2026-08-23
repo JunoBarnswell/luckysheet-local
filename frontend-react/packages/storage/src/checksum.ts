@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { sha256Hex } from './sha256';
 
 export function computeSnapshotChecksum(snapshotJson: string): string {
-  return createHash('sha256').update(snapshotJson).digest('hex');
+  return sha256Hex(snapshotJson);
 }
 
 export function verifySnapshotChecksum(snapshotJson: string, expected: string): boolean {

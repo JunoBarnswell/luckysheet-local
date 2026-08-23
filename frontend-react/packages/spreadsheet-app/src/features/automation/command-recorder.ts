@@ -46,17 +46,18 @@ export class CommandRecorder {
       case 'sheet.cell.set': {
         const row = p?.row as number | undefined;
         const col = p?.column as number | undefined;
-        const value = p?.value;
+        const value = p?.value as { value?: unknown } | undefined;
         if (row == null || col == null) return undefined;
         const a1 = `${columnToLetter(col)}${row + 1}`;
-        return `sheet.getRange('${a1}').setValues([[${JSON.stringify(value)}]]);`;
+        return `sheet.getRange('${a1}').setValues([[${JSON.stringify(value?.value ?? value)}]]);`;
       }
       case 'sheet.style.set': {
         const style = p?.style as { bold?: boolean } | undefined;
-        const row = p?.row as number | undefined;
-        const col = p?.column as number | undefined;
-        if (row == null || col == null) return undefined;
-        const a1 = `${columnToLetter(col)}${row + 1}`;
+        const range = p?.range as { startRow?: number; startColumn?: number; endRow?: number; endColumn?: number } | undefined;
+        if (!range || range.startRow == null || range.startColumn == null) return undefined;
+        const endRow = range.endRow ?? range.startRow;
+        const endCol = range.endColumn ?? range.startColumn;
+        const a1 = `${columnToLetter(range.startColumn)}${range.startRow + 1}:${columnToLetter(endCol)}${endRow + 1}`;
         if (style?.bold) return `sheet.getRange('${a1}').setFontWeight('bold');`;
         return undefined;
       }

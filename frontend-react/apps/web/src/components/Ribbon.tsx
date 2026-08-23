@@ -14,7 +14,7 @@ import {
   Text,
   type RibbonTabId,
 } from '@react-sheets/ui-system';
-import type { AppPhase } from '@react-sheets/spreadsheet-app';
+import type { AppPhase, ShareRole } from '@react-sheets/spreadsheet-app';
 import { localizeText, translate, translateRibbonTab, type Locale } from '../i18n';
 
 export interface RibbonProps {
@@ -35,6 +35,9 @@ export interface RibbonProps {
     background?: string;
     textColor?: string;
   };
+  canExecute?: (commandId: string, params?: unknown) => boolean;
+  shareRole?: ShareRole;
+  onRoleChange?: (role: ShareRole) => void;
 }
 
 const RibbonLocaleContext = createContext<Locale>('en-US');
@@ -89,8 +92,19 @@ function ToolBtn({
   );
 }
 
-export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellStyle = {} }: RibbonProps) {
+export function Ribbon({
+  activeTab,
+  locale,
+  onExecute,
+  onTabChange,
+  phase,
+  cellStyle = {},
+  canExecute,
+  shareRole = 'owner',
+  onRoleChange,
+}: RibbonProps) {
   const disabled = phase !== 'ready';
+  const blocked = (commandId: string, params?: unknown) => disabled || (canExecute ? !canExecute(commandId, params) : false);
 
   return (
     <RibbonLocaleContext.Provider value={locale}>
@@ -106,7 +120,42 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
           </>
         )}
       >
-        {activeTab === 'file' || activeTab === 'pageLayout' || activeTab === 'automate' ? (
+        {activeTab === 'file' ? (
+          <Inline gap="md" className="min-w-max items-start">
+            <RibbonGroup label={locale === 'zh-CN' ? '工作簿' : 'Workbook'}>
+              <Button size="sm" variant="secondary" disabled={disabled} onClick={() => onExecute('ui.file.save')}>
+                {locale === 'zh-CN' ? '保存' : 'Save'}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('ui.file.export-xlsx')}>
+                {locale === 'zh-CN' ? '导出 XLSX' : 'Export XLSX'}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('ui.file.import-xlsx')}>
+                {locale === 'zh-CN' ? '导入 XLSX' : 'Import XLSX'}
+              </Button>
+            </RibbonGroup>
+          </Inline>
+        ) : null}
+
+        {activeTab === 'automate' ? (
+          <Inline gap="md" className="min-w-max items-start">
+            <RibbonGroup label={locale === 'zh-CN' ? '脚本' : 'Scripts'}>
+              <Button size="sm" variant="primary" disabled={disabled} onClick={() => onExecute('ui.panel.open', { panel: 'automate' })}>
+                {locale === 'zh-CN' ? '打开自动化面板' : 'Open Automate Panel'}
+              </Button>
+              <Button size="sm" variant="outline" disabled={disabled} onClick={() => onExecute('automation.run.sample')}>
+                {locale === 'zh-CN' ? '运行示例脚本' : 'Run Sample Script'}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('automation.record.start')}>
+                {locale === 'zh-CN' ? '开始录制' : 'Start Recording'}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('automation.record.stop')}>
+                {locale === 'zh-CN' ? '停止录制' : 'Stop Recording'}
+              </Button>
+            </RibbonGroup>
+          </Inline>
+        ) : null}
+
+        {activeTab === 'pageLayout' ? (
           <RibbonEmptyState message={locale === 'zh-CN' ? '此选项卡的命令将在此显示。' : 'Commands for this tab will appear here.'} />
         ) : null}
 
@@ -115,6 +164,9 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
             <RibbonGroup label="Calculation">
               <Button size="sm" variant="ghost" icon="calculator" disabled={disabled} onClick={() => onExecute('recalculate-formulas')}>
                 Calculate Now
+              </Button>
+              <Button size="sm" variant="outline" disabled={disabled} onClick={() => onExecute('ui.panel.open', { panel: 'extended' })}>
+                Goal Seek
               </Button>
             </RibbonGroup>
           </Inline>
@@ -407,10 +459,10 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
         {activeTab === 'review' ? (
           <Inline gap="md" className="min-w-max items-start">
             <RibbonGroup label="Comments">
-              <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('review.panel.open', { notice: 'Add a comment in the Inspector panel.' })}>
+              <Button size="sm" variant="ghost" icon="comment" disabled={blocked('review.panel.open')} onClick={() => onExecute('review.panel.open', { notice: 'Add a comment in the Inspector panel.' })}>
                 New Comment
               </Button>
-              <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('review.comment.resolve')}>
+              <Button size="sm" variant="ghost" icon="comment" disabled={blocked('review.comment.resolve')} onClick={() => onExecute('review.comment.resolve')}>
                 Resolve
               </Button>
               <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('ui.panel.open', { panel: 'inspector' })}>
@@ -425,6 +477,30 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               <Button size="sm" variant="ghost" icon="share" onClick={() => onExecute('review.panel.open', { notice: 'Insert a hyperlink in the Inspector panel.' })}>
                 Insert Link
               </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+            <RibbonGroup label="Protection">
+              <Button size="sm" variant="ghost" icon="lock" disabled={blocked('permission.protect.selection')} onClick={() => onExecute('permission.protect.selection')}>
+                Protect Selection
+              </Button>
+              <Button size="sm" variant="ghost" icon="lock" disabled={blocked('permission.unprotect.selection')} onClick={() => onExecute('permission.unprotect.selection')}>
+                Unprotect
+              </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+            <RibbonGroup label="Share Role">
+              <Select
+                aria-label="Share role"
+                value={shareRole}
+                disabled={disabled}
+                onChange={(event) => onRoleChange?.(event.target.value as ShareRole)}
+                className="min-w-28"
+              >
+                <option value="owner">Owner</option>
+                <option value="editor">Editor</option>
+                <option value="commenter">Commenter</option>
+                <option value="viewer">Viewer</option>
+              </Select>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
             <RibbonGroup label="History & Audit">

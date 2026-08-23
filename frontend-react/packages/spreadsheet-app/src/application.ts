@@ -45,10 +45,19 @@ import {
 import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
 import { executeUiCommand, isUiCommand } from './execute-command';
-import { PermissionService } from './permission-service';
+import {
+  buildCollaborationSnapshot,
+  type CollaborationSnapshot,
+} from './collaboration-bridge';
+import { PermissionService, type PermissionCapabilities, type ShareRole } from './permission-service';
+import {
+  canExecuteCommand,
+  findProtectionRuleCoveringRange,
+} from './permission-bridge';
 import {
   createSpreadsheetRuntime,
   hydrateRuntime,
+  rehydrateFormulaAfterRestore,
   resolveActorId,
   resolveUnitId,
   startCollaborationSession,
@@ -87,6 +96,68 @@ import {
   buildSparklineInsertParams,
   resolveQuickSparklinePlacement,
 } from './sparkline-bridge';
+import {
+  buildRestoreParams,
+  revisionToHistoryMeta,
+} from './history-bridge';
+import {
+  buildPersistenceMeta,
+  buildLocalDraftRecord,
+  type PersistenceSnapshotMeta,
+} from './persistence-bridge';
+import {
+  exchangeExportXlsx,
+  summarizeCompatibilityReport,
+} from './xlsx-bridge';
+import {
+  buildPrintSnapshot,
+  summarizePrintSnapshot,
+  type PrintPageSnapshot,
+  type PrintSnapshot,
+} from './print-bridge';
+import { browserPrintHook, PdfExportService } from './features/print';
+import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
+import {
+  buildQueryResultSnapshot,
+  executeQueryDefinition,
+  resolveLoadTarget,
+  summarizeQueryResult,
+  type QueryResultSnapshot,
+  type QuerySessionEntry,
+} from './query-bridge';
+import {
+  createCommandRecorder,
+  runAutomationScript,
+  SAMPLE_AUTOMATION_SCRIPT,
+  summarizeScriptResult,
+  type AutomationSnapshot,
+} from './automation-bridge';
+import { CommandRecorder } from './features/automation/command-recorder';
+import type { ScriptRunResult } from './features/automation';
+import type { CapabilityDescriptor, PlatformCapability } from './features/extended';
+import type {
+  DataTableParams,
+  DataTableResult,
+  GoalSeekParams,
+  GoalSeekResult,
+  ScenarioDefinition,
+  ScenarioResult,
+} from './features/extended/what-if';
+import {
+  evaluateCapability,
+  runDataTable,
+  runGoalSeek,
+  runScenario,
+  summarizeGoalSeekResult,
+  summarizeScenarioResult,
+  summarizeDataTableResult,
+  type ExtendedSnapshot,
+} from './extended-bridge';
+import type { CompatibilityReport } from './xlsx-bridge';
+import {
+  HistoryPreviewSession,
+  type HistoryEntryMeta,
+} from './features/history';
 import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId } from './types';
 
@@ -115,9 +186,18 @@ export interface UiSnapshot {
   selectedFloatingId: string | null;
   peers: PeerCursor[];
   collabStatus: 'connecting' | 'open' | 'closed';
+  collabRevision: number;
+  pendingChangeSetCount: number;
+  offlineQueueState: string;
   actorId: string;
+  shareRole: ShareRole;
+  permissions: PermissionCapabilities;
   historyEntries: readonly HistoryEntry[];
   remoteRevisions: readonly RevisionRecord[];
+  historyPreviewRevision: number | null;
+  hasLocalDraft: boolean;
+  persistenceChecksum: string;
+  compatibilityReport: CompatibilityReport | null;
   tables: readonly WorkbookTableModel[];
   showFunctionWizard: boolean;
   showSortDialog: boolean;
@@ -129,6 +209,17 @@ export interface UiSnapshot {
   findQuery: string;
   showPrintPreview: boolean;
   printLayout: PrintLayout;
+  printPages: readonly PrintPageSnapshot[];
+  printPageCount: number;
+  printArea: RangeRef | null;
+  lastQueryResult: QueryResultSnapshot | null;
+  queryConnectors: readonly string[];
+  loadedQueries: readonly QueryResultSnapshot[];
+  automationRecording: boolean;
+  recordedScript: string;
+  lastScriptResult: ScriptRunResult | null;
+  platformCapabilities: readonly CapabilityDescriptor[];
+  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
   version: number;
 }
 
@@ -158,6 +249,10 @@ export class SpreadsheetApplication {
   private peers: PeerCursor[] = [];
   private collabStatus: 'connecting' | 'open' | 'closed' = 'closed';
   private remoteRevisions: RevisionRecord[] = [];
+  private historyPreview: HistoryPreviewSession | null = null;
+  private hasLocalDraft = false;
+  private persistenceChecksum = '';
+  private compatibilityReport: CompatibilityReport | null = null;
   private showFunctionWizard = false;
   private showSortDialog = false;
   private showFindReplace = false;
@@ -172,6 +267,15 @@ export class SpreadsheetApplication {
     orientation: 'portrait',
     margin: { top: 20, right: 20, bottom: 20, left: 20 },
   };
+  private printSnapshot: PrintSnapshot | null = null;
+  private querySessions = new Map<string, QuerySessionEntry>();
+  private lastQueryResult: QueryResultSnapshot | null = null;
+  private readonly commandRecorder: CommandRecorder = createCommandRecorder();
+  private recorderDetach: (() => void) | null = null;
+  private automationRecording = false;
+  private recordedScript = '';
+  private lastScriptResult: ScriptRunResult | null = null;
+  private lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null = null;
 
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
@@ -197,6 +301,7 @@ export class SpreadsheetApplication {
       createInitialSelection(this.activeSheetId),
     );
     this.wireRuntimeHandlers();
+    this.syncPersistenceMeta();
   }
 
   private wireRuntimeHandlers(): void {
@@ -221,6 +326,9 @@ export class SpreadsheetApplication {
       this.remoteRevisions = revisions;
       this.emit();
     };
+    this.runtime.handlers.onDraftUpdated = () => {
+      this.syncPersistenceMeta();
+    };
     this.runtime.handlers.onCollabStatus = (status) => {
       this.collabStatus = status;
       this.emit();
@@ -244,6 +352,8 @@ export class SpreadsheetApplication {
   }
 
   dispose(): void {
+    this.recorderDetach?.();
+    this.recorderDetach = null;
     this.collabDispose?.();
     this.persistenceDispose?.();
     this.collabDispose = null;
@@ -261,8 +371,16 @@ export class SpreadsheetApplication {
   }
 
   private refresh(): void {
+    this.syncPersistenceMeta();
     this.version += 1;
     this.emit();
+  }
+
+  private syncPersistenceMeta(): void {
+    const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
+    const meta = buildPersistenceMeta(this.runtime.model.snapshot(), this.runtime.remoteRevision, draft);
+    this.hasLocalDraft = meta.hasLocalDraft;
+    this.persistenceChecksum = meta.checksum;
   }
 
   getUiSnapshot = (): UiSnapshot => {
@@ -272,6 +390,7 @@ export class SpreadsheetApplication {
     const sheets = buildAllSheetSnapshots(this.runtime.model, this.runtime.formula, this.runtime.pivotResults);
     const selectedSheet = sheets.find((sheet) => sheet.id === this.activeSheetId) ?? sheets[0]!;
     const selection = this.selectionService.getState();
+    const collaboration = this.getCollaborationSnapshot();
     const snapshot: UiSnapshot = {
       unitId: this.runtime.model.unitId,
       workbookName: this.runtime.model.name,
@@ -291,9 +410,18 @@ export class SpreadsheetApplication {
       selectedFloatingId: this.selectedFloatingId,
       peers: this.peers,
       collabStatus: this.collabStatus,
+      collabRevision: collaboration.revision,
+      pendingChangeSetCount: collaboration.pendingCount,
+      offlineQueueState: collaboration.offlineQueueState,
       actorId: this.actorId,
+      shareRole: this.getShareRole(),
+      permissions: this.permission.getCapabilities(this.actorId),
       historyEntries: this.runtime.commands.getUndoEntries(),
       remoteRevisions: this.remoteRevisions,
+      historyPreviewRevision: this.historyPreview?.revision ?? null,
+      hasLocalDraft: this.hasLocalDraft,
+      persistenceChecksum: this.persistenceChecksum,
+      compatibilityReport: this.compatibilityReport,
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
       showFunctionWizard: this.showFunctionWizard,
       showSortDialog: this.showSortDialog,
@@ -305,6 +433,19 @@ export class SpreadsheetApplication {
       findQuery: this.findQuery,
       showPrintPreview: this.showPrintPreview,
       printLayout: this.printLayout,
+      printPages: this.printSnapshot?.pageSnapshots ?? [],
+      printPageCount: this.printSnapshot?.pageCount ?? 0,
+      printArea: this.printSnapshot?.printArea ?? null,
+      lastQueryResult: this.lastQueryResult,
+      queryConnectors: this.runtime.connectors.list().map((connector) => connector.id),
+      loadedQueries: [...this.querySessions.values()]
+        .map((session) => session.lastResult)
+        .filter((result): result is QueryResultSnapshot => Boolean(result)),
+      automationRecording: this.automationRecording,
+      recordedScript: this.recordedScript,
+      lastScriptResult: this.lastScriptResult,
+      platformCapabilities: this.runtime.capabilities.list(),
+      lastWhatIfResult: this.lastWhatIfResult,
       version: this.version,
     };
     this.cachedUiSnapshotGeneration = this.snapshotGeneration;
@@ -314,22 +455,88 @@ export class SpreadsheetApplication {
 
   execute(commandId: string, params?: unknown): void {
     if (this.phase !== 'ready' && !commandId.startsWith('ui.')) return;
-    this.permission.assert(commandId, params, this.actorId);
-    if (isUiCommand(commandId)) {
-      if (executeUiCommand(this, commandId, params)) {
-        this.refresh();
+    try {
+      this.assertPermission(commandId, params);
+      if (isUiCommand(commandId)) {
+        if (executeUiCommand(this, commandId, params)) {
+          this.refresh();
+        }
+        return;
       }
-      return;
+      this.runCommand(commandId, params);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Permission denied');
     }
-    this.runCommand(commandId, params);
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
-    this.permission.assert(commandId, params, this.actorId);
+    this.assertPermission(commandId, params);
     const result = this.runtime.commands.execute(commandId, params);
+    if (commandId === 'history.restore') {
+      const restoreParams = params as { targetRevision?: number };
+      rehydrateFormulaAfterRestore(this.runtime, restoreParams.targetRevision);
+      this.activeSheetId = this.runtime.model.activeSheetId;
+      this.selectionService.resetForSheet(this.activeSheetId);
+      this.clearHistoryPreview();
+    }
     this.applySelectionFromCommand(commandId, params, result);
     this.refresh();
     return result;
+  }
+
+  canExecute(commandId: string, params?: unknown): boolean {
+    return canExecuteCommand(
+      this.permission,
+      this.runtime.model,
+      commandId,
+      params,
+      this.actorId,
+      this.activeSheetId,
+    ).allowed;
+  }
+
+  getShareRole(): ShareRole {
+    return this.permission.getShareRole(this.actorId);
+  }
+
+  setShareRole(role: ShareRole): void {
+    this.permission.setShareRole(this.actorId, role);
+    this.notify(`Share role set to ${role}`);
+    this.refresh();
+  }
+
+  protectSelection(allowedActions: string[] = ['format']): void {
+    const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+    const rule = {
+      id: nextId('protect'),
+      scope: 'range' as const,
+      sheetId: this.activeSheetId,
+      range,
+      locked: true,
+      allow: {},
+      allowedActions,
+    };
+    this.runCommand('sheet.protect.set', { sheetId: this.activeSheetId, rule });
+    this.notify('Selection protected');
+  }
+
+  unprotectSelection(): void {
+    const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+    const rule = findProtectionRuleCoveringRange(this.runtime.model, this.activeSheetId, range);
+    if (!rule) {
+      this.notify('No protection rule covers the current selection');
+      return;
+    }
+    this.runCommand('sheet.protect.remove', { sheetId: this.activeSheetId, ruleId: rule.id });
+    this.notify('Selection unprotected');
+  }
+
+  private assertPermission(commandId: string, params?: unknown): void {
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const result = this.permission.checkCommand(commandId, params, this.actorId, this.activeSheetId);
+    if (!result.allowed) {
+      throw new Error(result.reason ?? 'Permission denied');
+    }
   }
 
   private static readonly SELECTION_COMMAND_IDS = new Set([
@@ -434,6 +641,159 @@ export class SpreadsheetApplication {
     return this.zoom;
   }
 
+  getCollaborationSnapshot(): CollaborationSnapshot {
+    if (!this.runtime.collaboration) {
+      return {
+        revision: this.runtime.remoteRevision,
+        pendingCount: 0,
+        offlineQueueState: 'offline',
+        presence: { users: [], selections: [], editSessions: [], updatedAt: Date.now() },
+        peerCount: this.peers.length,
+      };
+    }
+    return buildCollaborationSnapshot(this.runtime.collaboration, this.peers);
+  }
+
+  async flushPendingCollaborations(): Promise<void> {
+    if (!this.runtime.collaboration) {
+      this.notify('Collaboration is offline');
+      return;
+    }
+    const result = await this.runtime.collaboration.offlineQueue.flushAll();
+    if (result.failed > 0) this.notify(`${result.failed} pending change set(s) failed to sync`);
+    else if (result.flushed > 0) this.notify(`${result.flushed} pending change set(s) synced`);
+    else this.notify('No pending collaboration changes');
+    this.refresh();
+  }
+
+  async refreshRevisionLog(): Promise<void> {
+    try {
+      this.remoteRevisions = await this.runtime.api.listRevisions(this.runtime.model.unitId);
+      this.emit();
+    } catch {
+      this.notify('Failed to refresh revision log');
+    }
+  }
+
+  undoToHistoryIndex(index: number): void {
+    const entries = this.runtime.commands.getUndoEntries();
+    if (index < 0 || index >= entries.length) return;
+    const undoCount = entries.length - 1 - index;
+    for (let step = 0; step < undoCount; step += 1) {
+      if (!this.runtime.commands.undo()) break;
+    }
+    this.syncDraftFromPrimary();
+    this.notify(`Restored session history to step ${index + 1}`);
+    this.refresh();
+  }
+
+  restoreFromSnapshot(snapshot: import('@react-sheets/core-model').WorkbookSnapshotV1, targetRevision: number, reason?: string): void {
+    try {
+      this.runCommand('history.restore', buildRestoreParams(snapshot, targetRevision, reason));
+      this.notify(`Restored workbook to revision ${targetRevision}`);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Permission denied');
+    }
+  }
+
+  async restoreToRevision(revision: number): Promise<void> {
+    const response = await this.runtime.api.getRevisionSnapshot(this.runtime.model.unitId, revision);
+    this.restoreFromSnapshot(response.snapshot, revision, `Restore to revision ${revision}`);
+    await this.refreshRevisionLog();
+  }
+
+  async previewRevision(revision: number): Promise<HistoryPreviewSession | null> {
+    try {
+      const response = await this.runtime.api.getRevisionSnapshot(this.runtime.model.unitId, revision);
+      const record = this.remoteRevisions.find((entry) => entry.revision === revision);
+      const meta: HistoryEntryMeta = record
+        ? revisionToHistoryMeta(record)
+        : {
+          revision,
+          operationId: `preview-${revision}`,
+          createdAt: new Date().toISOString(),
+          description: `Revision ${revision}`,
+        };
+      this.historyPreview?.dispose();
+      this.historyPreview = HistoryPreviewSession.fromSnapshot(meta, response.snapshot);
+      this.notify(`Previewing revision #${revision}`);
+      this.emit();
+      return this.historyPreview;
+    } catch {
+      this.notify('Failed to load revision preview');
+      return null;
+    }
+  }
+
+  clearHistoryPreview(): void {
+    if (!this.historyPreview) return;
+    this.historyPreview.dispose();
+    this.historyPreview = null;
+    this.emit();
+  }
+
+  getHistoryPreview(): HistoryPreviewSession | null {
+    return this.historyPreview;
+  }
+
+  getPersistenceSnapshot(): PersistenceSnapshotMeta {
+    const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
+    return buildPersistenceMeta(this.runtime.model.snapshot(), this.runtime.remoteRevision, draft);
+  }
+
+  async saveWorkbook(reason = 'Manual save'): Promise<void> {
+    if (!this.canExecute('persistence.save')) {
+      this.notify('You do not have permission to save this workbook');
+      return;
+    }
+    this.saveState = 'saving';
+    this.emit();
+    try {
+      this.runCommand('persistence.save', { reason, baseRevision: this.runtime.remoteRevision });
+      const response = await this.runtime.api.saveSnapshot(
+        this.runtime.model.unitId,
+        this.runtime.model.snapshot(),
+        this.runtime.remoteRevision,
+      );
+      this.runtime.remoteRevision = response.revision;
+      this.runtime.collaboration?.setRevision(response.revision);
+      this.runtime.draftStore.clear(this.runtime.model.unitId);
+      this.runCommand('persistence.draft.clear');
+      this.saveState = 'saved';
+      this.syncPersistenceMeta();
+      this.notify('Workbook saved');
+      await this.refreshRevisionLog();
+    } catch (error) {
+      this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'offline';
+      this.notify(error instanceof Error ? error.message : 'Save failed');
+      this.emit();
+    }
+  }
+
+  recoverLocalDraft(): boolean {
+    const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
+    if (!draft) {
+      this.notify('No local draft available');
+      return false;
+    }
+    hydrateRuntime(this.runtime, { snapshot: draft.snapshot, revision: draft.revision });
+    this.activeSheetId = this.runtime.model.activeSheetId;
+    this.selectionService.resetForSheet(this.activeSheetId);
+    this.saveState = 'offline';
+    this.syncPersistenceMeta();
+    this.notify('Local draft recovered');
+    this.refresh();
+    return true;
+  }
+
+  clearLocalDraft(): void {
+    this.runtime.draftStore.clear(this.runtime.model.unitId);
+    this.runCommand('persistence.draft.clear');
+    this.syncPersistenceMeta();
+    this.notify('Local draft cleared');
+    this.refresh();
+  }
+
   notify(message: string): void {
     this.notice = message;
     this.emit();
@@ -488,6 +848,7 @@ export class SpreadsheetApplication {
     if (dialog === 'format-cells') this.showFormatCells = true;
     if (dialog === 'shift-cells') this.showShiftCells = true;
     if (dialog === 'print-preview') {
+      this.rebuildPrintSnapshot();
       this.showPrintPreview = true;
       this.activePanel = 'print';
     }
@@ -1429,32 +1790,394 @@ export class SpreadsheetApplication {
   }
 
   printWorkbook(layout: PrintLayout): void {
-    this.printLayout = layout;
+    if (!this.canExecute('print.preview')) {
+      this.notify('You do not have permission to print');
+      return;
+    }
+    const range = this.selectionService.primaryRangeOrDefault();
+    this.runCommand('print.preview', { layout, sheetId: this.activeSheetId, range });
+    const snapshot = this.rebuildPrintSnapshot(layout, range);
     this.showPrintPreview = true;
-    this.notify('Preparing print preview');
-    this.emit();
-  }
-  exportPdf(layout: PrintLayout): void {
-    this.printLayout = layout;
-    this.showPrintPreview = true;
-    this.notify('Choose Save as PDF in the print dialog');
+    this.notify(summarizePrintSnapshot(snapshot));
     this.emit();
   }
 
-  async importXlsxBase64(base64: string): Promise<void> {
-    const response = await fetch('/api/v1/files/import-xlsx', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ base64 }) });
-    if (!response.ok) throw new Error('Import failed: ' + response.status);
-    const result = (await response.json()) as import('@react-sheets/protocol').SnapshotResponse;
-    hydrateRuntime(this.runtime, result);
-    this.runtime.remoteConnected = true;
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(UNIT_ID_STORAGE_KEY, result.snapshot.unitId);
-      window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(result.snapshot.unitId)}`);
+  exportPdf(layout: PrintLayout): void {
+    if (!this.canExecute('print.export')) {
+      this.notify('You do not have permission to export PDF');
+      return;
     }
-    this.activeSheetId = this.runtime.model.activeSheetId;
-    this.selectionService.resetForSheet(this.activeSheetId);
-    this.notify('XLSX imported');
-    this.phase = 'ready';
+    const range = this.selectionService.primaryRangeOrDefault();
+    this.runCommand('print.export', { layout, sheetId: this.activeSheetId, range });
+    const snapshot = this.rebuildPrintSnapshot(layout, range);
+    this.showPrintPreview = true;
+    void this.executePdfExport(snapshot);
+    this.notify(summarizePrintSnapshot(snapshot));
+    this.emit();
+  }
+
+  getPrintSnapshot(): PrintSnapshot | null {
+    return this.printSnapshot;
+  }
+
+  setPrintArea(range: RangeRef): void {
+    if (!this.canExecute('print.area.set')) {
+      this.notify('You do not have permission to set print area');
+      return;
+    }
+    this.runCommand('print.area.set', { sheetId: range.sheetId, range });
+    this.rebuildPrintSnapshot(this.printLayout, range);
+    this.notify('Print area updated');
+    this.emit();
+  }
+
+  updatePrintPageSetup(layout: PrintLayout): void {
+    if (!this.canExecute('print.pageSetup')) {
+      this.notify('You do not have permission to change print setup');
+      return;
+    }
+    this.runCommand('print.pageSetup', { layout, sheetId: this.activeSheetId });
+    this.rebuildPrintSnapshot(layout);
+    this.emit();
+  }
+
+  private rebuildPrintSnapshot(layout?: PrintLayout, range?: RangeRef): PrintSnapshot {
+    const uiLayout = layout ?? this.printLayout;
+    const selectionRange = range ?? this.selectionService.primaryRangeOrDefault();
+    const snapshot = buildPrintSnapshot(
+      this.runtime.model,
+      this.activeSheetId,
+      uiLayout,
+      selectionRange,
+    );
+    this.printLayout = uiLayout;
+    this.printSnapshot = snapshot;
+    return snapshot;
+  }
+
+  private async executePdfExport(snapshot: PrintSnapshot): Promise<void> {
+    const service = new PdfExportService(browserPrintHook);
+    try {
+      await service.export(snapshot.model, snapshot.pages, {
+        filename: `${this.runtime.model.name || 'workbook'}.pdf`,
+        title: this.runtime.model.name,
+      });
+      this.notify('Choose Save as PDF in the print dialog');
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'PDF export failed');
+    }
+  }
+
+  async loadQuery(query: QueryDefinition, target?: LoadTarget): Promise<void> {
+    if (!this.canExecute('query.load')) {
+      this.notify('You do not have permission to load queries');
+      return;
+    }
+    try {
+      const resolvedTarget = target ?? resolveLoadTarget(
+        this.activeSheetId,
+        this.selectionService.primaryRangeOrDefault(),
+      );
+      const result = await executeQueryDefinition(this.runtime.connectors, query);
+      this.runCommand('query.load', { query, target: resolvedTarget, result });
+      const snapshot = buildQueryResultSnapshot(query, result, resolvedTarget);
+      this.querySessions.set(query.id, { definition: structuredClone(query), lastResult: snapshot });
+      this.lastQueryResult = snapshot;
+      this.activePanel = 'query';
+      this.notify(summarizeQueryResult(snapshot));
+      this.refresh();
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Query load failed');
+      this.emit();
+    }
+  }
+
+  async refreshQuery(queryId: string): Promise<void> {
+    const session = this.querySessions.get(queryId);
+    if (!session) {
+      this.notify('Query not found');
+      return;
+    }
+    if (!this.canExecute('query.refresh')) {
+      this.notify('You do not have permission to refresh queries');
+      return;
+    }
+    try {
+      const target = session.lastResult?.target ?? resolveLoadTarget(
+        this.activeSheetId,
+        this.selectionService.primaryRangeOrDefault(),
+      );
+      const result = await executeQueryDefinition(this.runtime.connectors, session.definition);
+      this.runCommand('query.refresh', {
+        queryId,
+        query: session.definition,
+        target,
+        result,
+      });
+      const snapshot = buildQueryResultSnapshot(session.definition, result, target);
+      session.lastResult = snapshot;
+      this.lastQueryResult = snapshot;
+      this.notify(summarizeQueryResult(snapshot));
+      this.refresh();
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Query refresh failed');
+      this.emit();
+    }
+  }
+
+  async testQueryConnection(
+    connectorId: string,
+    config: Record<string, unknown>,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const connector = this.runtime.connectors.get(connectorId);
+    return connector.testConnection(config);
+  }
+
+  getQuerySnapshot(): {
+    lastResult: QueryResultSnapshot | null;
+    connectors: string[];
+    loadedQueries: QueryResultSnapshot[];
+  } {
+    return {
+      lastResult: this.lastQueryResult,
+      connectors: this.runtime.connectors.list().map((connector) => connector.id),
+      loadedQueries: [...this.querySessions.values()]
+        .map((session) => session.lastResult)
+        .filter((result): result is QueryResultSnapshot => Boolean(result)),
+    };
+  }
+
+  runAutomationScript(source: string): void {
+    if (!this.canExecute('automation.run')) {
+      this.notify('You do not have permission to run scripts');
+      return;
+    }
+    this.runCommand('automation.run', { source });
+    const result = runAutomationScript(this.runtime.model, this.runtime.commands, source);
+    this.lastScriptResult = result;
+    this.activePanel = 'automate';
+    this.ribbonTab = 'automate';
+    this.notify(summarizeScriptResult(result));
+    this.refresh();
+  }
+
+  runSampleAutomationScript(): void {
+    this.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
+  }
+
+  startAutomationRecording(): void {
+    if (!this.canExecute('automation.record.start')) {
+      this.notify('You do not have permission to record scripts');
+      return;
+    }
+    this.runCommand('automation.record.start', {});
+    this.recorderDetach?.();
+    this.commandRecorder.start();
+    this.recorderDetach = this.runtime.commands.onCommand(this.commandRecorder.createListener());
+    this.automationRecording = true;
+    this.recordedScript = '';
+    this.activePanel = 'automate';
+    this.ribbonTab = 'automate';
+    this.notify('Recording automation script');
+    this.emit();
+  }
+
+  stopAutomationRecording(): string {
+    if (!this.canExecute('automation.record.stop')) {
+      this.notify('You do not have permission to stop recording');
+      return this.recordedScript;
+    }
+    this.runCommand('automation.record.stop', {});
+    this.recorderDetach?.();
+    this.recorderDetach = null;
+    const statements = this.commandRecorder.stop();
+    this.automationRecording = false;
+    this.recordedScript = this.commandRecorder.toScript();
+    this.notify(`Recorded ${statements.length} statement(s)`);
+    this.emit();
+    return this.recordedScript;
+  }
+
+  getAutomationSnapshot(): AutomationSnapshot {
+    return {
+      recording: this.automationRecording,
+      recordedScript: this.recordedScript,
+      lastResult: this.lastScriptResult,
+      lastRunAt: this.lastScriptResult ? new Date().toISOString() : null,
+    };
+  }
+
+  runGoalSeek(params: GoalSeekParams): GoalSeekResult {
+    if (!this.canExecute('extended.whatIf.goalSeek')) {
+      this.notify('You do not have permission to run Goal Seek');
+      return {
+        kind: 'goal-seek',
+        status: 'not-converged',
+        iterations: 0,
+        message: 'Permission denied',
+      };
+    }
+    if (!this.runtime.capabilities.isEnabled('what-if')) {
+      this.notify('What-if analysis is disabled for this workbook');
+      return {
+        kind: 'goal-seek',
+        status: 'not-converged',
+        iterations: 0,
+        message: 'What-if capability disabled',
+      };
+    }
+    this.runCommand('extended.whatIf.goalSeek', { ...params, sheetId: this.activeSheetId });
+    const result = runGoalSeek(this.runtime.model, this.runtime.formula, this.activeSheetId, params);
+    if (result.status === 'converged' && result.changingCellValue != null) {
+      this.runCommand('sheet.cell.set', {
+        sheetId: this.activeSheetId,
+        row: params.byChangingCell.row,
+        column: params.byChangingCell.column,
+        value: { value: result.changingCellValue },
+      });
+    }
+    this.lastWhatIfResult = result;
+    this.activePanel = 'extended';
+    this.notify(summarizeGoalSeekResult(result));
+    this.refresh();
+    return result;
+  }
+
+  runScenarioAnalysis(scenario: ScenarioDefinition): ScenarioResult {
+    if (!this.canExecute('extended.whatIf.scenario')) {
+      this.notify('You do not have permission to run scenarios');
+      return {
+        kind: 'scenario',
+        status: 'failed',
+        scenarioId: scenario.id,
+        message: 'Permission denied',
+        outputs: [],
+      };
+    }
+    if (!this.runtime.capabilities.isEnabled('what-if')) {
+      this.notify('What-if analysis is disabled for this workbook');
+      return {
+        kind: 'scenario',
+        status: 'failed',
+        scenarioId: scenario.id,
+        message: 'What-if capability disabled',
+        outputs: [],
+      };
+    }
+    this.runCommand('extended.whatIf.scenario', { sheetId: this.activeSheetId, scenario });
+    const result = runScenario(this.runtime.model, this.runtime.formula, this.activeSheetId, scenario);
+    if (result.status === 'completed') {
+      for (const cell of scenario.changingCells) {
+        this.runCommand('sheet.cell.set', {
+          sheetId: this.activeSheetId,
+          row: cell.row,
+          column: cell.column,
+          value: { value: cell.value },
+        });
+      }
+      this.recalculateFormulas();
+    }
+    this.lastWhatIfResult = result;
+    this.activePanel = 'extended';
+    this.notify(summarizeScenarioResult(result));
+    this.refresh();
+    return result;
+  }
+
+  runDataTableAnalysis(params: DataTableParams): DataTableResult {
+    if (!this.canExecute('extended.whatIf.dataTable')) {
+      this.notify('You do not have permission to run data tables');
+      return { kind: 'data-table', status: 'failed', message: 'Permission denied', filledCells: 0, writes: [] };
+    }
+    if (!this.runtime.capabilities.isEnabled('what-if')) {
+      this.notify('What-if analysis is disabled for this workbook');
+      return { kind: 'data-table', status: 'failed', message: 'What-if capability disabled', filledCells: 0, writes: [] };
+    }
+    this.runCommand('extended.whatIf.dataTable', { ...params, sheetId: this.activeSheetId });
+    const result = runDataTable(this.runtime.model, this.runtime.formula, this.activeSheetId, params);
+    if (result.status === 'completed') {
+      for (const write of result.writes) {
+        this.runCommand('sheet.cell.set', {
+          sheetId: this.activeSheetId,
+          row: write.row,
+          column: write.column,
+          value: { value: write.value },
+        });
+      }
+      this.recalculateFormulas();
+    }
+    this.lastWhatIfResult = result;
+    this.activePanel = 'extended';
+    this.notify(summarizeDataTableResult(result));
+    this.refresh();
+    return result;
+  }
+
+  evaluatePlatformCapability(capability: PlatformCapability): { canEnable: boolean; reason?: string } {
+    this.runCommand('extended.capability.evaluate', { capability });
+    return evaluateCapability(this.runtime.capabilities, capability);
+  }
+
+  getExtendedSnapshot(): ExtendedSnapshot {
+    return {
+      capabilities: this.runtime.capabilities.list(),
+      lastWhatIfResult: this.lastWhatIfResult,
+    };
+  }
+
+  async importXlsxBase64(base64: string, fileName = 'import.xlsx'): Promise<void> {
+    if (!this.canExecute('xlsx.import')) {
+      this.notify('You do not have permission to import workbooks');
+      return;
+    }
+    this.phase = 'loading';
+    this.emit();
+    try {
+      this.runCommand('xlsx.import', { fileName, base64 });
+      const response = await this.runtime.api.importXlsxBase64(base64, fileName);
+      hydrateRuntime(this.runtime, response);
+      this.compatibilityReport = response.report as CompatibilityReport;
+      this.runtime.remoteConnected = true;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(UNIT_ID_STORAGE_KEY, response.snapshot.unitId);
+        window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(response.snapshot.unitId)}`);
+      }
+      this.activeSheetId = this.runtime.model.activeSheetId;
+      this.selectionService.resetForSheet(this.activeSheetId);
+      this.runtime.draftStore.clear(this.runtime.model.unitId);
+      this.phase = 'ready';
+      this.notify(summarizeCompatibilityReport(this.compatibilityReport));
+      this.refresh();
+    } catch (error) {
+      this.phase = 'error';
+      this.notify(error instanceof Error ? error.message : 'XLSX import failed');
+      this.emit();
+    }
+  }
+
+  async exportXlsxWorkbook(fileName?: string): Promise<{ base64: string; fileName: string } | null> {
+    if (!this.canExecute('xlsx.export')) {
+      this.notify('You do not have permission to export workbooks');
+      return null;
+    }
+    try {
+      this.runCommand('xlsx.export', { fileName });
+      const exported = await exchangeExportXlsx(this.runtime.model.snapshot(), {
+        fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
+      });
+      this.compatibilityReport = exported.report;
+      this.notify(summarizeCompatibilityReport(exported.report));
+      this.refresh();
+      if (!exported.base64 || !exported.fileName) return null;
+      return { base64: exported.base64, fileName: exported.fileName };
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'XLSX export failed');
+      return null;
+    }
+  }
+
+  clearCompatibilityReport(): void {
+    this.compatibilityReport = null;
     this.refresh();
   }
 

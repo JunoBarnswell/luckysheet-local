@@ -14,6 +14,17 @@ test('PermissionService blocks viewer from editing cells', () => {
   assert.equal(result.blockedBy, 'share-role');
 });
 
+test('PermissionService allows navigation commands for viewers', () => {
+  const perm = new PermissionService();
+  perm.setShareRole('user-1', 'viewer');
+  const result = perm.canCheck({
+    commandId: 'ui.panel.open',
+    affectedRanges: [{ sheetId: 's1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    actor: { actorId: 'user-1', role: 'viewer' },
+  });
+  assert.equal(result.allowed, true);
+});
+
 test('PermissionService blocks locked range', () => {
   const perm = new PermissionService();
   perm.setShareRole('user-1', 'editor');

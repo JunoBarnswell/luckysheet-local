@@ -18,6 +18,9 @@ export type SidebarPanelId =
   | 'conditionalFormat'
   | 'dataValidation'
   | 'print'
+  | 'query'
+  | 'automate'
+  | 'extended'
   | 'history'
   | 'data';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';

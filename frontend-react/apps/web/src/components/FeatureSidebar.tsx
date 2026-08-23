@@ -29,6 +29,7 @@ import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/pro-features';
+import type { QueryDefinition, CapabilityDescriptor, PlatformCapability } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import type { PivotModel } from '@react-sheets/core-model';
 import { localizeText, type Locale } from '../i18n';
@@ -40,7 +41,11 @@ import { SparklinePanel } from './panels/SparklinePanel';
 import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
 import { DataValidationPanel } from './panels/DataValidationPanel';
 import { PrintPanel } from './panels/PrintPanel';
+import { QueryPanel } from './panels/QueryPanel';
+import { AutomationPanel } from './panels/AutomationPanel';
+import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
+import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
 
 export interface FeatureSidebarProps {
@@ -69,6 +74,15 @@ export interface FeatureSidebarProps {
   dataValidations: DataValidationRule[];
   historyEntries: readonly HistoryEntry[];
   remoteRevisions: readonly RevisionRecord[];
+  historyPreviewRevision?: number | null;
+  canRestoreHistory?: boolean;
+  onUndoToHistory?: (index: number) => void;
+  onRestoreRevision?: (revision: number) => void;
+  onPreviewRevision?: (revision: number) => void;
+  onClearHistoryPreview?: () => void;
+  onRefreshRevisions?: () => void;
+  compatibilityReport?: import('@react-sheets/exchange-xlsx').CompatibilityReport | null;
+  onClearCompatibilityReport?: () => void;
   tables: readonly WorkbookTableModel[];
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
@@ -84,6 +98,37 @@ export interface FeatureSidebarProps {
   onRemoveDataValidation: (id: string) => void;
   onPrint: (layout: PrintLayout) => void;
   onExportPdf: (layout: PrintLayout) => void;
+  printPageCount?: number;
+  queryConnectors?: readonly string[];
+  loadedQueries?: readonly { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string }[];
+  lastQueryResult?: { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string } | null;
+  canQuery?: boolean;
+  onLoadQuery?: (query: QueryDefinition) => Promise<void>;
+  onRefreshQuery?: (queryId: string) => Promise<void>;
+  onTestQueryConnection?: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
+  automationRecording?: boolean;
+  recordedScript?: string;
+  lastScriptResult?: { ok: boolean; durationMs: number; error?: string } | null;
+  canRunScripts?: boolean;
+  onRunAutomationScript?: (source: string) => void;
+  onStartAutomationRecording?: () => void;
+  onStopAutomationRecording?: () => void;
+  platformCapabilities?: readonly CapabilityDescriptor[];
+  lastWhatIfMessage?: string | null;
+  canRunExtended?: boolean;
+  onGoalSeek?: (params: { setRow: number; setColumn: number; targetValue: number; changingRow: number; changingColumn: number }) => void;
+  onRunDataTable?: (params: {
+    inputMode: 'row' | 'column';
+    inputCell: { row: number; column: number };
+    tableRange: { startRow: number; startColumn: number; endRow: number; endColumn: number };
+  }) => void;
+  onRunScenario?: (params: {
+    name: string;
+    changingCell: { row: number; column: number };
+    changingValue: number;
+    resultCell: { row: number; column: number };
+  }) => void;
+  onEvaluateCapability?: (capability: PlatformCapability) => Promise<{ ok: boolean; message?: string }>;
   onAddComment?: (text: string) => void;
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
@@ -103,6 +148,9 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'conditionalFormat', label: 'Format', icon: 'sparkles' },
   { id: 'dataValidation', label: 'Validate', icon: 'check-circle' },
   { id: 'print', label: 'Print', icon: 'printer' },
+  { id: 'query', label: 'Query', icon: 'table' },
+  { id: 'automate', label: 'Automate', icon: 'function' },
+  { id: 'extended', label: 'Extended', icon: 'sparkles' },
   { id: 'history', label: 'History', icon: 'history' },
   { id: 'data', label: 'Tables', icon: 'table' },
 ];
@@ -119,6 +167,8 @@ function InsightRow({ label, tone = 'muted', value }: { label: string; tone?: 'a
 function InspectorPanel({
   activeCell,
   sheet,
+  compatibilityReport,
+  onClearCompatibilityReport,
   onAddComment,
   onReplyComment,
   onResolveComment,
@@ -130,6 +180,8 @@ function InspectorPanel({
 }: {
   activeCell: string;
   sheet: CanvasSheetSnapshot;
+  compatibilityReport?: import('@react-sheets/exchange-xlsx').CompatibilityReport | null;
+  onClearCompatibilityReport?: () => void;
   onAddComment?: (text: string) => void;
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
@@ -183,6 +235,8 @@ function InspectorPanel({
         onRemoveHyperlink={onRemoveHyperlink}
       />
 
+      <CompatibilityReportPanel report={compatibilityReport ?? null} onClear={onClearCompatibilityReport} />
+
       <Panel className="shadow-none">
         <PanelHeader>
           <Inline gap="sm">
@@ -226,6 +280,15 @@ export function FeatureSidebar({
   dataValidations,
   historyEntries,
   remoteRevisions,
+  historyPreviewRevision = null,
+  canRestoreHistory = true,
+  onUndoToHistory,
+  onRestoreRevision,
+  onPreviewRevision,
+  onClearHistoryPreview,
+  onRefreshRevisions,
+  compatibilityReport = null,
+  onClearCompatibilityReport,
   tables,
   onReadDataRows,
   onRemoveDataTable,
@@ -241,6 +304,28 @@ export function FeatureSidebar({
   onRemoveDataValidation,
   onPrint,
   onExportPdf,
+  printPageCount = 0,
+  queryConnectors = [],
+  loadedQueries = [],
+  lastQueryResult = null,
+  canQuery = true,
+  onLoadQuery,
+  onRefreshQuery,
+  onTestQueryConnection,
+  automationRecording = false,
+  recordedScript = '',
+  lastScriptResult = null,
+  canRunScripts = true,
+  onRunAutomationScript,
+  onStartAutomationRecording,
+  onStopAutomationRecording,
+  platformCapabilities = [] as readonly CapabilityDescriptor[],
+  lastWhatIfMessage = null,
+  canRunExtended = true,
+  onGoalSeek,
+  onRunDataTable,
+  onRunScenario,
+  onEvaluateCapability,
   onAddComment,
   onReplyComment,
   onResolveComment,
@@ -330,6 +415,8 @@ export function FeatureSidebar({
           <InspectorPanel
             activeCell={activeCell}
             sheet={sheet}
+            compatibilityReport={compatibilityReport}
+            onClearCompatibilityReport={onClearCompatibilityReport}
             onAddComment={onAddComment}
             onReplyComment={onReplyComment}
             onResolveComment={onResolveComment}
@@ -395,10 +482,54 @@ export function FeatureSidebar({
           />
         ) : null}
         {phase === 'ready' && activePanel === 'print' ? (
-          <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} />
+          <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} pageCount={printPageCount} />
+        ) : null}
+        {phase === 'ready' && activePanel === 'automate' ? (
+          <AutomationPanel
+            recording={automationRecording}
+            recordedScript={recordedScript}
+            lastResult={lastScriptResult}
+            canRunScripts={canRunScripts}
+            onRunScript={onRunAutomationScript ?? (() => undefined)}
+            onStartRecording={onStartAutomationRecording ?? (() => undefined)}
+            onStopRecording={onStopAutomationRecording ?? (() => undefined)}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'extended' ? (
+          <ExtendedPanel
+            capabilities={platformCapabilities}
+            lastWhatIfMessage={lastWhatIfMessage}
+            canRunExtended={canRunExtended}
+            sheetId={sheetId}
+            onGoalSeek={onGoalSeek ?? (() => undefined)}
+            onRunDataTable={onRunDataTable ?? (() => undefined)}
+            onRunScenario={onRunScenario ?? (() => undefined)}
+            onEvaluateCapability={onEvaluateCapability ?? (async () => ({ ok: false, message: 'Unavailable' }))}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'query' ? (
+          <QueryPanel
+            connectors={queryConnectors}
+            loadedQueries={loadedQueries}
+            lastResult={lastQueryResult}
+            canQuery={canQuery}
+            onLoadQuery={onLoadQuery ?? (async () => undefined)}
+            onRefreshQuery={onRefreshQuery ?? (async () => undefined)}
+            onTestConnection={onTestQueryConnection ?? (async () => ({ ok: false, message: 'Query unavailable' }))}
+          />
         ) : null}
         {phase === 'ready' && activePanel === 'history' ? (
-          <HistoryPanel entries={historyEntries} remoteRevisions={remoteRevisions} />
+          <HistoryPanel
+            entries={historyEntries}
+            remoteRevisions={remoteRevisions}
+            previewRevision={historyPreviewRevision}
+            canRestore={canRestoreHistory}
+            onUndoTo={onUndoToHistory}
+            onRestoreRevision={onRestoreRevision}
+            onPreviewRevision={onPreviewRevision}
+            onClearPreview={onClearHistoryPreview}
+            onRefreshRevisions={onRefreshRevisions}
+          />
         ) : null}
         {phase === 'ready' && activePanel === 'data' ? (
           <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />

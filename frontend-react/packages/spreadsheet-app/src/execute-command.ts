@@ -1,4 +1,5 @@
 import type { CellStyle, WorkbookTableModel } from '@react-sheets/core-model';
+import type { ShareRole } from './permission-service';
 import type { PrintLayout } from '@react-sheets/pro-features';
 import {
   copyRangeToClipboardData,
@@ -6,7 +7,6 @@ import {
   normalizeRangeRef,
   parseTsv,
 } from '@react-sheets/sheet-features';
-import { buildXlsxArchiveBase64 } from '@react-sheets/pro-features';
 import type { SpreadsheetApplication } from './application';
 import { columnLabel, usedRangeOfSheet } from './application-helpers';
 import type { SidebarPanelId } from './types';
@@ -42,6 +42,7 @@ export type UiCommandId =
   | 'sheet.filter.set'
   | 'ui.file.export-xlsx'
   | 'ui.file.import-xlsx'
+  | 'ui.file.save'
   | 'ui.dialog.open'
   | 'ui.panel.open'
   | 'ui.zoom.set'
@@ -67,8 +68,14 @@ export type UiCommandId =
   | 'sparkline.insert.quick'
   | 'review.comment.resolve'
   | 'review.panel.open'
+  | 'permission.protect.selection'
+  | 'permission.unprotect.selection'
+  | 'permission.role.set'
   | 'ui.formula.recalculate'
-  | 'ui.notice';
+  | 'ui.notice'
+  | 'automation.run.sample'
+  | 'automation.record.start'
+  | 'automation.record.stop';
 
 export interface StyleToggleParams {
   property: keyof CellStyle | 'horizontalAlignment' | 'verticalAlignment';
@@ -102,7 +109,11 @@ export function isUiCommand(commandId: string): boolean {
     || commandId === 'pivot.insert.quick'
     || commandId === 'sparkline.insert.quick'
     || commandId === 'review.comment.resolve'
-    || commandId === 'review.panel.open';
+    || commandId === 'review.panel.open'
+    || commandId === 'permission.protect.selection'
+    || commandId === 'permission.unprotect.selection'
+    || commandId === 'permission.role.set'
+    || commandId.startsWith('automation.');
 }
 
 export function executeUiCommand(app: SpreadsheetApplication, commandId: string, params?: unknown): boolean {
@@ -324,15 +335,18 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
     case 'sheet.filter.set':
       app.applyFilterSelection();
       return true;
+    case 'ui.file.save':
+      void app.saveWorkbook('Ribbon save');
+      return true;
     case 'ui.file.export-xlsx': {
       void (async () => {
         try {
-          const base64 = buildXlsxArchiveBase64(app.getWorkbook().snapshot());
+          const exported = await app.exportXlsxWorkbook();
+          if (!exported) return;
           const link = document.createElement('a');
-          link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + base64;
-          link.download = (app.getWorkbook().name || 'workbook') + '.xlsx';
+          link.href = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${exported.base64}`;
+          link.download = exported.fileName;
           link.click();
-          app.notify('Workbook exported as .xlsx');
         } catch {
           app.notify('Export failed');
         }
@@ -450,11 +464,31 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
       if (notice) app.notify(notice);
       return true;
     }
+    case 'permission.protect.selection':
+      app.protectSelection();
+      return true;
+    case 'permission.unprotect.selection':
+      app.unprotectSelection();
+      return true;
+    case 'permission.role.set': {
+      const role = (params as { role?: ShareRole })?.role;
+      if (role) app.setShareRole(role);
+      return true;
+    }
     case 'ui.formula.recalculate':
       app.recalculateFormulas();
       return true;
     case 'ui.notice':
       app.notify(String(params ?? ''));
+      return true;
+    case 'automation.run.sample':
+      app.runSampleAutomationScript();
+      return true;
+    case 'automation.record.start':
+      app.startAutomationRecording();
+      return true;
+    case 'automation.record.stop':
+      app.stopAutomationRecording();
       return true;
     default:
       return false;

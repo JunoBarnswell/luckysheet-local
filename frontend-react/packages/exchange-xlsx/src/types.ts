@@ -51,16 +51,13 @@ export interface XlsxWorkbookPayload {
 export interface XlsxImportResult {
   payload: XlsxWorkbookPayload;
   report: CompatibilityReport;
-  /** server-first: 实际 snapshot 由 exchange 任务返回 */
+  snapshot: import('@react-sheets/core-model').WorkbookSnapshotV1;
   taskId?: string;
 }
 
 export interface XlsxExportResult {
   taskId: string;
   report: CompatibilityReport;
+  base64: string;
+  fileName: string;
 }
-
-export * from './date-system';
-export * from './compatibility-report';
-export * from './import';
-export * from './export';

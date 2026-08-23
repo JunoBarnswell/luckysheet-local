@@ -10,6 +10,10 @@ import {
 import { CollabSocketClient } from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
+import { createDefaultConnectorRegistry, type ConnectorRegistry } from './features/query';
+import { createDefaultCapabilityRegistry, type CapabilityRegistry } from './features/extended';
+import { CollaborationSession } from './collaboration/collaboration-session';
+import { acknowledgeChangeSet, mapPeerCursor, updatePresenceFromPeer } from './collaboration-bridge';
 import {
   configureFormulaSpillEnvironment,
   configureWorkbookSpillEnvironments,
@@ -17,6 +21,12 @@ import {
   syncWorkbookSheetTables,
   syncWorkbookSpills,
 } from './formula-spill-sync';
+import {
+  LocalDraftStore,
+  buildLocalDraftRecord,
+  isDraftNewerThanServer,
+  scheduleDebounced,
+} from './persistence-bridge';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -27,6 +37,7 @@ export interface RuntimeHandlers {
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
   onCollabStatus?: (status: 'connecting' | 'open' | 'closed') => void;
   onPeersChange?: (peers: import('./types').PeerCursor[]) => void;
+  onDraftUpdated?: () => void;
 }
 
 export interface SpreadsheetRuntime {
@@ -45,7 +56,12 @@ export interface SpreadsheetRuntime {
   pivotResults: Record<string, import('@react-sheets/core-model').PivotResultTree>;
   collab: CollabSocketClient | null;
   collabDispose: (() => void) | null;
+  collaboration: CollaborationSession | null;
   bootstrapDispose: (() => void) | null;
+  draftStore: LocalDraftStore;
+  scheduleDraftWrite: () => void;
+  connectors: ConnectorRegistry;
+  capabilities: CapabilityRegistry;
 }
 
 const UNIT_ID_STORAGE_KEY = 'react-sheets:unitId';
@@ -89,7 +105,10 @@ export function createSpreadsheetRuntime(): SpreadsheetRuntime {
   const model = new WorkbookModel(resolveUnitId(), 'Untitled workbook');
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
+  const connectors = createDefaultConnectorRegistry();
+  const capabilities = createDefaultCapabilityRegistry();
   registerSpreadsheetFeatures(commands, drawing);
+  const draftStore = new LocalDraftStore();
   const runtime: SpreadsheetRuntime = {
     api: new WorkbookApiClient(),
     formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
@@ -106,8 +125,17 @@ export function createSpreadsheetRuntime(): SpreadsheetRuntime {
     pivotResults: {},
     collab: null,
     collabDispose: null,
+    collaboration: null,
     bootstrapDispose: null,
+    draftStore,
+    scheduleDraftWrite: () => undefined,
+    connectors,
+    capabilities,
   };
+  runtime.scheduleDraftWrite = scheduleDebounced(() => {
+    runtime.draftStore.write(buildLocalDraftRecord(runtime.model.snapshot(), runtime.remoteRevision));
+    runtime.handlers.onDraftUpdated?.();
+  }, 800);
   attachCoreListeners(runtime);
   return runtime;
 }
@@ -242,6 +270,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         params: mutation.params,
         affectedRanges: mutation.affectedRanges,
       });
+      runtime.scheduleDraftWrite();
     }),
   );
 
@@ -268,25 +297,37 @@ function submitChangeset(
   operationId: string,
   mutations: CollaborationMutation[],
 ): void {
-  if (!runtime.collab) {
+  if (!runtime.collaboration) {
     runtime.handlers.onSaveState?.('offline');
     return;
   }
   runtime.ownOperationIds.add(operationId);
-  const changeSet = {
-    schema: 'CollaborationChangeSetV1' as const,
+  const changeSet = runtime.collaboration.enqueueLocalMutations(
+    mutations.map((mutation) => ({
+      id: mutation.id,
+      unitId: runtime.model.unitId,
+      sheetId: mutation.sheetId,
+      params: mutation.params,
+      affectedRanges: mutation.affectedRanges,
+    })),
+    runtime.model.unitId,
     operationId,
-    unitId: runtime.model.unitId,
-    actorId: resolveActorId(),
-    clientSequence: ++runtime.nextClientSequence,
-    baseRevision: runtime.remoteRevision,
-    mutations,
-    createdAt: new Date().toISOString(),
-  };
+  );
+  changeSet.baseRevision = runtime.remoteRevision;
   runtime.handlers.onSaveState?.('saving');
-  if (!runtime.collab.send({ type: 'changeset.submit', payload: changeSet })) {
+  if (!runtime.collab?.send({ type: 'changeset.submit', payload: changeSet })) {
     runtime.handlers.onSaveState?.('syncing');
+    return;
   }
+}
+
+export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revision?: number): void {
+  runtime.formula = rebuildFormulaEngine(runtime.model);
+  if (revision != null) {
+    runtime.remoteRevision = revision;
+    runtime.collaboration?.setRevision(revision);
+  }
+  runtime.pivotResults = {};
 }
 
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
@@ -315,6 +356,8 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.formula = rebuildFormulaEngine(workbook);
   attachCoreListeners(runtime);
   runtime.remoteRevision = response.revision;
+  runtime.collaboration?.setRevision(response.revision);
+  runtime.collaboration?.rebindCommands(runtime.commands);
   runtime.pivotResults = {};
 }
 
@@ -324,6 +367,17 @@ export function startCollaborationSession(
   getSelectionKey: () => string,
 ): () => void {
   if (typeof window === 'undefined') return () => undefined;
+
+  runtime.collaboration = new CollaborationSession(runtime.commands, {
+    actorId,
+    flush: async (changeSet) => {
+      if (!runtime.collab?.send({ type: 'changeset.submit', payload: changeSet })) {
+        throw new Error('Collaboration socket unavailable');
+      }
+      return runtime.remoteRevision;
+    },
+  });
+  runtime.collaboration.setRevision(runtime.remoteRevision);
 
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const client = new CollabSocketClient(protocol + '://' + window.location.host + '/api/v1/collab');
@@ -335,48 +389,53 @@ export function startCollaborationSession(
       if (!response || (message.unitId && message.unitId !== runtime.model.unitId)) return;
       hydrateRuntime(runtime, response);
       runtime.remoteRevision = response.revision;
+      runtime.collaboration?.setRevision(response.revision);
       void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
       runtime.handlers.onMutationsApplied?.();
     } else if (message.type === 'revision.created') {
       if (message.payload.unitId !== runtime.model.unitId) return;
       if (runtime.ownOperationIds.has(message.payload.operationId)) return;
-      runtime.commands.applyRemoteMutations(
-        message.payload.mutations.map((mutation) => ({ ...mutation, unitId: runtime.model.unitId })),
-      );
+      runtime.collaboration?.applyRemote(message.payload);
       runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
+      runtime.collaboration?.setRevision(runtime.remoteRevision);
       runtime.handlers.onMutationsApplied?.();
       void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
     } else if (message.type === 'changeset.ack') {
       runtime.ownOperationIds.add(message.operationId);
       runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
+      if (runtime.collaboration) {
+        const pending = runtime.collaboration.offlineQueue.getPending().find((item) => item.changeSet.operationId === message.operationId);
+        if (pending) runtime.collaboration.recordCommittedMutations(pending.changeSet.mutations);
+        acknowledgeChangeSet(runtime.collaboration, runtime.remoteRevision, message.operationId);
+      }
       runtime.handlers.onSaveState?.('saved');
       void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
     } else if (message.type === 'changeset.reject') {
       runtime.ownOperationIds.delete(message.operationId);
+      runtime.collaboration?.offlineQueue.dequeueByOperationId(message.operationId);
       runtime.handlers.onSaveState?.('conflict');
       runtime.handlers.onNotice?.(`Change rejected: ${message.error.message}`);
       void runtime.api.getSnapshot(runtime.model.unitId).then((snapshot) => {
         hydrateRuntime(runtime, snapshot);
+        runtime.collaboration?.setRevision(snapshot.revision);
         runtime.handlers.onMutationsApplied?.();
       }).catch(() => undefined);
     } else if (message.type === 'cursor.updated' || message.type === 'presence.updated') {
       if (!message.unitId || message.unitId !== runtime.model.unitId) return;
       if (message.type === 'presence.updated' && (message.state as { status?: string } | null)?.status === 'offline') {
         runtime.handlers.onPeersChange?.([]);
+        runtime.collaboration?.presence.removeUser(message.actorId);
         return;
       }
       const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
-      const color = PEER_COLORS[Math.abs(hashCode(message.actorId)) % PEER_COLORS.length]!;
-      runtime.handlers.onPeersChange?.([
-        {
-          actorId: message.actorId,
-          name: cursorState?.name ?? message.actorId.slice(0, 6),
-          color,
-          sheetId: cursorState?.sheetId ?? runtime.model.activeSheetId,
-          row: cursorState?.row ?? 0,
-          column: cursorState?.column ?? 0,
-        },
-      ]);
+      const peer = mapPeerCursor(message.actorId, cursorState, runtime.model.activeSheetId);
+      runtime.collaboration?.presence.upsertUser({
+        actorId: peer.actorId,
+        displayName: peer.name,
+        color: peer.color,
+      });
+      updatePresenceFromPeer(runtime.collaboration!, peer);
+      runtime.handlers.onPeersChange?.([peer]);
     }
   };
 
@@ -384,9 +443,15 @@ export function startCollaborationSession(
   const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
     runtime.handlers.onCollabStatus?.(status);
     runtime.remoteConnected = status !== 'closed';
+    runtime.collaboration?.offlineQueue.setOnline(status === 'open');
     if (status === 'closed') runtime.handlers.onSaveState?.('offline');
     else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
-    if (status === 'open') client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
+    if (status === 'open') {
+      client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
+      void runtime.collaboration?.offlineQueue.flushAll().then(({ failed }) => {
+        if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
+      });
+    }
   });
   client.open();
 
@@ -396,12 +461,15 @@ export function startCollaborationSession(
     if (key === lastBroadcast) return;
     lastBroadcast = key;
     const parts = key.split(':');
+    const state = { row: Number(parts[1]), column: Number(parts[2]), sheetId: parts[0] };
     client.send({
       type: 'cursor.updated',
       unitId: runtime.model.unitId,
       actorId,
-      state: { row: Number(parts[1]), column: Number(parts[2]), sheetId: parts[0] },
+      state,
     });
+    const peer = mapPeerCursor(actorId, { ...state, name: actorId.slice(0, 6) }, runtime.model.activeSheetId);
+    if (runtime.collaboration) updatePresenceFromPeer(runtime.collaboration, peer);
   }, 400);
 
   return () => {
@@ -410,6 +478,7 @@ export function startCollaborationSession(
     detachStatus();
     client.close();
     runtime.collab = null;
+    runtime.collaboration = null;
   };
 }
 
@@ -418,7 +487,13 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
   void (async () => {
     try {
       const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
-      hydrateRuntime(runtime, snapshotResponse);
+      const localDraft = runtime.draftStore.read(runtime.model.unitId);
+      if (localDraft && isDraftNewerThanServer(localDraft, snapshotResponse.revision)) {
+        hydrateRuntime(runtime, { snapshot: localDraft.snapshot, revision: localDraft.revision });
+        runtime.handlers.onNotice?.('Recovered newer local draft');
+      } else {
+        hydrateRuntime(runtime, snapshotResponse);
+      }
       void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => runtime.handlers.onRemoteRevisions?.([]));
       runtime.remoteConnected = true;
       if (!active) return;
@@ -427,6 +502,7 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.activeSheetId);
       runtime.handlers.onMutationsApplied?.();
+      runtime.handlers.onDraftUpdated?.();
     } catch {
       try {
         const created = await runtime.api.createWorkbook(runtime.model.snapshot());
@@ -439,6 +515,18 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
         runtime.handlers.onPhaseChange?.('ready');
         runtime.handlers.onMutationsApplied?.();
       } catch {
+        const localDraft = runtime.draftStore.read(runtime.model.unitId);
+        if (localDraft) {
+          hydrateRuntime(runtime, { snapshot: localDraft.snapshot, revision: localDraft.revision });
+          runtime.remoteConnected = false;
+          if (!active) return;
+          runtime.handlers.onSaveState?.('offline');
+          runtime.handlers.onNotice?.('Running from local draft');
+          runtime.handlers.onPhaseChange?.('ready');
+          runtime.handlers.onMutationsApplied?.();
+          runtime.handlers.onDraftUpdated?.();
+          return;
+        }
         if (!active) return;
         runtime.handlers.onSaveState?.('offline');
         runtime.handlers.onNotice?.('Running local in-memory engine');

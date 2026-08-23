@@ -42,6 +42,14 @@ export class OfflineQueue {
     this.queue.sort((a, b) => a.changeSet.clientSequence - b.changeSet.clientSequence);
   }
 
+  dequeueByOperationId(operationId: string): boolean {
+    const index = this.queue.findIndex((item) => item.changeSet.operationId === operationId);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    if (this.queue.length === 0 && this.state === 'syncing') this.state = 'idle';
+    return true;
+  }
+
   setOnline(online: boolean): void {
     this.state = online ? 'idle' : 'offline';
     if (online) void this.flushAll();

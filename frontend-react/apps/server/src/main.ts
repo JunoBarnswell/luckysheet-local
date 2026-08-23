@@ -1,38 +1,12 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { inflateRawSync } from 'node:zlib';
 import { cpus } from 'node:os';
 import { WebSocketServer } from 'ws';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { decodeMessage, encodeMessage } from '@react-sheets/protocol';
 import { WorkbookStorage } from '@react-sheets/storage';
-import { computePivotResult, exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot } from '@react-sheets/pro-features';
-
-/** 解析上传的 XLSX(zip)Base64:解 STORE/DEFLATE 条目并返回文件名到文本内容映射 */
-function unzipXlsxBase64(base64: string): Record<string, string> {
-  const buffer = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
-  const files: Record<string, string> = {};
-  let offset = 0;
-  while (offset + 4 <= buffer.length) {
-    const signature = buffer.readUInt32LE(offset);
-    if (signature !== 0x04034b50) break;
-    const method = buffer.readUInt16LE(offset + 8);
-    const compressedSize = buffer.readUInt32LE(offset + 18);
-    const nameLength = buffer.readUInt16LE(offset + 26);
-    const extraLength = buffer.readUInt16LE(offset + 28);
-    const nameStart = offset + 30;
-    const name = buffer.subarray(nameStart, nameStart + nameLength).toString('utf8');
-    const dataStart = nameStart + nameLength + extraLength;
-    const rawData = buffer.subarray(dataStart, dataStart + compressedSize);
-    try {
-      files[name] = (method === 0 ? rawData : inflateRawSync(rawData)).toString('utf8');
-    } catch {
-      // 跳过无法解码的条目(如内嵌图片)
-    }
-    offset = dataStart + compressedSize;
-  }
-  return files;
-}
+import { computePivotResult } from '@react-sheets/pro-features';
+import { importXlsx, exportXlsx, parseXlsxXmlToSnapshot } from '@react-sheets/exchange-xlsx';
 
 const storage = new WorkbookStorage();
 const port = Number(process.env.REACT_SHEETS_SERVER_PORT ?? 4181);
@@ -124,10 +98,44 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'PUT' && url.pathname.startsWith('/api/v1/workbooks/') && url.pathname.endsWith('/snapshot')) {
+      const unitId = url.pathname.split('/')[4];
+      if (!unitId) throw new Error('Workbook id is required');
+      const body = JSON.parse(await readBody(request)) as {
+        snapshot?: ReturnType<typeof createDefaultSnapshot>;
+        baseRevision?: number;
+      };
+      if (!body.snapshot || body.baseRevision == null) {
+        sendJson(response, 400, { code: 'VALIDATION_ERROR', message: 'snapshot and baseRevision are required' });
+        return;
+      }
+      try {
+        sendJson(response, 200, storage.saveSnapshot(unitId, body.snapshot, body.baseRevision));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Save failed';
+        const status = message.includes('conflict') ? 409 : 400;
+        sendJson(response, status, { code: status === 409 ? 'CONFLICT' : 'VALIDATION_ERROR', message });
+      }
+      return;
+    }
+
     if (request.method === 'GET' && /^\/api\/v1\/workbooks\/[^/]+\/revisions$/.test(url.pathname)) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');
       sendJson(response, 200, { revisions: storage.listRevisions(unitId) });
+      return;
+    }
+
+    if (request.method === 'GET' && /^\/api\/v1\/workbooks\/[^/]+\/revisions\/\d+\/snapshot$/.test(url.pathname)) {
+      const parts = url.pathname.split('/');
+      const unitId = parts[4];
+      const revision = Number(parts[6]);
+      if (!unitId) throw new Error('Workbook id is required');
+      try {
+        sendJson(response, 200, storage.getSnapshotAtRevision(unitId, revision));
+      } catch {
+        sendJson(response, 404, { code: 'NOT_FOUND', message: 'Revision snapshot not found' });
+      }
       return;
     }
 
@@ -230,13 +238,15 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/v1/files/import-xlsx') {
-      const body = JSON.parse(await readBody(request)) as { base64?: string };
+      const body = JSON.parse(await readBody(request)) as { base64?: string; fileName?: string };
       if (!body.base64) throw new Error('base64 payload is required');
-      const files = unzipXlsxBase64(body.base64);
-      if (!files['xl/workbook.xml']) throw new Error('Not a valid XLSX package');
-      const snapshot = parseXlsxXmlToSnapshot(files);
-      const result = storage.createWorkbook(snapshot);
-      sendJson(response, 200, result);
+      const imported = await importXlsx({
+        fileName: body.fileName ?? 'import.xlsx',
+        base64: body.base64,
+        options: { compatibilityTarget: 'B' },
+      });
+      const result = storage.createWorkbook(imported.snapshot);
+      sendJson(response, 200, { ...result, report: imported.report });
       return;
     }
 
@@ -256,8 +266,19 @@ const server = createServer(async (request, response) => {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('File unitId is required');
       const snapshotRes = storage.getSnapshot(unitId);
-      const xmlFiles = exportSnapshotToXlsxXml(snapshotRes.snapshot);
-      sendJson(response, 200, { unitId, files: xmlFiles, snapshot: snapshotRes.snapshot });
+      const fileName = url.searchParams.get('fileName') ?? `${snapshotRes.snapshot.name || 'workbook'}.xlsx`;
+      const exported = await exportXlsx({
+        snapshot: snapshotRes.snapshot,
+        fileName,
+        options: { compatibilityTarget: 'B', includeCachedValues: true },
+      });
+      sendJson(response, 200, {
+        unitId,
+        base64: exported.base64,
+        fileName: exported.fileName,
+        report: exported.report,
+        snapshot: snapshotRes.snapshot,
+      });
       return;
     }
 

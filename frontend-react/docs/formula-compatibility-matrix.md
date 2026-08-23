@@ -104,8 +104,8 @@
 
 | 函数 | 状态 |
 |------|------|
-| GROUPBY | N/A |
-| PIVOTBY | N/A |
+| GROUPBY | Partial |
+| PIVOTBY | Partial |
 
 ## 维护说明
 

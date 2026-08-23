@@ -23,11 +23,15 @@ export class CollaborationSession {
   private committedMutations: ReturnType<typeof classifyMutation>[] = [];
 
   constructor(
-    private readonly runtime: CommandRuntime,
+    private runtime: CommandRuntime,
     options: CollaborationSessionOptions,
   ) {
     this.actorId = options.actorId;
     this.offlineQueue = new OfflineQueue({ flush: options.flush });
+  }
+
+  rebindCommands(runtime: CommandRuntime): void {
+    this.runtime = runtime;
   }
 
   setRevision(revision: number): void {
@@ -39,11 +43,11 @@ export class CollaborationSession {
   }
 
   /** 本地命令执行后 enqueue 协同变更 */
-  enqueueLocalMutations(mutations: MutationInfo[], unitId: string): CollaborationChangeSet {
+  enqueueLocalMutations(mutations: MutationInfo[], unitId: string, operationId?: string): CollaborationChangeSet {
     this.clientSequence += 1;
     const changeSet: CollaborationChangeSet = {
       schema: 'CollaborationChangeSetV1',
-      operationId: mutations[0]?.unitId ? (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`) : `op-${Date.now()}`,
+      operationId: operationId ?? (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`),
       unitId,
       actorId: this.actorId,
       clientSequence: this.clientSequence,
@@ -79,6 +83,12 @@ export class CollaborationSession {
   rebasePending(mutationId: string, params: unknown, sheetId: string, affectedRanges: MutationInfo['affectedRanges']) {
     const pending = classifyMutation(mutationId, params, sheetId, affectedRanges);
     return rebaseAgainstHistory(pending, this.committedMutations);
+  }
+
+  recordCommittedMutations(mutations: Array<{ id: string; params: unknown; sheetId: string; affectedRanges: MutationInfo['affectedRanges'] }>): void {
+    for (const mutation of mutations) {
+      this.committedMutations.push(classifyMutation(mutation.id, mutation.params, mutation.sheetId, mutation.affectedRanges));
+    }
   }
 
   recordLocalUndo(entry: { operationId: string; undoMutations: MutationInfo[] }): void {

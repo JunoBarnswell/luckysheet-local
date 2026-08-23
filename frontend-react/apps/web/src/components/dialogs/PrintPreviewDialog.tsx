@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { RangeRef } from '@react-sheets/core-model';
 import { paginateRange, type PrintLayout } from '@react-sheets/pro-features';
 import { Box, Button, Dialog, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
 
 export interface PrintPreviewRow { rowNumber: number; cells: readonly { value: string }[]; }
+
+export interface PrintPreviewPage {
+  page: number;
+  range: RangeRef;
+}
 
 export interface PrintPreviewDialogProps {
   open: boolean;
@@ -14,6 +20,7 @@ export interface PrintPreviewDialogProps {
   rows: readonly PrintPreviewRow[];
   getRow?: (row: number) => PrintPreviewRow;
   layout?: PrintLayout;
+  pages?: readonly PrintPreviewPage[];
 }
 
 function columnLabel(column: number): string {
@@ -27,12 +34,23 @@ function columnLabel(column: number): string {
   return label;
 }
 
-export function PrintPreviewDialog({ columns, getRow, layout, open, onClose, rows, sheetId, rowCount, columnCount }: PrintPreviewDialogProps) {
+export function PrintPreviewDialog({
+  columns,
+  getRow,
+  layout,
+  open,
+  onClose,
+  pages: externalPages,
+  rows,
+  sheetId,
+  rowCount,
+  columnCount,
+}: PrintPreviewDialogProps) {
   const [rowsPerPage, setRowsPerPage] = useState(30);
   const [columnsPerPage, setColumnsPerPage] = useState(6);
   const [pageIndex, setPageIndex] = useState(0);
 
-  const pages = useMemo(() => {
+  const internalPages = useMemo(() => {
     if (!open || rowCount === 0 || columnCount === 0) return [];
     return paginateRange(
       { sheetId, startRow: 0, endRow: rowCount - 1, startColumn: 0, endColumn: columnCount - 1 },
@@ -40,17 +58,23 @@ export function PrintPreviewDialog({ columns, getRow, layout, open, onClose, row
       Math.max(1, columnsPerPage),
     );
   }, [open, rowCount, columnCount, sheetId, rowsPerPage, columnsPerPage]);
-  useEffect(() => setPageIndex(0), [rowsPerPage, columnsPerPage, open]);
+
+  const pages = externalPages && externalPages.length > 0 ? externalPages : internalPages;
+  useEffect(() => setPageIndex(0), [rowsPerPage, columnsPerPage, open, externalPages]);
   const page = pages[pageIndex];
 
   return (
     <Dialog open={open} onClose={onClose} title="Print preview" maxWidth="xl">
       <Stack gap="md">
+        {externalPages && externalPages.length > 0 ? (
+          <Text size="sm" tone="muted">{pages.length} page(s) from print layout</Text>
+        ) : (
           <Inline gap="md" className="items-end">
-          <Stack gap="xs"><Text size="xs" weight="medium">Rows / page</Text><TextInput type="number" min={1} max={200} value={rowsPerPage} onChange={(event) => setRowsPerPage(Number(event.target.value) || 1)} className="w-20" /></Stack>
-          <Stack gap="xs"><Text size="xs" weight="medium">Columns / page</Text><TextInput type="number" min={1} max={40} value={columnsPerPage} onChange={(event) => setColumnsPerPage(Number(event.target.value) || 1)} className="w-20" /></Stack>
-          <Text size="sm" tone="muted">{pages.length} page(s)</Text>
-        </Inline>
+            <Stack gap="xs"><Text size="xs" weight="medium">Rows / page</Text><TextInput type="number" min={1} max={200} value={rowsPerPage} onChange={(event) => setRowsPerPage(Number(event.target.value) || 1)} className="w-20" /></Stack>
+            <Stack gap="xs"><Text size="xs" weight="medium">Columns / page</Text><TextInput type="number" min={1} max={40} value={columnsPerPage} onChange={(event) => setColumnsPerPage(Number(event.target.value) || 1)} className="w-20" /></Stack>
+            <Text size="sm" tone="muted">{pages.length} page(s)</Text>
+          </Inline>
+        )}
         <Box className="max-h-[50vh] overflow-auto rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
           {page ? <Stack gap="xs" className="min-w-max">
             <Inline gap="none" className="border-b border-slate-300 bg-slate-100 font-semibold">

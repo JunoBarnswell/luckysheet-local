@@ -170,6 +170,7 @@ export class WorkbookStorage {
     `,
       )
       .run(snapshot.unitId, snapshot.name, JSON.stringify(snapshot), now);
+    this.persistRevisionSnapshot(snapshot.unitId, 0, snapshot, now);
     return this.getSnapshot(snapshot.unitId);
   }
 
@@ -189,6 +190,29 @@ export class WorkbookStorage {
       snapshot,
       revision: row.revision,
     };
+  }
+
+  saveSnapshot(unitId: string, snapshot: WorkbookSnapshotV1, baseRevision: number): SnapshotResponse {
+    const current = this.getSnapshot(unitId);
+    if (current.revision !== baseRevision) {
+      throw new Error('Revision conflict');
+    }
+    const migrated = migrateSnapshot(snapshot);
+    const nextRevision = current.revision + 1;
+    const now = new Date().toISOString();
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database
+        .prepare('UPDATE workbooks SET snapshot_json = ?, revision = ?, updated_at = ? WHERE unit_id = ?')
+        .run(JSON.stringify(migrated), nextRevision, now, unitId);
+      this.persistRevisionSnapshot(unitId, nextRevision, migrated, now);
+      this.database.exec('COMMIT');
+      void this.persistence.writeSnapshot(migrated, nextRevision);
+      return { snapshot: migrated, revision: nextRevision };
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   appendChangeSet(changeSet: CollaborationChangeSet): number {
@@ -345,6 +369,60 @@ export class WorkbookStorage {
     }));
   }
 
+  getSnapshotAtRevision(unitId: string, targetRevision: number): SnapshotResponse {
+    const current = this.getSnapshot(unitId);
+    if (targetRevision < 0 || targetRevision > current.revision) {
+      throw new Error(`Revision not found: ${targetRevision}`);
+    }
+    if (targetRevision === current.revision) return current;
+
+    const exact = this.readStoredSnapshot(unitId, targetRevision);
+    if (exact) {
+      return { snapshot: exact, revision: targetRevision };
+    }
+
+    const baseRow = this.database
+      .prepare(
+        'SELECT revision, checksum, payload FROM snapshots WHERE unit_id = ? AND revision <= ? ORDER BY revision DESC LIMIT 1',
+      )
+      .get(unitId, targetRevision) as { revision?: number; checksum?: string; payload?: Buffer } | undefined;
+
+    let baseSnapshot: WorkbookSnapshotV1;
+    let fromRevision: number;
+    if (baseRow?.revision != null && baseRow.checksum && baseRow.payload) {
+      baseSnapshot = this.decodeStoredSnapshot(baseRow.revision, baseRow.checksum, baseRow.payload);
+      fromRevision = baseRow.revision;
+    } else if (targetRevision === 0) {
+      throw new Error(`Snapshot baseline missing for revision 0: ${unitId}`);
+    } else {
+      return this.getSnapshotAtRevision(unitId, 0);
+    }
+
+    const workbook = WorkbookModel.fromSnapshot(baseSnapshot);
+    const runtime = createMutationRuntime(workbook);
+    const rows = this.database
+      .prepare(
+        'SELECT payload_json FROM changesets WHERE unit_id = ? AND revision > ? AND revision <= ? ORDER BY revision ASC',
+      )
+      .all(unitId, fromRevision, targetRevision) as Array<{ payload_json: string }>;
+
+    for (const row of rows) {
+      const changeSet = JSON.parse(row.payload_json) as CollaborationChangeSet;
+      runtime.applyRemoteMutations(changeSet.mutations.map((mutation) => ({
+        id: mutation.id,
+        unitId: changeSet.unitId,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges: mutation.affectedRanges,
+      })));
+    }
+
+    return {
+      snapshot: workbook.snapshot(),
+      revision: targetRevision,
+    };
+  }
+
   getRevision(
     unitId: string,
     revision: number,
@@ -377,6 +455,39 @@ export class WorkbookStorage {
       createdAt: row.created_at,
       payload: JSON.parse(row.payload_json) as CollaborationChangeSet,
     };
+  }
+
+  private persistRevisionSnapshot(
+    unitId: string,
+    revision: number,
+    snapshot: WorkbookSnapshotV1,
+    createdAt: string,
+  ): void {
+    const snapshotJson = JSON.stringify(snapshot);
+    const checksum = computeSnapshotChecksum(snapshotJson);
+    const payload = deflateRawSync(Buffer.from(snapshotJson, 'utf8'));
+    this.database.prepare(`
+      INSERT INTO snapshots (unit_id, revision, checksum, payload, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(unit_id, revision) DO UPDATE SET checksum = excluded.checksum, payload = excluded.payload, created_at = excluded.created_at
+    `).run(unitId, revision, checksum, payload, createdAt);
+  }
+
+  private readStoredSnapshot(unitId: string, revision: number): WorkbookSnapshotV1 | undefined {
+    const row = this.database
+      .prepare('SELECT revision, checksum, payload FROM snapshots WHERE unit_id = ? AND revision = ?')
+      .get(unitId, revision) as { revision?: number; checksum?: string; payload?: Buffer } | undefined;
+    if (row?.revision == null || !row.checksum || !row.payload) return undefined;
+    return this.decodeStoredSnapshot(row.revision, row.checksum, row.payload);
+  }
+
+  private decodeStoredSnapshot(revision: number, checksum: string, payload: Buffer): WorkbookSnapshotV1 {
+    const json = inflateRawSync(payload).toString('utf8');
+    const actualChecksum = computeSnapshotChecksum(json);
+    if (actualChecksum !== checksum) {
+      throw new Error(`Snapshot checksum mismatch at revision ${revision}`);
+    }
+    return migrateSnapshot(JSON.parse(json) as WorkbookSnapshotV1);
   }
 }
 

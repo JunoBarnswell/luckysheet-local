@@ -1,54 +1,47 @@
-import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
-import type { TableScalar } from '@react-sheets/core-model';
-import type { ConnectorRegistry } from './index';
+import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
+import type { SetRangeValuesParams } from '@react-sheets/sheet-features';
+import type { QueryResult } from './index';
+import { queryResultToRangeValues } from '../../query-bridge';
 import { type LoadTarget, type QueryDefinition } from './query-steps';
 
 export interface QueryLoadParams {
   query: QueryDefinition;
   target: LoadTarget;
+  result: QueryResult;
 }
 
 export interface QueryRefreshParams {
   queryId: string;
   query: QueryDefinition;
   target: LoadTarget;
+  result: QueryResult;
 }
 
-export function registerQueryCommands(registry: CommandRegistry, connectors: ConnectorRegistry): void {
-  registry.registerMutation('query.load-data', (item, context) => {
-    const params = item.params as { target: LoadTarget; columns: string[]; rows: TableScalar[][] };
-    const { target, columns, rows } = params;
-    if (target.kind === 'range' && target.sheetId && target.range) {
-      const sheet = context.workbook.getSheet(target.sheetId);
-      for (let r = 0; r < rows.length; r++) {
-        for (let c = 0; c < columns.length; c++) {
-          const value = rows[r]?.[c] ?? null;
-          sheet.cells.set(target.range.startRow + r, target.range.startColumn + c, { value });
-        }
-      }
-    }
-    if (target.kind === 'workbook-table' && target.tableId) {
-      const table = context.workbook.getTable(target.tableId);
-      table.rowCount = rows.length;
-      table.fields = columns.map((name, i) => ({ id: `f-${i}`, name, type: 'text' as const, ordinal: i }));
-    }
-  });
+function writeQueryResult(
+  registry: CommandRegistry,
+  params: QueryLoadParams,
+  context: CommandContext,
+): CommandResult {
+  const sheetId = params.target.sheetId ?? context.workbook.activeSheetId;
+  const startRow = params.target.range?.startRow ?? 0;
+  const startColumn = params.target.range?.startColumn ?? 0;
+  const values = queryResultToRangeValues(params.result);
+  const rangeCommand = registry.getCommand<SetRangeValuesParams>('sheet.range.set');
+  return rangeCommand.execute({ sheetId, startRow, startColumn, values }, context);
+}
 
+export function registerQueryCommands(registry: CommandRegistry): void {
   registry.registerCommand({
     id: 'query.load',
     execute(params: QueryLoadParams, context): CommandResult {
-      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      return writeQueryResult(registry, params, context);
     },
   });
 
   registry.registerCommand({
     id: 'query.refresh',
     execute(params: QueryRefreshParams, context): CommandResult {
-      registry.getCommand<QueryLoadParams>('query.load').execute(
-        { query: params.query, target: params.target },
-        context,
-      );
-      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      return writeQueryResult(registry, { query: params.query, target: params.target, result: params.result }, context);
     },
   });
 }

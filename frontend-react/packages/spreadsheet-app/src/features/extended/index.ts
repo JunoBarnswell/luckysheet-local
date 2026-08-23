@@ -51,4 +51,9 @@ export class CapabilityRegistry {
   }
 }
 
+export function createDefaultCapabilityRegistry(): CapabilityRegistry {
+  return new CapabilityRegistry();
+}
+
 export * from './what-if';
+export { registerExtendedCommands } from './commands';

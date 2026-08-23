@@ -10,7 +10,7 @@ export interface GoalSeekParams {
 
 export interface GoalSeekResult {
   kind: 'goal-seek';
-  status: 'converged' | 'not-converged' | 'stub';
+  status: 'converged' | 'not-converged' | 'failed';
   finalValue?: number;
   changingCellValue?: number;
   iterations: number;
@@ -23,50 +23,37 @@ export interface DataTableParams {
   tableRange: { startRow: number; startColumn: number; endRow: number; endColumn: number };
 }
 
+export interface DataTableCellWrite {
+  row: number;
+  column: number;
+  value: number | string | boolean | null;
+}
+
 export interface DataTableResult {
   kind: 'data-table';
-  status: 'stub';
+  status: 'completed' | 'failed';
   message: string;
+  filledCells: number;
+  writes: DataTableCellWrite[];
 }
 
 export interface ScenarioDefinition {
   id: string;
   name: string;
   changingCells: Array<{ row: number; column: number; value: number | string }>;
+  resultCells?: Array<{ row: number; column: number }>;
+}
+
+export interface ScenarioCellOutput {
+  row: number;
+  column: number;
+  value: number | string | boolean | null;
 }
 
 export interface ScenarioResult {
   kind: 'scenario';
-  status: 'stub';
+  status: 'completed' | 'failed';
   scenarioId: string;
   message: string;
-}
-
-/** What-if 基础 stub — Goal Seek / Data Table / Scenario */
-export class WhatIfService {
-  goalSeek(params: GoalSeekParams): GoalSeekResult {
-    return {
-      kind: 'goal-seek',
-      status: 'stub',
-      iterations: 0,
-      message: `Goal Seek stub: set (${params.setCell.row},${params.setCell.column}) to ${params.toValue} by changing (${params.byChangingCell.row},${params.byChangingCell.column})`,
-    };
-  }
-
-  dataTable(_params: DataTableParams): DataTableResult {
-    return {
-      kind: 'data-table',
-      status: 'stub',
-      message: 'Data Table requires formula recalc engine integration (M18 stub)',
-    };
-  }
-
-  runScenario(scenario: ScenarioDefinition): ScenarioResult {
-    return {
-      kind: 'scenario',
-      status: 'stub',
-      scenarioId: scenario.id,
-      message: `Scenario "${scenario.name}" stub — ${scenario.changingCells.length} changing cells`,
-    };
-  }
+  outputs: ScenarioCellOutput[];
 }

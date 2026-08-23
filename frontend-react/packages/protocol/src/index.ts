@@ -31,6 +31,38 @@ export interface SnapshotResponse {
   revision: number;
 }
 
+export interface CompatibilityReportPayload {
+  schema: 'CompatibilityReportV1';
+  fileName: string;
+  importLevel: 'A' | 'B' | 'C';
+  exportLevel: 'A' | 'B' | 'C';
+  dateSystem: '1900' | '1904';
+  issues: Array<{
+    level: 'A' | 'B' | 'C';
+    severity: 'error' | 'warning' | 'info';
+    feature: string;
+    location?: string;
+    message: string;
+    preserved: boolean;
+  }>;
+  summary: {
+    editableFeatures: number;
+    preservedOnly: number;
+    unsupported: number;
+  };
+}
+
+export interface XlsxImportResponse extends SnapshotResponse {
+  report: CompatibilityReportPayload;
+}
+
+export interface XlsxExportResponse {
+  unitId: string;
+  base64: string;
+  fileName: string;
+  report: CompatibilityReportPayload;
+}
+
 export interface PivotCalculationResponse {
   unitId: string;
   pivotId: string;
@@ -105,6 +137,47 @@ export class WorkbookApiClient {
     if (!response.ok) throw new Error(`Revision history fetch failed: ${response.status}`);
     const body = await response.json() as { revisions: RevisionRecord[] };
     return body.revisions;
+  }
+
+  async getRevisionSnapshot(unitId: string, revision: number): Promise<SnapshotResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
+    );
+    if (!response.ok) throw new Error(`Revision snapshot fetch failed: ${response.status}`);
+    return response.json() as Promise<SnapshotResponse>;
+  }
+
+  async saveSnapshot(unitId: string, snapshot: WorkbookSnapshotV1, baseRevision: number): Promise<SnapshotResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/snapshot`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ snapshot, baseRevision }),
+      },
+    );
+    if (response.status === 409) throw new Error('Revision conflict');
+    if (!response.ok) throw new Error(`Workbook snapshot save failed: ${response.status}`);
+    return response.json() as Promise<SnapshotResponse>;
+  }
+
+  async importXlsxBase64(base64: string, fileName = 'import.xlsx'): Promise<XlsxImportResponse> {
+    const response = await fetch(`${this.baseUrl}/api/v1/files/import-xlsx`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ base64, fileName }),
+    });
+    if (!response.ok) throw new Error(`XLSX import failed: ${response.status}`);
+    return response.json() as Promise<XlsxImportResponse>;
+  }
+
+  async exportXlsx(unitId: string, fileName?: string): Promise<XlsxExportResponse> {
+    const query = fileName ? `?fileName=${encodeURIComponent(fileName)}` : '';
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/files/${encodeURIComponent(unitId)}/export${query}`,
+    );
+    if (!response.ok) throw new Error(`XLSX export failed: ${response.status}`);
+    return response.json() as Promise<XlsxExportResponse>;
   }
 
   async calculatePivot(unitId: string, pivotId: string): Promise<PivotCalculationResponse> {
