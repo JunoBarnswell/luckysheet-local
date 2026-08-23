@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { decodeMessage, encodeMessage } from '@react-sheets/protocol';
 import { WorkbookStorage } from '@react-sheets/storage';
-import { exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot } from '@react-sheets/pro-features';
+import { computePivotResult, exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot } from '@react-sheets/pro-features';
 
 /** 解析上传的 XLSX(zip)Base64:解 STORE/DEFLATE 条目并返回文件名到文本内容映射 */
 function unzipXlsxBase64(base64: string): Record<string, string> {
@@ -106,6 +106,68 @@ const server = createServer(async (request, response) => {
         return;
       }
       sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/v1\/workbooks\/[^/]+\/calculations\/pivot$/.test(url.pathname)) {
+      const unitId = url.pathname.split('/')[4];
+      if (!unitId) throw new Error('Workbook id is required');
+      const body = JSON.parse(await readBody(request)) as { pivotId?: string };
+      if (!body.pivotId) throw new Error('Pivot id is required');
+      const snapshot = storage.getSnapshot(unitId);
+      const workbook = WorkbookModel.fromSnapshot(snapshot.snapshot);
+      const pivot = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === body.pivotId);
+      if (!pivot) {
+        sendJson(response, 404, { code: 'NOT_FOUND', message: 'Pivot not found' });
+        return;
+      }
+      sendJson(response, 200, {
+        unitId,
+        pivotId: body.pivotId,
+        revision: snapshot.revision,
+        result: computePivotResult(workbook, pivot),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/v1\/workbooks\/[^/]+\/tables$/.test(url.pathname)) {
+      const unitId = url.pathname.split('/')[4];
+      if (!unitId) throw new Error('Workbook id is required');
+      const input = JSON.parse(await readBody(request)) as Partial<import('@react-sheets/core-model').WorkbookTableModel>;
+      if (!input.name || !input.fields || input.fields.length === 0) throw new Error('Table name and fields are required');
+      const table: import('@react-sheets/core-model').WorkbookTableModel = {
+        id: input.id ?? randomUUID(),
+        name: input.name,
+        sourceSheetId: input.sourceSheetId,
+        rowCount: 0,
+        fields: structuredClone(input.fields),
+        blockSize: Math.max(1, Math.min(4096, input.blockSize ?? 4096)),
+        blocks: [],
+        revision: 0,
+      };
+      sendJson(response, 201, storage.createDataTable(unitId, table));
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/v1\/workbooks\/[^/]+\/tables\/[^/]+\/blocks$/.test(url.pathname)) {
+      const parts = url.pathname.split('/');
+      const unitId = parts[4];
+      const tableId = parts[6];
+      if (!unitId || !tableId) throw new Error('Workbook and table ids are required');
+      const body = JSON.parse(await readBody(request)) as { startRow?: number; rows?: Array<Array<string | number | boolean | null>> };
+      if (body.startRow == null || !body.rows) throw new Error('Block startRow and rows are required');
+      sendJson(response, 201, storage.appendDataBlock(unitId, tableId, body.startRow, body.rows));
+      return;
+    }
+
+    if (request.method === 'GET' && /^\/api\/v1\/workbooks\/[^/]+\/tables\/[^/]+\/rows$/.test(url.pathname)) {
+      const parts = url.pathname.split('/');
+      const unitId = parts[4];
+      const tableId = parts[6];
+      if (!unitId || !tableId) throw new Error('Workbook and table ids are required');
+      const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
+      const limit = Math.max(1, Math.min(4096, Number(url.searchParams.get('limit') ?? 500) || 500));
+      sendJson(response, 200, storage.readDataRows(unitId, tableId, offset, limit));
       return;
     }
 

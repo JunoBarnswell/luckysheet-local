@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { SparklineModel } from '@react-sheets/core-model';
+import { parseRangeInput } from '../../domain/range-input';
 
 export interface SparklinePanelProps {
   sheetId: string;
@@ -25,8 +26,10 @@ export function SparklinePanel({
   const [color, setColor] = useState('#2563eb');
   const [highlightMax, setHighlightMax] = useState(true);
   const [highlightMin, setHighlightMin] = useState(true);
+  const parsedSourceRange = parseRangeInput(sourceRange, sheetId);
 
   const handleCreate = () => {
+    if (!parsedSourceRange) return;
     // Parse target cell
     const match = /^([A-Z]+)(\d+)$/.exec(targetCell.toUpperCase());
     let r = 1;
@@ -44,10 +47,7 @@ export function SparklinePanel({
       anchor: { row: r, column: c },
       sourceRange: {
         sheetId,
-        startRow: r,
-        endRow: r,
-        startColumn: 1,
-        endColumn: 4,
+        ...parsedSourceRange,
       },
       type,
       color,
@@ -118,7 +118,7 @@ export function SparklinePanel({
             </div>
           </div>
 
-          <Button variant="primary" size="sm" icon="sparkline" onClick={handleCreate}>
+          <Button variant="primary" size="sm" icon="sparkline" disabled={!parsedSourceRange} onClick={handleCreate}>
             Insert In-Cell Sparkline
           </Button>
 

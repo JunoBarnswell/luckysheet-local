@@ -1,4 +1,4 @@
-import type { RangeRef, WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import type { PivotResultTree, RangeRef, TableScalar, WorkbookSnapshotV1, WorkbookTableBlock, WorkbookTableModel } from '@react-sheets/core-model';
 
 export type ProtocolErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT' | 'INTERNAL_ERROR';
 
@@ -13,6 +13,7 @@ export interface CollaborationChangeSet {
   operationId: string;
   unitId: string;
   actorId: string;
+  clientSequence: number;
   baseRevision: number;
   mutations: CollaborationMutation[];
   createdAt: string;
@@ -30,11 +31,31 @@ export interface SnapshotResponse {
   revision: number;
 }
 
+export interface PivotCalculationResponse {
+  unitId: string;
+  pivotId: string;
+  revision: number;
+  result: PivotResultTree;
+}
+
+export interface TableRowsResponse {
+  table: WorkbookTableModel;
+  rows: TableScalar[][];
+  nextOffset?: number;
+}
+
 export interface WorkbookSummary {
   unitId: string;
   name: string;
   revision: number;
   updatedAt: string;
+}
+
+export interface RevisionRecord {
+  operationId: string;
+  revision: number;
+  createdAt: string;
+  payload: CollaborationChangeSet;
 }
 
 export class WorkbookApiClient {
@@ -72,6 +93,49 @@ export class WorkbookApiClient {
     const response = await fetch(`${this.baseUrl}/api/v1/workbooks`);
     if (!response.ok) throw new Error(`Workbook list fetch failed: ${response.status}`);
     return response.json() as Promise<WorkbookSummary[]>;
+  }
+
+  async listRevisions(unitId: string): Promise<RevisionRecord[]> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions`);
+    if (!response.ok) throw new Error(`Revision history fetch failed: ${response.status}`);
+    const body = await response.json() as { revisions: RevisionRecord[] };
+    return body.revisions;
+  }
+
+  async calculatePivot(unitId: string, pivotId: string): Promise<PivotCalculationResponse> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/calculations/pivot`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pivotId }),
+    });
+    if (!response.ok) throw new Error(`Pivot calculation failed: ${response.status}`);
+    return response.json() as Promise<PivotCalculationResponse>;
+  }
+
+  async createDataTable(unitId: string, table: WorkbookTableModel): Promise<WorkbookTableModel> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(table),
+    });
+    if (!response.ok) throw new Error(`Data table creation failed: ${response.status}`);
+    return response.json() as Promise<WorkbookTableModel>;
+  }
+
+  async appendDataBlock(unitId: string, tableId: string, startRow: number, rows: TableScalar[][]): Promise<WorkbookTableBlock> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/blocks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startRow, rows }),
+    });
+    if (!response.ok) throw new Error(`Data block upload failed: ${response.status}`);
+    return response.json() as Promise<WorkbookTableBlock>;
+  }
+
+  async readDataRows(unitId: string, tableId: string, offset = 0, limit = 500): Promise<TableRowsResponse> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/rows?offset=${offset}&limit=${limit}`);
+    if (!response.ok) throw new Error(`Data table query failed: ${response.status}`);
+    return response.json() as Promise<TableRowsResponse>;
   }
 
 }

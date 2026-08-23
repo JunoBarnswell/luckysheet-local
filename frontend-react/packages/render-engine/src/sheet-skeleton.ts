@@ -26,6 +26,18 @@ function normalizeSize(value: number, fallback: number): number {
   return Math.max(0, candidate);
 }
 
+const VIRTUAL_GEOMETRY_THRESHOLD = 100_000;
+
+function readOverrides(input: readonly number[] | ReadonlyMap<number, number> | undefined): Map<number, number> {
+  if (!input) return new Map();
+  if (input instanceof Map) return new Map(input);
+  const overrides = new Map<number, number>();
+  input.forEach((value, index) => {
+    if (value !== undefined) overrides.set(index, value);
+  });
+  return overrides;
+}
+
 export function columnLabelOf(index: number): string {
   let value = index + 1;
   let label = "";
@@ -51,6 +63,10 @@ export class SheetSkeleton {
 
   private rowHeightsByModel: number[];
   private columnWidthsByModel: number[];
+  private readonly virtualRows: boolean;
+  private readonly virtualColumns: boolean;
+  private readonly rowHeightOverrides: Map<number, number>;
+  private readonly columnWidthOverrides: Map<number, number>;
   private hiddenRowSet: Set<number>;
   private hiddenColumnSet: Set<number>;
 
@@ -70,48 +86,49 @@ export class SheetSkeleton {
     this.zoom = options.zoom && options.zoom > 0 ? options.zoom : 1;
     this.hiddenRowSet = new Set(options.hiddenRows ?? []);
     this.hiddenColumnSet = new Set(options.hiddenColumns ?? []);
+    this.virtualRows = this.rowCount > VIRTUAL_GEOMETRY_THRESHOLD;
+    this.virtualColumns = this.columnCount > VIRTUAL_GEOMETRY_THRESHOLD;
+    this.rowHeightOverrides = readOverrides(options.rowHeights);
+    this.columnWidthOverrides = readOverrides(options.columnWidths);
 
-    this.rowHeightsByModel = new Array(this.rowCount);
-    for (let r = 0; r < this.rowCount; r++) {
-      const override = options.rowHeights
-        ? ((options.rowHeights as readonly number[])[r] ?? (options.rowHeights as ReadonlyMap<number, number>).get(r))
-        : undefined;
-      this.rowHeightsByModel[r] = normalizeSize((override ?? this.defaultRowHeight) * this.zoom, 0);
-    }
-    this.columnWidthsByModel = new Array(this.columnCount);
-    for (let c = 0; c < this.columnCount; c++) {
-      const override = options.columnWidths
-        ? ((options.columnWidths as readonly number[])[c] ?? (options.columnWidths as ReadonlyMap<number, number>).get(c))
-        : undefined;
-      this.columnWidthsByModel[c] = normalizeSize((override ?? this.defaultColumnWidth) * this.zoom, 0);
-    }
+    this.rowHeightsByModel = this.virtualRows ? [] : Array.from({ length: this.rowCount }, (_, row) => this.getVirtualRowHeight(row));
+    this.columnWidthsByModel = this.virtualColumns ? [] : Array.from({ length: this.columnCount }, (_, column) => this.getVirtualColumnWidth(column));
 
     this.rebuildVisibleMappings();
   }
 
   private rebuildVisibleMappings(): void {
+    if (this.virtualRows) {
+      this.visibleRowTops = [];
+      this.visibleRowModels = [];
+      this.modelToVisibleRow = new Map();
+    }
     this.visibleRowTops = [0];
     this.visibleRowModels = [];
     this.modelToVisibleRow = new Map();
-    let top = 0;
-    for (let r = 0; r < this.rowCount; r++) {
-      if (this.hiddenRowSet.has(r)) continue;
-      this.modelToVisibleRow.set(r, this.visibleRowModels.length);
-      this.visibleRowModels.push(r);
-      top += this.rowHeightsByModel[r]!;
-      this.visibleRowTops.push(top);
+    if (!this.virtualRows) {
+      let top = 0;
+      for (let r = 0; r < this.rowCount; r++) {
+        if (this.hiddenRowSet.has(r)) continue;
+        this.modelToVisibleRow.set(r, this.visibleRowModels.length);
+        this.visibleRowModels.push(r);
+        top += this.rowHeightsByModel[r]!;
+        this.visibleRowTops.push(top);
+      }
     }
 
     this.visibleColumnLefts = [0];
     this.visibleColumnModels = [];
     this.modelToVisibleColumn = new Map();
-    let left = 0;
-    for (let c = 0; c < this.columnCount; c++) {
-      if (this.hiddenColumnSet.has(c)) continue;
-      this.modelToVisibleColumn.set(c, this.visibleColumnModels.length);
-      this.visibleColumnModels.push(c);
-      left += this.columnWidthsByModel[c]!;
-      this.visibleColumnLefts.push(left);
+    if (!this.virtualColumns) {
+      let left = 0;
+      for (let c = 0; c < this.columnCount; c++) {
+        if (this.hiddenColumnSet.has(c)) continue;
+        this.modelToVisibleColumn.set(c, this.visibleColumnModels.length);
+        this.visibleColumnModels.push(c);
+        left += this.columnWidthsByModel[c]!;
+        this.visibleColumnLefts.push(left);
+      }
     }
   }
 
@@ -123,12 +140,66 @@ export class SheetSkeleton {
     return this.hiddenColumnSet.has(modelColumn);
 }
 
+  private getVirtualRowHeight(row: number): number {
+    return normalizeSize((this.rowHeightOverrides.get(row) ?? this.defaultRowHeight) * this.zoom, 0);
+  }
+
+  private getVirtualColumnWidth(column: number): number {
+    return normalizeSize((this.columnWidthOverrides.get(column) ?? this.defaultColumnWidth) * this.zoom, 0);
+  }
+
+  private visibleRowExtent(startRow: number, endRow: number): number {
+    if (endRow < startRow) return 0;
+    if (!this.virtualRows) {
+      let total = 0;
+      for (let row = startRow; row <= endRow; row++) total += this.isRowHidden(row) ? 0 : this.rowHeightsByModel[row]!;
+      return total;
+    }
+    let total = (endRow - startRow + 1) * this.defaultRowHeight * this.zoom;
+    for (const [row, height] of this.rowHeightOverrides) {
+      if (row >= startRow && row <= endRow) total += (height * this.zoom) - (this.defaultRowHeight * this.zoom);
+    }
+    for (const row of this.hiddenRowSet) {
+      if (row >= startRow && row <= endRow) total -= this.getVirtualRowHeight(row);
+    }
+    return Math.max(0, total);
+  }
+
+  private visibleColumnExtent(startColumn: number, endColumn: number): number {
+    if (endColumn < startColumn) return 0;
+    if (!this.virtualColumns) {
+      let total = 0;
+      for (let column = startColumn; column <= endColumn; column++) total += this.isColumnHidden(column) ? 0 : this.columnWidthsByModel[column]!;
+      return total;
+    }
+    let total = (endColumn - startColumn + 1) * this.defaultColumnWidth * this.zoom;
+    for (const [column, width] of this.columnWidthOverrides) {
+      if (column >= startColumn && column <= endColumn) total += (width * this.zoom) - (this.defaultColumnWidth * this.zoom);
+    }
+    for (const column of this.hiddenColumnSet) {
+      if (column >= startColumn && column <= endColumn) total -= this.getVirtualColumnWidth(column);
+    }
+    return Math.max(0, total);
+  }
+
+  private virtualRowTop(row: number): number {
+    return this.visibleRowExtent(0, row - 1);
+  }
+
+  private virtualColumnLeft(column: number): number {
+    return this.visibleColumnExtent(0, column - 1);
+  }
+
   get totalWidth(): number {
-    return this.visibleColumnLefts.at(-1) ?? 0;
+    return this.virtualColumns
+      ? this.visibleColumnExtent(0, this.columnCount - 1)
+      : this.visibleColumnLefts.at(-1) ?? 0;
   }
 
   get totalHeight(): number {
-    return this.visibleRowTops.at(-1) ?? 0;
+    return this.virtualRows
+      ? this.visibleRowExtent(0, this.rowCount - 1)
+      : this.visibleRowTops.at(-1) ?? 0;
   }
 
   get contentSize(): Size {
@@ -136,20 +207,22 @@ export class SheetSkeleton {
   }
 
   getRowHeight(row: number): number {
-    return this.rowHeightsByModel[row] ?? 0;
+    return this.virtualRows ? this.getVirtualRowHeight(row) : this.rowHeightsByModel[row] ?? 0;
   }
 
   getColumnWidth(column: number): number {
-    return this.columnWidthsByModel[column] ?? 0;
+    return this.virtualColumns ? this.getVirtualColumnWidth(column) : this.columnWidthsByModel[column] ?? 0;
   }
 
   getRowTop(modelRow: number): number {
+    if (this.virtualRows) return this.isRowHidden(modelRow) ? -1 : this.virtualRowTop(modelRow);
     const visibleIndex = this.modelToVisibleRow.get(modelRow);
     if (visibleIndex === undefined) return -1;
     return this.visibleRowTops[visibleIndex] ?? 0;
   }
 
   getColumnLeft(modelColumn: number): number {
+    if (this.virtualColumns) return this.isColumnHidden(modelColumn) ? -1 : this.virtualColumnLeft(modelColumn);
     const visibleIndex = this.modelToVisibleColumn.get(modelColumn);
     if (visibleIndex === undefined) return -1;
     return this.visibleColumnLefts[visibleIndex] ?? 0;
@@ -157,11 +230,11 @@ export class SheetSkeleton {
 
   /** 可见行数(用于分页/统计) */
   get visibleRowCount(): number {
-    return this.visibleRowModels.length;
+    return this.virtualRows ? this.rowCount - this.hiddenRowSet.size : this.visibleRowModels.length;
   }
 
   get visibleColumnCount(): number {
-    return this.visibleColumnModels.length;
+    return this.virtualColumns ? this.columnCount - this.hiddenColumnSet.size : this.visibleColumnModels.length;
   }
 
   getCellRect(modelRow: number, modelColumn: number): Rect | null {
@@ -178,6 +251,18 @@ export class SheetSkeleton {
   getRangeRect(range: CellRange): Rect | null {
     const normalized = normalizeCellRange(range);
     if (!normalized || this.visibleRowCount === 0 || this.visibleColumnCount === 0) return null;
+
+    if (this.virtualRows || this.virtualColumns) {
+      const x = this.getColumnLeft(normalized.startColumn);
+      const y = this.getRowTop(normalized.startRow);
+      if (x < 0 || y < 0) return null;
+      return {
+        x,
+        y,
+        width: this.visibleColumnExtent(normalized.startColumn, normalized.endColumn),
+        height: this.visibleRowExtent(normalized.startRow, normalized.endRow),
+      };
+    }
 
     let x = 0;
     let width = 0;
@@ -214,10 +299,11 @@ export class SheetSkeleton {
     const bottom = Math.min(this.totalHeight, sheetRect.y + sheetRect.height);
     if (right <= left || bottom <= top) return null;
 
+    const edgeEpsilon = 1e-7;
     const startColumn = this.findColumnAt(left);
-    const endColumn = this.findColumnAt(Math.max(left, right - Number.EPSILON));
+    const endColumn = this.findColumnAt(Math.max(left, right - edgeEpsilon));
     const startRow = this.findRowAt(top);
-    const endRow = this.findRowAt(Math.max(top, bottom - Number.EPSILON));
+    const endRow = this.findRowAt(Math.max(top, bottom - edgeEpsilon));
     if (startColumn < 0 || endColumn < 0 || startRow < 0 || endRow < 0) return null;
     return { startRow, endRow, startColumn, endColumn };
   }
@@ -231,34 +317,62 @@ export class SheetSkeleton {
 
   /** 内容偏移 → 可见模型行号 */
   findRowAt(contentOffsetY: number): number {
+    if (this.virtualRows) {
+      if (!Number.isFinite(contentOffsetY) || contentOffsetY < 0 || contentOffsetY >= this.totalHeight) return -1;
+      let low = 0;
+      let high = this.rowCount - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (this.virtualRowTop(middle) > contentOffsetY) high = middle - 1;
+        else low = middle;
+      }
+      while (low < this.rowCount && this.hiddenRowSet.has(low)) low += 1;
+      return low < this.rowCount ? low : -1;
+    }
     const visibleIndex = this.findIndexAt(contentOffsetY, this.visibleRowTops, this.totalHeight);
     return visibleIndex < 0 ? -1 : (this.visibleRowModels[visibleIndex] ?? -1);
   }
 
   /** 内容偏移 → 可见模型列号 */
   findColumnAt(contentOffsetX: number): number {
+    if (this.virtualColumns) {
+      if (!Number.isFinite(contentOffsetX) || contentOffsetX < 0 || contentOffsetX >= this.totalWidth) return -1;
+      let low = 0;
+      let high = this.columnCount - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (this.virtualColumnLeft(middle) > contentOffsetX) high = middle - 1;
+        else low = middle;
+      }
+      while (low < this.columnCount && this.hiddenColumnSet.has(low)) low += 1;
+      return low < this.columnCount ? low : -1;
+    }
     const visibleIndex = this.findIndexAt(contentOffsetX, this.visibleColumnLefts, this.totalWidth);
     return visibleIndex < 0 ? -1 : (this.visibleColumnModels[visibleIndex] ?? -1);
   }
 
   setRowHeight(modelRow: number, heightPx: number, zoom = this.zoom): void {
     if (!this.isValidRow(modelRow)) throw new Error("Unknown row: " + modelRow);
-    this.rowHeightsByModel[modelRow] = normalizeSize(heightPx * zoom, 0);
+    if (this.virtualRows) this.rowHeightOverrides.set(modelRow, heightPx);
+    else this.rowHeightsByModel[modelRow] = normalizeSize(heightPx * zoom, 0);
     this.rebuildVisibleMappings();
   }
 
   setColumnWidth(modelColumn: number, widthPx: number, zoom = this.zoom): void {
     if (!this.isValidColumn(modelColumn)) throw new Error("Unknown column: " + modelColumn);
-    this.columnWidthsByModel[modelColumn] = normalizeSize(widthPx * zoom, 0);
+    if (this.virtualColumns) this.columnWidthOverrides.set(modelColumn, widthPx);
+    else this.columnWidthsByModel[modelColumn] = normalizeSize(widthPx * zoom, 0);
     this.rebuildVisibleMappings();
   }
 
   /** 返回指定内容偏移处向上/向左最近的可见模型索引(供表头渲染遍历) */
   getVisibleRowModels(): readonly number[] {
+    if (this.virtualRows) return [];
     return this.visibleRowModels;
   }
 
   getVisibleColumnModels(): readonly number[] {
+    if (this.virtualColumns) return [];
     return this.visibleColumnModels;
   }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { paginateRange } from '@react-sheets/pro-features';
+import { paginateRange, type PrintLayout } from '@react-sheets/pro-features';
 import { Box, Button, Dialog, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
 
 export interface PrintPreviewRow { rowNumber: number; cells: readonly { value: string }[]; }
@@ -12,6 +12,8 @@ export interface PrintPreviewDialogProps {
   columnCount: number;
   columns: readonly string[];
   rows: readonly PrintPreviewRow[];
+  getRow?: (row: number) => PrintPreviewRow;
+  layout?: PrintLayout;
 }
 
 function columnLabel(column: number): string {
@@ -25,7 +27,7 @@ function columnLabel(column: number): string {
   return label;
 }
 
-export function PrintPreviewDialog({ columns, open, onClose, rows, sheetId, rowCount, columnCount }: PrintPreviewDialogProps) {
+export function PrintPreviewDialog({ columns, getRow, layout, open, onClose, rows, sheetId, rowCount, columnCount }: PrintPreviewDialogProps) {
   const [rowsPerPage, setRowsPerPage] = useState(30);
   const [columnsPerPage, setColumnsPerPage] = useState(6);
   const [pageIndex, setPageIndex] = useState(0);
@@ -55,13 +57,19 @@ export function PrintPreviewDialog({ columns, open, onClose, rows, sheetId, rowC
               <Text size="xs" className="w-12 shrink-0 border-r border-slate-200 px-2 py-1">#</Text>
               {columns.slice(page.range.startColumn, page.range.endColumn + 1).map((column) => <Text key={column} size="xs" className="w-28 shrink-0 border-r border-slate-200 px-2 py-1">{column}</Text>)}
             </Inline>
-            {rows.slice(page.range.startRow, page.range.endRow + 1).map((row) => <Inline key={row.rowNumber} gap="none" className="border-b border-slate-100"><Text size="xs" className="w-12 shrink-0 border-r border-slate-200 px-2 py-1 text-slate-400">{row.rowNumber}</Text>{row.cells.slice(page.range.startColumn, page.range.endColumn + 1).map((cell, index) => <Text key={`${row.rowNumber}-${index}`} size="xs" className="w-28 shrink-0 truncate border-r border-slate-100 px-2 py-1">{cell.value}</Text>)}</Inline>)}
+            {Array.from({ length: page.range.endRow - page.range.startRow + 1 }, (_, offset) => getRow?.(page.range.startRow + offset) ?? rows[page.range.startRow + offset]).filter((row): row is PrintPreviewRow => Boolean(row)).map((row) => <Inline key={row.rowNumber} gap="none" className="border-b border-slate-100"><Text size="xs" className="w-12 shrink-0 border-r border-slate-200 px-2 py-1 text-slate-400">{row.rowNumber}</Text>{row.cells.slice(page.range.startColumn, page.range.endColumn + 1).map((cell, index) => <Text key={`${row.rowNumber}-${index}`} size="xs" className="w-28 shrink-0 truncate border-r border-slate-100 px-2 py-1">{cell.value}</Text>)}</Inline>)}
           </Stack> : <Text size="sm" tone="muted">No printable cells.</Text>}
         </Box>
         <Inline gap="sm" className="items-center justify-between"><Button disabled={pageIndex <= 0} size="xs" variant="ghost" onClick={() => setPageIndex((index) => Math.max(0, index - 1))}>Previous page</Button><Text size="xs" tone="muted">{page ? `Page ${page.page} · Rows ${page.range.startRow + 1}-${page.range.endRow + 1} · ${columnLabel(page.range.startColumn)}-${columnLabel(page.range.endColumn)}` : 'No page'}</Text><Button disabled={pageIndex >= pages.length - 1} size="xs" variant="ghost" onClick={() => setPageIndex((index) => Math.min(pages.length - 1, index + 1))}>Next page</Button></Inline>
         <Inline gap="sm" className="justify-end">
           <Button variant="ghost" onClick={onClose}>Close</Button>
-          <Button variant="primary" onClick={() => window.print()}>Print</Button>
+          <Button variant="primary" onClick={() => {
+            if (layout) {
+              document.documentElement.dataset.printPaper = layout.paper;
+              document.documentElement.dataset.printOrientation = layout.orientation;
+            }
+            window.print();
+          }}>Print</Button>
         </Inline>
       </Stack>
     </Dialog>

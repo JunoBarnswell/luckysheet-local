@@ -12,7 +12,15 @@ export type PivotSort = { direction: 'ascending' | 'descending'; by?: 'label' | 
 export interface PivotFieldPlacement { field: string; sort?: PivotSort; group?: PivotGroup; }
 export type PivotFilter = { kind: 'manual'; field: string; selected: PivotScalar[]; exclude?: boolean } | { kind: 'condition'; field: string; operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal'; value: PivotScalar } | { kind: 'top-items'; field: string; count: number; valueField: string; direction: 'top' | 'bottom' };
 export type PivotShowAs = { kind: 'normal' } | { kind: 'grand-percentage' } | { kind: 'row-percentage' } | { kind: 'column-percentage' } | { kind: 'parent-percentage' } | { kind: 'difference'; base: 'grand' | 'row' | 'column' | 'parent' } | { kind: 'percentage-difference'; base: 'grand' | 'row' | 'column' | 'parent' } | { kind: 'running-total'; axis: 'row' | 'column' } | { kind: 'rank'; axis: 'row' | 'column'; direction: 'ascending' | 'descending' } | { kind: 'index' };
-export interface PivotValueField { field: string; summarizeBy: PivotAggregateFunction; displayName?: string; showAs?: PivotShowAs; }
+export interface PivotValueField {
+  field: string;
+  summarizeBy: PivotAggregateFunction;
+  displayName?: string;
+  numberFormat?: string;
+  baseField?: string;
+  baseItem?: string;
+  showAs?: PivotShowAs;
+}
 export interface PivotCalculatedField { name: string; formula: string; }
 export interface PivotCalculatedItem { field: string; name: string; formula: string; }
 export interface PivotLayout { rows: PivotFieldPlacement[]; columns: PivotFieldPlacement[]; filters: PivotFilter[]; values: PivotValueField[]; calculatedFields?: PivotCalculatedField[]; calculatedItems?: PivotCalculatedItem[]; showSubtotals: boolean; showGrandTotals: boolean; compact: boolean; repeatLabels: boolean; expandedFieldIds?: string[]; }
@@ -24,13 +32,18 @@ export interface PivotSourceRowPath { sheetId: SheetId; row: Row; }
 export interface PivotResultCell { kind?: 'detail' | 'grand-total'; columnPath: PivotScalar[]; values: PivotScalar[]; sourceRowPaths: PivotSourceRowPath[]; }
 export interface PivotResultNode { kind: 'leaf' | 'subtotal'; field?: string; key: PivotScalar; label: string; depth: number; children: PivotResultNode[]; values: PivotResultCell[]; subtotal: boolean; sourceRowPaths: PivotSourceRowPath[]; }
 export interface PivotResultTree { schema: 'PivotResultTreeV1'; pivotId: string; fields: PivotFieldCatalog; columnPaths: PivotScalar[][]; rows: PivotResultNode[]; grandTotal: PivotResultCell | null; sourceRowPaths: PivotSourceRowPath[]; }
-export interface PivotModel { id: string; sheetId: SheetId; sourceRange: RangeRef; dataSource?: PivotDataSource; fieldCatalog?: PivotFieldCatalog; layout?: PivotLayout; refreshPolicy?: PivotRefreshPolicy; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[]; targetAnchor?: { row: Row; column: Column }; rowFields: string[]; columnFields: string[]; valueFields: PivotValueField[]; filterFields: string[]; }
-export type NormalizedPivotModel = Omit<PivotModel, 'rowFields' | 'columnFields' | 'valueFields' | 'filterFields' | 'layout'> & { layout: PivotLayout };
-export function normalizePivotDefinition(pivot: PivotModel): NormalizedPivotModel {
-  const layout = pivot.layout ?? {
-    rows: pivot.rowFields.map((field) => ({ field })), columns: pivot.columnFields.map((field) => ({ field })), filters: [], values: pivot.valueFields,
-    showSubtotals: true, showGrandTotals: true, compact: false, repeatLabels: false,
-  };
-  const { rowFields: _rowFields, columnFields: _columnFields, valueFields: _valueFields, filterFields: _filterFields, ...canonical } = pivot;
-  return { ...canonical, layout: structuredClone(layout) };
+export interface PivotModel {
+  id: string;
+  sheetId: SheetId;
+  sourceRange: RangeRef;
+  dataSource?: PivotDataSource;
+  fieldCatalog?: PivotFieldCatalog;
+  layout: PivotLayout;
+  refreshPolicy?: PivotRefreshPolicy;
+  refreshRevision?: number;
+  lastRefreshedAt?: string;
+  slicers?: PivotSlicer[];
+  timelines?: PivotTimeline[];
+  chartReferences?: PivotChartReference[];
+  targetAnchor?: { row: Row; column: Column };
 }

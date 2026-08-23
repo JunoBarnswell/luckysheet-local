@@ -1,14 +1,16 @@
 import React from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
+import type { RevisionRecord } from '@react-sheets/protocol';
 
 export interface HistoryPanelProps {
   entries: readonly HistoryEntry[];
+  remoteRevisions?: readonly RevisionRecord[];
   onUndoTo?: (index: number) => void;
   onClose?: () => void;
 }
 
-export function HistoryPanel({ entries, onUndoTo, onClose }: HistoryPanelProps) {
+export function HistoryPanel({ entries, remoteRevisions = [], onUndoTo, onClose }: HistoryPanelProps) {
   return (
     <Panel className="h-full border-0 bg-transparent shadow-none">
       <PanelHeader className="h-12 border-b border-slate-200 px-4">
@@ -20,6 +22,21 @@ export function HistoryPanel({ entries, onUndoTo, onClose }: HistoryPanelProps) 
           <Text size="xs" tone="subtle">
             All workbook state mutations are tracked as reversible transactions.
           </Text>
+
+          {remoteRevisions.length > 0 ? (
+            <Stack gap="xs">
+              <Text size="xs" weight="semibold">Server revisions ({remoteRevisions.length})</Text>
+              {remoteRevisions.slice(0, 20).map((revision) => (
+                <Inline key={`${revision.operationId}-${revision.revision}`} gap="sm" className="items-start rounded-lg border border-blue-100 bg-blue-50/50 p-2 text-xs">
+                  <Text size="xs" weight="semibold" className="text-blue-700">#{revision.revision}</Text>
+                  <Stack gap="none" className="min-w-0">
+                    <Text size="xs" className="truncate">{revision.payload.mutations.length} mutation(s)</Text>
+                    <Text size="xs" tone="subtle">{new Date(revision.createdAt).toLocaleString()}</Text>
+                  </Stack>
+                </Inline>
+              ))}
+            </Stack>
+          ) : null}
 
           {entries.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">

@@ -15,10 +15,13 @@ import {
   Text,
 } from '@react-sheets/ui-system';
 import type { RibbonTabId, WorkspacePhase } from '../state/workspace';
+import { translate, type Locale } from '../i18n';
+import type { RibbonAction } from '../domain/ribbon-actions';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
-  onAction: (action: string, payload?: unknown) => void;
+  locale: Locale;
+  onAction: (action: RibbonAction, payload?: unknown) => void;
   onTabChange: (tab: RibbonTabId) => void;
   phase: WorkspacePhase;
   cellStyle?: {
@@ -65,12 +68,12 @@ function ToolBtn({
   onAction,
   className,
 }: {
-  action: string;
+  action: RibbonAction;
   disabled: boolean;
   icon: React.ComponentProps<typeof Icon>['name'];
   label: string;
   active?: boolean;
-  onAction: (action: string) => void;
+  onAction: (action: RibbonAction) => void;
   className?: string;
 }) {
   return (
@@ -88,7 +91,7 @@ function ToolBtn({
   );
 }
 
-export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {} }: RibbonProps) {
+export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellStyle = {} }: RibbonProps) {
   const disabled = phase !== 'ready';
 
   return (
@@ -96,7 +99,7 @@ export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {}
       {/* Top Tab Bar */}
       <Inline gap="lg" className="h-10 overflow-x-auto px-4">
         <TabList label="Workbook ribbon tabs" className="h-full gap-1">
-          {ribbonTabs.map((tab) => (
+              {ribbonTabs.map((tab) => (
             <Tab
               key={tab.id}
               active={activeTab === tab.id}
@@ -104,14 +107,14 @@ export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {}
               onClick={() => onTabChange(tab.id)}
               className="h-full border-b-2 border-transparent px-3 text-xs font-semibold data-active:border-blue-600 data-active:text-blue-600"
             >
-              {tab.label}
+              {translate(locale, tab.id)}
             </Tab>
           ))}
         </TabList>
 
         <Inline gap="xs" className="ml-auto shrink-0 border-l border-slate-100 pl-3">
           <Icon name="cloud-check" size="sm" className={disabled ? 'text-slate-300' : 'text-emerald-500'} />
-          <Text size="xs" tone="muted">Engine Connected</Text>
+          <Text size="xs" tone="muted">{translate(locale, 'engineConnected')}</Text>
         </Inline>
       </Inline>
 
@@ -363,6 +366,9 @@ export function Ribbon({ activeTab, onAction, onTabChange, phase, cellStyle = {}
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Data Tools">
+              <Button size="sm" variant="ghost" icon="table" onClick={() => onAction('create-data-table')}>
+                Create Data Table
+              </Button>
               <Button size="sm" variant="ghost" icon="check-circle" onClick={() => onAction('open-data-validation')}>
                 Data Validation
               </Button>

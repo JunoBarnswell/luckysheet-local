@@ -11,8 +11,11 @@ import { SortDialog } from "./components/dialogs/SortDialog";
 import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
 import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
 import { WorkbookCatalog } from "./components/WorkbookCatalog";
+import { parseRangeInput } from "./domain/range-input";
+import type { RibbonAction } from "./domain/ribbon-actions";
 import { useState } from "react";
-import { getInitialWorkspacePhase, useWorkspaceState, type SelectionState, type SidebarPanelId } from "./state/workspace";
+import { cellAddress, getInitialWorkspacePhase, useWorkspaceState, type SelectionState, type SidebarPanelId } from "./state/workspace";
+import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import type { PivotAggregateFunction, PivotFieldDefinition as CorePivotFieldDefinition, PivotFilter, PivotLayout, PivotModel, PivotShowAs as CorePivotShowAs, PivotValueField } from "@react-sheets/core-model";
 import type { PivotCalculatedFieldDefinition, PivotCalculatedItemDefinition, PivotDefinition, PivotFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult, PivotShowAs as UiPivotShowAs } from "./components/pivot/types";
 
@@ -46,35 +49,38 @@ function fromUiShowAs(showAs: UiPivotShowAs): CorePivotShowAs {
 function pivotToUiDefinition(pivot?: PivotModel): PivotDefinition {
   if (!pivot) return emptyPivotDefinition;
   const layout = pivot.layout;
-  const rows = layout?.rows.map((field) => field.field) ?? pivot.rowFields;
-  const columns = layout?.columns.map((field) => field.field) ?? pivot.columnFields;
-  const filters = layout?.filters.map((filter) => filter.field) ?? pivot.filterFields;
-  const values = (layout?.values ?? pivot.valueFields).map((value, index) => ({
+  const rows = layout.rows.map((field) => field.field);
+  const columns = layout.columns.map((field) => field.field);
+  const filters = layout.filters.map((filter) => filter.field);
+  const values = layout.values.map((value, index) => ({
     id: `${value.field}-${index}`,
     fieldId: value.field,
     summary: value.summarizeBy,
     displayName: value.displayName ?? `${value.summarizeBy.toUpperCase()} of ${value.field}`,
-    numberFormat: "",
+    numberFormat: value.numberFormat ?? "",
+    baseFieldId: value.baseField,
+    baseItem: value.baseItem,
     showAs: toUiShowAs(value.showAs),
   }));
   const filterSelections: Record<string, string[]> = {};
-  for (const filter of layout?.filters ?? []) if (filter.kind === "manual") filterSelections[filter.field] = filter.selected.map((value) => String(value));
+  for (const filter of layout.filters) if (filter.kind === "manual") filterSelections[filter.field] = filter.selected.map((value) => String(value));
   const sort: Record<string, "none" | "ascending" | "descending"> = {};
-  for (const field of [...(layout?.rows ?? []), ...(layout?.columns ?? [])]) sort[field.field] = field.sort?.direction ?? "none";
+  for (const field of [...layout.rows, ...layout.columns]) sort[field.field] = field.sort?.direction ?? "none";
   return {
+    sourceRange: `${cellAddress(pivot.sourceRange.startRow, pivot.sourceRange.startColumn)}:${cellAddress(pivot.sourceRange.endRow, pivot.sourceRange.endColumn)}`,
     filters,
     columns,
     rows,
     values,
-    calculatedFields: (layout?.calculatedFields ?? []).map((field) => ({ ...field })),
-    calculatedItems: (layout?.calculatedItems ?? []).map((item) => ({ fieldId: item.field, name: item.name, formula: item.formula })),
+    calculatedFields: (layout.calculatedFields ?? []).map((field) => ({ ...field })),
+    calculatedItems: (layout.calculatedItems ?? []).map((item) => ({ fieldId: item.field, name: item.name, formula: item.formula })),
     filterSelections,
     sort,
-    groupedFields: [...(layout?.rows ?? []), ...(layout?.columns ?? [])].filter((field) => Boolean(field.group)).map((field) => field.field),
-    layout: layout?.compact ? "compact" : "outline",
-    showGrandTotals: layout?.showGrandTotals ?? true,
-    showSubtotals: layout?.showSubtotals ?? true,
-    expandedFieldIds: layout?.expandedFieldIds ?? [...rows],
+    groupedFields: [...layout.rows, ...layout.columns].filter((field) => Boolean(field.group)).map((field) => field.field),
+    layout: layout.compact ? "compact" : layout.repeatLabels ? "tabular" : "outline",
+    showGrandTotals: layout.showGrandTotals,
+    showSubtotals: layout.showSubtotals,
+    expandedFieldIds: layout.expandedFieldIds ?? [...rows],
     slicers: pivot.slicers?.map((slicer) => slicer.field) ?? [],
     timelineFieldId: pivot.timelines?.[0]?.field,
     timelineStart: pivot.timelines?.[0]?.start,
@@ -96,7 +102,7 @@ function uiToPivotLayout(definition: PivotDefinition, fields: readonly PivotFiel
     const selected = definition.filterSelections[field] ?? [];
     return selected.length ? [{ kind: "manual", field, selected: selected.slice() }] : [];
   });
-  const values: PivotValueField[] = definition.values.map((value) => ({ field: value.fieldId, summarizeBy: value.summary as PivotAggregateFunction, displayName: value.displayName, showAs: fromUiShowAs(value.showAs) }));
+  const values: PivotValueField[] = definition.values.map((value) => ({ field: value.fieldId, summarizeBy: value.summary as PivotAggregateFunction, displayName: value.displayName, numberFormat: value.numberFormat || undefined, baseField: value.baseFieldId, baseItem: value.baseItem, showAs: fromUiShowAs(value.showAs) }));
   return {
     rows: definition.rows.map(placement),
     columns: definition.columns.map(placement),
@@ -114,7 +120,12 @@ function uiToPivotLayout(definition: PivotDefinition, fields: readonly PivotFiel
 
 function WorkspaceApp() {
   const { actions, state } = useWorkspaceState({ initialPhase: getInitialWorkspacePhase() });
+  const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const isBusy = state.phase !== "ready";
+  const setLocale = (nextLocale: Locale) => {
+    setLocaleState(nextLocale);
+    persistLocale(nextLocale);
+  };
   const copyWorkbookLink = () => {
     const link = `${window.location.origin}/workbooks/${encodeURIComponent(state.unitId)}`;
     const clipboard = navigator.clipboard;
@@ -130,7 +141,7 @@ function WorkspaceApp() {
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
-    : { sheetId: state.activeSheetId, startRow: 0, endRow: Math.max(1, state.selectedSheet.rowCount - 1), startColumn: 0, endColumn: Math.max(1, state.selectedSheet.columns.length - 1) };
+    : state.selectedSheet.usedRange;
   const [activePivotId, setActivePivotId] = useState<string>();
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
@@ -164,7 +175,7 @@ function WorkspaceApp() {
     if (!rowField || !valueField) return;
     const id = `pivot-${Math.random().toString(36).slice(2, 8)}`;
     const summarizeBy = pivotFields.find((field) => field.id === valueField)?.type === "number" ? "sum" : "count";
-    actions.addPivot({ id, sheetId: state.activeSheetId, sourceRange: pivotSourceRange, rowFields: [rowField], columnFields: [], valueFields: [{ field: valueField, summarizeBy }], filterFields: [], layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [] } });
+    actions.addPivot({ id, sheetId: state.activeSheetId, sourceRange: pivotSourceRange, layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [] } });
     setActivePivotId(id);
   };
   const pivotCallbacks: PivotPanelCallbacks = {
@@ -212,6 +223,15 @@ function WorkspaceApp() {
       updatePivotDefinition(next);
     },
     onRefresh: () => { if (activePivot) actions.refreshPivot(activePivot.id); },
+    onSourceRangeChange: (sourceRange) => {
+      if (!activePivot) return;
+      const parsed = parseRangeInput(sourceRange, activePivot.sheetId);
+      if (!parsed) {
+        actions.notify("Invalid pivot source range");
+        return;
+      }
+      actions.updatePivotConfiguration(activePivot.id, { sourceRange: { sheetId: activePivot.sheetId, ...parsed } });
+    },
     onLayoutChange: (layout) => updatePivotDefinition({ ...clonePivotDefinition(pivotDefinition), layout }),
     onExpandedChange: (fieldId, expanded) => {
       const next = clonePivotDefinition(pivotDefinition);
@@ -238,7 +258,21 @@ function WorkspaceApp() {
     },
   };
   const pivotPanelState: PivotPanelState = { disabled: isBusy, loading: state.phase === "loading", error: state.phase === "error" ? "Pivot data could not be loaded" : undefined, empty: pivotFields.length === 0 };
-  const selectPanel = (panel: SidebarPanelId) => actions.handleRibbonAction(panel === "inspector" ? "open-comments" : `open-${panel.replace("conditionalFormat", "conditional-format").replace("dataValidation", "data-validation")}`);
+  const selectPanel = (panel: SidebarPanelId) => {
+    const actionByPanel: Partial<Record<SidebarPanelId, RibbonAction>> = {
+      inspector: 'open-comments',
+      chart: 'open-chart',
+      pivot: 'open-pivot',
+      shape: 'open-shape',
+      sparkline: 'open-sparkline',
+      conditionalFormat: 'open-conditional-format',
+      dataValidation: 'open-data-validation',
+      print: 'open-print',
+      history: 'open-history',
+    };
+    const action = actionByPanel[panel];
+    if (action) actions.handleRibbonAction(action);
+  };
 
   /** 画布选区 → workspace 多选区模型 */
   const applySelection = (selection: SelectionState) => {
@@ -266,8 +300,12 @@ function WorkspaceApp() {
           />
         }
         isBusy={isBusy}
+        locale={locale}
         notice={state.notice}
+        onLocaleChange={setLocale}
+        onSearch={(query) => actions.handleRibbonAction("find-replace", query)}
         onShare={copyWorkbookLink}
+        peers={state.peers}
         workbookMenu={
           <DropdownMenu
             align="right"
@@ -297,6 +335,7 @@ function WorkspaceApp() {
         ribbon={
           <Ribbon
             activeTab={state.ribbonTab}
+            locale={locale}
             onAction={actions.handleRibbonAction}
             onTabChange={actions.setRibbonTab}
             phase={state.phase}
@@ -402,6 +441,7 @@ function WorkspaceApp() {
             conditionalFormats={state.selectedSheet.conditionalFormats}
             dataValidations={state.selectedSheet.dataValidations}
             historyEntries={state.historyEntries}
+            remoteRevisions={state.remoteRevisions}
             onAddChart={actions.addChart}
             onRemoveChart={actions.removeChart}
             onAddShape={actions.addShape}
@@ -415,6 +455,8 @@ function WorkspaceApp() {
             onPrint={actions.printWorkbook}
             onExportPdf={actions.exportPdf}
             onAddComment={actions.addComment}
+            onReplyComment={actions.replyComment}
+            onResolveComment={actions.resolveComment}
             onRemoveComment={actions.removeComment}
             onSetHyperlink={actions.setHyperlink}
             onRemoveHyperlink={actions.removeHyperlink}
@@ -441,6 +483,7 @@ function WorkspaceApp() {
 
       <FindReplaceDialog
         open={state.showFindReplace}
+        initialFind={state.findQuery}
         onClose={actions.closeFindReplace}
         onReplaceAll={(params) => actions.findReplace(params)}
       />
@@ -453,6 +496,11 @@ function WorkspaceApp() {
         columnCount={state.selectedSheet.columns.length}
         columns={state.selectedSheet.columns}
         rows={state.selectedSheet.rows}
+        layout={state.printLayout}
+        getRow={(row) => ({
+          rowNumber: row + 1,
+          cells: Array.from({ length: state.selectedSheet.columns.length }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? '' })),
+        })}
       />
     </>
   );

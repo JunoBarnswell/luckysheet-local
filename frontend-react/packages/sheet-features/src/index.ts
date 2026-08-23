@@ -8,6 +8,7 @@ import type {
   FreezeModel,
   MergeSpan,
   RangeRef,
+  WorkbookTableModel,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
@@ -24,6 +25,8 @@ export interface SetCellValueParams {
   column: number;
   value: CellData;
 }
+
+export interface AddTableParams extends WorkbookTableModel {}
 
 export interface SetRangeValuesParams {
   sheetId: string;
@@ -255,6 +258,46 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         apply: () => {
           sheet.name = params.name;
         },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerMutation('table.add', (item, context) => {
+    context.workbook.addTable(item.params as WorkbookTableModel);
+  });
+  runtime.registry.registerMutation('table.remove', (item, context) => {
+    context.workbook.removeTable(item.params as string);
+  });
+  runtime.registry.registerCommand<AddTableParams>({
+    id: 'table.add',
+    execute: (params, context) => {
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'table.add',
+        unitId: context.workbook.unitId,
+        sheetId: params.sourceSheetId ?? context.workbook.activeSheetId,
+        params: structuredClone(params),
+        affectedRanges,
+        inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sourceSheetId ?? context.workbook.activeSheetId, params: params.id, affectedRanges }],
+        apply: () => context.workbook.addTable(params),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ tableId: string; sheetId: string }>({
+    id: 'table.remove',
+    execute: (params, context) => {
+      const previous = structuredClone(context.workbook.getTable(params.tableId));
+      const affectedRanges: RangeRef[] = [];
+      context.applyMutation({
+        id: 'table.remove',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: params.tableId,
+        affectedRanges,
+        inverse: [{ id: 'table.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
+        apply: () => context.workbook.removeTable(params.tableId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

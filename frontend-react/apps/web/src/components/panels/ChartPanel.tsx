@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ChartModel } from '@react-sheets/core-model';
+import { parseRangeInput } from '../../domain/range-input';
 
 export interface ChartPanelProps {
   sheetId: string;
@@ -25,8 +26,11 @@ export function ChartPanel({
   const [type, setType] = useState<ChartModel['type']>(activeChart?.type ?? 'column');
   const [title, setTitle] = useState(activeChart?.title ?? 'Sales Overview');
   const [rangeInput, setRangeInput] = useState(defaultRange ?? 'A1:C5');
+  const sourceRange = parseRangeInput(rangeInput, sheetId);
 
   const handleCreate = () => {
+    const source = parseRangeInput(rangeInput, sheetId);
+    if (!source) return;
     const newChart: ChartModel = {
       id: 'chart-' + Math.random().toString(36).substring(2, 7),
       sheetId,
@@ -35,10 +39,7 @@ export function ChartPanel({
       sourceRanges: [
         {
           sheetId,
-          startRow: 0,
-          endRow: 4,
-          startColumn: 0,
-          endColumn: 2,
+          ...source,
         },
       ],
       bounds: {
@@ -100,7 +101,7 @@ export function ChartPanel({
             />
           </div>
 
-          <Button variant="primary" size="sm" icon="plus" onClick={handleCreate}>
+          <Button variant="primary" size="sm" icon="plus" disabled={!sourceRange} onClick={handleCreate}>
             Insert Chart to Canvas
           </Button>
 

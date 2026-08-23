@@ -1,10 +1,9 @@
 import type {
   PivotAggregateFunction, PivotDataSource, PivotFieldCatalog, PivotFieldDataType, PivotFieldPlacement,
   PivotFilter, PivotGroup, PivotModel, PivotResultCell, PivotResultNode, PivotResultTree, PivotScalar,
-  PivotSourceRowPath, PivotValueField, WorkbookModel, WorksheetModel, NormalizedPivotModel,
+  PivotSourceRowPath, PivotValueField, WorkbookModel, WorksheetModel,
   PivotCalculatedField, PivotCalculatedItem,
 } from '@react-sheets/core-model';
-import { normalizePivotDefinition } from '@react-sheets/core-model';
 import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
 
 interface SourceRow { values: Record<string, PivotScalar>; paths: PivotSourceRowPath[]; }
@@ -47,7 +46,7 @@ function inferType(values: PivotScalar[]): PivotFieldDataType {
   return 'mixed';
 }
 
-function sourceRange(pivot: PivotModel | NormalizedPivotModel): PivotDataSource {
+function sourceRange(pivot: PivotModel): PivotDataSource {
   return pivot.dataSource ?? { kind: 'worksheet-range', range: pivot.sourceRange };
 }
 
@@ -135,13 +134,13 @@ function joinTables(workbook: WorkbookModel, source: Extract<PivotDataSource, { 
   return current;
 }
 
-function readSource(workbook: WorkbookModel, pivot: PivotModel | NormalizedPivotModel): SourceRow[] {
+function readSource(workbook: WorkbookModel, pivot: PivotModel): SourceRow[] {
   const source = sourceRange(pivot);
   const rows = source.kind === 'worksheet-range' ? readTable(workbook.getSheet(source.range.sheetId), source.range) : joinTables(workbook, source);
-  return applyCalculatedData(rows, pivot.layout?.calculatedFields, pivot.layout?.calculatedItems);
+  return applyCalculatedData(rows, pivot.layout.calculatedFields, pivot.layout.calculatedItems);
 }
 
-export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel | NormalizedPivotModel): PivotFieldCatalog {
+export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel): PivotFieldCatalog {
   if (pivot.fieldCatalog) return structuredClone(pivot.fieldCatalog);
   const rows = readSource(workbook, pivot); const names = new Set<string>();
   rows.forEach((row) => Object.keys(row.values).forEach((name) => names.add(name)));
@@ -210,7 +209,7 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
   return result;
 }
 
-function matchesSlicersAndTimelines(workbook: WorkbookModel, rows: SourceRow[], pivot: NormalizedPivotModel): SourceRow[] {
+function matchesSlicersAndTimelines(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel): SourceRow[] {
   const linked = workbook.getSheet(pivot.sheetId).pivots.filter((candidate) => candidate.id !== pivot.id);
   const slicers = [...(pivot.slicers ?? []), ...linked.flatMap((candidate) => (candidate.slicers ?? []).filter((slicer) => slicer.connectedPivotIds?.includes(pivot.id)))];
   const timelines = [...(pivot.timelines ?? []), ...linked.flatMap((candidate) => (candidate.timelines ?? []).filter((timeline) => timeline.connectedPivotIds?.includes(pivot.id)))];
@@ -255,11 +254,11 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
 }
 
 export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
-  const definition = normalizePivotDefinition(pivot); let rows = matchesSlicersAndTimelines(workbook, readSource(workbook, definition), definition); rows = rows.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter))); rows = topItems(rows, definition.layout.filters);
+  const definition = pivot; let rows = matchesSlicersAndTimelines(workbook, readSource(workbook, definition), definition); rows = rows.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter))); rows = topItems(rows, definition.layout.filters);
   const catalog = getPivotFieldCatalog(workbook, definition); const columns = definition.layout.columns.length ? axisGroups(rows, definition.layout.columns) : [{ values: [], rows }]; const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? { kind: 'grand-total', columnPath: [], values: definition.layout.values.map((field) => aggregate(rows, field.field, field.summarizeBy)), sourceRowPaths: rows.flatMap((row) => row.paths) } : null;
   const tree: PivotResultTree = { schema: 'PivotResultTreeV1', pivotId: definition.id, fields: catalog, columnPaths: columns.map((column) => column.values), rows: resultNodes(rows, definition.layout.rows, 0, columns, definition.layout.values, definition.layout.showSubtotals), grandTotal, sourceRowPaths: rows.flatMap((row) => row.paths) }; applyShowAs(tree, definition.layout.values); return tree;
 }
 
 export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): PivotResultTable {
-  const tree = computePivotResult(workbook, pivot); const definition = normalizePivotDefinition(pivot); const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) })); const headers = [...definition.layout.rows.map((field) => field.field), ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? `${field.summarizeBy.toUpperCase()} of ${field.field}`}` : field.displayName ?? `${field.summarizeBy.toUpperCase()} of ${field.field}`))]; return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
+  const tree = computePivotResult(workbook, pivot); const definition = pivot; const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) })); const headers = [...definition.layout.rows.map((field) => field.field), ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? `${field.summarizeBy.toUpperCase()} of ${field.field}`}` : field.displayName ?? `${field.summarizeBy.toUpperCase()} of ${field.field}`))]; return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }

@@ -21,6 +21,9 @@ import {
   type RangeRef,
   type ShapeModel,
   type SparklineModel,
+  type TableScalar,
+  type TableFieldType,
+  type WorkbookTableModel,
   type WorksheetModel,
 } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry } from '@react-sheets/command-runtime';
@@ -45,9 +48,12 @@ import {
   WorkbookApiClient,
   type CollaborationMessage,
   type CollaborationMutation,
+  type RevisionRecord,
   type SnapshotResponse,
+  type TableRowsResponse,
 } from '@react-sheets/protocol';
 import { buildXlsxArchiveBase64, computePivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, registerProSheetCommands, type PrintLayout } from '@react-sheets/pro-features';
+import type { RibbonAction } from '../domain/ribbon-actions';
 
 export type WorkspacePhase = 'empty' | 'error' | 'loading' | 'ready';
 export type RibbonTabId = 'data' | 'home' | 'insert' | 'review' | 'view';
@@ -61,9 +67,7 @@ export type SidebarPanelId =
   | 'dataValidation'
   | 'print'
   | 'history'
-  | 'comments'
-  | 'data'
-  | 'automations';
+  | 'data';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing';
 
 /** 多选区状态:ranges 均已归一化且属于当前活动工作表 */
@@ -92,6 +96,7 @@ export interface SheetCell {
   /** 单元格级标记(由视图构建阶段计算) */
   hasComment?: boolean;
   commentText?: string;
+  comment?: CellComment;
   invalid?: boolean;
   hyperlink?: string;
   /** 条件格式覆盖 */
@@ -108,7 +113,10 @@ export interface SheetView {
   columns: string[];
   id: string;
   isEmpty?: boolean;
+  occupiedCellCount: number;
+  numericAverage?: number;
   getCell: (row: number, column: number) => SheetCell | undefined;
+  usedRange: RangeRef;
   name: string;
   rows: SheetRow[];
   charts: ChartModel[];
@@ -158,10 +166,14 @@ export interface WorkspaceState {
   sheets: SheetView[];
   zoom: number;
   historyEntries: readonly HistoryEntry[];
+  remoteRevisions: readonly RevisionRecord[];
+  tables: readonly WorkbookTableModel[];
   showFunctionWizard: boolean;
   showSortDialog: boolean;
   showFindReplace: boolean;
+  findQuery: string;
   showPrintPreview: boolean;
+  printLayout: PrintLayout;
   peers: PeerCursor[];
   collabStatus: 'connecting' | 'open' | 'closed';
   actorId: string;
@@ -193,14 +205,14 @@ export interface WorkspaceActions {
   setRibbonTab: (tab: RibbonTabId) => void;
   setZoom: (zoom: number) => void;
   undo: () => void;
-  handleRibbonAction: (action: string, payload?: unknown) => void;
+  handleRibbonAction: (action: RibbonAction, payload?: unknown) => void;
   // Pro 模型
   addChart: (chart: ChartModel) => void;
   updateChartBounds: (id: string, bounds: ChartModel['bounds']) => void;
   removeChart: (id: string) => void;
   addPivot: (pivot: PivotModel) => void;
   updatePivotLayout: (pivotId: string, layout: PivotLayout) => void;
-  updatePivotConfiguration: (pivotId: string, patch: { layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }) => void;
+  updatePivotConfiguration: (pivotId: string, patch: { sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }) => void;
   refreshPivot: (id: string) => void;
   removePivot: (id: string) => void;
   addShape: (shape: ShapeModel) => void;
@@ -214,6 +226,8 @@ export interface WorkspaceActions {
   removeDataValidation: (id: string) => void;
   // 数据功能
   addComment: (text: string) => void;
+  replyComment: (text: string) => void;
+  resolveComment: () => void;
   removeComment: () => void;
   setHyperlink: (url: string) => void;
   removeHyperlink: () => void;
@@ -262,6 +276,7 @@ export interface WorkspaceActions {
   removeFloatingObject: (kind: 'chart' | 'shape', id: string) => void;
   getActiveSheetName: () => string;
   getPivotFieldCatalog: (range: RangeRef) => PivotFieldDefinition[];
+  readDataTable: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   showPivotDetails: (paths: PivotSourceRowPath[]) => void;
 }
 
@@ -286,6 +301,8 @@ interface WorkspaceRuntime {
   detachers: Array<() => void>;
   handlers: RuntimeHandlers;
   ownOperationIds: Set<string>;
+  nextClientSequence: number;
+  pivotResults: Record<string, PivotResultTree>;
   collab: CollabSocketClient | null;
 }
 
@@ -375,6 +392,8 @@ function createWorkspaceRuntime(): WorkspaceRuntime {
     detachers: [],
     handlers: {},
     ownOperationIds: new Set(),
+    nextClientSequence: 0,
+    pivotResults: {},
     collab: null,
   };
   attachCoreListeners(runtime);
@@ -409,6 +428,8 @@ function attachCoreListeners(runtime: WorkspaceRuntime): void {
   // 1) 公式引擎同步(command/undo/redo/remote 全部来源)
   runtime.detachers.push(
     runtime.commands.onMutation((mutation) => {
+      const changedSheet = runtime.model.getSheets().find((sheet) => sheet.id === mutation.sheetId);
+      for (const pivot of changedSheet?.pivots ?? []) delete runtime.pivotResults[pivot.id];
       switch (mutation.id) {
         case 'cell.set': {
           const params = mutation.params as { row: number; column: number; value: CellData };
@@ -448,6 +469,32 @@ function attachCoreListeners(runtime: WorkspaceRuntime): void {
           }
           break;
         }
+        case 'rows.inserted':
+        case 'rows.deleted': {
+          const params = mutation.params as { at: number; count: number };
+          runtime.formula.remapStructure(mutation.sheetId, {
+            axis: 'row',
+            at: params.at,
+            count: params.count,
+            op: mutation.id === 'rows.inserted' ? 'insert' : 'delete',
+          });
+          break;
+        }
+        case 'columns.inserted':
+        case 'columns.deleted': {
+          const params = mutation.params as { at: number; count: number };
+          runtime.formula.remapStructure(mutation.sheetId, {
+            axis: 'column',
+            at: params.at,
+            count: params.count,
+            op: mutation.id === 'columns.inserted' ? 'insert' : 'delete',
+          });
+          break;
+        }
+        case 'name.set':
+        case 'name.remove':
+          runtime.formula.setDefinedNames(runtime.model.definedNames);
+          break;
         default:
           break;
       }
@@ -491,7 +538,7 @@ function submitChangeset(
   operationId: string,
   mutations: CollaborationMutation[],
 ): void {
-  if (!runtime.remoteConnected || !runtime.collab) {
+  if (!runtime.collab) {
     runtime.handlers.onSaveState?.('offline');
     return;
   }
@@ -501,6 +548,7 @@ function submitChangeset(
     operationId,
     unitId: runtime.model.unitId,
     actorId: resolveActorId(),
+    clientSequence: ++runtime.nextClientSequence,
     baseRevision: runtime.remoteRevision,
     mutations,
     createdAt: new Date().toISOString(),
@@ -515,6 +563,7 @@ function submitChangeset(
 
 function rebuildFormulaInto(engine: FormulaEngine, workbook: WorkbookModel): void {
   engine.reset();
+  engine.setDefinedNames(workbook.definedNames);
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
@@ -526,6 +575,7 @@ function rebuildFormulaInto(engine: FormulaEngine, workbook: WorkbookModel): voi
 
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
+  engine.setDefinedNames(workbook.definedNames);
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
@@ -546,6 +596,7 @@ function hydrateRuntime(runtime: WorkspaceRuntime, response: SnapshotResponse): 
   runtime.formula = rebuildFormulaEngine(workbook);
   attachCoreListeners(runtime);
   runtime.remoteRevision = response.revision;
+  runtime.pivotResults = {};
 }
 
 // ---------- 视图构建 ----------
@@ -569,17 +620,55 @@ function formatDisplayValue(
   return String(cell.value);
 }
 
+function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
+  let minRow = Number.POSITIVE_INFINITY;
+  let minColumn = Number.POSITIVE_INFINITY;
+  let maxRow = 0;
+  let maxColumn = 0;
+  let numericSum = 0;
+  let numericCount = 0;
+  sheet.cells.forEach((_cell, row, column) => {
+    minRow = Math.min(minRow, row);
+    minColumn = Math.min(minColumn, column);
+    maxRow = Math.max(maxRow, row);
+    maxColumn = Math.max(maxColumn, column);
+    if (typeof _cell.value === 'number' && Number.isFinite(_cell.value)) {
+      numericSum += _cell.value;
+      numericCount += 1;
+    }
+  });
+  return {
+    sheetId: sheet.id,
+    startRow: Number.isFinite(minRow) ? minRow : 0,
+    endRow: Number.isFinite(minRow) ? maxRow : 0,
+    startColumn: Number.isFinite(minColumn) ? minColumn : 0,
+    endColumn: Number.isFinite(minColumn) ? maxColumn : 0,
+  };
+}
+
+function inferTableFieldType(values: CellData['value'][]): TableFieldType {
+  const present = values.filter((value) => value != null && value !== '');
+  if (present.length === 0) return 'mixed';
+  if (present.every((value) => typeof value === 'number')) return 'number';
+  if (present.every((value) => typeof value === 'boolean')) return 'boolean';
+  if (present.every((value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value))) return 'date';
+  if (present.every((value) => typeof value === 'string')) return 'text';
+  return 'mixed';
+}
+
 function toSheetView(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
   formula: FormulaEngine,
   showInvalid: boolean,
+  cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
 ): SheetView {
   const overlays = computeConditionalOverlays(sheet);
   const filterHidden = computeFilterHiddenRows(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden]);
   const filterColumns = sheet.filter ? Object.keys(sheet.filter.criteria).map(Number) : [];
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
+  const usedRange = usedRangeOfSheet(sheet);
 
   const getCell = (row: number, column: number): SheetCell | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
@@ -599,6 +688,7 @@ function toSheetView(
       displayValue: value,
       hasComment: Boolean(modelCell?.comment),
       commentText: modelCell?.comment?.text,
+      comment: modelCell?.comment ? structuredClone(modelCell.comment) : undefined,
       invalid: showInvalid && modelCell?.value != null && !validation.valid,
       hyperlink: modelCell?.hyperlink,
       overlay,
@@ -623,7 +713,7 @@ function toSheetView(
   const pivotResults: Record<string, PivotResultTree> = {};
   for (const pivot of sheet.pivots) {
     try {
-      pivotResults[pivot.id] = computePivotResult(workbook, pivot);
+      pivotResults[pivot.id] = cachedPivotResults[pivot.id] ?? computePivotResult(workbook, pivot);
     } catch {
       // An invalid pivot remains visible in the model so the UI can report it;
       // a failed projection must not prevent the worksheet from rendering.
@@ -636,7 +726,10 @@ function toSheetView(
     columns: viewColumns,
     rows,
     getCell,
+    usedRange,
     isEmpty,
+    occupiedCellCount: sheet.cells.count(),
+    numericAverage: numericCount > 0 ? numericSum / numericCount : undefined,
     charts: [...sheet.charts],
     pivots: [...sheet.pivots],
     pivotResults,
@@ -685,18 +778,29 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [notice, setNotice] = useState('Workbook engine ready');
   const [modelVersion, setModelVersion] = useState(0);
+  const [remoteRevisions, setRemoteRevisions] = useState<RevisionRecord[]>([]);
 
   const [activeSheetId, setActiveSheetId] = useState(runtime.model.activeSheetId);
 
   const [showFunctionWizard, setShowFunctionWizard] = useState(false);
   const [showSortDialog, setShowSortDialog] = useState(false);
   const [showFindReplace, setShowFindReplace] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
   const [showPrintPreview, setShowPrintPreviewState] = useState(false);
+  const [printLayout, setPrintLayout] = useState<PrintLayout>({
+    paper: 'A4',
+    orientation: 'portrait',
+    margin: { top: 20, right: 20, bottom: 20, left: 20 },
+  });
   const [selectedFloatingId, setSelectedFloatingIdState] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerCursor[]>([]);
   const [collabStatus, setCollabStatus] = useState<'connecting' | 'open' | 'closed'>('closed');
 
   const actorId = useMemo(() => resolveActorId(), []);
+  const activeSheetIdRef = useRef(activeSheetId);
+  const selectionRef = useRef(selection);
+  activeSheetIdRef.current = activeSheetId;
+  selectionRef.current = selection;
 
   const refresh = useCallback(() => setModelVersion((version) => version + 1), []);
 
@@ -724,10 +828,12 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         );
         runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
         runtime.handlers.onMutationsApplied?.();
+        void runtime.api.listRevisions(runtime.model.unitId).then(setRemoteRevisions).catch(() => undefined);
       } else if (message.type === 'changeset.ack') {
         runtime.ownOperationIds.add(message.operationId);
         runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
         runtime.handlers.onSaveState?.('saved');
+        void runtime.api.listRevisions(runtime.model.unitId).then(setRemoteRevisions).catch(() => undefined);
       } else if (message.type === 'changeset.reject') {
         runtime.ownOperationIds.delete(message.operationId);
         runtime.handlers.onSaveState?.('offline');
@@ -766,14 +872,16 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     // 本地光标广播
     let lastBroadcast = '';
     const broadcastTimer = window.setInterval(() => {
-      const key = activeSheetId + ':' + selection.primaryRowIndex + ':' + selection.primaryColumnIndex;
+      const currentSelection = selectionRef.current;
+      const currentSheetId = activeSheetIdRef.current;
+      const key = currentSheetId + ':' + currentSelection.primaryRowIndex + ':' + currentSelection.primaryColumnIndex;
       if (key === lastBroadcast) return;
       lastBroadcast = key;
       client.send({
         type: 'cursor.updated',
         unitId: runtime.model.unitId,
         actorId,
-        state: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex, sheetId: activeSheetId },
+        state: { row: currentSelection.primaryRowIndex, column: currentSelection.primaryColumnIndex, sheetId: currentSheetId },
       });
     }, 400);
 
@@ -794,6 +902,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       try {
         const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
         hydrateRuntime(runtime, snapshotResponse);
+        void runtime.api.listRevisions(runtime.model.unitId).then(setRemoteRevisions).catch(() => setRemoteRevisions([]));
         runtime.remoteConnected = true;
         if (!active) return;
         runtime.handlers.onSaveState?.('saved');
@@ -804,6 +913,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       } catch {
         try {
           const created = await runtime.api.createWorkbook(runtime.model.snapshot());
+          void runtime.api.listRevisions(runtime.model.unitId).then(setRemoteRevisions).catch(() => setRemoteRevisions([]));
           runtime.remoteConnected = true;
           runtime.remoteRevision = Math.max(runtime.remoteRevision, created.revision);
           if (!active) return;
@@ -825,10 +935,11 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   }, [runtime, refresh]);
 
   const sheets = useMemo(
-    () => runtime.model.getSheets().map((sheet) => toSheetView(runtime.model, sheet, runtime.formula, true)),
+    () => runtime.model.getSheets().map((sheet) => toSheetView(runtime.model, sheet, runtime.formula, true, runtime.pivotResults)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [modelVersion, runtime],
   );
+  const tables = useMemo(() => [...runtime.model.tables.values()].map((table) => structuredClone(table)), [modelVersion, runtime]);
 
   const selectedSheet = useMemo(
     () => sheets.find((sheet) => sheet.id === activeSheetId) ?? sheets[0]!,
@@ -1155,7 +1266,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
 
   // ---- Ribbon 动作 ----
 
-  const handleRibbonAction = (action: string, payload?: unknown) => {
+  const handleRibbonAction = (action: RibbonAction, payload?: unknown) => {
       const sheet = runtime.model.getSheet(activeSheetId);
       const primaryRange = selection.ranges[selection.primaryRangeIndex]
         ?? normalizeRangeRef({
@@ -1489,6 +1600,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           break;
         }
         case 'find-replace':
+          setFindQuery(typeof payload === 'string' ? payload : '');
           setShowFindReplace(true);
           break;
         case 'zoom-in':
@@ -1508,8 +1620,8 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           if (sheet.pivots.length === 0) {
             const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn
               ? primaryRange
-              : { sheetId: activeSheetId, startRow: 0, endRow: Math.max(1, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(1, sheet.columnCount - 1) };
-            const fieldCatalog = buildPivotFieldCatalog(runtime.model, { id: 'pivot-source', sheetId: activeSheetId, sourceRange, rowFields: [], columnFields: [], valueFields: [], filterFields: [] }).fields;
+              : usedRangeOfSheet(sheet);
+            const fieldCatalog = buildPivotFieldCatalog(runtime.model, { id: 'pivot-source', sheetId: activeSheetId, sourceRange, layout: { rows: [], columns: [], filters: [], values: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false } }).fields;
             const rowField = fieldCatalog.find((field) => field.dataType !== 'number')?.id ?? fieldCatalog[0]?.id;
             const valueField = fieldCatalog.find((field) => field.dataType === 'number')?.id ?? fieldCatalog[0]?.id;
             if (rowField && valueField) {
@@ -1518,16 +1630,60 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
                 id: 'pivot-' + Math.random().toString(36).slice(2, 8),
                 sheetId: activeSheetId,
                 sourceRange,
-                rowFields: [rowField],
-                columnFields: [],
-                valueFields: [{ field: valueField, summarizeBy }],
-                filterFields: [],
                 layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
               });
               refresh();
             }
           }
           break;
+        case 'create-data-table': {
+          const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn
+            ? primaryRange
+            : usedRangeOfSheet(sheet);
+          const fieldNames = new Set<string>();
+          const fields = [] as WorkbookTableModel['fields'];
+          for (let column = sourceRange.startColumn; column <= sourceRange.endColumn; column++) {
+            const rawName = String(sheet.cells.get(sourceRange.startRow, column)?.value ?? '').trim() || `Column ${column - sourceRange.startColumn + 1}`;
+            let name = rawName;
+            let suffix = 2;
+            while (fieldNames.has(name)) name = `${rawName} ${suffix++}`;
+            fieldNames.add(name);
+            const sample: CellData['value'][] = [];
+            for (let row = sourceRange.startRow + 1; row <= Math.min(sourceRange.endRow, sourceRange.startRow + 1000); row++) sample.push(sheet.cells.get(row, column)?.value ?? null);
+            fields.push({ id: name, name, ordinal: fields.length, type: inferTableFieldType(sample) });
+          }
+          const table: WorkbookTableModel = {
+            id: nextId('table'),
+            name: `${sheet.name} table`,
+            sourceSheetId: activeSheetId,
+            rowCount: Math.max(0, sourceRange.endRow - sourceRange.startRow),
+            fields,
+            blockSize: 4096,
+            blocks: [],
+            revision: 0,
+          };
+          void (async () => {
+            runtime.handlers.onSaveState?.('saving');
+            await runtime.api.createDataTable(runtime.model.unitId, table);
+            for (let startRow = sourceRange.startRow + 1; startRow <= sourceRange.endRow; startRow += table.blockSize) {
+              const rows: TableScalar[][] = [];
+              const endRow = Math.min(sourceRange.endRow, startRow + table.blockSize - 1);
+              for (let row = startRow; row <= endRow; row++) {
+                rows.push(fields.map((_field, offset) => sheet.cells.get(row, sourceRange.startColumn + offset)?.value ?? null));
+              }
+              if (rows.length > 0) table.blocks.push(await runtime.api.appendDataBlock(runtime.model.unitId, table.id, startRow - sourceRange.startRow - 1, rows));
+            }
+            table.revision = table.blocks.length;
+            runtime.commands.execute('table.add', table);
+            refresh();
+            runtime.handlers.onSaveState?.('saved');
+            runtime.handlers.onNotice?.(`Data table ${table.name} created`);
+          })().catch((error: unknown) => {
+            runtime.handlers.onSaveState?.('offline');
+            runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Data table creation failed');
+          });
+          break;
+        }
         case 'open-shape':
           setActivePanel('shape');
           break;
@@ -1692,7 +1848,14 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     if (phase !== 'ready') return;
     const pivot = runtime.model.getSheet(activeSheetId).pivots.find((entry) => entry.id === pivotId);
     if (!pivot) return;
+    runtime.commands.execute('pro.pivot.refresh', { sheetId: activeSheetId, pivotId });
     refresh();
+    void runtime.api.calculatePivot(runtime.model.unitId, pivotId)
+      .then((response) => {
+        runtime.pivotResults[pivotId] = response.result;
+        refresh();
+      })
+      .catch((error: unknown) => runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Pivot calculation failed'));
   }, [activeSheetId, phase, refresh, runtime]);
 
   const updatePivotLayout = useCallback((pivotId: string, layout: PivotLayout) => {
@@ -1701,7 +1864,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     refresh();
   }, [activeSheetId, phase, refresh, runtime]);
 
-  const updatePivotConfiguration = useCallback((pivotId: string, patch: { layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }) => {
+  const updatePivotConfiguration = useCallback((pivotId: string, patch: { sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }) => {
     if (phase !== 'ready') return;
     runtime.commands.execute('pro.pivot.update', { sheetId: activeSheetId, pivotId, ...patch });
     refresh();
@@ -1740,7 +1903,8 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const addComment = useCallback((text: string) => {
     if (phase !== 'ready' || !text.trim()) return;
     const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
-    const comment: CellComment = { id: nextId('cmt'), author: actorId, text: text.trim(), createdAt: new Date().toISOString() };
+    const mentions = [...text.matchAll(/@([\w-]+)/g)].map((match) => match[1]).filter((value): value is string => Boolean(value));
+    const comment: CellComment = { id: nextId('cmt'), author: actorId, text: text.trim(), createdAt: new Date().toISOString(), mentions, replies: [], resolved: false };
     runtime.commands.execute('sheet.cell.set', {
       sheetId: activeSheetId,
       row: selection.primaryRowIndex,
@@ -1749,6 +1913,39 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     });
     refresh();
   }, [actorId, activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const replyComment = useCallback((text: string) => {
+    if (phase !== 'ready' || !text.trim()) return;
+    const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+    const comment = cell?.comment;
+    if (!comment) return;
+    const nextComment: CellComment = {
+      ...structuredClone(comment),
+      resolved: false,
+      replies: [...(comment.replies ?? []), { id: nextId('reply'), author: actorId, text: text.trim(), createdAt: new Date().toISOString() }],
+    };
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      value: { ...cell, comment: nextComment },
+    });
+    refresh();
+  }, [actorId, activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const resolveComment = useCallback(() => {
+    if (phase !== 'ready') return;
+    const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+    if (!cell?.comment) return;
+    const comment: CellComment = { ...structuredClone(cell.comment), resolved: true, resolvedAt: new Date().toISOString() };
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      value: { ...cell, comment },
+    });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
 
   const removeComment = useCallback(() => {
     if (phase !== 'ready') return;
@@ -1845,25 +2042,9 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     [phase, refresh, runtime],
   );
 
-  const remapEngineStructure = (
-    axis: 'row' | 'column',
-    at: number,
-    count: number,
-    op: 'insert' | 'delete',
-  ) => {
-    try {
-      runtime.formula.remapStructure(activeSheetId, { axis, at, count, op });
-    } catch {
-      // 重映射失败时整体重建,保证正确性优先
-      runtime.formula.reset();
-      rebuildFormulaInto(runtime.formula, runtime.model);
-    }
-  };
-
   const insertRowsAtPrimary = useCallback((count: number) => {
     if (phase !== 'ready') return;
     runtime.commands.execute('sheet.rows.insert', { sheetId: activeSheetId, at: selection.primaryRowIndex, count });
-    remapEngineStructure('row', selection.primaryRowIndex, count, 'insert');
     refresh();
   }, [activeSheetId, phase, refresh, runtime, selection.primaryRowIndex]);
 
@@ -1875,14 +2056,12 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       at: range?.startRow ?? selection.primaryRowIndex,
       count: (range?.endRow ?? selection.primaryRowIndex) - (range?.startRow ?? selection.primaryRowIndex) + 1,
     });
-    remapEngineStructure('row', range?.startRow ?? selection.primaryRowIndex, (range?.endRow ?? selection.primaryRowIndex) - (range?.startRow ?? selection.primaryRowIndex) + 1, 'delete');
     refresh();
   }, [activeSheetId, phase, refresh, runtime, selection]);
 
   const insertColumnsAtPrimary = useCallback((count: number) => {
     if (phase !== 'ready') return;
     runtime.commands.execute('sheet.columns.insert', { sheetId: activeSheetId, at: selection.primaryColumnIndex, count });
-    remapEngineStructure('column', selection.primaryColumnIndex, count, 'insert');
     refresh();
   }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex]);
 
@@ -1894,7 +2073,6 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       at: range?.startColumn ?? selection.primaryColumnIndex,
       count: (range?.endColumn ?? selection.primaryColumnIndex) - (range?.startColumn ?? selection.primaryColumnIndex) + 1,
     });
-    remapEngineStructure('column', range?.startColumn ?? selection.primaryColumnIndex, (range?.endColumn ?? selection.primaryColumnIndex) - (range?.startColumn ?? selection.primaryColumnIndex) + 1, 'delete');
     refresh();
   }, [activeSheetId, phase, refresh, runtime, selection]);
 
@@ -1987,14 +2165,16 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     refresh();
   }, [phase, refresh, runtime]);
 
-  const printWorkbook = useCallback((_layout?: PrintLayout) => {
+  const printWorkbook = useCallback((layout: PrintLayout) => {
+    setPrintLayout(layout);
+    setShowPrintPreviewState(true);
     setNotice('Preparing print preview');
-    window.print();
   }, []);
 
-  const exportPdf = useCallback((_layout?: PrintLayout) => {
-    setNotice('Use the browser print dialog and choose Save as PDF');
-    window.print();
+  const exportPdf = useCallback((layout: PrintLayout) => {
+    setPrintLayout(layout);
+    setShowPrintPreviewState(true);
+    setNotice('Choose Save as PDF in the print dialog');
   }, []);
 
   const importXlsxBase64 = useCallback(async (base64: string) => {
@@ -2052,15 +2232,16 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
 
   const getActiveSheetName = useCallback(() => runtime.model.getSheet(activeSheetId).name, [activeSheetId, runtime]);
 
+  const readDataTable = useCallback((tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> => {
+    return runtime.api.readDataRows(runtime.model.unitId, tableId, offset, limit);
+  }, [runtime]);
+
   const getPivotFieldCatalog = useCallback((range: RangeRef): PivotFieldDefinition[] => {
     const pivot: PivotModel = {
       id: 'pivot-field-catalog',
       sheetId: range.sheetId,
       sourceRange: range,
-      rowFields: [],
-      columnFields: [],
-      valueFields: [],
-      filterFields: [],
+      layout: { rows: [], columns: [], filters: [], values: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
     };
     return buildPivotFieldCatalog(runtime.model, pivot).fields;
   }, [runtime]);
@@ -2072,6 +2253,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
     runtime.commands.execute('sheet.add', { id, name: 'Pivot Details' });
     const values: CellData[][] = [];
+    values.push(Array.from({ length: source.columnCount }, (_, column) => structuredClone(source.cells.get(0, column) ?? { value: null })));
     for (const path of paths) {
       const rowSheet = runtime.model.getSheet(path.sheetId);
       values.push(Array.from({ length: source.columnCount }, (_, column) => structuredClone(rowSheet.cells.get(path.row, column) ?? { value: null })));
@@ -2172,7 +2354,10 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
 
   const closeFunctionWizard = useCallback(() => setShowFunctionWizard(false), []);
   const closeSortDialog = useCallback(() => setShowSortDialog(false), []);
-  const closeFindReplace = useCallback(() => setShowFindReplace(false), []);
+  const closeFindReplace = useCallback(() => {
+    setShowFindReplace(false);
+    setFindQuery('');
+  }, []);
   const setShowPrintPreview = useCallback((open: boolean) => setShowPrintPreviewState(open), []);
 
   const actions: WorkspaceActions = {
@@ -2216,6 +2401,8 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       addDataValidation,
       removeDataValidation,
       addComment,
+      replyComment,
+      resolveComment,
       removeComment,
       setHyperlink,
       removeHyperlink,
@@ -2257,6 +2444,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       removeFloatingObject,
       getActiveSheetName,
       getPivotFieldCatalog,
+      readDataTable,
       showPivotDetails,
       setZoom: (nextZoom: number) => setZoomState(Math.max(50, Math.min(200, nextZoom))),
       commitFormula: (overrideValue?: string) => {
@@ -2293,13 +2481,17 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     zoom,
     peers,
     historyEntries,
+    remoteRevisions,
+    tables,
     showFunctionWizard,
     showSortDialog,
     showFindReplace,
+    findQuery,
     showPrintPreview,
+    printLayout,
     actorId,
     collabStatus,
-  }), [activeCell, activePanel, activeSheetId, actorId, collabStatus, editingCell, formulaDraft, historyEntries, modelVersion, notice, peers, phase, ribbonTab, saveState, selectedFloatingId, selectedSheet, selection, sheets, showFindReplace, showFunctionWizard, showPrintPreview, showSortDialog, zoom]);
+  }), [activeCell, activePanel, activeSheetId, actorId, collabStatus, editingCell, findQuery, formulaDraft, historyEntries, modelVersion, notice, peers, phase, printLayout, remoteRevisions, ribbonTab, saveState, selectedFloatingId, selectedSheet, selection, sheets, showFindReplace, showFunctionWizard, showPrintPreview, showSortDialog, tables, zoom]);
 
   return { actions, state };
 }

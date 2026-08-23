@@ -1,13 +1,18 @@
-import type { ReactNode } from 'react';
-import { Box, Button, Heading, Icon, Inline, Stack, Text } from '@react-sheets/ui-system';
-import type { SaveState, WorkspacePhase } from '../state/workspace';
+import { useState, type ReactNode } from 'react';
+import { Box, Button, DropdownMenu, Heading, Icon, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import type { PeerCursor, SaveState, WorkspacePhase } from '../state/workspace';
+import { localeLabels, translate, type Locale } from '../i18n';
 
 export interface AppShellProps {
   children: ReactNode;
   formulaBar: ReactNode;
   isBusy: boolean;
   notice: string;
+  locale: Locale;
+  onLocaleChange: (locale: Locale) => void;
+  onSearch?: (query: string) => void;
   onShare: () => void;
+  peers: readonly PeerCursor[];
   workbookMenu?: ReactNode;
   ribbon: ReactNode;
   saveState: SaveState;
@@ -17,15 +22,21 @@ export interface AppShellProps {
   workspacePhase: WorkspacePhase;
 }
 
-const saveStateCopy: Record<SaveState, { label: string; tone: string }> = {
-  saved: { label: 'Saved', tone: 'text-emerald-300' },
-  saving: { label: 'Saving', tone: 'text-amber-300' },
-  offline: { label: 'Offline', tone: 'text-rose-300' },
-  syncing: { label: 'Syncing', tone: 'text-sky-300' },
+const peerColorClasses: Record<string, string> = {
+  '#2563eb': 'bg-blue-600',
+  '#10b981': 'bg-emerald-500',
+  '#f59e0b': 'bg-amber-500',
+  '#ef4444': 'bg-rose-500',
+  '#8b5cf6': 'bg-violet-500',
+  '#06b6d4': 'bg-cyan-500',
 };
 
-export function AppShell({ children, formulaBar, isBusy, notice, onShare, ribbon, saveState, sheetTabs, statusBar, title, workbookMenu, workspacePhase }: AppShellProps) {
-  const saveCopy = saveStateCopy[saveState];
+export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocaleChange, onSearch, onShare, peers, ribbon, saveState, sheetTabs, statusBar, title, workbookMenu, workspacePhase }: AppShellProps) {
+  const [search, setSearch] = useState('');
+  const saveCopy = {
+    label: translate(locale, saveState),
+    tone: saveState === 'saved' ? 'text-emerald-300' : saveState === 'saving' ? 'text-amber-300' : saveState === 'offline' ? 'text-rose-300' : 'text-sky-300',
+  };
   return (
     <Box
       aria-busy={isBusy}
@@ -41,27 +52,61 @@ export function AppShell({ children, formulaBar, isBusy, notice, onShare, ribbon
             </Box>
             <Stack gap="none" className="hidden sm:flex">
               <Text size="xs" tone="inverse" weight="bold" className="tracking-[0.18em] text-slate-300">SHEETS</Text>
-              <Text size="xs" tone="subtle">Workspace</Text>
+              <Text size="xs" tone="subtle">{translate(locale, 'workspaceLabel')}</Text>
             </Stack>
           </Inline>
           <Box className="hidden h-8 w-px bg-slate-700 md:block" />
           <Stack gap="none" className="min-w-0">
-            <Text size="xs" tone="subtle" weight="medium" className="uppercase tracking-[0.14em]">Planning workbook</Text>
+            <Text size="xs" tone="subtle" weight="medium" className="uppercase tracking-[0.14em]">{translate(locale, 'planningWorkbook')}</Text>
             <Heading as="h1" size="md" className="truncate text-white">{title}</Heading>
           </Stack>
           <Inline gap="xs" className="hidden rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-slate-300 lg:flex">
-            <Text size="xs" tone="subtle">Personal</Text>
+            <Text size="xs" tone="subtle">{translate(locale, 'personal')}</Text>
             <Icon name="chevron-down" size="xs" />
           </Inline>
         </Inline>
 
         <Inline gap="sm" className="shrink-0">
+          <Box className="hidden w-64 lg:block">
+            <TextInput
+              aria-label={translate(locale, 'searchWorkbook')}
+              placeholder={translate(locale, 'searchWorkbook')}
+              leadingIcon="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && search.trim()) onSearch?.(search.trim());
+              }}
+              className="border-slate-700 bg-slate-900 text-white placeholder:text-slate-500 focus:border-blue-400"
+            />
+          </Box>
           <Inline gap="xs" className="hidden md:flex">
             <Box className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
             <Text size="xs" className={saveCopy.tone}>{saveCopy.label}</Text>
           </Inline>
           <Text size="xs" tone="subtle" className="hidden xl:inline">{notice}</Text>
-          <Button aria-label="Share workbook" disabled={isBusy} icon="share" onClick={onShare} size="sm" variant="soft">Share</Button>
+          {peers.length > 0 ? (
+            <Inline gap="none" className="hidden items-center md:flex">
+              {peers.slice(0, 3).map((peer) => (
+                <Box key={peer.actorId} title={peer.name} className={`-ml-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-slate-950 text-[10px] font-semibold text-white first:ml-0 ${peerColorClasses[peer.color] ?? 'bg-blue-600'}`}>
+                  {peer.name.slice(0, 2).toUpperCase()}
+                </Box>
+              ))}
+              {peers.length > 3 ? <Text size="xs" tone="subtle" className="ml-1">+{peers.length - 3}</Text> : null}
+            </Inline>
+          ) : null}
+          <Button aria-label="Share workbook" disabled={isBusy} icon="share" onClick={onShare} size="sm" variant="soft">{translate(locale, 'share')}</Button>
+          <DropdownMenu
+            align="right"
+            trigger={<Button aria-label={translate(locale, 'language')} disabled={isBusy} size="sm" variant="ghost" className="text-slate-300 hover:bg-slate-800 hover:text-white">{localeLabels[locale]}</Button>}
+          >
+            {({ close }) => (
+              <Stack gap="xs" className="min-w-36">
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onLocaleChange('en-US'); close(); }}>{translate(locale, 'english')}</Button>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onLocaleChange('zh-CN'); close(); }}>{translate(locale, 'simplifiedChinese')}</Button>
+              </Stack>
+            )}
+          </DropdownMenu>
           {workbookMenu}
         </Inline>
       </Box>

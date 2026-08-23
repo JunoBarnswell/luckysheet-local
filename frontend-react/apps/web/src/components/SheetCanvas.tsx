@@ -27,6 +27,7 @@ import type { ChartModel, PivotResultTree, RangeRef, ShapeModel, SparklineModel 
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
 import type { PeerCursor, SelectionState, SheetCell, SheetView, WorkspacePhase } from "../state/workspace";
+import type { RibbonAction } from "../domain/ribbon-actions";
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
@@ -61,7 +62,7 @@ export interface SheetCanvasProps {
   onFloatingSelect: (hit: FloatingHit | null) => void;
   onFloatingMove: (kind: "chart" | "shape" | "image", id: string, bounds: Rect) => void;
   onFloatingRemove: (kind: "chart" | "shape" | "image", id: string) => void;
-  onAction: (action: string, payload?: unknown) => void;
+  onAction: (action: RibbonAction, payload?: unknown) => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
@@ -233,7 +234,7 @@ export function SheetCanvas({
     }
     return drawables;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [charts, pivotResults, shapes, sparklines, skeleton, sheetId]);
+  }, [charts, pivotResults, shapes, sparklines, skeleton, sheet, sheetId]);
 
   function getChartSeries(chart: ChartModel): { categories: string[]; series: Array<{ name: string; values: number[] }> } {
     const categories: string[] = [];

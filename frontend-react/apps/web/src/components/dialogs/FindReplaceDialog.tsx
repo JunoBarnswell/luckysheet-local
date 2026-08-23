@@ -1,20 +1,27 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Button, Inline, Stack, TextInput, Text } from '@react-sheets/ui-system';
 
 export interface FindReplaceDialogProps {
   open: boolean;
+  initialFind?: string;
   onClose: () => void;
   onReplaceAll: (params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }) => number;
 }
 
 /** 查找替换对话框:返回替换命中数由调用方展示 */
-export function FindReplaceDialog({ open, onClose, onReplaceAll }: FindReplaceDialogProps): React.ReactElement | null {
+export function FindReplaceDialog({ initialFind = '', open, onClose, onReplaceAll }: FindReplaceDialogProps): React.ReactElement | null {
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
   const [matchCase, setMatchCase] = useState(false);
   const [entireCell, setEntireCell] = useState(false);
   const [scope, setScope] = useState<'sheet' | 'workbook'>('sheet');
   const [result, setResult] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setFind(initialFind);
+    setResult(null);
+  }, [initialFind, open]);
 
   if (!open) return null;
 

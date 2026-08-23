@@ -167,6 +167,9 @@ export class CommandRuntime {
       workbook: this.workbook,
       operationId,
       applyMutation: (mutation) => {
+        if (mutation.unitId !== this.workbook.unitId) {
+          throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${mutation.unitId}`);
+        }
         mutation.apply(context);
         const info: MutationInfo = {
           id: mutation.id,

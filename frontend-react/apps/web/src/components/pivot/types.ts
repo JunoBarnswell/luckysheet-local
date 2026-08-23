@@ -29,6 +29,7 @@ export interface PivotCalculatedFieldDefinition { name: string; formula: string;
 export interface PivotCalculatedItemDefinition { fieldId: string; name: string; formula: string; }
 
 export interface PivotDefinition {
+  sourceRange?: string;
   filters: string[];
   columns: string[];
   rows: string[];
@@ -77,6 +78,7 @@ export interface PivotPanelCallbacks {
   onSortChange: (fieldId: string, direction: PivotSortDirection) => void;
   onGroupChange: (fieldId: string, grouped: boolean) => void;
   onRefresh: () => void;
+  onSourceRangeChange?: (sourceRange: string) => void;
   onLayoutChange: (layout: PivotDefinition['layout']) => void;
   onExpandedChange: (fieldId: string, expanded: boolean) => void;
   onSlicerChange: (fieldId: string, enabled: boolean) => void;

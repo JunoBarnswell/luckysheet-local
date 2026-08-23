@@ -18,6 +18,7 @@ import {
   Textarea,
 } from '@react-sheets/ui-system';
 import type {
+  CellComment,
   ChartModel,
   ConditionalFormatRule,
   DataValidationRule,
@@ -25,6 +26,8 @@ import type {
   SparklineModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
+import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
+import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/pro-features';
 import { parseAddress, type SheetView, type SidebarPanelId, type WorkspacePhase } from '../state/workspace';
 import type { PivotDefinition as PivotUiDefinition, PivotFieldDefinition as PivotUiFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult as PivotUiResult } from './pivot/types';
@@ -36,6 +39,7 @@ import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
 import { DataValidationPanel } from './panels/DataValidationPanel';
 import { PrintPanel } from './panels/PrintPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
+import { DataModelPanel } from './panels/DataModelPanel';
 
 export interface FeatureSidebarProps {
   activePanel: SidebarPanelId;
@@ -63,6 +67,9 @@ export interface FeatureSidebarProps {
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
   historyEntries: readonly HistoryEntry[];
+  remoteRevisions: readonly RevisionRecord[];
+  tables: readonly WorkbookTableModel[];
+  onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onAddChart: (chart: ChartModel) => void;
   onRemoveChart: (id: string) => void;
   onAddShape: (shape: ShapeModel) => void;
@@ -76,6 +83,8 @@ export interface FeatureSidebarProps {
   onPrint: (layout: PrintLayout) => void;
   onExportPdf: (layout: PrintLayout) => void;
   onAddComment?: (text: string) => void;
+  onReplyComment?: (text: string) => void;
+  onResolveComment?: () => void;
   onRemoveComment?: () => void;
   onSetHyperlink?: (url: string) => void;
   onRemoveHyperlink?: () => void;
@@ -91,6 +100,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'dataValidation', label: 'Validate', icon: 'check-circle' },
   { id: 'print', label: 'Print', icon: 'printer' },
   { id: 'history', label: 'History', icon: 'history' },
+  { id: 'data', label: 'Tables', icon: 'table' },
 ];
 
 function InsightRow({ label, tone = 'muted', value }: { label: string; tone?: 'accent' | 'muted' | 'success'; value: string }) {
@@ -106,6 +116,8 @@ function InspectorPanel({
   activeCell,
   sheet,
   onAddComment,
+  onReplyComment,
+  onResolveComment,
   onRemoveComment,
   onSetHyperlink,
   onRemoveHyperlink,
@@ -113,21 +125,16 @@ function InspectorPanel({
   activeCell: string;
   sheet: SheetView;
   onAddComment?: (text: string) => void;
+  onReplyComment?: (text: string) => void;
+  onResolveComment?: () => void;
   onRemoveComment?: () => void;
   onSetHyperlink?: (url: string) => void;
   onRemoveHyperlink?: () => void;
 }) {
-  const cells = sheet.rows.flatMap((row) => row.cells).filter((cell) => cell.value !== '');
   const selectedAddress = parseAddress(activeCell);
   const selected = selectedAddress ? sheet.getCell(selectedAddress.row, selectedAddress.column) : undefined;
   const selectedCell = selected;
-  const numericValues = cells
-    .map((cell) => Number(cell.value.replace(/[$,%]/g, '')))
-    .filter((value) => Number.isFinite(value));
-  const average =
-    numericValues.length > 0
-      ? Math.round(numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length).toLocaleString('en-US')
-      : '—';
+  const average = sheet.numericAverage == null ? '—' : Math.round(sheet.numericAverage).toLocaleString('en-US');
 
   return (
     <Stack gap="md">
@@ -146,17 +153,20 @@ function InspectorPanel({
             {selected?.value || 'Empty cell selected'}
           </Text>
           <Inline gap="xs" className="mt-3">
-            <span className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+            <Text as="span" size="xs" weight="bold" className="rounded bg-blue-100 px-2 py-0.5 text-blue-700">
               {selected?.formula ? 'Formula: ' + selected.formula : 'Direct Value'}
-            </span>
+            </Text>
           </Inline>
         </PanelBody>
       </Panel>
 
       <CommentHyperlinkForms
+        comment={selectedCell?.comment}
         commentText={selectedCell?.commentText ?? ''}
         hyperlinkUrl={selectedCell?.hyperlink ?? ''}
         onAddComment={onAddComment}
+        onReplyComment={onReplyComment}
+        onResolveComment={onResolveComment}
         onRemoveComment={onRemoveComment}
         onSetHyperlink={onSetHyperlink}
         onRemoveHyperlink={onRemoveHyperlink}
@@ -171,7 +181,7 @@ function InspectorPanel({
         </PanelHeader>
         <PanelBody className="py-2">
           <InsightRow label="Numeric average" value={average} tone="accent" />
-          <InsightRow label="Occupied cells" value={String(cells.length)} />
+          <InsightRow label="Occupied cells" value={String(sheet.occupiedCellCount)} />
           <InsightRow label="Worksheet name" value={sheet.name} />
           <InsightRow label="Columns count" value={String(sheet.columns.length)} />
         </PanelBody>
@@ -203,6 +213,9 @@ export function FeatureSidebar({
   conditionalFormats,
   dataValidations,
   historyEntries,
+  remoteRevisions,
+  tables,
+  onReadDataRows,
   onAddChart,
   onRemoveChart,
   onAddShape,
@@ -216,6 +229,8 @@ export function FeatureSidebar({
   onPrint,
   onExportPdf,
   onAddComment,
+  onReplyComment,
+  onResolveComment,
   onRemoveComment,
   onSetHyperlink,
   onRemoveHyperlink,
@@ -243,7 +258,7 @@ export function FeatureSidebar({
     <Box
       as="aside"
       aria-label="Feature sidebar"
-      className="hidden w-[310px] shrink-0 flex-col border-l border-slate-200 bg-slate-50/70 lg:flex"
+      className="hidden w-[420px] shrink-0 flex-col border-l border-slate-200 bg-slate-50/70 lg:flex"
     >
       <Tabs className="shrink-0 border-b border-slate-200 bg-white px-2 pt-2">
         <TabList label="Feature panels" className="grid grid-cols-5 gap-0.5">
@@ -301,6 +316,8 @@ export function FeatureSidebar({
             activeCell={activeCell}
             sheet={sheet}
             onAddComment={onAddComment}
+            onReplyComment={onReplyComment}
+            onResolveComment={onResolveComment}
             onRemoveComment={onRemoveComment}
             onSetHyperlink={onSetHyperlink}
             onRemoveHyperlink={onRemoveHyperlink}
@@ -364,7 +381,10 @@ export function FeatureSidebar({
           <PrintPanel onPrint={onPrint} onExportPdf={onExportPdf} />
         ) : null}
         {phase === 'ready' && activePanel === 'history' ? (
-          <HistoryPanel entries={historyEntries} />
+          <HistoryPanel entries={historyEntries} remoteRevisions={remoteRevisions} />
+        ) : null}
+        {phase === 'ready' && activePanel === 'data' ? (
+          <DataModelPanel tables={tables} onReadRows={onReadDataRows} />
         ) : null}
       </Box>
     </Box>
@@ -373,24 +393,32 @@ export function FeatureSidebar({
 
 
 function CommentHyperlinkForms({
+  comment,
   commentText: initialCommentText,
   hyperlinkUrl: initialHyperlinkUrl,
   onAddComment,
+  onReplyComment,
+  onResolveComment,
   onRemoveComment,
   onSetHyperlink,
   onRemoveHyperlink,
 }: {
+  comment?: CellComment;
   commentText: string;
   hyperlinkUrl: string;
   onAddComment?: (text: string) => void;
+  onReplyComment?: (text: string) => void;
+  onResolveComment?: () => void;
   onRemoveComment?: () => void;
   onSetHyperlink?: (url: string) => void;
   onRemoveHyperlink?: () => void;
 }) {
   const [commentText, setCommentText] = useState('');
+  const [replyText, setReplyText] = useState('');
   const [hyperlinkUrl, setHyperlinkUrl] = useState('');
 
   useEffect(() => setCommentText(initialCommentText), [initialCommentText]);
+  useEffect(() => setReplyText(''), [comment?.id]);
   useEffect(() => setHyperlinkUrl(initialHyperlinkUrl), [initialHyperlinkUrl]);
 
   return (
@@ -431,6 +459,33 @@ function CommentHyperlinkForms({
           </Stack>
         </PanelBody>
       </Panel>
+
+      {comment ? (
+        <Panel className="shadow-none">
+          <PanelHeader>
+            <Inline gap="sm">
+              <Icon name="comment" size="sm" className="text-blue-600" />
+              <PanelTitle as="h3" size="sm">Thread</PanelTitle>
+              {comment.resolved ? <Text size="xs" tone="success">Resolved</Text> : null}
+            </Inline>
+          </PanelHeader>
+          <PanelBody>
+            <Stack gap="sm">
+              {(comment.replies ?? []).map((reply) => (
+                <Box key={reply.id} className="rounded-lg bg-slate-50 p-2">
+                  <Text size="xs" weight="semibold">{reply.author}</Text>
+                  <Text size="xs" className="mt-1 block">{reply.text}</Text>
+                </Box>
+              ))}
+              <Textarea rows={2} aria-label="Reply to comment" placeholder="Reply to this comment" value={replyText} onChange={(event) => setReplyText(event.target.value)} />
+              <Inline gap="sm" className="justify-end">
+                {onResolveComment && !comment.resolved ? <Button size="xs" variant="ghost" onClick={onResolveComment}>Resolve</Button> : null}
+                <Button size="xs" variant="primary" disabled={!replyText.trim() || !onReplyComment} onClick={() => { onReplyComment?.(replyText.trim()); setReplyText(''); }}>Reply</Button>
+              </Inline>
+            </Stack>
+          </PanelBody>
+        </Panel>
+      ) : null}
 
       <Panel className="shadow-none">
         <PanelHeader>

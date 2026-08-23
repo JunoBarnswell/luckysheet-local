@@ -40,6 +40,17 @@ export interface CellComment {
   author: string;
   text: string;
   createdAt: string;
+  mentions?: string[];
+  replies?: CellCommentReply[];
+  resolved?: boolean;
+  resolvedAt?: string;
+}
+
+export interface CellCommentReply {
+  id: string;
+  author: string;
+  text: string;
+  createdAt: string;
 }
 
 export interface CellData {
@@ -105,6 +116,8 @@ export interface ChartModel {
 
 import type { PivotModel } from './pivot';
 export * from './pivot';
+import type { WorkbookTableModel } from './data-model';
+export * from './data-model';
 
 export interface ShapeModel {
   id: string;
@@ -590,11 +603,13 @@ export interface WorkbookSnapshotV1 {
   name: string;
   activeSheetId: SheetId;
   definedNames?: Record<string, string>;
+  tables?: WorkbookTableModel[];
   sheets: SheetSnapshotV1[];
 }
 
 export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
+  readonly tables = new Map<string, WorkbookTableModel>();
   activeSheetId: SheetId;
   definedNames: Record<string, string> = {};
 
@@ -619,6 +634,23 @@ export class WorkbookModel {
 
   getSheets(): WorksheetModel[] {
     return [...this.sheets.values()];
+  }
+
+  getTable(tableId: string): WorkbookTableModel {
+    const table = this.tables.get(tableId);
+    if (!table) throw new Error(`Unknown table: ${tableId}`);
+    return table;
+  }
+
+  addTable(table: WorkbookTableModel): void {
+    if (this.tables.has(table.id)) throw new Error(`Table already exists: ${table.id}`);
+    this.tables.set(table.id, structuredClone(table));
+  }
+
+  removeTable(tableId: string): WorkbookTableModel {
+    const table = this.getTable(tableId);
+    this.tables.delete(tableId);
+    return table;
   }
 
   addSheet(id: SheetId, name: string, rowCount = 1000, columnCount = 26): WorksheetModel {
@@ -646,6 +678,7 @@ export class WorkbookModel {
       name: this.name,
       activeSheetId: this.activeSheetId,
       definedNames: { ...this.definedNames },
+      tables: [...this.tables.values()].map((table) => structuredClone(table)),
       sheets: this.getSheets().map((sheet) => ({
         id: sheet.id,
         name: sheet.name,
@@ -677,6 +710,7 @@ export class WorkbookModel {
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
     workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
+    for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);

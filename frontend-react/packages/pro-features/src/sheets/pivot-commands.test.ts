@@ -13,17 +13,13 @@ describe('pivot commands', () => {
       id: 'pivot-1',
       sheetId: 'sheet-1',
       sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
-      rowFields: ['Region'],
-      columnFields: [],
-      valueFields: [{ field: 'Amount', summarizeBy: 'sum' as const }],
-      filterFields: [],
       layout: { rows: [{ field: 'Region' }], columns: [], filters: [], values: [{ field: 'Amount', summarizeBy: 'sum' as const }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
     };
     runtime.execute('pro.pivot.add', pivot);
     runtime.execute('pro.pivot.update', { sheetId: 'sheet-1', pivotId: pivot.id, layout: { ...pivot.layout, rows: [{ field: 'Region' }, { field: 'Owner' }] } });
-    assert.equal(workbook.getSheet('sheet-1').pivots[0]?.layout?.rows.length, 2);
+    assert.equal(workbook.getSheet('sheet-1').pivots[0]?.layout.rows.length, 2);
     assert.equal(workbook.getSheet('sheet-1').cells.count(), 0);
     runtime.undo();
-    assert.equal(workbook.getSheet('sheet-1').pivots[0]?.layout?.rows.length, 1);
+    assert.equal(workbook.getSheet('sheet-1').pivots[0]?.layout.rows.length, 1);
   });
 });

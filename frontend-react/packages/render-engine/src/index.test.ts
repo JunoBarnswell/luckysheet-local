@@ -145,3 +145,23 @@ test('SheetSkeleton handles custom dimensions and coordinate lookups accurately'
   assert.deepEqual(customSkeleton.getCellAtPoint({ x: 50, y: 20 }), { row: 0, column: 0 });
   assert.deepEqual(customSkeleton.getCellAtPoint({ x: 160, y: 50 }), { row: 1, column: 1 });
 });
+
+test('SheetSkeleton virtualizes very large uniform dimensions without dense arrays', () => {
+  const largeSkeleton = new SheetSkeleton({
+    rowCount: 1_000_000,
+    columnCount: 32,
+    defaultRowHeight: 20,
+    defaultColumnWidth: 80,
+  });
+
+  assert.equal(largeSkeleton.totalHeight, 20_000_000);
+  assert.equal(largeSkeleton.getRowTop(999_999), 19_999_980);
+  assert.deepEqual(largeSkeleton.findRowAt(19_999_985), 999_999);
+  assert.deepEqual(largeSkeleton.getVisibleRange({ x: 0, y: 19_999_980, width: 160, height: 20 }), {
+    startRow: 999_999,
+    endRow: 999_999,
+    startColumn: 0,
+    endColumn: 1,
+  });
+  assert.equal(largeSkeleton.getVisibleRowModels().length, 0);
+});

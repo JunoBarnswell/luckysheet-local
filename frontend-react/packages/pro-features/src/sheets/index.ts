@@ -36,13 +36,22 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     removeById(context.workbook.getSheet(item.sheetId).pivots, item.params as string);
   });
   runtime.registry.registerMutation('pivot.update', (item, context) => {
-    const params = item.params as { pivotId: string; sheetId: string; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] };
+    const params = item.params as { pivotId: string; sheetId: string; sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] };
     const pivot = context.workbook.getSheet(params.sheetId).pivots.find((entry) => entry.id === params.pivotId);
     if (pivot) {
       if (params.layout) pivot.layout = structuredClone(params.layout);
+      if (params.sourceRange) pivot.sourceRange = structuredClone(params.sourceRange);
       if (params.slicers) pivot.slicers = structuredClone(params.slicers);
       if (params.timelines) pivot.timelines = structuredClone(params.timelines);
       if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
+    }
+  });
+  runtime.registry.registerMutation('pivot.refresh', (item, context) => {
+    const params = item.params as { pivotId: string; sheetId: string; refreshRevision: number; lastRefreshedAt: string };
+    const pivot = context.workbook.getSheet(params.sheetId).pivots.find((entry) => entry.id === params.pivotId);
+    if (pivot) {
+      pivot.refreshRevision = params.refreshRevision;
+      pivot.lastRefreshedAt = params.lastRefreshedAt;
     }
   });
   runtime.registry.registerMutation('shape.add', (item, context) =>
@@ -66,13 +75,13 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     (params: AddChartParams) => params,
     (sheet) => sheet.charts,
   );
-  runtime.registry.registerCommand<{ pivotId: string; sheetId: string; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }>({
+  runtime.registry.registerCommand<{ pivotId: string; sheetId: string; sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }>({
     id: 'pro.pivot.update',
     execute: (input, context) => {
-      const params = input as { pivotId: string; sheetId: string; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] };
+      const params = input as { pivotId: string; sheetId: string; sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] };
       const pivot = context.workbook.getSheet(params.sheetId).pivots.find((entry) => entry.id === params.pivotId);
       if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const previous = { layout: structuredClone(pivot.layout), slicers: structuredClone(pivot.slicers), timelines: structuredClone(pivot.timelines), chartReferences: structuredClone(pivot.chartReferences) };
+      const previous = { sourceRange: structuredClone(pivot.sourceRange), layout: structuredClone(pivot.layout), slicers: structuredClone(pivot.slicers), timelines: structuredClone(pivot.timelines), chartReferences: structuredClone(pivot.chartReferences) };
       const affectedRanges = range(params.sheetId);
       context.applyMutation({
         id: 'pivot.update',
@@ -83,9 +92,43 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
         inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { pivotId: params.pivotId, sheetId: params.sheetId, ...previous }, affectedRanges }],
         apply: () => {
           if (params.layout) pivot.layout = structuredClone(params.layout);
+          if (params.sourceRange) pivot.sourceRange = structuredClone(params.sourceRange);
           if (params.slicers) pivot.slicers = structuredClone(params.slicers);
           if (params.timelines) pivot.timelines = structuredClone(params.timelines);
           if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ pivotId: string; sheetId: string }>({
+    id: 'pro.pivot.refresh',
+    execute: (params, context) => {
+      const pivot = context.workbook.getSheet(params.sheetId).pivots.find((entry) => entry.id === params.pivotId);
+      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const next = {
+        pivotId: params.pivotId,
+        sheetId: params.sheetId,
+        refreshRevision: (pivot.refreshRevision ?? 0) + 1,
+        lastRefreshedAt: new Date().toISOString(),
+      };
+      const previous = {
+        pivotId: params.pivotId,
+        sheetId: params.sheetId,
+        refreshRevision: pivot.refreshRevision ?? 0,
+        lastRefreshedAt: pivot.lastRefreshedAt ?? '',
+      };
+      const affectedRanges = range(params.sheetId);
+      context.applyMutation({
+        id: 'pivot.refresh',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: next,
+        affectedRanges,
+        inverse: [{ id: 'pivot.refresh', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
+        apply: () => {
+          pivot.refreshRevision = next.refreshRevision;
+          pivot.lastRefreshedAt = next.lastRefreshedAt;
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

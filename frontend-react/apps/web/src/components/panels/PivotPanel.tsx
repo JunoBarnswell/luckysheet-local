@@ -1,5 +1,5 @@
-import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
-import { useMemo, type DragEvent } from 'react';
+import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, StatePanel, Text, TextInput } from '@react-sheets/ui-system';
+import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import { PivotActions } from '../pivot/PivotActions';
 import { PivotFieldArea } from '../pivot/PivotFieldArea';
 import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
@@ -27,6 +27,8 @@ export interface PivotPanelProps {
 
 export function PivotPanel({ activePivotId, callbacks, definition = emptyDefinition, fieldCatalog = [], onClose, onShowDetails, pivotList = [], result, slots, state }: PivotPanelProps) {
   const isDisabled = state?.disabled || state?.loading || Boolean(state?.error);
+  const [sourceRange, setSourceRange] = useState(definition.sourceRange ?? '');
+  useEffect(() => setSourceRange(definition.sourceRange ?? ''), [definition.sourceRange]);
   const selectedFieldIds = useMemo(() => new Set([...definition.filters, ...definition.columns, ...definition.rows, ...definition.values.map((value) => value.fieldId)]), [definition]);
 
   if (state?.loading) return <Panel className="h-full border-0 bg-transparent shadow-none"><StatePanel kind="loading" description="Preparing pivot field list." /></Panel>;
@@ -46,6 +48,20 @@ export function PivotPanel({ activePivotId, callbacks, definition = emptyDefinit
       <PanelHeader className="h-12 shrink-0 border-b border-line/80 px-4"><Inline gap="sm" className="min-w-0 justify-between"><Stack gap="none" className="min-w-0"><PanelTitle size="sm">Pivot field list</PanelTitle><Text size="xs" tone="subtle">Build, filter and configure the pivot view</Text></Stack><Inline gap="xs">{pivotList.length > 1 ? <Select aria-label="Active pivot table" disabled={isDisabled} sizeVariant="sm" value={activePivotId ?? pivotList[0]?.id} onChange={(event) => callbacks?.onPivotSelect?.(event.target.value)}>{pivotList.map((pivot) => <option key={pivot.id} value={pivot.id}>{pivot.label}</option>)}</Select> : null}{callbacks?.onCreate ? <Button disabled={isDisabled} size="xs" variant="primary" onClick={callbacks.onCreate}>New pivot</Button> : null}{slots?.headerActions}</Inline></Inline></PanelHeader>
       <PanelBody className="min-h-0 flex-1 overflow-auto p-4">
         <Stack gap="md">
+          <Stack gap="xs">
+            <Text size="xs" weight="semibold" tone="muted">Data source range</Text>
+            <TextInput
+              aria-label="Pivot data source range"
+              value={sourceRange}
+              placeholder="A1:F100"
+              disabled={isDisabled}
+              onChange={(event) => setSourceRange(event.target.value)}
+              onBlur={() => callbacks?.onSourceRangeChange?.(sourceRange.trim())}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') callbacks?.onSourceRangeChange?.(sourceRange.trim());
+              }}
+            />
+          </Stack>
           <PivotFieldCatalog fields={fieldCatalog} selectedFieldIds={selectedFieldIds} disabled={isDisabled} onToggle={handleToggle} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.id)} onKeyboardAssign={(fieldId, area) => updateArea(fieldId, area, definition[area].length)} />
           <Stack gap="sm">
             {(['filters', 'columns', 'rows'] as const).map((area) => <PivotFieldArea key={area} area={area} fields={fieldCatalog} fieldIds={definition[area]} disabled={isDisabled} filterSelections={definition.filterSelections} onDrop={handleDrop(area)} onFilter={(fieldId, values) => callbacks?.onFilterChange(fieldId, values)} onGroup={(fieldId, grouped) => callbacks?.onGroupChange(fieldId, grouped)} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, area, index)} onMoveByKeyboard={moveByKeyboard(area)} onSort={(fieldId, direction) => callbacks?.onSortChange(fieldId, direction)} />)}

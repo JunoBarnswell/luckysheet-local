@@ -7,6 +7,7 @@ export * from './errors';
 export * from './evaluator';
 export * from './formula-engine';
 export * from './functions';
+export * from './compute-policy';
 export * from './lexer';
 export * from './parser';
 export * from './range-index';
