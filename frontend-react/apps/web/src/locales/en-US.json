@@ -22,6 +22,8 @@
   "review": "Review",
   "view": "View",
   "automate": "Automate",
+  "pivotAnalyze": "PivotTable Analyze",
+  "pivotDesign": "PivotTable Design",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -70,7 +72,9 @@
       "freezePanes": "Freeze Panes",
       "zoom": "Zoom",
       "printLayout": "Print Layout",
-      "appearanceFiles": "Appearance & Files"
+      "appearanceFiles": "Appearance & Files",
+      "pivotAnalyze": "PivotTable",
+      "pivotDesign": "PivotTable"
     },
     "commands": {
       "save": "Save",
@@ -133,6 +137,8 @@
       "conditionalFormat": "Conditional Format",
       "pivotTable": "Pivot Table",
       "quickPivot": "Quick Pivot",
+      "pivotRefresh": "Refresh",
+      "pivotFieldList": "Field List",
       "chartBuilder": "Chart Builder",
       "columnChart": "Column Chart",
       "sparkline": "Sparkline",

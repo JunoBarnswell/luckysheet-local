@@ -8,7 +8,9 @@ export type RibbonTabId =
   | 'data'
   | 'review'
   | 'view'
-  | 'automate';
+  | 'automate'
+  | 'pivotAnalyze'
+  | 'pivotDesign';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
@@ -25,6 +27,13 @@ export type SidebarPanelId =
   | 'history'
   | 'data';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';
+
+/** Ephemeral selection context for contextual Ribbon tabs and menus. */
+export type ActiveContext =
+  | { kind: 'none' }
+  | { kind: 'pivot'; sheetId: string; pivotId: string }
+  | { kind: 'drawing'; sheetId: string; drawingId: string }
+  | { kind: 'table'; sheetId: string; tableId: string };
 
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =

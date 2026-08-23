@@ -116,6 +116,32 @@ export interface NativePivotTableDefinition {
   repeatLabels?: boolean;
   compactData?: boolean;
   styleName?: string;
+  pivotId?: string;
+}
+
+export interface NativePivotControlDefinition {
+  kind: 'slicer' | 'timeline';
+  id: string;
+  name: string;
+  sheetPart: string;
+  part: string;
+  cachePart: string;
+  cacheName: string;
+  relationshipId: string;
+  cacheRelationshipId: string;
+  drawingPart?: string;
+  drawingRelationshipId?: string;
+  pivotId?: string;
+  fieldId?: string;
+  fieldIndex?: number;
+  pivotCacheId?: number;
+  connectedPivotIds?: string[];
+  selection?: { start?: string; end?: string };
+  selectedItemIndexes?: number[];
+  styleName?: string;
+  caption?: string;
+  valid: boolean;
+  reason?: string;
 }
 
 /**
@@ -127,6 +153,7 @@ export interface NativePivotGraph {
   schema: 'NativePivotGraph';
   caches: NativePivotCacheDefinition[];
   tables: NativePivotTableDefinition[];
+  controls?: NativePivotControlDefinition[];
 }
 
 /**

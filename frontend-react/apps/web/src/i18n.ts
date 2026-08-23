@@ -29,6 +29,8 @@ export type MessageKey =
   | 'review'
   | 'view'
   | 'automate'
+  | 'pivotAnalyze'
+  | 'pivotDesign'
   | 'engineConnected'
   | 'searchWorkbook';
 

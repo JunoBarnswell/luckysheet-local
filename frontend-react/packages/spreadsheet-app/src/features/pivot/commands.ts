@@ -1,21 +1,17 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import type {
   PivotAggregateFunction,
-  PivotChartReference,
-  PivotDataSource,
   PivotDefinition,
   PivotSource,
   PivotGroup,
   PivotLayout,
   PivotModel,
   PivotShowAs,
-  PivotSlicer,
-  PivotTimeline,
   ChartDrawingPayload,
   DrawingObject,
   RangeRef,
 } from '@react-sheets/core-model';
-import { assertPivotDefinition, assertPivotField, createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs, upsertPivotSlicer, upsertPivotTimeline } from './panel-state';
+import { assertPivotDefinition, assertPivotField, createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs } from './panel-state';
 import { buildPivotGridProjection, getPivotSourceRanges, normalizePivotDefinition } from './engine';
 
 function sheetRange(sheetId: string) {
@@ -36,20 +32,7 @@ export interface PivotUpdateParams {
   fieldCatalog?: PivotDefinition['fieldCatalog'];
   refreshPolicy?: PivotDefinition['refreshPolicy'];
   nativeMetadata?: PivotDefinition['nativeMetadata'];
-  /** Legacy input is accepted only at this command boundary and normalized. */
-  sourceRange?: RangeRef;
-  dataSource?: PivotDataSource;
   layout?: PivotLayout;
-  slicers?: PivotSlicer[];
-  timelines?: PivotTimeline[];
-  chartReferences?: PivotChartReference[];
-}
-
-export interface PivotRefreshParams {
-  sheetId: string;
-  pivotId: string;
-  refreshRevision: number;
-  lastRefreshedAt: string;
 }
 
 export interface PivotLayoutCommandParams {
@@ -61,14 +44,14 @@ export interface PivotLayoutCommandParams {
 export interface PivotAggregateParams {
   sheetId: string;
   pivotId: string;
-  field: string;
+  fieldId: string;
   summarizeBy: PivotAggregateFunction;
 }
 
 export interface PivotShowAsParams {
   sheetId: string;
   pivotId: string;
-  field: string;
+  fieldId: string;
   showAs: PivotShowAs;
 }
 
@@ -76,7 +59,7 @@ export interface PivotGroupParams {
   sheetId: string;
   pivotId: string;
   axis: 'rows' | 'columns';
-  field: string;
+  fieldId: string;
   group: PivotGroup;
 }
 
@@ -86,24 +69,13 @@ export interface PivotDrillDownParams {
   label: string;
   sourceRowPaths: Array<{ sheetId: string; row: number }>;
   targetSheetId: string;
-  targetAnchor: { row: number; column: number };
+  target: { row: number; column: number };
 }
 
 export interface PivotDrillDownRemoveParams {
   targetSheetId: string;
 }
 
-export interface PivotSlicerParams {
-  sheetId: string;
-  pivotId: string;
-  slicer: PivotSlicer;
-}
-
-export interface PivotTimelineParams {
-  sheetId: string;
-  pivotId: string;
-  timeline: PivotTimeline;
-}
 
 /** A PivotChart is one command and one reversible drawing mutation. */
 export interface PivotChartCreateParams {
@@ -120,18 +92,15 @@ function pivotFor(context: CommandContext, sheetId: string, pivotId: string): Pi
 }
 
 function pivotDisplaySheetId(pivot: PivotModel, fallback = ''): string {
-  return pivot.target?.sheetId ?? pivot.sheetId ?? fallback;
+  return pivot.target.sheetId || fallback;
 }
 
 function pivotSourceRanges(pivot: PivotModel, workbook?: import('@react-sheets/core-model').WorkbookModel): RangeRef[] {
   if (workbook) {
     try { return getPivotSourceRanges(workbook, pivot); } catch { /* validator/migration will report the source error */ }
   }
-  if (pivot.source?.kind === 'worksheet-ranges') return structuredClone(pivot.source.ranges);
-  if (pivot.dataSource?.kind === 'worksheet-ranges') return structuredClone(pivot.dataSource.ranges);
-  if (pivot.source?.kind === 'worksheet-range') return [structuredClone(pivot.source.range)];
-  if (pivot.dataSource?.kind === 'worksheet-range') return [structuredClone(pivot.dataSource.range)];
-  if (pivot.sourceRange) return [structuredClone(pivot.sourceRange)];
+  if (pivot.source.kind === 'worksheet-ranges') return structuredClone(pivot.source.ranges);
+  if (pivot.source.kind === 'worksheet-range') return [structuredClone(pivot.source.range)];
   return [];
 }
 
@@ -184,7 +153,7 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
 
   const columns = drillDownColumns(context, pivot);
   const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
-  columns.forEach((column, index) => target.cells.set(params.targetAnchor.row, params.targetAnchor.column + index, { value: column.label }));
+  columns.forEach((column, index) => target.cells.set(params.target.row, params.target.column + index, { value: column.label }));
 
   const ranges = pivotSourceRanges(pivot, context.workbook);
   const rowsPerResult = Math.max(ranges.length, 1);
@@ -197,7 +166,7 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
       const path = paths.find((entry) => entry.sheetId === column.range.sheetId);
       const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
       const value = source && path ? sourceCellValue(source.cells.get(path.row, column.column)) : null;
-      target.cells.set(params.targetAnchor.row + rowOffset + 1, params.targetAnchor.column + columnOffset, { value });
+      target.cells.set(params.target.row + rowOffset + 1, params.target.column + columnOffset, { value });
     });
   }
 }
@@ -206,9 +175,7 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
   const pivot = pivotFor(context, params.sheetId, params.pivotId);
   if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
   const current = normalizePivotDefinition(context.workbook, pivot);
-  const source = params.source
-    ?? params.dataSource
-    ?? (params.sourceRange ? { kind: 'worksheet-range' as const, range: structuredClone(params.sourceRange) } : current.source);
+  const source = params.source ?? current.source;
   const next: PivotModel = {
     schema: 'PivotDefinition',
     id: current.id,
@@ -217,41 +184,23 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
     fieldCatalog: structuredClone(params.fieldCatalog ?? current.fieldCatalog),
     layout: structuredClone(params.layout ?? current.layout),
     refreshPolicy: structuredClone(params.refreshPolicy ?? current.refreshPolicy),
-    nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata),
-    ...(params.slicers ? { slicers: structuredClone(params.slicers) } : { slicers: structuredClone(pivot.slicers) }),
-    ...(params.timelines ? { timelines: structuredClone(params.timelines) } : { timelines: structuredClone(pivot.timelines) }),
-    ...(params.chartReferences ? { chartReferences: structuredClone(params.chartReferences) } : { chartReferences: structuredClone(pivot.chartReferences) }),
+    ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
   };
   assertPivotDefinition(context.workbook, next);
   Object.assign(pivot, next);
-  // Remove stale legacy keys after the single migration boundary.
-  delete pivot.sourceRange;
-  delete pivot.dataSource;
-  delete pivot.sheetId;
-  delete pivot.targetAnchor;
 }
 
 function previousPivotUpdate(pivot: PivotModel): PivotUpdateParams {
-  const definition = pivot.source && pivot.target && pivot.fieldCatalog && pivot.refreshPolicy
-    ? pivot as PivotDefinition
-    : undefined;
+  const definition = pivot as PivotDefinition;
   return {
-    sheetId: definition?.target.sheetId ?? pivot.sheetId ?? '',
+    sheetId: definition.target.sheetId,
     pivotId: pivot.id,
-    ...(definition ? {
-      source: structuredClone(definition.source),
-      target: structuredClone(definition.target),
-      fieldCatalog: structuredClone(definition.fieldCatalog),
-      refreshPolicy: structuredClone(definition.refreshPolicy),
-      nativeMetadata: structuredClone(definition.nativeMetadata),
-    } : {
-      sourceRange: pivot.sourceRange ? structuredClone(pivot.sourceRange) : undefined,
-      dataSource: structuredClone(pivot.dataSource),
-    }),
+    source: structuredClone(definition.source),
+    target: structuredClone(definition.target),
+    fieldCatalog: structuredClone(definition.fieldCatalog),
+    refreshPolicy: structuredClone(definition.refreshPolicy),
+    ...(definition.nativeMetadata ? { nativeMetadata: structuredClone(definition.nativeMetadata) } : {}),
     layout: structuredClone(pivot.layout),
-    slicers: structuredClone(pivot.slicers),
-    timelines: structuredClone(pivot.timelines),
-    chartReferences: structuredClone(pivot.chartReferences),
   };
 }
 
@@ -268,48 +217,41 @@ const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && Array.isArray(value.values)
   && typeof value.showSubtotals === 'boolean' && typeof value.showGrandTotals === 'boolean'
   && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean';
-const isPivotDataSource = (value: unknown): value is PivotDataSource => {
+const isPivotWorksheetSource = (value: unknown): boolean => {
   if (!isRecord(value)) return false;
   if (value.kind === 'worksheet-range') return isRange(value.range);
   if (value.kind === 'worksheet-ranges') return Array.isArray(value.ranges) && value.ranges.every(isRange)
     && Array.isArray(value.relationships);
   return false;
 };
-const isPivotSource = (value: unknown): value is PivotSource => isPivotDataSource(value)
+const isPivotSource = (value: unknown): value is PivotSource => isPivotWorksheetSource(value)
   || (isRecord(value) && value.kind === 'table' && isNonEmptyString(value.tableId))
   || (isRecord(value) && value.kind === 'named-range' && isNonEmptyString(value.name))
   || (isRecord(value) && value.kind === 'data-source' && isNonEmptyString(value.dataSourceId));
 const isPivotModel = (value: unknown): value is PivotModel => isRecord(value)
   && isNonEmptyString(value.id)
+  && value.schema === 'PivotDefinition'
   && isPivotLayout(value.layout)
-  && ((value.source === undefined && isRange(value.sourceRange)) || (value.source !== undefined && isPivotSource(value.source)))
-  && ((value.target !== undefined && isRecord(value.target) && isNonEmptyString(value.target.sheetId)) || (value.target === undefined && isNonEmptyString(value.sheetId)))
-  && (value.target === undefined || (isRecord(value.target) && isNonEmptyString(value.target.sheetId) && isRecord(value.target.anchor)
+  && isPivotSource(value.source)
+  && isRecord(value.target) && isNonEmptyString(value.target.sheetId) && isRecord(value.target.anchor)
     && Number.isSafeInteger(value.target.anchor.row) && Number(value.target.anchor.row) >= 0
-    && Number.isSafeInteger(value.target.anchor.column) && Number(value.target.anchor.column) >= 0));
+    && Number.isSafeInteger(value.target.anchor.column) && Number(value.target.anchor.column) >= 0
+  && isRecord(value.fieldCatalog) && Array.isArray(value.fieldCatalog.fields)
+  && isRecord(value.refreshPolicy) && ['manual', 'on-open', 'on-change'].includes(String(value.refreshPolicy.mode));
 const isPivotUpdate = (value: unknown): value is PivotUpdateParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
   && (value.source === undefined || isPivotSource(value.source))
   && (value.target === undefined || (isRecord(value.target) && isNonEmptyString(value.target.sheetId) && isRecord(value.target.anchor)))
-  && (value.sourceRange === undefined || isRange(value.sourceRange))
-  && (value.dataSource === undefined || isPivotDataSource(value.dataSource))
   && (value.layout === undefined || isPivotLayout(value.layout))
-  && (value.slicers === undefined || Array.isArray(value.slicers))
-  && (value.timelines === undefined || Array.isArray(value.timelines))
-  && (value.chartReferences === undefined || Array.isArray(value.chartReferences))
-  && ['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'sourceRange', 'dataSource', 'layout', 'slicers', 'timelines', 'chartReferences'].some((key) => value[key] !== undefined);
-const isPivotRefresh = (value: unknown): value is PivotRefreshParams => isRecord(value)
-  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
-  && Number.isSafeInteger(value.refreshRevision) && Number(value.refreshRevision) >= 0
-  && typeof value.lastRefreshedAt === 'string';
+  && ['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'].some((key) => value[key] !== undefined);
 const isPivotDrillDown = (value: unknown): value is PivotDrillDownParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
   && typeof value.label === 'string' && isNonEmptyString(value.targetSheetId)
   && Array.isArray(value.sourceRowPaths)
   && value.sourceRowPaths.every((entry) => isRecord(entry) && isNonEmptyString(entry.sheetId) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0)
-  && isRecord(value.targetAnchor)
-  && Number.isSafeInteger(value.targetAnchor.row) && Number.isSafeInteger(value.targetAnchor.column)
-  && Number(value.targetAnchor.row) >= 0 && Number(value.targetAnchor.column) >= 0;
+  && isRecord(value.target)
+  && Number.isSafeInteger(value.target.row) && Number.isSafeInteger(value.target.column)
+  && Number(value.target.row) >= 0 && Number(value.target.column) >= 0;
 const isPivotDrillDownRemove = (value: unknown): value is PivotDrillDownRemoveParams => isRecord(value) && isNonEmptyString(value.targetSheetId);
 
 function pivotMutationRanges(value: unknown): RangeRef[] {
@@ -317,9 +259,6 @@ function pivotMutationRanges(value: unknown): RangeRef[] {
   if (isPivotUpdate(value)) {
     if (value.source?.kind === 'worksheet-ranges') return structuredClone(value.source.ranges);
     if (value.source?.kind === 'worksheet-range') return [structuredClone(value.source.range)];
-    if (value.dataSource?.kind === 'worksheet-ranges') return structuredClone(value.dataSource.ranges);
-    if (value.dataSource?.kind === 'worksheet-range') return [structuredClone(value.dataSource.range)];
-    if (value.sourceRange) return [structuredClone(value.sourceRange)];
     return sheetRange(value.sheetId);
   }
   if (isRecord(value) && isNonEmptyString(value.sheetId)) return sheetRange(value.sheetId);
@@ -341,13 +280,6 @@ function applyPivotRemove(context: CommandContext, params: string, sheetId: stri
   if (removeById(sheet.pivots, params)) return;
   for (const candidate of context.workbook.getSheets()) if (candidate !== sheet && removeById(candidate.pivots, params)) return;
   throw new Error(`Unknown pivot: ${params}`);
-}
-
-function applyPivotRefresh(context: CommandContext, params: PivotRefreshParams): void {
-  const pivot = pivotFor(context, params.sheetId, params.pivotId);
-  if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-  pivot.refreshRevision = params.refreshRevision;
-  pivot.lastRefreshedAt = params.lastRefreshedAt;
 }
 
 export function registerPivotCommands(runtime: CommandRuntime): string[] {
@@ -376,14 +308,6 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['pivot.update'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<PivotRefreshParams>('pivot.refresh', (item, context) => {
-    applyPivotRefresh(context, item.params);
-  }, {
-    schema: { name: 'PivotRefreshParams', validate: isPivotRefresh },
-    permission: { capability: 'pivot.refresh' },
-    affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
-    inversePolicy: { allowedMutationIds: ['pivot.refresh'], minCount: 1, maxCount: 1 },
   });
 
   runtime.registry.registerCommand<PivotModel>({
@@ -447,34 +371,16 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   });
   commandIds.push('pivot.update');
 
+  // Refresh is intentionally a derived operation: it validates and rebuilds
+  // the projection without persisting a stale result cache or a fake counter.
   runtime.registry.registerCommand<{ sheetId: string; pivotId: string }>({
     id: 'pivot.refresh',
     execute: (params, context) => {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
       if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-      const next: PivotRefreshParams = {
-        pivotId: params.pivotId,
-        sheetId: params.sheetId,
-        refreshRevision: (pivot.refreshRevision ?? 0) + 1,
-        lastRefreshedAt: new Date().toISOString(),
-      };
-      const previous: PivotRefreshParams = {
-        pivotId: params.pivotId,
-        sheetId: params.sheetId,
-        refreshRevision: pivot.refreshRevision ?? 0,
-        lastRefreshedAt: pivot.lastRefreshedAt ?? '',
-      };
-      const affectedRanges = sheetRange(params.sheetId);
-      context.applyMutation({
-        id: 'pivot.refresh',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: next,
-        affectedRanges,
-        inverse: [{ id: 'pivot.refresh', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => applyPivotRefresh(context, next),
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      const projection = buildPivotGridProjection(context.workbook, pivot);
+      if (projection.refresh.status === 'error') throw new Error(projection.refresh.error ?? 'PivotTable refresh failed');
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [projection.occupiedRange] };
     },
   });
   commandIds.push('pivot.refresh');
@@ -497,7 +403,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     inversePolicy: { allowedMutationIds: ['pivot.drilldown.add'], minCount: 1, maxCount: 1 },
   });
 
-  const registerLayoutPatch = <P extends { sheetId: string; pivotId: string; field: string }>(
+  const registerLayoutPatch = <P extends { sheetId: string; pivotId: string; fieldId: string }>(
     commandId: string,
     buildLayout: (layout: PivotLayout, params: P) => PivotLayout,
   ): void => {
@@ -506,7 +412,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       execute: (params, context) => {
         const pivot = pivotFor(context, params.sheetId, params.pivotId);
         if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-        assertPivotField(context.workbook, pivot, params.field);
+        assertPivotField(context.workbook, pivot, params.fieldId);
         const previousLayout = structuredClone(pivot.layout);
         const nextLayout = buildLayout(previousLayout, params);
         const affectedRanges = sheetRange(params.sheetId);
@@ -525,55 +431,9 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     commandIds.push(commandId);
   };
 
-  registerLayoutPatch<PivotAggregateParams>('pivot.setAggregate', (layout, params) => setPivotAggregate(layout, params.field, params.summarizeBy));
-  registerLayoutPatch<PivotShowAsParams>('pivot.setShowAs', (layout, params) => setPivotShowAs(layout, params.field, params.showAs));
-  registerLayoutPatch<PivotGroupParams>('pivot.setGroup', (layout, params) => setPivotGroup(layout, params.axis, params.field, params.group));
-
-  runtime.registry.registerCommand<PivotSlicerParams>({
-    id: 'pivot.slicer.set',
-    execute: (params, context) => {
-      const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-      assertPivotField(context.workbook, pivot, params.slicer.fieldId ?? params.slicer.field ?? '');
-      const previous = structuredClone(pivot.slicers ?? []);
-      const next = upsertPivotSlicer(pivot, params.slicer);
-      const affectedRanges = sheetRange(params.sheetId);
-      context.applyMutation({
-        id: 'pivot.update',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { pivotId: params.pivotId, sheetId: params.sheetId, slicers: next },
-        affectedRanges,
-        inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { pivotId: params.pivotId, sheetId: params.sheetId, slicers: previous }, affectedRanges }],
-        apply: () => applyPivotUpdate(context, { pivotId: params.pivotId, sheetId: params.sheetId, slicers: next }),
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
-  commandIds.push('pivot.slicer.set');
-
-  runtime.registry.registerCommand<PivotTimelineParams>({
-    id: 'pivot.timeline.set',
-    execute: (params, context) => {
-      const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-      assertPivotField(context.workbook, pivot, params.timeline.fieldId ?? params.timeline.field ?? '');
-      const previous = structuredClone(pivot.timelines ?? []);
-      const next = upsertPivotTimeline(pivot, params.timeline);
-      const affectedRanges = sheetRange(params.sheetId);
-      context.applyMutation({
-        id: 'pivot.update',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { pivotId: params.pivotId, sheetId: params.sheetId, timelines: next },
-        affectedRanges,
-        inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { pivotId: params.pivotId, sheetId: params.sheetId, timelines: previous }, affectedRanges }],
-        apply: () => applyPivotUpdate(context, { pivotId: params.pivotId, sheetId: params.sheetId, timelines: next }),
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
-  commandIds.push('pivot.timeline.set');
+  registerLayoutPatch<PivotAggregateParams>('pivot.setAggregate', (layout, params) => setPivotAggregate(layout, params.fieldId, params.summarizeBy));
+  registerLayoutPatch<PivotShowAsParams>('pivot.setShowAs', (layout, params) => setPivotShowAs(layout, params.fieldId, params.showAs));
+  registerLayoutPatch<PivotGroupParams>('pivot.setGroup', (layout, params) => setPivotGroup(layout, params.axis, params.fieldId, params.group));
 
   runtime.registry.registerCommand<PivotChartCreateParams>({
     id: 'pivot.chart.create',
@@ -625,7 +485,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       const detailRows = Math.ceil(params.sourceRowPaths.length / sourceRangeCount);
       const affectedRanges: RangeRef[] = [
         { sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
-        { sheetId: params.targetSheetId, startRow: params.targetAnchor.row, endRow: params.targetAnchor.row + detailRows, startColumn: params.targetAnchor.column, endColumn: params.targetAnchor.column + Math.max(columns - 1, 0) },
+        { sheetId: params.targetSheetId, startRow: params.target.row, endRow: params.target.row + detailRows, startColumn: params.target.column, endColumn: params.target.column + Math.max(columns - 1, 0) },
       ];
       context.applyMutation({
         id: 'pivot.drilldown.add',
@@ -650,4 +510,4 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   return commandIds;
 }
 
-export const PIVOT_MUTATION_IDS = ['pivot.add', 'pivot.remove', 'pivot.update', 'pivot.refresh', 'pivot.drilldown.add', 'pivot.drilldown.remove'] as const;
+export const PIVOT_MUTATION_IDS = ['pivot.add', 'pivot.remove', 'pivot.update', 'pivot.drilldown.add', 'pivot.drilldown.remove'] as const;

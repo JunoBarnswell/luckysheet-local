@@ -43,7 +43,7 @@ export function PivotValueEditor({ disabled = false, fields, onChange, value }: 
   const fieldId = value.fieldId;
   return (
     <Stack gap="xs" className="rounded-lg border border-blue-100 bg-blue-50/40 p-2">
-      <Text size="xs" weight="semibold">Value settings · {fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId ?? 'Unknown field'}</Text>
+      <Text size="xs" weight="semibold">Value settings · {fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId}</Text>
       <Select aria-label="Summary function" disabled={disabled} sizeVariant="sm" value={value.summarizeBy} onChange={(event) => onChange({ ...value, summarizeBy: event.target.value as PivotAggregateFunction })}>
         {(['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'] as const).map((option) => <option key={option} value={option}>{option}</option>)}
       </Select>
@@ -53,7 +53,7 @@ export function PivotValueEditor({ disabled = false, fields, onChange, value }: 
         <option value="normal">Normal</option><option value="percent-of-total">% of grand total</option><option value="percent-of-row">% of row</option><option value="percent-of-column">% of column</option><option value="percent-of-parent">% of parent</option><option value="difference-from">Difference from</option><option value="percent-difference-from">% difference from</option><option value="running-total">Running total</option><option value="rank">Rank</option><option value="index">Index</option>
       </Select>
       {['difference-from', 'percent-difference-from'].includes(showAs) ? (
-        <><Select aria-label="Base field" disabled={disabled} sizeVariant="sm" value={value.baseFieldId ?? ''} onChange={(event) => onChange({ ...value, baseFieldId: event.target.value || undefined })}><option value="">Base field</option>{fields.filter((field) => field.fieldId).map((field) => <option key={field.fieldId} value={field.fieldId}>{field.name}</option>)}</Select><TextInput aria-label="Base item" disabled={disabled} placeholder="Base item" value={typeof value.baseItem === 'string' ? value.baseItem : value.baseItem ? String(value.baseItem.value ?? '') : ''} onChange={(event) => onChange({ ...value, baseItem: event.target.value || undefined })} /></>
+        <><Select aria-label="Base field" disabled={disabled} sizeVariant="sm" value={value.baseFieldId ?? ''} onChange={(event) => onChange({ ...value, baseFieldId: event.target.value || undefined })}><option value="">Base field</option>{fields.map((field) => <option key={field.fieldId} value={field.fieldId}>{field.name}</option>)}</Select><TextInput aria-label="Base item" disabled={disabled} placeholder="Base item" value={typeof value.baseItem === 'string' ? value.baseItem : value.baseItem ? String(value.baseItem.value ?? '') : ''} onChange={(event) => onChange({ ...value, baseItem: event.target.value || undefined })} /></>
       ) : null}
     </Stack>
   );

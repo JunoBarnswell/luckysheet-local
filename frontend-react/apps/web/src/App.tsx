@@ -239,6 +239,7 @@ function WorkspaceApp() {
     switch (id) {
       case "history.undo": session.undo(); return true;
       case "history.redo": session.redo(); return true;
+      case "history.repeat": session.repeatLastCommand(); return true;
       case "clipboard.copy": session.copy(); return true;
       case "clipboard.cut": session.cut(); return true;
       case "clipboard.paste": session.paste(); return true;
@@ -267,8 +268,8 @@ function WorkspaceApp() {
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
   const corePivotFields = pivotTree?.fields.fields ?? session.getPivotFieldCatalog(pivotSourceRange);
   const pivotFields: PivotFieldDefinition[] = corePivotFields;
-  const activePivotSheetId = activePivot?.target?.sheetId ?? state.activeSheetId;
-  const activePivotSourceRange = activePivot?.source?.kind === "worksheet-range" ? activePivot.source.range : undefined;
+  const activePivotSheetId = activePivot ? activePivot.target.sheetId : state.activeSheetId;
+  const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
   const pivotSlicerControls = pivotControlRecords.flatMap((record) => record.payload.kind === "slicer"
     ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, connectedPivotIds: record.payload.connectedPivotIds }]
@@ -280,10 +281,10 @@ function WorkspaceApp() {
   const cloneLayout = (layout: PivotLayout): PivotLayout => structuredClone(layout);
   const removeField = (layout: PivotLayout, fieldId: string): PivotLayout => {
     const next = cloneLayout(layout);
-    next.filters = next.filters.filter((filter) => (filter.fieldId ?? filter.field) !== fieldId);
-    next.rows = next.rows.filter((field) => (field.fieldId ?? field.field) !== fieldId);
-    next.columns = next.columns.filter((field) => (field.fieldId ?? field.field) !== fieldId);
-    next.values = next.values.filter((value) => (value.fieldId ?? value.field) !== fieldId);
+    next.filters = next.filters.filter((filter) => filter.fieldId !== fieldId);
+    next.rows = next.rows.filter((field) => field.fieldId !== fieldId);
+    next.columns = next.columns.filter((field) => field.fieldId !== fieldId);
+    next.values = next.values.filter((value) => value.fieldId !== fieldId);
     return next;
   };
   const updatePivotLayout = (nextLayout: PivotLayout) => {
@@ -301,7 +302,7 @@ function WorkspaceApp() {
       if (!activePivot) return;
       const next = removeField(activePivot.layout, fieldId);
       if (area === "values") {
-        const field = pivotFields.find((entry) => entry.fieldId === fieldId || entry.id === fieldId);
+        const field = pivotFields.find((entry) => entry.fieldId === fieldId);
         const summarizeBy: PivotAggregateFunction = field?.dataType === "number" ? "sum" : "count";
         next.values.splice(Math.max(0, index), 0, { fieldId, summarizeBy });
       } else if (area === "filters") {
@@ -314,16 +315,16 @@ function WorkspaceApp() {
     onRemoveField: (fieldId, area) => {
       if (!activePivot) return;
       const next = cloneLayout(activePivot.layout);
-      if (area === "values") next.values = next.values.filter((value) => (value.fieldId ?? value.field) !== fieldId);
-      else if (area === "filters") next.filters = next.filters.filter((filter) => (filter.fieldId ?? filter.field) !== fieldId);
-      else next[area] = next[area].filter((field) => (field.fieldId ?? field.field) !== fieldId);
+      if (area === "values") next.values = next.values.filter((value) => value.fieldId !== fieldId);
+      else if (area === "filters") next.filters = next.filters.filter((filter) => filter.fieldId !== fieldId);
+      else next[area] = next[area].filter((field) => field.fieldId !== fieldId);
       updatePivotLayout(next);
     },
     onValueChange: (value) => {
       if (!activePivot) return;
       const next = cloneLayout(activePivot.layout);
-      const valueFieldId = value.fieldId ?? value.field;
-      const index = next.values.findIndex((entry) => (entry.fieldId ?? entry.field) === valueFieldId);
+      const valueFieldId = value.fieldId;
+      const index = next.values.findIndex((entry) => entry.fieldId === valueFieldId);
       if (index < 0) return;
       next.values[index] = structuredClone(value);
       updatePivotLayout(next);
@@ -342,14 +343,11 @@ function WorkspaceApp() {
     onFilterChange: (fieldId, filter) => {
       if (!activePivot) return;
       const next = cloneLayout(activePivot.layout);
-      const existing = next.filters.find((filter) => (filter.fieldId ?? filter.field) === fieldId);
+      const existing = next.filters.find((filter) => filter.fieldId === fieldId);
       if (existing?.kind === "manual") {
         existing.fieldId = fieldId;
         existing.mode = filter.mode;
         existing.memberKeys = [...filter.memberKeys];
-        delete existing.field;
-        delete existing.selected;
-        delete existing.exclude;
       } else next.filters.push({ kind: "manual", fieldId, mode: filter.mode, memberKeys: [...filter.memberKeys] });
       updatePivotLayout(next);
       session.notify("Pivot filter updated");
@@ -357,20 +355,20 @@ function WorkspaceApp() {
     onSortChange: (fieldId, sort) => {
       if (!activePivot) return;
       const next = cloneLayout(activePivot.layout);
-      next.rows = next.rows.map((field) => (field.fieldId ?? field.field) === fieldId ? { ...field, fieldId, sort } : field);
-      next.columns = next.columns.map((field) => (field.fieldId ?? field.field) === fieldId ? { ...field, fieldId, sort } : field);
+      next.rows = next.rows.map((field) => field.fieldId === fieldId ? { ...field, fieldId, sort } : field);
+      next.columns = next.columns.map((field) => field.fieldId === fieldId ? { ...field, fieldId, sort } : field);
       updatePivotLayout(next);
     },
     onGroupChange: (fieldId, group) => {
       if (!activePivot) return;
       const next = cloneLayout(activePivot.layout);
-      next.rows = next.rows.map((entry) => (entry.fieldId ?? entry.field) === fieldId ? { ...entry, fieldId, group } : entry);
-      next.columns = next.columns.map((entry) => (entry.fieldId ?? entry.field) === fieldId ? { ...entry, fieldId, group } : entry);
+      next.rows = next.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, fieldId, group } : entry);
+      next.columns = next.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, fieldId, group } : entry);
       updatePivotLayout(next);
     },
     onRefresh: () => {
       if (!activePivot) return;
-      dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, refreshRevision: (activePivot.refreshRevision ?? 0) + 1, lastRefreshedAt: new Date().toISOString() } });
+      dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: activePivotSheetId, pivotId: activePivot.id } });
     },
     onLayoutChange: (layout) => {
       if (!activePivot) return;
@@ -531,6 +529,9 @@ function WorkspaceApp() {
         ribbon={
           <Ribbon
             activeTab={state.ribbonTab}
+            activePivot={state.activeContext.kind === 'pivot'
+              ? { sheetId: state.activeContext.sheetId, pivotId: state.activeContext.pivotId }
+              : undefined}
             locale={locale}
             onCommand={dispatchCommand}
             onSessionIntent={dispatchSessionIntent}
@@ -642,9 +643,12 @@ function WorkspaceApp() {
               onPivotContextHit={(hit) => {
                 const pivotId = hit?.pivot?.pivotId ?? hit?.objectId;
                 if (pivotId) {
+                  session.setActivePivotContext(pivotId, state.activeSheetId);
                   setActivePivotId(pivotId);
                   setSidebarOpen(true);
                   dispatchSessionIntent({ type: "panel.open", panel: "pivot" });
+                } else {
+                  session.setActivePivotContext(null);
                 }
               }}
               getPivotContextMenuItems={(hit) => {
@@ -655,7 +659,7 @@ function WorkspaceApp() {
                   {
                     id: "pivot-refresh",
                     label: "Refresh PivotTable",
-                    onSelect: () => dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: state.activeSheetId, pivotId, refreshRevision: (state.selectedSheet.pivots.find((pivot) => pivot.id === pivotId)?.refreshRevision ?? 0) + 1, lastRefreshedAt: new Date().toISOString() } }),
+                    onSelect: () => dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: state.activeSheetId, pivotId } }),
                   },
                   {
                     id: "pivot-show-details",
@@ -704,6 +708,7 @@ function WorkspaceApp() {
               onUndo={() => session.undo()}
               onRedo={() => session.redo()}
               onShortcut={executeShortcut}
+              canRepeat={session.canRepeatLastCommand()}
               onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
               onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
               onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}

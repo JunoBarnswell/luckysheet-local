@@ -1,6 +1,5 @@
 import type {
   PivotAggregateFunction,
-  PivotDataSource,
   PivotDefinition,
   PivotFieldCatalog,
   PivotFieldDataType,
@@ -22,8 +21,8 @@ import type {
   PivotSource,
   PivotSourceRowPath,
   PivotTarget,
-  PivotTimeline,
-  PivotSlicer,
+  PivotSlicerDrawingPayload,
+  PivotTimelineDrawingPayload,
   PivotValueField,
   ContextHit,
   RangeRef,
@@ -103,6 +102,14 @@ function fingerprint(value: unknown): string {
 
 function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
   const source = getPivotSource(pivot);
+  if (source.kind === 'data-source') {
+    const manifest = workbook.getDataSource(source.dataSourceId);
+    return fingerprint({
+      source,
+      revision: manifest.revision,
+      blocks: manifest.blocks.map((block) => ({ id: block.id, checksum: block.checksum, revision: block.revision })),
+    });
+  }
   const ranges = sourceRanges(workbook, pivot);
   const revisions = ranges.map((range) => {
     const sheet = workbook.getSheet(range.sheetId);
@@ -115,13 +122,12 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
 }
 
 function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): unknown[] {
-  const pivotId = pivot.id;
-  return workbook.getSheets()
-    .flatMap((sheet) => sheet.pivots)
-    .filter((candidate) => candidate.id !== pivotId)
-    .filter((candidate) => (candidate.slicers ?? []).some((slicer) => slicer.connectedPivotIds?.includes(pivotId))
-      || (candidate.timelines ?? []).some((timeline) => timeline.connectedPivotIds?.includes(pivotId)))
-    .map((candidate) => ({ id: candidate.id, slicers: candidate.slicers, timelines: candidate.timelines }));
+  return workbook.getSheets().flatMap((sheet) => sheet.drawings.map((drawing) => {
+    const payload = sheet.drawingPayloads.get(drawing.payloadId);
+    if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return undefined;
+    const linked = [payload.pivotId, ...(payload.connectedPivotIds ?? [])];
+    return linked.includes(pivot.id) ? { drawingId: drawing.id, payload } : undefined;
+  })).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
 
 export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel): PivotRevisionKey {
@@ -130,7 +136,7 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
     pivotId: definition.id,
     sourceRevision: sourceRevision(workbook, pivot),
     layoutRevision: fingerprint({ source: definition.source, fieldCatalog: definition.fieldCatalog, layout: definition.layout }),
-    filterRevision: fingerprint({ filters: definition.layout.filters, slicers: pivot.slicers, timelines: pivot.timelines, linked: linkedFilterDefinitions(workbook, pivot) }),
+    filterRevision: fingerprint({ filters: definition.layout.filters, linked: linkedFilterDefinitions(workbook, pivot) }),
   };
 }
 
@@ -142,20 +148,11 @@ export function clearPivotResultCache(_workbook: WorkbookModel, _pivotId?: strin
 }
 
 function getPivotSource(pivot: PivotModel): PivotSource {
-  if (pivot.source) return pivot.source;
-  if (pivot.dataSource) return pivot.dataSource;
-  if (pivot.sourceRange) return { kind: 'worksheet-range', range: structuredClone(pivot.sourceRange) };
-  throw new Error(`Pivot ${pivot.id} requires a source`);
+  return pivot.source;
 }
 
 function getPivotTarget(pivot: PivotModel): PivotTarget {
-  if (pivot.target) return pivot.target;
-  if (pivot.sheetId) return { sheetId: pivot.sheetId, anchor: structuredClone(pivot.targetAnchor ?? { row: 0, column: 0 }) };
-  throw new Error(`Pivot ${pivot.id} requires a target`);
-}
-
-function fieldIdOf(field: PivotFieldPlacement | PivotValueField | PivotFilter | PivotSlicer | PivotTimeline): string | undefined {
-  return field.fieldId ?? field.field;
+  return pivot.target;
 }
 
 function sourceIdentity(source: PivotSource, range: RangeRef, ordinal: number, rangeIndex = 0): string {
@@ -266,8 +263,8 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
       const right = tables[index]!;
       const relationship = source.relationships.find((candidate) => candidate.left.sheetId === ranges[index - 1]!.sheetId && candidate.right.sheetId === ranges[index]!.sheetId);
       if (!relationship) throw new Error('Every local worksheet range must have an adjacent typed relationship');
-      const leftField = relationship.left.fieldId ?? relationship.left.field;
-      const rightField = relationship.right.fieldId ?? relationship.right.field;
+      const leftField = relationship.left.fieldId;
+      const rightField = relationship.right.fieldId;
       const leftResolved = current.fields.find((field) => field.fieldId === leftField || field.name === leftField)?.fieldId;
       const rightResolved = right.fields.find((field) => field.fieldId === rightField || field.name === rightField)?.fieldId;
       if (!leftResolved || !rightResolved) throw new Error('Pivot relationship references an unknown field');
@@ -310,14 +307,14 @@ function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotF
     const values = sourceTableValue.rows.map((row) => row.values[field.fieldId] ?? null);
     const persistedField = persisted?.fields.find((candidate) => candidate.ordinal === ordinal);
     const fieldId = persistedField?.fieldId ?? field.fieldId ?? `field:${ordinal}`;
-    return { fieldId, id: fieldId, name: field.name, dataType: inferType(values), ordinal, values: [...new Map(values.filter((value) => value != null).map((value) => [pivotMemberKey(createPivotMemberKey(value)), value])).values()].slice(0, 10_000) };
+    return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: [...new Map(values.filter((value) => value != null).map((value) => [pivotMemberKey(createPivotMemberKey(value)), value])).values()].slice(0, 10_000) };
   });
   return { schema: 'PivotFieldCatalog', fields };
 }
 
 function resolveFieldId(reference: string | undefined, catalog: PivotFieldCatalog): string | undefined {
   if (!reference) return undefined;
-  return catalog.fields.find((field) => field.fieldId === reference || field.id === reference || field.name === reference)?.fieldId;
+  return catalog.fields.find((field) => field.fieldId === reference || field.name === reference)?.fieldId;
 }
 
 function fieldName(fieldId: string, catalog: PivotFieldCatalog): string {
@@ -325,31 +322,33 @@ function fieldName(fieldId: string, catalog: PivotFieldCatalog): string {
 }
 
 function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldCatalog): PivotFieldPlacement {
-  const fieldId = resolveFieldId(placement.fieldId ?? placement.field, catalog);
-  if (!fieldId) throw new Error(`Unknown pivot field: ${placement.fieldId ?? placement.field ?? ''}`);
+  const fieldId = resolveFieldId(placement.fieldId, catalog);
+  if (!fieldId) throw new Error(`Unknown pivot field: ${placement.fieldId}`);
   const sort = placement.sort ? {
     ...placement.sort,
-    valueFieldId: placement.sort.valueFieldId ?? resolveFieldId(placement.sort.valueField, catalog),
+    ...(placement.sort.valueFieldId ? { valueFieldId: resolveFieldId(placement.sort.valueFieldId, catalog) } : {}),
   } : undefined;
   return { fieldId, sort, group: placement.group };
 }
 
 function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): PivotFilter {
-  const fieldId = resolveFieldId(filter.fieldId ?? filter.field, catalog);
-  if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId ?? filter.field ?? ''}`);
+  const fieldId = resolveFieldId(filter.fieldId, catalog);
+  if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId}`);
   if (filter.kind === 'manual') {
-    const mode = filter.mode ?? (filter.exclude ? 'exclude' : (filter.selected?.length ? 'include' : 'all'));
-    const memberKeys = filter.memberKeys?.length ? filter.memberKeys : (filter.selected ?? []).map(createPivotMemberKey);
-    return { kind: 'manual', fieldId, mode, memberKeys: structuredClone(memberKeys) };
+    return { kind: 'manual', fieldId, mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
   }
-  if (filter.kind === 'top-items') return { ...filter, fieldId, valueFieldId: filter.valueFieldId ?? resolveFieldId(filter.valueFieldId ?? filter.valueField, catalog) };
+  if (filter.kind === 'top-items') {
+    const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
+    if (!valueFieldId) throw new Error(`Unknown pivot value field: ${filter.valueFieldId}`);
+    return { ...filter, fieldId, valueFieldId };
+  }
   return { ...filter, fieldId };
 }
 
 function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog): PivotValueField {
-  const fieldId = resolveFieldId(field.fieldId ?? field.field, catalog);
-  if (!fieldId) throw new Error(`Unknown pivot value field: ${field.fieldId ?? field.field ?? ''}`);
-  return { ...field, fieldId, baseFieldId: field.baseFieldId ?? resolveFieldId(field.baseFieldId ?? field.baseField, catalog) };
+  const fieldId = resolveFieldId(field.fieldId, catalog);
+  if (!fieldId) throw new Error(`Unknown pivot value field: ${field.fieldId}`);
+  return { ...field, fieldId, ...(field.baseFieldId ? { baseFieldId: resolveFieldId(field.baseFieldId, catalog) } : {}) };
 }
 
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
@@ -371,18 +370,18 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   };
 }
 
-/** Normalize legacy storage at one boundary. Calculation never branches on two models. */
+/** Canonicalize field catalog values against the live source. Calculation has one model shape. */
 export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel): PivotDefinition {
   const source = getPivotSource(pivot);
   const rawTable = sourceTable(workbook, pivot, pivot.fieldCatalog);
   const fieldCatalog = normalizeFieldCatalog(rawTable, pivot.fieldCatalog);
   const calculatedFields = [
-    ...(pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId ?? `calculated:${field.name}`, name: field.name })),
-    ...(pivot.layout.calculatedItems ?? []).map((field) => ({ fieldId: field.fieldId ?? `calculated-item:${field.name}`, name: field.name })),
+    ...(pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
+    ...(pivot.layout.calculatedItems ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
   ];
   for (const calculated of calculatedFields) {
     if (!fieldCatalog.fields.some((field) => field.fieldId === calculated.fieldId || field.name === calculated.name)) {
-      fieldCatalog.fields.push({ fieldId: calculated.fieldId, id: calculated.fieldId, name: calculated.name, dataType: 'mixed', ordinal: fieldCatalog.fields.length, values: [] });
+      fieldCatalog.fields.push({ fieldId: calculated.fieldId, name: calculated.name, dataType: 'mixed', ordinal: fieldCatalog.fields.length, values: [] });
     }
   }
   return {
@@ -392,14 +391,9 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
     target: getPivotTarget(pivot),
     fieldCatalog,
     layout: normalizeLayout(pivot.layout, fieldCatalog),
-    refreshPolicy: pivot.refreshPolicy ?? { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-    nativeMetadata: pivot.nativeMetadata ? structuredClone(pivot.nativeMetadata) : undefined,
+    refreshPolicy: structuredClone(pivot.refreshPolicy),
+    ...(pivot.nativeMetadata ? { nativeMetadata: structuredClone(pivot.nativeMetadata) } : {}),
   };
-}
-
-/** Explicit snapshot migration entry point used by persistence/session code. */
-export function migratePivotDefinition(workbook: WorkbookModel, pivot: PivotModel): PivotDefinition {
-  return normalizePivotDefinition(workbook, pivot);
 }
 
 export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel): PivotFieldCatalog {
@@ -444,17 +438,17 @@ function calculateRowFormula(row: SourceRow, formula: string, fields: SourceFiel
 
 function applyCalculatedData(rows: SourceRow[], fields: PivotFieldDefinition[], calculatedFields: PivotLayout['calculatedFields'] = [], calculatedItems: PivotLayout['calculatedItems'] = []): SourceRow[] {
   if (!calculatedFields.length && !calculatedItems.length) return rows;
-  const currentFields: SourceField[] = fields.map((field) => ({ fieldId: field.fieldId ?? field.id ?? `field:${field.ordinal}`, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
+  const currentFields: SourceField[] = fields.map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
   return rows.map((row) => {
     const values = { ...row.values };
     for (const calculated of calculatedFields) {
-      const fieldId = calculated.fieldId ?? `calculated:${calculated.name}`;
+      const fieldId = calculated.fieldId;
       values[fieldId] = calculateRowFormula({ ...row, values }, calculated.formula, currentFields);
       currentFields.push({ fieldId, name: calculated.name, ordinal: currentFields.length, dataType: 'mixed' });
     }
     for (const calculated of calculatedItems) {
-      const fieldId = calculated.fieldId ?? `calculated-item:${calculated.name}`;
-      const targetFieldId = resolveFieldId(calculated.fieldId ?? calculated.field, { fields: currentFields.map((field) => ({ fieldId: field.fieldId, id: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType ?? 'mixed' })) });
+      const fieldId = calculated.fieldId;
+      const targetFieldId = resolveFieldId(calculated.targetFieldId, { fields: currentFields.map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType ?? 'mixed' })) });
       if (targetFieldId && same(values[targetFieldId] ?? null, calculated.name)) values[fieldId] = calculateRowFormula({ ...row, values }, calculated.formula, currentFields);
       if (!currentFields.some((field) => field.fieldId === fieldId)) currentFields.push({ fieldId, name: calculated.name, ordinal: currentFields.length, dataType: 'mixed' });
     }
@@ -532,7 +526,7 @@ function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
   if (!group || value == null || value === '') return value;
   if (group.kind === 'manual') {
     const key = createPivotMemberKey(value);
-    return group.groups.find((candidate) => candidate.items.some((item) => pivotMemberKeyEquals(item, key) || (candidate.legacyItems ?? []).some((legacy) => same(legacy, value))) )?.name ?? value;
+    return group.groups.find((candidate) => candidate.items.some((item) => pivotMemberKeyEquals(item, key)))?.name ?? value;
   }
   if (group.kind === 'number') {
     const number = toNumber(value);
@@ -554,7 +548,7 @@ function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
 function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[]): AxisGroup[] {
   const map = new Map<string, AxisGroup>();
   for (const row of rows) {
-    const values = placements.map((placement) => grouped(row.values[placement.fieldId ?? ''] ?? null, placement.group));
+    const values = placements.map((placement) => grouped(row.values[placement.fieldId] ?? null, placement.group));
     const key = JSON.stringify(values.map(createPivotMemberKey));
     const group = map.get(key) ?? { values, rows: [] };
     group.rows.push(row);
@@ -583,8 +577,7 @@ function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { 
 }
 
 function matchesFilter(row: SourceRow, filter: PivotFilter): boolean {
-  const fieldId = filter.fieldId ?? filter.field;
-  if (!fieldId) return false;
+  const fieldId = filter.fieldId;
   const value = row.values[fieldId] ?? null;
   if (filter.kind === 'top-items') return true;
   if (filter.kind === 'manual') return manualFilterMatches(value, filter);
@@ -607,9 +600,8 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
   let result = rows;
   for (const filter of filters) {
     if (filter.kind !== 'top-items') continue;
-    const fieldId = filter.fieldId ?? filter.field;
-    const valueFieldId = filter.valueFieldId ?? filter.valueField;
-    if (!fieldId || !valueFieldId) throw new Error('Pivot top-items filter requires fieldId and valueFieldId');
+    const fieldId = filter.fieldId;
+    const valueFieldId = filter.valueFieldId;
     if (!Number.isInteger(filter.count) || filter.count < 1) throw new Error('Pivot top-items count must be a positive integer');
     const buckets = new Map<string, SourceRow[]>();
     for (const row of result) {
@@ -625,32 +617,36 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
   return result;
 }
 
-function matchesSlicer(row: SourceRow, slicer: PivotSlicer): boolean {
-  const fieldId = slicer.fieldId ?? slicer.field;
-  if (!fieldId) return false;
-  const mode = slicer.mode ?? (slicer.selected?.length ? 'include' : 'all');
-  if (mode === 'all') return true;
-  const selected = slicer.memberKeys?.length ? slicer.memberKeys : (slicer.selected ?? []).map(createPivotMemberKey);
-  const included = selected.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(row.values[fieldId] ?? null)));
-  return mode === 'include' ? included : !included;
+function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload): boolean {
+  const { fieldId, filter } = slicer;
+  if (filter.mode === 'all') return true;
+  const included = filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(row.values[fieldId] ?? null)));
+  return filter.mode === 'include' ? included : !included;
 }
 
-function matchesTimeline(row: SourceRow, timeline: PivotTimeline): boolean {
-  const fieldId = timeline.fieldId ?? timeline.field;
-  if (!fieldId) return false;
+function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload): boolean {
+  const fieldId = timeline.fieldId;
   const raw = row.values[fieldId];
   if (raw == null || raw === '') return false;
   const date = new Date(String(raw));
   if (Number.isNaN(date.getTime())) return false;
-  const start = timeline.start ? new Date(timeline.start).getTime() : Number.NEGATIVE_INFINITY;
-  const end = timeline.end ? new Date(timeline.end).getTime() : Number.POSITIVE_INFINITY;
+  const start = timeline.period.start ? new Date(timeline.period.start).getTime() : Number.NEGATIVE_INFINITY;
+  const end = timeline.period.end ? new Date(timeline.period.end).getTime() : Number.POSITIVE_INFINITY;
   return date.getTime() >= start && date.getTime() <= end;
 }
 
 function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel): SourceRow[] {
-  const linked = workbook.getSheets().flatMap((sheet) => sheet.pivots).filter((candidate) => candidate.id !== pivot.id);
-  const slicers = [...(pivot.slicers ?? []), ...linked.flatMap((candidate) => (candidate.slicers ?? []).filter((slicer) => slicer.connectedPivotIds?.includes(pivot.id)))];
-  const timelines = [...(pivot.timelines ?? []), ...linked.flatMap((candidate) => (candidate.timelines ?? []).filter((timeline) => timeline.connectedPivotIds?.includes(pivot.id)))];
+  const slicers: PivotSlicerDrawingPayload[] = [];
+  const timelines: PivotTimelineDrawingPayload[] = [];
+  for (const sheet of workbook.getSheets()) {
+    for (const drawing of sheet.drawings) {
+      if (drawing.kind !== 'slicer' && drawing.kind !== 'timeline') continue;
+      const payload = sheet.drawingPayloads.get(drawing.payloadId);
+      if (!payload || ![payload.pivotId, ...(payload.connectedPivotIds ?? [])].includes(pivot.id)) continue;
+      if (payload.kind === 'slicer') slicers.push(payload);
+      else if (payload.kind === 'timeline') timelines.push(payload);
+    }
+  }
   return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer)) && timelines.every((timeline) => matchesTimeline(row, timeline)));
 }
 
@@ -664,7 +660,7 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValue
       kind,
       columnPath: column.values,
       sourceRowPaths: columnRows.flatMap((row) => row.paths),
-      values: values.map((value) => aggregatePivotValues(columnRows, value.fieldId ?? value.field ?? '', value.summarizeBy)),
+      values: values.map((value) => aggregatePivotValues(columnRows, value.fieldId, value.summarizeBy)),
     };
   });
 }
@@ -673,7 +669,7 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
   if (depth >= placements.length) return [];
   const placement = placements[depth]!;
   return axisGroups(rows, [placement]).map((group) => {
-    const fieldId = placement.fieldId ?? placement.field ?? '';
+    const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
     const children = resultNodes(group.rows, placements, depth + 1, columns, values, showSubtotals, path);
@@ -683,7 +679,6 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
       path,
       kind: leaf ? 'leaf' : 'subtotal',
       fieldId,
-      field: fieldId,
       memberKey: member,
       key: group.values[0] ?? null,
       label: display(group.values[0] ?? null),
@@ -747,12 +742,12 @@ function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel):
   const rawTable = sourceTable(workbook, pivot, definition.fieldCatalog);
   const rows = applyCalculatedData(rawTable.rows, definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
   const references = [
-    ...definition.layout.rows.map((entry) => entry.fieldId ?? ''),
-    ...definition.layout.columns.map((entry) => entry.fieldId ?? ''),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId ?? '', filter.valueFieldId ?? ''] : [filter.fieldId ?? '']),
-    ...definition.layout.values.map((entry) => entry.fieldId ?? ''),
+    ...definition.layout.rows.map((entry) => entry.fieldId),
+    ...definition.layout.columns.map((entry) => entry.fieldId),
+    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.values.map((entry) => entry.fieldId),
   ];
-  const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId ?? `calculated:${field.name}`), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId ?? `calculated-item:${field.name}`)]);
+  const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId)]);
   const unknown = references.find((field) => field && !known.has(field));
   if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
   let filtered = matchesControls(workbook, rows, pivot);
@@ -763,7 +758,7 @@ function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel):
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
     columnPath: [],
-    values: definition.layout.values.map((field) => aggregatePivotValues(filtered, field.fieldId ?? '', field.summarizeBy)),
+    values: definition.layout.values.map((field) => aggregatePivotValues(filtered, field.fieldId, field.summarizeBy)),
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   } : null;
   const tree: PivotResultTree = {
@@ -861,9 +856,9 @@ function refreshState(workbook: WorkbookModel, pivot: PivotModel, collision: imp
   const revisions = getPivotRevisionKey(workbook, pivot);
   return {
     status: collision.status === 'collision' ? 'collision' : status,
-    revision: pivot.refreshRevision ?? 0,
+    revision: Number.parseInt(revisions.sourceRevision.slice(-6), 16) || 0,
     sourceRevision: revisions.sourceRevision,
-    ...(pivot.lastRefreshedAt ? { completedAt: pivot.lastRefreshedAt } : {}),
+    completedAt: new Date().toISOString(),
     ...(error ? { error } : {}),
   };
 }
@@ -891,7 +886,7 @@ export function buildPivotGridProjection(workbook: WorkbookModel, pivot: PivotMo
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
   for (const filter of definition.layout.filters) {
-    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId ?? null, `${fieldName(filter.fieldId ?? '', definition.fieldCatalog)}: All`));
+    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`));
     row += 1;
   }
   for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : ''));
@@ -902,7 +897,7 @@ export function buildPivotGridProjection(workbook: WorkbookModel, pivot: PivotMo
     for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
       const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
       const valueField = values[valueIndex];
-      const label = path.length ? `${path.map(display).join(' / ')} ${valueField ? (valueField.displayName ?? valueField.fieldId ?? valueField.field ?? '') : ''}`.trim() : valueField ? (valueField.displayName ?? valueField.fieldId ?? valueField.field ?? '') : '';
+      const label = path.length ? `${path.map(display).join(' / ')} ${valueField ? (valueField.displayName ?? valueField.fieldId) : ''}`.trim() : valueField ? (valueField.displayName ?? valueField.fieldId) : '';
       cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path }));
     }
   }
@@ -973,8 +968,8 @@ export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): P
   const definition = normalizePivotDefinition(workbook, pivot);
   const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) }));
   const headers = [
-    ...definition.layout.rows.map((field) => fieldName(field.fieldId ?? '', definition.fieldCatalog)),
-    ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.fieldId ?? '', definition.fieldCatalog)}` : field.displayName ?? fieldName(field.fieldId ?? '', definition.fieldCatalog))),
+    ...definition.layout.rows.map((field) => fieldName(field.fieldId, definition.fieldCatalog)),
+    ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.fieldId, definition.fieldCatalog)}` : field.displayName ?? fieldName(field.fieldId, definition.fieldCatalog))),
   ];
   return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }

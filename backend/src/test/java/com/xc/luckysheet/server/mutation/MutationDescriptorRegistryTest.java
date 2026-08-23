@@ -76,6 +76,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
                 "automation.recording.changed",
+                "pivot.chart.create",
                 "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore",
                 "hyperlink.set", "hyperlink.remove",
                 "query.load.workbook-table",
@@ -203,7 +204,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
                 """);
         OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
-                {"id":"pivot-1","sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true}}
+                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"region","name":"Region","dataType":"text","ordinal":0},{"fieldId":"amount","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"region"}],"columns":[],"filters":[{"kind":"manual","fieldId":"region","mode":"all","memberKeys":[]}],"values":[{"fieldId":"amount","summarizeBy":"sum"}],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
         JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
@@ -215,12 +216,60 @@ class MutationDescriptorRegistryTest {
         assertEquals("spark-1", current.path("sheets").get(0).path("sparklines").get(0).path("id").asText());
 
         OperationMutation drillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","pivotId":"pivot-1","label":"East","sourceRowPaths":[{"sheetId":"sheet-1","row":1}],"targetSheetId":"detail-1","targetAnchor":{"row":0,"column":0}}
+                {"sheetId":"sheet-1","pivotId":"pivot-1","label":"East","sourceRowPaths":[{"sheetId":"sheet-1","row":1}],"targetSheetId":"detail-1","target":{"row":0,"column":0}}
                 """));
         current = registry.prepare(current, drillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, drillDown);
         assertEquals("detail-1", current.path("sheets").get(1).path("id").asText());
         assertEquals("Region", current.path("sheets").get(1).path("cells").path("0").path("0").path("value").asText());
         assertEquals("East", current.path("sheets").get(1).path("cells").path("1").path("0").path("value").asText());
+    }
+
+    @Test
+    void pivotMutationsRejectLegacyShapeAndRefreshDoesNotPersistRuntimeState() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{},"pivots":[]}]}
+                """);
+        OperationMutation legacy = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
+                {"id":"pivot-legacy","sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true}}
+                """));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", error.code());
+
+        OperationMutation add = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
+                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                """));
+        JsonNode current = registry.applyPublicMutations(snapshot, List.of(add));
+        JsonNode beforeRefresh = current.deepCopy();
+        OperationMutation refresh = new OperationMutation("pivot.refresh", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","pivotId":"pivot-1"}
+                """));
+        JsonNode afterRefresh = registry.applyPublicMutations(current, List.of(refresh));
+        assertEquals(beforeRefresh, afterRefresh);
+    }
+
+    @Test
+    void structuralTransformsUpdateCanonicalPivotSourceAndTarget() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeights":{},"columnWidths":{},"notes":[],"commentThreads":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[
+                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                ]}]}
+                """));
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":1,"count":1}
+                """));
+        JsonNode current = registry.applyPublicMutations(snapshot, List.of(insert));
+        JsonNode pivot = current.path("sheets").get(0).path("pivots").get(0);
+        assertEquals(2, pivot.path("source").path("range").path("endRow").asInt());
+        assertEquals(5, pivot.path("target").path("anchor").path("row").asInt());
+    }
+
+    @Test
+    void pivotChartCreateIsNotAWorkbookMutation() {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.require("pivot.chart.create", false));
+        assertEquals("SERVICE_UNAVAILABLE", error.code());
     }
 
     @Test

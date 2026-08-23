@@ -88,6 +88,7 @@ export interface RibbonProps {
   onTextToColumns: () => CommandDescriptor | undefined;
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
+  activePivot?: { sheetId: string; pivotId: string };
   cellStyle?: {
     bold?: boolean;
     italic?: boolean;
@@ -249,6 +250,7 @@ export function Ribbon({
   onTextToColumns,
   onTabChange,
   phase,
+  activePivot,
   cellStyle = {},
   canExecute,
 }: RibbonProps) {
@@ -308,6 +310,7 @@ export function Ribbon({
     canExecute,
     buildSortDescriptor,
     openCreatePivotDialog: onCreatePivotDialog,
+    activePivot,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
     sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
@@ -322,6 +325,7 @@ export function Ribbon({
     <RibbonLocaleContext.Provider value={locale}>
       <RibbonShell
         activeTab={activeTab}
+        contextualTabs={activePivot ? ['pivotAnalyze', 'pivotDesign'] : []}
         disabled={disabled}
         onTabChange={onTabChange}
         tabLabel={(tab) => translateRibbonTab(locale, tab)}
@@ -392,6 +396,22 @@ export function Ribbon({
               <CatalogButton id="showFormulas" context={catalogContext} onExecute={executeCatalogResult} />
               <CatalogButton id="errorChecking" context={catalogContext} onExecute={executeCatalogResult} />
               <CatalogButton id="evaluateFormula" context={catalogContext} onExecute={executeCatalogResult} />
+            </RibbonGroup>
+          </Inline>
+        ) : null}
+
+        {activeTab === 'pivotAnalyze' ? (
+          <Inline gap="md" className="flex-wrap items-start">
+            <RibbonGroup group="pivotAnalyze">
+              <CatalogButton id="pivotRefresh" context={catalogContext} onExecute={executeCatalogResult} variant="primary" />
+            </RibbonGroup>
+          </Inline>
+        ) : null}
+
+        {activeTab === 'pivotDesign' ? (
+          <Inline gap="md" className="flex-wrap items-start">
+            <RibbonGroup group="pivotDesign">
+              <CatalogButton id="pivotFieldList" context={catalogContext} onExecute={executeCatalogResult} variant="primary" />
             </RibbonGroup>
           </Inline>
         ) : null}

@@ -5,7 +5,7 @@ import { exportXlsx } from './export';
 import { importXlsx } from './import';
 import { scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
-import { loadXlsxPackage, zipXlsxPartsBuffer } from './archive';
+import { loadXlsxPackage, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
 import { strFromU8, strToU8 } from 'fflate';
 
 describe('exchange-xlsx', () => {
@@ -113,6 +113,39 @@ describe('exchange-xlsx', () => {
     assert.match(strFromU8(output.files['xl/worksheets/_rels/sheet1.xml.rels']!), /\/table/);
   });
 
+  it('writes a canonical table Pivot as a native cache and table graph', async () => {
+    const workbook = new WorkbookModel('wb-new-pivot', 'New Pivot');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Category' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 'A' });
+    sheet.cells.set(1, 1, { value: 10 });
+    sheet.cells.set(2, 0, { value: 'B' });
+    sheet.cells.set(2, 1, { value: 20 });
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'SalesTable',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false, showFilterButton: true,
+      columns: [{ id: 'category', name: 'Category' }, { id: 'amount', name: 'Amount' }], styleName: 'TableStyleMedium2',
+    });
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'sales-pivot', source: { kind: 'table', tableId: 'table-1' }, target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
+        { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
+        { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
+      ] },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    const output = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    assert.equal(output.package.nativePivotGraph?.caches.length, 1);
+    assert.equal(output.package.nativePivotGraph?.tables.length, 1);
+    assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /worksheetSource name="SalesTable"/);
+    assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
+    const imported = parseLoadedXlsx(output).snapshot;
+    assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
+  });
+
   it('reads and rewrites native Pivot cache/table relationship graphs', async () => {
     const workbook = new WorkbookModel('wb-native-pivot', 'Native Pivot');
     const generated = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
@@ -129,6 +162,9 @@ describe('exchange-xlsx', () => {
     assert.equal(imported.package.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.package.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
     assert.equal(imported.package.nativePivotGraph?.tables[0]?.dataFields[0]?.field, 1);
+    assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'preserved-only');
     const exported = await exportXlsx({ snapshot: imported.snapshot, package: imported.package, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadXlsxPackage(exported.buffer);

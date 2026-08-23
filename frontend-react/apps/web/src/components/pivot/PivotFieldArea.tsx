@@ -96,7 +96,7 @@ function groupOptions(field: AreaItem, onGroup?: PivotFieldAreaProps['onGroup'])
   }
   const values = (field.values ?? []).map(keyFor);
   return values.length > 0
-    ? <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'manual', groups: [{ name: 'Group 1', items: values }] })}>Group all values</Button>
+    ? <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'manual', groups: [{ groupId: `group:${field.fieldId}:all`, name: 'Group 1', items: values }] })}>Group all values</Button>
     : null;
 }
 

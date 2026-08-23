@@ -15,6 +15,8 @@ export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
 export interface RibbonShellProps {
   activeTab: RibbonTabId;
   children: ReactNode | ((layout: RibbonLayoutState) => ReactNode);
+  /** Context tabs are session state supplied by the host, never workbook data. */
+  contextualTabs?: readonly RibbonTabId[];
   disabled?: boolean;
   onTabChange: (tab: RibbonTabId) => void;
   status?: ReactNode;
@@ -24,6 +26,7 @@ export interface RibbonShellProps {
 export function RibbonShell({
   activeTab,
   children,
+  contextualTabs = [],
   disabled = false,
   onTabChange,
   status,
@@ -31,6 +34,7 @@ export function RibbonShell({
 }: RibbonShellProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<RibbonLayoutState>({ mode: 'wide', width: 1120 });
+  const tabs = [...RIBBON_TAB_ORDER, ...contextualTabs.filter((tab, index, values) => !RIBBON_TAB_ORDER.includes(tab) && values.indexOf(tab) === index)];
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -56,7 +60,7 @@ export function RibbonShell({
     <Tabs ref={rootRef} className="border-b border-slate-200 bg-white" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
       <Inline gap="lg" className="min-h-10 flex-wrap px-4 py-1">
         <TabList label="Workbook ribbon tabs" className="h-full flex-wrap gap-1">
-          {RIBBON_TAB_ORDER.map((tab) => (
+          {tabs.map((tab) => (
             <Tab
               key={tab}
               active={activeTab === tab}

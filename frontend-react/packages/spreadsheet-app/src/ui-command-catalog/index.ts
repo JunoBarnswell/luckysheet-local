@@ -10,7 +10,9 @@ export type RibbonCatalogTabId =
   | 'data'
   | 'review'
   | 'view'
-  | 'automate';
+  | 'automate'
+  | 'pivotAnalyze'
+  | 'pivotDesign';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -43,6 +45,8 @@ export type RibbonGroupId =
   | 'zoom'
   | 'printLayout'
   | 'appearanceFiles';
+  | 'pivotAnalyze'
+  | 'pivotDesign';
 
 export type RibbonCommandId =
   | 'save'
@@ -162,6 +166,8 @@ export type RibbonCommandId =
   | 'zoomReset'
   | 'printPdf'
   | 'bandedRows';
+  | 'pivotRefresh'
+  | 'pivotFieldList';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -282,6 +288,7 @@ export interface RibbonCommandContext {
   buildSortDescriptor?: (ascending: boolean) => CommandDescriptor | undefined;
   /** Host-owned Create PivotTable dialog entry point. */
   openCreatePivotDialog?: () => void;
+  activePivot?: { sheetId: string; pivotId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
@@ -350,6 +357,8 @@ export const RIBBON_TEXT = {
     zoom: 'groups.zoom',
     printLayout: 'groups.printLayout',
     appearanceFiles: 'groups.appearanceFiles',
+    pivotAnalyze: 'groups.pivotAnalyze',
+    pivotDesign: 'groups.pivotDesign',
   },
   commands: {
     save: 'commands.save',
@@ -414,6 +423,8 @@ export const RIBBON_TEXT = {
     conditionalFormat: 'commands.conditionalFormat',
     pivotTable: 'commands.pivotTable',
     quickPivot: 'commands.quickPivot',
+    pivotRefresh: 'commands.pivotRefresh',
+    pivotFieldList: 'commands.pivotFieldList',
     chartBuilder: 'commands.chartBuilder',
     columnChart: 'commands.columnChart',
     sparkline: 'commands.sparkline',
@@ -512,6 +523,8 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('zoom', 'view', 20),
   group('printLayout', 'view', 40),
   group('appearanceFiles', 'view', 60),
+  group('pivotAnalyze', 'pivotAnalyze', 10),
+  group('pivotDesign', 'pivotDesign', 10),
 ] as const;
 
 const command = (
@@ -677,6 +690,24 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
     enabled: (context) => Boolean(context.openCreatePivotDialog),
   },
   dynamicCommand('quickPivot', 'insert', 'tablesPivots', RIBBON_TEXT.commands.quickPivot, (context) => context.actions.onCreatePivot()),
+  {
+    id: 'pivotRefresh',
+    tab: 'pivotAnalyze',
+    group: 'pivotAnalyze',
+    labelKey: RIBBON_TEXT.commands.pivotRefresh,
+    icon: 'table-pivot',
+    priority: 10,
+    display: 'medium',
+    enabled: (context) => Boolean(context.activePivot)
+      && (!context.canExecute || context.canExecute('pivot.refresh', context.activePivot)),
+    build: (context) => context.activePivot
+      ? { type: 'command', descriptor: { commandId: 'pivot.refresh', params: { sheetId: context.activePivot.sheetId, pivotId: context.activePivot.pivotId } } }
+      : undefined,
+  },
+  {
+    ...intent('pivotFieldList', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
+    enabled: (context) => Boolean(context.activePivot),
+  },
   intent('chartBuilder', 'insert', 'chartsVisuals', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart'),
   dynamicCommand('columnChart', 'insert', 'chartsVisuals', RIBBON_TEXT.commands.columnChart, (context) => context.actions.onCreateChart()),
   intent('sparkline', 'insert', 'chartsVisuals', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

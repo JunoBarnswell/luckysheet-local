@@ -15,6 +15,8 @@ import java.util.Set;
 
 /** Deterministically materializes and removes Pivot drill-down detail sheets. */
 final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescriptor {
+    private static final Set<String> ADD_KEYS = Set.of("sheetId", "pivotId", "label", "sourceRowPaths", "targetSheetId", "target");
+    private static final Set<String> REMOVE_KEYS = Set.of("sheetId", "targetSheetId");
     static final Set<String> IDS = Set.of("pivot.drilldown.add", "pivot.drilldown.remove");
 
     PivotDrillDownMutationDescriptor(String id) {
@@ -24,11 +26,11 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
 
     @Override
     public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
-        ObjectNode root = SnapshotMutationSupport.root(snapshot);
+        ObjectNode root = PivotMutationDescriptor.canonicalSnapshot(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         if (id().equals("pivot.drilldown.remove")) {
-            String target = SnapshotMutationSupport.text(params, "targetSheetId");
-            return List.of(SnapshotMutationSupport.wholeSheetRange(root, target));
+            String targetSheetId = targetSheetId(params);
+            return List.of(SnapshotMutationSupport.wholeSheetRange(root, targetSheetId));
         }
         DrillPlan plan = plan(root, mutation.sheetId(), params);
         List<RangeRef> ranges = new ArrayList<>(plan.sourceRanges());
@@ -39,10 +41,10 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
-        ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+        ObjectNode root = PivotMutationDescriptor.canonicalSnapshot(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         if (id().equals("pivot.drilldown.remove")) {
-            remove(root, SnapshotMutationSupport.text(params, "targetSheetId"));
+            remove(root, targetSheetId(params));
             return root;
         }
         DrillPlan plan = plan(root, mutation.sheetId(), params);
@@ -54,25 +56,29 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
     }
 
     private DrillPlan plan(ObjectNode root, String pivotSheetId, ObjectNode params) {
+        SnapshotMutationSupport.validateKnownKeys(params, ADD_KEYS, "pivot.drilldown.add params");
         String pivotId = SnapshotMutationSupport.text(params, "pivotId");
         ObjectNode pivotSheet = SnapshotMutationSupport.sheet(root, pivotSheetId);
         ObjectNode pivot = SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(pivotSheet, "pivots"), pivotId, "Pivot");
+        if (!"PivotDefinition".equals(SnapshotMutationSupport.text(pivot, "schema"))) throw ServiceException.validation("Pivot schema must be PivotDefinition");
         String label = SnapshotMutationSupport.text(params, "label");
         String targetSheetId = SnapshotMutationSupport.text(params, "targetSheetId");
-        ObjectNode targetAnchor = SnapshotMutationSupport.requiredObject(params, "targetAnchor");
-        SnapshotMutationSupport.CellCoordinate anchor = coordinate(targetAnchor);
+        SnapshotMutationSupport.CellCoordinate anchor = coordinate(params.get("target"));
         ArrayNode paths = SnapshotMutationSupport.requiredArray(params, "sourceRowPaths");
         if (paths.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Pivot drill-down has too many source rows");
-        List<RangeRef> sourceRanges = sourceRanges(root, pivot);
+        List<RangeRef> sourceRanges = PivotMutationDescriptor.sourceRanges(root, pivot);
+        if (sourceRanges.isEmpty()) throw ServiceException.validation("Pivot drill-down source has no worksheet range");
         List<DrillColumn> columns = columns(root, sourceRanges);
         if (columns.isEmpty()) throw ServiceException.validation("Pivot drill-down source has no columns");
         List<SourcePath> sourcePaths = new ArrayList<>();
         for (JsonNode raw : paths) {
             if (!raw.isObject()) throw ServiceException.validation("Pivot drill-down source path must be an object");
             ObjectNode path = (ObjectNode) raw;
+            SnapshotMutationSupport.validateKnownKeys(path, Set.of("sheetId", "row"), "Pivot drill-down source path");
             String sheetId = SnapshotMutationSupport.text(path, "sheetId");
             ObjectNode coordinate = JsonNodeFactory.instance.objectNode();
             coordinate.set("row", path.get("row"));
+            coordinate.put("column", 0);
             int row = SnapshotMutationSupport.index(root, sheetId, coordinate, "row");
             sourcePaths.add(new SourcePath(sheetId, row));
         }
@@ -86,16 +92,10 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         return new DrillPlan(targetSheetId, sheetName, anchor, sourceRanges, columns, sourcePaths, targetRange, rowsPerResult);
     }
 
-    private List<RangeRef> sourceRanges(ObjectNode root, ObjectNode pivot) {
-        JsonNode source = pivot.get("dataSource");
-        List<RangeRef> ranges = new ArrayList<>();
-        if (source != null && source.isObject() && "worksheet-ranges".equals(source.path("kind").asText())) {
-            for (JsonNode raw : source.path("ranges")) ranges.add(SnapshotMutationSupport.range(root, raw));
-        } else if (source != null && source.isObject() && "worksheet-range".equals(source.path("kind").asText())) {
-            ranges.add(SnapshotMutationSupport.range(root, source.get("range")));
-        } else ranges.add(SnapshotMutationSupport.range(root, pivot.get("sourceRange")));
-        if (ranges.isEmpty()) throw ServiceException.validation("Pivot drill-down source range is required");
-        return List.copyOf(ranges);
+    private String targetSheetId(ObjectNode params) {
+        Set<String> allowed = id().equals("pivot.drilldown.remove") ? REMOVE_KEYS : ADD_KEYS;
+        SnapshotMutationSupport.validateKnownKeys(params, allowed, id() + " params");
+        return SnapshotMutationSupport.text(params, "targetSheetId");
     }
 
     private List<DrillColumn> columns(ObjectNode root, List<RangeRef> ranges) {
@@ -157,9 +157,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
 
     private void removeScopedState(ObjectNode root, String sheetId) {
         ArrayNode documents = SnapshotMutationSupport.array(root, "printDocuments");
-        for (int index = documents.size() - 1; index >= 0; index--) {
-            if (sheetId.equals(documents.get(index).path("sheetId").asText())) documents.remove(index);
-        }
+        for (int index = documents.size() - 1; index >= 0; index--) if (sheetId.equals(documents.get(index).path("sheetId").asText())) documents.remove(index);
         ArrayNode names = SnapshotMutationSupport.array(root, "definedNameModels");
         for (int index = names.size() - 1; index >= 0; index--) {
             JsonNode name = names.get(index);
@@ -181,9 +179,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         sheet.set("cells", JsonNodeFactory.instance.objectNode());
         sheet.set("merges", JsonNodeFactory.instance.arrayNode());
         sheet.putObject("freeze").put("xSplit", 0).put("ySplit", 0).put("startRow", 0).put("startColumn", 0);
-        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "notes", "commentThreads", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) {
-            sheet.set(property, JsonNodeFactory.instance.arrayNode());
-        }
+        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "notes", "commentThreads", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) sheet.set(property, JsonNodeFactory.instance.arrayNode());
         sheet.set("drawingPayloads", JsonNodeFactory.instance.objectNode());
         sheet.set("rowHeights", JsonNodeFactory.instance.objectNode());
         sheet.set("columnWidths", JsonNodeFactory.instance.objectNode());
@@ -195,9 +191,10 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         return sheet;
     }
 
-    private SnapshotMutationSupport.CellCoordinate coordinate(ObjectNode anchor) {
-        JsonNode row = anchor.get("row");
-        JsonNode column = anchor.get("column");
+    private SnapshotMutationSupport.CellCoordinate coordinate(JsonNode raw) {
+        if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot drill-down target anchor is invalid");
+        JsonNode row = raw.get("row");
+        JsonNode column = raw.get("column");
         if (row == null || !row.isIntegralNumber() || row.intValue() < 0 || column == null || !column.isIntegralNumber() || column.intValue() < 0) throw ServiceException.validation("Pivot drill-down target anchor is invalid");
         return new SnapshotMutationSupport.CellCoordinate(row.intValue(), column.intValue());
     }

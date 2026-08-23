@@ -6,8 +6,6 @@ import type {
   PivotLayout,
   PivotModel,
   PivotShowAs,
-  PivotSlicer,
-  PivotTimeline,
   PivotValueField,
   RangeRef,
   WorkbookModel,
@@ -19,10 +17,7 @@ export interface PivotPanelState {
   sheetId: string;
   fieldCatalog: ReturnType<typeof getPivotFieldCatalog>;
   layout: PivotLayout;
-  slicers: PivotSlicer[];
-  timelines: PivotTimeline[];
   resultTreeSchema: string;
-  refreshRevision: number;
 }
 
 function hasPivotHeaderData(workbook: WorkbookModel, pivot: PivotModel): boolean {
@@ -44,23 +39,20 @@ export function buildPivotPanelState(workbook: WorkbookModel, pivot: PivotModel)
     sheetId: definition.target.sheetId,
     fieldCatalog: definition.fieldCatalog,
     layout: structuredClone(definition.layout),
-    slicers: structuredClone(pivot.slicers ?? []),
-    timelines: structuredClone(pivot.timelines ?? []),
     resultTreeSchema: result.schema,
-    refreshRevision: pivot.refreshRevision ?? 0,
   };
 }
 
 export function listAvailablePivotFields(workbook: WorkbookModel, pivot: PivotModel): string[] {
-  return getPivotFieldCatalog(workbook, pivot).fields.map((field) => field.fieldId ?? field.id ?? field.name);
+  return getPivotFieldCatalog(workbook, pivot).fields.map((field) => field.fieldId);
 }
 
 /** Validate a field reference against the live source before a command mutates the model. */
 export function assertPivotField(workbook: WorkbookModel, pivot: PivotModel, field: string): void {
   if (!hasPivotHeaderData(workbook, pivot)) return;
   const catalog = getPivotFieldCatalog(workbook, pivot);
-  const names = new Set(catalog.fields.flatMap((entry) => [entry.fieldId, entry.name, entry.id ?? '']));
-  for (const calculated of pivot.layout.calculatedFields ?? []) names.add(calculated.fieldId ?? `calculated:${calculated.name}`);
+  const names = new Set(catalog.fields.flatMap((entry) => [entry.fieldId, entry.name]));
+  for (const calculated of pivot.layout.calculatedFields ?? []) names.add(calculated.fieldId);
   if (!names.has(field)) throw new Error(`Unknown pivot field: ${field}`);
 }
 
@@ -77,32 +69,32 @@ export function assertPivotDefinition(workbook: WorkbookModel, pivot: PivotModel
     if (range.startRow < 0 || range.endRow < range.startRow || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn < range.startColumn || range.endColumn >= sheet.columnCount) throw new Error('Pivot source range is invalid');
   }
   if (!hasPivotHeaderData(workbook, pivot)) return;
-  const fields = new Set(definition.fieldCatalog.fields.flatMap((entry) => [entry.fieldId, entry.name, entry.id ?? '']));
-  for (const calculated of definition.layout.calculatedFields ?? []) fields.add(calculated.fieldId ?? `calculated:${calculated.name}`);
-  for (const calculated of definition.layout.calculatedItems ?? []) fields.add(calculated.fieldId ?? `calculated-item:${calculated.name}`);
+  const fields = new Set(definition.fieldCatalog.fields.flatMap((entry) => [entry.fieldId, entry.name]));
+  for (const calculated of definition.layout.calculatedFields ?? []) fields.add(calculated.fieldId);
+  for (const calculated of definition.layout.calculatedItems ?? []) fields.add(calculated.fieldId);
   const references = [
-    ...definition.layout.rows.map((entry) => entry.fieldId ?? ''),
-    ...definition.layout.columns.map((entry) => entry.fieldId ?? ''),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId ?? '', filter.valueFieldId ?? ''] : [filter.fieldId ?? '']),
-    ...definition.layout.values.map((entry) => entry.fieldId ?? ''),
+    ...definition.layout.rows.map((entry) => entry.fieldId),
+    ...definition.layout.columns.map((entry) => entry.fieldId),
+    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.values.map((entry) => entry.fieldId),
   ];
   const unknown = references.find((field) => field && !fields.has(field));
   if (unknown) throw new Error(`Unknown pivot field: ${unknown}`);
 }
 
 export function patchPivotValueField(layout: PivotLayout, field: string, patch: Partial<PivotValueField>): PivotLayout {
-  if (!layout.values.some((entry) => (entry.fieldId ?? entry.field) === field)) throw new Error(`Unknown pivot value field: ${field}`);
-  return { ...layout, values: layout.values.map((entry) => ((entry.fieldId ?? entry.field) === field ? { ...entry, ...patch, fieldId: field } : entry)) };
+  if (!layout.values.some((entry) => entry.fieldId === field)) throw new Error(`Unknown pivot value field: ${field}`);
+  return { ...layout, values: layout.values.map((entry) => (entry.fieldId === field ? { ...entry, ...patch, fieldId: field } : entry)) };
 }
 
 export function patchPivotRowField(layout: PivotLayout, field: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
-  if (!layout.rows.some((entry) => (entry.fieldId ?? entry.field) === field)) throw new Error(`Unknown pivot row field: ${field}`);
-  return { ...layout, rows: layout.rows.map((entry) => ((entry.fieldId ?? entry.field) === field ? { ...entry, ...patch, fieldId: field } : entry)) };
+  if (!layout.rows.some((entry) => entry.fieldId === field)) throw new Error(`Unknown pivot row field: ${field}`);
+  return { ...layout, rows: layout.rows.map((entry) => (entry.fieldId === field ? { ...entry, ...patch, fieldId: field } : entry)) };
 }
 
 export function patchPivotColumnField(layout: PivotLayout, field: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
-  if (!layout.columns.some((entry) => (entry.fieldId ?? entry.field) === field)) throw new Error(`Unknown pivot column field: ${field}`);
-  return { ...layout, columns: layout.columns.map((entry) => ((entry.fieldId ?? entry.field) === field ? { ...entry, ...patch, fieldId: field } : entry)) };
+  if (!layout.columns.some((entry) => entry.fieldId === field)) throw new Error(`Unknown pivot column field: ${field}`);
+  return { ...layout, columns: layout.columns.map((entry) => (entry.fieldId === field ? { ...entry, ...patch, fieldId: field } : entry)) };
 }
 
 export function setPivotAggregate(layout: PivotLayout, field: string, summarizeBy: PivotAggregateFunction): PivotLayout {
@@ -118,34 +110,17 @@ export function setPivotGroup(layout: PivotLayout, axis: 'rows' | 'columns', fie
 }
 
 export function upsertPivotFilter(layout: PivotLayout, filter: PivotFilter): PivotLayout {
-  const fieldId = filter.fieldId ?? filter.field;
-  if (!fieldId) throw new Error('Pivot filter requires fieldId');
-  const filters = layout.filters.filter((entry) => (entry.fieldId ?? entry.field) !== fieldId);
+  const fieldId = filter.fieldId;
+  const filters = layout.filters.filter((entry) => entry.fieldId !== fieldId);
   filters.push(structuredClone({ ...filter, fieldId }));
   return { ...layout, filters };
-}
-
-export function upsertPivotSlicer(pivot: PivotModel, slicer: PivotSlicer): PivotSlicer[] {
-  const slicers = [...(pivot.slicers ?? [])];
-  const index = slicers.findIndex((entry) => entry.id === slicer.id);
-  if (index >= 0) slicers[index] = structuredClone(slicer);
-  else slicers.push(structuredClone(slicer));
-  return slicers;
-}
-
-export function upsertPivotTimeline(pivot: PivotModel, timeline: PivotTimeline): PivotTimeline[] {
-  const timelines = [...(pivot.timelines ?? [])];
-  const index = timelines.findIndex((entry) => entry.id === timeline.id);
-  if (index >= 0) timelines[index] = structuredClone(timeline);
-  else timelines.push(structuredClone(timeline));
-  return timelines;
 }
 
 export interface PivotDrillDownTarget {
   sheetId: string;
   pivotId: string;
   targetSheetId: string;
-  targetAnchor: { row: number; column: number };
+  target: { row: number; column: number };
   sourceRowPaths: Array<{ sheetId: string; row: number }>;
 }
 

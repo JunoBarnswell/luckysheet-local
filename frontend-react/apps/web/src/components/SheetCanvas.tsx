@@ -625,6 +625,7 @@ export interface SheetCanvasProps {
   onRedo: () => void;
   /** Host owns command/session execution after the shared registry resolves a shortcut. */
   onShortcut?: (id: string) => boolean;
+  canRepeat?: boolean;
   onOpenInspector: () => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
   onToggleOutline?: (groupId: string) => void;
@@ -870,6 +871,7 @@ export function SheetCanvas({
   onUndo,
   onRedo,
   onShortcut,
+  canRepeat = false,
   onOpenInspector,
   onApplyFilter,
   onToggleOutline,
@@ -1833,7 +1835,7 @@ export function SheetCanvas({
 
       const shortcut = shortcutRegistryRef.current?.resolve(event, {
         scope: 'grid',
-        canRepeat: false,
+        canRepeat,
       });
       if (shortcut && onShortcut?.(shortcut.id)) {
         event.preventDefault();
@@ -1909,7 +1911,7 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selection, sheet, skeleton],
+    [canRepeat, cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selection, sheet, skeleton],
   );
 
   // ---------- 右键菜单 ----------

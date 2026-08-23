@@ -53,8 +53,8 @@ export type PivotAggregateFunction =
 
 export interface PivotSourceRelationship {
   id: string;
-  left: { sheetId: SheetId; fieldId?: string; field?: string };
-  right: { sheetId: SheetId; fieldId?: string; field?: string };
+  left: { sheetId: SheetId; fieldId: string };
+  right: { sheetId: SheetId; fieldId: string };
   join: 'inner' | 'left';
 }
 
@@ -68,20 +68,15 @@ export type PivotSource = PivotWorksheetDataSource
   | { kind: 'named-range'; name: string }
   | { kind: 'data-source'; dataSourceId: string };
 
-/** @deprecated Use PivotSource. Kept as a type name for package consumers during migration. */
-export type PivotDataSource = PivotWorksheetDataSource;
-
 export type PivotFieldDataType = 'text' | 'number' | 'date' | 'boolean' | 'mixed';
 
 export interface PivotFieldDefinition {
   /** Stable identity. It is derived from the source column, never from a row value. */
-  fieldId?: string;
+  fieldId: string;
   name: string;
   dataType: PivotFieldDataType;
   ordinal: number;
   values?: PivotScalar[];
-  /** @deprecated read-only migration hint; new definitions use fieldId. */
-  id?: string;
 }
 
 export interface PivotFieldCatalog {
@@ -90,11 +85,9 @@ export interface PivotFieldCatalog {
 }
 
 export interface PivotManualGroup {
-  groupId?: string;
+  groupId: string;
   name: string;
   items: PivotMemberKey[];
-  /** @deprecated accepts source values only while migrating old snapshots. */
-  legacyItems?: PivotScalar[];
 }
 
 export type PivotGroup =
@@ -106,47 +99,34 @@ export type PivotSort = {
   direction: 'ascending' | 'descending';
   by?: 'label' | 'value';
   valueFieldId?: string;
-  /** @deprecated use valueFieldId. */
-  valueField?: string;
 };
 
 export interface PivotFieldPlacement {
-  fieldId?: string;
-  /** @deprecated use fieldId. New layouts emitted by the app never set this. */
-  field?: string;
+  fieldId: string;
   sort?: PivotSort;
   group?: PivotGroup;
 }
 
 export type PivotManualFilter = {
   kind: 'manual';
-  fieldId?: string;
-  /** @deprecated use fieldId. */
-  field?: string;
-  mode?: 'all' | 'include' | 'exclude';
-  memberKeys?: PivotMemberKey[];
-  /** @deprecated old snapshots are normalized at the calculation boundary. */
-  selected?: PivotScalar[];
-  /** @deprecated old snapshots are normalized at the calculation boundary. */
-  exclude?: boolean;
+  fieldId: string;
+  mode: 'all' | 'include' | 'exclude';
+  memberKeys: PivotMemberKey[];
 };
 
 export type PivotFilter =
   | PivotManualFilter
   | {
     kind: 'condition';
-    fieldId?: string;
-    field?: string;
+    fieldId: string;
     operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
     value: PivotScalar;
   }
   | {
     kind: 'top-items';
-    fieldId?: string;
-    field?: string;
+    fieldId: string;
     count: number;
-    valueFieldId?: string;
-    valueField?: string;
+    valueFieldId: string;
     direction: 'top' | 'bottom';
   };
 
@@ -163,28 +143,24 @@ export type PivotShowAs =
   | { kind: 'index' };
 
 export interface PivotValueField {
-  fieldId?: string;
-  /** @deprecated use fieldId. */
-  field?: string;
+  fieldId: string;
   summarizeBy: PivotAggregateFunction;
   displayName?: string;
   numberFormat?: string;
   baseFieldId?: string;
   baseItem?: PivotMemberKey | string;
-  /** @deprecated use baseFieldId. */
-  baseField?: string;
   showAs?: PivotShowAs;
 }
 
 export interface PivotCalculatedField {
-  fieldId?: string;
+  fieldId: string;
   name: string;
   formula: string;
 }
 
 export interface PivotCalculatedItem {
-  fieldId?: string;
-  field?: string;
+  fieldId: string;
+  targetFieldId: string;
   name: string;
   formula: string;
 }
@@ -208,8 +184,6 @@ export interface PivotLayout {
   compact: boolean;
   repeatLabels: boolean;
   expansion?: PivotExpansionState;
-  /** @deprecated field-level expansion is migrated to expansion node paths. */
-  expandedFieldIds?: string[];
 }
 
 export interface PivotRefreshPolicy {
@@ -226,36 +200,6 @@ export interface PivotNativeMetadata {
   fieldBindings?: Record<string, { cacheFieldIndex: number; sourceName?: string }>;
   /** Only identifiers and style/display attributes may cross the model boundary. */
   preservedFeatures?: Array<'external-connection' | 'olap' | 'consolidation' | 'macro' | 'custom-xml' | 'slicer' | 'timeline'>;
-}
-
-/** Floating Pivot controls are owned by their drawing/object records. These
- * narrow records remain useful as an input projection while those records are
- * being migrated out of PivotModel. */
-export interface PivotSlicer {
-  id: string;
-  pivotId?: string;
-  fieldId?: string;
-  field?: string;
-  mode?: 'all' | 'include' | 'exclude';
-  memberKeys?: PivotMemberKey[];
-  /** @deprecated use mode/memberKeys. */
-  selected?: PivotScalar[];
-  connectedPivotIds?: string[];
-}
-
-export interface PivotTimeline {
-  id: string;
-  pivotId?: string;
-  fieldId?: string;
-  field?: string;
-  start?: string;
-  end?: string;
-  connectedPivotIds?: string[];
-}
-
-export interface PivotChartReference {
-  chartId: string;
-  role: 'source' | 'linked';
 }
 
 export interface PivotTarget {
@@ -275,33 +219,8 @@ export interface PivotDefinition {
   nativeMetadata?: PivotNativeMetadata;
 }
 
-/**
- * WorkbookModel currently exposes this name. New code should construct a
- * PivotDefinition; optional legacy members let a loader inspect old records
- * and hand them to the explicit migration boundary without creating a second
- * calculation path.
- */
-export interface PivotModel extends Partial<Omit<PivotDefinition, 'id' | 'layout'>> {
-  id: string;
-  layout: PivotLayout;
-  /** @deprecated old snapshot members; never emitted by canonical builders. */
-  sourceRange?: RangeRef;
-  /** @deprecated old snapshot members; never emitted by canonical builders. */
-  dataSource?: PivotDataSource;
-  /** @deprecated use target.sheetId. */
-  sheetId?: SheetId;
-  /** @deprecated use target.anchor. */
-  targetAnchor?: { row: Row; column: Column };
-  /** @deprecated old runtime status; refresh status is derived. */
-  refreshRevision?: number;
-  lastRefreshedAt?: string;
-  /** @deprecated Pivot controls are moving to floating-object records. */
-  slicers?: PivotSlicer[];
-  /** @deprecated Pivot controls are moving to floating-object records. */
-  timelines?: PivotTimeline[];
-  /** @deprecated chart relation is derived from drawing payloads. */
-  chartReferences?: PivotChartReference[];
-}
+/** Compatibility export for package consumers. There is exactly one Pivot shape. */
+export type PivotModel = PivotDefinition;
 
 export interface PivotSourceRowPath {
   sheetId: SheetId;
@@ -309,22 +228,20 @@ export interface PivotSourceRowPath {
 }
 
 export interface PivotResultCell {
-  id?: string;
-  nodePath?: string[];
-  kind?: 'detail' | 'subtotal' | 'grand-total';
+  id: string;
+  nodePath: string[];
+  kind: 'detail' | 'subtotal' | 'grand-total';
   columnPath: PivotScalar[];
   values: PivotScalar[];
   sourceRowPaths: PivotSourceRowPath[];
 }
 
 export interface PivotResultNode {
-  nodeId?: string;
-  path?: string[];
+  nodeId: string;
+  path: string[];
   kind: 'leaf' | 'subtotal';
-  fieldId?: string;
-  /** @deprecated use fieldId. */
-  field?: string;
-  memberKey?: PivotMemberKey;
+  fieldId: string;
+  memberKey: PivotMemberKey;
   key: PivotScalar;
   label: string;
   depth: number;
@@ -426,43 +343,14 @@ export interface ContextHit extends PivotHitTest {
  * source inspection and field catalog inference belong to the spreadsheet-app
  * engine where a WorkbookModel is available.
  */
-export function migratePivotDefinition(input: PivotModel): PivotDefinition {
-  const source = input.source ?? input.dataSource ?? (input.sourceRange ? { kind: 'worksheet-range' as const, range: structuredClone(input.sourceRange) } : undefined);
-  if (!source) throw new Error(`Pivot ${input.id} requires a source`);
-  const sheetId = input.target?.sheetId ?? input.sheetId;
-  if (!sheetId) throw new Error(`Pivot ${input.id} requires a target sheet`);
-  const catalog: PivotFieldCatalog = {
-    schema: 'PivotFieldCatalog',
-    fields: structuredClone(input.fieldCatalog?.fields ?? []).map((field, ordinal) => ({
-      ...field,
-      fieldId: field.fieldId ?? field.id ?? `field:${ordinal}:${field.name}`,
-      id: field.fieldId ?? field.id ?? `field:${ordinal}:${field.name}`,
-      ordinal,
-    })),
-  };
-  const fieldId = (value: string | undefined): string | undefined => {
-    if (!value) return undefined;
-    return catalog.fields.find((field) => field.fieldId === value || field.id === value || field.name === value)?.fieldId ?? value;
-  };
-  const layout: PivotLayout = structuredClone(input.layout);
-  layout.rows = layout.rows.map((entry) => ({ ...entry, fieldId: fieldId(entry.fieldId ?? entry.field) }));
-  layout.columns = layout.columns.map((entry) => ({ ...entry, fieldId: fieldId(entry.fieldId ?? entry.field) }));
-  layout.values = layout.values.map((entry) => ({ ...entry, fieldId: fieldId(entry.fieldId ?? entry.field), baseFieldId: fieldId(entry.baseFieldId ?? entry.baseField) }));
-  layout.filters = layout.filters.map((entry) => {
-    const normalizedFieldId = fieldId(entry.fieldId ?? entry.field);
-    if (entry.kind !== 'manual') return { ...entry, fieldId: normalizedFieldId };
-    const mode = entry.mode ?? (entry.exclude ? 'exclude' : (entry.selected?.length ? 'include' : 'all'));
-    const memberKeys = entry.memberKeys?.length ? entry.memberKeys : (entry.selected ?? []).map(createPivotMemberKey);
-    return { kind: 'manual' as const, fieldId: normalizedFieldId, mode, memberKeys };
-  });
-  return {
-    schema: PIVOT_DEFINITION_SCHEMA,
-    id: input.id,
-    source: structuredClone(source),
-    target: { sheetId, anchor: structuredClone(input.target?.anchor ?? input.targetAnchor ?? { row: 0, column: 0 }) },
-    fieldCatalog: catalog,
-    layout,
-    refreshPolicy: structuredClone(input.refreshPolicy ?? { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true }),
-    nativeMetadata: input.nativeMetadata ? structuredClone(input.nativeMetadata) : undefined,
-  };
+export function migratePivotDefinition(input: PivotDefinition): PivotDefinition {
+  if (input.schema !== PIVOT_DEFINITION_SCHEMA) throw new Error(`Pivot ${input.id} is not a canonical definition`);
+  if (!input.source || !input.target || !input.fieldCatalog || !input.refreshPolicy) throw new Error(`Pivot ${input.id} is missing canonical fields`);
+  if (input.layout.rows.some((entry) => !entry.fieldId)
+    || input.layout.columns.some((entry) => !entry.fieldId)
+    || input.layout.values.some((entry) => !entry.fieldId)
+    || input.layout.filters.some((entry) => !entry.fieldId)) {
+    throw new Error(`Pivot ${input.id} has non-canonical field references`);
+  }
+  return structuredClone(input);
 }

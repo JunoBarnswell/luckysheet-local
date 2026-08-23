@@ -1,5 +1,6 @@
 import type {
   DataSourceManifest,
+  PivotDefinition,
   PivotResultTree,
   RangeRef,
   SheetDataRegion,
@@ -190,6 +191,124 @@ function validateExactKeys(value: Record<string, unknown>, allowed: readonly str
   }
 }
 
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function validatePivotMemberKey(value: unknown, label: string): void {
+  const member = requireRecord(value, label);
+  validateExactKeys(member, ['type', 'value'], label);
+  if (!['text', 'number', 'boolean', 'blank'].includes(String(member.type))) throw new Error(`${label}.type is invalid`);
+  if (member.type === 'blank' && member.value !== null) throw new Error(`${label}.value must be null for blank`);
+  if (member.type === 'text' && typeof member.value !== 'string') throw new Error(`${label}.value must be text`);
+  if (member.type === 'number' && (typeof member.value !== 'number' || !Number.isFinite(member.value))) throw new Error(`${label}.value must be a finite number`);
+  if (member.type === 'boolean' && typeof member.value !== 'boolean') throw new Error(`${label}.value must be boolean`);
+}
+
+function validatePivotSource(value: unknown): void {
+  const source = requireRecord(value, 'Pivot source');
+  if (source.kind === 'worksheet-range') {
+    validateExactKeys(source, ['kind', 'range'], 'Pivot worksheet source');
+    if (!isRangeRef(source.range)) throw new Error('Pivot worksheet source range is invalid');
+    return;
+  }
+  if (source.kind === 'worksheet-ranges') {
+    validateExactKeys(source, ['kind', 'ranges', 'relationships'], 'Pivot worksheet sources');
+    if (!Array.isArray(source.ranges) || !source.ranges.length || !source.ranges.every(isRangeRef) || !Array.isArray(source.relationships)) {
+      throw new Error('Pivot worksheet sources are invalid');
+    }
+    for (const relationship of source.relationships) {
+      const item = requireRecord(relationship, 'Pivot relationship');
+      validateExactKeys(item, ['id', 'left', 'right', 'join'], 'Pivot relationship');
+      if (!isNonEmptyString(item.id) || (item.join !== 'inner' && item.join !== 'left')) throw new Error('Pivot relationship is invalid');
+      for (const side of [item.left, item.right]) {
+        const reference = requireRecord(side, 'Pivot relationship field');
+        validateExactKeys(reference, ['sheetId', 'fieldId'], 'Pivot relationship field');
+        if (!isNonEmptyString(reference.sheetId) || !isNonEmptyString(reference.fieldId)) throw new Error('Pivot relationship field is invalid');
+      }
+    }
+    return;
+  }
+  if (source.kind === 'table') {
+    validateExactKeys(source, ['kind', 'tableId'], 'Pivot table source');
+    if (!isNonEmptyString(source.tableId)) throw new Error('Pivot table source is invalid');
+    return;
+  }
+  if (source.kind === 'named-range') {
+    validateExactKeys(source, ['kind', 'name'], 'Pivot named source');
+    if (!isNonEmptyString(source.name)) throw new Error('Pivot named source is invalid');
+    return;
+  }
+  if (source.kind === 'data-source') {
+    validateExactKeys(source, ['kind', 'dataSourceId'], 'Pivot data source');
+    if (!isNonEmptyString(source.dataSourceId)) throw new Error('Pivot data source is invalid');
+    return;
+  }
+  throw new Error('Pivot source kind is unsupported');
+}
+
+/** Rejects every non-canonical Pivot field at the transport boundary. */
+export function validatePivotDefinition(value: unknown): asserts value is PivotDefinition {
+  const pivot = requireRecord(value, 'Pivot definition');
+  validateExactKeys(pivot, ['schema', 'id', 'source', 'target', 'fieldCatalog', 'layout', 'refreshPolicy', 'nativeMetadata'], 'Pivot definition');
+  if (pivot.schema !== 'PivotDefinition' || !isNonEmptyString(pivot.id)) throw new Error('Pivot definition identity is invalid');
+  validatePivotSource(pivot.source);
+  const target = requireRecord(pivot.target, 'Pivot target');
+  validateExactKeys(target, ['sheetId', 'anchor'], 'Pivot target');
+  const anchor = requireRecord(target.anchor, 'Pivot target anchor');
+  validateExactKeys(anchor, ['row', 'column'], 'Pivot target anchor');
+  if (!isNonEmptyString(target.sheetId) || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0 || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0) throw new Error('Pivot target is invalid');
+  const catalog = requireRecord(pivot.fieldCatalog, 'Pivot field catalog');
+  validateExactKeys(catalog, ['schema', 'fields'], 'Pivot field catalog');
+  if (catalog.schema !== undefined && catalog.schema !== 'PivotFieldCatalog') throw new Error('Pivot field catalog schema is invalid');
+  if (!Array.isArray(catalog.fields)) throw new Error('Pivot field catalog fields are invalid');
+  const fieldIds = new Set<string>();
+  for (const [ordinal, rawField] of catalog.fields.entries()) {
+    const field = requireRecord(rawField, 'Pivot field');
+    validateExactKeys(field, ['fieldId', 'name', 'dataType', 'ordinal', 'values'], 'Pivot field');
+    if (!isNonEmptyString(field.fieldId) || fieldIds.has(field.fieldId) || !isNonEmptyString(field.name)
+      || field.ordinal !== ordinal || !['text', 'number', 'date', 'boolean', 'mixed'].includes(String(field.dataType))) {
+      throw new Error('Pivot field is invalid');
+    }
+    if (field.values !== undefined && (!Array.isArray(field.values) || !field.values.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item)))) throw new Error('Pivot field values are invalid');
+    fieldIds.add(field.fieldId);
+  }
+  const layout = requireRecord(pivot.layout, 'Pivot layout');
+  validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'showSubtotals', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
+  if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
+    || typeof layout.showSubtotals !== 'boolean' || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+  const validatePlacement = (rawPlacement: unknown): void => {
+    const placement = requireRecord(rawPlacement, 'Pivot placement');
+    validateExactKeys(placement, ['fieldId', 'sort', 'group'], 'Pivot placement');
+    if (!isNonEmptyString(placement.fieldId) || !fieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
+  };
+  layout.rows.forEach(validatePlacement);
+  layout.columns.forEach(validatePlacement);
+  for (const rawFilter of layout.filters) {
+    const filter = requireRecord(rawFilter, 'Pivot filter');
+    if (!isNonEmptyString(filter.fieldId) || !fieldIds.has(filter.fieldId)) throw new Error('Pivot filter fieldId is invalid');
+    if (filter.kind === 'manual') {
+      validateExactKeys(filter, ['kind', 'fieldId', 'mode', 'memberKeys'], 'Pivot manual filter');
+      if (!['all', 'include', 'exclude'].includes(String(filter.mode)) || !Array.isArray(filter.memberKeys)) throw new Error('Pivot manual filter is invalid');
+      filter.memberKeys.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual filter member ${String(index)}`));
+    } else if (filter.kind === 'condition') {
+      validateExactKeys(filter, ['kind', 'fieldId', 'operator', 'value'], 'Pivot condition filter');
+    } else if (filter.kind === 'top-items') {
+      validateExactKeys(filter, ['kind', 'fieldId', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
+    } else throw new Error('Pivot filter kind is unsupported');
+  }
+  for (const rawValue of layout.values) {
+    const item = requireRecord(rawValue, 'Pivot value field');
+    validateExactKeys(item, ['fieldId', 'summarizeBy', 'displayName', 'numberFormat', 'baseFieldId', 'baseItem', 'showAs'], 'Pivot value field');
+    if (!isNonEmptyString(item.fieldId) || !fieldIds.has(item.fieldId) || !['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'].includes(String(item.summarizeBy))) throw new Error('Pivot value field is invalid');
+  }
+  const policy = requireRecord(pivot.refreshPolicy, 'Pivot refresh policy');
+  validateExactKeys(policy, ['mode', 'preserveFormatting', 'refreshOnLoad'], 'Pivot refresh policy');
+  if (!['manual', 'on-open', 'on-change'].includes(String(policy.mode)) || typeof policy.preserveFormatting !== 'boolean' || typeof policy.refreshOnLoad !== 'boolean') throw new Error('Pivot refresh policy is invalid');
+}
+
 export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Data source manifest must be an object');
   const source = value as Record<string, unknown>;
@@ -292,6 +411,25 @@ export function validateDataSourceMutationParams(
   }
 }
 
+function validatePivotMutationParams(id: string, value: unknown): void {
+  if (id === 'pivot.add') {
+    validatePivotDefinition(value);
+    return;
+  }
+  if (id !== 'pivot.update') return;
+  const params = requireRecord(value, 'Pivot update');
+  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'], 'Pivot update');
+  if (!isNonEmptyString(params.sheetId) || !isNonEmptyString(params.pivotId)) throw new Error('Pivot update identity is invalid');
+  if (!['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'].some((key) => params[key] !== undefined)) throw new Error('Pivot update has no canonical change');
+  if (params.source !== undefined) validatePivotSource(params.source);
+  if (params.target !== undefined) {
+    const target = requireRecord(params.target, 'Pivot update target');
+    validateExactKeys(target, ['sheetId', 'anchor'], 'Pivot update target');
+    const anchor = requireRecord(target.anchor, 'Pivot update target anchor');
+    if (!isNonEmptyString(target.sheetId) || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0 || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0) throw new Error('Pivot update target is invalid');
+  }
+}
+
 /** Validate the only snapshot representation accepted at the wire boundary. */
 export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -338,6 +476,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     if (!Array.isArray(sheet.drawings) || !sheet.drawingPayloads || typeof sheet.drawingPayloads !== 'object') {
       throw new Error(`WorkbookSnapshot sheet[${index}] requires canonical drawings and payloads`);
     }
+    for (const pivot of sheet.pivots) validatePivotDefinition(pivot);
     if (sheet.dataRegions !== undefined) {
       if (!Array.isArray(sheet.dataRegions)) throw new Error(`WorkbookSnapshot sheet[${index}] dataRegions must be an array`);
       for (const region of sheet.dataRegions) {
@@ -418,6 +557,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
     if (isDataSourceMutationId(mutation.id)) {
       validateDataSourceMutationParams(mutation.id, mutation.params);
     }
+    validatePivotMutationParams(mutation.id, mutation.params);
     return {
       id: mutation.id,
       sheetId: mutation.sheetId,

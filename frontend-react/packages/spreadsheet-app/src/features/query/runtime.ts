@@ -38,7 +38,6 @@ export interface QueryCellLoadPayload {
   clearRange: RangeRef;
   values: CellData[][];
   /** Pivot source loads refresh this persisted pivot metadata atomically. */
-  pivot?: { sheetId: string; pivotId: string; nextRefreshRevision: number; nextRefreshedAt: string };
 }
 
 export interface QueryWorkbookTableLoadPayload {
@@ -221,10 +220,10 @@ function findPivot(workbook: WorkbookModel, pivotId: string): { sheetId: string;
 }
 
 function sourceRangeForPivot(pivot: import('@react-sheets/core-model').PivotModel): RangeRef {
-  if (pivot.dataSource?.kind === 'worksheet-ranges') {
-    throw new Error(`Pivot ${pivot.id} has multiple source ranges; query load requires an explicit range target`);
+  if (pivot.source.kind !== 'worksheet-range') {
+    throw new Error(`Pivot ${pivot.id} requires an explicit query target for this source kind`);
   }
-  return structuredClone(pivot.dataSource?.range ?? pivot.sourceRange);
+  return structuredClone(pivot.source.range);
 }
 
 function previousCells(workbook: WorkbookModel, range: RangeRef): Array<{ row: number; column: number; value?: CellData }> {
@@ -354,11 +353,9 @@ export function buildQueryLoadPlan(
     assertRangeBounds(workbook, sourceRange);
     const payload: QueryCellLoadPayload = {
       kind: 'cells', queryId: params.query.id, queryDefinition: persistedDefinition, target: structuredClone(target), clearRange: sourceRange, values,
-      pivot: { sheetId: found.sheetId, pivotId: found.pivot.id, nextRefreshRevision: (found.pivot.refreshRevision ?? 0) + 1, nextRefreshedAt: new Date().toISOString() },
     };
     const inverse: QueryCellLoadPayload = {
       kind: 'cells', queryId: params.query.id, queryDefinition: previousDefinition, target: structuredClone(target), clearRange: sourceRange, values: [],
-      pivot: { sheetId: found.sheetId, pivotId: found.pivot.id, nextRefreshRevision: found.pivot.refreshRevision ?? 0, nextRefreshedAt: found.pivot.lastRefreshedAt ?? '' },
     };
     Object.assign(inverse, { previousCells: previousCells(workbook, sourceRange) });
     return { mutationId: 'query.load.pivot-source', payload, inverse, affectedRanges: [sourceRange] };

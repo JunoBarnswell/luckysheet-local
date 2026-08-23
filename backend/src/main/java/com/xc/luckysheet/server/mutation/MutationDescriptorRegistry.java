@@ -39,7 +39,7 @@ public class MutationDescriptorRegistry {
             "dv.add", "dv.remove", "filter.remove", "filter.set", "freeze.set",
             "hyperlink.remove", "hyperlink.set", "merge.remove", "merge.set",
             "name.remove", "name.set", "note.remove", "note.set", "note.visibility", "outline.set",
-            "pivot.add", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
+            "pivot.add", "pivot.chart.create", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
             "print.area.clear", "print.area.set", "print.document.replace", "print.pageBreak.remove", "print.pageBreak.set", "print.pageBreaks.clear", "print.pageSetup.set",
             "query.definition.replace", "query.load.pivot-source", "query.load.range", "query.load.sheet-table", "query.load.workbook-table",
             "range.clear", "range.clear.restore", "range.paste", "range.set",
@@ -66,6 +66,7 @@ public class MutationDescriptorRegistry {
             Map.entry("hyperlink.set", "The canonical workbook snapshot currently has no structured hyperlink collection."),
             Map.entry("hyperlink.remove", "The canonical workbook snapshot currently has no structured hyperlink collection."),
             Map.entry("query.load.workbook-table", "Workbook-table query result blocks have no persisted, frontend-readable canonical data plane."),
+            Map.entry("pivot.chart.create", "PivotChart is persisted through one canonical drawing.add mutation; the UI command must never cross the workbook mutation boundary."),
             Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
     );
 

@@ -17,7 +17,9 @@ export type RibbonTabId =
   | 'data'
   | 'review'
   | 'view'
-  | 'automate';
+  | 'automate'
+  | 'pivotAnalyze'
+  | 'pivotDesign';
 
 export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'file',

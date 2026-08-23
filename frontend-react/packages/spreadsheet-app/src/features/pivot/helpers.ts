@@ -4,17 +4,10 @@ import type {
   PivotFieldPlacement,
   PivotLayout,
   PivotModel,
-  PivotSlicer,
-  PivotTimeline,
   RangeRef,
   WorkbookModel,
 } from '@react-sheets/core-model';
-import { createPivotMemberKey } from '@react-sheets/core-model';
 import { getPivotFieldCatalog, getPivotSourceRanges } from './engine';
-
-function fieldIdByName(catalog: PivotFieldCatalog, name: string): string | undefined {
-  return catalog.fields.find((field) => field.name === name || field.fieldId === name)?.fieldId;
-}
 
 export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string, sourceRange: RangeRef): PivotLayout | undefined {
   const draft = {
@@ -79,31 +72,4 @@ export function connectedPivotIdsForSource(workbook: WorkbookModel, _sheetId: st
     .flatMap((sheet) => sheet.pivots)
     .filter((pivot) => getPivotSourceRanges(workbook, pivot).some((range) => sameRange(range, sourceRange)))
     .map((pivot) => pivot.id);
-}
-
-export function buildPivotSlicer(pivot: PivotModel, _workbook: WorkbookModel, field: string, connectedPivotIds: string[]): PivotSlicer {
-  const catalog = pivot.fieldCatalog;
-  const fieldId = fieldIdByName(catalog ?? { fields: [] }, field) ?? field;
-  const existing = pivot.slicers?.find((entry) => (entry.fieldId ?? entry.field) === fieldId || (entry.fieldId ?? entry.field) === field);
-  return {
-    id: existing?.id ?? `slicer-${fieldId}`,
-    pivotId: pivot.id,
-    fieldId,
-    mode: existing?.mode ?? 'all',
-    memberKeys: existing?.memberKeys ?? (existing?.selected ?? []).map(createPivotMemberKey),
-    connectedPivotIds,
-  };
-}
-
-export function buildPivotTimeline(pivot: PivotModel, field: string, connectedPivotIds: string[], start?: string, end?: string): PivotTimeline {
-  const fieldId = fieldIdByName(pivot.fieldCatalog ?? { fields: [] }, field) ?? field;
-  const existing = pivot.timelines?.find((entry) => (entry.fieldId ?? entry.field) === fieldId || (entry.fieldId ?? entry.field) === field);
-  return {
-    id: existing?.id ?? `timeline-${fieldId}`,
-    pivotId: pivot.id,
-    fieldId,
-    start: start ?? existing?.start,
-    end: end ?? existing?.end,
-    connectedPivotIds,
-  };
 }

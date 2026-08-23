@@ -22,6 +22,8 @@
   "review": "审阅",
   "view": "视图",
   "automate": "自动化",
+  "pivotAnalyze": "数据透视表分析",
+  "pivotDesign": "数据透视表设计",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -70,7 +72,9 @@
       "freezePanes": "冻结窗格",
       "zoom": "缩放",
       "printLayout": "打印布局",
-      "appearanceFiles": "外观与文件"
+      "appearanceFiles": "外观与文件",
+      "pivotAnalyze": "数据透视表",
+      "pivotDesign": "数据透视表"
     },
     "commands": {
       "save": "保存",
@@ -133,6 +137,8 @@
       "conditionalFormat": "条件格式",
       "pivotTable": "透视表",
       "quickPivot": "快速透视",
+      "pivotRefresh": "刷新",
+      "pivotFieldList": "字段列表",
       "chartBuilder": "图表构建器",
       "columnChart": "柱形图",
       "sparkline": "迷你图",

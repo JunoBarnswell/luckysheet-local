@@ -3,6 +3,7 @@ import type {
   CellStyle,
   CellHyperlink,
   DefinedNameModel,
+  DrawingObject,
   FreezeModel,
   MergeSpan,
   WorkbookSnapshot,
@@ -28,7 +29,8 @@ import {
   type XlsxRelationship,
   type XlsxZipLimits,
 } from './types';
-import { readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotGraph } from './native-pivot';
+import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
+import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 
 const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
@@ -167,6 +169,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
     definedNameModels,
     sheets,
   };
+  attachNativePivots(snapshot, loaded.package.nativePivotGraph, loaded.package.sheetPartById);
   return { package: loaded.package, snapshot, features: detectPackageFeatures(loaded.package, snapshot) };
 }
 
@@ -183,21 +186,19 @@ export function exportSnapshotToXlsxPackage(
     }
   }
   const sourceFiles = preserved?.parts ?? {};
-  const nativeFiles = preserved?.nativePivotGraph
-    ? synchronizeNativePivotGraph({
-      files: Object.fromEntries([...files.entries()]),
-      relationships: preserved.relationships,
-      graph: preserved.nativePivotGraph,
-      sheetNameByPart: Object.fromEntries(snapshot.sheets.map((sheet, index) => [preserved.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`, sheet.name])),
-    })
-    : undefined;
-  if (nativeFiles) {
-    for (const [name, data] of Object.entries(nativeFiles)) files.set(name, data);
-  }
+  const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
+  const sheetPartById = Object.fromEntries(snapshot.sheets.map((sheet, index) => [sheet.id, sheetParts[index]!])) as Record<string, string>;
+  const nativeUpdate = synchronizeNativePivotPackage({
+    files: Object.fromEntries([...files.entries()]),
+    relationships: preserved?.relationships ?? {},
+    graph: preserved?.nativePivotGraph,
+    snapshot,
+    sheetPartById,
+  });
+  for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const styleOutput = buildStyles(snapshot);
   const styleIndexes = collectStyleIndexes(snapshot);
   const sharedOutput = buildSharedStrings(snapshot);
-  const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
   const sheetRelationships: Record<string, XlsxRelationship[]> = {};
   for (let index = 0; index < snapshot.sheets.length; index += 1) {
     const sheet = snapshot.sheets[index]!;
@@ -207,25 +208,29 @@ export function exportSnapshotToXlsxPackage(
     const requiredHyperlinks = collectHyperlinkRelationships(sheet, preserved?.relationships[part] ?? []);
     const tableParts = prepareTableParts(sheet, part, preserved, files);
     for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
-    const relationships = mergeRelationships(preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
+    const relationships = mergeRelationships(nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, options.includeCachedValues ?? true)));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part])));
   }
 
   const workbookRelations = mergeRelationships(
-    preserved?.relationships['xl/workbook.xml'] ?? [],
+    nativeUpdate.relationships['xl/workbook.xml'] ?? preserved?.relationships['xl/workbook.xml'] ?? [],
     [
       { id: '', type: REL_STYLES, target: 'styles.xml' },
       { id: '', type: REL_SHARED_STRINGS, target: 'sharedStrings.xml' },
       ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget('xl/workbook.xml', part) })),
     ],
   );
-  files.set('xl/workbook.xml', strToU8(buildWorkbookXml(snapshot, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, preserved)));
+  files.set('xl/workbook.xml', strToU8(buildWorkbookXml(snapshot, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
   files.set('xl/_rels/workbook.xml.rels', strToU8(buildRelationshipsXml(workbookRelations)));
   files.set('_rels/.rels', strToU8(buildRootRelationshipsXml(preserved?.relationships[''] ?? [])));
   files.set('xl/styles.xml', strToU8(styleOutput));
   files.set('xl/sharedStrings.xml', strToU8(sharedOutput));
   for (const [source, relationships] of Object.entries(sheetRelationships)) {
+    files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
+  }
+  for (const [source, relationships] of Object.entries(nativeUpdate.relationships)) {
+    if (!source || source === 'xl/workbook.xml' || sheetRelationships[source]) continue;
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
   }
   files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved)));
@@ -346,6 +351,83 @@ function parseSheet(
     ...(sheetTables.length ? { sheetTables } : {}),
     hidden: descriptor.hidden,
   };
+}
+
+function attachNativePivots(snapshot: WorkbookSnapshot, graph: NativePivotGraph | undefined, sheetPartById: Record<string, string>): void {
+  if (!graph) return;
+  const caches = new Map(graph.caches.map((cache) => [cache.cacheId, cache]));
+  for (const table of graph.tables) {
+    const cache = caches.get(table.cacheId);
+    if (!cache) continue;
+    const definition = mapNativePivotDefinition(table, cache, snapshot, sheetPartById);
+    if (!definition) continue;
+    const sheet = snapshot.sheets.find((candidate) => candidate.id === definition.target.sheetId);
+    if (!sheet) continue;
+    sheet.pivots.push(definition);
+    const location = table.locationRef ? parseRange(table.locationRef) : undefined;
+    if (!location) continue;
+    for (const row of Object.keys(sheet.cells)) {
+      const rowIndex = Number(row);
+      if (rowIndex < location.startRow || rowIndex > location.endRow) continue;
+      for (const column of Object.keys(sheet.cells[row] ?? {})) {
+        const columnIndex = Number(column);
+        if (columnIndex >= location.startColumn && columnIndex <= location.endColumn) delete sheet.cells[row]![column]!;
+      }
+      if (!Object.keys(sheet.cells[row] ?? {}).length) delete sheet.cells[row];
+    }
+  }
+  attachNativePivotControls(snapshot, graph.controls ?? [], sheetPartById);
+}
+
+function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativePivotControlDefinition[], sheetPartById: Record<string, string>): void {
+  const style = { theme: 'light' as const, fill: '#ffffff', border: '#d1d5db', textColor: '#111827', accentColor: '#2563eb' };
+  for (const control of controls) {
+    if (!control.valid || !control.pivotId || !control.fieldId) continue;
+    const sheet = snapshot.sheets.find((candidate) => sheetPartById[candidate.id] === control.sheetPart);
+    const pivot = snapshot.sheets.flatMap((candidate) => candidate.pivots).find((candidate) => candidate.id === control.pivotId);
+    if (!sheet || !pivot || !pivot.fieldCatalog.fields.some((field) => field.fieldId === control.fieldId)) continue;
+    const existing = sheet.drawings.find((drawing) => drawing.id === control.id);
+    if (existing) continue;
+    const payloadId = control.id;
+    if (control.kind === 'slicer') {
+      const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === control.fieldId);
+      const memberKeys = (control.selectedItemIndexes ?? []).flatMap((index) => field?.values?.[index] === undefined ? [] : [nativeMemberKey(field.values[index] ?? null)]);
+      sheet.drawingPayloads[payloadId] = {
+        kind: 'slicer',
+        pivotId: control.pivotId,
+        fieldId: control.fieldId,
+        filter: { mode: memberKeys.length ? 'include' : 'all', memberKeys },
+        style,
+        ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
+      };
+    } else {
+      sheet.drawingPayloads[payloadId] = {
+        kind: 'timeline',
+        pivotId: control.pivotId,
+        fieldId: control.fieldId,
+        period: control.selection ?? {},
+        style,
+        ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
+      };
+    }
+    const drawing: DrawingObject = {
+      id: control.id,
+      sheetId: sheet.id,
+      kind: control.kind,
+      anchor: { kind: 'one-cell', row: 0, column: 0 },
+      transform: { x: 0, y: 0, width: control.kind === 'slicer' ? 220 : 420, height: control.kind === 'slicer' ? 180 : 120 },
+      zIndex: 0,
+      payloadId,
+    };
+    sheet.drawings.push(drawing);
+  }
+}
+
+function nativeMemberKey(value: string | number | boolean | null): { type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null } {
+  if (value === null || value === '') return { type: 'blank', value: null };
+  if (typeof value === 'number') return { type: 'number', value };
+  if (typeof value === 'boolean') return { type: 'boolean', value };
+  return { type: 'text', value };
 }
 
 function parseSheetTables(
@@ -569,6 +651,7 @@ function buildWorksheetXml(
   files: Map<string, Uint8Array>,
   styleIndexes: Map<string, number>,
   includeCachedValues: boolean,
+  nativeDisplayCells?: Record<string, Record<string, CellData>>,
 ): string {
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
   if (sheet.tabColor) xml += `<sheetPr><tabColor rgb="${encodeXml(sheet.tabColor)}"/></sheetPr>`;
@@ -582,9 +665,9 @@ function buildWorksheetXml(
     xml += `<cols>${Object.entries(sheet.columnWidths ?? {}).map(([column, width]) => `<col min="${Number(column) + 1}" max="${Number(column) + 1}" width="${width}" customWidth="1"/>`).join('')}${(sheet.hiddenColumns ?? []).map((column) => `<col min="${column + 1}" max="${column + 1}" hidden="1"/>`).join('')}</cols>`;
   }
   xml += '<sheetData>';
-  const rowKeys = Object.keys(sheet.cells).map(Number).sort((a, b) => a - b);
+  const rowKeys = [...new Set([...Object.keys(sheet.cells), ...Object.keys(nativeDisplayCells ?? {})])].map(Number).sort((a, b) => a - b);
   for (const row of rowKeys) {
-    const cells = sheet.cells[String(row)] ?? {};
+    const cells = { ...(nativeDisplayCells?.[String(row)] ?? {}), ...(sheet.cells[String(row)] ?? {}) };
     const columns = Object.keys(cells).map(Number).sort((a, b) => a - b);
     const hidden = sheet.hiddenRows?.includes(row) ? ' hidden="1"' : '';
     const height = sheet.rowHeights?.[row];
@@ -618,16 +701,25 @@ function buildWorksheetXml(
     });
     xml += `<tableParts count="${tableParts.length}">${tableParts.join('')}</tableParts>`;
   }
-  // A drawing/chart/pivot that is not editable in this package is still emitted
-  // through its original relationship node.  The binary/XML parts remain in
-  // the package, so an import/export cycle does not destroy unsupported data.
+  const pivotRelations = relationships.filter((relation) => relation.type.endsWith('/pivotTable'));
+  if (pivotRelations.length) {
+    const pivotParts = pivotRelations.map((relation) => {
+      const target = resolveTarget(sourcePart, relation.target);
+      if (!files.has(target)) throw new Error(`Worksheet PivotTable relationship points to missing part: ${target}`);
+      return `<pivotTablePart r:id="${encodeXml(relation.id)}"/>`;
+    });
+    xml += `<pivotTableParts count="${pivotParts.length}">${pivotParts.join('')}</pivotTableParts>`;
+  }
+  // A drawing or other unsupported worksheet node is still emitted through its
+  // original relationship. Native Pivot parts are rebuilt above from the
+  // canonical graph and therefore never copied from a stale worksheet node.
   if (originalRoot) {
     const preservedNodes = new Map<string, XmlNode>();
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'pivotTableParts' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
+      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
     }
-    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts', 'pivotTableParts', 'extLst']) {
+    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts', 'extLst']) {
       const node = preservedNodes.get(name);
       if (node) xml += serializeXml(node);
     }
@@ -652,7 +744,7 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${encodeXml(cell.value)}</t></is></c>`;
 }
 
-function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, preserved?: XlsxPackage): string {
+function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: XlsxPackage): string {
   const relationFor = (target: string, type: string) => relationships.find((relation) => relation.type === type && resolveTarget('xl/workbook.xml', relation.target) === target)?.id ?? '';
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
@@ -674,8 +766,8 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
   // OOXML places pivotCaches after definedNames.  Keeping the canonical
   // child order avoids Excel repair prompts on otherwise valid preserved
   // native Pivot packages.
-  if (preserved?.nativePivotGraph?.caches.length) {
-    xml += serializeNativePivotCaches(preserved.nativePivotGraph, relationships);
+  if (nativePivotGraph?.caches.length) {
+    xml += serializeNativePivotCaches(nativePivotGraph, relationships);
   }
   // Preserve workbook-level extension/calculation metadata that this package
   // does not edit.  Sheet references and defined names above remain canonical.

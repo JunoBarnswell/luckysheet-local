@@ -79,12 +79,6 @@ function applyCells(context: CommandContext, payload: QueryCellLoadPayload): voi
       if (value) sheet.cells.set(payload.clearRange.startRow + rowOffset, payload.clearRange.startColumn + columnOffset, structuredClone(value));
     }
   }
-  if (payload.pivot) {
-    const pivot = context.workbook.getSheet(payload.pivot.sheetId).pivots.find((entry) => entry.id === payload.pivot!.pivotId);
-    if (!pivot) throw new Error(`Unknown pivot: ${payload.pivot.pivotId}`);
-    pivot.refreshRevision = payload.pivot.nextRefreshRevision;
-    pivot.lastRefreshedAt = payload.pivot.nextRefreshedAt;
-  }
 }
 
 function restoreCells(context: CommandContext, payload: QueryCellRestorePayload): void {
@@ -96,13 +90,6 @@ function restoreCells(context: CommandContext, payload: QueryCellRestorePayload)
   }
   for (const previous of payload.previousCells) {
     if (previous.value) sheet.cells.set(previous.row, previous.column, structuredClone(previous.value));
-  }
-  if (payload.pivot) {
-    const pivot = context.workbook.getSheet(payload.pivot.sheetId).pivots.find((entry) => entry.id === payload.pivot!.pivotId);
-    if (pivot) {
-      pivot.refreshRevision = payload.pivot.nextRefreshRevision;
-      pivot.lastRefreshedAt = payload.pivot.nextRefreshedAt;
-    }
   }
 }
 

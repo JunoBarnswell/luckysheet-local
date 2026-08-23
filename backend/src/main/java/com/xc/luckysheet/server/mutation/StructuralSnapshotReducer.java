@@ -9,6 +9,7 @@ import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Canonical structural reducer for a workbook JSON snapshot.
@@ -30,6 +31,7 @@ final class StructuralSnapshotReducer {
             int count,
             FormulaReferenceTransformer.Direction direction
     ) {
+        PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode target = SnapshotMutationSupport.sheet(root, sheetId);
         int limit = dimension(target, axis);
         int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW + 1 : SnapshotMutationSupport.MAX_COLUMN + 1;
@@ -43,6 +45,7 @@ final class StructuralSnapshotReducer {
     }
 
     static void shiftCells(ObjectNode root, String sheetId, RangeRef source, ShiftDirection direction) {
+        PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(source, sheetId);
         RangeRef selection = normalize(source);
@@ -86,6 +89,7 @@ final class StructuralSnapshotReducer {
     }
 
     static void permuteRows(ObjectNode root, String sheetId, RangeRef range, JsonNode sourceRows) {
+        PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(range, sheetId);
         RangeRef selected = normalize(range);
@@ -175,7 +179,8 @@ final class StructuralSnapshotReducer {
             }
         }
         for (JsonNode pivot : SnapshotMutationSupport.array(target, "pivots")) {
-            JsonNode anchor = pivot.path("targetAnchor");
+            ObjectNode pivotTarget = PivotMutationDescriptor.requiredTarget(pivot);
+            JsonNode anchor = pivotTarget.path("anchor");
             if (anchor.isObject() && insideDeleted(anchor.path(axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column").asInt(-1), at, end)) {
                 throw ServiceException.validation("Structural delete would lose a pivot target anchor");
             }
@@ -391,13 +396,10 @@ final class StructuralSnapshotReducer {
         boolean ownerTarget = targetSheetId.equals(owner.path("id").asText());
         for (JsonNode raw : SnapshotMutationSupport.array(owner, "pivots")) {
             ObjectNode pivot = requireObject(raw, "Pivot");
-            shiftRange(root, pivot.get("sourceRange"), targetSheetId, axis, at, count, direction);
-            JsonNode source = pivot.get("dataSource");
-            if (source != null && source.isObject()) {
-                if ("worksheet-range".equals(source.path("kind").asText())) shiftRange(root, source.get("range"), targetSheetId, axis, at, count, direction);
-                if ("worksheet-ranges".equals(source.path("kind").asText())) for (JsonNode range : source.path("ranges")) shiftRange(root, range, targetSheetId, axis, at, count, direction);
-            }
-            JsonNode anchorRaw = pivot.get("targetAnchor");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, range -> shiftRange(root, range, targetSheetId, axis, at, count, direction));
+            ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
+            JsonNode anchorRaw = target.get("anchor");
             if (ownerTarget && anchorRaw != null && anchorRaw.isObject()) {
                 ObjectNode anchor = (ObjectNode) anchorRaw;
                 String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
@@ -651,13 +653,10 @@ final class StructuralSnapshotReducer {
         }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) {
             ObjectNode pivot = requireObject(raw, "Pivot");
-            moveContainedRange(pivot.get("sourceRange"), selection, rowDelta, columnDelta);
-            JsonNode source = pivot.get("dataSource");
-            if (source != null && source.isObject()) {
-                if (source.has("range")) moveContainedRange(source.get("range"), selection, rowDelta, columnDelta);
-                for (JsonNode range : source.path("ranges")) moveContainedRange(range, selection, rowDelta, columnDelta);
-            }
-            JsonNode anchor = pivot.get("targetAnchor");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, range -> moveContainedRange(range, selection, rowDelta, columnDelta));
+            ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
+            JsonNode anchor = target.get("anchor");
             if (anchor != null && anchor.isObject() && contains(selection, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) {
                 ((ObjectNode) anchor).put("row", anchor.path("row").asInt() + rowDelta).put("column", anchor.path("column").asInt() + columnDelta);
             }
@@ -876,6 +875,16 @@ final class StructuralSnapshotReducer {
         JsonNode filter = sheet.get("filter");
         if (filter != null && filter.isObject()) remapRangeRows(filter.get("range"), range, rowMap);
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) remapRangeRows(requireObject(table, "Sheet table").get("range"), range, rowMap);
+        for (JsonNode rawPivot : SnapshotMutationSupport.array(sheet, "pivots")) {
+            ObjectNode pivot = requireObject(rawPivot, "Pivot");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, source -> remapRangeRows(source, range, rowMap));
+            ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
+            ObjectNode anchor = PivotMutationDescriptor.requiredAnchor(target);
+            if (range.sheetId().equals(target.path("sheetId").asText()) && contains(range, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) {
+                anchor.put("row", remapRow(anchor.path("row").asInt(), range, rowMap));
+            }
+        }
         for (JsonNode merge : SnapshotMutationSupport.array(sheet, "merges")) {
             ObjectNode object = requireObject(merge, "Merge");
             remapRangeRows(object.get("range"), range, rowMap);

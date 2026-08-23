@@ -160,7 +160,7 @@ import {
   type HistoryEntryMeta,
 } from './features/history';
 import { currentRegionOfSheet, inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
-import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId, UiSessionIntent } from './types';
+import type { ActiveContext, AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId, UiSessionIntent } from './types';
 
 export interface WorkbookSessionOptions {
   initialPhase?: AppPhase;
@@ -188,6 +188,7 @@ export interface UiSnapshot {
   sheets: CanvasSheetSnapshot[];
   selectedSheet: CanvasSheetSnapshot;
   selectedFloatingId: string | null;
+  activeContext: ActiveContext;
   peers: PeerCursor[];
   collabStatus: 'connecting' | 'open' | 'closed';
   collabRevision: number;
@@ -262,6 +263,7 @@ export class WorkbookSession {
   private formulaDraft = '';
   private zoom = 100;
   private selectedFloatingId: string | null = null;
+  private activeContext: ActiveContext = { kind: 'none' };
   private peers: PeerCursor[] = [];
   private collabStatus: 'connecting' | 'open' | 'closed' = 'closed';
   private remoteRevisions: RevisionRecord[] = [];
@@ -296,6 +298,7 @@ export class WorkbookSession {
   private recordedScript = '';
   private lastScriptResult: ScriptRunResult | null = null;
   private lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null = null;
+  private lastRepeatableCommand: CommandDescriptor | null = null;
 
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
@@ -470,6 +473,7 @@ export class WorkbookSession {
       sheets,
       selectedSheet,
       selectedFloatingId: this.selectedFloatingId,
+      activeContext: this.activeContext,
       peers: this.peers,
       collabStatus: this.collabStatus,
       collabRevision: collaboration.revision,
@@ -554,6 +558,9 @@ export class WorkbookSession {
     }
     this.assertPermission(commandId, params);
     const result = this.runtime.commands.execute(commandId, params);
+    if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh') {
+      this.lastRepeatableCommand = { commandId, ...(params === undefined ? {} : { params: structuredClone(params) }) };
+    }
     if (commandId === 'history.restore') {
       const restoreParams = params as { targetRevision?: number };
       rehydrateFormulaAfterRestore(this.runtime, restoreParams.targetRevision);
@@ -564,6 +571,17 @@ export class WorkbookSession {
     this.applySelectionFromCommand(commandId, params, result);
     this.refresh();
     return result;
+  }
+
+  canRepeatLastCommand(): boolean {
+    return this.lastRepeatableCommand !== null
+      && this.canExecute(this.lastRepeatableCommand.commandId, this.lastRepeatableCommand.params);
+  }
+
+  repeatLastCommand(): void {
+    if (!this.lastRepeatableCommand) return;
+    const descriptor = this.lastRepeatableCommand;
+    this.runCommand(descriptor.commandId, descriptor.params === undefined ? undefined : structuredClone(descriptor.params));
   }
 
   canExecute(commandId: string, params?: unknown): boolean {
@@ -703,6 +721,30 @@ export class WorkbookSession {
 
   getActiveSheetId(): string {
     return this.activeSheetId;
+  }
+
+  setActivePivotContext(pivotId: string | null, sheetId = this.activeSheetId): void {
+    const next: ActiveContext = pivotId === null ? { kind: 'none' } : { kind: 'pivot', sheetId, pivotId };
+    if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
+    this.activeContext = next;
+    if (pivotId !== null) {
+      this.activePanel = 'pivot';
+      this.ribbonTab = 'pivotAnalyze';
+    } else if (this.ribbonTab === 'pivotAnalyze' || this.ribbonTab === 'pivotDesign') {
+      this.ribbonTab = 'home';
+    }
+    this.emit();
+  }
+
+  setActiveDrawingContext(drawingId: string | null, sheetId = this.activeSheetId): void {
+    const next: ActiveContext = drawingId === null ? { kind: 'none' } : { kind: 'drawing', sheetId, drawingId };
+    if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
+    this.activeContext = next;
+    this.emit();
+  }
+
+  getActiveContext(): ActiveContext {
+    return structuredClone(this.activeContext);
   }
 
   getSelection(): SelectionState {
@@ -1318,12 +1360,10 @@ export class WorkbookSession {
     if (this.editSession.active) {
       this.editSession.toggleAbsoluteReference();
       this.formulaDraft = this.editSession.active.currentDraft;
-    } else {
-      this.setFormulaDraft(
-        this.formulaDraft.replace(/(\$?)([A-Za-z]+)(\$?)(\d+)/g, (_m, dCol, col, dRow, row) => `${dCol ? '' : '$'}${col}${dRow ? '' : '$'}${row}`),
-      );
+      this.emit();
+      return;
     }
-    this.emit();
+    this.repeatLastCommand();
   }
 
   selectSheet(sheetId: string): void {
@@ -1332,6 +1372,7 @@ export class WorkbookSession {
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
     this.formulaDraft = '';
+    this.activeContext = { kind: 'none' };
     this.refresh();
   }
 
@@ -1525,37 +1566,33 @@ export class WorkbookSession {
   updatePivotConfiguration(
     pivotId: string,
     patch: Parameters<WorkbookSession['updatePivotLayout']>[1] extends PivotLayout
-      ? { sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotModel['slicers']; timelines?: PivotModel['timelines']; chartReferences?: PivotModel['chartReferences'] }
+      ? { source?: PivotDefinition['source']; target?: PivotDefinition['target']; fieldCatalog?: PivotDefinition['fieldCatalog']; refreshPolicy?: PivotDefinition['refreshPolicy']; nativeMetadata?: PivotDefinition['nativeMetadata']; layout?: PivotLayout }
       : never,
   ): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });
-    if (patch.sourceRange) {
-      const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
-      if (pivot) pivot.fieldCatalog = undefined;
-    }
     this.recomputePivotResult(pivotId);
     this.refresh();
   }
-  setPivotAggregate(pivotId: string, field: string, summarizeBy: PivotAggregateFunction): void {
-    this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, field, summarizeBy });
+  setPivotAggregate(pivotId: string, fieldId: string, summarizeBy: PivotAggregateFunction): void {
+    this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, fieldId, summarizeBy });
     this.recomputePivotResult(pivotId);
     this.refresh();
   }
 
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
-    if (!pivot?.target) return [];
+    if (!pivot) return [];
     return listPivotControlsForPivot(this.runtime.model.getSheet(pivot.target.sheetId), pivotId)
       .map((record) => ({ drawing: structuredClone(record.drawing), payload: structuredClone(record.payload) }));
   }
 
   createPivotSlicerControl(pivotId: string, fieldId: string): void {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
-    if (!pivot?.target) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
     const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
     const existing = listPivotControlsForPivot(sheet, pivotId).find((entry) => entry.payload.kind === 'slicer' && entry.payload.fieldId === fieldId);
     if (existing) return;
-    const sourceRange = pivot.source?.kind === 'worksheet-range' ? pivot.source.range : undefined;
+    const sourceRange = pivot.source.kind === 'worksheet-range' ? pivot.source.range : undefined;
     const connectedPivotIds = sourceRange ? connectedPivotIdsForSource(this.runtime.model, pivot.target.sheetId, sourceRange) : [pivotId];
     const offset = listPivotControlsForPivot(sheet, pivotId).length;
     const control = buildPivotSlicerDrawing({
@@ -1574,11 +1611,11 @@ export class WorkbookSession {
 
   createPivotTimelineControl(pivotId: string, fieldId: string): void {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
-    if (!pivot?.target) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
     const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
     const existing = listPivotControlsForPivot(sheet, pivotId).find((entry) => entry.payload.kind === 'timeline' && entry.payload.fieldId === fieldId);
     if (existing) return;
-    const sourceRange = pivot.source?.kind === 'worksheet-range' ? pivot.source.range : undefined;
+    const sourceRange = pivot.source.kind === 'worksheet-range' ? pivot.source.range : undefined;
     const connectedPivotIds = sourceRange ? connectedPivotIdsForSource(this.runtime.model, pivot.target.sheetId, sourceRange) : [pivotId];
     const offset = listPivotControlsForPivot(sheet, pivotId).length;
     const control = buildPivotTimelineDrawing({
@@ -1619,7 +1656,6 @@ export class WorkbookSession {
     if (!pivot) return;
     this.runCommand('pivot.refresh', { sheetId: this.activeSheetId, pivotId });
     this.recomputePivotResult(pivotId);
-    this.notify('Pivot refreshed');
     this.refresh();
   }
   removePivot(id: string): void {
@@ -1636,7 +1672,7 @@ export class WorkbookSession {
       label,
       sourceRowPaths: paths.map((path) => ({ sheetId: path.sheetId, row: path.row })),
       targetSheetId,
-      targetAnchor: { row: 0, column: 0 },
+      target: { row: 0, column: 0 },
     });
     this.selectSheet(targetSheetId);
     this.notify(`Drill-down sheet created for ${label}`);
@@ -2130,11 +2166,14 @@ export class WorkbookSession {
       const drawing = sheet.drawings.find((entry) => entry.id === id);
       if (drawing) {
         this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawing.id] });
+        this.activeContext = { kind: 'drawing', sheetId: this.activeSheetId, drawingId: drawing.id };
       } else {
         this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
+        this.activeContext = { kind: 'none' };
       }
     } else {
       this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
+      this.activeContext = { kind: 'none' };
     }
     this.emit();
   }
