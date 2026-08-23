@@ -69,8 +69,11 @@ function visit(
       if (!sheetTables) return;
       const resolved = resolveSheetTableReference(
         node.tableName,
-        node.columnName,
-        node.thisRow,
+        {
+          specifier: node.specifier,
+          columnName: node.columnName,
+          thisRow: node.thisRow,
+        },
         owner,
         sheetTables,
       );

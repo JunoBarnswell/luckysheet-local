@@ -10,6 +10,8 @@ import type {
   RangeReferenceNode,
   SourceSpan,
   StringLiteralNode,
+  TableReferenceNode,
+  TableReferenceSpecifier,
   UnaryExpressionNode,
 } from './ast';
 import { tryParseCellReferenceText } from './address';
@@ -238,25 +240,75 @@ class Parser {
     };
   }
 
-  private parseTableReference(nameToken: Token) {
+  private parseTableReference(nameToken: Token): TableReferenceNode {
     this.expect('left-bracket', 'Expected [ after table name');
-    const thisRow = this.match('at-sign');
-    let columnName: string;
-    const columnToken = this.peek();
-    if (columnToken.kind === 'string') {
-      this.advance();
-      columnName = columnToken.value ?? '';
-    } else {
-      columnName = this.expect('identifier', 'Expected table column name').lexeme;
+
+    if (this.match('left-bracket')) {
+      const specifier = this.parseTableSpecifierToken();
+      this.expect('right-bracket', 'Expected ] after table specifier');
+      this.expect('comma', 'Expected , between structured table references');
+      this.expect('left-bracket', 'Expected [ before table column');
+      const columnName = this.parseTableColumnName();
+      const innerClose = this.expect('right-bracket', 'Expected ] after table column');
+      const outerClose = this.expect('right-bracket', 'Expected ] after structured table reference');
+      return {
+        type: 'table-reference',
+        tableName: nameToken.lexeme,
+        specifier,
+        columnName,
+        thisRow: false,
+        span: { start: nameToken.span.start, end: outerClose.span.end },
+      };
     }
+
+    const thisRow = this.match('at-sign');
+    if (this.check('table-specifier')) {
+      const specifier = this.parseTableSpecifierToken();
+      const closingToken = this.expect('right-bracket', 'Expected ] after table specifier');
+      return {
+        type: 'table-reference',
+        tableName: nameToken.lexeme,
+        specifier,
+        thisRow: false,
+        span: { start: nameToken.span.start, end: closingToken.span.end },
+      };
+    }
+
+    const columnName = this.parseTableColumnName();
     const closingToken = this.expect('right-bracket', 'Expected ] after table column');
     return {
-      type: 'table-reference' as const,
+      type: 'table-reference',
       tableName: nameToken.lexeme,
       columnName,
       thisRow,
       span: { start: nameToken.span.start, end: closingToken.span.end },
     };
+  }
+
+  private parseTableColumnName(): string {
+    const columnToken = this.peek();
+    if (columnToken.kind === 'string') {
+      this.advance();
+      return columnToken.value ?? '';
+    }
+    return this.expect('identifier', 'Expected table column name').lexeme;
+  }
+
+  private parseTableSpecifierToken(): TableReferenceSpecifier {
+    const token = this.expect('table-specifier', 'Expected table specifier such as #All or #Data');
+    const normalized = token.value?.trim().toLowerCase() ?? '';
+    switch (normalized) {
+      case 'all':
+        return 'all';
+      case 'headers':
+        return 'headers';
+      case 'data':
+        return 'data';
+      case 'totals':
+        return 'totals';
+      default:
+        throw new FormulaSyntaxError(`Unknown table specifier: ${token.lexeme}`, token.span.start);
+    }
   }
 
   private parseReference(): CellReferenceNode | RangeReferenceNode {

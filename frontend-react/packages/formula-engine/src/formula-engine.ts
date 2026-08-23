@@ -423,8 +423,8 @@ export class FormulaEngine {
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
-        resolveTableReference: (tableName, columnName, thisRow) => {
-          const resolved = resolveSheetTableReference(tableName, columnName, thisRow, cell.address, this.sheetTables);
+        resolveTableReference: (tableName, request) => {
+          const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
           if (isFormulaError(resolved)) return resolved;
           if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
           return this.evaluateCell(resolved as CellAddress, cache, visiting);

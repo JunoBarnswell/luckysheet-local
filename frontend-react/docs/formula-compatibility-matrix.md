@@ -35,7 +35,7 @@
 | A1 / `$A$1` / `A$1` / `$A1` | Full |
 | 同表 / 跨表 `'Sheet 1'!A1` | Full |
 | 定义名称 | Full |
-| 结构化表引用 `Table1[@Col]` | Partial |
+| 结构化表引用 `Table1[Col]` / `[@Col]` / `#All` / `#Headers` / `#Data` / `#Totals` | Partial |
 | 3D 引用 / 外部簿 | Preserve |
 | 联合 `@` / `#`  spilled range | Partial |
 

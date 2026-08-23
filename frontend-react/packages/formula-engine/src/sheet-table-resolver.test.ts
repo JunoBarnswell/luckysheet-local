@@ -46,3 +46,29 @@ test('FormulaEngine evaluates SUBTOTAL on structured table columns', () => {
   engine.setFormula('D1', '=SUBTOTAL(109,Sales[Amount])');
   assert.equal(engine.getCellValue('D1'), 30);
 });
+
+test('FormulaEngine resolves #Data and #Headers structured table specifiers', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setSheetTables([sampleTable]);
+  engine.setValue('A1', 'Product');
+  engine.setValue('B1', 'Amount');
+  engine.setValue('A2', 'Apple');
+  engine.setValue('B2', 10);
+  engine.setValue('A3', 'Banana');
+  engine.setValue('B3', 20);
+  engine.setFormula('D1', '=SUM(Sales[#Data])');
+  assert.equal(engine.getCellValue('D1'), 30);
+  engine.setFormula('D2', '=Sales[[#Headers],[Amount]]');
+  assert.equal(engine.getCellValue('D2'), 'Amount');
+});
+
+test('FormulaEngine resolves #All structured table specifier', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setSheetTables([sampleTable]);
+  engine.setValue('A1', 'Product');
+  engine.setValue('B1', 'Amount');
+  engine.setValue('A2', 10);
+  engine.setValue('B2', 20);
+  engine.setFormula('C1', '=SUM(Sales[#All])');
+  assert.equal(engine.getCellValue('C1'), 30);
+});

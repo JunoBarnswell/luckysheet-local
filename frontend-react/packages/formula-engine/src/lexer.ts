@@ -26,6 +26,7 @@ export type TokenKind =
   | 'left-bracket'
   | 'right-bracket'
   | 'at-sign'
+  | 'table-specifier'
   | 'eof';
 
 export interface Token {
@@ -93,6 +94,22 @@ export function lexFormula(source: string): readonly Token[] {
       tokens.push({ kind: 'equal', lexeme: '=', span: { start: index, end: index + 1 } });
       index += 1;
       continue;
+    }
+
+    if (character === '#') {
+      const rest = source.slice(index);
+      const match = /^#(ALL|HEADERS|DATA|TOTALS)(?![A-Za-z0-9_])/i.exec(rest);
+      if (match) {
+        const lexeme = source.slice(index, index + match[0].length);
+        tokens.push({
+          kind: 'table-specifier',
+          lexeme,
+          value: match[1]!.toLowerCase(),
+          span: { start: index, end: index + match[0].length },
+        });
+        index += match[0].length;
+        continue;
+      }
     }
 
     if (isWordStart(character)) {

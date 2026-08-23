@@ -1,8 +1,22 @@
 import type {
   FormulaAst,
   ParsedCellReference,
+  TableReferenceSpecifier,
 } from './ast';
 import { columnToLabel } from './address';
+
+function formatTableSpecifier(specifier: TableReferenceSpecifier): string {
+  switch (specifier) {
+    case 'all':
+      return '#All';
+    case 'headers':
+      return '#Headers';
+    case 'data':
+      return '#Data';
+    case 'totals':
+      return '#Totals';
+  }
+}
 
 function formatReference(reference: ParsedCellReference): string {
   const column = (reference.absoluteColumn ? '$' : '') + columnToLabel(reference.column);
@@ -26,8 +40,13 @@ function formatNode(node: FormulaAst): string {
       return formatNode(node.start) + ':' + formatNode(node.end);
     case 'name-reference':
       return node.name;
-    case 'table-reference':
-      return `${node.tableName}[${node.thisRow ? '@' : ''}${node.columnName}]`;
+    case 'table-reference': {
+      if (node.specifier && node.columnName) {
+        return `${node.tableName}[[${formatTableSpecifier(node.specifier)}],[${node.columnName}]]`;
+      }
+      if (node.specifier) return `${node.tableName}[${formatTableSpecifier(node.specifier)}]`;
+      return `${node.tableName}[${node.thisRow ? '@' : ''}${node.columnName ?? ''}]`;
+    }
     case 'unary-expression':
       if (node.operator === '%') return formatNode(node.operand) + '%';
       return node.operator + formatNode(node.operand);

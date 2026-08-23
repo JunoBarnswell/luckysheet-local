@@ -90,10 +90,13 @@ export interface NameReferenceNode {
   readonly span: SourceSpan;
 }
 
+export type TableReferenceSpecifier = 'all' | 'headers' | 'data' | 'totals';
+
 export interface TableReferenceNode {
   readonly type: 'table-reference';
   readonly tableName: string;
-  readonly columnName: string;
+  readonly specifier?: TableReferenceSpecifier;
+  readonly columnName?: string;
   readonly thisRow: boolean;
   readonly span: SourceSpan;
 }
