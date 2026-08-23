@@ -705,10 +705,25 @@ export function SheetCanvas({
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
     const cell = sheet.getCell(row, column);
-    if (!cell) return undefined;
     const merge = sheet.merges.find((span) =>
       row >= span.range.startRow && row <= span.range.endRow
       && column >= span.range.startColumn && column <= span.range.endColumn);
+    // Empty cells inside a merge still need a render record so the grid layer
+    // can suppress the merge's internal boundaries. Returning undefined here
+    // made blank merged areas look like ordinary cells.
+    if (!cell) {
+      if (!merge) return undefined;
+      return {
+        value: undefined,
+        merge: {
+          startRow: merge.range.startRow,
+          endRow: merge.range.endRow,
+          startColumn: merge.range.startColumn,
+          endColumn: merge.range.endColumn,
+          isAnchor: merge.anchor.row === row && merge.anchor.column === column,
+        },
+      };
+    }
     const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
     return {
       value: parseCellValue(cell),
@@ -1477,9 +1492,12 @@ export function SheetCanvas({
     void scrollTick;
     const engine = engineRef.current;
     if (!engine || !editingCell) return null;
-    const rect = skeleton.getCellRect(editingCell.row, editingCell.column);
+    // The engine owns the render geometry. Reading the local React skeleton
+    // here can race with setSkeleton during a session refresh, and the main
+    // pane is not the correct origin for frozen rows/columns.
+    const rect = engine.skeleton.getCellRect(editingCell.row, editingCell.column);
     if (!rect) return null;
-    const topLeft = engine.contentToMainScreen({ x: rect.x, y: rect.y });
+    const topLeft = engine.contentToMainScreen({ x: rect.x, y: rect.y }, editingCell);
     return {
       x: topLeft.x,
       y: topLeft.y,

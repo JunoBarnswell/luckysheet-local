@@ -126,10 +126,13 @@ export function consumeAutomationWorkerRequest(payload: unknown): AutomationWork
     return { protocol: AUTOMATION_WORKER_PROTOCOL, taskId, status: 'completed', plan };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const code = message.includes('timed out') ? 'AUTOMATION_WORKER_TIMEOUT'
+    const declaredCode = typeof error === 'object' && error !== null && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : undefined;
+    const code = declaredCode ?? (message.includes('timed out') ? 'AUTOMATION_WORKER_TIMEOUT'
       : message.includes('cancelled') ? 'AUTOMATION_WORKER_CANCELLED'
         : message.includes('exceeds') ? 'AUTOMATION_WORKER_QUOTA'
-          : 'AUTOMATION_WORKER_FAILED';
+          : 'AUTOMATION_WORKER_FAILED');
     return {
       protocol: AUTOMATION_WORKER_PROTOCOL,
       taskId,
@@ -190,6 +193,7 @@ export class AutomationWorkerClient {
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('error', onError);
         worker.removeEventListener('messageerror', onError);
+        worker.terminate();
         if (this.worker === worker) this.worker = null;
         resolve(result);
       };

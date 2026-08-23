@@ -444,12 +444,7 @@ function WorkspaceApp() {
   };
 
   const applySelection = (selection: SelectionState) => {
-    const range = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
-    if (!range) return;
-    session.selectRange(
-      { startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn },
-      selection.ranges.length > 1 ? "add" : "replace",
-    );
+    session.applyCanvasSelection(selection);
   };
 
   const formatCellsInitial = useMemo(() => {

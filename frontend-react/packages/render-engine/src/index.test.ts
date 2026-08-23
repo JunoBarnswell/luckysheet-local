@@ -228,3 +228,150 @@ test('SheetSkeleton virtualizes very large uniform dimensions without dense arra
   });
   assert.equal(largeSkeleton.getVisibleRowModels().length, 0);
 });
+
+function recordingContext() {
+  const textCalls: Array<{ text: string; x: number; y: number }> = [];
+  const lineCalls: Array<{ from: [number, number]; to: [number, number] }> = [];
+  let current: [number, number] = [0, 0];
+  const context = {
+    beginPath() {},
+    closePath() {},
+    save() {},
+    restore() {},
+    moveTo(x: number, y: number) { current = [x, y]; },
+    lineTo(x: number, y: number) {
+      lineCalls.push({ from: current, to: [x, y] });
+      current = [x, y];
+    },
+    stroke() {},
+    fill() {},
+    fillRect() {},
+    strokeRect() {},
+    fillText(text: string, x: number, y: number) { textCalls.push({ text, x, y }); },
+    measureText() { return { width: 8 }; },
+    setLineDash() {},
+    translate() {},
+    rotate() {},
+    arc() {},
+    rect() {},
+    ellipse() {},
+    roundRect() {},
+    clearRect() {},
+    setTransform() {},
+    globalAlpha: 1,
+    lineWidth: 1,
+    fillStyle: '',
+    strokeStyle: '',
+    font: '',
+    textBaseline: 'middle' as CanvasTextBaseline,
+    textAlign: 'left' as CanvasTextAlign,
+  } as unknown as CanvasRenderingContext2D;
+  return { context, textCalls, lineCalls };
+}
+
+function mainPane(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): RenderPane {
+  return {
+    id: 'main',
+    rect: { x: 46, y: 24, width: 260, height: 180 },
+    offset: { x: 0, y: 0 },
+    range,
+  };
+}
+
+test('cell rendering calls the provider address and paints the value only in that cell', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 12, columnCount: 8, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 10, startColumn: 0, endColumn: 4 };
+  const provider = ({ row, column }: { row: number; column: number }): CellRenderData | undefined =>
+    row === 8 && column === 2 ? { value: 4, displayValue: '4' } : undefined;
+  const { context, textCalls } = recordingContext();
+
+  drawCellLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: provider,
+    theme: DEFAULT_RENDER_THEME,
+  });
+
+  assert.deepEqual(textCalls, [{ text: '4', x: 106, y: 170 }]);
+});
+
+test('blank cells retain complete horizontal and vertical grid boundaries', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 3, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 };
+  const { context, lineCalls } = recordingContext();
+  drawGridLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: () => undefined,
+    theme: DEFAULT_RENDER_THEME,
+  });
+
+  const horizontal = new Set(lineCalls
+    .filter(({ from, to }) => from[1] === to[1] && from[0] !== to[0])
+    .map(({ from, to }) => `${from[1]}:${from[0]}-${to[0]}`));
+  const vertical = new Set(lineCalls
+    .filter(({ from, to }) => from[0] === to[0] && from[1] !== to[1])
+    .map(({ from, to }) => `${from[0]}:${from[1]}-${to[1]}`));
+  for (const y of [0.5, 20.5, 40.5, 60.5]) {
+    for (const segment of ['0.5-50.5', '50.5-100.5', '100.5-150.5']) assert.ok(horizontal.has(`${y}:${segment}`));
+  }
+  for (const x of [0.5, 50.5, 100.5, 150.5]) {
+    for (const segment of ['0.5-20.5', '20.5-40.5', '40.5-60.5']) assert.ok(vertical.has(`${x}:${segment}`));
+  }
+});
+
+test('merged blank cells suppress only their internal grid boundaries', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 3, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 };
+  const { context, lineCalls } = recordingContext();
+  drawGridLayer({
+    context,
+    skeleton: renderSkeleton,
+    pane: mainPane(range),
+    visibleRange: range,
+    cellProvider: ({ row, column }) => {
+      if (row > 1 || column > 1) return undefined;
+      return {
+        value: undefined,
+        merge: { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1, isAnchor: row === 0 && column === 0 },
+      };
+    },
+    theme: DEFAULT_RENDER_THEME,
+  });
+
+  const internalHorizontal = lineCalls.some(({ from, to }) => from[1] === 20.5 && from[0] < 100.5 && to[0] <= 100.5);
+  const internalVertical = lineCalls.some(({ from, to }) => from[0] === 50.5 && from[1] < 40.5 && to[1] <= 40.5);
+  assert.equal(internalHorizontal, false);
+  assert.equal(internalVertical, false);
+});
+
+test('pane translation preserves model coordinates for C9', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const engine = new CanvasRenderEngine({
+    skeleton: renderSkeleton,
+    viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
+  });
+  engine.render();
+  const cell = renderSkeleton.getCellRect(8, 2)!;
+  assert.deepEqual(engine.cellAtLocalPoint({ x: 46 + cell.x + cell.width / 2, y: 24 + cell.y + cell.height / 2 }), { row: 8, column: 2 });
+  engine.dispose();
+});
+
+test('contentToMainScreen selects the cell pane for frozen rows and columns', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const engine = new CanvasRenderEngine({
+    skeleton: renderSkeleton,
+    viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
+  });
+  engine.setFreeze({ xSplit: 1, ySplit: 1 });
+  engine.render();
+  const topLeft = renderSkeleton.getCellRect(0, 0)!;
+  const main = renderSkeleton.getCellRect(4, 2)!;
+  assert.deepEqual(engine.contentToMainScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
+  assert.deepEqual(engine.contentToMainScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 196, y: 124 });
+  engine.dispose();
+});

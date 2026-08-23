@@ -165,6 +165,33 @@ export class SelectionService {
     this.anchorCell = { row: primary.startRow, column: primary.startColumn };
   }
 
+  /**
+   * Apply the complete transient canvas selection without collapsing its
+   * active cell to the top-left of a dragged range.  This is essential for
+   * edit placement: a range may start at A2 while its active cell is C9.
+   */
+  applyState(selection: SelectionState): void {
+    if (selection.ranges.length === 0) return;
+    const sheetId = this.getActiveSheetId();
+    const ranges = selection.ranges.map((range) => normalizeRangeRef({
+      sheetId: range.sheetId ?? sheetId,
+      startRow: this.clampRow(Math.min(range.startRow, range.endRow)),
+      endRow: this.clampRow(Math.max(range.startRow, range.endRow)),
+      startColumn: this.clampColumn(Math.min(range.startColumn, range.endColumn)),
+      endColumn: this.clampColumn(Math.max(range.startColumn, range.endColumn)),
+    }));
+    this.state = {
+      ranges,
+      primaryRangeIndex: Math.max(0, Math.min(ranges.length - 1, selection.primaryRangeIndex)),
+      primaryRowIndex: this.clampRow(selection.primaryRowIndex),
+      primaryColumnIndex: this.clampColumn(selection.primaryColumnIndex),
+    };
+    this.anchorCell = {
+      row: this.clampRow(selection.anchorRowIndex),
+      column: this.clampColumn(selection.anchorColumnIndex),
+    };
+  }
+
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
     const sheetId = this.getActiveSheetId();
     const targetRow = this.clampRow(this.state.primaryRowIndex + rowDelta);

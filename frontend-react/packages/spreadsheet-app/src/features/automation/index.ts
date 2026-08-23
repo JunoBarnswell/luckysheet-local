@@ -20,10 +20,9 @@ export class FacadeScriptRuntime {
   ) {}
 
   /**
-   * Parse, validate, and execute a Facade DSL program.  Parsing and range
-   * validation are completed before the first mutation. CommandRuntime owns
-   * the complete transaction; there is deliberately no statement-by-
-   * statement fallback path.
+   * Synchronous execution is intentionally unavailable. A browser Worker
+   * cannot be synchronously joined from the main thread, and this method must
+   * not become an accidental main-thread fallback.
    */
   runScript(_source: string, _sandbox: ScriptSandbox): ScriptRunResult {
     return {

@@ -49,4 +49,24 @@ class FormulaReferenceTransformerTest {
     void moveOffsetHonorsAbsoluteMarkers() {
         assertEquals("=C3+$B$1+E$1+$D3", FormulaReferenceTransformer.offset("=A1+$B$1+C$1+$D1", 2, 2));
     }
+
+    @Test
+    void removedQualifiedSheetReferenceBecomesReferenceError() {
+        assertEquals("=#REF!+A1", FormulaReferenceTransformer.invalidateSheet("=Sheet1!A1+A1", "sheet-1", "Sheet1"));
+    }
+
+    @Test
+    void rangeUnionIntersectionAndDynamicArraySyntaxRemainStructuredFormulaText() {
+        String result = FormulaReferenceTransformer.remapAxis(
+                "=SUM(Sheet1!A2:B3,A1 B1,@C2#)",
+                sheet,
+                sheet,
+                FormulaReferenceTransformer.Axis.ROW,
+                1,
+                1,
+                FormulaReferenceTransformer.Direction.INSERT
+        );
+
+        assertEquals("=SUM(Sheet1!A3:B4,A1 B1,@C3#)", result);
+    }
 }

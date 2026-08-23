@@ -961,6 +961,13 @@ export class WorkbookSession {
     this.emit();
   }
 
+  /** Commit a canvas selection exactly, including its active cell and anchor. */
+  applyCanvasSelection(selection: SelectionState): void {
+    this.selectionService.applyState(selection);
+    this.syncDraftFromPrimary();
+    this.emit();
+  }
+
   extendSelectionTo(row: number, column: number): void {
     this.selectRange({ startRow: row, startColumn: column, endRow: row, endColumn: column }, 'extend');
   }

@@ -59,6 +59,12 @@ function planFor(workbook: WorkbookModel, source: string): unknown {
 }
 
 describe('Facade automation Worker', () => {
+  it('returns a structured error for a malformed Worker request', () => {
+    const result = consumeAutomationWorkerRequest({ taskId: 'bad-request' });
+    if (result.status !== 'failed') throw new Error('Expected a failed Worker result');
+    assert.equal(result.error.code, 'AUTOMATION_WORKER_PROTOCOL');
+  });
+
   it('rejects JavaScript in the Worker and performs no writes', async () => {
     const workbook = new WorkbookModel('automation-dsl', 'DSL');
     const runtime = new CommandRuntime(workbook);

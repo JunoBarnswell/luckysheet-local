@@ -100,6 +100,28 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app['runtime'].commands.getHistoryDepth().undo, 1);
   });
 
+  it('edits the active canvas cell instead of the top-left of a dragged range', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.applyCanvasSelection({
+      ranges: [{ sheetId, startRow: 1, endRow: 8, startColumn: 0, endColumn: 2 }],
+      primaryRangeIndex: 0,
+      primaryRowIndex: 8,
+      primaryColumnIndex: 2,
+      anchorRowIndex: 1,
+      anchorColumnIndex: 0,
+    });
+    assert.equal(app.getUiSnapshot().activeCell, 'C9');
+
+    app.beginEdit('4');
+    assert.deepEqual(app.getUiSnapshot().editingCell, { row: 8, column: 2 });
+    app.commitEdit('none');
+
+    const cells = app['runtime'].model.getSheet(sheetId).cells;
+    assert.equal(cells.get(8, 2)?.value, 4);
+    assert.equal(cells.get(1, 0), undefined);
+  });
+
   it('shiftCells down moves cell contents within the selected range', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

@@ -350,17 +350,24 @@ export class CanvasRenderEngine {
     return null;
   }
 
-  /** 主窗格内容坐标 → 屏幕(用于浮动对象命中) */
-  private mainPaneTransform(): { origin: Point; offset: Point } {
+  /**
+   * 内容坐标 → 当前窗格屏幕坐标。
+   *
+   * 浮动对象没有模型单元格，继续使用主窗格；单元格编辑器必须传入
+   * cell，否则冻结行/列会错误地套用 main pane 的原点，把编辑框落到
+   * 另一格（通常表现为 A2/首格）。
+   */
+  contentToMainScreen(content: Point, cell?: CellAddress): Point {
     const panes = this.lastPlan?.panes
       ?? computeRenderPanes(this.skeletonModel, this.viewport.getSnapshot(), this.freezeSplits, this.headerOrigin);
     const main = panes.find((pane) => pane.id === "main") ?? panes.at(-1)!;
-    return { origin: { x: main.rect.x, y: main.rect.y }, offset: main.offset };
-  }
-
-  contentToMainScreen(content: Point): Point {
-    const transform = this.mainPaneTransform();
-    return { x: content.x - transform.offset.x + transform.origin.x, y: content.y - transform.offset.y + transform.origin.y };
+    const target = cell
+      ? panes.find((pane) => pane.range
+        && cell.row >= pane.range.startRow && cell.row <= pane.range.endRow
+        && cell.column >= pane.range.startColumn && cell.column <= pane.range.endColumn)
+      : undefined;
+    const pane = target ?? main;
+    return { x: content.x - pane.offset.x + pane.rect.x, y: content.y - pane.offset.y + pane.rect.y };
   }
 
   hitTestFloating(local: Point): FloatingHit | null {
