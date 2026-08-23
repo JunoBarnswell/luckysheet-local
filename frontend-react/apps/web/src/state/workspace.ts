@@ -1858,12 +1858,19 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     if (!pivot) return;
     runtime.commands.execute('pro.pivot.refresh', { sheetId: activeSheetId, pivotId });
     refresh();
+    runtime.handlers.onSaveState?.('syncing');
+    runtime.handlers.onNotice?.('Calculating pivot…');
     void runtime.api.calculatePivot(runtime.model.unitId, pivotId)
       .then((response) => {
         runtime.pivotResults[pivotId] = response.result;
+        runtime.handlers.onNotice?.('Pivot calculation complete');
+        runtime.handlers.onSaveState?.('saved');
         refresh();
       })
-      .catch((error: unknown) => runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Pivot calculation failed'));
+      .catch((error: unknown) => {
+        runtime.handlers.onSaveState?.('offline');
+        runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Pivot calculation failed');
+      });
   }, [activeSheetId, phase, refresh, runtime]);
 
   const updatePivotLayout = useCallback((pivotId: string, layout: PivotLayout) => {
