@@ -123,20 +123,20 @@ function restoreWorkbookTable(context: CommandContext, payload: QueryWorkbookTab
 }
 
 function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQueryStore): void {
-  registry.registerMutation<QueryDefinitionReplaceMutationParams>({
-    id: 'query.definition.replace',
-    handler: (item, context) => {
+  registry.registerMutation<QueryDefinitionReplaceMutationParams>(
+    'query.definition.replace',
+    (item, context) => {
       if (!isQueryDefinitionReplacePayload(item.params)) throw new Error('Invalid query.definition.replace mutation payload');
       if (item.params.definition === null) context.workbook.removeQueryDefinition(item.params.queryId);
       else context.workbook.setQueryDefinition(item.params.definition);
     },
-    metadata: {
+    {
       schema: { name: 'QueryDefinitionReplaceMutationParams', validate: isQueryDefinitionReplacePayload },
       permission: { capability: 'query.definition.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['query.definition.replace'],
     },
-  });
+  );
   for (const id of ['query.load.range', 'query.load.sheet-table', 'query.load.pivot-source'] as const) {
     registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({
       id,
