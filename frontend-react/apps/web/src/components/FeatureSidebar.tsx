@@ -537,6 +537,10 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'conditionalFormat' ? (
           <ConditionalFormatPanel
             sheetId={sheetId}
+            range={selectedRange
+              ? { sheetId, ...selectedRange }
+              : { ...sheet.usedRange, sheetId }}
+            locale={locale}
             rules={conditionalFormats}
             onAddRule={onAddConditionalFormat}
             onRemoveRule={onRemoveConditionalFormat}

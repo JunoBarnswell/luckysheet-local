@@ -105,6 +105,10 @@ describe('Ribbon UI command catalog', () => {
       type: 'command',
       descriptor: { commandId: 'sheet.style.set', params: { style: { bold: true } } },
     });
+    assert.deepEqual(buildRibbonCommand('clearContents', current), {
+      type: 'command',
+      descriptor: { commandId: 'sheet.range.clear', params: { mode: 'contents' } },
+    });
     const pivotAction = buildRibbonCommand('pivotTable', current);
     assert.equal(pivotAction?.type, 'callback');
     if (pivotAction?.type === 'callback') pivotAction.invoke();

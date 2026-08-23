@@ -579,11 +579,6 @@ export interface SheetCanvasProps {
   phase: AppPhase;
   zoom: number;
   peers: PeerCursor[];
-  cellStyle?: {
-    bold?: boolean;
-    italic?: boolean;
-    underline?: boolean;
-  };
   drawings?: readonly DrawingObject[];
   drawingPayloads?: ReadonlyMap<string, DrawingPayload>;
   allSheets?: readonly CanvasSheetSnapshot[];
@@ -838,7 +833,6 @@ export function SheetCanvas({
   phase,
   zoom,
   peers,
-  cellStyle = {},
   drawings = sheet.drawings,
   drawingPayloads = sheet.drawingPayloads,
   allSheets = [],
@@ -1896,21 +1890,6 @@ export function SheetCanvas({
         return;
       }
 
-      if (ctrl && (key === "z" || key === "Z")) { event.preventDefault(); onUndo(); return; }
-      if (ctrl && (key === "y" || key === "Y")) { event.preventDefault(); onRedo(); return; }
-      if (ctrl && (key === "c" || key === "C")) { event.preventDefault(); onCopy(); return; }
-      if (ctrl && (key === "x" || key === "X")) { event.preventDefault(); onCut(); return; }
-      if (ctrl && (key === "v" || key === "V")) { event.preventDefault(); onPaste(); return; }
-      if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { bold: !cellStyle.bold } } }); return; }
-      if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { italic: !cellStyle.italic } } }); return; }
-      if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { underline: !cellStyle.underline } } }); return; }
-      if (key === "F2") {
-        event.preventDefault();
-        if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
-        else onBeginEdit();
-        return;
-      }
-      if (key === "Delete" || key === "Backspace") { event.preventDefault(); onCommand({ commandId: "sheet.range.clear" }); return; }
       if (key === "Enter") {
         event.preventDefault();
         if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
@@ -1964,7 +1943,7 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canRepeat, cellStyle.bold, cellStyle.italic, cellStyle.underline, drawingSelectionMode, editingCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCancelFormatPainter, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selectedFloatingId, selection, sheet, sheetId, skeleton],
+    [canRepeat, drawingSelectionMode, editingCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCancelFormatPainter, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selectedFloatingId, selection, sheet, sheetId, skeleton],
   );
 
   // ---------- 右键菜单 ----------

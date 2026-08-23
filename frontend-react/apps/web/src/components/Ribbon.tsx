@@ -45,6 +45,7 @@ export interface RibbonProps {
   onPaste: () => void;
   onBeginFormatPainter: (locked?: boolean) => void;
   formatPainterActive?: boolean;
+  onMergeCells: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
@@ -217,6 +218,7 @@ export function Ribbon({
   onPaste,
   onBeginFormatPainter,
   formatPainterActive = false,
+  onMergeCells,
   onUndo,
   onRedo,
   onSave,
@@ -642,7 +644,18 @@ export function Ribbon({
                 )}
               </DropdownMenu>
               <CatalogButton id="wrapText" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('wrapText')} />
-              <CatalogButton id="mergeCells" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={homeState.merge === 'mixed'} />
+              <Button
+                size="sm"
+                variant={homeState.merge === 'full' ? 'secondary' : 'ghost'}
+                icon="merge-cells"
+                iconOnly
+                disabled={disabled || !homeState.canFormat}
+                aria-label={translateRibbonText(locale, RIBBON_TEXT.commands.mergeCells)}
+                title={translateRibbonText(locale, RIBBON_TEXT.commands.mergeCells)}
+                data-mixed={homeState.merge === 'mixed' || undefined}
+                className={homeState.merge === 'mixed' ? 'border border-dashed border-slate-400' : undefined}
+                onClick={onMergeCells}
+              />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 

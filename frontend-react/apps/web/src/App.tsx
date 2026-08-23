@@ -28,6 +28,7 @@ const GoToDialog = lazy(() => import("./components/dialogs/GoToDialog").then((mo
 const PasteSpecialDialog = lazy(() => import("./components/dialogs/PasteSpecialDialog").then((module) => ({ default: module.PasteSpecialDialog })));
 const FormatCellsDialog = lazy(() => import("./components/dialogs/FormatCellsDialog").then((module) => ({ default: module.FormatCellsDialog })));
 const ShiftCellsDialog = lazy(() => import("./components/dialogs/ShiftCellsDialog").then((module) => ({ default: module.ShiftCellsDialog })));
+const MergeConfirmDialog = lazy(() => import("./components/dialogs/MergeConfirmDialog").then((module) => ({ default: module.MergeConfirmDialog })));
 const CreatePivotTableDialog = lazy(() => import("./components/dialogs/CreatePivotTableDialog").then((module) => ({ default: module.CreatePivotTableDialog })));
 const PrintPreviewDialog = lazy(() => import("./components/dialogs/PrintPreviewDialog").then((module) => ({ default: module.PrintPreviewDialog })));
 const WorkbookCatalog = lazy(() => import("./components/WorkbookCatalog").then((module) => ({ default: module.WorkbookCatalog })));
@@ -270,13 +271,22 @@ function WorkspaceApp() {
       case "clipboard.copy": session.copy(); return true;
       case "clipboard.cut": session.cut(); return true;
       case "clipboard.paste": session.paste(); return true;
+      case "clipboard.pasteSpecial": dispatchSessionIntent({ type: "dialog.open", dialog: "paste-special" }); return true;
+      case "clipboard.cancel": session.clearClipboard(); session.cancelFormatPainter(); return true;
       case "workbook.save": void session.saveWorkbook("Keyboard shortcut"); return true;
       case "format.bold": dispatchCommand({ commandId: "sheet.style.set", params: { style: { bold: !selectedCellStyle.bold } } }); return true;
       case "format.italic": dispatchCommand({ commandId: "sheet.style.set", params: { style: { italic: !selectedCellStyle.italic } } }); return true;
       case "format.underline": dispatchCommand({ commandId: "sheet.style.set", params: { style: { underline: !selectedCellStyle.underline } } }); return true;
+      case "range.fillDown": session.fillSelection('down'); return true;
+      case "range.clearContents": session.clearSelection('contents'); return true;
+      case "cells.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells" }); return true;
+      case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells" }); return true;
+      case "filter.toggle": session.applyFilterSelection(); return true;
       case "find.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace" }); return true;
       case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace" }); return true;
       case "name.goto": dispatchSessionIntent({ type: "dialog.open", dialog: "goto" }); return true;
+      case "navigation.goto": dispatchSessionIntent({ type: "dialog.open", dialog: "goto" }); return true;
+      case "ribbon.home.keyTips": session.setRibbonTab('home'); session.notify('Home shortcuts are active'); return true;
       case "format.cells": dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells" }); return true;
       case "hyperlink.insert": dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Use the Inspector to insert a hyperlink." }); return true;
       case "row.select": session.selectActiveRow(); return true;
@@ -284,6 +294,8 @@ function WorkspaceApp() {
       case "sheet.previous": session.selectAdjacentSheet("previous"); return true;
       case "sheet.next": session.selectAdjacentSheet("next"); return true;
       case "formula.autoSum": session.autoSum(); return true;
+      case "edit.begin": session.beginEdit(); return true;
+      case "drawing.remove": session.removeSelectedDrawing(); return true;
       case "formula.functionWizard": dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" }); return true;
       case "formula.calculate": void session.recalculateFormulas(); return true;
       case "pivot.refresh": {
@@ -632,6 +644,7 @@ function WorkspaceApp() {
             homeState={state.homeRibbon}
             formatPainterActive={state.formatPainter !== null}
             onBeginFormatPainter={(locked) => session.beginFormatPainter(Boolean(locked))}
+            onMergeCells={() => session.requestMergeCells()}
             canExecute={session.canExecute.bind(session)}
           />
         }
@@ -684,7 +697,6 @@ function WorkspaceApp() {
               phase={state.phase}
               zoom={state.zoom}
               peers={state.peers}
-              cellStyle={selectedCellStyle}
               selectedFloatingId={state.selectedFloatingId}
               showFormulas={state.formulaAudit.showFormulas}
               onPivotContextHit={(hit) => {
@@ -936,6 +948,7 @@ function WorkspaceApp() {
 
       <GoToDialog
         open={state.showGoTo}
+        locale={locale}
         onClose={session.closeGoTo.bind(session)}
         onGoTo={(reference) => session.selectAddress(reference)}
         onGoToSpecial={(kind) => session.goToSpecial(kind)}
@@ -961,6 +974,14 @@ function WorkspaceApp() {
         locale={locale}
         onClose={session.closeShiftCells.bind(session)}
         onShift={(direction) => session.shiftCells(direction)}
+      />
+
+      <MergeConfirmDialog
+        open={state.showMergeConfirm}
+        discardedCellCount={state.mergeDiscardCount}
+        locale={locale}
+        onCancel={() => session.cancelMergeCells()}
+        onConfirm={() => session.confirmMergeCells()}
       />
 
       <CreatePivotTableDialog

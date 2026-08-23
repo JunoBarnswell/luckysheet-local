@@ -8,7 +8,7 @@ export interface FindReplaceDialogProps {
   initialFind?: string;
   locale?: Locale;
   onClose: () => void;
-  onReplaceAll: (params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }) => number;
+  onReplaceAll: (params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }) => number | Promise<number>;
 }
 
 /** UI-only Find & Replace form; the host owns command execution and result count. */
@@ -44,8 +44,7 @@ export function FindReplaceDialog({ initialFind = '', locale, open, onClose, onR
             disabled={!find}
             data-testid="find-replace-all"
             onClick={() => {
-              const count = onReplaceAll({ find, replace, matchCase, entireCell, scope });
-              setResult(count);
+              void Promise.resolve(onReplaceAll({ find, replace, matchCase, entireCell, scope })).then(setResult);
             }}
           >
             {homeText(activeLocale, 'replaceAll')}

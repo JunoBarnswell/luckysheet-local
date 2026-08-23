@@ -188,7 +188,7 @@ test('invalid ranges and fields are errors, while empty ranges are ready and emp
   assert.deepEqual(empty.value, []);
 });
 
-test('resolved cells preserve block values when legacy sparse metadata carries a stale value', async () => {
+test('one-time overlay migration preserves block values before canonical resolution', async () => {
   const sourceId = nextSourceId();
   const store = new LocalDataBlockStore();
   const block = await buildBlock(sourceId, 'resolved-block', 0, [['A', 10], ['B', 20]]);

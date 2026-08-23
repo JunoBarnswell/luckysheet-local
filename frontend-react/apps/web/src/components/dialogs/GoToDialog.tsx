@@ -2,15 +2,20 @@ import React, { useState } from 'react';
 import type { GoToSpecialKind } from '@react-sheets/sheet-features';
 import { Box, Button, Dialog, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
-import { homeText, resolveHomeLocale } from '../home/home-localization';
+import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
 
-const SPECIAL_KINDS: Array<{ id: GoToSpecialKind; labelKey: 'blanks' | 'constants' | 'formulas' | 'comments' | 'errors' | 'visibleCells' }> = [
+const SPECIAL_KINDS: Array<{ id: GoToSpecialKind; labelKey: HomeUiTextKey }> = [
   { id: 'blanks', labelKey: 'blanks' },
   { id: 'constants', labelKey: 'constants' },
   { id: 'formulas', labelKey: 'formulas' },
   { id: 'comments', labelKey: 'comments' },
   { id: 'errors', labelKey: 'errors' },
   { id: 'visible', labelKey: 'visibleCells' },
+  { id: 'conditional-format', labelKey: 'conditionalFormat' },
+  { id: 'data-validation', labelKey: 'dataValidation' },
+  { id: 'current-region', labelKey: 'currentRegion' },
+  { id: 'last-cell', labelKey: 'lastCell' },
+  { id: 'objects', labelKey: 'objects' },
 ];
 
 export interface GoToDialogProps {

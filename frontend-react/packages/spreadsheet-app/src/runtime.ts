@@ -15,7 +15,7 @@ import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
 import { createDefaultConnectorRegistry, type ConnectorRegistry } from './features/query';
 import { FormulaAuditController, registerFormulaAuditCommands } from './features/formula-audit';
-import { DataSourceContentQuery } from './features/data-source';
+import { DataSourceContentQuery, migrateDataRegionCellPatches } from './features/data-source';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
@@ -183,6 +183,10 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'range.set',
   'range.clear',
   'range.paste',
+  'format.painter.applied',
+  'style.preset.set',
+  'dataRegion.materialize.commit',
+  'dataRegion.materialize.restore',
   'cells.shifted',
   'cells.shifted.restore',
   'rows.inserted',
@@ -391,7 +395,8 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
 
       const changedSheet = runtime.model.getSheets().find((sheet) => sheet.id === mutation.sheetId);
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
-        || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove') {
+        || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
+        || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore') {
         initializeDataContent(runtime);
       }
       for (const pivot of changedSheet?.pivots ?? []) {
@@ -544,6 +549,9 @@ function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
 
 export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotResponse): void {
   const workbook = WorkbookModel.fromSnapshot(response.snapshot);
+  // Legacy block overlays are normalized exactly once at the snapshot boundary.
+  // All runtime reads after this point require the canonical CellPatch carrier.
+  for (const sheet of workbook.getSheets()) migrateDataRegionCellPatches(sheet);
   detachCoreListeners(runtime);
   runtime.formula.disposeCalculationTasks();
   runtime.model = workbook;

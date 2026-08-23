@@ -175,4 +175,64 @@ describe('WorkbookSession core editing integration', () => {
     app.undo();
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 0)?.value, 'before-undo');
   });
+
+  it('derives one mixed Home-ribbon state from a multi-cell selection', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'bold', style: { bold: true } } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { value: 'plain' } });
+    app.runCommand('selection.set', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }],
+      primaryRangeIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
+    });
+
+    const home = app.getUiSnapshot().homeRibbon;
+    assert.ok(home.mixedStyleKeys.includes('bold'));
+    assert.equal(home.style.bold, undefined);
+    assert.equal(home.canFormat, true);
+  });
+
+  it('uses contents as the default clear mode for a context-resolved Home descriptor', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'keep-style', style: { bold: true } } });
+    selectCell(app, 0, 0);
+
+    app.dispatch({ commandId: 'sheet.range.clear' });
+
+    const cell = app['runtime'].model.getSheet(sheetId).cells.get(0, 0);
+    assert.equal(cell?.value, null);
+    assert.equal(cell?.style?.bold, true);
+  });
+
+  it('requires confirmation before a merge discards non-anchor content and keeps one undo entry', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'anchor' } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 'discarded' } });
+    app.runCommand('selection.set', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }],
+      primaryRangeIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
+    });
+
+    const before = app['runtime'].commands.getHistoryDepth().undo;
+    app.requestMergeCells();
+    assert.equal(app.getUiSnapshot().showMergeConfirm, true);
+    assert.equal(app.getUiSnapshot().mergeDiscardCount, 1);
+
+    app.confirmMergeCells();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    assert.equal(sheet.merges.length, 1);
+    assert.equal(sheet.cells.get(0, 0)?.value, 'anchor');
+    assert.equal(app['runtime'].commands.getHistoryDepth().undo, before + 1);
+    app.undo();
+    assert.equal(sheet.merges.length, 0);
+    assert.equal(sheet.cells.get(0, 1)?.value, 'discarded');
+  });
 });

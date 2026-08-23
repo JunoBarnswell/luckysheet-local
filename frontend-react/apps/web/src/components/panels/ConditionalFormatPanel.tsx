@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, ColorPicker, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ConditionalFormatOperator, ConditionalFormatRule, ConditionalFormatType, RangeRef } from '@react-sheets/core-model';
+import type { Locale } from '../../i18n';
+import { homeTemplate, homeText, resolveHomeLocale } from '../home/home-localization';
 
 export interface ConditionalFormatPanelProps {
   sheetId: string;
+  range: RangeRef;
+  locale?: Locale;
   rules: ConditionalFormatRule[];
   onAddRule: (rule: ConditionalFormatRule) => void;
   onRemoveRule: (id: string) => void;
@@ -12,11 +16,14 @@ export interface ConditionalFormatPanelProps {
 
 export function ConditionalFormatPanel({
   sheetId,
+  range,
+  locale,
   rules,
   onAddRule,
   onRemoveRule,
   onClose,
 }: ConditionalFormatPanelProps) {
+  const activeLocale = resolveHomeLocale(locale);
   const [type, setType] = useState<ConditionalFormatType>('highlight');
   const [operator, setOperator] = useState<ConditionalFormatOperator>('greaterThan');
   const [value1, setValue1] = useState('50');
@@ -27,15 +34,7 @@ export function ConditionalFormatPanel({
     const newRule: ConditionalFormatRule = {
       id: 'cf-' + Math.random().toString(36).substring(2, 7),
       sheetId,
-      ranges: [
-        {
-          sheetId,
-          startRow: 0,
-          endRow: 20,
-          startColumn: 0,
-          endColumn: 10,
-        },
-      ],
+      ranges: [{ ...range, sheetId }],
       type,
       operator,
       value1,
@@ -51,29 +50,29 @@ export function ConditionalFormatPanel({
   return (
     <Panel className="h-full border-0 bg-transparent shadow-none">
       <PanelHeader className="h-12 border-b border-slate-200 px-4">
-        <PanelTitle size="sm">Conditional Formatting</PanelTitle>
+        <PanelTitle size="sm">{homeText(activeLocale, 'conditionalFormatting')}</PanelTitle>
       </PanelHeader>
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
-              Format Type
+              {homeText(activeLocale, 'formatType')}
             </Text>
             <Select
               value={type}
               onChange={(e) => setType(e.target.value as ConditionalFormatType)}
               sizeVariant="sm"
             >
-              <option value="highlight">Highlight Cell Rules</option>
-              <option value="colorScale">Color Scale</option>
-              <option value="dataBar">Data Bars</option>
+              <option value="highlight">{homeText(activeLocale, 'highlightRules')}</option>
+              <option value="colorScale">{homeText(activeLocale, 'colorScale')}</option>
+              <option value="dataBar">{homeText(activeLocale, 'dataBars')}</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
-              Rule Condition
+              {homeText(activeLocale, 'ruleCondition')}
             </Text>
             <Select
               value={operator}
@@ -87,71 +86,61 @@ export function ConditionalFormatPanel({
               <option value="containsText">Text Contains</option>
               <option value="duplicate">Duplicate Values</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
-              Threshold Value
+              {homeText(activeLocale, 'thresholdValue')}
             </Text>
             <TextInput
               value={value1}
               onChange={(e) => setValue1(e.target.value)}
-              placeholder="e.g. 100, Target, At risk"
+              placeholder="100"
             />
-          </div>
+          </Box>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div>
+          <Box className="grid grid-cols-2 gap-2">
+            <Box>
               <Text size="xs" weight="medium" className="mb-1 text-slate-700">
-                Cell Fill
+                {homeText(activeLocale, 'cellFill')}
               </Text>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={bg}
-                  onChange={(e) => setBg(e.target.value)}
-                  className="h-8 w-8 cursor-pointer rounded border border-slate-300 p-0"
-                />
+              <Stack gap="xs">
+                <ColorPicker color={bg} onChange={setBg} />
                 <TextInput value={bg} onChange={(e) => setBg(e.target.value)} className="h-8 text-xs font-mono" />
-              </div>
-            </div>
-            <div>
+              </Stack>
+            </Box>
+            <Box>
               <Text size="xs" weight="medium" className="mb-1 text-slate-700">
-                Text Color
+                {homeText(activeLocale, 'textColor')}
               </Text>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                  className="h-8 w-8 cursor-pointer rounded border border-slate-300 p-0"
-                />
+              <Stack gap="xs">
+                <ColorPicker color={color} onChange={setColor} />
                 <TextInput value={color} onChange={(e) => setColor(e.target.value)} className="h-8 text-xs font-mono" />
-              </div>
-            </div>
-          </div>
+              </Stack>
+            </Box>
+          </Box>
 
           <Button variant="primary" size="sm" icon="plus" onClick={handleCreate}>
-            Apply Formatting Rule
+            {homeText(activeLocale, 'applyFormattingRule')}
           </Button>
 
           {rules.length > 0 ? (
-            <div className="mt-4 border-t border-slate-200 pt-3">
+            <Box className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
-                Active Rules ({rules.length})
+                {homeTemplate(activeLocale, 'activeRules', { count: rules.length })}
               </Text>
               <Stack gap="xs">
                 {rules.map((r) => (
-                  <div
+                  <Box
                     key={r.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
-                    <div>
-                      <div className="font-medium text-slate-800">
+                    <Stack gap="none">
+                      <Text size="xs" weight="medium" className="text-slate-800">
                         {r.operator} {r.value1}
-                      </div>
-                      <div className="text-[10px] text-slate-500">{r.type}</div>
-                    </div>
+                      </Text>
+                      <Text size="xs" tone="subtle">{r.type}</Text>
+                    </Stack>
                     <Button
                       variant="ghost"
                       size="xs"
@@ -160,10 +149,10 @@ export function ConditionalFormatPanel({
                       onClick={() => onRemoveRule(r.id)}
                       className="text-rose-600 hover:bg-rose-50"
                     />
-                  </div>
+                  </Box>
                 ))}
               </Stack>
-            </div>
+            </Box>
           ) : null}
         </Stack>
       </PanelBody>
@@ -171,7 +160,7 @@ export function ConditionalFormatPanel({
       {onClose ? (
         <PanelFooter className="border-t border-slate-200 px-4 py-2">
           <Button variant="ghost" size="sm" onClick={onClose}>
-            Close Panel
+            {homeText(activeLocale, 'closePanel')}
           </Button>
         </PanelFooter>
       ) : null}
