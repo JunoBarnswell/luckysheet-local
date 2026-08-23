@@ -175,7 +175,7 @@ function WorkspaceApp() {
     if (!rowField || !valueField) return;
     const id = `pivot-${Math.random().toString(36).slice(2, 8)}`;
     const summarizeBy = pivotFields.find((field) => field.id === valueField)?.type === "number" ? "sum" : "count";
-    actions.addPivot({ id, sheetId: state.activeSheetId, sourceRange: pivotSourceRange, layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [] } });
+    actions.addPivot({ id, sheetId: state.activeSheetId, sourceRange: pivotSourceRange, refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true }, layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [] } });
     setActivePivotId(id);
   };
   const pivotCallbacks: PivotPanelCallbacks = {

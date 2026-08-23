@@ -1638,6 +1638,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
                 id: 'pivot-' + Math.random().toString(36).slice(2, 8),
                 sheetId: activeSheetId,
                 sourceRange,
+                refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
                 layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
               });
               refresh();
