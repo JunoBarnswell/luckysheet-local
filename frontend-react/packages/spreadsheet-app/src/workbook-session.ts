@@ -781,7 +781,7 @@ export class WorkbookSession {
           description: `Revision ${revision}`,
         };
       this.historyPreview?.dispose();
-      this.historyPreview = HistoryPreviewSession.fromSnapshot(meta, response.snapshot);
+      this.historyPreview = await HistoryPreviewSession.fromSnapshot(meta, response.snapshot);
       this.notify(`Previewing revision #${revision}`);
       this.emit();
       return this.historyPreview;

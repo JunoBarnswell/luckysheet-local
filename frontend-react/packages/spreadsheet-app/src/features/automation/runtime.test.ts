@@ -5,20 +5,43 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
   runAutomationScript,
+  runAutomationScriptAsync,
   SAMPLE_AUTOMATION_SCRIPT,
   summarizeScriptResult,
 } from './runtime';
 import { CommandRecorder } from './command-recorder';
 import { ScriptSandbox } from './sandbox';
+import { consumeAutomationWorkerRequest, type AutomationWorkerSurface } from './automation-worker';
+
+class ImmediateAutomationWorker implements AutomationWorkerSurface {
+  private readonly listeners = new Set<(event: { readonly data?: unknown; readonly message?: string }) => void>();
+
+  postMessage(message: unknown): void {
+    queueMicrotask(() => {
+      const result = consumeAutomationWorkerRequest(message);
+      for (const listener of this.listeners) listener({ data: result });
+    });
+  }
+
+  terminate(): void { this.listeners.clear(); }
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void {
+    if (type === 'message') this.listeners.add(listener);
+  }
+  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void {
+    if (type === 'message') this.listeners.delete(listener);
+  }
+}
 
 describe('automation runtime', () => {
-  it('runs facade scripts through command runtime', () => {
+  it('runs facade scripts through a Worker and one command transaction', async () => {
     const model = new WorkbookModel('wb-auto', 'Automation');
     const runtime = new CommandRuntime(model);
     registerSheetCommands(runtime);
     const sheetId = model.primarySheetId;
 
-    const result = runAutomationScript(model, runtime, SAMPLE_AUTOMATION_SCRIPT);
+    const result = await runAutomationScriptAsync(model, runtime, SAMPLE_AUTOMATION_SCRIPT, new ScriptSandbox(), {
+      workerFactory: () => new ImmediateAutomationWorker(),
+    });
     assert.equal(result.ok, true);
     assert.match(summarizeScriptResult(result), /completed/i);
 
@@ -27,7 +50,7 @@ describe('automation runtime', () => {
     assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
   });
 
-  it('blocks scripts that violate sandbox policy', () => {
+  it('keeps the synchronous API unavailable instead of falling back to the host', () => {
     const model = new WorkbookModel('wb-blocked', 'Blocked');
     const runtime = new CommandRuntime(model);
     registerSheetCommands(runtime);
@@ -38,7 +61,7 @@ describe('automation runtime', () => {
       new ScriptSandbox(),
     );
     assert.equal(result.ok, false);
-    assert.match(result.error ?? '', /blocked/i);
+    assert.match(result.error ?? '', /WORKER_ASYNC_REQUIRED/i);
   });
 });
 

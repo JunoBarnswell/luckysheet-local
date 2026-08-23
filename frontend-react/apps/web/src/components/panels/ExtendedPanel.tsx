@@ -55,9 +55,9 @@ export function ExtendedPanel({
   const [scenarioChangingCell, setScenarioChangingCell] = useState('B1');
   const [scenarioChangingValue, setScenarioChangingValue] = useState('20');
   const [scenarioResultCell, setScenarioResultCell] = useState('A1');
-  const [capabilityStatus, setCapabilityStatus] = useState<string | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
 
-  const setStatus = (message: string) => setCapabilityStatus(message);
+  const setStatus = (message: string) => setAnalysisStatus(message);
 
   return (
     <Panel className="h-full border-0 bg-transparent shadow-none">
@@ -228,9 +228,9 @@ export function ExtendedPanel({
             </div>
           ) : null}
 
-          {capabilityStatus ? (
+          {analysisStatus ? (
             <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
-              {capabilityStatus}
+              {analysisStatus}
             </div>
           ) : null}
         </Stack>

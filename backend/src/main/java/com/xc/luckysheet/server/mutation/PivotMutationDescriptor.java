@@ -77,10 +77,12 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private void refresh(ArrayNode pivots, ObjectNode params) {
         ObjectNode pivot = SnapshotMutationSupport.requireById(pivots, pivotId(params), "Pivot");
         JsonNode revision = params.get("refreshRevision");
-        String refreshedAt = SnapshotMutationSupport.text(params, "lastRefreshedAt");
+        JsonNode refreshedAt = params.get("lastRefreshedAt");
+        if (refreshedAt == null || !refreshedAt.isTextual()) throw ServiceException.validation("Pivot lastRefreshedAt must be a string");
         if (revision == null || !revision.isIntegralNumber() || revision.longValue() < 0) throw ServiceException.validation("Pivot refresh revision is invalid");
         pivot.set("refreshRevision", revision.deepCopy());
-        pivot.put("lastRefreshedAt", refreshedAt);
+        if (refreshedAt.asText().isBlank()) pivot.remove("lastRefreshedAt");
+        else pivot.set("lastRefreshedAt", refreshedAt.deepCopy());
     }
 
     private ObjectNode currentPivot(ObjectNode root, String sheetId, String pivotId) {

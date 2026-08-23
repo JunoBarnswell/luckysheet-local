@@ -471,8 +471,8 @@ function WorkspaceApp() {
             disabled={isBusy}
             formula={state.formulaDraft}
             locale={locale}
-            onCancel={session.cancelEdit}
-            onChange={session.setFormulaDraft}
+            onCancel={session.cancelEdit.bind(session)}
+            onChange={session.setFormulaDraft.bind(session)}
             onCommit={() => {
               if (state.editingCell) session.commitEdit("down");
               else session.commitFormula();
@@ -570,14 +570,14 @@ function WorkspaceApp() {
             activeSheetId={state.activeSheetId}
             locale={locale}
             disabled={isBusy}
-            onAdd={session.addSheet}
-            onSelect={session.selectSheet}
-            onRenameSheet={session.renameSheet}
-            onDeleteSheet={session.deleteSheet}
-            onDuplicateSheet={session.duplicateSheet}
-            onHideSheet={session.hideSheet}
-            onSetTabColor={session.setSheetTabColor}
-            onMoveSheet={session.moveSheet}
+            onAdd={session.addSheet.bind(session)}
+            onSelect={session.selectSheet.bind(session)}
+            onRenameSheet={session.renameSheet.bind(session)}
+            onDeleteSheet={session.deleteSheet.bind(session)}
+            onDuplicateSheet={session.duplicateSheet.bind(session)}
+            onHideSheet={session.hideSheet.bind(session)}
+            onSetTabColor={session.setSheetTabColor.bind(session)}
+            onMoveSheet={session.moveSheet.bind(session)}
             sheets={state.sheets}
           />
         }
@@ -586,7 +586,7 @@ function WorkspaceApp() {
             activeCell={state.activeCell}
             locale={locale}
             onOpenShortcuts={() => session.notify("Shortcuts: Arrows / Tab / Enter / F2 / F4 / Ctrl+C/X/V/Z/Y/B/I/U")}
-            onZoomChange={session.setZoom}
+            onZoomChange={session.setZoom.bind(session)}
             phase={state.phase}
             saveState={state.saveState}
             sheetCount={state.sheets.length}
@@ -625,17 +625,17 @@ function WorkspaceApp() {
               onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
               onCommitCell={(value) => session.commitFormula(value)}
               onBeginEdit={(initialText) => session.beginEdit(initialText)}
-              onCancelEdit={session.cancelEdit}
+              onCancelEdit={session.cancelEdit.bind(session)}
               onCommitEdit={(moveAfter) => session.commitEdit(moveAfter ?? "down")}
-              onFormulaDraftChange={session.setFormulaDraft}
+              onFormulaDraftChange={session.setFormulaDraft.bind(session)}
               onAppendFormulaDraft={session.appendFormulaDraft.bind(session)}
-              onInsertRef={session.insertRefIntoDraft}
-              onToggleAbsolute={session.toggleAbsoluteReference}
+              onInsertRef={session.insertRefIntoDraft.bind(session)}
+              onToggleAbsolute={session.toggleAbsoluteReference.bind(session)}
               onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
-              onSelectAll={session.selectAll}
-              onResizeRow={session.resizeRow}
-              onResizeColumn={session.resizeColumn}
-              onFillRange={session.fillRange}
+              onSelectAll={session.selectAll.bind(session)}
+              onResizeRow={session.resizeRow.bind(session)}
+              onResizeColumn={session.resizeColumn.bind(session)}
+              onFillRange={session.fillRange.bind(session)}
               onFloatingSelect={(hit) => session.setSelectedFloatingId(hit ? hit.id : null)}
               onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({
                 commandId: "drawing.move",
@@ -654,9 +654,9 @@ function WorkspaceApp() {
               onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
               onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
               onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}
-              getValidationList={session.getValidationAt}
-              onRetry={session.retry}
-              onCreateSheet={session.addSheet}
+              getValidationList={session.getValidationAt.bind(session)}
+              onRetry={session.retry.bind(session)}
+              onCreateSheet={session.addSheet.bind(session)}
             />
             </Suspense>
           </Box>
@@ -672,7 +672,7 @@ function WorkspaceApp() {
             locale={locale}
             selectedRange={selectedRange}
             onPanelChange={selectPanel}
-            onRetry={session.retry}
+            onRetry={session.retry.bind(session)}
             phase={state.phase}
             sheet={state.selectedSheet}
             sheetId={state.activeSheetId}
@@ -706,14 +706,14 @@ function WorkspaceApp() {
             onReadDataRows={session.readDataTable.bind(session)}
             onRemoveDataTable={session.removeDataTable.bind(session)}
             onCommand={dispatchCommand}
-            onAddSparkline={session.addSparkline}
-            onRemoveSparkline={session.removeSparkline}
-            onAddConditionalFormat={session.addConditionalFormat}
-            onRemoveConditionalFormat={session.removeConditionalFormat}
-            onAddDataValidation={session.addDataValidation}
-            onRemoveDataValidation={session.removeDataValidation}
-            onPrint={session.printWorkbook}
-            onExportPdf={session.exportPdf}
+            onAddSparkline={session.addSparkline.bind(session)}
+            onRemoveSparkline={session.removeSparkline.bind(session)}
+            onAddConditionalFormat={session.addConditionalFormat.bind(session)}
+            onRemoveConditionalFormat={session.removeConditionalFormat.bind(session)}
+            onAddDataValidation={session.addDataValidation.bind(session)}
+            onRemoveDataValidation={session.removeDataValidation.bind(session)}
+            onPrint={session.printWorkbook.bind(session)}
+            onExportPdf={session.exportPdf.bind(session)}
             printPageCount={state.printPageCount}
             queryConnectors={state.queryConnectors}
             loadedQueries={state.loadedQueries}
@@ -764,14 +764,14 @@ function WorkspaceApp() {
                 resultCells: [{ row: params.resultCell.row, column: params.resultCell.column }],
               });
             }}
-            onAddComment={session.addComment}
-            onReplyComment={session.replyComment}
-            onResolveComment={session.resolveComment}
-            onRemoveComment={session.removeComment}
-            onAddNote={session.addNote}
-            onRemoveNote={session.removeNote}
-            onSetHyperlink={session.setHyperlink}
-            onRemoveHyperlink={session.removeHyperlink}
+            onAddComment={session.addComment.bind(session)}
+            onReplyComment={session.replyComment.bind(session)}
+            onResolveComment={session.resolveComment.bind(session)}
+            onRemoveComment={session.removeComment.bind(session)}
+            onAddNote={session.addNote.bind(session)}
+            onRemoveNote={session.removeNote.bind(session)}
+            onSetHyperlink={session.setHyperlink.bind(session)}
+            onRemoveHyperlink={session.removeHyperlink.bind(session)}
           />
           </Suspense>
         </SidebarShell>
@@ -781,7 +781,7 @@ function WorkspaceApp() {
       <Suspense fallback={null}>
       <FunctionWizardDialog
         open={state.showFunctionWizard}
-        onClose={session.closeFunctionWizard}
+        onClose={session.closeFunctionWizard.bind(session)}
         onInsertFormula={(formula) => {
           session.setFormulaDraft(formula);
           session.commitFormula(formula);
@@ -791,40 +791,40 @@ function WorkspaceApp() {
       <SortDialog
         open={state.showSortDialog}
         columns={state.selectedSheet.columns}
-        onClose={session.closeSortDialog}
+        onClose={session.closeSortDialog.bind(session)}
         onSort={(criteria, hasHeader) => session.sortRange(criteria, hasHeader)}
       />
 
       <FindReplaceDialog
         open={state.showFindReplace}
         initialFind={state.findQuery}
-        onClose={session.closeFindReplace}
+        onClose={session.closeFindReplace.bind(session)}
         onReplaceAll={(params) => session.findReplace(params)}
       />
 
       <GoToDialog
         open={state.showGoTo}
-        onClose={session.closeGoTo}
+        onClose={session.closeGoTo.bind(session)}
         onGoTo={(reference) => session.selectAddress(reference)}
         onGoToSpecial={(kind) => session.goToSpecial(kind)}
       />
 
       <PasteSpecialDialog
         open={state.showPasteSpecial}
-        onClose={session.closePasteSpecial}
+        onClose={session.closePasteSpecial.bind(session)}
         onPaste={(mode) => session.pasteSpecial(mode)}
       />
 
       <FormatCellsDialog
         open={state.showFormatCells}
         initial={formatCellsInitial}
-        onClose={session.closeFormatCells}
+        onClose={session.closeFormatCells.bind(session)}
         onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
       />
 
       <ShiftCellsDialog
         open={state.showShiftCells}
-        onClose={session.closeShiftCells}
+        onClose={session.closeShiftCells.bind(session)}
         onShift={(direction) => session.shiftCells(direction)}
       />
 

@@ -121,7 +121,9 @@ final class QueryMutationDescriptor extends CanonicalJsonMutationDescriptor {
             JsonNode revision = pivotData.get("nextRefreshRevision");
             if (revision == null || !revision.isIntegralNumber() || revision.longValue() < 0) throw ServiceException.validation("Query pivot refresh revision is invalid");
             pivotRevision = revision.longValue();
-            pivotRefreshedAt = SnapshotMutationSupport.text(pivotData, "nextRefreshedAt");
+            JsonNode refreshedAt = pivotData.get("nextRefreshedAt");
+            if (refreshedAt == null || !refreshedAt.isTextual()) throw ServiceException.validation("Query pivot refresh time must be a string");
+            pivotRefreshedAt = refreshedAt.asText();
             SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, pivotSheetId), "pivots"), pivotId, "Pivot");
         }
         return new QueryCells(queryId, definition, clearRange, values, previous == null || previous.isNull() ? null : (ArrayNode) previous, pivotSheetId, pivotId, pivotRevision, pivotRefreshedAt);
@@ -158,7 +160,8 @@ final class QueryMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, payload.pivotSheetId());
         ObjectNode pivot = SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(sheet, "pivots"), payload.pivotId(), "Pivot");
         pivot.put("refreshRevision", payload.pivotRevision());
-        pivot.put("lastRefreshedAt", payload.pivotRefreshedAt());
+        if (payload.pivotRefreshedAt().isBlank()) pivot.remove("lastRefreshedAt");
+        else pivot.put("lastRefreshedAt", payload.pivotRefreshedAt());
     }
 
     private void validateDefinition(ObjectNode root, String expectedId, ObjectNode definition) {

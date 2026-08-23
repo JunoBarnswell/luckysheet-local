@@ -1,6 +1,27 @@
 import type { OutlineGroup, OutlineModel, RangeRef } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isOutlineMutation(value: unknown): value is { sheetId: string; outline: OutlineModel } {
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRecord(value.outline) || !Array.isArray(value.outline.groups)) return false;
+  return value.outline.groups.every((group) => isRecord(group)
+    && typeof group.id === 'string'
+    && (group.axis === 'row' || group.axis === 'column')
+    && Number.isInteger(group.start)
+    && Number.isInteger(group.end)
+    && Number.isInteger(group.level)
+    && typeof group.collapsed === 'boolean');
+}
+
+function outlineAffectedRanges(value: { sheetId: string; outline: OutlineModel }): RangeRef[] {
+  return value.outline.groups.map((group) => group.axis === 'row'
+    ? { sheetId: value.sheetId, startRow: group.start, endRow: group.end, startColumn: 0, endColumn: 0 }
+    : { sheetId: value.sheetId, startRow: 0, endRow: 0, startColumn: group.start, endColumn: group.end });
+}
+
 function emptyOutline(): OutlineModel {
   return { groups: [] };
 }
@@ -57,11 +78,21 @@ export interface OutlineToggleParams {
 }
 
 export function registerOutlineCommands(runtime: CommandRuntime): void {
-  runtime.registry.registerMutation('outline.set', (item, context) => {
-    const params = item.params as { sheetId: string; outline: OutlineModel };
+  runtime.registry.registerMutation({
+    id: 'outline.set',
+    handler: (item, context) => {
+    if (!isOutlineMutation(item.params)) throw new Error('Invalid outline.set mutation payload');
+    const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
     validateOutline(params.outline, sheet);
     sheet.outline = structuredClone(params.outline);
+    },
+    metadata: {
+      schema: { name: 'OutlineMutation', validate: isOutlineMutation },
+      permission: { capability: 'sheet.outline.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: outlineAffectedRanges, mode: 'declared' },
+      inverseIds: ['outline.set'],
+    },
   });
 
   runtime.registry.registerCommand<OutlineGroupParams>({

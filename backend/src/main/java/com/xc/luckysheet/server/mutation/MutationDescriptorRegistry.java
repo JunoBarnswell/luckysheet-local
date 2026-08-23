@@ -48,6 +48,23 @@ public class MutationDescriptorRegistry {
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
             "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore"
     );
+    private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
+            Map.entry("automation.recording.changed", "Recorder state is transient session state and must not enter workbook history."),
+            Map.entry("cells.shifted", "Requires one shared reference AST transform and complete structural participant relocation."),
+            Map.entry("cells.shifted.restore", "Requires one shared reference AST transform and complete structural participant relocation."),
+            Map.entry("rows.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
+            Map.entry("rows.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
+            Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
+            Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
+            Map.entry("rows.permuted", "Requires row permutation of formulas, objects, tables, validations and every structural participant."),
+            Map.entry("sheet.rename", "Requires a shared formula-reference AST rename transform; raw text replacement is forbidden."),
+            Map.entry("sheet.duplicated", "Requires identity remapping for scoped names, object payloads, print state and source relationships."),
+            Map.entry("sheet.restore", "Client-side live worksheet instances are not a canonical persisted sheet payload."),
+            Map.entry("hyperlink.set", "The canonical workbook snapshot currently has no structured hyperlink collection."),
+            Map.entry("hyperlink.remove", "The canonical workbook snapshot currently has no structured hyperlink collection."),
+            Map.entry("query.load.workbook-table", "Workbook-table query result blocks have no persisted, frontend-readable canonical data plane."),
+            Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
+    );
 
     private final Map<String, MutationDescriptor> descriptors = new ConcurrentHashMap<>();
 
@@ -83,9 +100,12 @@ public class MutationDescriptorRegistry {
         for (String id : SheetDataMutationDescriptor.IDS) register(new SheetDataMutationDescriptor(id));
         for (String id : DrawingMutationDescriptor.IDS) register(new DrawingMutationDescriptor(id));
         for (String id : PivotMutationDescriptor.IDS) register(new PivotMutationDescriptor(id));
+        for (String id : PivotDrillDownMutationDescriptor.IDS) register(new PivotDrillDownMutationDescriptor(id));
         for (String id : SparklineMutationDescriptor.IDS) register(new SparklineMutationDescriptor(id));
         for (String id : WorkbookStateMutationDescriptor.IDS) register(new WorkbookStateMutationDescriptor(id));
         for (String id : QueryMutationDescriptor.IDS) register(new QueryMutationDescriptor(id));
+        for (String id : StructuralMutationDescriptor.IDS) register(new StructuralMutationDescriptor(id));
+        register(new SheetRenameMutationDescriptor());
         registerUnavailableKnownMutations();
     }
 
@@ -99,8 +119,8 @@ public class MutationDescriptorRegistry {
         MutationDescriptor descriptor = descriptors.get(id);
         if (descriptor == null) throw ServiceException.validation("Unknown mutation: " + id);
         if (descriptor.internalOnly() && !internalCall) throw ServiceException.forbidden("Mutation is server-only: " + id);
-        if (descriptor instanceof UnavailableDescriptor) {
-            throw ServiceException.unavailable("Mutation is not available for server commit: " + id);
+        if (descriptor instanceof UnavailableDescriptor unavailable) {
+            throw ServiceException.unavailable("Mutation is not available for server commit: " + id + ". " + unavailable.reason());
         }
         return descriptor;
     }
@@ -144,8 +164,26 @@ public class MutationDescriptorRegistry {
                 .toList();
     }
 
+    /** Complete, server-owned explanation for every known mutation not accepted online. */
+    public Map<String, String> unavailableReasons() {
+        Map<String, String> reasons = new java.util.TreeMap<>();
+        for (Map.Entry<String, String> entry : UNAVAILABLE_REASONS.entrySet()) {
+            MutationDescriptor descriptor = descriptors.get(entry.getKey());
+            if (descriptor instanceof UnavailableDescriptor || (descriptor != null && descriptor.internalOnly())) {
+                reasons.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return Map.copyOf(reasons);
+    }
+
     private void registerUnavailableKnownMutations() {
-        for (String id : KNOWN_MUTATION_IDS) descriptors.putIfAbsent(id, new UnavailableDescriptor(id));
+        for (String id : KNOWN_MUTATION_IDS) {
+            String reason = UNAVAILABLE_REASONS.get(id);
+            if (reason == null && !descriptors.containsKey(id)) {
+                throw new IllegalStateException("Known mutation requires an explicit availability classification: " + id);
+            }
+            if (reason != null) descriptors.putIfAbsent(id, new UnavailableDescriptor(id, reason));
+        }
     }
 
     private void assertUnlocked(JsonNode snapshot, List<RangeRef> ranges, String action) {
@@ -677,8 +715,17 @@ public class MutationDescriptorRegistry {
     }
 
     private static final class UnavailableDescriptor extends BaseDescriptor {
-        private UnavailableDescriptor(String id) { super(id, WorkbookAclRole.OWNER, false, ""); }
+        private final String reason;
+
+        private UnavailableDescriptor(String id, String reason) {
+            super(id, WorkbookAclRole.OWNER, false, "");
+            this.reason = reason;
+        }
+
+        private String reason() {
+            return reason;
+        }
         @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) { return List.of(); }
-        @Override public JsonNode apply(JsonNode snapshot, OperationMutation mutation) { throw ServiceException.unavailable("Mutation is not available for server commit: " + id()); }
+        @Override public JsonNode apply(JsonNode snapshot, OperationMutation mutation) { throw ServiceException.unavailable("Mutation is not available for server commit: " + id() + ". " + reason); }
     }
 }

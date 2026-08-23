@@ -14,6 +14,7 @@ export interface FacadeProgram {
   readonly statements: readonly FacadeStatement[];
   readonly sourceLength: number;
   readonly cellCount: number;
+  readonly sourceHash: string;
 }
 
 export interface A1Range {
@@ -49,6 +50,15 @@ export interface FacadePlan {
   readonly statements: readonly FacadeStatement[];
   readonly operations: readonly FacadeCellOperation[];
   readonly affectedRanges: readonly RangeRef[];
+  readonly sourceLength: number;
+  readonly cellCount: number;
+  readonly sourceHash: string;
+}
+
+export interface FacadeSheetBounds {
+  readonly sheetId: string;
+  readonly rowCount: number;
+  readonly columnCount: number;
 }
 
 export interface FacadeExecutionControl {
@@ -71,6 +81,7 @@ class DslParser {
   constructor(
     private readonly source: string,
     private readonly limits: FacadeDslLimits,
+    private readonly control?: FacadeExecutionControl,
   ) {}
 
   parse(): FacadeProgram {
@@ -80,6 +91,7 @@ class DslParser {
 
     this.skipWhitespace();
     while (!this.atEnd()) {
+      checkFacadeExecution(this.control);
       if (this.statements.length >= this.limits.maxStatements) {
         throw new Error(`Automation script exceeds ${this.limits.maxStatements} statements`);
       }
@@ -99,6 +111,7 @@ class DslParser {
       statements: this.statements,
       sourceLength: this.source.length,
       cellCount: this.cellCount,
+      sourceHash: hashSource(this.source),
     };
   }
 
@@ -152,6 +165,7 @@ class DslParser {
   }
 
   private readLiteral(): unknown {
+    checkFacadeExecution(this.control);
     this.skipWhitespace();
     const char = this.peek();
     if (char === '[') {
@@ -163,6 +177,7 @@ class DslParser {
         return values;
       }
       while (true) {
+        checkFacadeExecution(this.control);
         values.push(this.readLiteral());
         this.skipWhitespace();
         if (this.peek() === ',') {
@@ -201,6 +216,7 @@ class DslParser {
       return result;
     }
     while (true) {
+      checkFacadeExecution(this.control);
       this.skipWhitespace();
       const key = this.peek() === '"' || this.peek() === "'" ? this.readString() : this.readIdentifier();
       this.skipWhitespace();
@@ -222,12 +238,14 @@ class DslParser {
     if (this.peek() === '-') this.index += 1;
     let digits = 0;
     while (isDigit(this.peek())) {
+      checkFacadeExecution(this.control);
       this.index += 1;
       digits += 1;
     }
     if (this.peek() === '.') {
       this.index += 1;
       while (isDigit(this.peek())) {
+        checkFacadeExecution(this.control);
         this.index += 1;
         digits += 1;
       }
@@ -255,6 +273,7 @@ class DslParser {
     this.index += 1;
     let result = '';
     while (!this.atEnd()) {
+      checkFacadeExecution(this.control);
       const char = this.source[this.index]!;
       this.index += 1;
       if (char === quote) return result;
@@ -325,9 +344,10 @@ class DslParser {
 export function parseFacadeScript(
   source: string,
   limits: FacadeDslLimits = DEFAULT_FACADE_DSL_LIMITS,
+  control?: FacadeExecutionControl,
 ): FacadeProgram {
   if (typeof source !== 'string') throw new Error('Automation source must be a string');
-  return new DslParser(source, limits).parse();
+  return new DslParser(source, limits, control).parse();
 }
 
 export function buildFacadePlan(
@@ -336,14 +356,23 @@ export function buildFacadePlan(
   control?: FacadeExecutionControl,
 ): FacadePlan {
   const sheet = workbook.getSheet(workbook.primarySheetId);
+  return buildFacadePlanForBounds({ sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount }, program, control);
+}
+
+/** Build a plan without importing WorkbookModel; this is the Worker entry point. */
+export function buildFacadePlanForBounds(
+  bounds: FacadeSheetBounds,
+  program: FacadeProgram,
+  control?: FacadeExecutionControl,
+): FacadePlan {
   const operations: FacadeCellOperation[] = [];
   const affectedRanges: RangeRef[] = [];
 
   for (const statement of program.statements) {
     checkFacadeExecution(control);
-    assertRangeWithinSheet(sheet.rowCount, sheet.columnCount, statement.range);
+    assertRangeWithinSheet(bounds.rowCount, bounds.columnCount, statement.range);
     affectedRanges.push({
-      sheetId: sheet.id,
+      sheetId: bounds.sheetId,
       startRow: statement.range.startRow,
       endRow: statement.range.endRow,
       startColumn: statement.range.startColumn,
@@ -362,7 +391,7 @@ export function buildFacadePlan(
           }
           operations.push({
             kind: 'set-cell',
-            sheetId: sheet.id,
+            sheetId: bounds.sheetId,
             row: targetRow,
             column: targetColumn,
             value: normalizeCellData(row[columnOffset]),
@@ -378,19 +407,52 @@ export function buildFacadePlan(
         if (statement.kind === 'set-font-weight') {
           operations.push({
             kind: 'set-style',
-            sheetId: sheet.id,
+            sheetId: bounds.sheetId,
             row,
             column,
             style: { bold: statement.weight === 'bold' },
           });
         } else {
-          operations.push({ kind: 'clear-cell', sheetId: sheet.id, row, column });
+          operations.push({ kind: 'clear-cell', sheetId: bounds.sheetId, row, column });
         }
       }
     }
   }
 
-  return { statements: program.statements, operations, affectedRanges };
+  return {
+    statements: program.statements,
+    operations,
+    affectedRanges,
+    sourceLength: program.sourceLength,
+    cellCount: program.cellCount,
+    sourceHash: program.sourceHash,
+  };
+}
+
+export function validateFacadePlan(plan: FacadePlan, bounds: FacadeSheetBounds): void {
+  if (!plan || !Array.isArray(plan.operations) || !Array.isArray(plan.affectedRanges)) throw new Error('Automation Worker returned an invalid plan');
+  if (typeof plan.sourceHash !== 'string' || typeof plan.sourceLength !== 'number' || typeof plan.cellCount !== 'number') {
+    throw new Error('Automation Worker returned an incomplete plan');
+  }
+  for (const operation of plan.operations) {
+    if (operation.sheetId !== bounds.sheetId || !Number.isSafeInteger(operation.row) || !Number.isSafeInteger(operation.column)) {
+      throw new Error('Automation Worker returned an out-of-bounds operation');
+    }
+    if (operation.row < 0 || operation.row >= bounds.rowCount || operation.column < 0 || operation.column >= bounds.columnCount) {
+      throw new Error('Automation Worker returned an out-of-bounds operation');
+    }
+    if (operation.kind !== 'set-cell' && operation.kind !== 'set-style' && operation.kind !== 'clear-cell') {
+      throw new Error('Automation Worker returned an unknown operation');
+    }
+    if (operation.kind === 'set-cell' && !isCellDataLiteral(operation.value)) throw new Error('Automation Worker returned an invalid cell value');
+    if (operation.kind === 'set-style' && operation.style?.bold !== true && operation.style?.bold !== false) {
+      throw new Error('Automation Worker returned an invalid style operation');
+    }
+  }
+  for (const range of plan.affectedRanges) {
+    if (range.sheetId !== bounds.sheetId) throw new Error('Automation Worker returned an invalid affected range');
+    assertRangeWithinSheet(bounds.rowCount, bounds.columnCount, range);
+  }
 }
 
 export function parseAndBuildFacadePlan(
@@ -487,4 +549,13 @@ function isIdentifierPart(value: string | undefined): boolean {
 
 function isWhitespace(value: string | undefined): boolean {
   return value === ' ' || value === '\n' || value === '\r' || value === '\t';
+}
+
+function hashSource(source: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }

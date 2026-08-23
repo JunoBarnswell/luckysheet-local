@@ -36,7 +36,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, mutation.sheetId());
         switch (id()) {
-            case "drawing.add" -> add(sheet, mutation.sheetId(), params);
+            case "drawing.add" -> add(root, sheet, mutation.sheetId(), params);
             case "drawing.remove" -> remove(sheet, params);
             case "drawing.transform" -> transform(sheet, params);
             case "drawing.transform.batch" -> transformBatch(sheet, params);
@@ -49,11 +49,11 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         return root;
     }
 
-    private void add(ObjectNode sheet, String sheetId, ObjectNode params) {
+    private void add(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
         ObjectNode drawing = SnapshotMutationSupport.requiredObject(params, "drawing");
         ObjectNode payload = SnapshotMutationSupport.requiredObject(params, "payload");
         SnapshotMutationSupport.requireEntitySheet(params, sheetId);
-        validateDrawing(drawing, payload, sheetId);
+        validateDrawing(root, drawing, payload, sheetId);
         ArrayNode drawings = SnapshotMutationSupport.array(sheet, "drawings");
         ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
         String drawingId = SnapshotMutationSupport.text(drawing, "id");
@@ -172,11 +172,11 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         throw ServiceException.notFound("Drawing payload not found: " + payloadId);
     }
 
-    private void validateDrawing(ObjectNode drawing, ObjectNode payload, String sheetId) {
+    private void validateDrawing(ObjectNode root, ObjectNode drawing, ObjectNode payload, String sheetId) {
         SnapshotMutationSupport.text(drawing, "id");
         SnapshotMutationSupport.requireEntitySheet(drawing, sheetId);
         SnapshotMutationSupport.text(drawing, "payloadId");
-        validateAnchorWithoutBounds(drawing.path("anchor"));
+        validateAnchor(root, sheetId, SnapshotMutationSupport.requiredObject(drawing, "anchor"));
         validateTransformObject(drawing.path("transform"));
         JsonNode zIndex = drawing.get("zIndex");
         if (zIndex == null || !zIndex.isNumber() || !Double.isFinite(zIndex.asDouble())) throw ServiceException.validation("Drawing zIndex is invalid");

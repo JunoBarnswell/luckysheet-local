@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
+import { ApiRequestError } from '@react-sheets/protocol';
 import { createSpreadsheetRuntime, startCollaborationSession, startPersistenceSession } from '../../runtime';
 import { LocalWorkspaceStore } from './storage';
 
@@ -76,5 +77,31 @@ describe('local workspace runtime persistence', () => {
     assert.equal(runtime.workspaceRecord?.localRevision, 8);
     assert.equal(runtime.workspaceRecord?.syncMode, 'local-only');
     assert.equal(runtime.localOnly, true);
+  });
+
+  it('starts a usable local workbook when the connected backend returns a server error', async () => {
+    const runtime = createSpreadsheetRuntime({
+      authTokenProvider: () => 'verified-host-token',
+      persistence: { databaseName: 'runtime-backend-error-test' },
+    });
+    const phases: string[] = [];
+    const saveStates: string[] = [];
+    runtime.handlers.onPhaseChange = (phase) => phases.push(phase);
+    runtime.handlers.onSaveState = (state) => saveStates.push(state);
+    runtime.api = {
+      getSnapshot: async () => { throw new ApiRequestError('Backend is unavailable', 503, 'INTERNAL_ERROR'); },
+      getAccess: async () => { throw new Error('getAccess must not run after a failed snapshot'); },
+      createWorkbook: async () => { throw new Error('startup must not create a remote workbook after a backend error'); },
+    } as unknown as typeof runtime.api;
+
+    const dispose = startPersistenceSession(runtime);
+    await runtime.persistenceReady;
+    dispose();
+
+    assert.equal(runtime.localOnly, true);
+    assert.equal(runtime.remoteConnected, false);
+    assert.equal(runtime.workspaceRecord?.syncMode, 'local-only');
+    assert.deepEqual(phases, ['ready']);
+    assert.equal(saveStates.at(-1), 'offline');
   });
 });

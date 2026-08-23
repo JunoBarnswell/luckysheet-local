@@ -48,9 +48,9 @@ export class HistoryPreviewSession {
     this.projection = projection;
   }
 
-  static fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot): HistoryPreviewSession {
+  static async fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot): Promise<HistoryPreviewSession> {
     const workbook = WorkbookModel.fromSnapshot(snapshot);
-    const formula = hydratePreviewFormula(workbook);
+    const formula = await hydratePreviewFormula(workbook);
     const derivedCache = new Map<string, PivotResultTree>();
     const pivotResults: Record<string, PivotResultTree> = {};
     for (const sheet of workbook.getSheets()) {
@@ -89,6 +89,7 @@ export class HistoryPreviewSession {
 
   dispose(): void {
     this.disposed = true;
+    this.formula.disposeCalculationTasks();
   }
 }
 
@@ -163,7 +164,7 @@ function pivotCacheKey(revision: number, pivotId: string): string {
   return `pivot:${pivotId}:source:${revision}:layout:${revision}:filter:${revision}`;
 }
 
-function hydratePreviewFormula(workbook: WorkbookModel): FormulaEngine {
+async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEngine> {
   const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
   engine.setRecalculationMode('manual');
   engine.setDefinedNames(workbook.definedNames);
@@ -190,7 +191,7 @@ function hydratePreviewFormula(workbook: WorkbookModel): FormulaEngine {
     });
   }
   engine.setRecalculationMode('automatic');
-  engine.recalculate();
+  await engine.recalculateAsync();
   return engine;
 }
 

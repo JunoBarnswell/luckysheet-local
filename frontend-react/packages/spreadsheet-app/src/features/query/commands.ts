@@ -137,23 +137,15 @@ function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQ
       inverseIds: ['query.definition.replace'],
     },
   );
-  for (const id of ['query.load.range', 'query.load.sheet-table', 'query.load.pivot-source'] as const) {
-    registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({
-      id,
-      handler: (item, context) => {
-        const payload = item.params as QueryCellLoadPayload | QueryCellRestorePayload;
-        if (!isQueryLoadPayload(payload)) throw new Error(`Invalid ${id} mutation payload`);
-        if ('previousCells' in payload) restoreCells(context, payload);
-        else applyCells(context, payload);
-      },
-      metadata: {
-        schema: { name: `${id}Params`, validate: isQueryLoadPayload },
-        permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
-        affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
-        inverseIds: [id],
-      },
-    });
-  }
+  const applyCellQueryMutation = (item: import('@react-sheets/command-runtime').MutationInfo<QueryCellLoadPayload | QueryCellRestorePayload>, context: CommandContext): void => {
+    const payload = item.params;
+    if (!isQueryLoadPayload(payload)) throw new Error('Invalid query cell mutation payload');
+    if ('previousCells' in payload) restoreCells(context, payload);
+    else applyCells(context, payload);
+  };
+  registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({ id: 'query.load.range', handler: applyCellQueryMutation, metadata: { schema: { name: 'QueryLoadRangeMutation', validate: isQueryLoadPayload }, permission: { capability: 'query.load.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: queryMutationRanges, mode: 'declared' }, inversePolicy: { allowedMutationIds: ['query.load.range'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({ id: 'query.load.sheet-table', handler: applyCellQueryMutation, metadata: { schema: { name: 'QueryLoadSheetTableMutation', validate: isQueryLoadPayload }, permission: { capability: 'query.load.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: queryMutationRanges, mode: 'declared' }, inversePolicy: { allowedMutationIds: ['query.load.sheet-table'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({ id: 'query.load.pivot-source', handler: applyCellQueryMutation, metadata: { schema: { name: 'QueryLoadPivotSourceMutation', validate: isQueryLoadPayload }, permission: { capability: 'query.load.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: queryMutationRanges, mode: 'declared' }, inversePolicy: { allowedMutationIds: ['query.load.pivot-source'], minCount: 1, maxCount: 1 } } });
   registry.registerMutation<QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload>({
     id: 'query.load.workbook-table',
     handler: (item, context) => {
@@ -166,9 +158,25 @@ function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQ
       schema: { name: 'query.load.workbook-tableParams', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
-      inverseIds: ['query.load.workbook-table'],
+      inversePolicy: { allowedMutationIds: ['query.load.workbook-table'], minCount: 1, maxCount: 1 },
     },
   });
+}
+
+function applyQueryLoadRange(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
+  context.applyMutation({ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.range')({ id: 'query.load.range', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
+}
+
+function applyQueryLoadSheetTable(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
+  context.applyMutation({ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.sheet-table')({ id: 'query.load.sheet-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
+}
+
+function applyQueryLoadPivotSource(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
+  context.applyMutation({ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.pivot-source')({ id: 'query.load.pivot-source', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
+}
+
+function applyQueryLoadWorkbookTable(registry: CommandRegistry, plan: ReturnType<typeof buildQueryLoadPlan>, context: CommandContext, sheetId: string): void {
+  context.applyMutation({ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges, inverse: [{ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }], apply: () => registry.getMutation<QueryMutationPayload>('query.load.workbook-table')({ id: 'query.load.workbook-table', unitId: context.workbook.unitId, sheetId, params: plan.payload, affectedRanges: plan.affectedRanges }, context) });
 }
 
 function executeLoad(
@@ -179,21 +187,13 @@ function executeLoad(
 ): CommandResult {
   const plan = buildQueryLoadPlan(context.workbook, params, store);
   const sheetId = params.target.sheetId ?? context.workbook.primarySheetId;
-  context.applyMutation({
-    id: plan.mutationId,
-    unitId: context.workbook.unitId,
-    sheetId,
-    params: plan.payload,
-    affectedRanges: plan.affectedRanges,
-    inverse: [{ id: plan.mutationId, unitId: context.workbook.unitId, sheetId, params: plan.inverse, affectedRanges: plan.affectedRanges }],
-    apply: () => registry.getMutation<QueryMutationPayload>(plan.mutationId)({
-      id: plan.mutationId,
-      unitId: context.workbook.unitId,
-      sheetId,
-      params: plan.payload,
-      affectedRanges: plan.affectedRanges,
-    }, context),
-  });
+  switch (plan.mutationId) {
+    case 'query.load.range': applyQueryLoadRange(registry, plan, context, sheetId); break;
+    case 'query.load.sheet-table': applyQueryLoadSheetTable(registry, plan, context, sheetId); break;
+    case 'query.load.pivot-source': applyQueryLoadPivotSource(registry, plan, context, sheetId); break;
+    case 'query.load.workbook-table': applyQueryLoadWorkbookTable(registry, plan, context, sheetId); break;
+    default: throw new Error(`Unsupported query load mutation: ${String(plan.mutationId)}`);
+  }
   return { operationId: context.operationId, mutationCount: 1, affectedRanges: plan.affectedRanges };
 }
 

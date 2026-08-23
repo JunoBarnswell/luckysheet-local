@@ -2,10 +2,15 @@ import type { WorkbookModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { ScriptSandbox } from './sandbox';
 import {
-  buildFacadePlan,
-  checkFacadeExecution,
+  validateFacadePlan,
   type FacadePlan,
+  type FacadeSheetBounds,
 } from './dsl';
+import {
+  AutomationWorkerClient,
+  createAutomationWorker,
+  type AutomationWorkerFactory,
+} from './automation-worker';
 
 /** Facade 脚本运行时 — 脚本只允许调 Facade */
 export class FacadeScriptRuntime {
@@ -20,51 +25,81 @@ export class FacadeScriptRuntime {
    * the complete transaction; there is deliberately no statement-by-
    * statement fallback path.
    */
-  runScript(source: string, sandbox: ScriptSandbox, options: ScriptRunOptions = {}): ScriptRunResult {
+  runScript(_source: string, _sandbox: ScriptSandbox): ScriptRunResult {
+    return {
+      ok: false,
+      durationMs: 0,
+      error: 'AUTOMATION_WORKER_ASYNC_REQUIRED: use runScriptAsync to execute in a browser Worker',
+    };
+  }
+
+  async runScriptAsync(source: string, sandbox: ScriptSandbox, options: ScriptRunOptions = {}): Promise<ScriptRunResult> {
     const started = Date.now();
-    const deadlineAt = started + sandbox.getTimeoutMs();
+    const sheet = this.workbook.getSheet(this.workbook.primarySheetId);
+    const bounds: FacadeSheetBounds = {
+      sheetId: sheet.id,
+      rowCount: sheet.rowCount,
+      columnCount: sheet.columnCount,
+    };
+    const worker = new AutomationWorkerClient(options.workerFactory ?? createAutomationWorker);
     try {
-      checkFacadeExecution({ signal: options.signal, deadlineAt });
-      const program = sandbox.parse(source);
-      checkFacadeExecution({ signal: options.signal, deadlineAt });
-      const plan = buildFacadePlan(this.workbook, program, { signal: options.signal, deadlineAt });
-      sandbox.assertPlanAllowed(plan);
-      const result = this.executePlan(source, plan, deadlineAt, options.signal);
+      const workerResult = await worker.submit(source, bounds, {
+        limits: sandbox.getLimits(),
+        maxOperations: sandbox.getPolicy().maxOperations,
+        maxDurationMs: sandbox.getTimeoutMs(),
+      }, options.signal);
+      if (workerResult.status === 'cancelled') {
+        return { ok: false, durationMs: Date.now() - started, error: 'Automation execution cancelled' };
+      }
+      if (workerResult.status === 'failed') {
+        return { ok: false, durationMs: Date.now() - started, error: `${workerResult.error.code}: ${workerResult.error.message}` };
+      }
+      validateFacadePlan(workerResult.plan, bounds);
+      sandbox.assertPlanAllowed(workerResult.plan);
+      const result = this.runtime.execute('automation.run', { plan: workerResult.plan });
       return {
         ok: true,
         durationMs: Date.now() - started,
         mutationCount: result.mutationCount,
-        plan,
+        plan: workerResult.plan,
       };
     } catch (error) {
       return { ok: false, durationMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      worker.dispose();
     }
   }
 
   /** Public deterministic plan API for hosts that own transaction execution. */
   planScript(source: string, sandbox = new ScriptSandbox()): FacadePlan {
-    const plan = buildFacadePlan(this.workbook, sandbox.parse(source));
-    sandbox.assertPlanAllowed(plan);
-    return plan;
+    void source;
+    void sandbox;
+    throw new Error('AUTOMATION_WORKER_ASYNC_REQUIRED: use planScriptAsync to plan in a browser Worker');
   }
 
-  private executePlan(
-    source: string,
-    _plan: FacadePlan,
-    deadlineAt: number,
-    signal?: AbortSignal,
-  ): { mutationCount: number } {
-    checkFacadeExecution({ signal, deadlineAt });
-    if (this.runtime.registry.hasCommand('automation.run')) {
-      const result = this.runtime.execute('automation.run', { source, deadlineAt });
-      return { mutationCount: result.mutationCount };
+  async planScriptAsync(source: string, sandbox = new ScriptSandbox(), options: ScriptRunOptions = {}): Promise<FacadePlan> {
+    const sheet = this.workbook.getSheet(this.workbook.primarySheetId);
+    const worker = new AutomationWorkerClient(options.workerFactory ?? createAutomationWorker);
+    try {
+      const result = await worker.submit(source, { sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount }, {
+        limits: sandbox.getLimits(),
+        maxOperations: sandbox.getPolicy().maxOperations,
+        maxDurationMs: sandbox.getTimeoutMs(),
+      }, options.signal);
+      if (result.status === 'cancelled') throw new Error('Automation execution cancelled');
+      if (result.status === 'failed') throw new Error(`${result.error.code}: ${result.error.message}`);
+      validateFacadePlan(result.plan, { sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount });
+      sandbox.assertPlanAllowed(result.plan);
+      return result.plan;
+    } finally {
+      worker.dispose();
     }
-    throw new Error('Automation command is not registered; script execution is unavailable');
   }
 }
 
 export interface ScriptRunOptions {
   signal?: AbortSignal;
+  workerFactory?: AutomationWorkerFactory;
 }
 
 export interface ScriptRunResult {
@@ -78,6 +113,21 @@ export interface ScriptRunResult {
 export { CommandRecorder, type RecordedStatement } from './command-recorder';
 export { ScriptSandbox, DEFAULT_SANDBOX_POLICY, type SandboxPolicy } from './sandbox';
 export { registerAutomationCommands } from './commands';
+export {
+  AutomationWorkerClient,
+  createAutomationWorker,
+  consumeAutomationWorkerRequest,
+  isAutomationWorkerCancel,
+  isAutomationWorkerRequest,
+  isAutomationWorkerResult,
+  AUTOMATION_WORKER_PROTOCOL,
+  type AutomationWorkerCancel,
+  type AutomationWorkerFactory,
+  type AutomationWorkerFailure,
+  type AutomationWorkerRequest,
+  type AutomationWorkerResult,
+  type AutomationWorkerSurface,
+} from './automation-worker';
 export * from './runtime';
 export {
   buildFacadePlan,

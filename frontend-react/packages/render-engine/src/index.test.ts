@@ -12,6 +12,8 @@ import {
   mergeCellRanges,
   rangeToViewportRect,
 } from './index';
+import { drawCellLayer, drawGridLayer } from './cell-renderer';
+import { DEFAULT_RENDER_THEME, type CellRenderData, type RenderPane } from './types';
 
 const skeleton = new SheetSkeleton({
   rowCount: 20,

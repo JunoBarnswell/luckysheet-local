@@ -32,6 +32,23 @@ export function normalizeRangeRef(range: RangeRef): RangeRef {
   };
 }
 
+function isRowsPermutedMutation(value: unknown): value is { sheetId: string; range: RangeRef; sourceRows: number[] } {
+  if (!value || typeof value !== 'object') return false;
+  const params = value as Record<string, unknown>;
+  const range = params.range;
+  if (!range || typeof range !== 'object') return false;
+  const candidate = range as Record<string, unknown>;
+  return typeof params.sheetId === 'string'
+    && candidate.sheetId === params.sheetId
+    && Number.isInteger(candidate.startRow) && Number.isInteger(candidate.endRow)
+    && Number.isInteger(candidate.startColumn) && Number.isInteger(candidate.endColumn)
+    && Number(candidate.startRow) >= 0 && Number(candidate.endRow) >= Number(candidate.startRow)
+    && Number(candidate.startColumn) >= 0 && Number(candidate.endColumn) >= Number(candidate.startColumn)
+    && Array.isArray(params.sourceRows)
+    && params.sourceRows.length === Number(candidate.endRow) - Number(candidate.startRow) + 1
+    && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
+}
+
 function inRange(range: RangeRef, row: number, column: number): boolean {
   return row >= range.startRow && row <= range.endRow
     && column >= range.startColumn && column <= range.endColumn;
@@ -75,7 +92,7 @@ function applyRangeValues(
       id: 'cell.restore' as const,
       unitId: context.workbook.unitId,
       sheetId: params.sheetId,
-      params: { row: entry.row, column: entry.column, previous: entry.previous },
+      params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
       affectedRanges: [cellRange(params.sheetId, entry.row, entry.column)],
     })),
     apply: () => {
@@ -103,7 +120,7 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
       id: 'cell.restore' as const,
       unitId: context.workbook.unitId,
       sheetId: range.sheetId,
-      params: { row: entry.row, column: entry.column, previous: entry.previous },
+      params: { sheetId: range.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
       affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
     })),
     apply: () => {
@@ -154,7 +171,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
         id: 'cell.restore' as const,
         unitId: context.workbook.unitId,
         sheetId,
-        params: { row: entry.row, column: entry.column, previous: entry.previous },
+        params: { sheetId, row: entry.row, column: entry.column, previous: entry.previous },
         affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
       })),
     ],
@@ -1140,12 +1157,22 @@ function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<
 }
 
 export function registerDataToolCommands(runtime: CommandRuntime): void {
-  runtime.registry.registerMutation('rows.permuted', (item, context) => {
-    const params = item.params as DataSortParams & { sourceRows: number[] };
-    const range = selectedRange(params);
-    const sheet = context.workbook.getSheet(params.sheetId);
-    validatePermutationMetadata(sheet, range);
-    applyRowPermutation(sheet, { range, sourceRows: params.sourceRows });
+  runtime.registry.registerMutation<{ sheetId: string; range: RangeRef; sourceRows: number[] }>({
+    id: 'rows.permuted',
+    handler: (item, context) => {
+      if (!isRowsPermutedMutation(item.params)) throw new Error('Invalid rows.permuted mutation payload');
+      const params = item.params;
+      const range = params.range;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      validatePermutationMetadata(sheet, range);
+      applyRowPermutation(sheet, { range, sourceRows: params.sourceRows });
+    },
+    metadata: {
+      schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
+      permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
+      inverseIds: ['rows.permuted'],
+    },
   });
 
   runtime.registry.registerCommand<DataSortParams>({

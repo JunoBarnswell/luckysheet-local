@@ -1,6 +1,5 @@
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import type { RangeRef } from '@react-sheets/core-model';
-import { sheetRange } from '../../command-helpers';
 import {
   buildPrintSnapshot,
 } from './layout';
@@ -41,6 +40,10 @@ interface PrintDocumentMutationParams {
   document: PrintDocument;
 }
 
+function sheetRange(sheetId: string): RangeRef[] {
+  return [{ sheetId, startRow: 0, endRow: Number.MAX_SAFE_INTEGER, startColumn: 0, endColumn: Number.MAX_SAFE_INTEGER }];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -78,49 +81,39 @@ function isDocumentMutation(value: unknown): value is PrintDocumentMutationParam
   return isRecord(value) && typeof value.sheetId === 'string' && isPrintDocument(value.document) && value.document.sheetId === value.sheetId;
 }
 
-function printMutationMetadata(id: string) {
-  return {
-    schema: { name: `${id}Params`, validate: isDocumentMutation },
-    permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] },
-    affectedRanges: { resolve: (params: PrintDocumentMutationParams) => sheetRange(params.sheetId) },
-    inverseIds: [id],
-  } as const;
-}
-
-function registerDocumentMutation(registry: CommandRegistry, id: string): void {
-  registry.registerMutation<PrintDocumentMutationParams>({
-    id,
-    handler: (item, context) => {
-      if (!isDocumentMutation(item.params)) throw new Error(`Invalid ${id} mutation payload`);
-      replacePrintDocument(context.workbook, item.params.document);
-    },
-    metadata: printMutationMetadata(id),
-  });
-}
-
-function applyDocumentChange(
-  context: CommandContext,
-  mutationId: string,
-  sheetId: string,
-  next: PrintDocument,
-  previous: PrintDocument,
-): void {
+function applyPrintPageSetup(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
   const affectedRanges = sheetRange(sheetId);
-  context.applyMutation({
-    id: mutationId,
-    unitId: context.workbook.unitId,
-    sheetId,
-    params: { sheetId, document: normalizePrintDocument(next) },
-    affectedRanges,
-    inverse: [{
-      id: mutationId,
-      unitId: context.workbook.unitId,
-      sheetId,
-      params: { sheetId, document: normalizePrintDocument(previous) },
-      affectedRanges,
-    }],
-    apply: () => replacePrintDocument(context.workbook, next),
-  });
+  context.applyMutation({ id: 'print.pageSetup.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageSetup.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
+}
+
+function applyPrintAreaSet(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
+  const affectedRanges = sheetRange(sheetId);
+  context.applyMutation({ id: 'print.area.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.area.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
+}
+
+function applyPrintAreaClear(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
+  const affectedRanges = sheetRange(sheetId);
+  context.applyMutation({ id: 'print.area.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.area.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
+}
+
+function applyPrintPageBreakSet(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
+  const affectedRanges = sheetRange(sheetId);
+  context.applyMutation({ id: 'print.pageBreak.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageBreak.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
+}
+
+function applyPrintPageBreakRemove(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
+  const affectedRanges = sheetRange(sheetId);
+  context.applyMutation({ id: 'print.pageBreak.remove', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageBreak.remove', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
+}
+
+function applyPrintPageBreaksClear(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
+  const affectedRanges = sheetRange(sheetId);
+  context.applyMutation({ id: 'print.pageBreaks.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.pageBreaks.clear', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
+}
+
+function applyPrintDocumentReplace(context: CommandContext, sheetId: string, next: PrintDocument, previous: PrintDocument): void {
+  const affectedRanges = sheetRange(sheetId);
+  context.applyMutation({ id: 'print.document.replace', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.document.replace', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
 }
 
 function pageSetupFromParams(params: PrintPageSetupCommandParams): PageSetup {
@@ -151,13 +144,13 @@ function samePageBreak(left: PrintPageBreak, right: PrintPageBreak): boolean {
 }
 
 export function registerPrintCommands(registry: CommandRegistry): void {
-  registerDocumentMutation(registry, 'print.pageSetup.set');
-  registerDocumentMutation(registry, 'print.area.set');
-  registerDocumentMutation(registry, 'print.area.clear');
-  registerDocumentMutation(registry, 'print.pageBreak.set');
-  registerDocumentMutation(registry, 'print.pageBreak.remove');
-  registerDocumentMutation(registry, 'print.pageBreaks.clear');
-  registerDocumentMutation(registry, 'print.document.replace');
+  registry.registerMutation({ id: 'print.pageSetup.set', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageSetupMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageSetup.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation({ id: 'print.area.set', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintAreaSetMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.area.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation({ id: 'print.area.clear', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintAreaClearMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.area.clear'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation({ id: 'print.pageBreak.set', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageBreakSetMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageBreak.set'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation({ id: 'print.pageBreak.remove', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageBreakRemoveMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageBreak.remove'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation({ id: 'print.pageBreaks.clear', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintPageBreaksClearMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.pageBreaks.clear'], minCount: 1, maxCount: 1 } } });
+  registry.registerMutation({ id: 'print.document.replace', handler: (item, context) => replacePrintDocument(context.workbook, item.params.document), metadata: { schema: { name: 'PrintDocumentReplaceMutation', validate: isDocumentMutation }, permission: { capability: 'print.layout.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => sheetRange(params.sheetId), mode: 'exact' }, inversePolicy: { allowedMutationIds: ['print.document.replace'], minCount: 1, maxCount: 1 } } });
 
   registry.registerCommand<PrintPreviewCommandParams>({
     id: 'print.preview',
@@ -182,7 +175,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, pageSetup: structuredClone(pageSetupFromParams(params)) };
-      applyDocumentChange(context, 'print.pageSetup.set', params.sheetId, next, previous);
+      applyPrintPageSetup(context, params.sheetId, next, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });
@@ -192,7 +185,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, printAreas: [{ sheetId: params.sheetId, range: structuredClone(params.range) }] };
-      applyDocumentChange(context, 'print.area.set', params.sheetId, next, previous);
+      applyPrintAreaSet(context, params.sheetId, next, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [params.range] };
     },
   });
@@ -202,7 +195,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, printAreas: [] };
-      applyDocumentChange(context, 'print.area.clear', params.sheetId, next, previous);
+      applyPrintAreaClear(context, params.sheetId, next, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });
@@ -215,7 +208,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
       const pageBreaks = previous.pageBreaks.filter((item) => !(item.sheetId === nextBreak.sheetId && ((nextBreak.row !== undefined && item.row === nextBreak.row) || (nextBreak.column !== undefined && item.column === nextBreak.column))));
       pageBreaks.push(nextBreak);
       const next = { ...previous, pageBreaks };
-      applyDocumentChange(context, 'print.pageBreak.set', params.sheetId, next, previous);
+      applyPrintPageBreakSet(context, params.sheetId, next, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });
@@ -225,7 +218,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, pageBreaks: previous.pageBreaks.filter((item) => !samePageBreak(item, params.pageBreak)) };
-      applyDocumentChange(context, 'print.pageBreak.remove', params.sheetId, next, previous);
+      applyPrintPageBreakRemove(context, params.sheetId, next, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });
@@ -235,7 +228,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       const previous = getPrintDocument(context.workbook, params.sheetId);
       const next = { ...previous, pageBreaks: [] };
-      applyDocumentChange(context, 'print.pageBreaks.clear', params.sheetId, next, previous);
+      applyPrintPageBreaksClear(context, params.sheetId, next, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });
@@ -245,7 +238,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       const document = normalizePrintDocument(params.document);
       const previous = getPrintDocument(context.workbook, document.sheetId);
-      applyDocumentChange(context, 'print.document.replace', document.sheetId, document, previous);
+      applyPrintDocumentReplace(context, document.sheetId, document, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(document.sheetId) };
     },
   });

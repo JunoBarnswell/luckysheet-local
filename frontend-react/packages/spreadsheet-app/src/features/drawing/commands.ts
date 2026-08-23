@@ -1,12 +1,21 @@
-import type { CommandContext, CommandRuntime, MutationHandler } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import type {
   DrawingObject,
   DrawingPayload,
   DrawingTransform,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { applyTrackedMutation, removeById, sheetRange } from '../../command-helpers';
 import { DrawingRuntime, reorderDrawing } from './runtime';
+
+function sheetRange(sheetId: string) {
+  return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+}
+
+function removeById<T extends { id: string }>(items: T[], id: string): T | undefined {
+  const index = items.findIndex((item) => item.id === id);
+  if (index < 0) return undefined;
+  return items.splice(index, 1)[0];
+}
 
 export interface DrawingSelectParams {
   sheetId: string;
@@ -288,33 +297,18 @@ function rangesForParams(params: unknown): ReturnType<typeof sheetRange> {
   return hasSheetId(params) ? sheetRange(params.sheetId) : [];
 }
 
-function registerDrawingMutation<P>(
-  runtime: CommandRuntime,
-  id: string,
-  handler: MutationHandler<P>,
-  schema: (value: unknown) => value is P,
-  inverseIds: readonly string[],
-): void {
-  runtime.registry.registerMutation(id, handler, {
-    schema: { name: `${id}Params`, validate: schema },
-    permission: { capability: 'drawing.edit' },
-    affectedRanges: { resolve: (params) => rangesForParams(params), mode: 'declared' },
-    inverseIds,
-  });
-}
-
 function executeAdd(params: DrawingAddParams, context: CommandContext, kind?: DrawingObject['kind']): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   const drawing = kind ? { ...params.drawing, kind } : params.drawing;
   const next = { sheetId: params.sheetId, drawing, payload: params.payload };
   isDrawingPairValid(next.drawing, next.payload);
   const affectedRanges = sheetRange(params.sheetId);
-  applyTrackedMutation(context, {
+  context.applyMutation({
     id: 'drawing.add',
+    unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: next,
-    inverseId: 'drawing.remove',
-    inverseParams: { sheetId: params.sheetId, drawingId: drawing.id },
     affectedRanges,
+    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
     apply: () => addDrawing(context.workbook.getSheet(params.sheetId), drawing, params.payload),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -325,12 +319,13 @@ function executeTransform(params: DrawingTransformParams, context: CommandContex
   const drawing = findDrawing(sheet, params.drawingId);
   const previous = structuredClone(drawing.transform);
   const affectedRanges = sheetRange(params.sheetId);
-  applyTrackedMutation(context, {
+  context.applyMutation({
     id: 'drawing.transform',
+    unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params,
-    inverseParams: { ...params, transform: previous },
     affectedRanges,
+    inverse: [{ id: 'drawing.transform', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, transform: previous }, affectedRanges }],
     apply: () => { findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId).transform = structuredClone(params.transform); },
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -340,12 +335,13 @@ function executeTransformCommit(params: DrawingTransformCommitParams, context: C
   const drawing = findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId);
   if (JSON.stringify(drawing.transform) !== JSON.stringify(params.before)) throw new Error(`Drawing transform changed before pointer commit: ${params.drawingId}`);
   const affectedRanges = sheetRange(params.sheetId);
-  applyTrackedMutation(context, {
+  context.applyMutation({
     id: 'drawing.transform',
+    unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: { sheetId: params.sheetId, drawingId: params.drawingId, transform: structuredClone(params.after) },
-    inverseParams: { sheetId: params.sheetId, drawingId: params.drawingId, transform: structuredClone(params.before) },
     affectedRanges,
+    inverse: [{ id: 'drawing.transform', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawingId, transform: structuredClone(params.before) }, affectedRanges }],
     apply: () => { findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId).transform = structuredClone(params.after); },
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -363,12 +359,13 @@ function executeTransformBatch(params: DrawingTransformBatchParams, context: Com
     sheetId: params.sheetId,
     entries: params.entries.map((entry) => ({ drawingId: entry.drawingId, before: entry.after, after: entry.before })),
   };
-  applyTrackedMutation(context, {
+  context.applyMutation({
     id: 'drawing.transform.batch',
+    unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params,
-    inverseParams: inverse,
     affectedRanges,
+    inverse: [{ id: 'drawing.transform.batch', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges }],
     apply: () => {
       const targetSheet = context.workbook.getSheet(params.sheetId);
       for (const entry of params.entries) findDrawing(targetSheet, entry.drawingId).transform = structuredClone(entry.after);
@@ -378,14 +375,70 @@ function executeTransformBatch(params: DrawingTransformBatchParams, context: Com
 }
 
 export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime: DrawingRuntime): string[] {
-  registerDrawingMutation<DrawingAddParams>(runtime, 'drawing.add', (item, context) => addDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawing, item.params.payload), isDrawingAddParams, ['drawing.remove']);
-  registerDrawingMutation<DrawingRemoveParams>(runtime, 'drawing.remove', (item, context) => { removeDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId); }, isDrawingRemoveParams, ['drawing.add']);
-  registerDrawingMutation<DrawingTransformParams>(runtime, 'drawing.transform', (item, context) => { findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).transform = structuredClone(item.params.transform); }, isTransformParams, ['drawing.transform']);
-  registerDrawingMutation<DrawingTransformBatchParams>(runtime, 'drawing.transform.batch', (item, context) => { for (const entry of item.params.entries) findDrawing(context.workbook.getSheet(item.params.sheetId), entry.drawingId).transform = structuredClone(entry.after); }, isTransformBatchParams, ['drawing.transform.batch']);
-  registerDrawingMutation<DrawingAnchorParams>(runtime, 'drawing.anchor', (item, context) => { findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).anchor = structuredClone(item.params.anchor); }, isAnchorParams, ['drawing.anchor']);
-  registerDrawingMutation<DrawingPayloadUpdateParams>(runtime, 'drawing.payload.update', (item, context) => updatePayload(context.workbook.getSheet(item.params.sheetId), item.params), isPayloadUpdateParams, ['drawing.payload.update']);
-  registerDrawingMutation<DrawingZOrderParams>(runtime, 'drawing.zorder', (item, context) => reorderDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId, item.params.direction), isZOrderParams, ['drawing.zorder.restore']);
-  registerDrawingMutation<DrawingZOrderRestoreParams>(runtime, 'drawing.zorder.restore', (item, context) => restoreZOrder(context.workbook.getSheet(item.params.sheetId), item.params), isZOrderRestoreParams, ['drawing.zorder']);
+  runtime.registry.registerMutation<DrawingAddParams>('drawing.add', (item, context) => {
+    addDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawing, item.params.payload);
+  }, {
+    schema: { name: 'DrawingAddParams', validate: isDrawingAddParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.remove'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingRemoveParams>('drawing.remove', (item, context) => {
+    removeDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId);
+  }, {
+    schema: { name: 'DrawingRemoveParams', validate: isDrawingRemoveParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.add'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingTransformParams>('drawing.transform', (item, context) => {
+    findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).transform = structuredClone(item.params.transform);
+  }, {
+    schema: { name: 'DrawingTransformParams', validate: isTransformParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.transform'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingTransformBatchParams>('drawing.transform.batch', (item, context) => {
+    for (const entry of item.params.entries) findDrawing(context.workbook.getSheet(item.params.sheetId), entry.drawingId).transform = structuredClone(entry.after);
+  }, {
+    schema: { name: 'DrawingTransformBatchParams', validate: isTransformBatchParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.transform.batch'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingAnchorParams>('drawing.anchor', (item, context) => {
+    findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).anchor = structuredClone(item.params.anchor);
+  }, {
+    schema: { name: 'DrawingAnchorParams', validate: isAnchorParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.anchor'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingPayloadUpdateParams>('drawing.payload.update', (item, context) => {
+    updatePayload(context.workbook.getSheet(item.params.sheetId), item.params);
+  }, {
+    schema: { name: 'DrawingPayloadUpdateParams', validate: isPayloadUpdateParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.payload.update'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingZOrderParams>('drawing.zorder', (item, context) => {
+    reorderDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId, item.params.direction);
+  }, {
+    schema: { name: 'DrawingZOrderParams', validate: isZOrderParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.zorder.restore'], minCount: 1, maxCount: 1 },
+  });
+  runtime.registry.registerMutation<DrawingZOrderRestoreParams>('drawing.zorder.restore', (item, context) => {
+    restoreZOrder(context.workbook.getSheet(item.params.sheetId), item.params);
+  }, {
+    schema: { name: 'DrawingZOrderRestoreParams', validate: isZOrderRestoreParams },
+    permission: { capability: 'drawing.edit' },
+    affectedRanges: { resolve: rangesForParams, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['drawing.zorder.restore'], minCount: 1, maxCount: 1 },
+  });
 
   const commandIds: string[] = [];
   runtime.registry.registerCommand<DrawingSelectParams>({
@@ -421,13 +474,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const payload = sheet.drawingPayloads.get(drawing.payloadId);
       if (!payload) throw new Error(`Missing drawing payload: ${drawing.payloadId}`);
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      context.applyMutation({
         id: 'drawing.remove',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params,
-        inverseId: 'drawing.add',
-        inverseParams: { sheetId: params.sheetId, drawing: structuredClone(drawing), payload: structuredClone(payload) },
         affectedRanges,
+        inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: structuredClone(drawing), payload: structuredClone(payload) }, affectedRanges }],
         apply: () => removeDrawing(context.workbook.getSheet(params.sheetId), params.drawingId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -450,12 +503,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const drawing = findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId);
       const previous = structuredClone(drawing.anchor);
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      context.applyMutation({
         id: 'drawing.anchor',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params,
-        inverseParams: { ...params, anchor: previous },
         affectedRanges,
+        inverse: [{ id: 'drawing.anchor', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, anchor: previous }, affectedRanges }],
         apply: () => { findDrawing(context.workbook.getSheet(params.sheetId), params.drawingId).anchor = structuredClone(params.anchor); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -471,12 +525,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       if (!current) throw new Error(`Missing drawing payload: ${params.payloadId}`);
       if (current.kind !== params.before.kind) throw new Error(`Drawing payload changed before update: ${params.payloadId}`);
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      context.applyMutation({
         id: 'drawing.payload.update',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params,
-        inverseParams: { sheetId: params.sheetId, payloadId: params.payloadId, before: params.after, after: params.before },
         affectedRanges,
+        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: params.payloadId, before: params.after, after: params.before }, affectedRanges }],
         apply: () => updatePayload(context.workbook.getSheet(params.sheetId), params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -491,13 +546,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const drawing = findDrawing(sheet, params.drawingId);
       const previous = sheet.drawings.map((entry) => ({ drawingId: entry.id, zIndex: entry.zIndex }));
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation<DrawingZOrderParams, DrawingZOrderRestoreParams>(context, {
+      context.applyMutation({
         id: 'drawing.zorder',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params,
-        inverseId: 'drawing.zorder.restore',
-        inverseParams: { sheetId: params.sheetId, entries: previous },
         affectedRanges,
+        inverse: [{ id: 'drawing.zorder.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, entries: previous }, affectedRanges }],
         apply: () => { reorderDrawing(context.workbook.getSheet(params.sheetId), drawing.id, params.direction); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -576,13 +631,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         ? { ...structuredClone(sourcePayload), chartId: params.payloadId }
         : structuredClone(sourcePayload);
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      context.applyMutation({
         id: 'drawing.add',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, drawing, payload },
-        inverseId: 'drawing.remove',
-        inverseParams: { sheetId: params.sheetId, drawingId: drawing.id },
         affectedRanges,
+        inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
         apply: () => addDrawing(context.workbook.getSheet(params.sheetId), drawing, payload),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -601,12 +656,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const before = structuredClone(current);
       const after: ImagePayloadWithCrop = { ...structuredClone(current), crop: structuredClone(params.crop) };
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      context.applyMutation({
         id: 'drawing.payload.update',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after },
-        inverseParams: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before },
         affectedRanges,
+        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
         apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -625,12 +681,13 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const before = structuredClone(current);
       const after = { ...structuredClone(current), altText: params.altText };
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      context.applyMutation({
         id: 'drawing.payload.update',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after },
-        inverseParams: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before },
         affectedRanges,
+        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
         apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

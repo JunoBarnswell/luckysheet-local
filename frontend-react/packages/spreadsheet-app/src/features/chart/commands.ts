@@ -1,6 +1,9 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import type { ChartDrawingPayload, DrawingObject, RangeRef, WorksheetModel } from '@react-sheets/core-model';
-import { applyTrackedMutation, sheetRange } from '../../command-helpers';
+
+function sheetRange(sheetId: string) {
+  return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+}
 
 export type ChartType = ChartDrawingPayload['chartType'];
 export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
@@ -189,23 +192,18 @@ function updateChartPayload(sheet: WorksheetModel, params: { sheetId: string; ch
   sheet.drawingPayloads.set(current.drawing.payloadId, structuredClone(params.payload));
 }
 
-interface DrawingRemoveMutationParams {
-  sheetId: string;
-  drawingId: string;
-}
-
 function executeChartInsert(params: ChartInsertParams, context: CommandContext, expectedType?: ChartType): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
   if (expectedType && params.payload.chartType !== expectedType) throw new Error(`Chart command type mismatch: expected ${expectedType}`);
   const sheet = context.workbook.getSheet(params.sheetId);
   validateChartPair(sheet, params.drawing, params.payload);
   const affectedRanges = sheetRange(params.sheetId);
-  applyTrackedMutation<ChartInsertParams, DrawingRemoveMutationParams>(context, {
+  context.applyMutation({
     id: 'drawing.add',
+    unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params,
-    inverseId: 'drawing.remove',
-    inverseParams: { sheetId: params.sheetId, drawingId: params.drawing.id },
     affectedRanges,
+    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: params.drawing.id }, affectedRanges }],
     apply: () => addChartDrawing(context.workbook.getSheet(params.sheetId), params),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -223,12 +221,13 @@ function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
   if (!isChartPayload(nextPayload)) throw new Error(`Invalid chart payload: ${params.chartId}`);
   const affectedRanges = sheetRange(params.sheetId);
   const mutationParams = { sheetId: params.sheetId, payloadId: params.chartId, before: current.payload, after: nextPayload };
-  applyTrackedMutation(context, {
+  context.applyMutation({
     id: 'drawing.payload.update',
+    unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: mutationParams,
-    inverseParams: { sheetId: params.sheetId, payloadId: params.chartId, before: nextPayload, after: current.payload },
     affectedRanges,
+    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: params.chartId, before: nextPayload, after: current.payload }, affectedRanges }],
     apply: () => updateChartPayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload }),
   });
   return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -269,13 +268,13 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
       if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
       const affectedRanges = sheetRange(params.sheetId);
       const inverseParams: ChartInsertParams = { sheetId: params.sheetId, drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
-      applyTrackedMutation<DrawingRemoveMutationParams, ChartInsertParams>(context, {
+      context.applyMutation({
         id: 'drawing.remove',
+        unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, drawingId: current.drawing.id },
-        inverseId: 'drawing.add',
-        inverseParams,
         affectedRanges,
+        inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverseParams, affectedRanges }],
         apply: () => removeChartDrawing(context.workbook.getSheet(params.sheetId), params.chartId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

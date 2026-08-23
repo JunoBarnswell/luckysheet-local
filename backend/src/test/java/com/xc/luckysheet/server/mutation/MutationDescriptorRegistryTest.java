@@ -42,10 +42,10 @@ class MutationDescriptorRegistryTest {
     @Test
     void knownMutationWithoutServerReducerFailsClosedInsteadOfBeingStoredAsOpaqueJson() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.require("rows.inserted", false));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.require("sheet.duplicated", false));
         assertEquals("SERVICE_UNAVAILABLE", error.code());
-        assertEquals(true, registry.ids().contains("rows.inserted"));
-        assertEquals(false, registry.acceptedIds().contains("rows.inserted"));
+        assertEquals(true, registry.ids().contains("sheet.duplicated"));
+        assertEquals(false, registry.acceptedIds().contains("sheet.duplicated"));
     }
 
     @Test
@@ -62,12 +62,26 @@ class MutationDescriptorRegistryTest {
                 "filter.set", "filter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
                 "sheetTable.add", "sheetTable.remove", "sheetTable.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
-                "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh",
+                "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
                 "table.add", "table.remove", "name.set", "name.remove",
                 "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set", "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace"
-                , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source"
+                , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source",
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore", "rows.permuted", "sheet.rename"
         ), Set.copyOf(registry.acceptedIds()));
+    }
+
+    @Test
+    void everyKnownNonAcceptedMutationHasAServerOwnedReason() {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        assertEquals(Set.of(
+                "automation.recording.changed",
+                "sheet.duplicated", "sheet.restore",
+                "hyperlink.set", "hyperlink.remove",
+                "query.load.workbook-table",
+                "workbook.restore"
+        ), registry.unavailableReasons().keySet());
+        assertEquals("Requires identity remapping for scoped names, object payloads, print state and source relationships.", registry.unavailableReasons().get("sheet.duplicated"));
     }
 
     @Test
@@ -180,5 +194,120 @@ class MutationDescriptorRegistryTest {
         assertEquals("query-1", current.path("queryDefinitions").get(0).path("id").asText());
         assertEquals("East", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
         assertEquals(42, current.path("sheets").get(0).path("cells").path("1").path("1").path("value").asInt());
+    }
+
+    @Test
+    void pivotSparklineAndDrillDownReducersPreserveOnlyDomainDefinitionsAndDerivedDetailCells() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
+                """);
+        OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
+                {"id":"pivot-1","sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true}}
+                """));
+        JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
+        assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
+
+        OperationMutation sparkline = new OperationMutation("sparkline.add", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sparkline":{"id":"spark-1","sheetId":"sheet-1","anchor":{"row":3,"column":0},"sourceRange":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":1,"endColumn":1},"type":"line","color":"#2563eb"}}
+                """));
+        current = registry.prepare(current, sparkline, WorkbookAclRole.EDITOR).descriptor().apply(current, sparkline);
+        assertEquals("spark-1", current.path("sheets").get(0).path("sparklines").get(0).path("id").asText());
+
+        OperationMutation drillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","pivotId":"pivot-1","label":"East","sourceRowPaths":[{"sheetId":"sheet-1","row":1}],"targetSheetId":"detail-1","targetAnchor":{"row":0,"column":0}}
+                """));
+        current = registry.prepare(current, drillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, drillDown);
+        assertEquals("detail-1", current.path("sheets").get(1).path("id").asText());
+        assertEquals("Region", current.path("sheets").get(1).path("cells").path("0").path("0").path("value").asText());
+        assertEquals("East", current.path("sheets").get(1).path("cells").path("1").path("0").path("value").asText());
+    }
+
+    @Test
+    void sparklineGroupStateIsAppliedAsOneConsistentMutation() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{},"sparklines":[
+                  {"id":"s1","sheetId":"sheet-1","anchor":{"row":1,"column":0},"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"type":"line","color":"#1"},
+                  {"id":"s2","sheetId":"sheet-1","anchor":{"row":2,"column":0},"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"type":"line","color":"#1"}
+                ],"sparklineGroups":[]}]}
+                """);
+        OperationMutation group = new OperationMutation("sparkline.group.add", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","groupIds":["g1"],"groups":[{"index":0,"group":{"id":"g1","sheetId":"sheet-1","type":"line","sparklineIds":["s1","s2"],"showAxis":true}}],"members":[{"sparklineId":"s1","type":"line","groupId":"g1","showAxis":true},{"sparklineId":"s2","type":"line","groupId":"g1","showAxis":true}]}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, group, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, group);
+        assertEquals("g1", current.path("sheets").get(0).path("sparklineGroups").get(0).path("id").asText());
+        assertEquals("g1", current.path("sheets").get(0).path("sparklines").get(0).path("groupId").asText());
+        assertEquals(true, current.path("sheets").get(0).path("sparklines").get(1).path("showAxis").asBoolean());
+    }
+
+    @Test
+    void structuralRowMutationMovesCellsMetadataAndParsedFormulaReferencesTogether() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"definedNames":{"Sales":"=Sheet1!A2"},"definedNameModels":[{"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"}],"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"freeze":{"xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"hiddenRows":[1],"rowHeights":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"notes":[],"commentThreads":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0}}
+                ]}
+                """);
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":1,"count":1}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, insert, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, insert);
+        assertEquals(6, current.path("sheets").get(0).path("rowCount").asInt());
+        assertEquals(10, current.path("sheets").get(0).path("cells").path("2").path("0").path("value").asInt());
+        assertEquals("=A3", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("=Sheet1!A3", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("=Sheet1!A3", current.path("definedNames").path("Sales").asText());
+        assertEquals(2, current.path("sheets").get(0).path("hiddenRows").get(0).asInt());
+    }
+
+    @Test
+    void sheetRenameUsesParsedReferencesAndDoesNotTouchStringLiterals() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Old Name","rowCount":5,"columnCount":3,"cells":{},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0}},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"='Old Name'!A1+\\\"Old Name!A1\\\""}}},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0}}
+                ],"definedNames":{"Total":"='Old Name'!A1"},"definedNameModels":[{"name":"Total","formula":"='Old Name'!A1","scope":"workbook"}]}
+                """);
+        OperationMutation rename = new OperationMutation("sheet.rename", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","name":"New Name"}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, rename, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, rename);
+        assertEquals("New Name", current.path("sheets").get(0).path("name").asText());
+        assertEquals("='New Name'!A1+\"Old Name!A1\"", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='New Name'!A1", current.path("definedNames").path("Total").asText());
+    }
+
+    @Test
+    void boundedShiftAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0},"notes":[{"row":0,"column":0,"note":{"id":"n1"}}],"commentThreads":[],"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        OperationMutation shift = new OperationMutation("cells.shifted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"direction":"down"}
+                """));
+        JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
+        assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(1, current.path("sheets").get(0).path("notes").get(0).path("row").asInt());
+
+        OperationMutation restore = new OperationMutation("cells.shifted.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"direction":"down","cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
+                """));
+        current = registry.prepare(current, restore, WorkbookAclRole.EDITOR).descriptor().apply(current, restore);
+        assertEquals("=A1", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("drop", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
+
+        OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        current = registry.prepare(current, permutation, WorkbookAclRole.EDITOR).descriptor().apply(current, permutation);
+        assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+        assertEquals("=A1", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
     }
 }

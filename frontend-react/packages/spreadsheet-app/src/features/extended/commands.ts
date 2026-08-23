@@ -29,23 +29,6 @@ function cellRange(sheetId: string, row: number, column: number): RangeRef[] {
   return [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
 }
 
-function ensureCellMutations(registry: CommandRegistry): void {
-  if (!registry.hasMutation('cell.set')) {
-    registry.registerMutation<{ sheetId: string; row: number; column: number; value: CellData }>('cell.set', (item, context) => {
-      const params = item.params;
-      context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, structuredClone(params.value));
-    });
-  }
-  if (!registry.hasMutation('cell.restore')) {
-    registry.registerMutation<{ row: number; column: number; previous?: CellData }>('cell.restore', (item, context) => {
-      const params = item.params;
-      const sheet = context.workbook.getSheet(item.sheetId);
-      if (params.previous) sheet.cells.set(params.row, params.column, structuredClone(params.previous));
-      else sheet.cells.delete(params.row, params.column);
-    });
-  }
-}
-
 function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
   const sheet = context.workbook.getSheet(write.sheetId);
   const previous = sheet.cells.get(write.row, write.column);
@@ -60,7 +43,7 @@ function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
       id: 'cell.restore',
       unitId: context.workbook.unitId,
       sheetId: write.sheetId,
-      params: { row: write.row, column: write.column, previous: previous ? structuredClone(previous) : undefined },
+      params: { sheetId: write.sheetId, row: write.row, column: write.column, previous: previous ? structuredClone(previous) : undefined },
       affectedRanges,
     }],
     apply: () => sheet.cells.set(write.row, write.column, structuredClone(write.value)),
@@ -99,8 +82,6 @@ function commandPlanResult(
 }
 
 export function registerExtendedCommands(registry: CommandRegistry): void {
-  ensureCellMutations(registry);
-
   registry.registerCommand<ExtendedGoalSeekCommandParams>({
     id: 'extended.whatIf.goalSeek',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {

@@ -1,7 +1,6 @@
-import type { CommandRuntime } from '@react-sheets/command-runtime';
-import type { ProtectionRule } from '@react-sheets/core-model';
+import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
+import type { ProtectionRule, RangeRef } from '@react-sheets/core-model';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
-import { applyTrackedMutation, registerMutationHandler, removeById } from '../../command-helpers';
 
 export interface ProtectSetParams {
   sheetId: string;
@@ -13,61 +12,118 @@ export interface ProtectRemoveParams {
   ruleId: string;
 }
 
-function sheetWideRange(sheetId: string) {
-  return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+function sheetWideRange(sheetId: string): RangeRef[] {
+  return [{ sheetId, startRow: 0, endRow: Number.MAX_SAFE_INTEGER, startColumn: 0, endColumn: Number.MAX_SAFE_INTEGER }];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isProtectSetParams(value: unknown): value is ProtectSetParams {
+  return isRecord(value)
+    && typeof value.sheetId === 'string'
+    && isRecord(value.rule)
+    && typeof value.rule.id === 'string'
+    && typeof value.rule.scope === 'string';
+}
+
+function isProtectRemoveParams(value: unknown): value is ProtectRemoveParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && typeof value.ruleId === 'string';
+}
+
+function applyProtectSet(context: CommandContext, params: ProtectSetParams, inverse: ProtectSetParams | ProtectRemoveParams): void {
+  const affectedRanges = params.rule.scope === 'range' && params.rule.range ? [params.rule.range] : sheetWideRange(params.sheetId);
+  const apply = () => {
+    const rules = context.workbook.getSheet(params.sheetId).protectionRules;
+    const index = rules.findIndex((entry) => entry.id === params.rule.id);
+    if (index >= 0) rules[index] = structuredClone(params.rule);
+    else rules.push(structuredClone(params.rule));
+  };
+  if ('rule' in inverse) {
+    const inverseRanges = inverse.rule.scope === 'range' && inverse.rule.range ? [inverse.rule.range] : sheetWideRange(params.sheetId);
+    context.applyMutation({
+      id: 'sheet.protect.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges,
+      inverse: [{ id: 'sheet.protect.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: inverseRanges }], apply,
+    });
+    return;
+  }
+  context.applyMutation({
+    id: 'sheet.protect.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges,
+    inverse: [{ id: 'sheet.protect.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: sheetWideRange(params.sheetId) }], apply,
+  });
+}
+
+function applyProtectRemove(context: CommandContext, params: ProtectRemoveParams, inverse: ProtectSetParams | ProtectRemoveParams): void {
+  const affectedRanges = sheetWideRange(params.sheetId);
+  const apply = () => {
+    const rules = context.workbook.getSheet(params.sheetId).protectionRules;
+    const index = rules.findIndex((entry) => entry.id === params.ruleId);
+    if (index >= 0) rules.splice(index, 1);
+  };
+  if ('rule' in inverse) {
+    const inverseRanges = inverse.rule.scope === 'range' && inverse.rule.range ? [inverse.rule.range] : affectedRanges;
+    context.applyMutation({
+      id: 'sheet.protect.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges,
+      inverse: [{ id: 'sheet.protect.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: inverseRanges }], apply,
+    });
+    return;
+  }
+  context.applyMutation({
+    id: 'sheet.protect.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges,
+    inverse: [{ id: 'sheet.protect.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges }], apply,
+  });
 }
 
 export function registerPermissionCommands(runtime: CommandRuntime): string[] {
-  const commandIds: string[] = [];
-
-  registerMutationHandler<ProtectSetParams>(runtime, 'sheet.protect.set', (params, context) => {
-    const rules = context.workbook.getSheet(params.sheetId).protectionRules;
-    const existing = rules.findIndex((entry) => entry.id === params.rule.id);
-    if (existing >= 0) rules[existing] = structuredClone(params.rule);
-    else rules.push(structuredClone(params.rule));
+  runtime.registry.registerMutation<ProtectSetParams>({
+    id: 'sheet.protect.set',
+    handler: (item, context) => {
+      const params = item.params;
+      const rules = context.workbook.getSheet(params.sheetId).protectionRules;
+      const index = rules.findIndex((entry) => entry.id === params.rule.id);
+      if (index >= 0) rules[index] = structuredClone(params.rule);
+      else rules.push(structuredClone(params.rule));
+    },
+    metadata: {
+      schema: { name: 'ProtectSetParams', validate: isProtectSetParams },
+      permission: { capability: 'workbook.protect', roles: ['owner'] },
+      affectedRanges: { resolve: (params) => params.rule.scope === 'range' && params.rule.range ? [params.rule.range] : sheetWideRange(params.sheetId), mode: 'exact' },
+      inversePolicy: { allowedMutationIds: ['sheet.protect.set', 'sheet.protect.remove'], minCount: 1, maxCount: 1 },
+    },
   });
-  registerMutationHandler<ProtectRemoveParams>(runtime, 'sheet.protect.remove', (params, context) => {
-    removeById(context.workbook.getSheet(params.sheetId).protectionRules, params.ruleId);
-  });
-
-  const registerSimple = <P extends { sheetId: string }>(
-    commandId: string,
-    mutationId: string,
-    readInverse: (params: P, context: import('@react-sheets/command-runtime').CommandContext) => { id: string; params: unknown },
-  ): void => {
-    runtime.registry.registerCommand<P>({
-      id: commandId,
-      execute: (params, context) => {
-        const inverse = readInverse(params, context);
-        applyTrackedMutation(context, {
-          id: mutationId,
-          sheetId: params.sheetId,
-          params,
-          inverseId: inverse.id,
-          inverseParams: inverse.params,
-          affectedRanges: sheetWideRange(params.sheetId),
-          apply: () => runtime.registry.getMutation(mutationId)({ id: mutationId, unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges: sheetWideRange(params.sheetId) }, context),
-        });
-        return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetWideRange(params.sheetId) };
-      },
-    });
-    commandIds.push(commandId);
-  };
-
-  registerSimple<ProtectSetParams>('sheet.protect.set', 'sheet.protect.set', (params, context) => {
-    const previous = context.workbook.getSheet(params.sheetId).protectionRules.find((entry) => entry.id === params.rule.id);
-    return previous
-      ? { id: 'sheet.protect.set', params: { sheetId: params.sheetId, rule: structuredClone(previous) } }
-      : { id: 'sheet.protect.remove', params: { sheetId: params.sheetId, ruleId: params.rule.id } };
-  });
-  registerSimple<ProtectRemoveParams>('sheet.protect.remove', 'sheet.protect.remove', (params, context) => {
-    const rule = context.workbook.getSheet(params.sheetId).protectionRules.find((entry) => entry.id === params.ruleId);
-    return rule
-      ? { id: 'sheet.protect.set', params: { sheetId: params.sheetId, rule: structuredClone(rule) } }
-      : { id: 'sheet.protect.remove', params };
+  runtime.registry.registerMutation<ProtectRemoveParams>({
+    id: 'sheet.protect.remove',
+    handler: (item, context) => {
+      const rules = context.workbook.getSheet(item.params.sheetId).protectionRules;
+      const index = rules.findIndex((entry) => entry.id === item.params.ruleId);
+      if (index >= 0) rules.splice(index, 1);
+    },
+    metadata: {
+      schema: { name: 'ProtectRemoveParams', validate: isProtectRemoveParams },
+      permission: { capability: 'workbook.protect', roles: ['owner'] },
+      affectedRanges: { resolve: (params) => sheetWideRange(params.sheetId), mode: 'exact' },
+      inversePolicy: { allowedMutationIds: ['sheet.protect.set', 'sheet.protect.remove'], minCount: 1, maxCount: 1 },
+    },
   });
 
-  return commandIds;
+  runtime.registry.registerCommand<ProtectSetParams>({
+    id: 'sheet.protect.set',
+    execute: (params, context) => {
+      const previous = context.workbook.getSheet(params.sheetId).protectionRules.find((entry) => entry.id === params.rule.id);
+      applyProtectSet(context, params, previous ? { sheetId: params.sheetId, rule: structuredClone(previous) } : { sheetId: params.sheetId, ruleId: params.rule.id });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: params.rule.scope === 'range' && params.rule.range ? [params.rule.range] : sheetWideRange(params.sheetId) };
+    },
+  });
+  runtime.registry.registerCommand<ProtectRemoveParams>({
+    id: 'sheet.protect.remove',
+    execute: (params, context) => {
+      const previous = context.workbook.getSheet(params.sheetId).protectionRules.find((entry) => entry.id === params.ruleId);
+      applyProtectRemove(context, params, previous ? { sheetId: params.sheetId, rule: structuredClone(previous) } : params);
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetWideRange(params.sheetId) };
+    },
+  });
+  return ['sheet.protect.set', 'sheet.protect.remove'];
 }
 
 export const PERMISSION_RIBBON_ENTRIES = [

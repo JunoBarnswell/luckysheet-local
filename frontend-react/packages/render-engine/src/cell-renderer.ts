@@ -44,80 +44,86 @@ export function drawGridLayer(options: PaneDrawOptions): void {
   context.fillRect(background.x, background.y, background.width, background.height);
   if (!visibleRange) return;
 
-  // 合并覆盖集合:被合并覆盖的非锚点单元格之间不画内部网格线
-  const covered = collectMergeCovered(options, visibleRange);
-
+  // 网格线属于整张可见网格，而不是 occupied cells。先收集可见合并区域，
+  // 再逐个空白/有值单元格绘制四条边，确保空白单元格仍保持完整网格。
+  // 旧实现只在每一行/列的第一个单元格后 break，导致内容区只剩 A 列和首行的线。
+  const merges = collectVisibleMerges(options, visibleRange);
   context.strokeStyle = theme.gridLine;
   context.lineWidth = 1;
   context.beginPath();
   for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
-    if (!shouldDrawRect(drawRects, rowStrip(skeleton, visibleRange, row))) continue;
-    const y = Math.round(skeleton.getRowTop(row)) + 0.5;
     for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
-      if (covered.has(row + ":" + column)) continue;
-      const x = Math.round(skeleton.getColumnLeft(column)) + 0.5;
+      const cell = options.cellProvider({ row, column });
+      if (cell?.merge) continue;
+      const x = skeleton.getColumnLeft(column);
+      const y = skeleton.getRowTop(row);
       const width = skeleton.getColumnWidth(column);
       const height = skeleton.getRowHeight(row);
-      context.moveTo(x, y);
-      context.lineTo(x + width, y);
-      context.moveTo(x, y + height);
-      context.lineTo(x + width, y + height);
-      break; // 行上下边线每行画一次即可(由最左列起)
+      const rect = { x, y, width, height };
+      if (!shouldDrawRect(drawRects, rect)) continue;
+      const right = x + width;
+      const bottom = y + height;
+      context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
+      context.lineTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
+      context.moveTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
+      context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+      context.moveTo(Math.round(x) + 0.5, Math.round(y) + 0.5);
+      context.lineTo(Math.round(x) + 0.5, Math.round(bottom) + 0.5);
+      context.moveTo(Math.round(right) + 0.5, Math.round(y) + 0.5);
+      context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
     }
   }
-  for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
-    const x = Math.round(skeleton.getColumnLeft(column)) + 0.5;
-    let blockedAbove = false;
-    let blockedBelow = false;
-    for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
-      if (covered.has(row + ":" + column)) { blockedAbove = true; blockedBelow = true; continue; }
-      const height = skeleton.getRowHeight(row);
-      const y = Math.round(skeleton.getRowTop(row)) + 0.5;
-      if (!blockedAbove) { context.moveTo(x, y); context.lineTo(x + skeleton.getColumnWidth(column), y); }
-      if (!blockedBelow) { context.moveTo(x, y + height); context.lineTo(x + skeleton.getColumnWidth(column), y + height); }
-      break;
-    }
-  }
-  // 右侧与底部收尾边界线
-  const endX = Math.round(skeleton.getColumnLeft(visibleRange.endColumn) + skeleton.getColumnWidth(visibleRange.endColumn)) + 0.5;
-  const endY = Math.round(skeleton.getRowTop(visibleRange.endRow) + skeleton.getRowHeight(visibleRange.endRow)) + 0.5;
-  context.moveTo(endX, skeleton.getRowTop(visibleRange.startRow));
-  context.lineTo(endX, endY - 0.5);
-  context.moveTo(skeleton.getColumnLeft(visibleRange.startColumn), endY);
-  context.lineTo(endX - 0.5, endY);
-  context.stroke();
 
+  // 非锚点单元格被跳过后，合并区域的外框由这里一次性绘制；内部不生成线。
+  for (const merge of merges.values()) {
+    const rect = {
+      x: skeleton.getColumnLeft(merge.startColumn),
+      y: skeleton.getRowTop(merge.startRow),
+      width: sumWidth(skeleton, merge.startColumn, merge.endColumn),
+      height: sumHeight(skeleton, merge.startRow, merge.endRow),
+    };
+    if (!shouldDrawRect(drawRects, rect)) continue;
+    const right = rect.x + rect.width;
+    const bottom = rect.y + rect.height;
+    context.moveTo(Math.round(rect.x) + 0.5, Math.round(rect.y) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(rect.y) + 0.5);
+    context.moveTo(Math.round(rect.x) + 0.5, Math.round(bottom) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+    context.moveTo(Math.round(rect.x) + 0.5, Math.round(rect.y) + 0.5);
+    context.lineTo(Math.round(rect.x) + 0.5, Math.round(bottom) + 0.5);
+    context.moveTo(Math.round(right) + 0.5, Math.round(rect.y) + 0.5);
+    context.lineTo(Math.round(right) + 0.5, Math.round(bottom) + 0.5);
+  }
+
+  context.stroke();
   void background;
 }
 
-function rowStrip(skeleton: SheetSkeleton, range: CellRange, row: number): Rect {
-  return {
-    x: skeleton.getColumnLeft(range.startColumn),
-    y: skeleton.getRowTop(row),
-    width: skeleton.getColumnLeft(range.endColumn) + skeleton.getColumnWidth(range.endColumn) - skeleton.getColumnLeft(range.startColumn),
-    height: skeleton.getRowHeight(row),
-  };
+interface VisibleMerge {
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
 }
 
-interface MergeSpanLike { startRow: number; endRow: number; startColumn: number; endColumn: number; isAnchor: boolean }
-
-function collectMergeCovered(options: PaneDrawOptions, range: CellRange): Set<string> {
-  const covered = new Set<string>();
+function collectVisibleMerges(options: PaneDrawOptions, range: CellRange): Map<string, VisibleMerge> {
+  const merges = new Map<string, VisibleMerge>();
   const { cellProvider } = options;
   for (let row = range.startRow; row <= range.endRow; row++) {
     for (let column = range.startColumn; column <= range.endColumn; column++) {
-      const cell = cellProvider({ row, column });
-      const merge = cell?.merge;
-      if (!merge || !merge.isAnchor) continue;
-      for (let r = merge.startRow; r <= merge.endRow; r++) {
-        for (let c = merge.startColumn; c <= merge.endColumn; c++) {
-          if (r === merge.startRow && c === merge.startColumn) continue;
-          covered.add(r + ":" + c);
-        }
-      }
+      const merge = cellProvider({ row, column })?.merge;
+      if (!merge) continue;
+      const value = {
+        startRow: merge.startRow,
+        endRow: merge.endRow,
+        startColumn: merge.startColumn,
+        endColumn: merge.endColumn,
+      };
+      const key = `${value.startRow}:${value.startColumn}:${value.endRow}:${value.endColumn}`;
+      merges.set(key, value);
     }
   }
-  return covered;
+  return merges;
 }
 
 // ---------------- 内容层 ----------------

@@ -765,9 +765,9 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (runtime.localOnly) {
     runtime.remoteConnected = false;
     runtime.handlers.onAccessRole?.(null);
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
+    const checkpointed = await checkpointStartupLocally(runtime);
     if (isActive()) {
-      runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
+      runtime.handlers.onSaveState?.(checkpointed ? (runtime.remoteSyncRequested ? 'offline' : 'saved') : 'error');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
       runtime.handlers.onMutationsApplied?.();
@@ -815,13 +815,34 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.remoteConnected = false;
     runtime.remoteSyncRequested = true;
     runtime.handlers.onAccessRole?.(null);
-    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
+    const checkpointed = await checkpointStartupLocally(runtime);
     if (isActive()) {
-      runtime.handlers.onSaveState?.('offline');
+      runtime.handlers.onSaveState?.(checkpointed ? 'offline' : 'error');
       runtime.handlers.onNotice?.('Server unavailable; using local IndexedDB workspace');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onMutationsApplied?.();
     }
+  }
+}
+
+/**
+ * Startup may continue with an in-memory local workbook when IndexedDB is
+ * unavailable. A server failure must never become a blank or permanently
+ * loading frontend merely because local persistence also reports an error.
+ */
+async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<boolean> {
+  try {
+    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+      runtime.model.snapshot(),
+      runtime.localRevision,
+      runtime.remoteRevision,
+      'local-only',
+    );
+    return true;
+  } catch (error) {
+    runtime.workspaceRecord = null;
+    runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local workspace persistence is unavailable');
+    return false;
   }
 }
 

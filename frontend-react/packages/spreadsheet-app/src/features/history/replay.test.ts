@@ -75,12 +75,12 @@ describe('history replay', () => {
     assert.equal(sheet?.cells['0']?.['0']?.value, 'restored');
   });
 
-  it('builds an isolated formula-backed UI projection for preview', () => {
+  it('builds an isolated formula-backed UI projection for preview', async () => {
     const source = new WorkbookModel('wb-preview', 'Preview');
     const sheet = source.getSheet('sheet-1');
     sheet.cells.set(0, 0, { value: 2 });
     sheet.cells.set(0, 1, { value: null, formula: '=A1+3' });
-    const session = HistoryPreviewSession.fromSnapshot({
+    const session = await HistoryPreviewSession.fromSnapshot({
       revision: 7,
       operationId: 'op-preview',
       createdAt: '2026-01-01T00:00:00.000Z',

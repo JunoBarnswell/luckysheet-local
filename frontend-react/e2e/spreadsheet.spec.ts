@@ -75,6 +75,18 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('');
   });
 
+  test('adds and activates a new editable worksheet from the sheet tab control', async ({ page }) => {
+    await waitForWorkspace(page);
+    await page.getByRole('button', { name: /add worksheet|添加工作表/i }).click();
+    await expect(page.getByRole('tab', { name: /sheet2/i })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /sheet2/i })).toHaveAttribute('aria-selected', 'true');
+    const canvas = await focusCanvas(page);
+    await page.keyboard.type('new-sheet-value');
+    await page.keyboard.press('Enter');
+    await canvas.press('ArrowUp');
+    await expect(page.getByTestId('formula-input')).toHaveValue('new-sheet-value');
+  });
+
   test('F2 editing keeps Chinese IME text intact before one committed operation', async ({ page }) => {
     await waitForWorkspace(page);
     const canvas = await focusCanvas(page);

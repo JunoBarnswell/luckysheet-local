@@ -115,6 +115,83 @@ function shiftKind(direction: ShiftCellsParams['direction']): 'shift-cells-down'
   return `shift-cells-${direction}` as 'shift-cells-down';
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isRange(value: unknown): value is RangeRef {
+  if (!isRecord(value)) return false;
+  return typeof value.sheetId === 'string'
+    && Number.isInteger(value.startRow) && Number.isInteger(value.endRow)
+    && Number.isInteger(value.startColumn) && Number.isInteger(value.endColumn)
+    && Number(value.startRow) >= 0 && Number(value.endRow) >= Number(value.startRow)
+    && Number(value.startColumn) >= 0 && Number(value.endColumn) >= Number(value.startColumn);
+}
+
+function isCellData(value: unknown): value is CellData {
+  return isRecord(value) && 'value' in value;
+}
+
+function isSheetViewMutation(value: unknown): value is SheetViewParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && (value.showGridlines === undefined || typeof value.showGridlines === 'boolean')
+    && (value.showHeaders === undefined || typeof value.showHeaders === 'boolean')
+    && (value.zoom === undefined || (typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom > 0));
+}
+
+type PasteMutationParams = PasteRangeParams & {
+  values: CellData[][];
+  startRow: number;
+  startColumn: number;
+  sourceRange?: RangeRef;
+  clearSource?: boolean;
+};
+
+function isPasteMutation(value: unknown): value is PasteMutationParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && isRecord(value.targetOrigin) && Number.isInteger(value.startRow) && Number.isInteger(value.startColumn)
+    && Array.isArray(value.values) && value.values.every((row) => Array.isArray(row) && row.every(isCellData))
+    && (value.sourceRange === undefined || isRange(value.sourceRange))
+    && (value.clearSource === undefined || typeof value.clearSource === 'boolean');
+}
+
+function pasteAffectedRanges(value: PasteMutationParams): RangeRef[] {
+  const width = Math.max(1, ...value.values.map((row) => row.length));
+  const ranges = [{ sheetId: value.sheetId, startRow: value.startRow, endRow: value.startRow + Math.max(0, value.values.length - 1), startColumn: value.startColumn, endColumn: value.startColumn + width - 1 }];
+  if (value.clearSource && value.sourceRange) ranges.push(structuredClone(value.sourceRange));
+  return ranges;
+}
+
+function isShiftCellsMutation(value: unknown): value is ShiftCellsParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
+    && value.range.sheetId === value.sheetId
+    && (value.direction === 'down' || value.direction === 'up' || value.direction === 'right' || value.direction === 'left');
+}
+
+type ShiftCellsRestoreParams = { sheetId: string; range: RangeRef; direction: ShiftCellsParams['direction']; cells: Array<{ row: number; column: number; cell: CellData }> };
+
+function isShiftRestoreMutation(value: unknown): value is ShiftCellsRestoreParams {
+  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
+    && isShiftCellsMutation({ sheetId: value.sheetId, range: value.range, direction: value.direction })
+    && Array.isArray(value.cells) && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && isCellData(entry.cell));
+}
+
+function isSheetDuplicateMutation(value: unknown): value is { sourceSheetId: string; newId: string; newName: string } {
+  return isRecord(value) && typeof value.sourceSheetId === 'string' && typeof value.newId === 'string' && typeof value.newName === 'string' && value.newId.length > 0;
+}
+
+function isSheetIdMutation(value: unknown): value is { sheetId: string } {
+  return isRecord(value) && typeof value.sheetId === 'string' && value.sheetId.length > 0;
+}
+
+function isSheetReorderedMutation(value: unknown): value is { sheetId: string; toIndex: number } {
+  return isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.toIndex) && Number(value.toIndex) >= 0;
+}
+
+function isTabColorMutation(value: unknown): value is { sheetId: string; color?: string } {
+  return isRecord(value) && typeof value.sheetId === 'string' && (value.color === undefined || typeof value.color === 'string');
+}
+
 export function rewriteFormulasForSheetRename(
   workbook: WorkbookModel,
   _sheetId: string,
@@ -223,14 +300,11 @@ function applyPasteCell(
 }
 
 export function registerEditingCommands(runtime: CommandRuntime): void {
-  runtime.registry.registerMutation('range.paste', (item, context) => {
-    const params = item.params as PasteRangeParams & {
-      values: CellData[][];
-      startRow: number;
-      startColumn: number;
-      sourceRange?: RangeRef;
-      clearSource?: boolean;
-    };
+  runtime.registry.registerMutation<PasteMutationParams>({
+    id: 'range.paste',
+    handler: (item, context) => {
+    if (!isPasteMutation(item.params)) throw new Error('Invalid range.paste mutation payload');
+    const params = item.params;
     const targetSheet = context.workbook.getSheet(params.sheetId);
     const sourceSheet = params.sourceRange
       ? context.workbook.getSheet(params.sourceRange.sheetId)
@@ -255,6 +329,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         if (value) targetSheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
       }
     }
+    },
+    metadata: {
+      schema: { name: 'PasteMutation', validate: isPasteMutation },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: pasteAffectedRanges, mode: 'declared' },
+      inverseIds: ['cell.restore'],
+    },
   });
 
   runtime.registry.registerCommand<PasteRangeParams>({
@@ -335,14 +416,14 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
             id: 'cell.restore' as const,
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { row: item.row, column: item.column, previous: item.value },
+            params: { sheetId: params.sheetId, row: item.row, column: item.column, previous: item.value },
             affectedRanges: [{ sheetId: params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
           })),
           ...sourcePrevious.map((item) => ({
             id: 'cell.restore' as const,
             unitId: context.workbook.unitId,
             sheetId: sourceRange?.sheetId ?? params.sheetId,
-            params: { row: item.row, column: item.column, previous: item.value },
+            params: { sheetId: sourceRange?.sheetId ?? params.sheetId, row: item.row, column: item.column, previous: item.value },
             affectedRanges: [{ sheetId: sourceRange?.sheetId ?? params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
           })),
         ],
@@ -410,7 +491,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
           id: 'cell.restore' as const,
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { row: item.row, column: item.column, previous: item.value },
+          params: { sheetId: params.sheetId, row: item.row, column: item.column, previous: item.value },
           affectedRanges: [{ sheetId: params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
         })),
         apply: () => {
@@ -446,12 +527,22 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation('view.set', (item, context) => {
-    const params = item.params as SheetViewParams;
-    const sheet = context.workbook.getSheet(params.sheetId);
-    if (params.showGridlines !== undefined) sheet.showGridlines = params.showGridlines;
-    if (params.showHeaders !== undefined) sheet.showHeaders = params.showHeaders;
-    if (params.zoom !== undefined) sheet.zoom = params.zoom;
+  runtime.registry.registerMutation<SheetViewParams>({
+    id: 'view.set',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string') throw new Error('Invalid view.set mutation payload');
+      const params = item.params as SheetViewParams;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (params.showGridlines !== undefined) sheet.showGridlines = params.showGridlines;
+      if (params.showHeaders !== undefined) sheet.showHeaders = params.showHeaders;
+      if (params.zoom !== undefined) sheet.zoom = params.zoom;
+    },
+    metadata: {
+      schema: { name: 'SheetView', validate: isSheetViewMutation },
+      permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['view.set'],
+    },
   });
 
   runtime.registry.registerCommand<SheetViewParams>({
@@ -530,23 +621,25 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation('cells.shifted', (item, context) => {
-    const params = item.params as ShiftCellsParams;
-    StructuralTransform.apply(context.workbook, {
-      kind: shiftKind(params.direction),
-      sheetId: params.sheetId,
-      at: 0,
-      count: 0,
-      sourceRange: params.range,
-    });
+  runtime.registry.registerMutation<ShiftCellsParams>({
+    id: 'cells.shifted',
+    handler: (item, context) => {
+      if (!isShiftCellsMutation(item.params)) throw new Error('Invalid cells.shifted mutation payload');
+      const params = item.params;
+      StructuralTransform.apply(context.workbook, { kind: shiftKind(params.direction), sheetId: params.sheetId, at: 0, count: 0, sourceRange: params.range });
+    },
+    metadata: {
+      schema: { name: 'ShiftCells', validate: isShiftCellsMutation },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
+      inverseIds: ['cells.shifted.restore'],
+    },
   });
-  runtime.registry.registerMutation('cells.shifted.restore', (item, context) => {
-    const params = item.params as {
-      sheetId: string;
-      range: RangeRef;
-      direction?: ShiftCellsParams['direction'];
-      cells: Array<{ row: number; column: number; cell: CellData }>;
-    };
+  runtime.registry.registerMutation<ShiftCellsRestoreParams>({
+    id: 'cells.shifted.restore',
+    handler: (item, context) => {
+    if (!isShiftRestoreMutation(item.params)) throw new Error('Invalid cells.shifted.restore mutation payload');
+    const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
     if (params.direction) {
       const reverse: ShiftCellsParams['direction'] = params.direction === 'down'
@@ -566,6 +659,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     }
     forEachCell(sheet, params.range, (row, column) => sheet.cells.delete(row, column));
     for (const entry of params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
+    },
+    metadata: {
+      schema: { name: 'ShiftCellsRestore', validate: isShiftRestoreMutation },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
+      inverseIds: ['cells.shifted'],
+    },
   });
 
   runtime.registry.registerCommand<ShiftCellsParams>({
@@ -604,9 +704,19 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation('sheet.duplicated', (item, context) => {
-    const params = item.params as { sourceSheetId: string; newId: string; newName: string };
-    context.workbook.duplicateSheet(params.sourceSheetId, params.newId, params.newName);
+  runtime.registry.registerMutation<{ sourceSheetId: string; newId: string; newName: string }>({
+    id: 'sheet.duplicated',
+    handler: (item, context) => {
+      if (!isSheetDuplicateMutation(item.params)) throw new Error('Invalid sheet.duplicated mutation payload');
+      const params = item.params;
+      context.workbook.duplicateSheet(params.sourceSheetId, params.newId, params.newName);
+    },
+    metadata: {
+      schema: { name: 'DuplicateSheet', validate: isSheetDuplicateMutation },
+      permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.remove'],
+    },
   });
 
   runtime.registry.registerCommand<{ sourceSheetId: string; newId: string; newName: string }>({
@@ -626,11 +736,31 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation('sheet.hidden', (item, context) => {
-    context.workbook.getSheet(item.sheetId).hidden = true;
+  runtime.registry.registerMutation<{ sheetId: string }>({
+    id: 'sheet.hidden',
+    handler: (item, context) => {
+      if (!isSheetIdMutation(item.params)) throw new Error('Invalid sheet.hidden mutation payload');
+      context.workbook.getSheet(item.params.sheetId).hidden = true;
+    },
+    metadata: {
+      schema: { name: 'SheetHidden', validate: isSheetIdMutation },
+      permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.unhidden'],
+    },
   });
-  runtime.registry.registerMutation('sheet.unhidden', (item, context) => {
-    context.workbook.getSheet(item.sheetId).hidden = false;
+  runtime.registry.registerMutation<{ sheetId: string }>({
+    id: 'sheet.unhidden',
+    handler: (item, context) => {
+      if (!isSheetIdMutation(item.params)) throw new Error('Invalid sheet.unhidden mutation payload');
+      context.workbook.getSheet(item.params.sheetId).hidden = false;
+    },
+    metadata: {
+      schema: { name: 'SheetUnhidden', validate: isSheetIdMutation },
+      permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.hidden'],
+    },
   });
 
   runtime.registry.registerCommand<{ sheetId: string }>({
@@ -671,9 +801,19 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation('sheet.reordered', (item, context) => {
-    const params = item.params as { sheetId: string; toIndex: number };
-    context.workbook.reorderSheet(params.sheetId, params.toIndex);
+  runtime.registry.registerMutation<{ sheetId: string; toIndex: number }>({
+    id: 'sheet.reordered',
+    handler: (item, context) => {
+      if (!isSheetReorderedMutation(item.params)) throw new Error('Invalid sheet.reordered mutation payload');
+      const params = item.params;
+      context.workbook.reorderSheet(params.sheetId, params.toIndex);
+    },
+    metadata: {
+      schema: { name: 'ReorderSheet', validate: isSheetReorderedMutation },
+      permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.reordered'],
+    },
   });
 
   runtime.registry.registerCommand<{ sheetId: string; toIndex: number }>({
@@ -695,9 +835,19 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation('sheet.tabColor', (item, context) => {
-    const params = item.params as { sheetId: string; color?: string };
-    context.workbook.getSheet(params.sheetId).tabColor = params.color;
+  runtime.registry.registerMutation<{ sheetId: string; color?: string }>({
+    id: 'sheet.tabColor',
+    handler: (item, context) => {
+      if (!isTabColorMutation(item.params)) throw new Error('Invalid sheet.tabColor mutation payload');
+      const params = item.params;
+      context.workbook.getSheet(params.sheetId).tabColor = params.color;
+    },
+    metadata: {
+      schema: { name: 'TabColor', validate: isTabColorMutation },
+      permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['sheet.tabColor'],
+    },
   });
 
   runtime.registry.registerCommand<{ sheetId: string; color?: string }>({

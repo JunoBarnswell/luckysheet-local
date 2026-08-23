@@ -1,21 +1,16 @@
 import type { CellData, RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import {
-  buildFacadePlan,
   checkFacadeExecution,
-  parseFacadeScript,
+  validateFacadePlan,
   type FacadeCellOperation,
-  type FacadeProgram,
+  type FacadePlan,
 } from './dsl';
 import { DEFAULT_SANDBOX_POLICY, ScriptSandbox } from './sandbox';
 
 export interface AutomationRunParams {
-  source: string;
+  plan: FacadePlan;
   label?: string;
-  /** Internal parsed form; hosts must still provide source, which is parsed again. */
-  program?: FacadeProgram;
-  /** Absolute deadline supplied by FacadeScriptRuntime; never a user script expression. */
-  deadlineAt?: number;
 }
 
 export interface AutomationPlanResult extends CommandResult {
@@ -45,21 +40,11 @@ function cellRange(sheetId: string, row: number, column: number): RangeRef[] {
   return [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
 }
 
-function registerCellMutationHandlers(registry: CommandRegistry): void {
-  if (!registry.hasMutation('cell.set')) {
-    registry.registerMutation<{ sheetId: string; row: number; column: number; value: CellData }>('cell.set', (item, context) => {
-      const params = item.params;
-      context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, structuredClone(params.value));
-    });
-  }
-  if (!registry.hasMutation('cell.restore')) {
-    registry.registerMutation<{ row: number; column: number; previous?: CellData }>('cell.restore', (item, context) => {
-      const params = item.params;
-      const sheet = context.workbook.getSheet(item.sheetId);
-      if (params.previous) sheet.cells.set(params.row, params.column, structuredClone(params.previous));
-      else sheet.cells.delete(params.row, params.column);
-    });
-  }
+function isRecordingMutation(value: unknown): value is { recording: boolean } {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as { recording?: unknown }).recording === 'boolean';
 }
 
 function applyPlannedCellOperation(operation: FacadeCellOperation, context: CommandContext): void {
@@ -73,13 +58,13 @@ function applyPlannedCellOperation(operation: FacadeCellOperation, context: Comm
       id: 'cell.restore',
       unitId: context.workbook.unitId,
       sheetId: operation.sheetId,
-      params: { row: operation.row, column: operation.column, previous: undefined },
+        params: { sheetId: operation.sheetId, row: operation.row, column: operation.column, previous: undefined },
       affectedRanges,
       inverse: [{
         id: 'cell.restore',
         unitId: context.workbook.unitId,
         sheetId: operation.sheetId,
-        params: { row: operation.row, column: operation.column, previous: structuredClone(previous) },
+          params: { sheetId: operation.sheetId, row: operation.row, column: operation.column, previous: structuredClone(previous) },
         affectedRanges,
       }],
       apply: () => sheet.cells.delete(operation.row, operation.column),
@@ -103,7 +88,7 @@ function applyPlannedCellOperation(operation: FacadeCellOperation, context: Comm
       id: 'cell.restore',
       unitId: context.workbook.unitId,
       sheetId: operation.sheetId,
-      params: { row: operation.row, column: operation.column, previous: previous ? structuredClone(previous) : undefined },
+      params: { sheetId: operation.sheetId, row: operation.row, column: operation.column, previous: previous ? structuredClone(previous) : undefined },
       affectedRanges,
     }],
     apply: () => sheet.cells.set(operation.row, operation.column, structuredClone(value)),
@@ -130,29 +115,32 @@ function applyRecordingState(state: RecordingState, next: boolean, context: Comm
 }
 
 export function registerAutomationCommands(registry: CommandRegistry, options: AutomationCommandOptions = {}): void {
-  registerCellMutationHandlers(registry);
   const state: RecordingState = { recording: false };
   const sandbox = options.sandbox ?? new ScriptSandbox(DEFAULT_SANDBOX_POLICY);
-  registry.registerMutation<{ recording: boolean }>('automation.recording.changed', (item) => {
-    state.recording = item.params.recording;
+  registry.registerMutation<{ recording: boolean }>({
+    id: 'automation.recording.changed',
+    handler: (item) => {
+      state.recording = item.params.recording;
+    },
+    metadata: {
+      schema: { name: 'AutomationRecordingMutation', validate: isRecordingMutation },
+      permission: { capability: 'automation.recording.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inversePolicy: { allowedMutationIds: ['automation.recording.changed'], minCount: 1, maxCount: 1 },
+    },
   });
 
   registry.registerCommand<AutomationRunParams>({
     id: 'automation.run',
     execute(params, context): AutomationPlanResult {
-      if (!params || typeof params.source !== 'string') throw new Error('Automation source is required');
-      if (Object.prototype.hasOwnProperty.call(params, 'program')) {
-        throw new Error('Automation command accepts source only; program payload is not serializable');
-      }
-      const deadlineAt = params.deadlineAt ?? Date.now() + sandbox.getTimeoutMs();
+      if (!params || !params.plan) throw new Error('AUTOMATION_PLAN_REQUIRED: a Worker-generated plan is required');
+      const sheet = context.workbook.getSheet(context.workbook.primarySheetId);
+      const bounds = { sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+      validateFacadePlan(params.plan, bounds);
+      sandbox.assertPlanAllowed(params.plan);
+      const deadlineAt = Date.now() + sandbox.getTimeoutMs();
       checkFacadeExecution({ deadlineAt });
-      // Always parse the source supplied to the command. A caller cannot
-      // smuggle an AST with executable JavaScript through an out-of-band hint.
-      const program = sandbox.parse(params.source);
-      checkFacadeExecution({ deadlineAt });
-      const plan = buildFacadePlan(context.workbook, program, { deadlineAt });
-      sandbox.assertPlanAllowed(plan);
-      checkFacadeExecution({ deadlineAt });
+      const plan = params.plan;
       for (const operation of plan.operations) {
         checkFacadeExecution({ deadlineAt });
         applyPlannedCellOperation(operation, context);
@@ -170,9 +158,9 @@ export function registerAutomationCommands(registry: CommandRegistry, options: A
           kind: 'facade-dsl',
           statements: plan.statements.length,
           operations: plan.operations.length,
-          sourceHash: hashSource(params.source),
-          sourceLength: program.sourceLength,
-          cellCount: program.cellCount,
+          sourceHash: plan.sourceHash,
+          sourceLength: plan.sourceLength,
+          cellCount: plan.cellCount,
           affectedRanges: structuredClone(plan.affectedRanges),
           limits: sandbox.getPolicy(),
           serializable: true,
@@ -198,15 +186,4 @@ export function registerAutomationCommands(registry: CommandRegistry, options: A
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
-}
-
-function hashSource(source: string): string {
-  // Deterministic, non-secret plan identity. This is metadata only and is not
-  // used as an authorization or integrity primitive.
-  let hash = 2166136261;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
 }

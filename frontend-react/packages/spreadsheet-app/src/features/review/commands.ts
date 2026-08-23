@@ -1,13 +1,22 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
-import type { CellHyperlink, CellNote, CommentReply, CommentThread } from '@react-sheets/core-model';
+import type { CellHyperlink, CellNote, CommentReply, CommentThread, RangeRef } from '@react-sheets/core-model';
 import { noteCellKey } from '@react-sheets/core-model';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
-import { applyTrackedMutation, registerMutationHandler, removeById, sheetRange } from '../../command-helpers';
 import {
   getCellHyperlink,
   removeCellHyperlink,
   setCellHyperlink,
 } from './helpers';
+
+function sheetRange(sheetId: string) {
+  return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+}
+
+function removeById<T extends { id: string }>(items: T[], id: string): T | undefined {
+  const index = items.findIndex((item) => item.id === id);
+  if (index < 0) return undefined;
+  return items.splice(index, 1)[0];
+}
 
 export interface NoteSetParams {
   sheetId: string;
@@ -74,181 +83,391 @@ export interface HyperlinkRemoveParams {
   column: number;
 }
 
-interface MutationInverse {
-  id: string;
-  params: unknown;
-  affectedRanges?: ReturnType<typeof cellRange>;
-}
-
 function cellRange(sheetId: string, row: number, column: number) {
   return [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+const isCellPosition = (value: unknown): value is { sheetId: string; row: number; column: number } => isRecord(value)
+  && isNonEmptyString(value.sheetId) && Number.isSafeInteger(value.row) && Number.isSafeInteger(value.column)
+  && Number(value.row) >= 0 && Number(value.column) >= 0;
+const isCellNote = (value: unknown): value is CellNote => isRecord(value)
+  && isNonEmptyString(value.id) && typeof value.author === 'string' && typeof value.text === 'string'
+  && typeof value.createdAt === 'string' && typeof value.visible === 'boolean';
+const isCommentReply = (value: unknown): value is CommentReply => isRecord(value)
+  && isNonEmptyString(value.id) && typeof value.author === 'string'
+  && typeof value.text === 'string' && typeof value.createdAt === 'string';
+const isCommentThread = (value: unknown): value is CommentThread => isRecord(value)
+  && isNonEmptyString(value.id) && isNonEmptyString(value.sheetId)
+  && Number.isSafeInteger(value.row) && Number.isSafeInteger(value.column)
+  && Number(value.row) >= 0 && Number(value.column) >= 0
+  && typeof value.author === 'string' && typeof value.text === 'string'
+  && typeof value.createdAt === 'string' && Array.isArray(value.replies)
+  && value.replies.every(isCommentReply)
+  && (value.resolved === undefined || typeof value.resolved === 'boolean')
+  && (value.resolvedAt === undefined || typeof value.resolvedAt === 'string');
+const isHyperlinkTarget = (value: unknown): boolean => {
+  if (!isRecord(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'url') return typeof value.url === 'string' && value.url.length > 0;
+  if (value.kind === 'email') return typeof value.address === 'string' && value.address.length > 0
+    && (value.subject === undefined || typeof value.subject === 'string');
+  if (value.kind === 'name') return isNonEmptyString(value.name);
+  if (value.kind === 'sheet') return isNonEmptyString(value.sheetId)
+    && (value.address === undefined || typeof value.address === 'string')
+    && (value.row === undefined || (Number.isSafeInteger(value.row) && Number(value.row) >= 0))
+    && (value.column === undefined || (Number.isSafeInteger(value.column) && Number(value.column) >= 0));
+  return false;
+};
+const isCellHyperlink = (value: unknown): value is CellHyperlink => isRecord(value)
+  && isNonEmptyString(value.id) && isHyperlinkTarget(value.target)
+  && (value.tooltip === undefined || typeof value.tooltip === 'string');
+const isNoteSet = (value: unknown): value is NoteSetParams => isRecord(value) && isCellPosition(value) && isCellNote((value as Record<string, unknown>).note);
+const isNoteRemove = (value: unknown): value is NoteRemoveParams => isCellPosition(value);
+const isNoteVisibility = (value: unknown): value is NoteVisibilityParams => isRecord(value) && isCellPosition(value) && typeof (value as Record<string, unknown>).visible === 'boolean';
+const isCommentAdd = (value: unknown): value is CommentAddParams => {
+  if (!isRecord(value) || !isCellPosition(value)) return false;
+  const thread = (value as Record<string, unknown>).thread;
+  return isCommentThread(thread)
+    && thread.sheetId === value.sheetId
+    && thread.row === value.row
+    && thread.column === value.column;
+};
+const isCommentReplyParams = (value: unknown): value is CommentReplyParams => isRecord(value)
+  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId) && isCommentReply(value.reply);
+const isCommentReplyRemove = (value: unknown): value is CommentReplyRemoveParams => isRecord(value)
+  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId) && isNonEmptyString(value.replyId);
+const isCommentResolve = (value: unknown): value is CommentResolveParams => isRecord(value)
+  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId)
+  && typeof value.resolved === 'boolean'
+  && (value.resolvedAt === undefined || typeof value.resolvedAt === 'string');
+const isCommentRemove = (value: unknown): value is CommentRemoveParams => isRecord(value)
+  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId);
+const isHyperlinkSet = (value: unknown): value is HyperlinkSetParams => isRecord(value) && isCellPosition(value) && isCellHyperlink((value as Record<string, unknown>).hyperlink);
+const isHyperlinkRemove = (value: unknown): value is HyperlinkRemoveParams => isCellPosition(value);
+
+function reviewAffectedRanges(value: unknown): RangeRef[] {
+  if (isCellPosition(value)) return cellRange(value.sheetId, value.row, value.column);
+  if (isCommentAdd(value)) return cellRange(value.sheetId, value.thread.row, value.thread.column);
+  if (isRecord(value) && isNonEmptyString(value.sheetId)) return sheetRange(value.sheetId);
+  return [];
+}
+
+/** Apply a reviewed mutation through its literal canonical handler. */
+function applyReviewMutation(mutationId: string, params: unknown, context: import('@react-sheets/command-runtime').CommandContext): void {
+  switch (mutationId) {
+    case 'note.set': {
+      if (!isNoteSet(params)) throw new Error('Invalid note.set parameters');
+      context.workbook.getSheet(params.sheetId).notes.set(noteCellKey(params.row, params.column), structuredClone(params.note));
+      return;
+    }
+    case 'note.remove': {
+      if (!isNoteRemove(params)) throw new Error('Invalid note.remove parameters');
+      if (!context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column))) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
+      return;
+    }
+    case 'note.visibility': {
+      if (!isNoteVisibility(params)) throw new Error('Invalid note.visibility parameters');
+      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      if (!note) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
+      note.visible = params.visible;
+      return;
+    }
+    case 'comment.add': {
+      if (!isCommentAdd(params)) throw new Error('Invalid comment.add parameters');
+      const threads = context.workbook.getSheet(params.sheetId).commentThreads;
+      if (threads.some((entry) => entry.id === params.thread.id)) throw new Error(`Comment thread already exists: ${params.thread.id}`);
+      threads.push(structuredClone(params.thread));
+      return;
+    }
+    case 'comment.reply': {
+      if (!isCommentReplyParams(params)) throw new Error('Invalid comment.reply parameters');
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
+      if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
+      thread.replies.push(structuredClone(params.reply));
+      return;
+    }
+    case 'comment.reply.remove': {
+      if (!isCommentReplyRemove(params)) throw new Error('Invalid comment.reply.remove parameters');
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
+      const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
+      if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
+      thread.replies.splice(index, 1);
+      return;
+    }
+    case 'comment.resolve': {
+      if (!isCommentResolve(params)) throw new Error('Invalid comment.resolve parameters');
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
+      if (params.resolved && !params.resolvedAt) throw new Error('Resolving a comment requires resolvedAt from the operation payload');
+      thread.resolved = params.resolved;
+      thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
+      return;
+    }
+    case 'comment.remove': {
+      if (!isCommentRemove(params)) throw new Error('Invalid comment.remove parameters');
+      if (!removeById(context.workbook.getSheet(params.sheetId).commentThreads, params.threadId)) throw new Error(`Comment thread not found: ${params.threadId}`);
+      return;
+    }
+    case 'hyperlink.set': {
+      if (!isHyperlinkSet(params)) throw new Error('Invalid hyperlink.set parameters');
+      setCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column, params.hyperlink);
+      return;
+    }
+    case 'hyperlink.remove': {
+      if (!isHyperlinkRemove(params)) throw new Error('Invalid hyperlink.remove parameters');
+      if (!removeCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column)) throw new Error(`Hyperlink not found at ${params.sheetId}!${params.row}:${params.column}`);
+      return;
+    }
+    default:
+      throw new Error(`Unknown review mutation: ${mutationId}`);
+  }
 }
 
 export function registerReviewCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
-  registerMutationHandler<NoteSetParams>(runtime, 'note.set', (params, context) => {
+  runtime.registry.registerMutation<NoteSetParams>('note.set', (item, context) => {
+    const params = item.params;
     context.workbook.getSheet(params.sheetId).notes.set(noteCellKey(params.row, params.column), structuredClone(params.note));
+  }, {
+    schema: { name: 'NoteSetParams', validate: isNoteSet },
+    permission: { capability: 'review.note' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['note.set', 'note.remove'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<NoteRemoveParams>(runtime, 'note.remove', (params, context) => {
+  runtime.registry.registerMutation<NoteRemoveParams>('note.remove', (item, context) => {
+    const params = item.params;
     const removed = context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column));
     if (!removed) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
+  }, {
+    schema: { name: 'NoteRemoveParams', validate: isNoteRemove },
+    permission: { capability: 'review.note' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['note.set'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<NoteVisibilityParams>(runtime, 'note.visibility', (params, context) => {
+  runtime.registry.registerMutation<NoteVisibilityParams>('note.visibility', (item, context) => {
+    const params = item.params;
     const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
     if (!note) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
     note.visible = params.visible;
+  }, {
+    schema: { name: 'NoteVisibilityParams', validate: isNoteVisibility },
+    permission: { capability: 'review.note' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['note.visibility'], minCount: 1, maxCount: 1 },
   });
 
-  registerMutationHandler<CommentAddParams>(runtime, 'comment.add', (params, context) => {
+  runtime.registry.registerMutation<CommentAddParams>('comment.add', (item, context) => {
+    const params = item.params;
     const threads = context.workbook.getSheet(params.sheetId).commentThreads;
     if (threads.some((entry) => entry.id === params.thread.id)) throw new Error(`Comment thread already exists: ${params.thread.id}`);
     threads.push(structuredClone(params.thread));
+  }, {
+    schema: { name: 'CommentAddParams', validate: isCommentAdd },
+    permission: { capability: 'review.comment' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['comment.remove'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<CommentReplyParams>(runtime, 'comment.reply', (params, context) => {
+  runtime.registry.registerMutation<CommentReplyParams>('comment.reply', (item, context) => {
+    const params = item.params;
     const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
     if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
     thread.replies.push(structuredClone(params.reply));
+  }, {
+    schema: { name: 'CommentReplyParams', validate: isCommentReplyParams },
+    permission: { capability: 'review.comment' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['comment.reply.remove'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<CommentReplyRemoveParams>(runtime, 'comment.reply.remove', (params, context) => {
+  runtime.registry.registerMutation<CommentReplyRemoveParams>('comment.reply.remove', (item, context) => {
+    const params = item.params;
     const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
     if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
     if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
     thread.replies.splice(index, 1);
+  }, {
+    schema: { name: 'CommentReplyRemoveParams', validate: isCommentReplyRemove },
+    permission: { capability: 'review.comment' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['comment.reply'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<CommentResolveParams>(runtime, 'comment.resolve', (params, context) => {
+  runtime.registry.registerMutation<CommentResolveParams>('comment.resolve', (item, context) => {
+    const params = item.params;
     const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
     if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     if (params.resolved && !params.resolvedAt) throw new Error('Resolving a comment requires resolvedAt from the operation payload');
     thread.resolved = params.resolved;
     thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
+  }, {
+    schema: { name: 'CommentResolveParams', validate: isCommentResolve },
+    permission: { capability: 'review.comment' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['comment.resolve'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<CommentRemoveParams>(runtime, 'comment.remove', (params, context) => {
+  runtime.registry.registerMutation<CommentRemoveParams>('comment.remove', (item, context) => {
+    const params = item.params;
     const removed = removeById(context.workbook.getSheet(params.sheetId).commentThreads, params.threadId);
     if (!removed) throw new Error(`Comment thread not found: ${params.threadId}`);
+  }, {
+    schema: { name: 'CommentRemoveParams', validate: isCommentRemove },
+    permission: { capability: 'review.comment' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
+    inversePolicy: { allowedMutationIds: ['comment.add'], minCount: 1, maxCount: 1 },
   });
 
-  registerMutationHandler<HyperlinkSetParams>(runtime, 'hyperlink.set', (params, context) => {
+  runtime.registry.registerMutation<HyperlinkSetParams>('hyperlink.set', (item, context) => {
+    const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
     setCellHyperlink(sheet, params.row, params.column, params.hyperlink);
+  }, {
+    schema: { name: 'HyperlinkSetParams', validate: isHyperlinkSet },
+    permission: { capability: 'review.hyperlink' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['hyperlink.set', 'hyperlink.remove'], minCount: 1, maxCount: 1 },
   });
-  registerMutationHandler<HyperlinkRemoveParams>(runtime, 'hyperlink.remove', (params, context) => {
+  runtime.registry.registerMutation<HyperlinkRemoveParams>('hyperlink.remove', (item, context) => {
+    const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
     if (!removeCellHyperlink(sheet, params.row, params.column)) {
       throw new Error(`Hyperlink not found at ${params.sheetId}!${params.row}:${params.column}`);
     }
+  }, {
+    schema: { name: 'HyperlinkRemoveParams', validate: isHyperlinkRemove },
+    permission: { capability: 'review.hyperlink' },
+    affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['hyperlink.set'], minCount: 1, maxCount: 1 },
   });
 
-  const registerSimple = <P>(
-    commandId: string,
-    mutationId: string,
-    readInverse: (params: P, context: import('@react-sheets/command-runtime').CommandContext) => MutationInverse | undefined,
-  ): void => {
-    runtime.registry.registerCommand<P>({
-      id: commandId,
-      execute: (params, context) => {
-        const inverse = readInverse(params, context);
-        if (!inverse) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-        const affectedRanges = 'row' in (params as object) && 'column' in (params as object)
-          ? cellRange((params as NoteSetParams).sheetId, (params as NoteSetParams).row, (params as NoteSetParams).column)
-          : inverse.affectedRanges ?? sheetRange((params as CommentRemoveParams).sheetId);
-        applyTrackedMutation(context, {
-          id: mutationId,
-          sheetId: (params as { sheetId: string }).sheetId,
-          params,
-          inverseId: inverse.id,
-          inverseParams: inverse.params,
-          affectedRanges,
-          apply: () => runtime.registry.getMutation(mutationId)({ id: mutationId, unitId: context.workbook.unitId, sheetId: (params as { sheetId: string }).sheetId, params, affectedRanges }, context),
-        });
-        return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-      },
-    });
-    commandIds.push(commandId);
-  };
+  runtime.registry.registerCommand<NoteSetParams>({
+    id: 'note.set',
+    execute: (params, context) => {
+      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      const affectedRanges = cellRange(params.sheetId, params.row, params.column);
+      if (note) {
+        context.applyMutation({ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, note: structuredClone(note) }, affectedRanges }], apply: () => applyReviewMutation('note.set', params, context) });
+      } else {
+        context.applyMutation({ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column }, affectedRanges }], apply: () => applyReviewMutation('note.set', params, context) });
+      }
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('note.set');
 
-  registerSimple<NoteSetParams>('note.set', 'note.set', (params, context) => {
-    const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
-    return note
-      ? { id: 'note.set', params: { sheetId: params.sheetId, row: params.row, column: params.column, note: structuredClone(note) } }
-      : { id: 'note.remove', params: { sheetId: params.sheetId, row: params.row, column: params.column } };
+  runtime.registry.registerCommand<NoteRemoveParams>({
+    id: 'note.remove',
+    execute: (params, context) => {
+      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      if (!note) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, params.row, params.column);
+      context.applyMutation({ id: 'note.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, note: structuredClone(note) }, affectedRanges }], apply: () => applyReviewMutation('note.remove', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<NoteRemoveParams>('note.remove', 'note.remove', (params, context) => {
-    const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
-    return note
-      ? { id: 'note.set', params: { sheetId: params.sheetId, row: params.row, column: params.column, note: structuredClone(note) } }
-      : undefined;
+  commandIds.push('note.remove');
+
+  runtime.registry.registerCommand<NoteVisibilityParams>({
+    id: 'note.visibility',
+    execute: (params, context) => {
+      const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
+      if (!note) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, params.row, params.column);
+      context.applyMutation({ id: 'note.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'note.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, visible: note.visible }, affectedRanges }], apply: () => applyReviewMutation('note.visibility', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<NoteVisibilityParams>('note.visibility', 'note.visibility', (params, context) => {
-    const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
-    return note
-      ? { id: 'note.visibility', params: { sheetId: params.sheetId, row: params.row, column: params.column, visible: note.visible } }
-      : undefined;
+  commandIds.push('note.visibility');
+
+  runtime.registry.registerCommand<CommentAddParams>({
+    id: 'comment.add',
+    execute: (params, context) => {
+      const affectedRanges = cellRange(params.sheetId, params.row, params.column);
+      context.applyMutation({ id: 'comment.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, threadId: params.thread.id }, affectedRanges }], apply: () => applyReviewMutation('comment.add', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<CommentAddParams>('comment.add', 'comment.add', (params) => ({
+  commandIds.push('comment.add');
+
+  runtime.registry.registerCommand<CommentReplyParams>({
+    id: 'comment.reply',
+    execute: (params, context) => {
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
+      context.applyMutation({ id: 'comment.reply', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.reply.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, threadId: params.threadId, replyId: params.reply.id }, affectedRanges }], apply: () => applyReviewMutation('comment.reply', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('comment.reply');
+
+  runtime.registry.registerCommand<CommentResolveParams>({
+    id: 'comment.resolve',
+    execute: (params, context) => {
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
+      const previous: CommentResolveParams = { sheetId: params.sheetId, threadId: params.threadId, resolved: thread.resolved ?? false, ...(thread.resolvedAt ? { resolvedAt: thread.resolvedAt } : {}) };
+      context.applyMutation({ id: 'comment.resolve', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.resolve', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }], apply: () => applyReviewMutation('comment.resolve', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('comment.resolve');
+
+  runtime.registry.registerCommand<CommentRemoveParams>({
     id: 'comment.remove',
-    params: { sheetId: params.sheetId, threadId: params.thread.id },
-  }));
-  registerSimple<CommentReplyParams>('comment.reply', 'comment.reply', (params, context) => {
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    return thread
-      ? {
-          id: 'comment.reply.remove',
-          params: { sheetId: params.sheetId, threadId: params.threadId, replyId: params.reply.id },
-          affectedRanges: cellRange(params.sheetId, thread.row, thread.column),
-        }
-      : undefined;
+    execute: (params, context) => {
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
+      context.applyMutation({ id: 'comment.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: thread.row, column: thread.column, thread: structuredClone(thread) }, affectedRanges }], apply: () => applyReviewMutation('comment.remove', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<CommentResolveParams>('comment.resolve', 'comment.resolve', (params, context) => {
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    return thread
-      ? {
-          id: 'comment.resolve',
-          params: {
-            sheetId: params.sheetId,
-            threadId: params.threadId,
-            resolved: thread.resolved ?? false,
-            ...(thread.resolvedAt ? { resolvedAt: thread.resolvedAt } : {}),
-          },
-          affectedRanges: cellRange(params.sheetId, thread.row, thread.column),
-        }
-      : undefined;
+  commandIds.push('comment.remove');
+
+  runtime.registry.registerCommand<CommentReplyRemoveParams>({
+    id: 'comment.reply.remove',
+    execute: (params, context) => {
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      const reply = thread?.replies.find((entry) => entry.id === params.replyId);
+      if (!thread || !reply) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
+      context.applyMutation({ id: 'comment.reply.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.reply', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, threadId: params.threadId, reply: structuredClone(reply) }, affectedRanges }], apply: () => applyReviewMutation('comment.reply.remove', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<CommentRemoveParams>('comment.remove', 'comment.remove', (params, context) => {
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    return thread
-      ? {
-          id: 'comment.add',
-          params: { sheetId: params.sheetId, row: thread.row, column: thread.column, thread: structuredClone(thread) },
-          affectedRanges: cellRange(params.sheetId, thread.row, thread.column),
-        }
-      : undefined;
+  commandIds.push('comment.reply.remove');
+
+  runtime.registry.registerCommand<HyperlinkSetParams>({
+    id: 'hyperlink.set',
+    execute: (params, context) => {
+      const hyperlink = getCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column);
+      const affectedRanges = cellRange(params.sheetId, params.row, params.column);
+      if (hyperlink) {
+        context.applyMutation({ id: 'hyperlink.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'hyperlink.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, hyperlink }, affectedRanges }], apply: () => applyReviewMutation('hyperlink.set', params, context) });
+      } else {
+        context.applyMutation({ id: 'hyperlink.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'hyperlink.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column }, affectedRanges }], apply: () => applyReviewMutation('hyperlink.set', params, context) });
+      }
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<CommentReplyRemoveParams>('comment.reply.remove', 'comment.reply.remove', (params, context) => {
-    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
-    const reply = thread?.replies.find((entry) => entry.id === params.replyId);
-    return thread && reply
-      ? {
-          id: 'comment.reply',
-          params: { sheetId: params.sheetId, threadId: params.threadId, reply: structuredClone(reply) },
-          affectedRanges: cellRange(params.sheetId, thread.row, thread.column),
-        }
-      : undefined;
+  commandIds.push('hyperlink.set');
+
+  runtime.registry.registerCommand<HyperlinkRemoveParams>({
+    id: 'hyperlink.remove',
+    execute: (params, context) => {
+      const hyperlink = getCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column);
+      if (!hyperlink) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, params.row, params.column);
+      context.applyMutation({ id: 'hyperlink.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'hyperlink.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, hyperlink }, affectedRanges }], apply: () => applyReviewMutation('hyperlink.remove', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
-  registerSimple<HyperlinkSetParams>('hyperlink.set', 'hyperlink.set', (params, context) => {
-    const hyperlink = getCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column);
-    return hyperlink
-      ? { id: 'hyperlink.set', params: { sheetId: params.sheetId, row: params.row, column: params.column, hyperlink } }
-      : { id: 'hyperlink.remove', params: { sheetId: params.sheetId, row: params.row, column: params.column } };
-  });
-  registerSimple<HyperlinkRemoveParams>('hyperlink.remove', 'hyperlink.remove', (params, context) => {
-    const hyperlink = getCellHyperlink(context.workbook.getSheet(params.sheetId), params.row, params.column);
-    return hyperlink
-      ? { id: 'hyperlink.set', params: { sheetId: params.sheetId, row: params.row, column: params.column, hyperlink } }
-      : undefined;
-  });
+  commandIds.push('hyperlink.remove');
 
   return commandIds;
 }

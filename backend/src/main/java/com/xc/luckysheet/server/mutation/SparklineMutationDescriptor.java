@@ -154,6 +154,13 @@ final class SparklineMutationDescriptor extends CanonicalJsonMutationDescriptor 
         ObjectNode anchor = SnapshotMutationSupport.requiredObject(sparkline, "anchor");
         SnapshotMutationSupport.coordinate(root, sheetId, anchor);
         sourceRange(root, sparkline);
+        String groupId = SnapshotMutationSupport.optionalText(sparkline, "groupId");
+        if (groupId != null) {
+            ObjectNode group = SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, sheetId), "sparklineGroups"), groupId, "Sparkline group");
+            boolean member = false;
+            for (JsonNode id : SnapshotMutationSupport.requiredArray(group, "sparklineIds")) if (SnapshotMutationSupport.text(sparkline, "id").equals(id.asText())) member = true;
+            if (!member) throw ServiceException.validation("Sparkline group membership is inconsistent");
+        }
     }
 
     private RangeRef sourceRange(ObjectNode root, ObjectNode sparkline) {

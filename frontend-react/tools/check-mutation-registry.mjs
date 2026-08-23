@@ -131,7 +131,7 @@ function hasMetadataField(metadata, field) {
 
 function parseRegistrationCalls(source) {
   const calls = [];
-  const marker = /\b(registerMutationHandler|registerMutation)\s*(?:<[^;()]*>)?\s*\(/g;
+  const marker = /\b(registerMutationHandler|registerMutation)\s*(?:<[^>]*>)?\s*\(/g;
   for (const match of source.matchAll(marker)) {
     const openIndex = (match.index ?? 0) + match[0].lastIndexOf('(');
     const closeIndex = findMatching(source, openIndex, '(', ')');
@@ -185,8 +185,6 @@ function parseMutationCalls(source) {
             else dynamicInverse.push(entry);
             index = entryEnd;
           }
-          const dynamicId = inverseValue.match(/\bid\s*:\s*(?!['"])[A-Za-z_$][\w$]*/);
-          if (dynamicId) dynamicInverse.push(dynamicId[0]);
         }
       }
     }
