@@ -29,7 +29,8 @@ import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/pro-features';
-import { parseAddress, type SheetView, type SidebarPanelId, type WorkspacePhase } from '../state/workspace';
+import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
+import type { PivotModel } from '@react-sheets/core-model';
 import { localizeText, type Locale } from '../i18n';
 import type { PivotDefinition as PivotUiDefinition, PivotFieldDefinition as PivotUiFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult as PivotUiResult } from './pivot/types';
 import { ChartPanel } from './panels/ChartPanel';
@@ -50,11 +51,11 @@ export interface FeatureSidebarProps {
   selectedRange?: { startRow: number; endRow: number; startColumn: number; endColumn: number };
   onPanelChange: (panel: SidebarPanelId) => void;
   onRetry: () => void;
-  phase: WorkspacePhase;
-  sheet: SheetView;
+  phase: AppPhase;
+  sheet: CanvasSheetSnapshot;
   sheetId: string;
   charts: ChartModel[];
-  pivotDefinition?: PivotUiDefinition;
+  pivot?: PivotModel;
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
   pivotFieldCatalog?: readonly PivotUiFieldDefinition[];
@@ -124,7 +125,7 @@ function InspectorPanel({
   onRemoveHyperlink,
 }: {
   activeCell: string;
-  sheet: SheetView;
+  sheet: CanvasSheetSnapshot;
   onAddComment?: (text: string) => void;
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
@@ -135,7 +136,7 @@ function InspectorPanel({
   const selectedAddress = parseAddress(activeCell);
   const selected = selectedAddress ? sheet.getCell(selectedAddress.row, selectedAddress.column) : undefined;
   const selectedCell = selected;
-  const average = sheet.numericAverage == null ? '—' : Math.round(sheet.numericAverage).toLocaleString('en-US');
+  const average = '—';
 
   return (
     <Stack gap="md">
@@ -202,7 +203,7 @@ export function FeatureSidebar({
   sheet,
   sheetId,
   charts,
-  pivotDefinition,
+  pivot,
   pivotList,
   activePivotId,
   pivotFieldCatalog,
@@ -261,7 +262,7 @@ export function FeatureSidebar({
     <Box
       as="aside"
       aria-label="Feature sidebar"
-      className="hidden w-[420px] shrink-0 flex-col border-l border-slate-200 bg-slate-50/70 lg:flex"
+      className="flex min-h-0 flex-1 flex-col"
     >
       <Tabs className="shrink-0 border-b border-slate-200 bg-white px-2 pt-2">
         <TabList label="Feature panels" className="grid grid-cols-5 gap-0.5">
@@ -337,7 +338,7 @@ export function FeatureSidebar({
         ) : null}
         {phase === 'ready' && activePanel === 'pivot' ? (
           <PivotPanel
-            definition={pivotDefinition}
+            pivot={pivot}
             pivotList={pivotList}
             activePivotId={activePivotId}
             fieldCatalog={pivotFieldCatalog}

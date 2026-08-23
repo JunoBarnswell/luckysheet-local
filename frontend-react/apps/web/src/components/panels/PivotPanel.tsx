@@ -1,5 +1,7 @@
 import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, StatePanel, Text, TextInput } from '@react-sheets/ui-system';
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
+import type { PivotModel, PivotResultTree } from '@react-sheets/core-model';
+import { cellAddress } from '@react-sheets/spreadsheet-app';
 import { PivotActions } from '../pivot/PivotActions';
 import { PivotFieldArea } from '../pivot/PivotFieldArea';
 import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
@@ -8,12 +10,12 @@ import { PivotResultView } from '../pivot/PivotResultView';
 import { PivotSlicer } from '../pivot/PivotSlicer';
 import { PivotTimeline } from '../pivot/PivotTimeline';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
-import type { PivotDefinition, PivotFieldArea as Area, PivotFieldDefinition, PivotPanelCallbacks, PivotPanelSlots, PivotPanelState, PivotResult } from '../pivot/types';
+import type { PivotFieldArea as Area, PivotFieldDefinition, PivotPanelCallbacks, PivotPanelSlots, PivotPanelState, PivotResult, PivotValueDefinition } from '../pivot/types';
 
 export interface PivotPanelProps {
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
-  definition?: PivotDefinition;
+  pivot?: PivotModel;
   fieldCatalog?: readonly PivotFieldDefinition[];
   result?: PivotResult;
   onShowDetails?: (paths: import('@react-sheets/core-model').PivotSourceRowPath[]) => void;
@@ -23,29 +25,91 @@ export interface PivotPanelProps {
   onClose?: () => void;
 }
 
-  const emptyDefinition: PivotDefinition = { filters: [], columns: [], rows: [], values: [], calculatedFields: [], calculatedItems: [], filterSelections: {}, sort: {}, groupedFields: [], layout: 'compact', showGrandTotals: true, showSubtotals: true, expandedFieldIds: [], slicers: [] };
+function layoutCompactMode(pivot?: PivotModel): 'compact' | 'outline' | 'tabular' {
+  if (!pivot) return 'compact';
+  if (pivot.layout.compact) return 'compact';
+  if (pivot.layout.repeatLabels) return 'tabular';
+  return 'outline';
+}
 
-export function PivotPanel({ activePivotId, callbacks, definition = emptyDefinition, fieldCatalog = [], onClose, onShowDetails, pivotList = [], result, slots, state }: PivotPanelProps) {
+function valueDefinitions(pivot?: PivotModel): PivotValueDefinition[] {
+  if (!pivot) return [];
+  return pivot.layout.values.map((value, index) => ({
+    id: `${value.field}-${index}`,
+    fieldId: value.field,
+    summary: value.summarizeBy,
+    displayName: value.displayName ?? `${value.summarizeBy.toUpperCase()} of ${value.field}`,
+    numberFormat: value.numberFormat ?? '',
+    baseFieldId: value.baseField,
+    baseItem: value.baseItem,
+    showAs: 'normal',
+  }));
+}
+
+function filterSelections(pivot?: PivotModel): Record<string, string[]> {
+  const selections: Record<string, string[]> = {};
+  if (!pivot) return selections;
+  for (const filter of pivot.layout.filters) {
+    if (filter.kind === 'manual') selections[filter.field] = filter.selected.map(String);
+  }
+  return selections;
+}
+
+export function PivotPanel({ activePivotId, callbacks, pivot, fieldCatalog = [], onClose, onShowDetails, pivotList = [], result, slots, state }: PivotPanelProps) {
   const isDisabled = state?.disabled || state?.loading || Boolean(state?.error);
-  const [sourceRange, setSourceRange] = useState(definition.sourceRange ?? '');
-  useEffect(() => setSourceRange(definition.sourceRange ?? ''), [definition.sourceRange]);
-  const selectedFieldIds = useMemo(() => new Set([...definition.filters, ...definition.columns, ...definition.rows, ...definition.values.map((value) => value.fieldId)]), [definition]);
+  const sourceRangeText = pivot
+    ? `${cellAddress(pivot.sourceRange.startRow, pivot.sourceRange.startColumn)}:${cellAddress(pivot.sourceRange.endRow, pivot.sourceRange.endColumn)}`
+    : '';
+  const [sourceRange, setSourceRange] = useState(sourceRangeText);
+  useEffect(() => setSourceRange(sourceRangeText), [sourceRangeText]);
+
+  const rows = pivot?.layout.rows.map((field) => field.field) ?? [];
+  const columns = pivot?.layout.columns.map((field) => field.field) ?? [];
+  const filters = pivot?.layout.filters.map((filter) => filter.field) ?? [];
+  const values = valueDefinitions(pivot);
+  const filterSelectionMap = filterSelections(pivot);
+  const expandedFieldIds = pivot?.layout.expandedFieldIds ?? rows;
+  const slicers = pivot?.slicers?.map((slicer) => slicer.field) ?? [];
+  const timelineFieldId = pivot?.timelines?.[0]?.field;
+  const timelineStart = pivot?.timelines?.[0]?.start;
+  const timelineEnd = pivot?.timelines?.[0]?.end;
+  const layoutMode = layoutCompactMode(pivot);
+  const calculatedFields = pivot?.layout.calculatedFields ?? [];
+  const calculatedItems = (pivot?.layout.calculatedItems ?? []).map((item) => ({ fieldId: item.field, name: item.name, formula: item.formula }));
+
+  const selectedFieldIds = useMemo(
+    () => new Set([...filters, ...columns, ...rows, ...values.map((value) => value.fieldId)]),
+    [filters, columns, rows, values],
+  );
 
   if (state?.loading) return <Panel className="h-full border-0 bg-transparent shadow-none"><StatePanel kind="loading" description="Preparing pivot field list." /></Panel>;
   if (state?.error) return <Panel className="h-full border-0 bg-transparent shadow-none"><StatePanel kind="error" description={state.error} /></Panel>;
   if (state?.empty || fieldCatalog.length === 0) return <Panel className="h-full border-0 bg-transparent shadow-none"><StatePanel kind={state?.disabled ? 'disabled' : 'empty'} description="No pivot fields are available for this source." /></Panel>;
 
+  const areaLength = (area: Area) => (area === 'values' ? values.length : (area === 'filters' ? filters : area === 'columns' ? columns : rows).length);
+
   const updateArea = (fieldId: string, area: Area, index: number) => callbacks?.onFieldAreaChange(fieldId, area, index);
-  const handleDrop = (area: Area) => (event: DragEvent<HTMLElement>, index?: number) => { event.preventDefault(); const fieldId = event.dataTransfer.getData('application/x-pivot-field'); if (fieldId) updateArea(fieldId, area, index ?? definition[area].length); };
+  const handleDrop = (area: Area) => (event: DragEvent<HTMLElement>, index?: number) => {
+    event.preventDefault();
+    const fieldId = event.dataTransfer.getData('application/x-pivot-field');
+    if (fieldId) updateArea(fieldId, area, index ?? areaLength(area));
+  };
   const handleToggle = (fieldId: string, checked: boolean) => {
-    if (checked) updateArea(fieldId, 'rows', definition.rows.length);
-    else { const currentArea = (['filters', 'columns', 'rows'] as const).find((area) => definition[area].includes(fieldId)); if (currentArea) callbacks?.onRemoveField(fieldId, currentArea, definition[currentArea].indexOf(fieldId)); else { const valueIndex = definition.values.findIndex((value) => value.fieldId === fieldId); if (valueIndex >= 0) callbacks?.onRemoveField(fieldId, 'values', valueIndex); } }
+    if (checked) updateArea(fieldId, 'rows', rows.length);
+    else {
+      const currentArea = (['filters', 'columns', 'rows'] as const).find((area) => (area === 'filters' ? filters : area === 'columns' ? columns : rows).includes(fieldId));
+      if (currentArea) callbacks?.onRemoveField(fieldId, currentArea, (currentArea === 'filters' ? filters : currentArea === 'columns' ? columns : rows).indexOf(fieldId));
+      else {
+        const valueIndex = values.findIndex((value) => value.fieldId === fieldId);
+        if (valueIndex >= 0) callbacks?.onRemoveField(fieldId, 'values', valueIndex);
+      }
+    }
   };
   const moveByKeyboard = (area: Area) => (fieldId: string, index: number, direction: -1 | 1) => updateArea(fieldId, area, index + direction);
 
   return (
     <Panel className="flex h-full min-h-0 flex-col border-0 bg-transparent shadow-none">
-      <PanelHeader className="h-12 shrink-0 border-b border-line/80 px-4"><Inline gap="sm" className="min-w-0 justify-between"><Stack gap="none" className="min-w-0"><PanelTitle size="sm">Pivot field list</PanelTitle><Text size="xs" tone="subtle">Build, filter and configure the pivot view</Text></Stack><Inline gap="xs">{pivotList.length > 1 ? <Select aria-label="Active pivot table" disabled={isDisabled} sizeVariant="sm" value={activePivotId ?? pivotList[0]?.id} onChange={(event) => callbacks?.onPivotSelect?.(event.target.value)}>{pivotList.map((pivot) => <option key={pivot.id} value={pivot.id}>{pivot.label}</option>)}</Select> : null}{callbacks?.onCreate ? <Button disabled={isDisabled} size="xs" variant="primary" onClick={callbacks.onCreate}>New pivot</Button> : null}{slots?.headerActions}</Inline></Inline></PanelHeader>
+      <PanelHeader className="h-12 shrink-0 border-b border-line/80 px-4"><Inline gap="sm" className="min-w-0 justify-between"><Stack gap="none" className="min-w-0"><PanelTitle size="sm">Pivot field list</PanelTitle><Text size="xs" tone="subtle">Build, filter and configure the pivot view</Text></Stack><Inline gap="xs">{pivotList.length > 1 ? <Select aria-label="Active pivot table" disabled={isDisabled} sizeVariant="sm" value={activePivotId ?? pivotList[0]?.id} onChange={(event) => callbacks?.onPivotSelect?.(event.target.value)}>{pivotList.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</Select> : null}{callbacks?.onCreate ? <Button disabled={isDisabled} size="xs" variant="primary" onClick={callbacks.onCreate}>New pivot</Button> : null}{slots?.headerActions}</Inline></Inline></PanelHeader>
       <PanelBody className="min-h-0 flex-1 overflow-auto p-4">
         <Stack gap="md">
           <Stack gap="xs">
@@ -62,17 +126,31 @@ export function PivotPanel({ activePivotId, callbacks, definition = emptyDefinit
               }}
             />
           </Stack>
-          <PivotFieldCatalog fields={fieldCatalog} selectedFieldIds={selectedFieldIds} disabled={isDisabled} onToggle={handleToggle} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.id)} onKeyboardAssign={(fieldId, area) => updateArea(fieldId, area, definition[area].length)} />
+          <PivotFieldCatalog fields={fieldCatalog} selectedFieldIds={selectedFieldIds} disabled={isDisabled} onToggle={handleToggle} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.id)} onKeyboardAssign={(fieldId, area) => updateArea(fieldId, area, areaLength(area))} />
           <Stack gap="sm">
-            {(['filters', 'columns', 'rows'] as const).map((area) => <PivotFieldArea key={area} area={area} fields={fieldCatalog} fieldIds={definition[area]} disabled={isDisabled} filterSelections={definition.filterSelections} onDrop={handleDrop(area)} onFilter={(fieldId, values) => callbacks?.onFilterChange(fieldId, values)} onGroup={(fieldId, grouped) => callbacks?.onGroupChange(fieldId, grouped)} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, area, index)} onMoveByKeyboard={moveByKeyboard(area)} onSort={(fieldId, direction) => callbacks?.onSortChange(fieldId, direction)} />)}
-            <PivotFieldArea area="values" fields={fieldCatalog} fieldIds={definition.values.map((value) => value.fieldId)} disabled={isDisabled} onDrop={handleDrop('values')} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, 'values', index)} onMoveByKeyboard={moveByKeyboard('values')} />
-            <Stack gap="xs">{definition.values.map((value) => <PivotValueEditor key={value.id} fields={fieldCatalog} value={value} disabled={isDisabled} onChange={(next) => callbacks?.onValueChange(next)} />)}</Stack>
-            <PivotCalculatedEditor fields={fieldCatalog} calculatedFields={definition.calculatedFields} calculatedItems={definition.calculatedItems} disabled={isDisabled} onFieldsChange={(fields) => callbacks?.onCalculatedFieldsChange?.(fields)} onItemsChange={(items) => callbacks?.onCalculatedItemsChange?.(items)} />
+            <PivotFieldArea area="filters" fields={fieldCatalog} fieldIds={filters} disabled={isDisabled} filterSelections={filterSelectionMap} onDrop={handleDrop('filters')} onFilter={(fieldId, selected) => callbacks?.onFilterChange(fieldId, selected)} onGroup={(fieldId, grouped) => callbacks?.onGroupChange(fieldId, grouped)} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, 'filters', index)} onMoveByKeyboard={moveByKeyboard('filters')} onSort={(fieldId, direction) => callbacks?.onSortChange(fieldId, direction)} />
+            <PivotFieldArea area="columns" fields={fieldCatalog} fieldIds={columns} disabled={isDisabled} filterSelections={filterSelectionMap} onDrop={handleDrop('columns')} onFilter={(fieldId, selected) => callbacks?.onFilterChange(fieldId, selected)} onGroup={(fieldId, grouped) => callbacks?.onGroupChange(fieldId, grouped)} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, 'columns', index)} onMoveByKeyboard={moveByKeyboard('columns')} onSort={(fieldId, direction) => callbacks?.onSortChange(fieldId, direction)} />
+            <PivotFieldArea area="rows" fields={fieldCatalog} fieldIds={rows} disabled={isDisabled} filterSelections={filterSelectionMap} onDrop={handleDrop('rows')} onFilter={(fieldId, selected) => callbacks?.onFilterChange(fieldId, selected)} onGroup={(fieldId, grouped) => callbacks?.onGroupChange(fieldId, grouped)} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, 'rows', index)} onMoveByKeyboard={moveByKeyboard('rows')} onSort={(fieldId, direction) => callbacks?.onSortChange(fieldId, direction)} />
+            <PivotFieldArea area="values" fields={fieldCatalog} fieldIds={values.map((value) => value.fieldId)} disabled={isDisabled} onDrop={handleDrop('values')} onRemove={(fieldId, index) => callbacks?.onRemoveField(fieldId, 'values', index)} onMoveByKeyboard={moveByKeyboard('values')} />
+            <Stack gap="xs">{values.map((value) => <PivotValueEditor key={value.id} fields={fieldCatalog} value={value} disabled={isDisabled} onChange={(next) => callbacks?.onValueChange(next)} />)}</Stack>
+            <PivotCalculatedEditor fields={fieldCatalog} calculatedFields={calculatedFields} calculatedItems={calculatedItems} disabled={isDisabled} onFieldsChange={(fields) => callbacks?.onCalculatedFieldsChange?.(fields)} onItemsChange={(items) => callbacks?.onCalculatedItemsChange?.(items)} />
           </Stack>
-          {callbacks ? <PivotActions callbacks={callbacks} definition={definition} fields={fieldCatalog} disabled={isDisabled} /> : null}
-          {definition.slicers.map((fieldId) => { const field = fieldCatalog.find((candidate) => candidate.id === fieldId); return field ? <PivotSlicer key={fieldId} field={field} disabled={isDisabled} selectedValues={definition.filterSelections[fieldId] ?? []} onChange={(values) => callbacks?.onFilterChange(fieldId, values)} /> : null; })}
-          {definition.timelineFieldId ? <PivotTimeline fieldLabel={fieldCatalog.find((field) => field.id === definition.timelineFieldId)?.label ?? definition.timelineFieldId} start={definition.timelineStart} end={definition.timelineEnd} disabled={isDisabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(start, end)} onClear={() => callbacks?.onTimelineChange(undefined)} /> : null}
-          {result?.tree ? <PivotResultView tree={result.tree} disabled={isDisabled} expandedFieldIds={definition.expandedFieldIds} onExpandedChange={callbacks?.onExpandedChange} onShowDetails={onShowDetails} /> : null}
+          {callbacks && pivot ? (
+            <PivotActions
+              callbacks={callbacks}
+              layout={layoutMode}
+              expandedFieldIds={expandedFieldIds}
+              slicers={slicers}
+              fields={fieldCatalog}
+              disabled={isDisabled}
+            />
+          ) : null}
+          {slicers.map((fieldId) => {
+            const field = fieldCatalog.find((candidate) => candidate.id === fieldId);
+            return field ? <PivotSlicer key={fieldId} field={field} disabled={isDisabled} selectedValues={filterSelectionMap[fieldId] ?? []} onChange={(selected) => callbacks?.onFilterChange(fieldId, selected)} /> : null;
+          })}
+          {timelineFieldId ? <PivotTimeline fieldLabel={fieldCatalog.find((field) => field.id === timelineFieldId)?.label ?? timelineFieldId} start={timelineStart} end={timelineEnd} disabled={isDisabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(start, end)} onClear={() => callbacks?.onTimelineChange(undefined)} /> : null}
+          {result?.tree ? <PivotResultView tree={result.tree as PivotResultTree} disabled={isDisabled} expandedFieldIds={expandedFieldIds} onExpandedChange={callbacks?.onExpandedChange} onShowDetails={onShowDetails} /> : null}
           {result || slots?.resultSummary ? <Text size="xs" tone="subtle">{slots?.resultSummary ?? result?.summary ?? `${result?.rowCount ?? 0} rows × ${result?.columnCount ?? 0} columns`}</Text> : null}
         </Stack>
       </PanelBody>

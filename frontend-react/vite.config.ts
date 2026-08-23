@@ -20,6 +20,7 @@ export default defineConfig({
       '@react-sheets/ui-system': path.resolve(projectRoot, 'packages/ui-system/src'),
       '@react-sheets/sheet-features': path.resolve(projectRoot, 'packages/sheet-features/src'),
       '@react-sheets/pro-features': path.resolve(projectRoot, 'packages/pro-features/src'),
+      '@react-sheets/spreadsheet-app': path.resolve(projectRoot, 'packages/spreadsheet-app/src'),
     },
   },
   server: {

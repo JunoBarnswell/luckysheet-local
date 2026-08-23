@@ -1,0 +1,44 @@
+{
+  "workspaceLabel": "工作区",
+  "planningWorkbook": "规划工作簿",
+  "personal": "个人",
+  "saved": "已保存",
+  "saving": "保存中",
+  "offline": "离线",
+  "syncing": "同步中",
+  "conflict": "存在冲突",
+  "calculating": "计算中",
+  "error": "错误",
+  "share": "共享",
+  "language": "语言",
+  "english": "English",
+  "simplifiedChinese": "中文",
+  "file": "文件",
+  "home": "开始",
+  "insert": "插入",
+  "pageLayout": "页面布局",
+  "formulas": "公式",
+  "data": "数据",
+  "review": "审阅",
+  "view": "视图",
+  "automate": "自动化",
+  "engineConnected": "引擎已连接",
+  "searchWorkbook": "搜索工作簿",
+  "formulaBar": {
+    "selectedCell": "选中单元格",
+    "formulaInput": "公式输入",
+    "insertFunction": "插入函数向导",
+    "cancel": "取消公式编辑",
+    "apply": "应用公式",
+    "applyHint": "应用",
+    "placeholderReady": "输入值或公式 (=SUM, =IF, ...)",
+    "placeholderEmpty": "创建工作表后开始编辑"
+  },
+  "sidebar": {
+    "title": "属性",
+    "close": "关闭侧栏"
+  },
+  "ribbon": {
+    "comingSoon": "此选项卡的命令将在此显示。"
+  }
+}

@@ -1,15 +1,18 @@
 export type ScalarValue = number | string | boolean | null;
 
 export type FormulaErrorCode =
+  | '#NULL!'
   | '#DIV/0!'
   | '#VALUE!'
   | '#REF!'
   | '#NAME?'
   | '#NUM!'
   | '#N/A'
+  | '#CALC!'
+  | '#BLOCKED!'
+  | '#SPILL!'
   | '#PARSE!'
-  | '#CYCLE!'
-  | '#SPILL!';
+  | '#CYCLE!';
 
 export interface FormulaError {
   readonly kind: 'error';

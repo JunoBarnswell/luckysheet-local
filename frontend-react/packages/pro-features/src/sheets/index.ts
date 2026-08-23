@@ -6,6 +6,14 @@ export * from './sparkline-renderer';
 export * from './shape-renderer';
 export * from './pivot-engine';
 export * from './pivot-write';
+export * from './pivot-panel-state';
+export * from './chart-commands';
+export * from './pivot-commands-ext';
+export * from './sparkline-commands';
+
+import { registerChartDrawingCommands } from './chart-commands';
+import { registerExtendedPivotCommands } from './pivot-commands-ext';
+import { registerSparklineCommands } from './sparkline-commands';
 
 export interface AddChartParams extends ChartModel {}
 export interface AddPivotParams extends PivotModel {}
@@ -60,12 +68,6 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
   );
   runtime.registry.registerMutation('shape.remove', (item, context) => {
     removeById(context.workbook.getSheet(item.sheetId).shapes, item.params as string);
-  });
-  runtime.registry.registerMutation('sparkline.add', (item, context) =>
-    context.workbook.getSheet(item.sheetId).sparklines.push(item.params as SparklineModel),
-  );
-  runtime.registry.registerMutation('sparkline.remove', (item, context) => {
-    removeById(context.workbook.getSheet(item.sheetId).sparklines, item.params as string);
   });
 
   registerAddCommand(
@@ -152,14 +154,6 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     (params: AddShapeParams) => params,
     (sheet) => sheet.shapes,
   );
-  registerAddCommand(
-    runtime,
-    'pro.sparkline.add',
-    'sparkline.add',
-    'sparkline.remove',
-    (params: AddSparklineParams) => params,
-    (sheet) => sheet.sparklines,
-  );
 
   // 浮动对象移动/缩放(图表与形状共用 update 语义)
   const registerBoundsCommand = <T extends { id: string; sheetId: string; bounds: { x: number; y: number; width: number; height: number } }>(
@@ -215,6 +209,9 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     (sheet) => sheet.shapes,
   );
 
+  registerChartDrawingCommands(runtime);
+  registerExtendedPivotCommands(runtime);
+  registerSparklineCommands(runtime);
 }
 
 function registerAddCommand<T extends { id: string; sheetId: string }>(

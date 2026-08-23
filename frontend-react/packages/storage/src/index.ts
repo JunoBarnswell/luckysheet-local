@@ -7,6 +7,8 @@ import { WorkbookModel, type PivotLayout, type TableScalar, type WorkbookTableBl
 import type { CollaborationChangeSet, CollaborationMutation, SnapshotResponse, WorkbookSummary } from '@react-sheets/protocol';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerProSheetCommands } from '@react-sheets/pro-features';
+import { registerSpreadsheetFeatures } from '@react-sheets/spreadsheet-app';
+import { PersistenceSession, computeSnapshotChecksum } from './persistence-session';
 
 const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -15,6 +17,7 @@ function createMutationRuntime(workbook: WorkbookModel): CommandRuntime {
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
   registerProSheetCommands(runtime);
+  registerSpreadsheetFeatures(runtime);
   return runtime;
 }
 
@@ -69,8 +72,27 @@ interface EncodedTableBlock {
 
 export class WorkbookStorage {
   private readonly database = new DatabaseSync(databasePath);
+  readonly persistence: PersistenceSession;
 
   constructor() {
+    this.persistence = new PersistenceSession({
+      changesetThreshold: 50,
+      byteThreshold: 512_000,
+      timeThresholdMs: 60_000,
+      appendChangeSet: async (changeSet) => {
+        // changeset 已在 appendChangeSet 方法写入 DB
+        void changeSet;
+      },
+      persistSnapshot: async (record) => {
+        const json = JSON.stringify(record.snapshot);
+        const payload = deflateRawSync(Buffer.from(json, 'utf8'));
+        this.database.prepare(`
+          INSERT INTO snapshots (unit_id, revision, checksum, payload, created_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(unit_id, revision) DO UPDATE SET checksum = excluded.checksum, payload = excluded.payload, created_at = excluded.created_at
+        `).run(record.snapshot.unitId, record.revision, record.checksum, payload, record.createdAt);
+      },
+    });
     this.database.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS workbooks (
@@ -105,6 +127,14 @@ export class WorkbookStorage {
         row_count INTEGER NOT NULL,
         payload BLOB NOT NULL,
         UNIQUE(table_id, start_row)
+      );
+      CREATE TABLE IF NOT EXISTS snapshots (
+        unit_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        checksum TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (unit_id, revision)
       );
     `);
   }
@@ -211,6 +241,19 @@ export class WorkbookStorage {
         )
         .run(JSON.stringify(nextSnapshot), nextRevision, new Date().toISOString(), changeSet.unitId);
       this.database.exec('COMMIT');
+      void this.persistence.recordChangeSet(changeSet);
+      const snapshotJson = JSON.stringify(nextSnapshot);
+      this.persistence.writeSnapshot(nextSnapshot, nextRevision).catch(() => {
+        if (this.persistence.shouldSnapshot()) {
+          const checksum = computeSnapshotChecksum(snapshotJson);
+          const payload = deflateRawSync(Buffer.from(snapshotJson, 'utf8'));
+          this.database.prepare(`
+            INSERT INTO snapshots (unit_id, revision, checksum, payload, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(unit_id, revision) DO UPDATE SET checksum = excluded.checksum, payload = excluded.payload
+          `).run(changeSet.unitId, nextRevision, checksum, payload, new Date().toISOString());
+        }
+      });
       return nextRevision;
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -336,3 +379,6 @@ export class WorkbookStorage {
     };
   }
 }
+
+export { PersistenceSession, computeSnapshotChecksum, verifySnapshotChecksum } from './persistence-session';
+export type { PersistenceSnapshot, PersistenceSessionOptions } from './persistence-session';

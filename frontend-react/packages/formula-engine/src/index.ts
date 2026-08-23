@@ -12,3 +12,4 @@ export * from './lexer';
 export * from './parser';
 export * from './range-index';
 export * from './values';
+export { type SpillModel, spillBlocked, STANDARD_FORMULA_ERRORS } from './spill';

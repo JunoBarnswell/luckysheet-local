@@ -65,6 +65,7 @@ export class CanvasRenderEngine {
   private previousViewport: ViewportSnapshot | null = null;
   private lastPlan: RenderPlan | null = null;
   private forceFullRedraw = true;
+  private chromeDirty = false;
   private frameHandle: number | null = null;
   private frameUsesAnimationFrame = false;
   private disposed = false;
@@ -229,19 +230,23 @@ export class CanvasRenderEngine {
     this.requestRender();
   }
 
+  invalidateChrome(): void {
+    this.assertActive();
+    this.chromeDirty = true;
+    this.requestRender();
+  }
+
   setChrome(state: ChromeState): void {
     this.assertActive();
     this.chrome = state;
-    this.forceFullRedraw = true;
-    this.requestRender();
+    this.invalidateChrome();
   }
 
   setFloating(objects: readonly FloatingDrawable[], selectedId: string | null = null): void {
     this.assertActive();
     this.floatables = objects;
     this.chrome.selectedFloatingId = selectedId;
-    this.forceFullRedraw = true;
-    this.requestRender();
+    this.invalidateChrome();
   }
 
   onViewportChanged(listener: () => void): () => void {
@@ -414,6 +419,7 @@ export class CanvasRenderEngine {
       previousViewport: this.previousViewport,
       dirtyRanges: this.dirtyRanges.toArray(),
       forceFull: this.forceFullRedraw,
+      chromeDirty: this.chromeDirty,
       layers: this.layerDefinitions,
       freeze: this.freezeSplits,
       headerOffset: this.headerOrigin,
@@ -424,6 +430,7 @@ export class CanvasRenderEngine {
     this.previousViewport = viewport;
     this.lastPlan = plan;
     this.forceFullRedraw = false;
+    this.chromeDirty = false;
     this.dirtyRanges.clear();
 
     if (before

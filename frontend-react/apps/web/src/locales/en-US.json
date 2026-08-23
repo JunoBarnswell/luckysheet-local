@@ -1,0 +1,44 @@
+{
+  "workspaceLabel": "Workspace",
+  "planningWorkbook": "Planning workbook",
+  "personal": "Personal",
+  "saved": "Saved",
+  "saving": "Saving",
+  "offline": "Offline",
+  "syncing": "Syncing",
+  "conflict": "Conflict",
+  "calculating": "Calculating",
+  "error": "Error",
+  "share": "Share",
+  "language": "Language",
+  "english": "English",
+  "simplifiedChinese": "中文",
+  "file": "File",
+  "home": "Home",
+  "insert": "Insert",
+  "pageLayout": "Page Layout",
+  "formulas": "Formulas",
+  "data": "Data",
+  "review": "Review",
+  "view": "View",
+  "automate": "Automate",
+  "engineConnected": "Engine Connected",
+  "searchWorkbook": "Search workbook",
+  "formulaBar": {
+    "selectedCell": "Selected cell",
+    "formulaInput": "Formula input",
+    "insertFunction": "Insert Function Wizard",
+    "cancel": "Cancel formula edit",
+    "apply": "Apply formula",
+    "applyHint": "Apply",
+    "placeholderReady": "Enter a value or formula (=SUM, =IF, ...)",
+    "placeholderEmpty": "Create a sheet to start editing"
+  },
+  "sidebar": {
+    "title": "Properties",
+    "close": "Close sidebar"
+  },
+  "ribbon": {
+    "comingSoon": "Commands for this tab will appear here."
+  }
+}

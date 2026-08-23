@@ -6,6 +6,7 @@ import { textFunctions } from './text';
 import { lookupFunctions } from './lookup';
 import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
+import { extendedMatrixFunctions } from './extended-matrix';
 
 export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => FormulaValue> = {
   ...mathFunctions,
@@ -15,6 +16,7 @@ export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => Formula
   ...lookupFunctions,
   ...datetimeFunctions,
   ...informationFunctions,
+  ...extendedMatrixFunctions,
 };
 
 export const FORMULA_ALIASES: Readonly<Record<string, string>> = {
@@ -38,12 +40,13 @@ export interface FunctionDescriptor {
 const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'SUMPRODUCT']);
 const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'MEDIAN', 'PERCENTILE']);
 const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT']);
+const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY']);
 
 export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new Map(
   Object.keys(BUILTIN_FUNCTIONS).map((name) => {
     const id = name.toUpperCase();
     const volatile = VOLATILE_FUNCTIONS.has(id);
-    const cost = volatile ? 'volatile' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
+    const cost = volatile ? 'volatile' : MATRIX_FUNCTIONS.has(id) ? 'range' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
     return [id, { id, cost, streaming: cost === 'range', volatile }];
   }),
 );

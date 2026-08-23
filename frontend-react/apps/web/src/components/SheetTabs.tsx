@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import { Box, Button, ContextMenu, Icon, Inline, Tab, Text, type ContextMenuItem } from '@react-sheets/ui-system';
-import type { SheetView } from '../state/workspace';
+import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 import type { Locale } from '../i18n';
 
 export interface SheetTabsProps {
   activeSheetId: string;
   locale: Locale;
   disabled: boolean;
-  sheets: SheetView[];
+  sheets: CanvasSheetSnapshot[];
   onAdd: () => void;
   onSelect: (sheetId: string) => void;
   onRenameSheet?: (sheetId: string, name: string) => void;

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, Inline, Stack, TextInput, Text } from '@react-sheets/ui-system';
-import type { SheetView } from '../state/workspace';
+import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 
 export interface FilterPatch {
   selectedValues: string[] | null;
@@ -8,7 +8,7 @@ export interface FilterPatch {
 
 export interface FilterPopoverProps {
   column: number;
-  sheet: SheetView;
+  sheet: CanvasSheetSnapshot;
   onApply: (patch: FilterPatch) => void;
   onClose: () => void;
 }

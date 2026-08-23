@@ -1,0 +1,11 @@
+{
+  "name": "@react-sheets/spreadsheet-app",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@react-sheets/core-model": "workspace:*",
+    "@react-sheets/command-runtime": "workspace:*",
+    "@react-sheets/sheet-features": "workspace:*"
+  }
+}

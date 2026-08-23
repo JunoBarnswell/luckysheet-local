@@ -60,6 +60,8 @@ export interface RenderPlanInput {
   previousViewport?: ViewportSnapshot | null;
   dirtyRanges?: readonly CellRange[];
   forceFull?: boolean;
+  /** 仅重绘 chrome 层(选区/hover/浮动选中态) */
+  chromeDirty?: boolean;
   layers?: readonly LayerDefinition[];
   /** 冻结切分(null = 不冻结) */
   freeze?: FreezeSplits | null;
@@ -270,10 +272,7 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   );
   const resized = viewportChanged(previousViewport, input.viewport);
   const largeScroll = scrollDelta.hasDelta && !scrollDelta.canBlit;
-  // 有表头/冻结时滚动禁用 blit(避免表头条与冻结区被拖影),整帧重绘保证正确性
-  const chromePinned = Boolean(input.freeze || input.headerOffset);
-  const blitBlocked = chromePinned && scrollDelta.hasDelta;
-  const fullRedraw = input.forceFull === true || !hasPrevious || resized || largeScroll || blitBlocked;
+  const fullRedraw = input.forceFull === true || !hasPrevious || resized || largeScroll;
   const reason = calculateReason(
     hasPrevious,
     input.forceFull === true,
@@ -295,6 +294,9 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
     }
     if (dirtyRects.length > 0) {
       return { layerId: definition.id, mode: 'dirty', clearRects: dirtyRects, drawRects: dirtyRects };
+    }
+    if (input.chromeDirty && definition.id === 'chrome') {
+      return { layerId: definition.id, mode: 'full', clearRects: [], drawRects: [] };
     }
     return { layerId: definition.id, mode: 'none', clearRects: [], drawRects: [] };
   });

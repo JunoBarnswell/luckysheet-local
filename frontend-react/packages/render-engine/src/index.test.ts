@@ -7,6 +7,8 @@ import {
   Viewport,
   calculateRenderPlan,
   calculateScrollDelta,
+  createEmptyChromeState,
+  defaultHeaderOffset,
   mergeCellRanges,
   rangeToViewportRect,
 } from './index';
@@ -102,6 +104,65 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
   assert.equal(scroll.layers[1]?.mode, 'scroll');
   assert.equal(scroll.layers[2]?.mode, 'scroll');
   assert.equal(scroll.layers[3]?.mode, 'full');
+});
+
+test('RenderPlan scroll blits scrollable layers even with header offset', () => {
+  const scroll = calculateRenderPlan({
+    skeleton,
+    viewport: viewport({ scrollX: 10 }),
+    previousViewport: viewport(),
+    headerOffset: defaultHeaderOffset(),
+  });
+  assert.equal(scroll.fullRedraw, false);
+  assert.equal(scroll.layers[0]?.mode, 'scroll');
+  assert.equal(scroll.layers[4]?.mode, 'full');
+});
+
+test('RenderPlan chromeDirty only redraws chrome layer', () => {
+  const chromeOnly = calculateRenderPlan({
+    skeleton,
+    viewport: viewport(),
+    previousViewport: viewport(),
+    chromeDirty: true,
+  });
+  assert.equal(chromeOnly.fullRedraw, false);
+  assert.deepEqual(chromeOnly.layers.map((layer) => layer.mode), ['none', 'none', 'none', 'none', 'full']);
+});
+
+test('CanvasRenderEngine invalidateChrome only marks chrome layer', () => {
+  const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
+  engine.render();
+  engine.setChrome(createEmptyChromeState());
+  const chromeOnly = engine.render();
+  assert.equal(chromeOnly.fullRedraw, false);
+  assert.equal(chromeOnly.layers.find((layer) => layer.layerId === 'chrome')?.mode, 'full');
+  assert.equal(chromeOnly.layers.find((layer) => layer.layerId === 'grid')?.mode, 'none');
+  engine.dispose();
+});
+
+test('RenderPlan uses scroll blit on grid layers even with header offset', () => {
+  const scroll = calculateRenderPlan({
+    skeleton,
+    viewport: viewport({ scrollX: 10 }),
+    previousViewport: viewport(),
+    headerOffset: defaultHeaderOffset(),
+  });
+  assert.equal(scroll.fullRedraw, false);
+  assert.equal(scroll.layers[0]?.mode, 'scroll');
+  assert.equal(scroll.layers[4]?.mode, 'full');
+});
+
+test('RenderPlan chromeDirty only repaints chrome layer', () => {
+  const chromeOnly = calculateRenderPlan({
+    skeleton,
+    viewport: viewport(),
+    previousViewport: viewport(),
+    chromeDirty: true,
+    headerOffset: defaultHeaderOffset(),
+  });
+  assert.equal(chromeOnly.fullRedraw, false);
+  assert.equal(chromeOnly.layers[0]?.mode, 'none');
+  assert.equal(chromeOnly.layers[4]?.mode, 'full');
 });
 
 test('CanvasRenderEngine keeps rendering state independent from DOM mounting', () => {

@@ -1,5 +1,5 @@
 import { Box, Button, Icon, Inline, Kbd, Text } from '@react-sheets/ui-system';
-import type { SaveState, WorkspacePhase } from '../state/workspace';
+import type { AppPhase, SaveState } from '@react-sheets/spreadsheet-app';
 import type { Locale } from '../i18n';
 
 export interface StatusBarProps {
@@ -7,7 +7,7 @@ export interface StatusBarProps {
   locale: Locale;
   onOpenShortcuts: () => void;
   onZoomChange: (zoom: number) => void;
-  phase: WorkspacePhase;
+  phase: AppPhase;
   saveState: SaveState;
   sheetCount: number;
   zoom: number;

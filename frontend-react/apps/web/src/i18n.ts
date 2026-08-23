@@ -1,3 +1,7 @@
+import enUS from './locales/en-US.json';
+import zhCN from './locales/zh-CN.json';
+import type { RibbonTabId, SaveState } from '@react-sheets/ui-system';
+
 export type Locale = 'zh-CN' | 'en-US';
 
 export type MessageKey =
@@ -15,61 +19,26 @@ export type MessageKey =
   | 'language'
   | 'english'
   | 'simplifiedChinese'
+  | 'file'
   | 'home'
   | 'insert'
+  | 'pageLayout'
+  | 'formulas'
   | 'data'
   | 'review'
   | 'view'
+  | 'automate'
   | 'engineConnected'
   | 'searchWorkbook';
 
 const messages: Record<Locale, Record<MessageKey, string>> = {
-  'en-US': {
-    workspaceLabel: 'Workspace',
-    planningWorkbook: 'Planning workbook',
-    personal: 'Personal',
-    saved: 'Saved',
-    saving: 'Saving',
-    offline: 'Offline',
-    syncing: 'Syncing',
-    conflict: 'Conflict',
-    calculating: 'Calculating',
-    error: 'Error',
-    share: 'Share',
-    language: 'Language',
-    english: 'English',
-    simplifiedChinese: '中文',
-    home: 'Home',
-    insert: 'Insert',
-    data: 'Data',
-    review: 'Review',
-    view: 'View',
-    engineConnected: 'Engine Connected',
-    searchWorkbook: 'Search workbook',
-  },
-  'zh-CN': {
-    workspaceLabel: '工作区',
-    planningWorkbook: '规划工作簿',
-    personal: '个人',
-    saved: '已保存',
-    saving: '保存中',
-    offline: '离线',
-    syncing: '同步中',
-    conflict: '存在冲突',
-    calculating: '计算中',
-    error: '错误',
-    share: '共享',
-    language: '语言',
-    english: 'English',
-    simplifiedChinese: '中文',
-    home: '开始',
-    insert: '插入',
-    data: '数据',
-    review: '审阅',
-    view: '视图',
-    engineConnected: '引擎已连接',
-    searchWorkbook: '搜索工作簿',
-  },
+  'en-US': enUS as Record<MessageKey, string>,
+  'zh-CN': zhCN as Record<MessageKey, string>,
+};
+
+const localeBundles: Record<Locale, typeof enUS> = {
+  'en-US': enUS,
+  'zh-CN': zhCN,
 };
 
 const textTranslations: Record<string, string> = {
@@ -125,6 +94,37 @@ export function translate(locale: Locale, key: MessageKey): string {
   return messages[locale][key];
 }
 
+export function translateRibbonTab(locale: Locale, tab: RibbonTabId): string {
+  return translate(locale, tab as MessageKey);
+}
+
+export function formulaBarLabels(locale: Locale, phase: 'empty' | 'error' | 'loading' | 'ready') {
+  const bundle = localeBundles[locale].formulaBar;
+  return {
+    selectedCell: bundle.selectedCell,
+    formulaInput: bundle.formulaInput,
+    insertFunction: bundle.insertFunction,
+    cancel: bundle.cancel,
+    apply: bundle.apply,
+    applyHint: bundle.applyHint,
+    placeholder: phase === 'empty' ? bundle.placeholderEmpty : bundle.placeholderReady,
+  };
+}
+
 export function localizeText(locale: Locale, text: string): string {
   return locale === 'zh-CN' ? textTranslations[text] ?? text : text;
+}
+
+export function shellLabels(locale: Locale, saveState: SaveState) {
+  return {
+    workspaceLabel: translate(locale, 'workspaceLabel'),
+    planningWorkbook: translate(locale, 'planningWorkbook'),
+    personal: translate(locale, 'personal'),
+    searchWorkbook: translate(locale, 'searchWorkbook'),
+    share: translate(locale, 'share'),
+    language: translate(locale, 'language'),
+    english: translate(locale, 'english'),
+    simplifiedChinese: translate(locale, 'simplifiedChinese'),
+    saveState: translate(locale, saveState as MessageKey),
+  };
 }

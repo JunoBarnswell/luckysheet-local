@@ -37,3 +37,7 @@ export { Dialog, type DialogProps } from './Dialog';
 export { DropdownMenu, type DropdownMenuProps } from './DropdownMenu';
 export { ColorPicker, type ColorPickerProps } from './ColorPicker';
 export { Select, type SelectProps } from './Select';
+export { AppShell, type AppShellProps, type PeerCursor, type SaveState } from './AppShell';
+export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';
+export { RibbonEmptyState, RibbonShell, RIBBON_TAB_ORDER, type RibbonShellProps, type RibbonTabId } from './RibbonShell';
+export { SidebarPlaceholder, SidebarShell, type SidebarShellProps } from './SidebarShell';

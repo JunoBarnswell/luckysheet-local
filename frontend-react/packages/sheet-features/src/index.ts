@@ -14,9 +14,16 @@ import type {
 } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { shiftFormula } from './clipboard';
+import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
+import { registerDataToolCommands } from './data-features';
+import { registerSheetTableCommands } from './sheet-table-commands';
+import { registerOutlineCommands } from './outline-commands';
 
 export * from './clipboard';
 export * from './data-features';
+export * from './editing';
+export * from './sheet-table-commands';
+export * from './outline-commands';
 
 
 export interface SetCellValueParams {
@@ -159,6 +166,11 @@ function restoreCell(
 }
 
 export function registerSheetCommands(runtime: CommandRuntime): void {
+  registerEditingCommands(runtime);
+  registerDataToolCommands(runtime);
+  registerSheetTableCommands(runtime);
+  registerOutlineCommands(runtime);
+
   runtime.registry.registerMutation('workbook.renamed', (item, context) => {
     const params = item.params as RenameWorkbookParams;
     context.workbook.name = params.name;
@@ -266,6 +278,14 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const previousName = sheet.name;
       const affectedRanges: RangeRef[] = [];
+      const formulaRewrites = previousName !== params.name
+        ? rewriteFormulasForSheetRename(context.workbook, params.sheetId, previousName, params.name)
+        : [];
+      if (formulaRewrites.length > 0) {
+        for (const item of formulaRewrites) {
+          if (item.previous) context.workbook.getSheet(item.sheetId).cells.set(item.row, item.column, item.previous);
+        }
+      }
       context.applyMutation({
         id: 'sheet.rename',
         unitId: context.workbook.unitId,
@@ -280,9 +300,19 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             params: { sheetId: params.sheetId, name: previousName },
             affectedRanges,
           },
+          ...formulaRewrites.map((item) => ({
+            id: 'cell.restore' as const,
+            unitId: context.workbook.unitId,
+            sheetId: item.sheetId,
+            params: { row: item.row, column: item.column, previous: item.previous },
+            affectedRanges: [] as RangeRef[],
+          })),
         ],
         apply: () => {
           sheet.name = params.name;
+          if (previousName !== params.name) {
+            rewriteFormulasForSheetRename(context.workbook, params.sheetId, previousName, params.name);
+          }
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

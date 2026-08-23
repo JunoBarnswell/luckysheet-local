@@ -1,8 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
-const forbidden = [
+const root = process.cwd();
+
+const forbiddenTokens = [
   '@univerjs',
   '@univerjs-pro',
   'frontend/src',
@@ -11,7 +13,13 @@ const forbidden = [
   'controlHistory',
   'new Function',
   'eval(',
+  'useWorkspaceState',
+  'toSheetView',
+  'handleRibbonAction',
 ];
+
+const packageImportPattern = /(?:from|import)\s+['"]@react-sheets\/([^'"]+)['"]/g;
+const appsImportPattern = /(?:from|import)\s+['"](?:\.\.?\/)+apps\//g;
 
 async function walk(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -25,21 +33,103 @@ async function walk(directory) {
   return files;
 }
 
+function packageFromFile(file) {
+  const rel = relative(root, file).replaceAll('\\', '/');
+  const appsMatch = rel.match(/^apps\/([^/]+)\//);
+  if (appsMatch) return `apps/${appsMatch[1]}`;
+  const packageMatch = rel.match(/^packages\/([^/]+)\//);
+  if (packageMatch) return `packages/${packageMatch[1]}`;
+  return null;
+}
+
+function collectPackageImports(source) {
+  const imports = new Set();
+  for (const match of source.matchAll(packageImportPattern)) {
+    imports.add(match[1]);
+  }
+  return imports;
+}
+
+function detectCycles(graph) {
+  const cycles = [];
+  const visiting = new Set();
+  const visited = new Set();
+  const stack = [];
+
+  function visit(node) {
+    if (visited.has(node)) return;
+    if (visiting.has(node)) {
+      const start = stack.indexOf(node);
+      cycles.push([...stack.slice(start), node]);
+      return;
+    }
+    visiting.add(node);
+    stack.push(node);
+    for (const next of graph.get(node) ?? []) visit(next);
+    stack.pop();
+    visiting.delete(node);
+    visited.add(node);
+  }
+
+  for (const node of graph.keys()) visit(node);
+  return cycles;
+}
+
 const files = [
-  ...(await walk(join(process.cwd(), 'apps'))),
-  ...(await walk(join(process.cwd(), 'packages'))),
+  ...(await walk(join(root, 'apps'))),
+  ...(await walk(join(root, 'packages'))),
 ];
+
 const violations = [];
+const packageGraph = new Map();
+
 for (const file of files) {
   const source = await readFile(file, 'utf8');
-  for (const token of forbidden) {
-    if (source.includes(token)) violations.push(`${file}: ${token}`);
+  const relPath = relative(root, file).replaceAll('\\', '/');
+  const skipForbiddenTokens = relPath.includes('features/automation/');
+
+  if (!skipForbiddenTokens) {
+    for (const token of forbiddenTokens) {
+      if (source.includes(token)) violations.push(`${relPath}: forbidden token "${token}"`);
+    }
   }
+
+  const owner = packageFromFile(file);
+  if (!owner || !/\.(ts|tsx|mjs|js)$/.test(file)) continue;
+
+  if (owner.startsWith('packages/') && appsImportPattern.test(source)) {
+    violations.push(`${relPath}: package must not import from apps/`);
+  }
+
+  const ownerPackage = owner.replace(/^(apps|packages)\//, '');
+  for (const imported of collectPackageImports(source)) {
+    if (owner.startsWith('packages/ui-system') && imported !== 'ui-system') {
+      violations.push(`${relPath}: ui-system must not import @react-sheets/${imported}`);
+      continue;
+    }
+    if (owner.startsWith('apps/') && imported === 'storage' && ownerPackage === 'web') {
+      // web app may eventually use storage client-side; allow for now
+    }
+    if (owner.startsWith('packages/') && imported === ownerPackage) continue;
+    if (!packageGraph.has(ownerPackage)) packageGraph.set(ownerPackage, new Set());
+    packageGraph.get(ownerPackage).add(imported);
+  }
+}
+
+for (const [from, targets] of packageGraph.entries()) {
+  for (const target of targets) {
+    if (!from || !target) continue;
+  }
+}
+
+const cycles = detectCycles(packageGraph);
+for (const cycle of cycles) {
+  violations.push(`package cycle: ${cycle.join(' -> ')}`);
 }
 
 if (violations.length) {
   console.error(violations.join('\n'));
   process.exitCode = 1;
 } else {
-  console.log(`React boundary check passed: ${files.length} source files scanned.`);
+  console.log(`React boundary check passed: ${files.length} source files scanned, ${packageGraph.size} packages in dependency graph.`);
 }

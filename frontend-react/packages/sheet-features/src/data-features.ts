@@ -6,6 +6,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from "@react-sheets/core-model";
+import type { CommandRuntime } from "@react-sheets/command-runtime";
 
 // ---------- 基础 ----------
 
@@ -69,6 +70,7 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
   const overlays = new Map<string, ConditionalOverlay>();
   const rules = sheet.conditionalFormats;
   if (rules.length === 0) return overlays;
+  const valueCounts = buildValueCounts(sheet, rules);
 
   // 预收集各规则范围的数值用于色阶/数据条归一化
   for (const rule of rules) {
@@ -97,7 +99,7 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
 
           switch (rule.type) {
             case "highlight": {
-              const matches = evaluateHighlight(rule, cell);
+              const matches = evaluateHighlight(rule, cell, sheet, r, c, valueCounts);
               if (matches && rule.style) overlay = { ...overlay, style: { ...overlay.style, ...rule.style } };
               break;
             }
@@ -147,7 +149,14 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
   return overlays;
 }
 
-function evaluateHighlight(rule: ConditionalFormatRule, cell: CellData | undefined): boolean {
+function evaluateHighlight(
+  rule: ConditionalFormatRule,
+  cell: CellData | undefined,
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  valueCounts: Map<string, number>,
+): boolean {
   const text = cellText(cell);
   const numeric = numericOf(cell);
   const v1 = rule.value1;
@@ -165,11 +174,73 @@ function evaluateHighlight(rule: ConditionalFormatRule, cell: CellData | undefin
     }
     case "containsText": return typeof v1 === "string" && text.toLowerCase().includes(String(v1).toLowerCase());
     case "notContainsText": return typeof v1 === "string" && !text.toLowerCase().includes(String(v1).toLowerCase());
-    case "duplicate": return false; // 单规则内无法判定,需跨范围统计(留待增强)
-    case "unique": return false;
-    case "formula": return false;
+    case "duplicate": return valueCounts.get(text) !== undefined && (valueCounts.get(text) ?? 0) > 1;
+    case "unique": return text !== "" && (valueCounts.get(text) ?? 0) === 1;
+    case "formula": return evaluateCfFormula(String(v1 ?? ""), sheet, row, column, cell);
     default: return false;
   }
+}
+
+function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined): boolean {
+  const source = formula.trim().startsWith("=") ? formula.trim().slice(1) : formula.trim();
+  if (!source) return false;
+  const replaced = source
+    .replace(/\bROW\(\)/gi, String(row + 1))
+    .replace(/\bCOLUMN\(\)/gi, String(column + 1))
+    .replace(/\bROW\b/gi, String(row + 1))
+    .replace(/\bCOLUMN\b/gi, String(column + 1));
+  const cellRef = replaced.match(/^([A-Z]+\d+)\s*(=|<>|>=|<=|>|<)\s*(.+)$/i);
+  if (cellRef) {
+    const ref = parseSimpleA1(cellRef[1]!);
+    const operator = cellRef[2]!;
+    const operand = cellRef[3]!.trim();
+    const target = ref ? sheet.cells.get(ref.row, ref.column) : cell;
+    const left = numericOf(target) ?? cellText(target);
+    const right = Number(operand);
+    if (Number.isFinite(right)) return compareValues(left, right, operator);
+    return compareValues(String(left).toLowerCase(), operand.replace(/^"|"$/g, "").toLowerCase(), operator);
+  }
+  if (/^MOD\s*\(/i.test(replaced)) {
+    const modMatch = replaced.match(/^MOD\s*\(\s*ROW\s*\(\s*\)\s*,\s*(\d+)\s*\)\s*=\s*(\d+)/i);
+    if (modMatch) return (row + 1) % Number(modMatch[1]) === Number(modMatch[2]);
+  }
+  return Boolean(cell?.value);
+}
+
+function parseSimpleA1(reference: string): { row: number; column: number } | null {
+  const match = reference.match(/^([A-Z]+)(\d+)$/i);
+  if (!match) return null;
+  let column = 0;
+  for (const char of match[1]!.toUpperCase()) column = column * 26 + char.charCodeAt(0) - 64;
+  return { row: Number(match[2]) - 1, column: column - 1 };
+}
+
+function compareValues(left: string | number, right: string | number, operator: string): boolean {
+  switch (operator) {
+    case "=": return left === right;
+    case "<>": return left !== right;
+    case ">": return Number(left) > Number(right);
+    case "<": return Number(left) < Number(right);
+    case ">=": return Number(left) >= Number(right);
+    case "<=": return Number(left) <= Number(right);
+    default: return false;
+  }
+}
+
+function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const rule of rules) {
+    if (rule.operator !== "duplicate" && rule.operator !== "unique") continue;
+    for (const range of rule.ranges) {
+      for (let r = range.startRow; r <= range.endRow; r++) {
+        for (let c = range.startColumn; c <= range.endColumn; c++) {
+          const text = cellText(sheet.cells.get(r, c));
+          counts.set(text, (counts.get(text) ?? 0) + 1);
+        }
+      }
+    }
+  }
+  return counts;
 }
 
 // ---------- 筛选 ----------
@@ -189,8 +260,11 @@ export function computeFilterHiddenRows(sheet: WorksheetModel): Set<number> {
       if (criterion.selectedValues != null) {
         visible = criterion.selectedValues.includes(text);
       }
+      if (visible && criterion.excludeBlanks && text === "") {
+        visible = false;
+      }
       if (visible && criterion.conditionOperator && criterion.conditionValue != null) {
-        visible = evaluateFilterCondition(text, criterion.conditionOperator, criterion.conditionValue);
+        visible = evaluateFilterCondition(text, criterion.conditionOperator, criterion.conditionValue, criterion.conditionValue2);
       }
       if (!visible) hidden.add(row);
     }
@@ -198,7 +272,7 @@ export function computeFilterHiddenRows(sheet: WorksheetModel): Set<number> {
   return hidden;
 }
 
-function evaluateFilterCondition(text: string, operator: string, operand: string): boolean {
+function evaluateFilterCondition(text: string, operator: string, operand: string, operand2?: string): boolean {
   const numeric = Number(text.replace(/[$,%]/g, ""));
   const operandNumeric = Number(operand);
   const hasNumbers = Number.isFinite(numeric) && Number.isFinite(operandNumeric);
@@ -208,7 +282,15 @@ function evaluateFilterCondition(text: string, operator: string, operand: string
     case ">=": return hasNumbers && numeric >= operandNumeric;
     case "<=": return hasNumbers && numeric <= operandNumeric;
     case "=": return text.toLowerCase() === operand.toLowerCase();
+    case "<>": return text.toLowerCase() !== operand.toLowerCase();
     case "contains": return text.toLowerCase().includes(operand.toLowerCase());
+    case "notContains": return !text.toLowerCase().includes(operand.toLowerCase());
+    case "beginsWith": return text.toLowerCase().startsWith(operand.toLowerCase());
+    case "endsWith": return text.toLowerCase().endsWith(operand.toLowerCase());
+    case "between": {
+      const upper = Number(operand2);
+      return hasNumbers && Number.isFinite(upper) && numeric >= operandNumeric && numeric <= upper;
+    }
     default: return true;
   }
 }
@@ -282,11 +364,15 @@ export function validateDataInput(
       default: return judge(!(Number.isFinite(bound1) && length < bound1) && !(Number.isFinite(bound2) && length > bound2), rule);
     }
   }
-  if (rule.type === "date") {
+  if (rule.type === "date" || rule.type === "time") {
     const date = new Date(String(value));
     if (Number.isNaN(date.getTime())) {
-      return { valid: false, blocking: Boolean(rule.errorMessage), message: rule.errorMessage ?? "需要输入有效日期" };
+      return { valid: false, blocking: Boolean(rule.errorMessage), message: rule.errorMessage ?? "需要输入有效日期/时间" };
     }
+  }
+  if (rule.type === "checkbox") {
+    const ok = value === true || value === false || String(value).toUpperCase() === "TRUE" || String(value).toUpperCase() === "FALSE";
+    return { valid: ok, blocking: !ok && Boolean(rule.errorMessage), message: rule.errorMessage ?? "需要 TRUE/FALSE" };
   }
   return { valid: true, blocking: false };
 }
@@ -368,4 +454,149 @@ function coerceLike(text: string, previous: CellData["value"]): CellData["value"
     if (Number.isFinite(numeric) && text !== "") return numeric;
   }
   return text;
+}
+
+/** 大纲折叠隐藏行 — 独立于 filter hiddenRows 语义 */
+export function computeOutlineHiddenRows(sheet: WorksheetModel): Set<number> {
+  const hidden = new Set<number>();
+  const groups = sheet.outline?.groups ?? [];
+  for (const group of groups) {
+    if (group.axis !== 'row' || !group.collapsed) continue;
+    for (let row = group.start; row <= group.end; row++) hidden.add(row);
+  }
+  return hidden;
+}
+
+export interface TextToColumnsParams {
+  sheetId: string;
+  range: RangeRef;
+  delimiter: string;
+  maxColumns?: number;
+}
+
+export interface RemoveDuplicatesParams {
+  sheetId: string;
+  range: RangeRef;
+  columns: number[];
+  hasHeader?: boolean;
+}
+
+export interface SubtotalParams {
+  sheetId: string;
+  range: RangeRef;
+  groupColumn: number;
+  valueColumn: number;
+  functionName: 'SUM' | 'COUNT' | 'AVERAGE';
+}
+
+export function registerDataToolCommands(runtime: CommandRuntime): void {
+  runtime.registry.registerCommand<TextToColumnsParams>({
+    id: 'data.textToColumns',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const range = params.range;
+      const maxColumns = Math.max(2, params.maxColumns ?? 8);
+      const values: CellData[][] = [];
+      for (let row = range.startRow; row <= range.endRow; row++) {
+        const cell = sheet.cells.get(row, range.startColumn);
+        const text = cell?.value == null ? '' : String(cell.value);
+        const parts = text.split(params.delimiter).slice(0, maxColumns);
+        values.push(parts.map((part) => ({ value: part })));
+      }
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: range.startRow,
+        startColumn: range.startColumn,
+        values,
+      });
+    },
+  });
+
+  runtime.registry.registerCommand<RemoveDuplicatesParams>({
+    id: 'data.removeDuplicates',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const startRow = params.hasHeader ? params.range.startRow + 1 : params.range.startRow;
+      const seen = new Set<string>();
+      const kept: CellData[][] = [];
+      if (params.hasHeader) {
+        const header: CellData[] = [];
+        for (let column = params.range.startColumn; column <= params.range.endColumn; column++) {
+          header.push(structuredClone(sheet.cells.get(params.range.startRow, column)) ?? { value: null });
+        }
+        kept.push(header);
+      }
+      for (let row = startRow; row <= params.range.endRow; row++) {
+        const key = params.columns.map((column) => cellText(sheet.cells.get(row, column))).join('\u0001');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const rowValues: CellData[] = [];
+        for (let column = params.range.startColumn; column <= params.range.endColumn; column++) {
+          rowValues.push(structuredClone(sheet.cells.get(row, column)) ?? { value: null });
+        }
+        kept.push(rowValues);
+      }
+      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range: params.range, mode: 'contents' });
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: params.range.startRow,
+        startColumn: params.range.startColumn,
+        values: kept,
+      });
+    },
+  });
+
+  runtime.registry.registerCommand<SubtotalParams>({
+    id: 'data.subtotal',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const startRow = params.range.startRow + 1;
+      const groups = new Map<string, CellData[]>();
+      for (let row = startRow; row <= params.range.endRow; row++) {
+        const key = cellText(sheet.cells.get(row, params.groupColumn));
+        const bucket = groups.get(key) ?? [];
+        bucket.push(structuredClone(sheet.cells.get(row, params.valueColumn)) ?? { value: null });
+        groups.set(key, bucket);
+      }
+      const output: CellData[][] = [[{ value: 'Group' }, { value: params.functionName }]];
+      for (const [key, cells] of groups) {
+        const numbers = cells.map((cell) => numericOf(cell)).filter((value): value is number => value !== undefined);
+        let aggregate: number | null = null;
+        if (params.functionName === 'SUM') aggregate = numbers.reduce((sum, value) => sum + value, 0);
+        if (params.functionName === 'COUNT') aggregate = numbers.length;
+        if (params.functionName === 'AVERAGE' && numbers.length > 0) aggregate = numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+        output.push([{ value: key }, { value: aggregate }]);
+      }
+      const targetRow = params.range.endRow + 2;
+      return runtime.execute('sheet.range.set', {
+        sheetId: params.sheetId,
+        startRow: targetRow,
+        startColumn: params.range.startColumn,
+        values: output,
+      });
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; range: RangeRef }>({
+    id: 'data.transpose',
+    execute: (params, context) => runtime.execute('matrix.transpose', params),
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; range: RangeRef; direction: 'horizontal' | 'vertical' }>({
+    id: 'data.flip',
+    execute: (params, context) => runtime.execute('matrix.flip', params),
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
+    id: 'data.splitColumn',
+    execute: (params, context) => runtime.execute('sheet.splitColumn', params),
+  });
+
+  runtime.registry.registerCommand<{ name: string }>({
+    id: 'workbook.name.list',
+    execute: (_params, context) => {
+      const names = Object.keys(context.workbook.definedNames).sort();
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: names.map(() => ({ sheetId: context.workbook.activeSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })) };
+    },
+  });
 }

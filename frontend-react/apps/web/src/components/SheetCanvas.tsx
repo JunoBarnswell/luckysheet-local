@@ -26,19 +26,20 @@ import { drawChartOnCanvas, drawShapeOnCanvas, drawSparklineOnCanvas } from "@re
 import type { ChartModel, PivotResultTree, RangeRef, ShapeModel, SparklineModel } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
-import type { PeerCursor, SelectionState, SheetCell, SheetView, WorkspacePhase } from "../state/workspace";
+import type { PeerCursor, SelectionState, CanvasSheetSnapshot, AppPhase } from "@react-sheets/spreadsheet-app";
+import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { RibbonAction } from "../domain/ribbon-actions";
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
 export interface SheetCanvasProps {
-  sheet: SheetView;
+  sheet: CanvasSheetSnapshot;
   sheetId: string;
   selection: SelectionState;
   activeCell: string;
   formulaDraft: string;
   editingCell: { row: number; column: number } | null;
-  phase: WorkspacePhase;
+  phase: AppPhase;
   zoom: number;
   peers: PeerCursor[];
   charts?: ChartModel[];
@@ -47,11 +48,13 @@ export interface SheetCanvasProps {
   sparklines?: SparklineModel[];
   selectedFloatingId: string | null;
   onSelectionChange: (selection: SelectionState) => void;
+  onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onCommitCell: (value: string) => void;
   onBeginEdit: (initialText?: string) => void;
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
   onFormulaDraftChange: (value: string) => void;
+  onAppendFormulaDraft?: (fragment: string) => void;
   onInsertRef: (refText: string) => void;
   onToggleAbsolute: () => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
@@ -112,11 +115,13 @@ export function SheetCanvas({
   sparklines = [],
   selectedFloatingId,
   onSelectionChange,
+  onMovePrimary,
   onCommitCell,
   onBeginEdit,
   onCancelEdit,
   onCommitEdit,
   onFormulaDraftChange,
+  onAppendFormulaDraft,
   onInsertRef,
   onToggleAbsolute,
   onJumpEdge,
@@ -142,6 +147,11 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const transientSelectionRef = useRef<SelectionState | null>(null);
+  const editingActiveRef = useRef(false);
+
+  useEffect(() => {
+    editingActiveRef.current = Boolean(editingCell);
+  }, [editingCell]);
   const transientSelectionFrameRef = useRef<number | null>(null);
 
   const zoomFactor = zoom / 100;
@@ -767,12 +777,32 @@ export function SheetCanvas({
       if (phase !== "ready") return;
       const key = event.key;
       const ctrl = event.ctrlKey || event.metaKey;
+      const isEditing = Boolean(editingCell) || editingActiveRef.current;
 
-      if (editingCell) {
-        // 编辑态按键由 CellEditor 处理;此处仅拦截 Escape 兜底
+      if (isEditing) {
         if (key === "Escape") {
           event.preventDefault();
+          editingActiveRef.current = false;
           onCancelEdit();
+          return;
+        }
+        if (key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          editingActiveRef.current = false;
+          onCommitEdit("down");
+          return;
+        }
+        if (key === "Tab") {
+          event.preventDefault();
+          editingActiveRef.current = false;
+          onCommitEdit(event.shiftKey ? "left" : "right");
+          return;
+        }
+        if (key.length === 1 && !ctrl && !event.altKey) {
+          event.preventDefault();
+          if (onAppendFormulaDraft) onAppendFormulaDraft(key);
+          else onFormulaDraftChange(formulaDraft + key);
+          return;
         }
         return;
       }
@@ -800,11 +830,7 @@ export function SheetCanvas({
       if (key in moves && !ctrl) {
         event.preventDefault();
         const [dr, dc] = moves[key]!;
-        onSelectionChange({
-          ...selection,
-          primaryRowIndex: selection.primaryRowIndex + dr,
-          primaryColumnIndex: selection.primaryColumnIndex + dc,
-        });
+        onMovePrimary(dr, dc, { extend: event.shiftKey });
         return;
       }
       if (key in moves && ctrl) {
@@ -828,11 +854,16 @@ export function SheetCanvas({
       // 直接输入进入编辑
       if (key.length === 1 && !ctrl && !event.altKey) {
         event.preventDefault();
-        onBeginEdit(key);
+        if (editingCell || editingActiveRef.current) {
+          onAppendFormulaDraft?.(key);
+        } else {
+          editingActiveRef.current = true;
+          onBeginEdit(key);
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editingCell, onCancelEdit, onBeginEdit, onInsertRef, onJumpEdge, onAction, onSelectionChange, phase, selection, zoomFactor],
+    [editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onAction, onSelectionChange, phase, selection, zoomFactor],
   );
 
   // ---------- 右键菜单 ----------
@@ -924,6 +955,7 @@ export function SheetCanvas({
             ref={containerRef}
             role="grid"
             aria-label="Spreadsheet canvas"
+            data-testid="sheet-canvas"
             aria-rowcount={sheet.rowCount}
             aria-colcount={sheet.columnCount}
             aria-rowindex={selection.primaryRowIndex + 1}
@@ -1009,7 +1041,7 @@ export function SheetCanvas({
   );
 }
 
-function parseCellValue(cell: SheetCell): string | number | boolean | null {
+function parseCellValue(cell: CanvasCellSnapshot): string | number | boolean | null {
   const numeric = Number(cell.value.replace(/[$,]/g, ""));
   if (cell.value !== "" && Number.isFinite(numeric) && /\d/.test(cell.value)) return numeric;
   if (cell.value === "TRUE") return true;

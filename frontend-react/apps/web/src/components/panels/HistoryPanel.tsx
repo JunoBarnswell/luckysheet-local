@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
+import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
 

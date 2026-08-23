@@ -3,6 +3,19 @@ export type SheetId = string;
 export type Row = number;
 export type Column = number;
 
+import type {
+  CellHyperlink,
+  CellNote,
+  CommentThread,
+  DrawingObject,
+  DrawingPayload,
+  SparklineGroup,
+  SheetTableModel,
+  OutlineModel,
+  SpillRange,
+  ProtectionRule,
+} from './domain';
+
 export type CellValue = string | number | boolean | null;
 
 export interface CellBorderSide {
@@ -60,9 +73,13 @@ export interface CellData {
   styleId?: string;
   style?: CellStyle;
   numberFormat?: string;
-  error?: string;
+  /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
+  formulaValue?: import('./domain').FormulaValue;
+  note?: import('./domain').CellNote;
   comment?: CellComment;
+  /** @deprecated prefer hyperlinkDetail */
   hyperlink?: string;
+  hyperlinkDetail?: CellHyperlink;
 }
 
 export interface RangeRef {
@@ -85,14 +102,46 @@ export interface FreezeModel {
   startColumn: Column;
 }
 
-export interface SelectionSnapshot {
-  unitId: UnitId;
-  sheetId: SheetId;
-  ranges: RangeRef[];
-  primaryRangeIndex: number;
-  primaryCell: { row: Row; column: Column };
-  phase: 'idle' | 'selected' | 'selecting' | 'editing' | 'preview';
-}
+export type {
+  SelectionSnapshot,
+  EditSession,
+  SheetTableModel,
+  OutlineGroup,
+  OutlineModel,
+  DrawingKind,
+  DrawingTransform,
+  DrawingObject,
+  CellHyperlink,
+  HyperlinkTarget,
+  DrawingPayload,
+  ImageDrawingPayload,
+  ShapeDrawingPayload,
+  TextBoxDrawingPayload,
+  ChartDrawingPayload,
+  SparklineGroup,
+  CellNote,
+  CommentThread,
+  CommentReply,
+  SpillRange,
+  SpillState,
+  ProtectionRule,
+  ProtectionScope,
+  FormulaErrorCode,
+  FormulaValue,
+  StructuralOpKind,
+  StructuralTransformParams,
+} from './domain';
+export { createEmptySelection, isFormulaError, createFormulaError } from './domain';
+export { StructuralTransform, type StructuralTransformResult, ensureDrawing, shiftFormulaText } from './structural-transform';
+export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
+export {
+  migrateSnapshot,
+  loadWorkbookFromSnapshot,
+  createWorkbookSnapshotV2,
+  type WorkbookSnapshotV2,
+  type SheetSnapshotV2,
+  type AnyWorkbookSnapshot,
+} from './snapshot';
 
 export interface ChartSeries {
   name: string;
@@ -143,6 +192,12 @@ export interface SparklineModel {
   negativeColor?: string;
   highlightMax?: boolean;
   highlightMin?: boolean;
+  highlightFirst?: boolean;
+  highlightLast?: boolean;
+  highlightNegative?: boolean;
+  groupId?: string;
+  showAxis?: boolean;
+  showMarkers?: boolean;
 }
 
 /** 浮动图片(以内容坐标定位) */
@@ -189,7 +244,7 @@ export interface ConditionalFormatRule {
   barColor?: string;
 }
 
-export type DataValidationType = 'list' | 'whole' | 'decimal' | 'date' | 'textLength' | 'custom';
+export type DataValidationType = 'list' | 'whole' | 'decimal' | 'date' | 'time' | 'checkbox' | 'textLength' | 'custom';
 export type DataValidationOperator = 'between' | 'notBetween' | 'equal' | 'notEqual' | 'greaterThan' | 'lessThan';
 
 export interface DataValidationRule {
@@ -211,8 +266,10 @@ export interface DataValidationRule {
 export interface FilterColumnCondition {
   column: Column;
   selectedValues?: string[];
+  excludeBlanks?: boolean;
   conditionOperator?: string;
   conditionValue?: string;
+  conditionValue2?: string;
 }
 
 export interface FilterModel {
@@ -356,6 +413,19 @@ export class WorksheetModel {
   readonly conditionalFormats: ConditionalFormatRule[] = [];
   readonly dataValidations: DataValidationRule[] = [];
   readonly images: FloatingImage[] = [];
+  readonly sheetTables: SheetTableModel[] = [];
+  readonly drawings: DrawingObject[] = [];
+  readonly drawingPayloads = new Map<string, DrawingPayload>();
+  readonly notes = new Map<string, CellNote>();
+  readonly commentThreads: CommentThread[] = [];
+  readonly spillRanges: SpillRange[] = [];
+  readonly protectionRules: ProtectionRule[] = [];
+  readonly sparklineGroups: SparklineGroup[] = [];
+  outline?: OutlineModel;
+  showGridlines = true;
+  showHeaders = true;
+  zoom = 100;
+  hidden = false;
   filter?: FilterModel;
   bandedRule?: BandedRule;
   readonly rowHeights: Record<number, number> = {};
@@ -529,7 +599,11 @@ export class WorksheetModel {
 
   /** 深拷贝当前工作表(删除工作表撤销恢复用) */
   cloneSheet(): WorksheetModel {
-    const copy = new WorksheetModel(this.id, this.name, this.rowCount, this.columnCount);
+    return this.cloneWithIdentity(this.id, this.name);
+  }
+
+  cloneWithIdentity(id: SheetId, name: string): WorksheetModel {
+    const copy = new WorksheetModel(id, name, this.rowCount, this.columnCount);
     this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
     copy.merges.push(...structuredClone(this.merges));
     copy.charts.push(...structuredClone(this.charts));
@@ -545,6 +619,19 @@ export class WorksheetModel {
     Object.assign(copy.columnWidths, this.columnWidths);
     for (const row of this.hiddenRows) copy.hiddenRows.add(row);
     for (const column of this.hiddenColumns) copy.hiddenColumns.add(column);
+    copy.sheetTables.push(...structuredClone(this.sheetTables));
+    copy.drawings.push(...structuredClone(this.drawings));
+    for (const [key, payload] of this.drawingPayloads) copy.drawingPayloads.set(key, structuredClone(payload));
+    for (const [key, note] of this.notes) copy.notes.set(key, structuredClone(note));
+    copy.commentThreads.push(...structuredClone(this.commentThreads));
+    copy.spillRanges.push(...structuredClone(this.spillRanges));
+    copy.protectionRules.push(...structuredClone(this.protectionRules));
+    copy.sparklineGroups.push(...structuredClone(this.sparklineGroups));
+    copy.outline = this.outline ? structuredClone(this.outline) : undefined;
+    copy.showGridlines = this.showGridlines;
+    copy.showHeaders = this.showHeaders;
+    copy.zoom = this.zoom;
+    copy.hidden = this.hidden;
     copy.tabColor = this.tabColor;
     copy.freeze = { ...this.freeze };
     return copy;
@@ -573,6 +660,18 @@ export class WorksheetModel {
   }
 }
 
+export function noteCellKey(row: Row, column: Column): string {
+  return `${row}:${column}`;
+}
+
+export function getDrawingPayload(sheet: WorksheetModel, payloadId: string): DrawingPayload | undefined {
+  return sheet.drawingPayloads.get(payloadId);
+}
+
+export function getCellNote(sheet: WorksheetModel, row: Row, column: Column): CellNote | undefined {
+  return sheet.notes.get(noteCellKey(row, column));
+}
+
 export interface SheetSnapshotV1 {
   id: SheetId;
   name: string;
@@ -585,6 +684,11 @@ export interface SheetSnapshotV1 {
   pivots: PivotModel[];
   shapes: ShapeModel[];
   sparklines: SparklineModel[];
+  sparklineGroups?: SparklineGroup[];
+  drawings?: DrawingObject[];
+  drawingPayloads?: Record<string, DrawingPayload>;
+  notes?: Array<{ row: number; column: number; note: CellNote }>;
+  commentThreads?: CommentThread[];
   conditionalFormats?: ConditionalFormatRule[];
   dataValidations?: DataValidationRule[];
   rowHeights?: Record<number, number>;
@@ -595,6 +699,14 @@ export interface SheetSnapshotV1 {
   images?: FloatingImage[];
   bandedRule?: BandedRule;
   filter?: FilterModel;
+  sheetTables?: SheetTableModel[];
+  spillRanges?: SpillRange[];
+  protectionRules?: ProtectionRule[];
+  showGridlines?: boolean;
+  showHeaders?: boolean;
+  zoom?: number;
+  hidden?: boolean;
+  outline?: OutlineModel;
 }
 
 export interface WorkbookSnapshotV1 {
@@ -610,12 +722,15 @@ export interface WorkbookSnapshotV1 {
 export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
   readonly tables = new Map<string, WorkbookTableModel>();
+  /** 工作表 Tab 顺序 */
+  sheetOrder: SheetId[] = [];
   activeSheetId: SheetId;
   definedNames: Record<string, string> = {};
 
   constructor(readonly unitId: UnitId, public name: string) {
     const sheet = new WorksheetModel('sheet-1', 'Sheet1');
     this.sheets.set(sheet.id, sheet);
+    this.sheetOrder = [sheet.id];
     this.activeSheetId = sheet.id;
   }
 
@@ -633,7 +748,13 @@ export class WorkbookModel {
   }
 
   getSheets(): WorksheetModel[] {
-    return [...this.sheets.values()];
+    return this.sheetOrder
+      .map((id) => this.sheets.get(id))
+      .filter((sheet): sheet is WorksheetModel => sheet !== undefined);
+  }
+
+  getVisibleSheets(): WorksheetModel[] {
+    return this.getSheets().filter((sheet) => !sheet.hidden);
   }
 
   getTable(tableId: string): WorkbookTableModel {
@@ -657,13 +778,32 @@ export class WorkbookModel {
     if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
     const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);
+    this.sheetOrder.push(id);
     return sheet;
+  }
+
+  duplicateSheet(sourceSheetId: SheetId, newId: SheetId, newName: string): WorksheetModel {
+    const source = this.getSheet(sourceSheetId);
+    const copy = source.cloneWithIdentity(newId, newName);
+    this.sheets.set(newId, copy);
+    const sourceIndex = this.sheetOrder.indexOf(sourceSheetId);
+    this.sheetOrder.splice(sourceIndex + 1, 0, newId);
+    return copy;
+  }
+
+  reorderSheet(sheetId: SheetId, toIndex: number): void {
+    const fromIndex = this.sheetOrder.indexOf(sheetId);
+    if (fromIndex < 0) throw new Error(`Unknown sheet: ${sheetId}`);
+    const clamped = Math.max(0, Math.min(toIndex, this.sheetOrder.length - 1));
+    this.sheetOrder.splice(fromIndex, 1);
+    this.sheetOrder.splice(clamped, 0, sheetId);
   }
 
   removeSheet(sheetId: SheetId): WorksheetModel {
     if (this.sheets.size <= 1) throw new Error('A workbook must keep at least one worksheet');
     const sheet = this.getSheet(sheetId);
     this.sheets.delete(sheetId);
+    this.sheetOrder = this.sheetOrder.filter((id) => id !== sheetId);
     if (this.activeSheetId === sheetId) {
       const firstSheet = this.getSheets()[0];
       if (firstSheet) this.activeSheetId = firstSheet.id;
@@ -701,6 +841,22 @@ export class WorkbookModel {
         images: structuredClone(sheet.images),
         bandedRule: sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined,
         filter: sheet.filter ? structuredClone(sheet.filter) : undefined,
+        sheetTables: structuredClone(sheet.sheetTables),
+        sparklineGroups: structuredClone(sheet.sparklineGroups),
+        drawings: structuredClone(sheet.drawings),
+        drawingPayloads: Object.fromEntries([...sheet.drawingPayloads.entries()].map(([k, v]) => [k, structuredClone(v)])),
+        notes: [...sheet.notes.entries()].map(([key, note]) => {
+          const [row, column] = key.split(':').map(Number);
+          return { row: row!, column: column!, note: structuredClone(note) };
+        }),
+        commentThreads: structuredClone(sheet.commentThreads),
+        spillRanges: structuredClone(sheet.spillRanges),
+        protectionRules: structuredClone(sheet.protectionRules),
+        showGridlines: sheet.showGridlines,
+        showHeaders: sheet.showHeaders,
+        zoom: sheet.zoom,
+        hidden: sheet.hidden,
+        outline: sheet.outline ? structuredClone(sheet.outline) : undefined,
       })),
     };
   }
@@ -721,6 +877,17 @@ export class WorkbookModel {
       sheet.pivots.push(...structuredClone(input.pivots));
       sheet.shapes.push(...structuredClone(input.shapes));
       sheet.sparklines.push(...structuredClone(input.sparklines));
+      if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
+      if (input.drawings) sheet.drawings.push(...structuredClone(input.drawings));
+      if (input.drawingPayloads) {
+        for (const [key, payload] of Object.entries(input.drawingPayloads)) {
+          sheet.drawingPayloads.set(key, structuredClone(payload));
+        }
+      }
+      if (input.notes) {
+        for (const entry of input.notes) sheet.notes.set(noteCellKey(entry.row, entry.column), structuredClone(entry.note));
+      }
+      if (input.commentThreads) sheet.commentThreads.push(...structuredClone(input.commentThreads));
       if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
       if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
       if (input.rowHeights) Object.assign(sheet.rowHeights, input.rowHeights);
@@ -730,10 +897,19 @@ export class WorkbookModel {
       if (input.images) sheet.images.push(...structuredClone(input.images));
       if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);
       if (input.filter) sheet.filter = structuredClone(input.filter);
+      if (input.sheetTables) sheet.sheetTables.push(...structuredClone(input.sheetTables));
+      if (input.spillRanges) sheet.spillRanges.push(...structuredClone(input.spillRanges));
+      if (input.protectionRules) sheet.protectionRules.push(...structuredClone(input.protectionRules));
+      if (input.showGridlines != null) sheet.showGridlines = input.showGridlines;
+      if (input.showHeaders != null) sheet.showHeaders = input.showHeaders;
+      if (input.zoom != null) sheet.zoom = input.zoom;
+      if (input.hidden != null) sheet.hidden = input.hidden;
+      if (input.outline) sheet.outline = structuredClone(input.outline);
       sheet.tabColor = input.tabColor;
       workbook.sheets.set(sheet.id, sheet);
     }
     workbook.activeSheetId = snapshot.activeSheetId;
+    workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
     return workbook;
   }
 }

@@ -20,9 +20,6 @@ export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEd
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    textarea.focus();
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    // 自动长高
     textarea.style.height = '0px';
     textarea.style.height = Math.max(28, textarea.scrollHeight + 2) + 'px';
   }, [initialText]);
@@ -33,8 +30,7 @@ export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEd
         ref={textareaRef}
         aria-label="Cell editor"
         className="w-full resize-none border-0 bg-transparent px-1 py-0.5 text-[13px] leading-5 text-slate-800 outline-none"
-        defaultValue={initialText}
-        onBlur={() => onCommit('none')}
+        value={initialText}
         onChange={(event) => {
           onChange(event.target.value);
           event.currentTarget.style.height = '0px';

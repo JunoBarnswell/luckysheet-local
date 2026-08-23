@@ -1,26 +1,12 @@
 import { useState, type ReactNode } from 'react';
-import { Box, Button, DropdownMenu, Heading, Icon, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import type { PeerCursor, SaveState, WorkspacePhase } from '../state/workspace';
-import { localeLabels, translate, type Locale } from '../i18n';
+import { Button } from './Button';
+import { DropdownMenu } from './DropdownMenu';
+import { Icon } from './Icon';
+import { Box, Heading, Inline, Stack, Text } from './layout';
+import { TextInput } from './TextInput';
+import type { AppShellProps, SaveState } from './shell-types';
 
-export interface AppShellProps {
-  children: ReactNode;
-  formulaBar: ReactNode;
-  isBusy: boolean;
-  notice: string;
-  locale: Locale;
-  onLocaleChange: (locale: Locale) => void;
-  onSearch?: (query: string) => void;
-  onShare: () => void;
-  peers: readonly PeerCursor[];
-  workbookMenu?: ReactNode;
-  ribbon: ReactNode;
-  saveState: SaveState;
-  sheetTabs: ReactNode;
-  statusBar: ReactNode;
-  title: string;
-  workspacePhase: WorkspacePhase;
-}
+export type { AppShellProps, PeerCursor, SaveState } from './shell-types';
 
 const peerColorClasses: Record<string, string> = {
   '#2563eb': 'bg-blue-600',
@@ -31,17 +17,40 @@ const peerColorClasses: Record<string, string> = {
   '#06b6d4': 'bg-cyan-500',
 };
 
-export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocaleChange, onSearch, onShare, peers, ribbon, saveState, sheetTabs, statusBar, title, workbookMenu, workspacePhase }: AppShellProps) {
+function saveTone(state: SaveState): string {
+  if (state === 'saved') return 'text-emerald-300';
+  if (state === 'saving' || state === 'calculating') return 'text-amber-300';
+  if (state === 'offline' || state === 'conflict' || state === 'error') return 'text-rose-300';
+  return 'text-sky-300';
+}
+
+export function AppShell({
+  children,
+  formulaBar,
+  isBusy,
+  labels,
+  localeMenuLabel,
+  notice,
+  onLocaleChange,
+  onSearch,
+  onShare,
+  peers,
+  ribbon,
+  saveState,
+  sheetTabs,
+  statusBar,
+  title,
+  workbookMenu,
+  workspacePhase,
+}: AppShellProps) {
   const [search, setSearch] = useState('');
-  const saveCopy = {
-    label: translate(locale, saveState),
-    tone: saveState === 'saved' ? 'text-emerald-300' : saveState === 'saving' || saveState === 'calculating' ? 'text-amber-300' : saveState === 'offline' || saveState === 'conflict' || saveState === 'error' ? 'text-rose-300' : 'text-sky-300',
-  };
+
   return (
     <Box
       aria-busy={isBusy}
       as="main"
       className="flex h-screen min-h-[680px] min-w-[960px] flex-col overflow-hidden bg-canvas text-ink"
+      data-testid="app-shell"
       data-workspace-phase={workspacePhase}
     >
       <Box as="header" className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-950 px-5 text-white">
@@ -52,16 +61,16 @@ export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocal
             </Box>
             <Stack gap="none" className="hidden sm:flex">
               <Text size="xs" tone="inverse" weight="bold" className="tracking-[0.18em] text-slate-300">SHEETS</Text>
-              <Text size="xs" tone="subtle">{translate(locale, 'workspaceLabel')}</Text>
+              <Text size="xs" tone="subtle">{labels.workspaceLabel}</Text>
             </Stack>
           </Inline>
           <Box className="hidden h-8 w-px bg-slate-700 md:block" />
           <Stack gap="none" className="min-w-0">
-            <Text size="xs" tone="subtle" weight="medium" className="uppercase tracking-[0.14em]">{translate(locale, 'planningWorkbook')}</Text>
+            <Text size="xs" tone="subtle" weight="medium" className="uppercase tracking-[0.14em]">{labels.planningWorkbook}</Text>
             <Heading as="h1" size="md" className="truncate text-white">{title}</Heading>
           </Stack>
           <Inline gap="xs" className="hidden rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-slate-300 lg:flex">
-            <Text size="xs" tone="subtle">{translate(locale, 'personal')}</Text>
+            <Text size="xs" tone="subtle">{labels.personal}</Text>
             <Icon name="chevron-down" size="xs" />
           </Inline>
         </Inline>
@@ -69,8 +78,8 @@ export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocal
         <Inline gap="sm" className="shrink-0">
           <Box className="hidden w-64 lg:block">
             <TextInput
-              aria-label={translate(locale, 'searchWorkbook')}
-              placeholder={translate(locale, 'searchWorkbook')}
+              aria-label={labels.searchWorkbook}
+              placeholder={labels.searchWorkbook}
               leadingIcon="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -82,7 +91,7 @@ export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocal
           </Box>
           <Inline gap="xs" className="hidden md:flex">
             <Box className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            <Text size="xs" className={saveCopy.tone}>{saveCopy.label}</Text>
+            <Text size="xs" className={saveTone(saveState)}>{labels.saveState}</Text>
           </Inline>
           <Text size="xs" tone="subtle" className="hidden xl:inline">{notice}</Text>
           {peers.length > 0 ? (
@@ -95,15 +104,15 @@ export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocal
               {peers.length > 3 ? <Text size="xs" tone="subtle" className="ml-1">+{peers.length - 3}</Text> : null}
             </Inline>
           ) : null}
-          <Button aria-label="Share workbook" disabled={isBusy} icon="share" onClick={onShare} size="sm" variant="soft">{translate(locale, 'share')}</Button>
+          <Button aria-label={labels.share} disabled={isBusy} icon="share" onClick={onShare} size="sm" variant="soft">{labels.share}</Button>
           <DropdownMenu
             align="right"
-            trigger={<Button aria-label={translate(locale, 'language')} disabled={isBusy} size="sm" variant="ghost" className="text-slate-300 hover:bg-slate-800 hover:text-white">{localeLabels[locale]}</Button>}
+            trigger={<Button aria-label={labels.language} disabled={isBusy} size="sm" variant="ghost" className="text-slate-300 hover:bg-slate-800 hover:text-white">{localeMenuLabel}</Button>}
           >
             {({ close }) => (
               <Stack gap="xs" className="min-w-36">
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onLocaleChange('en-US'); close(); }}>{translate(locale, 'english')}</Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onLocaleChange('zh-CN'); close(); }}>{translate(locale, 'simplifiedChinese')}</Button>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onLocaleChange('en-US'); close(); }}>{labels.english}</Button>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onLocaleChange('zh-CN'); close(); }}>{labels.simplifiedChinese}</Button>
               </Stack>
             )}
           </DropdownMenu>

@@ -7,23 +7,22 @@ import {
   DropdownMenu,
   Icon,
   Inline,
+  RibbonEmptyState,
+  RibbonShell,
   Select,
   Stack,
-  Tab,
-  TabList,
-  Tabs,
   Text,
+  type RibbonTabId,
 } from '@react-sheets/ui-system';
-import type { RibbonTabId, WorkspacePhase } from '../state/workspace';
-import { localizeText, translate, type Locale } from '../i18n';
-import type { RibbonAction } from '../domain/ribbon-actions';
+import type { AppPhase } from '@react-sheets/spreadsheet-app';
+import { localizeText, translate, translateRibbonTab, type Locale } from '../i18n';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
   locale: Locale;
-  onAction: (action: RibbonAction, payload?: unknown) => void;
+  onExecute: (commandId: string, params?: unknown) => void;
   onTabChange: (tab: RibbonTabId) => void;
-  phase: WorkspacePhase;
+  phase: AppPhase;
   cellStyle?: {
     bold?: boolean;
     italic?: boolean;
@@ -37,14 +36,6 @@ export interface RibbonProps {
     textColor?: string;
   };
 }
-
-const ribbonTabs: Array<{ id: RibbonTabId; label: string }> = [
-  { id: 'home', label: 'Home' },
-  { id: 'insert', label: 'Insert' },
-  { id: 'data', label: 'Data' },
-  { id: 'review', label: 'Review' },
-  { id: 'view', label: 'View' },
-];
 
 const RibbonLocaleContext = createContext<Locale>('en-US');
 
@@ -63,20 +54,22 @@ function RibbonGroup({ children, label }: { children: React.ReactNode; label: st
 }
 
 function ToolBtn({
-  action,
+  commandId,
+  params,
   disabled,
   icon,
   label,
   active,
-  onAction,
+  onExecute,
   className,
 }: {
-  action: RibbonAction;
+  commandId: string;
+  params?: unknown;
   disabled: boolean;
   icon: React.ComponentProps<typeof Icon>['name'];
   label: string;
   active?: boolean;
-  onAction: (action: RibbonAction) => void;
+  onExecute: (commandId: string, params?: unknown) => void;
   className?: string;
 }) {
   const locale = useContext(RibbonLocaleContext);
@@ -88,7 +81,7 @@ function ToolBtn({
       disabled={disabled}
       icon={icon}
       iconOnly
-      onClick={() => onAction(action)}
+      onClick={() => onExecute(commandId, params)}
       size="sm"
       variant={active ? 'primary' : 'ghost'}
       className={className}
@@ -96,194 +89,100 @@ function ToolBtn({
   );
 }
 
-export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellStyle = {} }: RibbonProps) {
+export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellStyle = {} }: RibbonProps) {
   const disabled = phase !== 'ready';
 
   return (
     <RibbonLocaleContext.Provider value={locale}>
-      <Tabs className="border-b border-slate-200 bg-white">
-      {/* Top Tab Bar */}
-      <Inline gap="lg" className="h-10 overflow-x-auto px-4">
-        <TabList label="Workbook ribbon tabs" className="h-full gap-1">
-              {ribbonTabs.map((tab) => (
-            <Tab
-              key={tab.id}
-              active={activeTab === tab.id}
-              disabled={disabled}
-              onClick={() => onTabChange(tab.id)}
-              className="h-full border-b-2 border-transparent px-3 text-xs font-semibold data-active:border-blue-600 data-active:text-blue-600"
-            >
-              {translate(locale, tab.id)}
-            </Tab>
-          ))}
-        </TabList>
+      <RibbonShell
+        activeTab={activeTab}
+        disabled={disabled}
+        onTabChange={onTabChange}
+        tabLabel={(tab) => translateRibbonTab(locale, tab)}
+        status={(
+          <>
+            <Icon name="cloud-check" size="sm" className={disabled ? 'text-slate-300' : 'text-emerald-500'} />
+            <Text size="xs" tone="muted">{translate(locale, 'engineConnected')}</Text>
+          </>
+        )}
+      >
+        {activeTab === 'file' || activeTab === 'pageLayout' || activeTab === 'formulas' || activeTab === 'automate' ? (
+          <RibbonEmptyState message={locale === 'zh-CN' ? '此选项卡的命令将在此显示。' : 'Commands for this tab will appear here.'} />
+        ) : null}
 
-        <Inline gap="xs" className="ml-auto shrink-0 border-l border-slate-100 pl-3">
-          <Icon name="cloud-check" size="sm" className={disabled ? 'text-slate-300' : 'text-emerald-500'} />
-          <Text size="xs" tone="muted">{translate(locale, 'engineConnected')}</Text>
-        </Inline>
-      </Inline>
-
-      {/* Main Ribbon Toolbar Area */}
-      <Box className="min-h-[104px] overflow-x-auto border-t border-slate-100 bg-slate-50/80 px-4 py-2">
         {activeTab === 'home' ? (
           <Inline gap="md" className="min-w-max items-start">
-            {/* Undo / Redo */}
             <RibbonGroup label="History">
-              <ToolBtn action="undo" disabled={disabled} icon="undo" label="Undo (Ctrl+Z)" onAction={onAction} />
-              <ToolBtn action="redo" disabled={disabled} icon="redo" label="Redo (Ctrl+Y)" onAction={onAction} />
+              <ToolBtn commandId="ui.history.undo" disabled={disabled} icon="undo" label="Undo (Ctrl+Z)" onExecute={onExecute} />
+              <ToolBtn commandId="ui.history.redo" disabled={disabled} icon="redo" label="Redo (Ctrl+Y)" onExecute={onExecute} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
-            {/* Clipboard */}
             <RibbonGroup label="Clipboard">
-              <ToolBtn action="cut" disabled={disabled} icon="scissors" label="Cut (Ctrl+X)" onAction={onAction} />
-              <ToolBtn action="copy" disabled={disabled} icon="copy" label="Copy (Ctrl+C)" onAction={onAction} />
-              <ToolBtn action="paste" disabled={disabled} icon="clipboard" label="Paste (Ctrl+V)" onAction={onAction} />
+              <ToolBtn commandId="ui.clipboard.cut" disabled={disabled} icon="scissors" label="Cut (Ctrl+X)" onExecute={onExecute} />
+              <ToolBtn commandId="ui.clipboard.copy" disabled={disabled} icon="copy" label="Copy (Ctrl+C)" onExecute={onExecute} />
+              <ToolBtn commandId="ui.clipboard.paste" disabled={disabled} icon="clipboard" label="Paste (Ctrl+V)" onExecute={onExecute} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
-            {/* Font Formatting */}
             <RibbonGroup label="Font">
-              <ToolBtn
-                action="bold"
-                disabled={disabled}
-                icon="bold"
-                label="Bold (Ctrl+B)"
-                active={cellStyle.bold}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="italic"
-                disabled={disabled}
-                icon="italic"
-                label="Italic (Ctrl+I)"
-                active={cellStyle.italic}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="underline"
-                disabled={disabled}
-                icon="underline"
-                label="Underline (Ctrl+U)"
-                active={cellStyle.underline}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="strikethrough"
-                disabled={disabled}
-                icon="strikethrough"
-                label="Strikethrough"
-                active={cellStyle.strikethrough}
-                onAction={onAction}
-              />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'bold' }} disabled={disabled} icon="bold" label="Bold (Ctrl+B)" active={cellStyle.bold} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'italic' }} disabled={disabled} icon="italic" label="Italic (Ctrl+I)" active={cellStyle.italic} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'underline' }} disabled={disabled} icon="underline" label="Underline (Ctrl+U)" active={cellStyle.underline} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'strikethrough' }} disabled={disabled} icon="strikethrough" label="Strikethrough" active={cellStyle.strikethrough} onExecute={onExecute} />
 
-              {/* Text Color Picker */}
               <DropdownMenu
                 trigger={
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="type"
-                    iconOnly
-                    title="Text Color"
-                    disabled={disabled}
-                    className="relative"
-                  />
+                  <Button variant="ghost" size="sm" icon="type" iconOnly title="Text Color" disabled={disabled} className="relative" />
                 }
               >
                 {({ close }) => (
                   <ColorPicker
                     color={cellStyle.textColor || '#1e293b'}
                     onChange={(c) => {
-                      onAction('textColor', c);
+                      onExecute('sheet.style.set', { style: { textColor: c } });
                       close();
                     }}
                   />
                 )}
               </DropdownMenu>
 
-              {/* Fill Color Picker */}
               <DropdownMenu
                 trigger={
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="paint-bucket"
-                    iconOnly
-                    title="Fill Background"
-                    disabled={disabled}
-                  />
+                  <Button variant="ghost" size="sm" icon="paint-bucket" iconOnly title="Fill Background" disabled={disabled} />
                 }
               >
                 {({ close }) => (
                   <ColorPicker
                     color={cellStyle.background || '#ffffff'}
                     onChange={(c) => {
-                      onAction('background', c);
+                      onExecute('sheet.style.set', { style: { background: c } });
                       close();
                     }}
                   />
                 )}
               </DropdownMenu>
 
-              {/* Borders */}
-              <ToolBtn action="border-all" disabled={disabled} icon="borders" label="All Borders" onAction={onAction} />
+              <ToolBtn commandId="sheet.style.set" params={{ style: { borders: { top: { style: 'thin', color: '#334155' }, right: { style: 'thin', color: '#334155' }, bottom: { style: 'thin', color: '#334155' }, left: { style: 'thin', color: '#334155' } } } }} disabled={disabled} icon="borders" label="All Borders" onExecute={onExecute} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
-            {/* Alignment */}
             <RibbonGroup label="Alignment">
-              <ToolBtn
-                action="align-left"
-                disabled={disabled}
-                icon="align-left"
-                label="Align Left"
-                active={cellStyle.align === 'left'}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="align-center"
-                disabled={disabled}
-                icon="align-center"
-                label="Align Center"
-                active={cellStyle.align === 'center'}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="align-right"
-                disabled={disabled}
-                icon="align-right"
-                label="Align Right"
-                active={cellStyle.align === 'right'}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="wrap-text"
-                disabled={disabled}
-                icon="wrap-text"
-                label="Wrap Text"
-                active={cellStyle.wrapText}
-                onAction={onAction}
-              />
-              <ToolBtn
-                action="merge-cells"
-                disabled={disabled}
-                icon="merge-cells"
-                label="Merge & Center"
-                onAction={onAction}
-              />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'horizontalAlignment', value: 'left' }} disabled={disabled} icon="align-left" label="Align Left" active={cellStyle.align === 'left'} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'horizontalAlignment', value: 'center' }} disabled={disabled} icon="align-center" label="Align Center" active={cellStyle.align === 'center'} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'horizontalAlignment', value: 'right' }} disabled={disabled} icon="align-right" label="Align Right" active={cellStyle.align === 'right'} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.toggle" params={{ property: 'wrapText' }} disabled={disabled} icon="wrap-text" label="Wrap Text" active={cellStyle.wrapText} onExecute={onExecute} />
+              <ToolBtn commandId="sheet.merge.set" disabled={disabled} icon="merge-cells" label="Merge & Center" onExecute={onExecute} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
-            {/* Number Formats */}
             <RibbonGroup label="Number">
               <div className="w-28">
                 <Select
                   sizeVariant="sm"
                   disabled={disabled}
                   value={cellStyle.numberFormat || 'general'}
-                  onChange={(e) => onAction('numberFormat', e.target.value)}
+                  onChange={(e) => onExecute('sheet.style.set', { style: { numberFormat: e.target.value } })}
                 >
                   <option value="general">General</option>
                   <option value="$#,##0">Currency ($)</option>
@@ -292,24 +191,22 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
                   <option value="0.00">Decimal (0.00)</option>
                 </Select>
               </div>
-              <ToolBtn action="format-currency" disabled={disabled} icon="dollar-sign" label="Currency Format" onAction={onAction} />
-              <ToolBtn action="format-percent" disabled={disabled} icon="percent" label="Percent Format" onAction={onAction} />
+              <ToolBtn commandId="sheet.style.set" params={{ style: { numberFormat: '$#,##0' } }} disabled={disabled} icon="dollar-sign" label="Currency Format" onExecute={onExecute} />
+              <ToolBtn commandId="sheet.style.set" params={{ style: { numberFormat: '0%' } }} disabled={disabled} icon="percent" label="Percent Format" onExecute={onExecute} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
-            {/* Cells & Editing */}
             <RibbonGroup label="Cells">
-              <ToolBtn action="insert-row" disabled={disabled} icon="rows" label="Insert Row" onAction={onAction} />
-              <ToolBtn action="insert-column" disabled={disabled} icon="columns" label="Insert Column" onAction={onAction} />
-              <ToolBtn action="clear-range" disabled={disabled} icon="trash" label="Clear Content" onAction={onAction} />
+              <ToolBtn commandId="sheet.rows.insert" params={{ count: 1 }} disabled={disabled} icon="rows" label="Insert Row" onExecute={onExecute} />
+              <ToolBtn commandId="sheet.columns.insert" params={{ count: 1 }} disabled={disabled} icon="columns" label="Insert Column" onExecute={onExecute} />
+              <ToolBtn commandId="sheet.range.clear" disabled={disabled} icon="trash" label="Clear Content" onExecute={onExecute} />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
-            {/* Analysis & Tools */}
             <RibbonGroup label="Editing">
-              <ToolBtn action="autosum" disabled={disabled} icon="calculator" label="AutoSum =SUM()" onAction={onAction} />
-              <ToolBtn action="sort-dialog" disabled={disabled} icon="sort" label="Sort Range" onAction={onAction} />
-              <ToolBtn action="open-conditional-format" disabled={disabled} icon="sparkles" label="Conditional Format" onAction={onAction} />
+              <ToolBtn commandId="sheet.formula.autosum" disabled={disabled} icon="calculator" label="AutoSum =SUM()" onExecute={onExecute} />
+              <ToolBtn commandId="ui.dialog.open" params={{ dialog: 'sort-dialog' }} disabled={disabled} icon="sort" label="Sort Range" onExecute={onExecute} />
+              <ToolBtn commandId="ui.panel.open" params={{ panel: 'conditionalFormat' }} disabled={disabled} icon="sparkles" label="Conditional Format" onExecute={onExecute} />
             </RibbonGroup>
           </Inline>
         ) : null}
@@ -317,41 +214,41 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
         {activeTab === 'insert' ? (
           <Inline gap="md" className="min-w-max items-start">
             <RibbonGroup label="Tables & Pivots">
-              <Button size="sm" variant="ghost" icon="table-pivot" onClick={() => onAction('open-pivot')}>
+              <Button size="sm" variant="ghost" icon="table-pivot" onClick={() => onExecute('ui.panel.open', { panel: 'pivot' })}>
                 Pivot Table
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Charts & Visuals">
-              <Button size="sm" variant="ghost" icon="chart" onClick={() => onAction('open-chart')}>
+              <Button size="sm" variant="ghost" icon="chart" onClick={() => onExecute('ui.panel.open', { panel: 'chart' })}>
                 Chart Builder
               </Button>
-              <Button size="sm" variant="ghost" icon="sparkline" onClick={() => onAction('open-sparkline')}>
+              <Button size="sm" variant="ghost" icon="sparkline" onClick={() => onExecute('ui.panel.open', { panel: 'sparkline' })}>
                 Sparkline
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Illustrations">
-              <Button size="sm" variant="ghost" icon="shape-square" onClick={() => onAction('open-shape')}>
+              <Button size="sm" variant="ghost" icon="shape-square" onClick={() => onExecute('ui.panel.open', { panel: 'shape' })}>
                 Shapes & Lines
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Functions">
-              <Button size="sm" variant="ghost" icon="function" onClick={() => onAction('function-wizard')}>
+              <Button size="sm" variant="ghost" icon="function" onClick={() => onExecute('ui.dialog.open', { dialog: 'function-wizard' })}>
                 Insert Function (fx)
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Cells">
-              <Button size="sm" variant="ghost" onClick={() => onAction('insert-row')}>Insert Row</Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('insert-column')}>Insert Column</Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('delete-row')}>Delete Row</Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('delete-column')}>Delete Column</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.rows.insert', { count: 1 })}>Insert Row</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.columns.insert', { count: 1 })}>Insert Column</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.rows.delete')}>Delete Row</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.columns.delete')}>Delete Column</Button>
             </RibbonGroup>
           </Inline>
         ) : null}
@@ -359,47 +256,47 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
         {activeTab === 'data' ? (
           <Inline gap="md" className="min-w-max items-start">
             <RibbonGroup label="Sort & Filter">
-              <Button size="sm" variant="ghost" icon="sort" onClick={() => onAction('sort-asc')}>
+              <Button size="sm" variant="ghost" icon="sort" onClick={() => onExecute('sheet.sort.multi', { ascending: true })}>
                 Sort A to Z
               </Button>
-              <Button size="sm" variant="ghost" icon="sort" onClick={() => onAction('sort-desc')}>
+              <Button size="sm" variant="ghost" icon="sort" onClick={() => onExecute('sheet.sort.multi', { ascending: false })}>
                 Sort Z to A
               </Button>
-              <Button size="sm" variant="ghost" icon="sliders" onClick={() => onAction('sort-dialog')}>
+              <Button size="sm" variant="ghost" icon="sliders" onClick={() => onExecute('ui.dialog.open', { dialog: 'sort-dialog' })}>
                 Custom Sort...
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Data Tools">
-              <Button size="sm" variant="ghost" icon="table" onClick={() => onAction('open-data-table')}>
+              <Button size="sm" variant="ghost" icon="table" onClick={() => onExecute('ui.panel.open', { panel: 'data' })}>
                 Data Model
               </Button>
-              <Button size="sm" variant="ghost" icon="table" onClick={() => onAction('create-data-table')}>
+              <Button size="sm" variant="ghost" icon="table" onClick={() => onExecute('table.create')}>
                 Create Data Table
               </Button>
-              <Button size="sm" variant="ghost" icon="check-circle" onClick={() => onAction('open-data-validation')}>
+              <Button size="sm" variant="ghost" icon="check-circle" onClick={() => onExecute('ui.panel.open', { panel: 'dataValidation' })}>
                 Data Validation
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('apply-filter-selection')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.filter.set')}>
                 Filter Selection
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('filter-clear')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.filter.remove')}>
                 Clear Filter
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Find & Transform">
-              <Button size="sm" variant="ghost" onClick={() => onAction('find-replace')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('ui.dialog.open', { dialog: 'find-replace' })}>
                 Find & Replace
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('transpose')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('matrix.transpose')}>
                 Transpose
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('flip-h')}>Flip H</Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('flip-v')}>Flip V</Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('split-column')}>Split by Delimiter</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('matrix.flip', { axis: 'h' })}>Flip H</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('matrix.flip', { axis: 'v' })}>Flip V</Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.splitColumn', ',')}>Split by Delimiter</Button>
             </RibbonGroup>
           </Inline>
         ) : null}
@@ -407,7 +304,7 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
         {activeTab === 'review' ? (
           <Inline gap="md" className="min-w-max items-start">
             <RibbonGroup label="History & Audit">
-              <Button size="sm" variant="ghost" icon="history" onClick={() => onAction('open-history')}>
+              <Button size="sm" variant="ghost" icon="history" onClick={() => onExecute('ui.panel.open', { panel: 'history' })}>
                 Revision Log
               </Button>
             </RibbonGroup>
@@ -417,53 +314,52 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
         {activeTab === 'view' ? (
           <Inline gap="md" className="min-w-max items-start">
             <RibbonGroup label="Freeze Panes">
-              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onAction('freeze-top-row')}>
+              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onExecute('sheet.freeze.set', { freeze: { xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0 } })}>
                 Freeze Top Row
               </Button>
-              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onAction('freeze-first-col')}>
+              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onExecute('sheet.freeze.set', { freeze: { xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 } })}>
                 Freeze First Column
               </Button>
-              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onAction('unfreeze')}>
+              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onExecute('sheet.freeze.set', { freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 } })}>
                 Unfreeze All
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Zoom">
-              <Button size="sm" variant="ghost" icon="zoom-in" onClick={() => onAction('zoom-in')}>
+              <Button size="sm" variant="ghost" icon="zoom-in" onClick={() => onExecute('ui.zoom.adjust', { delta: 10 })}>
                 Zoom In
               </Button>
-              <Button size="sm" variant="ghost" icon="zoom-out" onClick={() => onAction('zoom-out')}>
+              <Button size="sm" variant="ghost" icon="zoom-out" onClick={() => onExecute('ui.zoom.adjust', { delta: -10 })}>
                 Zoom Out
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('zoom-100')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('ui.zoom.set', { value: 100 })}>
                 100%
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Print Layout">
-              <Button size="sm" variant="ghost" icon="printer" onClick={() => onAction('open-print')}>
+              <Button size="sm" variant="ghost" icon="printer" onClick={() => onExecute('ui.dialog.open', { dialog: 'print-preview' })}>
                 Print & PDF
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Appearance & Files">
-              <Button size="sm" variant="ghost" onClick={() => onAction('banded-toggle')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('sheet.banded.set')}>
                 Banded Rows
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('export-xlsx')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('ui.file.export-xlsx')}>
                 Export .xlsx
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onAction('import-xlsx')}>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('ui.file.import-xlsx')}>
                 Import .xlsx
               </Button>
             </RibbonGroup>
           </Inline>
         ) : null}
-      </Box>
-      </Tabs>
+      </RibbonShell>
     </RibbonLocaleContext.Provider>
   );
 }

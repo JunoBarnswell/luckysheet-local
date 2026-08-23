@@ -11,8 +11,10 @@
     "dev:server": "tsx apps/server/src/main.ts",
     "build": "npm run typecheck && vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts packages/formula-engine/src/index.test.ts packages/render-engine/src/index.test.ts packages/sheet-features/src/index.test.ts packages/pro-features/src/index.test.ts packages/pro-features/src/sheets/pivot-engine.test.ts packages/pro-features/src/sheets/pivot-commands.test.ts packages/number-format/src/index.test.ts packages/core-model/src/structure.test.ts",
-    "check:boundaries": "node tools/check-boundaries.mjs"
+    "test:unit": "tsx --test packages/core-model/src/index.test.ts packages/command-runtime/src/index.test.ts packages/protocol/src/index.test.ts packages/formula-engine/src/index.test.ts packages/formula-engine/src/functions/extended-matrix.test.ts packages/render-engine/src/index.test.ts packages/sheet-features/src/index.test.ts packages/pro-features/src/index.test.ts packages/pro-features/src/sheets/pivot-engine.test.ts packages/pro-features/src/sheets/pivot-commands.test.ts packages/pro-features/src/sheets/m5-m9.test.ts packages/spreadsheet-app/src/features/drawing/drawing.test.ts packages/spreadsheet-app/src/features/review/review.test.ts packages/number-format/src/index.test.ts packages/core-model/src/structure.test.ts packages/spreadsheet-app/src/permission-service.test.ts packages/spreadsheet-app/src/collaboration/ot-rebase.test.ts packages/storage/src/persistence-session.test.ts packages/exchange-xlsx/src/date-system.test.ts",
+    "check:boundaries": "node tools/check-boundaries.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.4.1",
@@ -22,6 +24,7 @@
     "ws": "8.20.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.0",
     "@types/node": "26.2.0",
     "@types/react": "19.2.8",
     "@types/react-dom": "19.2.3",
