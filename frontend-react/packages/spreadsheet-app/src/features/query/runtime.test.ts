@@ -34,7 +34,7 @@ describe('query runtime', () => {
 
   it('executes XLSX connector through the existing OOXML package reader', async () => {
     const workbook = new WorkbookModel('query-xlsx', 'Query XLSX');
-    const sheet = workbook.getSheet(workbook.activeSheetId);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, { value: 'Name' });
     sheet.cells.set(0, 1, { value: 'Units' });
     sheet.cells.set(1, 0, { value: 'Alpha' });
@@ -161,7 +161,7 @@ describe('query commands', () => {
     const runtime = new CommandRuntime(model);
     registerSheetCommands(runtime);
     registerQueryCommands(runtime.registry);
-    const sheetId = model.activeSheetId;
+    const sheetId = model.primarySheetId;
     const query = createInlineJsonQuery('q-load', 'Load', [{ Product: 'X', Units: 9 }]);
     const result = { columns: ['Product', 'Units'], rows: [['X', 9]], rowCount: 1 };
 
@@ -182,7 +182,7 @@ describe('query commands', () => {
 
   it('builds distinct load plans for sheet tables and pivots', () => {
     const model = new WorkbookModel('wb-query-targets', 'Query');
-    const sheet = model.getSheet(model.activeSheetId);
+    const sheet = model.getSheet(model.primarySheetId);
     sheet.sheetTables.push({
       id: 'table-1', sheetId: sheet.id, name: 'Sales',
       range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
@@ -204,7 +204,7 @@ describe('query commands', () => {
     registerSheetCommands(runtime);
     const tableStore = new InMemoryWorkbookTableQueryStore();
     registerQueryCommands(runtime.registry, { tableStore });
-    const sheet = model.getSheet(model.activeSheetId);
+    const sheet = model.getSheet(model.primarySheetId);
     sheet.sheetTables.push({
       id: 'table-1', sheetId: sheet.id, name: 'Sales',
       range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },

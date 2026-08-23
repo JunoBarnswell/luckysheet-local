@@ -114,7 +114,7 @@ export function registerExtendedCommands(
   registry.registerCommand<ExtendedGoalSeekCommandParams>({
     id: 'extended.whatIf.goalSeek',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
-      const sheetId = params.sheetId ?? context.workbook.activeSheetId;
+      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
       return commandPlanResult(planGoalSeek(context.workbook, sheetId, params), params, capabilities, context);
     },
   });
@@ -122,7 +122,7 @@ export function registerExtendedCommands(
   registry.registerCommand<ExtendedScenarioCommandParams>({
     id: 'extended.whatIf.scenario',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
-      const sheetId = params.sheetId ?? context.workbook.activeSheetId;
+      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
       return commandPlanResult(planScenario(context.workbook, sheetId, params.scenario), params.scenario, capabilities, context);
     },
   });
@@ -130,7 +130,7 @@ export function registerExtendedCommands(
   registry.registerCommand<ExtendedDataTableCommandParams>({
     id: 'extended.whatIf.dataTable',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
-      const sheetId = params.sheetId ?? context.workbook.activeSheetId;
+      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
       return commandPlanResult(planDataTable(context.workbook, sheetId, params), params, capabilities, context);
     },
   });

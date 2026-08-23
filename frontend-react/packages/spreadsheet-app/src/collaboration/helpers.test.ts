@@ -70,7 +70,7 @@ describe('collaboration helpers', () => {
     assert.throws(() => session.enqueueLocalMutations([{
       id: 'mutation.does-not-exist',
       unitId: workbook.unitId,
-      sheetId: workbook.activeSheetId,
+      sheetId: workbook.primarySheetId,
       params: {},
       affectedRanges: [],
     }], workbook.unitId), /Unknown mutation/);
@@ -107,7 +107,7 @@ describe('collaboration helpers', () => {
       createdAt: '2026-08-23T00:00:00.000Z',
       mutations: [{
         id: 'mutation.does-not-exist',
-        sheetId: workbook.activeSheetId,
+        sheetId: workbook.primarySheetId,
         params: {},
         affectedRanges: [],
       }],

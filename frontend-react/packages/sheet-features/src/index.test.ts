@@ -352,7 +352,7 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
 });
 
 function sheetId(workbook: WorkbookModel): string {
-  return workbook.activeSheetId;
+  return workbook.primarySheetId;
 }
 
 test('sheet commands: hide and unhide rows and columns are undoable commands', () => {

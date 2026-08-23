@@ -17,7 +17,7 @@ describe('SpreadsheetApplication query integration', () => {
     assert.equal(snapshot.loadedQueries.length, 1);
     assert.equal(snapshot.queryConnectors.includes('json'), true);
 
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.cells.get(0, 0)?.value, 'Region');
     assert.equal(sheet.cells.get(1, 1)?.value, 12);
   });

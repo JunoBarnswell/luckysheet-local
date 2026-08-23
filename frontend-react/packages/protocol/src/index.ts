@@ -141,8 +141,8 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   }
   const input = value as Record<string, unknown>;
   if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-  if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name) || !isNonEmptyString(input.activeSheetId)) {
-    throw new Error('WorkbookSnapshot requires unitId, name, and activeSheetId');
+  if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) {
+    throw new Error('WorkbookSnapshot requires unitId and name');
   }
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');

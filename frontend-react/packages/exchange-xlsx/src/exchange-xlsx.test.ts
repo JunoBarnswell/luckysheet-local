@@ -11,7 +11,7 @@ import { strFromU8, strToU8 } from 'fflate';
 describe('exchange-xlsx', () => {
   it('scans workbook features for compatibility reporting', () => {
     const workbook = new WorkbookModel('wb-xlsx', 'XLSX');
-    const sheet = workbook.getSheet(workbook.activeSheetId);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, { value: 10, formula: '=SUM(A2:A3)' });
     sheet.merges.push({
       range: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 },
@@ -25,7 +25,7 @@ describe('exchange-xlsx', () => {
 
   it('scans canonical drawing payloads instead of removed per-kind collections', () => {
     const workbook = new WorkbookModel('wb-drawing-features', 'Drawing Features');
-    const sheet = workbook.getSheet(workbook.activeSheetId);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.drawings.push(
       {
         id: 'chart-drawing',
@@ -61,8 +61,8 @@ describe('exchange-xlsx', () => {
 
   it('round-trips snapshot through xlsx archive import/export', async () => {
     const workbook = new WorkbookModel('wb-roundtrip', 'Roundtrip');
-    workbook.getSheet(workbook.activeSheetId).cells.set(0, 0, { value: 'hello' });
-    workbook.getSheet(workbook.activeSheetId).cells.set(1, 0, { value: 42, formula: '=A1&"!"' });
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 'hello' });
+    workbook.getSheet(workbook.primarySheetId).cells.set(1, 0, { value: 42, formula: '=A1&"!"' });
     const snapshot = workbook.snapshot();
     const base64 = exportSnapshotToXlsxBase64(snapshot);
     const imported = await importXlsx({
@@ -83,7 +83,7 @@ describe('exchange-xlsx', () => {
 
   it('round-trips styles, merges, scoped names, freeze and the 1904 date system', async () => {
     const workbook = new WorkbookModel('wb-rich', 'Rich');
-    const sheet = workbook.getSheet(workbook.activeSheetId);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, {
       value: 45292,
       style: { bold: true, background: '#ff0000', horizontalAlignment: 'center' },
@@ -110,7 +110,7 @@ describe('exchange-xlsx', () => {
 
   it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
-    workbook.getSheet(workbook.activeSheetId).cells.set(0, 0, { value: 1 });
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
     const generated = loadXlsxPackage(exportSnapshotToXlsxBase64(workbook.snapshot()));
     generated.package.parts['xl/charts/chart1.xml'] = strToU8('<chartSpace xmlns="http://schemas.openxmlformats.org/drawingml/2006/chart"><title>Keep</title></chartSpace>');
     generated.package.parts['xl/drawings/drawing1.xml'] = strToU8('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>');

@@ -16,7 +16,7 @@ describe('automation runtime', () => {
     const model = new WorkbookModel('wb-auto', 'Automation');
     const runtime = new CommandRuntime(model);
     registerSheetCommands(runtime);
-    const sheetId = model.activeSheetId;
+    const sheetId = model.primarySheetId;
 
     const result = runAutomationScript(model, runtime, SAMPLE_AUTOMATION_SCRIPT);
     assert.equal(result.ok, true);

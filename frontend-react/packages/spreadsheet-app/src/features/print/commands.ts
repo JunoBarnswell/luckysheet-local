@@ -162,7 +162,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
   registry.registerCommand<PrintPreviewCommandParams>({
     id: 'print.preview',
     execute(params, context): CommandResult {
-      const sheetId = params.sheetId ?? context.workbook.activeSheetId;
+      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
       const snapshot = buildPrintSnapshot(context.workbook, sheetId, params.layout, params.range);
       return { operationId: context.operationId, mutationCount: 0, affectedRanges: [snapshot.printArea] };
     },
@@ -171,7 +171,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
   registry.registerCommand<PrintPreviewCommandParams>({
     id: 'print.export',
     execute(params, context): CommandResult {
-      const sheetId = params.sheetId ?? context.workbook.activeSheetId;
+      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
       const snapshot = buildPrintSnapshot(context.workbook, sheetId, params.layout, params.range);
       return { operationId: context.operationId, mutationCount: 0, affectedRanges: [snapshot.printArea] };
     },

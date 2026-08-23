@@ -36,7 +36,7 @@ describe('SpreadsheetApplication data objects integration', () => {
     selectRange(app, 0, 0, 2, 1);
     app.createSheetTableFromSelection();
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.sheetTables.length, 1);
     assert.equal(sheet.sheetTables[0]?.name, 'Table1');
     assert.equal(sheet.sheetTables[0]?.columns.length, 2);
@@ -56,7 +56,7 @@ describe('SpreadsheetApplication data objects integration', () => {
       style: { background: '#FFEB9C' },
     });
 
-    const rules = app.getWorkbook().getSheet(sheetId).conditionalFormats;
+    const rules = app['runtime'].model.getSheet(sheetId).conditionalFormats;
     assert.equal(rules.length, 1);
     assert.equal(rules[0]?.id, 'cf-1');
     assert.equal(rules[0]?.operator, 'greaterThan');
@@ -74,7 +74,7 @@ describe('SpreadsheetApplication data objects integration', () => {
       showDropdown: true,
     });
 
-    const rules = app.getWorkbook().getSheet(sheetId).dataValidations;
+    const rules = app['runtime'].model.getSheet(sheetId).dataValidations;
     assert.equal(rules.length, 1);
     assert.equal(rules[0]?.type, 'list');
   });
@@ -95,7 +95,7 @@ describe('SpreadsheetApplication data objects integration', () => {
     selectRange(app, 0, 0, 2, 1);
     app.sortRange([{ colIdx: 0, ascending: true }], false);
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'A');
     assert.equal(sheet.cells.get(1, 0)?.value, 'B');
     assert.equal(sheet.cells.get(2, 0)?.value, 'C');
@@ -106,7 +106,7 @@ describe('SpreadsheetApplication data objects integration', () => {
     const sheetId = app.getActiveSheetId();
     app.applyFilter(0, { selectedValues: ['East', 'West'] });
 
-    const filter = app.getWorkbook().getSheet(sheetId).filter;
+    const filter = app['runtime'].model.getSheet(sheetId).filter;
     assert.ok(filter);
     assert.deepEqual(filter?.criteria[0]?.selectedValues, ['East', 'West']);
   });

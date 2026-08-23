@@ -231,10 +231,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'workbook.renamed',
         unitId: context.workbook.unitId,
-        sheetId: context.workbook.activeSheetId,
+        sheetId: context.workbook.primarySheetId,
         params: { name },
         affectedRanges,
-        inverse: [{ id: 'workbook.renamed', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: previous }, affectedRanges }],
+        inverse: [{ id: 'workbook.renamed', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { name: previous }, affectedRanges }],
         apply: () => { context.workbook.name = name; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -378,10 +378,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'table.add',
         unitId: context.workbook.unitId,
-        sheetId: params.sourceSheetId ?? context.workbook.activeSheetId,
+        sheetId: params.sourceSheetId ?? context.workbook.primarySheetId,
         params: structuredClone(params),
         affectedRanges,
-        inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sourceSheetId ?? context.workbook.activeSheetId, params: params.id, affectedRanges }],
+        inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sourceSheetId ?? context.workbook.primarySheetId, params: params.id, affectedRanges }],
         apply: () => context.workbook.addTable(params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -1658,12 +1658,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'name.set',
         unitId: context.workbook.unitId,
-        sheetId: context.workbook.activeSheetId,
+        sheetId: context.workbook.primarySheetId,
         params: { model: normalized },
         affectedRanges,
         inverse: previous !== undefined
-          ? [{ id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { model: previous }, affectedRanges }]
-          : [{ id: 'name.remove', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { name: normalized.name, scope: normalized.scope, sheetId: normalized.sheetId }, affectedRanges }],
+          ? [{ id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous }, affectedRanges }]
+          : [{ id: 'name.remove', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { name: normalized.name, scope: normalized.scope, sheetId: normalized.sheetId }, affectedRanges }],
         apply: () => {
           context.workbook.setDefinedName(normalized);
         },
@@ -1680,11 +1680,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.applyMutation({
         id: 'name.remove',
         unitId: context.workbook.unitId,
-        sheetId: context.workbook.activeSheetId,
+        sheetId: context.workbook.primarySheetId,
         params,
         affectedRanges,
         inverse: [
-          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.activeSheetId, params: { model: previous }, affectedRanges },
+          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous }, affectedRanges },
         ],
         apply: () => {
           context.workbook.removeDefinedName(params.name, previous.scope, previous.sheetId);

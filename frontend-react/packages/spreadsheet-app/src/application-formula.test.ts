@@ -95,7 +95,7 @@ describe('SpreadsheetApplication formula integration', () => {
       value: { formula: '=SEQUENCE(2,2,1,1)' },
     });
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.spillRanges.length, 1);
     assert.equal(sheet.spillRanges[0]?.state, 'ok');
     assert.equal(cellValue(app, 0, 0), '1');
@@ -115,14 +115,14 @@ describe('SpreadsheetApplication formula integration', () => {
       clipboard: { range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, values: [[{ value: 4 }]] },
       mode: 'all',
     });
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(1, 0)?.value, 4);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 0)?.value, 4);
 
     app.runCommand('sheet.cells.shift', {
       sheetId,
       range: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
       direction: 'down',
     });
-    const moved = app.getWorkbook().getSheet(sheetId).cells.get(1, 1);
+    const moved = app['runtime'].model.getSheet(sheetId).cells.get(1, 1);
     assert.equal(moved?.formula, '=A2*3');
     assert.equal(cellValue(app, 1, 1), '6');
   });
@@ -137,10 +137,10 @@ describe('SpreadsheetApplication formula integration', () => {
       range: { sheetId, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
       mode: 'contents',
     });
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 1)?.formula, '=A2*2');
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.formula, '=A2*2');
 
     app.runCommand('sheet.rows.delete', { sheetId, at: 1, count: 1 });
-    const formula = app.getWorkbook().getSheet(sheetId).cells.get(0, 1)?.formula;
+    const formula = app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.formula;
     assert.equal(formula, '=#REF!*2');
     assert.equal(cellValue(app, 0, 1), '#REF!');
   });
@@ -150,7 +150,7 @@ describe('SpreadsheetApplication formula integration', () => {
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=SEQUENCE(2,2,1,1)', value: null } });
     assert.throws(() => app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 99 } }), /Spill cells are read-only/);
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 1), undefined);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1), undefined);
     assert.equal(cellValue(app, 0, 1), '2');
   });
 });

@@ -69,7 +69,6 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
           schema: 'WorkbookSnapshot',
           unitId: 'unit-1',
           name: 'Workbook',
-          activeSheetId: 'sheet-1',
           sheets: [{
             id: 'sheet-1',
             name: 'Sheet1',
@@ -94,6 +93,33 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
   await api.getSnapshot('unit-1');
   assert.equal(new Headers(request?.headers).get('authorization'), 'Bearer token-123');
   await assert.rejects(() => new WorkbookApiClient().getSnapshot('unit-1'), AuthenticationRequiredError);
+});
+
+test('WorkbookApiClient uses a server-issued guest share token when no bearer exists', async () => {
+  let request: RequestInit | undefined;
+  const api = new WorkbookApiClient({
+    shareTokenProvider: () => 'guest-token',
+    fetchImpl: async (_input, init) => {
+      request = init;
+      return new Response(JSON.stringify({
+        snapshot: {
+          schema: 'WorkbookSnapshot',
+          unitId: 'unit-guest',
+          name: 'Guest workbook',
+          sheets: [{
+            id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
+            cells: {}, merges: [], freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
+            pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+          }],
+        },
+        revision: 0,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  await api.getSnapshot('unit-guest');
+  const headers = new Headers(request?.headers);
+  assert.equal(headers.get('x-workbook-share-token'), 'guest-token');
+  assert.equal(headers.has('authorization'), false);
 });
 
 test('history restore request is target-revision-only and client API posts no snapshot', async () => {
@@ -128,7 +154,6 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
     schema: 'WorkbookSnapshot',
     unitId: 'unit-1',
     name: 'Workbook',
-    activeSheetId: 'sheet-1',
     sheets: [{
       id: 'sheet-1',
       name: 'Sheet1',

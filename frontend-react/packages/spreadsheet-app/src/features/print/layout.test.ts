@@ -13,7 +13,7 @@ import { computePrintPages, createDefaultPrintLayout } from './index';
 describe('print layout', () => {
   it('builds print snapshots from workbook content', () => {
     const workbook = new WorkbookModel('wb-print', 'Print');
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     const sheet = workbook.getSheet(sheetId);
     sheet.cells.set(0, 0, { value: 'Header' });
     sheet.cells.set(1, 0, { value: 42 });
@@ -33,7 +33,7 @@ describe('print layout', () => {
 
   it('uses multi-cell selection as print area', () => {
     const workbook = new WorkbookModel('wb-print-selection', 'Selection');
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     const sheet = workbook.getSheet(sheetId);
     sheet.cells.set(0, 0, { value: 'A' });
     sheet.cells.set(9, 4, { value: 'B' });
@@ -71,7 +71,7 @@ describe('print layout', () => {
 
   it('resolves print area from used range for single-cell selection', () => {
     const workbook = new WorkbookModel('wb-used', 'Used');
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     const sheet = workbook.getSheet(sheetId);
     sheet.cells.set(3, 2, { value: 'Only' });
 

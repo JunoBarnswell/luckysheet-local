@@ -188,7 +188,6 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
     schema: 'WorkbookSnapshot',
     unitId: `imported-${randomId()}`,
     name: workbook.attrs.name ?? 'Imported Workbook',
-    activeSheetId: sheets[0]!.id,
     definedNames,
     definedNameModels,
     sheets,

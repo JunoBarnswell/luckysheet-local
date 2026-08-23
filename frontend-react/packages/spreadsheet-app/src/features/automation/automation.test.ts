@@ -16,7 +16,7 @@ describe('Facade automation DSL', () => {
       new ScriptSandbox(),
     );
     assert.equal(result.ok, false);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.get(0, 0), undefined);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.get(0, 0), undefined);
   });
 
   it('parses the complete program before applying any statement', () => {
@@ -28,7 +28,7 @@ describe('Facade automation DSL', () => {
       new ScriptSandbox(),
     );
     assert.equal(result.ok, false);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.get(0, 0), undefined);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.get(0, 0), undefined);
   });
 
   it('executes a validated program as one CommandRuntime transaction', () => {
@@ -41,9 +41,9 @@ describe('Facade automation DSL', () => {
     });
     assert.equal(result.mutationCount, 2);
     assert.equal(runtime.getHistoryDepth().undo, 1);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.get(0, 0)?.style?.bold, true);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.get(0, 0)?.style?.bold, true);
     assert.equal(runtime.undo(), true);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.get(0, 0), undefined);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.get(0, 0), undefined);
   });
 
   it('returns a serializable plan with resource limits', () => {
@@ -66,7 +66,7 @@ describe('Facade automation DSL', () => {
       ...new ScriptSandbox().getPolicy(), maxOperations: 1,
     }) });
     assert.throws(() => runtime.execute('automation.run', { source: "sheet.getRange('A1:A2').clear();" }), /exceeds 1 operations/i);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.count(), 0);
   });
 
   it('rejects an out-of-band AST payload explicitly', () => {
@@ -75,7 +75,7 @@ describe('Facade automation DSL', () => {
     registerSheetCommands(runtime);
     registerAutomationCommands(runtime.registry);
     assert.throws(() => runtime.execute('automation.run', { source: "sheet.getRange('A1').clear();", program: () => undefined } as never), /source only|not serializable/i);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.count(), 0);
   });
 
   it('honors cancellation and timeout before opening a transaction', () => {
@@ -94,6 +94,6 @@ describe('Facade automation DSL', () => {
     assert.match(cancelled.error ?? '', /cancel/i);
     const timedOut = runtime.execute.bind(runtime, 'automation.run', { source: "sheet.getRange('A1').setValues([[1]]);", deadlineAt: Date.now() - 1 });
     assert.throws(timedOut, /timed out|execution/i);
-    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
+    assert.equal(workbook.getSheet(workbook.primarySheetId).cells.count(), 0);
   });
 });

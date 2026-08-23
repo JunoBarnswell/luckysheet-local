@@ -1,23 +1,12 @@
 import { AppShell, Box, Button, DropdownMenu, Inline, SidebarShell, Stack } from "@react-sheets/ui-system";
-import { FeatureSidebar } from "./components/FeatureSidebar";
 import { FormulaBar } from "./components/FormulaBar";
 import { Ribbon } from "./components/Ribbon";
-import { SheetCanvas } from "./components/SheetCanvas";
 import { SheetTabs } from "./components/SheetTabs";
 import { StatusBar } from "./components/StatusBar";
-import { FunctionWizardDialog } from "./components/dialogs/FunctionWizardDialog";
-import { SortDialog } from "./components/dialogs/SortDialog";
-import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
-import { GoToDialog } from "./components/dialogs/GoToDialog";
-import { PasteSpecialDialog } from "./components/dialogs/PasteSpecialDialog";
-import { FormatCellsDialog } from "./components/dialogs/FormatCellsDialog";
-import { ShiftCellsDialog } from "./components/dialogs/ShiftCellsDialog";
-import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
-import { WorkbookCatalog } from "./components/WorkbookCatalog";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { parseRangeInput } from "./domain/range-input";
 import type { CommandDescriptor } from "./domain/command-descriptor";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   getInitialAppPhase,
   useSpreadsheetApp,
@@ -30,6 +19,18 @@ import zhCN from "./locales/zh-CN.json";
 import enUS from "./locales/en-US.json";
 import type { ChartDrawingPayload, DrawingObject, PivotAggregateFunction, PivotFieldDefinition, PivotLayout, PivotModel, ShapeDrawingPayload, SparklineModel } from "@react-sheets/core-model";
 import type { PivotPanelCallbacks, PivotPanelResult, PivotPanelState } from "./components/pivot/pivot-contract";
+
+const FeatureSidebar = lazy(() => import("./components/FeatureSidebar").then((module) => ({ default: module.FeatureSidebar })));
+const FunctionWizardDialog = lazy(() => import("./components/dialogs/FunctionWizardDialog").then((module) => ({ default: module.FunctionWizardDialog })));
+const SortDialog = lazy(() => import("./components/dialogs/SortDialog").then((module) => ({ default: module.SortDialog })));
+const FindReplaceDialog = lazy(() => import("./components/dialogs/FindReplaceDialog").then((module) => ({ default: module.FindReplaceDialog })));
+const GoToDialog = lazy(() => import("./components/dialogs/GoToDialog").then((module) => ({ default: module.GoToDialog })));
+const PasteSpecialDialog = lazy(() => import("./components/dialogs/PasteSpecialDialog").then((module) => ({ default: module.PasteSpecialDialog })));
+const FormatCellsDialog = lazy(() => import("./components/dialogs/FormatCellsDialog").then((module) => ({ default: module.FormatCellsDialog })));
+const ShiftCellsDialog = lazy(() => import("./components/dialogs/ShiftCellsDialog").then((module) => ({ default: module.ShiftCellsDialog })));
+const PrintPreviewDialog = lazy(() => import("./components/dialogs/PrintPreviewDialog").then((module) => ({ default: module.PrintPreviewDialog })));
+const WorkbookCatalog = lazy(() => import("./components/WorkbookCatalog").then((module) => ({ default: module.WorkbookCatalog })));
+const SheetCanvas = lazy(() => import("./components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
 function WorkspaceApp() {
   const { app, snapshot: state } = useSpreadsheetApp({ initialPhase: getInitialAppPhase() });
@@ -128,15 +129,30 @@ function WorkspaceApp() {
   };
   const buildQuickChartCommand = (): CommandDescriptor => {
     const chartId = createWebId("chart");
+    const drawing: DrawingObject = {
+      id: createWebId("drawing"),
+      sheetId: state.activeSheetId,
+      kind: "chart",
+      payloadId: chartId,
+      anchor: { kind: "absolute" },
+      transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 },
+      zIndex: 0,
+    };
+    const payload: ChartDrawingPayload = {
+      kind: "chart",
+      chartId,
+      chartType: "column",
+      title: "Chart",
+      sourceRanges: [{ ...pivotSourceRange, sheetId: state.activeSheetId }],
+      legendPosition: "bottom",
+      showDataLabels: false,
+    };
     return {
-      commandId: "chart.insert.column",
+      commandId: "chart.insert",
       params: {
         sheetId: state.activeSheetId,
-        chartId,
-        drawingId: createWebId("drawing"),
-        title: "Chart",
-        sourceRanges: [{ ...pivotSourceRange, sheetId: state.activeSheetId }],
-        bounds: { x: 96, y: 96, width: 480, height: 280 },
+        drawing,
+        payload,
       },
     };
   };
@@ -395,7 +411,7 @@ function WorkspaceApp() {
         title: chart.title,
         sourceRanges: [activePivot.sourceRange],
       };
-      executeCommand({ commandId: "chart.insert", params: { sheetId: activePivot.sheetId, chartId, drawingId: drawing.id, bounds: drawing.transform, payload } });
+      executeCommand({ commandId: "chart.insert", params: { sheetId: activePivot.sheetId, drawing, payload } });
       executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }] } });
     },
   };
@@ -586,6 +602,7 @@ function WorkspaceApp() {
       >
         <Inline gap="none" className="h-full min-h-0 w-full flex-nowrap">
           <Box className="h-full min-h-0 min-w-0 flex-1">
+            <Suspense fallback={<Box className="h-full min-h-0 w-full bg-canvas" />}>
             <SheetCanvas
               sheet={state.selectedSheet}
               sheetId={state.activeSheetId}
@@ -641,12 +658,14 @@ function WorkspaceApp() {
               onRetry={app.retry}
               onCreateSheet={app.addSheet}
             />
+            </Suspense>
           </Box>
           <SidebarShell
             open={sidebarOpen}
             onOpenChange={setSidebarOpen}
             title={locale === 'zh-CN' ? zhCN.sidebar.title : enUS.sidebar.title}
           >
+          <Suspense fallback={<Box className="h-full min-h-0" />}>
           <FeatureSidebar
             activeCell={state.activeCell}
             activePanel={state.activePanel}
@@ -759,11 +778,12 @@ function WorkspaceApp() {
             onSetHyperlink={app.setHyperlink}
             onRemoveHyperlink={app.removeHyperlink}
           />
+          </Suspense>
         </SidebarShell>
         </Inline>
       </AppShell>
 
-      {/* Dialogs */}
+      <Suspense fallback={null}>
       <FunctionWizardDialog
         open={state.showFunctionWizard}
         onClose={app.closeFunctionWizard}
@@ -830,11 +850,14 @@ function WorkspaceApp() {
           })),
         }}
       />
+      </Suspense>
     </>
   );
 }
 
 export default function App() {
-  if (typeof window !== "undefined" && window.location.pathname === "/workbooks") return <WorkbookCatalog />;
+  if (typeof window !== "undefined" && window.location.pathname === "/workbooks") {
+    return <Suspense fallback={<Box as="main" className="min-h-screen bg-canvas" />}><WorkbookCatalog /></Suspense>;
+  }
   return <WorkspaceErrorBoundary><WorkspaceApp /></WorkspaceErrorBoundary>;
 }

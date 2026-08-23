@@ -548,7 +548,6 @@ export class WorkbookModel {
   readonly queryDefinitions = new Map<string, QueryDefinitionSnapshot>();
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
-  activeSheetId: SheetId;
   /** Canonical scoped name definitions. `definedNames` remains the workbook-level formula view used by the formula runtime. */
   readonly definedNameModels: DefinedNameModel[] = [];
   /** @deprecated use definedNameModels and setDefinedName/getDefinedName. */
@@ -558,7 +557,13 @@ export class WorkbookModel {
     const sheet = new WorksheetModel('sheet-1', 'Sheet1');
     this.sheets.set(sheet.id, sheet);
     this.sheetOrder = [sheet.id];
-    this.activeSheetId = sheet.id;
+  }
+
+  /** Stable workbook default. UI selection belongs exclusively to WorkbookSession. */
+  get primarySheetId(): SheetId {
+    const sheetId = this.sheetOrder[0];
+    if (!sheetId) throw new Error('A workbook must contain at least one worksheet');
+    return sheetId;
   }
 
   getSheet(sheetId: SheetId): WorksheetModel {
@@ -752,10 +757,6 @@ export class WorkbookModel {
       }
     }
     this.sheetOrder = this.sheetOrder.filter((id) => id !== sheetId);
-    if (this.activeSheetId === sheetId) {
-      const firstSheet = this.getSheets()[0];
-      if (firstSheet) this.activeSheetId = firstSheet.id;
-    }
     return sheet;
   }
 
@@ -764,7 +765,6 @@ export class WorkbookModel {
       schema: 'WorkbookSnapshot',
       unitId: this.unitId,
       name: this.name,
-      activeSheetId: this.activeSheetId,
       definedNames: { ...this.definedNames },
       definedNameModels: this.definedNameModels.length > 0
         ? structuredClone(this.definedNameModels)
@@ -813,9 +813,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.sheets.length === 0 || !snapshot.sheets.some((sheet) => sheet.id === snapshot.activeSheetId)) {
-      throw new Error(`Workbook snapshot active sheet is not present: ${snapshot.activeSheetId}`);
-    }
+    if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
     workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
@@ -862,7 +860,6 @@ export class WorkbookModel {
     }
     for (const document of snapshot.printDocuments ?? []) workbook.setPrintDocument(document);
     for (const definition of snapshot.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
-    workbook.activeSheetId = snapshot.activeSheetId;
     workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
     return workbook;
   }

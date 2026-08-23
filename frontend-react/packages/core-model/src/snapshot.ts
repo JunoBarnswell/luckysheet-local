@@ -18,7 +18,6 @@ export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   unitId: UnitId;
   name: string;
-  activeSheetId: SheetId;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];

@@ -335,7 +335,7 @@ export function buildFacadePlan(
   program: FacadeProgram,
   control?: FacadeExecutionControl,
 ): FacadePlan {
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   const operations: FacadeCellOperation[] = [];
   const affectedRanges: RangeRef[] = [];
 

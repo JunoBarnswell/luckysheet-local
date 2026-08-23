@@ -33,7 +33,7 @@ test('scoped defined names survive command undo and snapshot round-trip', () => 
 
 test('total row inserts a real row and does not overwrite data below table', () => {
   const { workbook, commands } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   sheet.cells.set(0, 0, { value: 'Name' });
   sheet.cells.set(1, 0, { value: 'A' });
   sheet.cells.set(2, 0, { value: 'B' });
@@ -54,7 +54,7 @@ test('total row inserts a real row and does not overwrite data below table', () 
 
 test('sort and remove duplicates preserve formulas and use structural row deletion', () => {
   const { workbook, commands } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   commands.execute('sheet.range.set', {
     sheetId: sheet.id, startRow: 0, startColumn: 0,
     values: [
@@ -74,7 +74,7 @@ test('sort and remove duplicates preserve formulas and use structural row deleti
 
 test('conditional format priority/stop and validation alert style are represented', () => {
   const { workbook, commands } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   commands.execute('sheet.range.set', { sheetId: sheet.id, startRow: 0, startColumn: 0, values: [[{ value: 10 }], [{ value: 1 }]] });
   commands.execute('sheet.cf.add', {
     sheetId: sheet.id,
@@ -96,14 +96,14 @@ test('conditional format priority/stop and validation alert style are represente
 
 test('transpose fails closed when a selected range contains a drawing', () => {
   const { workbook, commands } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   sheet.drawings.push({ id: 'd1', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 0 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
   assert.throws(() => commands.execute('matrix.transpose', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 } }), /drawing anchors/);
 });
 
 test('Filter supports compound text/blank/date conditions and rejects out-of-range criteria', () => {
   const { workbook } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   sheet.cells.set(0, 0, { value: 'Value' });
   sheet.cells.set(1, 0, { value: 'Alpha' });
   sheet.cells.set(2, 0, { value: '' });
@@ -122,7 +122,7 @@ test('Filter supports compound text/blank/date conditions and rejects out-of-ran
 
 test('Validation supports custom AST, formula-backed list, time/date, multi-select and non-blocking alerts', () => {
   const { workbook } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   sheet.cells.set(0, 0, { value: 'Allowed' });
   sheet.cells.set(1, 0, { value: 'Other' });
   const custom = normalizeDataValidationRule({ id: 'custom', sheetId: sheet.id, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }], type: 'custom', formula1: '=B1="Allowed"', alertStyle: 'stop' });
@@ -140,7 +140,7 @@ test('Validation supports custom AST, formula-backed list, time/date, multi-sele
 
 test('Text Columns, Split and Flip are one undoable transaction and clear stale output', () => {
   const { workbook, commands } = runtime();
-  const sheet = workbook.getSheet(workbook.activeSheetId);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
   sheet.cells.set(0, 0, { value: 'a,b' });
   sheet.cells.set(0, 2, { value: 'stale' });
   let commandEvents = 0;

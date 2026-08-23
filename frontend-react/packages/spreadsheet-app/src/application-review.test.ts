@@ -21,7 +21,7 @@ describe('SpreadsheetApplication review integration', () => {
     selectCell(app, 1, 2);
     app.addComment('Please review totals');
 
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const thread = findCommentThreadAt(sheet, 1, 2);
     assert.ok(thread);
     assert.equal(thread.text, 'Please review totals');
@@ -38,7 +38,7 @@ describe('SpreadsheetApplication review integration', () => {
     app.replyComment('Follow-up');
     app.resolveComment();
 
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const thread = findCommentThreadAt(sheet, 0, 0);
     assert.equal(thread?.replies.length, 1);
     assert.equal(thread?.resolved, true);
@@ -54,7 +54,7 @@ describe('SpreadsheetApplication review integration', () => {
     app.addComment('Temporary');
     app.removeComment();
 
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(findCommentThreadAt(sheet, 3, 1), undefined);
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(3, 1)?.hasComment, false);
   });
@@ -63,7 +63,7 @@ describe('SpreadsheetApplication review integration', () => {
     const app = new SpreadsheetApplication();
     selectCell(app, 2, 2);
     app.setHyperlink('https://example.com/docs');
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(getCellHyperlink(sheet, 2, 2)?.target.kind, 'url');
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(2, 2)?.hyperlink, 'https://example.com/docs');
 
@@ -75,7 +75,7 @@ describe('SpreadsheetApplication review integration', () => {
     const app = new SpreadsheetApplication();
     selectCell(app, 4, 0);
     app.addNote('Audit note');
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(getCellNote(sheet, 4, 0)?.text, 'Audit note');
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(4, 0)?.hasComment, true);
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(4, 0)?.note?.text, 'Audit note');

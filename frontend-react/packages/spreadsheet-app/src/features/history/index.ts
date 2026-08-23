@@ -74,7 +74,7 @@ export class HistoryPreviewSession {
     if (this.disposed) throw new Error('History preview session has been disposed');
     return {
       revision: this.revision,
-      activeSheetId: this.workbook.activeSheetId,
+      activeSheetId: this.workbook.primarySheetId,
       sheets: this.projection,
     };
   }
@@ -119,7 +119,6 @@ function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot
   target.tables.clear();
   target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
   target.name = restored.name;
-  target.activeSheetId = restored.activeSheetId;
   target.sheetOrder = [...restored.sheetOrder];
   target.definedNames = { ...restored.definedNames };
   for (const [id, sheet] of restored.sheets) target.sheets.set(id, sheet);
@@ -165,7 +164,7 @@ function pivotCacheKey(revision: number, pivotId: string): string {
 }
 
 function hydratePreviewFormula(workbook: WorkbookModel): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
   engine.setRecalculationMode('manual');
   engine.setDefinedNames(workbook.definedNames);
   const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({

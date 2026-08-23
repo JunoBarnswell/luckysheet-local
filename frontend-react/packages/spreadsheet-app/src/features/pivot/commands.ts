@@ -244,7 +244,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<string | { sheetId: string; pivotId: string }>({
     id: 'pivot.remove',
     execute: (input, context) => {
-      const sheetId = typeof input === 'string' ? context.workbook.activeSheetId : input.sheetId;
+      const sheetId = typeof input === 'string' ? context.workbook.primarySheetId : input.sheetId;
       const pivotId = typeof input === 'string' ? input : input.pivotId;
       const pivot = pivotFor(context, sheetId, pivotId);
       if (!pivot) throw new Error(`Unknown pivot: ${pivotId}`);

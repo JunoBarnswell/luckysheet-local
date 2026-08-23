@@ -117,7 +117,7 @@ function scalarValue(value: unknown): FormulaScalar {
 
 function createPlanningFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const firstSheet = workbook.getSheets()[0];
-  const engine = new FormulaEngine({ defaultSheetId: firstSheet?.id ?? workbook.activeSheetId });
+  const engine = new FormulaEngine({ defaultSheetId: firstSheet?.id ?? workbook.primarySheetId });
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };

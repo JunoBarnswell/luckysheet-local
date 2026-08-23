@@ -7,7 +7,7 @@ describe('SpreadsheetApplication automation integration', () => {
   it('runs scripts through automation.run command path', () => {
     const app = new SpreadsheetApplication();
     app.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.cells.get(0, 0)?.value, 'Automated');
     assert.equal(app.getUiSnapshot().lastScriptResult?.ok, true);
     assert.equal(app.getUiSnapshot().activePanel, 'automate');

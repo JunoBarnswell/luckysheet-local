@@ -24,7 +24,7 @@ describe('SpreadsheetApplication chart integration', () => {
       showDataLabels: true,
     });
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     const drawing = sheet.drawings.find((entry) => entry.payloadId === 'chart-test-1');
     assert.equal(drawing?.kind, 'chart');
     assert.equal(sheet.drawingPayloads.get('chart-test-1')?.kind, 'chart');
@@ -58,7 +58,7 @@ describe('SpreadsheetApplication chart integration', () => {
     });
     app.insertQuickChart('bar');
     const snapshot = app.getUiSnapshot();
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'chart');
     const payload = sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { chartType?: string; sourceRanges?: unknown[] } | undefined;
     assert.equal(payload?.chartType, 'bar');

@@ -71,7 +71,7 @@ describe('history replay', () => {
     }];
 
     const replayed = replayRevisionsToSnapshot(baseSnapshot, revisions, 1);
-    const sheet = replayed.sheets.find((entry) => entry.id === baseSnapshot.activeSheetId);
+    const sheet = replayed.sheets[0];
     assert.equal(sheet?.cells['0']?.['0']?.value, 'restored');
   });
 
@@ -108,7 +108,7 @@ describe('history replay', () => {
     runtime.applyRemoteMutations([{
       id: 'workbook.restore',
       unitId: workbook.unitId,
-      sheetId: workbook.activeSheetId,
+      sheetId: workbook.primarySheetId,
       params: { serverGenerated: true, targetRevision: 2, snapshot },
       affectedRanges: [],
     }]);

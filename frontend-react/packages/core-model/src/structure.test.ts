@@ -125,6 +125,36 @@ describe('structural operations', () => {
     assert.equal(sheet.drawings.filter((drawing) => drawing.kind === 'chart').length, 1);
   });
 
+  it('structural transforms keep sheet-backed workbook table sources aligned', () => {
+    const workbook = new WorkbookModel('unit-workbook-table-structure', 'Workbook Table Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    workbook.addTable({
+      id: 'table-1',
+      name: 'Sales',
+      sourceSheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 4, startColumn: 2, endColumn: 4 },
+      rowCount: 3,
+      fields: [],
+      blockSize: 128,
+      blocks: [],
+      revision: 0,
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
+    assert.deepEqual(workbook.getTable('table-1').sourceRange, {
+      sheetId: sheet.id,
+      startRow: 3,
+      endRow: 6,
+      startColumn: 2,
+      endColumn: 4,
+    });
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 1 }),
+      /workbook table table-1 requires an explicit table operation/,
+    );
+  });
+
   it('move-range clears stale destinations, offsets formulas, and rewrites external references', () => {
     const workbook = new WorkbookModel('unit-move-range', 'Move Range');
     const sheet = workbook.getSheet('sheet-1');

@@ -870,7 +870,7 @@ export function collectFindReplacements(
   if (!params.find) return [];
   const sheets = params.scope === "workbook"
     ? workbook.getSheets()
-    : [workbook.getSheet(workbook.activeSheetId)];
+    : [workbook.getSheet(workbook.primarySheetId)];
   const patches: RangeValuesPatch[] = [];
 
   for (const sheet of sheets) {
@@ -1351,7 +1351,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     id: 'workbook.name.list',
     execute: (_params, context) => {
       const names = context.workbook.listDefinedNames().map((entry) => entry.name).sort();
-      return { operationId: context.operationId, mutationCount: 0, affectedRanges: names.map(() => ({ sheetId: context.workbook.activeSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })) };
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: names.map(() => ({ sheetId: context.workbook.primarySheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })) };
     },
   });
 }

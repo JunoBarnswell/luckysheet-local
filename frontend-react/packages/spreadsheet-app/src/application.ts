@@ -287,7 +287,7 @@ export class SpreadsheetApplication {
     });
     this.actorId = resolveActorId();
     this.phase = initialPhase;
-    this.activeSheetId = this.runtime.model.activeSheetId;
+    this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService = new SelectionService(
       this.runtime.model.unitId,
       () => this.activeSheetId,
@@ -301,11 +301,10 @@ export class SpreadsheetApplication {
     this.syncPersistenceMeta();
   }
 
-  private syncActiveSheetProjection(): void {
-    const activeSheetId = this.runtime.model.activeSheetId;
-    if (this.activeSheetId === activeSheetId) return;
-    this.activeSheetId = activeSheetId;
-    this.selectionService.resetForSheet(activeSheetId);
+  private ensureActiveSheetSession(): void {
+    if (this.runtime.model.sheets.has(this.activeSheetId)) return;
+    this.activeSheetId = this.runtime.model.primarySheetId;
+    this.selectionService.resetForSheet(this.activeSheetId);
     this.editSession.cancel();
     this.formulaDraft = '';
   }
@@ -320,9 +319,7 @@ export class SpreadsheetApplication {
       this.emit();
     };
     this.runtime.handlers.onMutationsApplied = () => {
-      // Remote/replayed sheet activation is still a runtime mutation. Keep
-      // the session projection synchronized without writing the model here.
-      this.syncActiveSheetProjection();
+      this.ensureActiveSheetSession();
       this.refresh();
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
@@ -534,7 +531,7 @@ export class SpreadsheetApplication {
     if (commandId === 'history.restore') {
       const restoreParams = params as { targetRevision?: number };
       rehydrateFormulaAfterRestore(this.runtime, restoreParams.targetRevision);
-      this.activeSheetId = this.runtime.model.activeSheetId;
+      this.activeSheetId = this.runtime.model.primarySheetId;
       this.selectionService.resetForSheet(this.activeSheetId);
       this.clearHistoryPreview();
     }
@@ -676,10 +673,6 @@ export class SpreadsheetApplication {
     this.runCommand('navigation.gotoSpecial', { sheetId: this.activeSheetId, range, kind });
   }
 
-  getWorkbook() {
-    return this.runtime.model;
-  }
-
   getActiveSheetId(): string {
     return this.activeSheetId;
   }
@@ -781,7 +774,7 @@ export class SpreadsheetApplication {
       `Restore to revision ${revision}`,
     );
     hydrateRuntime(this.runtime, response.snapshot);
-    this.activeSheetId = this.runtime.model.activeSheetId;
+    this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
     this.clearHistoryPreview();
     this.notify(`Restored workbook to revision ${revision}`);
@@ -855,7 +848,7 @@ export class SpreadsheetApplication {
 
   undo(): void {
     if (this.runtime.commands.undo()) {
-      this.syncActiveSheetProjection();
+      this.ensureActiveSheetSession();
       this.syncDraftFromPrimary();
       this.notify('Undo applied');
       this.refresh();
@@ -864,7 +857,7 @@ export class SpreadsheetApplication {
 
   redo(): void {
     if (this.runtime.commands.redo()) {
-      this.syncActiveSheetProjection();
+      this.ensureActiveSheetSession();
       this.syncDraftFromPrimary();
       this.notify('Redo applied');
       this.refresh();
@@ -1142,7 +1135,7 @@ export class SpreadsheetApplication {
   }
 
   selectSheet(sheetId: string): void {
-    this.runCommand('sheet.activate', { sheetId });
+    this.runtime.model.getSheet(sheetId);
     this.activeSheetId = sheetId;
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
@@ -2248,7 +2241,7 @@ export class SpreadsheetApplication {
       if (typeof window !== 'undefined') {
         window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(imported.snapshot.unitId)}`);
       }
-      this.activeSheetId = this.runtime.model.activeSheetId;
+      this.activeSheetId = this.runtime.model.primarySheetId;
       this.selectionService.resetForSheet(this.activeSheetId);
       await this.runtime.checkpointWorkspace();
       this.phase = 'ready';

@@ -115,13 +115,13 @@ function applyRecordingState(state: RecordingState, next: boolean, context: Comm
   context.applyMutation({
     id: 'automation.recording.changed',
     unitId: context.workbook.unitId,
-    sheetId: context.workbook.activeSheetId,
+    sheetId: context.workbook.primarySheetId,
     params: { recording: next },
     affectedRanges: [],
     inverse: [{
       id: 'automation.recording.changed',
       unitId: context.workbook.unitId,
-      sheetId: context.workbook.activeSheetId,
+      sheetId: context.workbook.primarySheetId,
       params: { recording: previous },
       affectedRanges: [],
     }],

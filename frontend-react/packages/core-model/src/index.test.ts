@@ -36,20 +36,19 @@ test('WorksheetModel handles merges and anchors properly', () => {
   assert.equal(sheet.isMerged(0, 0), undefined);
 });
 
-test('WorkbookModel manages multiple sheets and preserves activeSheetId', () => {
+test('WorkbookModel manages multiple sheets with a stable primary sheet', () => {
   const workbook = new WorkbookModel('unit-sheets', 'MultiSheet');
   assert.equal(workbook.getSheets().length, 1);
-  assert.equal(workbook.activeSheetId, 'sheet-1');
+  assert.equal(workbook.primarySheetId, 'sheet-1');
 
   const sheet2 = workbook.addSheet('sheet-2', 'Financials', 500, 50);
   assert.equal(sheet2.name, 'Financials');
   assert.equal(workbook.getSheets().length, 2);
   assert.equal(workbook.getSheetByName('financials')?.id, 'sheet-2');
 
-  workbook.activeSheetId = 'sheet-2';
   workbook.removeSheet('sheet-2');
   assert.equal(workbook.getSheets().length, 1);
-  assert.equal(workbook.activeSheetId, 'sheet-1');
+  assert.equal(workbook.primarySheetId, 'sheet-1');
 
   // Removing the only remaining sheet must throw
   assert.throws(() => workbook.removeSheet('sheet-1'), /must keep at least one worksheet/);
@@ -135,7 +134,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
 
 test('persists print documents and redacted query definitions in the workbook snapshot', () => {
   const workbook = new WorkbookModel('unit-persisted-features', 'Persisted Features');
-  const sheetId = workbook.activeSheetId;
+  const sheetId = workbook.primarySheetId;
   workbook.setPrintDocument({
     schema: 'PrintDocument',
     unitId: workbook.unitId,

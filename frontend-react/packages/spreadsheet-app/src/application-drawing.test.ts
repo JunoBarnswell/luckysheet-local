@@ -25,7 +25,7 @@ describe('SpreadsheetApplication drawing integration', () => {
       fontSize: 13,
     });
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     const drawing = sheet.drawings.find((entry) => entry.payloadId === 'shape-test-1');
     assert.equal(drawing?.kind, 'shape');
     assert.equal((sheet.drawingPayloads.get('shape-test-1') as { text?: string }).text, 'Box');
@@ -48,7 +48,7 @@ describe('SpreadsheetApplication drawing integration', () => {
     const app = new SpreadsheetApplication();
     app.insertQuickShape('rectangle');
     const snapshot = app.getUiSnapshot();
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'shape');
     assert.equal((sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { type?: string }).type, 'rectangle');
   });

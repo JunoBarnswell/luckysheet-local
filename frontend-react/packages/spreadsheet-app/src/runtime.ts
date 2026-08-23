@@ -454,7 +454,7 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
 }
 
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
   synchronizeFormulaEngine(engine, workbook);
   return engine;
 }
@@ -587,7 +587,7 @@ export function startCollaborationSession(
           return;
         }
         const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
-        const peer = mapPeerCursor(message.actorId, cursorState, runtime.model.activeSheetId);
+        const peer = mapPeerCursor(message.actorId, cursorState, runtime.model.primarySheetId);
         runtime.collaboration?.presence.upsertUser({
           actorId: peer.actorId,
           displayName: peer.name,
@@ -688,7 +688,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     if (isActive()) {
       runtime.handlers.onSaveState?.('offline');
       runtime.handlers.onPhaseChange?.('ready');
-      runtime.handlers.onActiveSheetChange?.(runtime.model.activeSheetId);
+      runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
       runtime.handlers.onMutationsApplied?.();
     }
     return;
@@ -707,7 +707,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       runtime.handlers.onSaveState?.('saved');
       runtime.handlers.onNotice?.('Workbook restored from server');
       runtime.handlers.onPhaseChange?.('ready');
-      runtime.handlers.onActiveSheetChange?.(runtime.model.activeSheetId);
+      runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
       runtime.handlers.onMutationsApplied?.();
       runtime.handlers.onWorkspacePersisted?.();
     }

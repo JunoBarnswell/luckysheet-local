@@ -60,7 +60,7 @@ describe('SpreadsheetApplication collaboration integration', () => {
 
   it('turns local undo into a durable compensating operation', () => {
     const runtime = createSpreadsheetRuntime();
-    const sheetId = runtime.model.activeSheetId;
+    const sheetId = runtime.model.primarySheetId;
     runtime.commands.execute('sheet.cell.set', {
       sheetId,
       row: 0,

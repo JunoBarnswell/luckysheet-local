@@ -16,7 +16,7 @@ describe('SpreadsheetApplication permission integration', () => {
     const app = new SpreadsheetApplication();
     app.setShareRole('viewer');
     app.execute('sheet.cell.set', { sheetId: app.getActiveSheetId(), row: 0, column: 0, value: { value: 'blocked' } });
-    assert.equal(app.getWorkbook().getSheet(app.getActiveSheetId()).cells.get(0, 0)?.value, undefined);
+    assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).cells.get(0, 0)?.value, undefined);
     assert.match(app.getUiSnapshot().notice, /viewer|edit-cell|Permission/i);
   });
 
@@ -46,7 +46,7 @@ describe('SpreadsheetApplication permission integration', () => {
       primaryColumnIndex: 1,
     });
     app.protectSelection(['format']);
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.protectionRules.length, 1);
     assert.equal(app.canExecute('sheet.cell.set', { row: 1, column: 1, value: { value: 9 } }), false);
     assert.equal(app.canExecute('sheet.style.set', { range: { sheetId: app.getActiveSheetId(), startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }, style: { bold: true } }), true);
@@ -58,7 +58,7 @@ describe('SpreadsheetApplication permission integration', () => {
   it('restores the exact protection rule through undo and redo', () => {
     const app = new SpreadsheetApplication();
     app.protectSelection(['format']);
-    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const rule = structuredClone(sheet.protectionRules[0]);
     assert.ok(rule);
     app.undo();

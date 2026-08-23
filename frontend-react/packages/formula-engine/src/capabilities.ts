@@ -17,9 +17,6 @@ export interface FormulaCapabilities {
   readonly reason?: (capability: FormulaCapability) => string | undefined;
 }
 
-/** Structural alias for hosts that expose a capability provider. */
-export type FormulaCapabilityProvider = FormulaCapabilities;
-
 const DEFAULT_DISABLED_REASON = 'calculation capability is not implemented';
 
 /**

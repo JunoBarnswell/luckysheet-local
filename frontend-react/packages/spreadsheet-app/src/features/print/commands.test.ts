@@ -31,7 +31,7 @@ describe('print document commands', () => {
   it('stores page setup, area and page breaks as one canonical document', () => {
     const workbook = new WorkbookModel('wb-print-command', 'Print');
     const commands = runtime(workbook);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     const range = { sheetId, startRow: 2, endRow: 20, startColumn: 1, endColumn: 7 };
 
     commands.execute('print.pageSetup', { sheetId, pageSetup });
@@ -48,7 +48,7 @@ describe('print document commands', () => {
   it('undoes and redoes document changes without creating a second write path', () => {
     const workbook = new WorkbookModel('wb-print-history', 'Print');
     const commands = runtime(workbook);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     const range = { sheetId, startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 };
 
     commands.execute('print.area.set', { sheetId, range });
@@ -64,7 +64,7 @@ describe('print document commands', () => {
     const target = new WorkbookModel('wb-print-remote', 'Print');
     const sourceRuntime = runtime(source);
     const targetRuntime = runtime(target);
-    const sheetId = source.activeSheetId;
+    const sheetId = source.primarySheetId;
     sourceRuntime.execute('print.pageBreak.set', { sheetId, pageBreak: { sheetId, column: 4 } });
     const mutation = sourceRuntime.getUndoEntries().at(-1)?.redo[0];
     assert.ok(mutation);

@@ -178,7 +178,7 @@ function executeLoad(
   store: WorkbookTableQueryStore,
 ): CommandResult {
   const plan = buildQueryLoadPlan(context.workbook, params, store);
-  const sheetId = params.target.sheetId ?? context.workbook.activeSheetId;
+  const sheetId = params.target.sheetId ?? context.workbook.primarySheetId;
   context.applyMutation({
     id: plan.mutationId,
     unitId: context.workbook.unitId,
@@ -213,13 +213,13 @@ export function registerQueryCommands(registry: CommandRegistry, options: QueryC
       context.applyMutation({
         id: 'query.definition.replace',
         unitId: context.workbook.unitId,
-        sheetId: context.workbook.activeSheetId,
+        sheetId: context.workbook.primarySheetId,
         params: { queryId: next.id, definition: next },
         affectedRanges: [],
         inverse: [{
           id: 'query.definition.replace',
           unitId: context.workbook.unitId,
-          sheetId: context.workbook.activeSheetId,
+          sheetId: context.workbook.primarySheetId,
           params: { queryId: next.id, definition: previous },
           affectedRanges: [],
         }],

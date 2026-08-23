@@ -6,7 +6,7 @@ describe('SpreadsheetApplication local workspace integration', () => {
   it('exposes a canonical persistence checksum in the UI projection', () => {
     const app = new SpreadsheetApplication();
     const meta = app.getPersistenceSnapshot();
-    assert.equal(meta.unitId, app.getWorkbook().unitId);
+    assert.equal(meta.unitId, app['runtime'].model.unitId);
     assert.equal(meta.checksum.length, 64);
     assert.equal(app.getUiSnapshot().persistenceChecksum.length, 64);
   });
@@ -21,7 +21,7 @@ describe('SpreadsheetApplication local workspace integration', () => {
       value: { value: 'local-value' },
     });
     await app['runtime'].checkpointWorkspace();
-    const record = await app['runtime'].workspacePersistence.load(app.getWorkbook().unitId);
+    const record = await app['runtime'].workspacePersistence.load(app['runtime'].model.unitId);
     assert.equal(record?.snapshot.schema, 'WorkbookSnapshot');
     assert.equal(record?.snapshot.sheets[0]?.cells['0']?.['0']?.value, 'local-value');
     assert.equal(record?.checksum.length, 64);

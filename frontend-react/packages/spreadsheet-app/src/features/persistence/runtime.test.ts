@@ -38,7 +38,7 @@ describe('local workspace runtime persistence', () => {
     const before = runtime.localRevision;
     runtime.collaboration = null;
     runtime.commands.execute('sheet.cell.set', {
-      sheetId: runtime.model.activeSheetId,
+      sheetId: runtime.model.primarySheetId,
       row: 0,
       column: 0,
       value: { value: 'checkpointed' },

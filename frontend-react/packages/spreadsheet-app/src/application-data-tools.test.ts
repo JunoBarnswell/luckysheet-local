@@ -38,7 +38,7 @@ describe('SpreadsheetApplication data tools integration', () => {
     selectRange(app, 0, 0, 1, 0);
     app.textToColumnsFromSelection(',');
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'a');
     assert.equal(sheet.cells.get(0, 1)?.value, 'b');
     assert.equal(sheet.cells.get(0, 2)?.value, 'c');
@@ -63,7 +63,7 @@ describe('SpreadsheetApplication data tools integration', () => {
     selectRange(app, 0, 0, 3, 1);
     app.removeDuplicatesFromSelection();
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'Key');
     assert.equal(sheet.cells.get(1, 0)?.value, 'A');
     assert.equal(sheet.cells.get(2, 0)?.value, 'B');
@@ -76,7 +76,7 @@ describe('SpreadsheetApplication data tools integration', () => {
     selectRange(app, 1, 0, 4, 3);
     app.groupRowsFromSelection();
 
-    const groups = app.getWorkbook().getSheet(sheetId).outline?.groups ?? [];
+    const groups = app['runtime'].model.getSheet(sheetId).outline?.groups ?? [];
     assert.equal(groups.length, 1);
     assert.equal(groups[0]?.axis, 'row');
     assert.equal(groups[0]?.start, 1);
@@ -98,7 +98,7 @@ describe('SpreadsheetApplication data tools integration', () => {
     selectRange(app, 0, 0, 1, 1);
     app.transposeSelection();
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'A');
     assert.equal(sheet.cells.get(0, 1)?.value, 1);
     assert.equal(sheet.cells.get(1, 0)?.value, 'B');
@@ -122,7 +122,7 @@ describe('SpreadsheetApplication data tools integration', () => {
     selectRange(app, 0, 0, 3, 1);
     app.applyDataSubtotal();
 
-    const sheet = app.getWorkbook().getSheet(sheetId);
+    const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(5, 0)?.value, 'Group');
     assert.equal(sheet.cells.get(6, 0)?.value, 'East');
     assert.equal(sheet.cells.get(6, 1)?.value, 15);

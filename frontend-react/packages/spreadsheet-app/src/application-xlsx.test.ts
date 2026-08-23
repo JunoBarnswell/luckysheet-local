@@ -7,7 +7,7 @@ import { SpreadsheetApplication } from './application';
 describe('xlsx exchange', () => {
   it('exports workbook snapshots with compatibility summary', async () => {
     const workbook = new WorkbookModel('wb-export', 'Export');
-    workbook.getSheet(workbook.activeSheetId).cells.set(0, 0, { value: 99 });
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 99 });
     const result = await exchangeExportXlsx(workbook.snapshot(), { fileName: 'export.xlsx' });
     assert.ok(result.base64 && result.base64.length > 0);
     assert.match(summarizeCompatibilityReport(result.report), /compatibility/i);

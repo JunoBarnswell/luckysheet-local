@@ -27,7 +27,7 @@ describe('SpreadsheetApplication extended integration', () => {
     });
 
     assert.equal(result.status, 'converged');
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 1)?.value, 50);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.value, 50);
     assert.equal(app.getUiSnapshot().activePanel, 'extended');
   });
 
@@ -66,7 +66,7 @@ describe('SpreadsheetApplication extended integration', () => {
 
     assert.equal(result.status, 'completed');
     assert.equal(result.outputs[0]?.value, 40);
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 1)?.value, 20);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.value, 20);
   });
 
   it('runs data table through extended.whatIf.dataTable command path', () => {
@@ -84,7 +84,7 @@ describe('SpreadsheetApplication extended integration', () => {
 
     assert.equal(result.status, 'completed');
     assert.equal(result.filledCells, 2);
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(1, 1)?.value, 10);
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(1, 2)?.value, 20);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 1)?.value, 10);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 2)?.value, 20);
   });
 });

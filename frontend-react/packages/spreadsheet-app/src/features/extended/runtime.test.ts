@@ -21,7 +21,7 @@ describe('extended runtime', () => {
     const workbook = new WorkbookModel('wb-goal', 'Goal Seek');
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     runtime.execute('sheet.cell.set', {
       sheetId,
       row: 0,
@@ -54,7 +54,7 @@ describe('extended runtime', () => {
     const workbook = new WorkbookModel('wb-table', 'Data Table');
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     runtime.execute('sheet.cell.set', { sheetId, row: 1, column: 0, value: { formula: '=B1*2' } });
     runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 5 } });
     runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 2, value: { value: 10 } });
@@ -83,7 +83,7 @@ describe('extended runtime', () => {
     const workbook = new WorkbookModel('wb-scenario', 'Scenario');
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=B1*2' } });
     runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 10 } });
 

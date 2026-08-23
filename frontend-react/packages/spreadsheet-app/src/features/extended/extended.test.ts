@@ -21,7 +21,7 @@ describe('M18 deterministic what-if commands', () => {
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
     registerExtendedCommands(runtime.registry);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     const command = runtime.execute('extended.whatIf.scenario', {
       sheetId,
       scenario: {
@@ -44,7 +44,7 @@ describe('M18 deterministic what-if commands', () => {
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
     registerExtendedCommands(runtime.registry);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     workbook.getSheet(sheetId).cells.set(0, 1, { value: 10 });
     workbook.getSheet(sheetId).cells.set(0, 2, { value: null });
     const result = runtime.execute('extended.whatIf.dataTable', {
@@ -62,7 +62,7 @@ describe('M18 deterministic what-if commands', () => {
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
     registerExtendedCommands(runtime.registry);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=B1*B1' } });
     runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 10 } });
     const result = runtime.execute('extended.whatIf.goalSeek', {
@@ -81,7 +81,7 @@ describe('M18 deterministic what-if commands', () => {
     const runtime = new CommandRuntime(workbook);
     registerSheetCommands(runtime);
     registerExtendedCommands(runtime.registry);
-    const sheetId = workbook.activeSheetId;
+    const sheetId = workbook.primarySheetId;
     workbook.getSheet(sheetId).spillRanges.push({
       sheetId,
       anchor: { row: 0, column: 1 },
