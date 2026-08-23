@@ -7,7 +7,24 @@ import { remapAst } from './ast-rewrite';
 import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './errors';
 import { parseFormula as parseFormulaSource } from './parser';
 import { RangeIndex, type FormulaDependency, type RangeDependency } from './range-index';
-import { createFormulaError, type FormulaError, type FormulaValue, type ScalarValue } from './values';
+import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
+import { normalizeDefinedNames, resolveDefinedNameSource } from './defined-names';
+import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
+import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
+import {
+  anchorDisplayValue,
+  isSpillMatrix,
+  resolveSpill,
+  spillKey,
+  spillValueAt,
+  type ResolvedSpill,
+} from './spill-resolver';
+
+export interface SpillEnvironment {
+  rowCount: number;
+  columnCount: number;
+  isOccupied: (row: number, column: number) => boolean;
+}
 
 export type CellAddressInput = CellAddress | string;
 
@@ -27,7 +44,10 @@ export interface RecalculationReport {
 
 export interface FormulaEngineOptions {
   readonly defaultSheetId?: string;
+  readonly recalculationMode?: RecalculationMode;
 }
+
+export type RecalculationMode = 'automatic' | 'manual';
 
 interface StoredCell {
   readonly address: CellAddress;
@@ -41,11 +61,20 @@ export class FormulaEngine {
   readonly defaultSheetId: string;
   readonly dependencies: RangeIndex;
   private definedNames: Record<string, string> = {};
+  private spillEnvironments = new Map<string, SpillEnvironment>();
+  private spills = new Map<string, ResolvedSpill>();
+  private nameIndex = new Map<string, Set<string>>();
+  private cellNameRefs = new Map<string, string[]>();
+  private volatileCells = new Set<string>();
+  private recalculationMode: RecalculationMode;
+  private pendingRecalculationRoots = new Set<string>();
+  private sheetTables = new Map<string, SheetTableRef>();
 
   private readonly cells = new Map<string, StoredCell>();
 
   constructor(options: FormulaEngineOptions = {}) {
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
+    this.recalculationMode = options.recalculationMode ?? 'automatic';
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -58,9 +87,14 @@ export class FormulaEngine {
     const address = this.resolveAddress(addressInput);
     const key = cellAddressKey(address);
     this.dependencies.remove(address);
+    this.spills.delete(spillKey(address));
     const result: FormulaResult = { value, dependencies: [] };
     this.cells.set(key, { address, result });
-    this.recalculate(address);
+    if (this.recalculationMode === 'automatic') {
+      this.recalculate(address);
+    } else {
+      this.pendingRecalculationRoots.add(key);
+    }
     return this.getCellResult(address) ?? result;
   }
 
@@ -73,7 +107,7 @@ export class FormulaEngine {
 
     try {
       const parsed = this.parseFormula(formula);
-      const extractedDependencies = collectFormulaDependencies(parsed, address);
+      const extractedDependencies = collectFormulaDependencies(parsed, address, { sheetTables: this.sheetTables });
       this.dependencies.set(address, extractedDependencies);
       ast = parsed;
       formulaDependencies = extractedDependencies;
@@ -86,15 +120,51 @@ export class FormulaEngine {
       ? { value: parseError, formula, dependencies: [] }
       : { value: null, formula, ast, dependencies: formulaDependencies };
     this.cells.set(key, { address, formula, ast, parseError, result });
-    this.recalculate(address);
+    this.updateFormulaMetadata(key, ast);
+    if (this.recalculationMode === 'automatic') {
+      this.recalculate(address);
+    } else {
+      this.evaluateChangedCell(address);
+      this.pendingRecalculationRoots.add(key);
+    }
     return this.getCellResult(address) ?? result;
   }
 
   clearCell(addressInput: CellAddressInput): RecalculationReport {
     const address = this.resolveAddress(addressInput);
+    const key = cellAddressKey(address);
     this.dependencies.remove(address);
-    this.cells.delete(cellAddressKey(address));
-    return this.recalculate(address);
+    this.spills.delete(spillKey(address));
+    this.detachNameReferences(key);
+    this.volatileCells.delete(key);
+    this.cells.delete(key);
+    return this.scheduleRecalculation(address) ?? { recalculated: [], results: new Map() };
+  }
+
+  getRecalculationMode(): RecalculationMode {
+    return this.recalculationMode;
+  }
+
+  setRecalculationMode(mode: RecalculationMode): void {
+    this.recalculationMode = mode;
+  }
+
+  hasPendingRecalculation(): boolean {
+    return this.pendingRecalculationRoots.size > 0;
+  }
+
+  setSheetTables(tables: readonly SheetTableRef[]): RecalculationReport {
+    this.sheetTables = normalizeSheetTables(tables);
+    const affected = this.allFormulaAddresses();
+    if (this.recalculationMode === 'manual') {
+      for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
+      return { recalculated: [], results: new Map() };
+    }
+    return this.recalculateAffected(affected);
+  }
+
+  getSheetTables(): readonly SheetTableRef[] {
+    return [...this.sheetTables.values()];
   }
 
   getCellResult(addressInput: CellAddressInput): FormulaResult | undefined {
@@ -103,7 +173,10 @@ export class FormulaEngine {
   }
 
   getCellValue(addressInput: CellAddressInput): FormulaValue {
-    return this.getCellResult(addressInput)?.value ?? null;
+    const address = this.resolveAddress(addressInput);
+    const spillValue = this.getSpillValueAt(address.sheetId, address.row, address.column);
+    if (spillValue !== undefined) return spillValue;
+    return this.cells.get(cellAddressKey(address))?.result.value ?? null;
   }
 
   getDependencies(addressInput: CellAddressInput): readonly FormulaDependency[] {
@@ -115,8 +188,39 @@ export class FormulaEngine {
   }
 
   /** 批量设置定义名称(值为公式文本或引用文本,不带 =) */
-  setDefinedNames(names: Record<string, string>): void {
-    this.definedNames = { ...names };
+  setDefinedNames(names: Record<string, string>): RecalculationReport {
+    this.definedNames = normalizeDefinedNames(names);
+    const affected = new Map<string, CellAddress>();
+    for (const refs of this.nameIndex.values()) {
+      for (const key of refs) {
+        const cell = this.cells.get(key);
+        if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+      }
+    }
+    if (affected.size === 0) return { recalculated: [], results: new Map() };
+    if (this.recalculationMode === 'manual') {
+      for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
+      return { recalculated: [], results: new Map() };
+    }
+    return this.recalculateAffected(affected);
+  }
+
+  setSpillEnvironment(sheetId: string, environment: SpillEnvironment | undefined): void {
+    if (!environment) this.spillEnvironments.delete(sheetId);
+    else this.spillEnvironments.set(sheetId, environment);
+  }
+
+  getSpillsForSheet(sheetId: string): ResolvedSpill[] {
+    return [...this.spills.values()].filter((spill) => spill.sheetId === sheetId);
+  }
+
+  getSpillValueAt(sheetId: string, row: number, column: number): FormulaValue | undefined {
+    for (const spill of this.spills.values()) {
+      if (spill.sheetId !== sheetId) continue;
+      const value = spillValueAt(spill, row, column);
+      if (value !== undefined) return value;
+    }
+    return undefined;
   }
 
   getDefinedNames(): Record<string, string> {
@@ -126,7 +230,71 @@ export class FormulaEngine {
   /** 清空全部公式与缓存(结构操作后整体重建前调用) */
   reset(): void {
     this.cells.clear();
+    this.spills.clear();
+    this.nameIndex.clear();
+    this.cellNameRefs.clear();
+    this.volatileCells.clear();
+    this.pendingRecalculationRoots.clear();
+    this.sheetTables.clear();
     this.dependencies.clear?.();
+  }
+
+  recalculateCell(addressInput: CellAddressInput): RecalculationReport {
+    const address = this.resolveAddress(addressInput);
+    const affected = new Map<string, CellAddress>();
+    const key = cellAddressKey(address);
+    const cell = this.cells.get(key);
+    if (cell?.formula !== undefined) affected.set(key, { ...address });
+    return this.recalculateAffected(affected);
+  }
+
+  recalculate(addressInput?: CellAddressInput): RecalculationReport {
+    if (addressInput !== undefined) {
+      const affected = this.collectAffected(this.resolveAddress(addressInput));
+      for (const key of this.volatileCells) {
+        const cell = this.cells.get(key);
+        if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+      }
+      return this.recalculateAffected(affected);
+    }
+
+    const affected = this.recalculationMode === 'manual' && this.pendingRecalculationRoots.size > 0
+      ? this.collectAffectedFromRoots(this.pendingRecalculationRoots)
+      : this.allFormulaAddresses();
+    for (const key of this.volatileCells) {
+      const cell = this.cells.get(key);
+      if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+    }
+    const report = this.recalculateAffected(affected);
+    this.pendingRecalculationRoots.clear();
+    return report;
+  }
+
+  private scheduleRecalculation(address: CellAddress): RecalculationReport | undefined {
+    if (this.recalculationMode === 'automatic') return this.recalculate(address);
+    this.pendingRecalculationRoots.add(cellAddressKey(address));
+    return undefined;
+  }
+
+  private evaluateChangedCell(address: CellAddress): void {
+    const key = cellAddressKey(address);
+    const cell = this.cells.get(key);
+    if (!cell?.formula || !cell.ast) return;
+    const cache = new Map<string, FormulaValue>();
+    const visiting = new Set<string>();
+    this.evaluateCell(address, cache, visiting);
+  }
+
+  private collectAffectedFromRoots(roots: ReadonlySet<string>): Map<string, CellAddress> {
+    const affected = new Map<string, CellAddress>();
+    for (const key of roots) {
+      const cell = this.cells.get(key);
+      if (!cell) continue;
+      for (const [dependentKey, dependentAddress] of this.collectAffected(cell.address)) {
+        affected.set(dependentKey, dependentAddress);
+      }
+    }
+    return affected;
   }
 
   /**
@@ -142,7 +310,7 @@ export class FormulaEngine {
       if (cell.formula === undefined || !cell.ast) continue;
       const relevantSheet =
         cell.address.sheetId === sheetId
-        || collectFormulaDependencies(cell.ast, cell.address).some((dependency) =>
+        || collectFormulaDependencies(cell.ast, cell.address, { sheetTables: this.sheetTables }).some((dependency) =>
           dependency.kind === 'cell'
             ? dependency.address.sheetId === sheetId
             : dependency.start.sheetId === sheetId,
@@ -162,10 +330,7 @@ export class FormulaEngine {
     return report;
   }
 
-  recalculate(addressInput?: CellAddressInput): RecalculationReport {
-    const affected = addressInput === undefined
-      ? this.allFormulaAddresses()
-      : this.collectAffected(this.resolveAddress(addressInput));
+  private recalculateAffected(affected: Map<string, CellAddress>): RecalculationReport {
     const evaluationCache = new Map<string, FormulaValue>();
     const visiting = new Set<string>();
     const recalculated: CellAddress[] = [];
@@ -257,7 +422,13 @@ export class FormulaEngine {
         currentCell: cell.address,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
-        resolveName: (name) => this.resolveDefinedName(name),
+        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
+        resolveTableReference: (tableName, columnName, thisRow) => {
+          const resolved = resolveSheetTableReference(tableName, columnName, thisRow, cell.address, this.sheetTables);
+          if (isFormulaError(resolved)) return resolved;
+          if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
+          return this.evaluateCell(resolved as CellAddress, cache, visiting);
+        },
       });
     } catch (error) {
       value = error instanceof FormulaReferenceError
@@ -268,32 +439,95 @@ export class FormulaEngine {
     }
 
     cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
-    cache.set(key, value);
-    return value;
+    this.refreshSpill(address, value, cache);
+    const displayValue = this.cells.get(key)?.result.value ?? value;
+    cache.set(key, displayValue);
+    return displayValue;
   }
 
-  /** 定义名称求值:值文本按公式解析(相对当前单元格) */
-  private resolveDefinedName(name: string): FormulaValue | undefined {
-    const source = this.definedNames[name];
-    if (source === undefined) return undefined;
-    try {
-      const parsed = this.parseFormula(source.startsWith('=') ? source : '=' + source);
-      return evaluateFormula(parsed, {
-        currentCell: { sheetId: this.defaultSheetId, row: 0, column: 0 },
-        readCell: (reference) => this.getCellValue(reference),
-        readRange: (range) => {
-          const values: FormulaValue[] = [];
-          for (let row = range.start.row; row <= range.end.row; row++) {
-            for (let column = range.start.column; column <= range.end.column; column++) {
-              values.push(this.getCellValue({ sheetId: range.start.sheetId, row, column }));
-            }
-          }
-          return values;
-        },
-      });
-    } catch {
-      return createFormulaError('#NAME?', 'Cannot resolve name: ' + name);
+  private refreshSpill(address: CellAddress, value: FormulaValue, cache?: Map<string, FormulaValue>): void {
+    const key = spillKey(address);
+    if (!isSpillMatrix(value)) {
+      this.spills.delete(key);
+      return;
     }
+    const environment = this.spillEnvironments.get(address.sheetId);
+    if (!environment) {
+      this.spills.delete(key);
+      return;
+    }
+    const spill = resolveSpill({
+      sheetId: address.sheetId,
+      anchor: { row: address.row, column: address.column },
+      values: value,
+      rowCount: environment.rowCount,
+      columnCount: environment.columnCount,
+      isOccupied: environment.isOccupied,
+    });
+    this.spills.set(key, spill);
+    if (spill.state === 'blocked') {
+      const display = anchorDisplayValue(spill, value);
+      const cell = this.cells.get(cellAddressKey(address));
+      if (cell) cell.result = { ...cell.result, value: display };
+      cache?.set(cellAddressKey(address), display);
+    }
+  }
+
+  private updateFormulaMetadata(key: string, ast?: FormulaAst): void {
+    this.detachNameReferences(key);
+    if (!ast) {
+      this.volatileCells.delete(key);
+      return;
+    }
+    if (formulaUsesVolatile(ast)) this.volatileCells.add(key);
+    else this.volatileCells.delete(key);
+    const names = collectNameReferences(ast);
+    this.cellNameRefs.set(key, names);
+    for (const name of names) {
+      const bucket = this.nameIndex.get(name) ?? new Set<string>();
+      bucket.add(key);
+      this.nameIndex.set(name, bucket);
+    }
+  }
+
+  private detachNameReferences(key: string): void {
+    for (const name of this.cellNameRefs.get(key) ?? []) {
+      const bucket = this.nameIndex.get(name);
+      bucket?.delete(key);
+      if (bucket && bucket.size === 0) this.nameIndex.delete(name);
+    }
+    this.cellNameRefs.delete(key);
+  }
+
+  private resolveDefinedName(
+    name: string,
+    currentCell: CellAddress,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+  ): FormulaValue | undefined {
+    const source = this.definedNames[name.toUpperCase()] ?? this.definedNames[name];
+    if (source === undefined) return undefined;
+    return resolveDefinedNameSource(source, {
+      currentCell,
+      readCell: (reference) => this.evaluateCell(reference, cache, visiting),
+      readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
+    });
+  }
+
+  private readRangeMatrix(
+    range: RangeDependency,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+  ): ArrayValue {
+    const matrix: ArrayValue = [];
+    for (let row = range.start.row; row <= range.end.row; row += 1) {
+      const line: FormulaValue[] = [];
+      for (let column = range.start.column; column <= range.end.column; column += 1) {
+        line.push(this.evaluateCell({ sheetId: range.start.sheetId, row, column }, cache, visiting));
+      }
+      matrix.push(line);
+    }
+    return matrix;
   }
 
   private readRange(

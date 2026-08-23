@@ -184,10 +184,24 @@ export interface ResizePreview {
   sizePx: number;
 }
 
+export interface ChromeFilterButton {
+  row: number;
+  column: number;
+}
+
+export interface ChromeTableOutline {
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
+}
+
 export interface ChromeState {
   selection: ChromeSelectionState;
   editing: CellAddress | null;
   filterColumns: readonly number[];
+  filterButtons: readonly ChromeFilterButton[];
+  tableOutlines: readonly ChromeTableOutline[];
   remoteCursors: readonly ChromeRemoteCursor[];
   resizePreview: ResizePreview | null;
   selectedFloatingId: string | null;
@@ -198,6 +212,8 @@ export function createEmptyChromeState(): ChromeState {
     selection: { ranges: [], primary: { row: 0, column: 0 }, primaryIndex: 0 },
     editing: null,
     filterColumns: [],
+    filterButtons: [],
+    tableOutlines: [],
     remoteCursors: [],
     resizePreview: null,
     selectedFloatingId: null,

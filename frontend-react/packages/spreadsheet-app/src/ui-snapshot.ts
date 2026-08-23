@@ -11,12 +11,25 @@ import type {
   PivotResultTree,
   RangeRef,
   ShapeModel,
+  SheetTableModel,
   SparklineModel,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { computeConditionalOverlays, computeFilterHiddenRows, validateDataInput, type ConditionalOverlay } from '@react-sheets/sheet-features';
-import { FormulaEngine, isFormulaError, type FormulaValue } from '@react-sheets/formula-engine';
+import {
+  computeBandedCellStyle,
+  computeConditionalOverlays,
+  computeFilterHiddenRows,
+  computeSheetTableCellStyle,
+  findSheetTableAt,
+  mergePresentationStyles,
+  resolveActiveFilterColumns,
+  resolveFilterButtonCells,
+  validateDataInput,
+  type ConditionalOverlay,
+  type FilterButtonCell,
+} from '@react-sheets/sheet-features';
+import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { computePivotResult } from '@react-sheets/pro-features';
 import { cellAddress, columnLabel } from './address';
@@ -67,6 +80,8 @@ export interface CanvasSheetSnapshot {
   columnWidths: Record<number, number>;
   hiddenRows: number[];
   filterColumns: number[];
+  filterButtons: FilterButtonCell[];
+  sheetTables: SheetTableModel[];
   tabColor?: string;
   hidden?: boolean;
   /** Print preview only — bounded slice */
@@ -84,14 +99,17 @@ function toFormulaDisplay(value: FormulaValue): string {
 function formatDisplayValue(
   cell: CellData | undefined,
   formula: FormulaEngine,
+  sheet: WorksheetModel,
   sheetId: string,
   row: number,
   column: number,
 ): string {
-  if (!cell) return '';
-  if (cell.formula) {
+  if (cell?.formula) {
     return toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
   }
+  const spillValue = formula.getSpillValueAt(sheetId, row, column);
+  if (spillValue !== undefined) return toFormulaDisplay(spillValue);
+  if (!cell) return '';
   if (cell.value == null) return '';
   if (typeof cell.value === 'number') {
     return formatNumberValue(cell.value, cell.numberFormat ?? cell.style?.numberFormat);
@@ -129,17 +147,27 @@ export function buildCanvasSheetSnapshot(
   const overlays = computeConditionalOverlays(sheet);
   const filterHidden = computeFilterHiddenRows(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden]);
-  const filterColumns = sheet.filter ? Object.keys(sheet.filter.criteria).map(Number) : [];
+  const filterColumns = resolveActiveFilterColumns(sheet);
+  const filterButtons = resolveFilterButtonCells(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = usedRangeOfSheet(sheet);
 
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
     const modelCell = sheet.cells.get(row, column);
-    const value = formatDisplayValue(modelCell, formula, sheet.id, row, column);
+    const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
     const key = `${row}:${column}`;
     const overlay = overlays.get(key);
-    const style = overlay?.style ? { ...(modelCell?.style ?? {}), ...overlay.style } : modelCell?.style;
+    const table = findSheetTableAt(sheet, row, column);
+    const presentation = mergePresentationStyles(
+      computeBandedCellStyle(sheet, row, column),
+      table ? computeSheetTableCellStyle(table, row, column) : undefined,
+    );
+    const style = overlay?.style
+      ? { ...(modelCell?.style ?? {}), ...presentation, ...overlay.style }
+      : presentation
+        ? { ...(modelCell?.style ?? {}), ...presentation }
+        : modelCell?.style;
     const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
     return {
       address: cellAddress(row, column),
@@ -199,6 +227,8 @@ export function buildCanvasSheetSnapshot(
     columnWidths: { ...sheet.columnWidths },
     hiddenRows: [...hiddenRows].sort((a, b) => a - b),
     filterColumns,
+    filterButtons,
+    sheetTables: [...sheet.sheetTables],
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
     previewRows,

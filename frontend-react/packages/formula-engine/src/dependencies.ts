@@ -2,12 +2,22 @@ import type { CellAddress, CellReferenceNode, FormulaAst, RangeReferenceNode, Pa
 import { assertCellAddress, cellAddressKey } from './address';
 import { FormulaReferenceError } from './errors';
 import { normalizeRange, type CellDependency, type FormulaDependency, type RangeDependency } from './range-index';
+import { resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
+import { isFormulaError } from './values';
 
-export function collectFormulaDependencies(ast: FormulaAst, owner: CellAddress): readonly FormulaDependency[] {
+export interface CollectFormulaDependenciesOptions {
+  readonly sheetTables?: ReadonlyMap<string, SheetTableRef>;
+}
+
+export function collectFormulaDependencies(
+  ast: FormulaAst,
+  owner: CellAddress,
+  options: CollectFormulaDependenciesOptions = {},
+): readonly FormulaDependency[] {
   assertCellAddress(owner);
   const dependencies: FormulaDependency[] = [];
   const seen = new Set<string>();
-  visit(ast, owner, dependencies, seen);
+  visit(ast, owner, dependencies, seen, options.sheetTables);
   return dependencies;
 }
 
@@ -31,6 +41,7 @@ function visit(
   owner: CellAddress,
   dependencies: FormulaDependency[],
   seen: Set<string>,
+  sheetTables?: ReadonlyMap<string, SheetTableRef>,
 ): void {
   switch (node.type) {
     case 'cell-reference': {
@@ -43,17 +54,38 @@ function visit(
       return;
     }
     case 'unary-expression':
-      visit(node.operand, owner, dependencies, seen);
+      visit(node.operand, owner, dependencies, seen, sheetTables);
       return;
     case 'binary-expression':
-      visit(node.left, owner, dependencies, seen);
-      visit(node.right, owner, dependencies, seen);
+      visit(node.left, owner, dependencies, seen, sheetTables);
+      visit(node.right, owner, dependencies, seen, sheetTables);
       return;
     case 'function-call':
-      for (const argument of node.arguments) visit(argument, owner, dependencies, seen);
+      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables);
       return;
+    case 'name-reference':
+      return;
+    case 'table-reference': {
+      if (!sheetTables) return;
+      const resolved = resolveSheetTableReference(
+        node.tableName,
+        node.columnName,
+        node.thisRow,
+        owner,
+        sheetTables,
+      );
+      if (isFormulaError(resolved)) return;
+      if ('start' in resolved && 'end' in resolved) {
+        addDependency(resolved, dependencies, seen);
+        return;
+      }
+      const dependency: CellDependency = { kind: 'cell', address: resolved as CellAddress };
+      addDependency(dependency, dependencies, seen);
+      return;
+    }
     case 'number-literal':
     case 'string-literal':
+    case 'boolean-literal':
       return;
   }
 }

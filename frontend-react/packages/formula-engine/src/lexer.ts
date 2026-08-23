@@ -23,6 +23,9 @@ export type TokenKind =
   | 'comma'
   | 'colon'
   | 'bang'
+  | 'left-bracket'
+  | 'right-bracket'
+  | 'at-sign'
   | 'eof';
 
 export interface Token {
@@ -218,6 +221,12 @@ function punctuationKind(character: string): TokenKind | undefined {
       return 'colon';
     case '!':
       return 'bang';
+    case '[':
+      return 'left-bracket';
+    case ']':
+      return 'right-bracket';
+    case '@':
+      return 'at-sign';
     default:
       return undefined;
   }

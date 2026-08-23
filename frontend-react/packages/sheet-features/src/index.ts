@@ -44,6 +44,7 @@ function applyStructuralTransform(workbook: WorkbookModel, params: StructuralTra
 export * from './clipboard';
 export * from './data-features';
 export * from './editing';
+export * from './sheet-table-features';
 export * from './sheet-table-commands';
 export * from './outline-commands';
 

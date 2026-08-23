@@ -13,6 +13,8 @@ export interface FormulaEvaluationContext {
   readRangeMatrix?(range: RangeDependency): ArrayValue;
   /** 定义名称解析:返回 undefined 视为 #NAME? */
   resolveName?(name: string): FormulaValue | undefined;
+  /** 结构化表引用解析 */
+  resolveTableReference?(tableName: string, columnName: string, thisRow: boolean): FormulaValue | EvaluationRange | undefined;
 }
 
 interface EvaluationRange {
@@ -57,6 +59,13 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext): Eval
     case 'name-reference': {
       const resolved = context.resolveName?.(node.name.toUpperCase());
       return resolved === undefined ? createFormulaError('#NAME?', 'Unknown name: ' + node.name) : resolved;
+    }
+    case 'table-reference': {
+      const resolved = context.resolveTableReference?.(node.tableName, node.columnName, node.thisRow);
+      if (resolved === undefined) return createFormulaError('#NAME?', `Unknown table reference: ${node.tableName}[${node.columnName}]`);
+      if (isFormulaError(resolved)) return resolved;
+      if (isEvaluationRange(resolved)) return resolved;
+      return resolved;
     }
   }
 }

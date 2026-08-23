@@ -132,6 +132,12 @@ export function mapRibbonAction(action: RibbonAction, payload?: unknown): Ribbon
       return { commandId: 'ui.panel.open', params: { panel: 'data' } };
     case 'create-data-table':
       return { commandId: 'table.create' };
+    case 'format-as-sheet-table':
+      return { commandId: 'sheetTable.create' };
+    case 'toggle-sheet-table-total-row':
+      return { commandId: 'sheetTable.toggleTotalRow' };
+    case 'recalculate-formulas':
+      return { commandId: 'ui.formula.recalculate' };
     case 'open-shape':
       return { commandId: 'ui.panel.open', params: { panel: 'shape' } };
     case 'open-sparkline':

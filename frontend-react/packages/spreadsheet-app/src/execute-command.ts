@@ -48,6 +48,9 @@ export type UiCommandId =
   | 'ui.zoom.adjust'
   | 'ui.freeze.atPrimary'
   | 'table.create'
+  | 'sheetTable.create'
+  | 'sheetTable.toggleTotalRow'
+  | 'ui.formula.recalculate'
   | 'ui.notice';
 
 export interface StyleToggleParams {
@@ -74,7 +77,7 @@ export interface ZoomAdjustParams {
   value?: number;
 }
 
-const UI_COMMAND_PREFIXES = ['ui.', 'table.create'];
+const UI_COMMAND_PREFIXES = ['ui.', 'table.create', 'sheetTable.create', 'sheetTable.toggleTotalRow'];
 
 export function isUiCommand(commandId: string): boolean {
   return UI_COMMAND_PREFIXES.some((prefix) => commandId.startsWith(prefix)) || commandId === 'sheet.formula.autosum';
@@ -360,6 +363,15 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
       return true;
     case 'table.create':
       app.createDataTableFromSelection();
+      return true;
+    case 'sheetTable.create':
+      app.createSheetTableFromSelection();
+      return true;
+    case 'sheetTable.toggleTotalRow':
+      app.toggleSheetTableTotalRow();
+      return true;
+    case 'ui.formula.recalculate':
+      app.recalculateFormulas();
       return true;
     case 'ui.notice':
       app.notify(String(params ?? ''));

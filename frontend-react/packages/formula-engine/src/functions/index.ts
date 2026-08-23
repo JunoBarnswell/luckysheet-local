@@ -7,6 +7,7 @@ import { lookupFunctions } from './lookup';
 import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
 import { extendedMatrixFunctions } from './extended-matrix';
+import { dynamicArrayFunctions } from './dynamic-array';
 
 export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => FormulaValue> = {
   ...mathFunctions,
@@ -17,6 +18,7 @@ export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => Formula
   ...datetimeFunctions,
   ...informationFunctions,
   ...extendedMatrixFunctions,
+  ...dynamicArrayFunctions,
 };
 
 export const FORMULA_ALIASES: Readonly<Record<string, string>> = {
@@ -38,9 +40,9 @@ export interface FunctionDescriptor {
 }
 
 const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'SUMPRODUCT']);
-const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'MEDIAN', 'PERCENTILE']);
-const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT']);
-const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY']);
+const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'MEDIAN', 'PERCENTILE', 'SORT', 'FILTER', 'UNIQUE']);
+const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT', 'RANDARRAY']);
+const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY', 'FILTER', 'UNIQUE', 'SORT', 'SORTBY', 'SEQUENCE', 'RANDARRAY', 'HSTACK', 'VSTACK', 'TAKE', 'DROP']);
 
 export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new Map(
   Object.keys(BUILTIN_FUNCTIONS).map((name) => {

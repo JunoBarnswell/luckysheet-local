@@ -17,6 +17,7 @@ export type RibbonAction =
   | 'filter-clear' | 'apply-filter-selection'
   | 'export-xlsx' | 'import-xlsx' | 'find-replace'
   | 'zoom-in' | 'zoom-out' | 'zoom-100'
-  | 'open-chart' | 'open-pivot' | 'open-data-table' | 'create-data-table'
+  | 'open-chart' | 'open-pivot' | 'open-data-table' | 'create-data-table' | 'format-as-sheet-table' | 'recalculate-formulas'
   | 'open-shape' | 'open-sparkline' | 'open-conditional-format'
-  | 'open-data-validation' | 'open-history' | 'open-print' | 'open-comments';
+  | 'open-data-validation' | 'open-history' | 'open-print' | 'open-comments'
+  | 'toggle-sheet-table-total-row';

@@ -34,8 +34,8 @@
 |------|------|
 | A1 / `$A$1` / `A$1` / `$A1` | Full |
 | 同表 / 跨表 `'Sheet 1'!A1` | Full |
-| 定义名称 | Partial |
-| 结构化表引用 `Table1[@Col]` | Partial (M3+) |
+| 定义名称 | Full |
+| 结构化表引用 `Table1[@Col]` | Partial |
 | 3D 引用 / 外部簿 | Preserve |
 | 联合 `@` / `#`  spilled range | Partial |
 
@@ -64,25 +64,25 @@
 
 | 函数 | 状态 |
 |------|------|
-| XLOOKUP | N/A |
-| XMATCH | N/A |
+| XLOOKUP | Partial |
+| XMATCH | Partial |
 | INDEX | Partial |
 | MATCH | Partial |
 | VLOOKUP | Partial |
 | HLOOKUP | Partial |
-| OFFSET | N/A |
-| INDIRECT | N/A |
+| OFFSET | Partial |
+| INDIRECT | Partial |
 
 ### 动态数组
 
 | 函数 | 状态 |
 |------|------|
-| FILTER | N/A |
-| SORT / SORTBY | N/A |
-| UNIQUE | N/A |
-| SEQUENCE / RANDARRAY | N/A |
-| TAKE / DROP | N/A |
-| HSTACK / VSTACK | N/A |
+| FILTER | Partial |
+| SORT / SORTBY | Partial |
+| UNIQUE | Partial |
+| SEQUENCE / RANDARRAY | Partial |
+| TAKE / DROP | Partial |
+| HSTACK / VSTACK | Partial |
 
 ### 文本
 

@@ -309,6 +309,13 @@ export function SheetCanvas({
     state.selection = toChromeSelection(selection);
     state.editing = editingCell ? { row: editingCell.row, column: editingCell.column } : null;
     state.filterColumns = sheet.filterColumns;
+    state.filterButtons = sheet.filterButtons;
+    state.tableOutlines = sheet.sheetTables.map((table) => ({
+      startRow: table.range.startRow,
+      endRow: table.range.endRow,
+      startColumn: table.range.startColumn,
+      endColumn: table.range.endColumn,
+    }));
     state.remoteCursors = peers.map((peer) => ({
       actorId: peer.actorId,
       color: peer.color,
@@ -318,7 +325,7 @@ export function SheetCanvas({
     }));
     state.selectedFloatingId = selectedFloatingId;
     return state;
-  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterColumns]);
+  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterButtons, sheet.filterColumns, sheet.sheetTables]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -537,6 +544,17 @@ export function SheetCanvas({
       // 4) 普通单元格选择/拖选
       const cell = engine.cellAtLocalPoint(local);
       if (!cell) return;
+      const filterButton = sheet.filterButtons.find((button) => button.row === cell.row && button.column === cell.column);
+      if (filterButton) {
+        const cellRect = skeleton.getCellRect(cell.row, cell.column);
+        if (cellRect) {
+          const content = engine.localToContent(local);
+          if (content.x >= cellRect.x + cellRect.width - 18) {
+            setFilterPopover({ column: cell.column, x: event.clientX, y: event.clientY });
+            return;
+          }
+        }
+      }
       const additive = event.ctrlKey || event.metaKey;
       const extend = event.shiftKey && !additive;
       dragRef.current = {
@@ -566,7 +584,7 @@ export function SheetCanvas({
       (event.target as Element).setPointerCapture?.(event.pointerId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [floatables, localPointOf, onFloatingSelect, onSelectAll, onSelectionChange, phase, selection, sheet.filterColumns, sheetId, skeleton],
+    [floatables, localPointOf, onFloatingSelect, onSelectAll, onSelectionChange, phase, selection, sheet.filterButtons, sheet.filterColumns, sheetId, skeleton],
   );
 
   const handlePointerMove = useCallback(

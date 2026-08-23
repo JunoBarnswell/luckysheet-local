@@ -38,6 +38,7 @@ export function remapAst(node: FormulaAst, shift: StructuralShift): FormulaAst {
     case 'string-literal':
     case 'boolean-literal':
     case 'name-reference':
+    case 'table-reference':
       return node;
     case 'cell-reference':
       return { ...node, reference: remapReference(node.reference, shift) };

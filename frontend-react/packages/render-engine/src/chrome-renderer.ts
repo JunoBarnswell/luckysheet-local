@@ -28,6 +28,7 @@ export function drawChromeLayer(options: ChromeDrawOptions): void {
   if (chrome.editing) drawEditingOutline(options, chrome.editing);
   drawFreezeTrapLines(context, options.skeleton, plan.viewport.width, plan.viewport.height);
   drawResizePreview(options);
+  drawTableOutlines(options);
   drawFilterFunnels(options);
   drawRemoteCursors(options);
   void theme;
@@ -199,8 +200,68 @@ function drawResizePreview(options: ChromeDrawOptions): void {
   context.restore();
 }
 
+function drawTableOutlines(options: ChromeDrawOptions): void {
+  const { context, skeleton, plan, chrome } = options;
+  if (chrome.tableOutlines.length === 0) return;
+  for (const outline of chrome.tableOutlines) {
+    const contentRect = contentRangeRect(skeleton, outline);
+    if (!contentRect) continue;
+    for (const pane of plan.panes) {
+      const visible = intersect(
+        { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height },
+        contentRect,
+      );
+      if (!visible) continue;
+      const transform = paneTransform(pane);
+      const screen = {
+        x: visible.x + transform.dx,
+        y: visible.y + transform.dy,
+        width: visible.width,
+        height: visible.height,
+      };
+      context.save();
+      context.strokeStyle = '#2F5597';
+      context.lineWidth = 2;
+      context.strokeRect(screen.x + 1, screen.y + 1, screen.width - 2, screen.height - 2);
+      context.restore();
+    }
+  }
+}
+
+function drawFilterFunnelIcon(context: CanvasRenderingContext2D, cx: number, cy: number): void {
+  context.fillStyle = '#2563eb';
+  context.beginPath();
+  context.moveTo(cx, cy - 4);
+  context.lineTo(cx + 8, cy - 4);
+  context.lineTo(cx + 4.5, cy);
+  context.lineTo(cx + 4.5, cy + 4);
+  context.lineTo(cx + 3.5, cy + 4);
+  context.lineTo(cx + 3.5, cy);
+  context.closePath();
+  context.fill();
+}
+
 function drawFilterFunnels(options: ChromeDrawOptions): void {
   const { context, skeleton, plan, chrome } = options;
+  if (chrome.filterButtons.length > 0) {
+    for (const pane of plan.panes) {
+      const transform = paneTransform(pane);
+      for (const button of chrome.filterButtons) {
+        const rect = skeleton.getCellRect(button.row, button.column);
+        if (!rect) continue;
+        const visible = intersect(
+          { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height },
+          rect,
+        );
+        if (!visible) continue;
+        const cx = visible.x + transform.dx + visible.width - 12;
+        const cy = visible.y + transform.dy + 8;
+        drawFilterFunnelIcon(context, cx, cy);
+      }
+    }
+    return;
+  }
+
   if (chrome.filterColumns.length === 0) return;
   for (const pane of plan.panes) {
     if (pane.offset.y !== 0 || pane.id === "bottomLeft") continue;
@@ -211,16 +272,7 @@ function drawFilterFunnels(options: ChromeDrawOptions): void {
       if (left + width <= pane.offset.x || left >= pane.offset.x + pane.rect.width) continue;
       const cx = left + width + t.dx - 9;
       const cy = COL_HEADER_HEIGHT / 2;
-      context.fillStyle = "#2563eb";
-      context.beginPath();
-      context.moveTo(cx, cy - 4);
-      context.lineTo(cx + 8, cy - 4);
-      context.lineTo(cx + 4.5, cy);
-      context.lineTo(cx + 4.5, cy + 4);
-      context.lineTo(cx + 3.5, cy + 4);
-      context.lineTo(cx + 3.5, cy);
-      context.closePath();
-      context.fill();
+      drawFilterFunnelIcon(context, cx, cy);
     }
   }
 }

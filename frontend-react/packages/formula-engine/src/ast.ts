@@ -90,6 +90,14 @@ export interface NameReferenceNode {
   readonly span: SourceSpan;
 }
 
+export interface TableReferenceNode {
+  readonly type: 'table-reference';
+  readonly tableName: string;
+  readonly columnName: string;
+  readonly thisRow: boolean;
+  readonly span: SourceSpan;
+}
+
 export type FormulaAst =
   | NumberLiteralNode
   | StringLiteralNode
@@ -97,6 +105,7 @@ export type FormulaAst =
   | CellReferenceNode
   | RangeReferenceNode
   | NameReferenceNode
+  | TableReferenceNode
   | UnaryExpressionNode
   | BinaryExpressionNode
   | FunctionCallNode;

@@ -9,6 +9,13 @@ import {
 } from '@react-sheets/protocol';
 import { CollabSocketClient } from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures } from './feature-registry';
+import {
+  configureFormulaSpillEnvironment,
+  configureWorkbookSpillEnvironments,
+  syncFormulaSpillsToSheet,
+  syncWorkbookSheetTables,
+  syncWorkbookSpills,
+} from './formula-spill-sync';
 
 export interface RuntimeHandlers {
   onSaveState?: (state: import('./types').SaveState) => void;
@@ -103,15 +110,17 @@ export function createSpreadsheetRuntime(): SpreadsheetRuntime {
 
 function syncEngineCell(
   engine: FormulaEngine,
-  sheetId: string,
+  sheet: import('@react-sheets/core-model').WorksheetModel,
   row: number,
   column: number,
   data: CellData | undefined,
 ): void {
-  const address = { sheetId, row, column };
+  configureFormulaSpillEnvironment(engine, sheet);
+  const address = { sheetId: sheet.id, row, column };
   const hasContent = data !== undefined && (data.formula !== undefined || data.value != null);
   if (!hasContent) {
     engine.clearCell(address);
+    syncFormulaSpillsToSheet(engine, sheet);
     return;
   }
   if (data!.formula) {
@@ -119,6 +128,7 @@ function syncEngineCell(
   } else {
     engine.setValue(address, data!.value as never);
   }
+  syncFormulaSpillsToSheet(engine, sheet);
 }
 
 export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
@@ -145,21 +155,24 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       switch (mutation.id) {
         case 'cell.set': {
           const params = mutation.params as { row: number; column: number; value: CellData };
-          syncEngineCell(runtime.formula, mutation.sheetId, params.row, params.column, params.value);
+          const sheet = runtime.model.getSheet(mutation.sheetId);
+          syncEngineCell(runtime.formula, sheet, params.row, params.column, params.value);
           break;
         }
         case 'cell.restore': {
           const params = mutation.params as { row: number; column: number; previous?: CellData };
-          syncEngineCell(runtime.formula, mutation.sheetId, params.row, params.column, params.previous);
+          const sheet = runtime.model.getSheet(mutation.sheetId);
+          syncEngineCell(runtime.formula, sheet, params.row, params.column, params.previous);
           break;
         }
         case 'range.set': {
           const params = mutation.params as { startRow: number; startColumn: number; values: CellData[][] };
+          const sheet = runtime.model.getSheet(mutation.sheetId);
           params.values.forEach((rowValues, rowOffset) =>
             rowValues.forEach((value, columnOffset) => {
               syncEngineCell(
                 runtime.formula,
-                mutation.sheetId,
+                sheet,
                 params.startRow + rowOffset,
                 params.startColumn + columnOffset,
                 value,
@@ -170,10 +183,11 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         }
         case 'range.clear': {
           const params = mutation.params as { range: RangeRef; mode?: 'all' | 'contents' | 'formats' };
+          const sheet = runtime.model.getSheet(mutation.sheetId);
           if (params.mode === 'formats') break;
           for (let r = params.range.startRow; r <= params.range.endRow; r++) {
             for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
-              runtime.formula.clearCell({ sheetId: mutation.sheetId, row: r, column: c });
+              syncEngineCell(runtime.formula, sheet, r, c, undefined);
             }
           }
           break;
@@ -203,6 +217,11 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         case 'name.set':
         case 'name.remove':
           runtime.formula.setDefinedNames(runtime.model.definedNames);
+          break;
+        case 'sheetTable.add':
+        case 'sheetTable.remove':
+        case 'sheetTable.update':
+          syncWorkbookSheetTables(runtime.formula, runtime.model);
           break;
         default:
           break;
@@ -269,6 +288,7 @@ function submitChangeset(
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
   engine.setDefinedNames(workbook.definedNames);
+  configureWorkbookSpillEnvironments(engine, workbook);
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
@@ -276,6 +296,9 @@ function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
       else if (cell.value != null) engine.setValue(address, cell.value as never);
     });
   }
+  engine.recalculate();
+  syncWorkbookSpills(engine, workbook);
+  syncWorkbookSheetTables(engine, workbook);
   return engine;
 }
 

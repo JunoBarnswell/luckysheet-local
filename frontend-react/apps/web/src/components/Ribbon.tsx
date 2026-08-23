@@ -106,8 +106,18 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
           </>
         )}
       >
-        {activeTab === 'file' || activeTab === 'pageLayout' || activeTab === 'formulas' || activeTab === 'automate' ? (
+        {activeTab === 'file' || activeTab === 'pageLayout' || activeTab === 'automate' ? (
           <RibbonEmptyState message={locale === 'zh-CN' ? '此选项卡的命令将在此显示。' : 'Commands for this tab will appear here.'} />
+        ) : null}
+
+        {activeTab === 'formulas' ? (
+          <Inline gap="md" className="min-w-max items-start">
+            <RibbonGroup label="Calculation">
+              <Button size="sm" variant="ghost" icon="calculator" disabled={disabled} onClick={() => onExecute('recalculate-formulas')}>
+                Calculate Now
+              </Button>
+            </RibbonGroup>
+          </Inline>
         ) : null}
 
         {activeTab === 'home' ? (
@@ -303,6 +313,12 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               </Button>
               <Button size="sm" variant="ghost" icon="table" onClick={() => onExecute('table.create')}>
                 Create Data Table
+              </Button>
+              <Button size="sm" variant="ghost" icon="table" disabled={disabled} onClick={() => onExecute('format-as-sheet-table')}>
+                Format as Table
+              </Button>
+              <Button size="sm" variant="ghost" icon="table" disabled={disabled} onClick={() => onExecute('toggle-sheet-table-total-row')}>
+                Total Row
               </Button>
               <Button size="sm" variant="ghost" icon="check-circle" onClick={() => onExecute('ui.panel.open', { panel: 'dataValidation' })}>
                 Data Validation

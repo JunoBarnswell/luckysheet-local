@@ -192,11 +192,16 @@ class Parser {
       if (this.checkNext('left-paren')) {
         return this.parseFunctionCall();
       }
+      if (this.checkNext('left-bracket')) {
+        this.advance();
+        return this.parseTableReference(token);
+      }
+      const savedIndex = this.index;
       try {
         return this.parseReference();
       } catch {
-        // 不是合法单元格引用 → 视为定义名称引用
-        this.advance();
+        // parseReference consumes the leading identifier before failing.
+        if (this.index === savedIndex) this.advance();
         return { type: 'name-reference', name: token.lexeme, span: token.span };
       }
     }
@@ -229,6 +234,27 @@ class Parser {
       type: 'function-call',
       name: nameToken.lexeme,
       arguments: argumentsList,
+      span: { start: nameToken.span.start, end: closingToken.span.end },
+    };
+  }
+
+  private parseTableReference(nameToken: Token) {
+    this.expect('left-bracket', 'Expected [ after table name');
+    const thisRow = this.match('at-sign');
+    let columnName: string;
+    const columnToken = this.peek();
+    if (columnToken.kind === 'string') {
+      this.advance();
+      columnName = columnToken.value ?? '';
+    } else {
+      columnName = this.expect('identifier', 'Expected table column name').lexeme;
+    }
+    const closingToken = this.expect('right-bracket', 'Expected ] after table column');
+    return {
+      type: 'table-reference' as const,
+      tableName: nameToken.lexeme,
+      columnName,
+      thisRow,
       span: { start: nameToken.span.start, end: closingToken.span.end },
     };
   }

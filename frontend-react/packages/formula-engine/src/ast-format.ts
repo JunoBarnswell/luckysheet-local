@@ -26,6 +26,8 @@ function formatNode(node: FormulaAst): string {
       return formatNode(node.start) + ':' + formatNode(node.end);
     case 'name-reference':
       return node.name;
+    case 'table-reference':
+      return `${node.tableName}[${node.thisRow ? '@' : ''}${node.columnName}]`;
     case 'unary-expression':
       if (node.operator === '%') return formatNode(node.operand) + '%';
       return node.operator + formatNode(node.operand);

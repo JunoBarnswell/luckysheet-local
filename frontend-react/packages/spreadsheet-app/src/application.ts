@@ -11,6 +11,7 @@ import type {
   PivotSourceRowPath,
   RangeRef,
   ShapeModel,
+  SheetTableModel,
   SparklineModel,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
@@ -21,6 +22,9 @@ import { getPivotFieldCatalog as buildPivotFieldCatalog } from '@react-sheets/pr
 import {
   collectFindReplacements,
   copyRangeToClipboardData,
+  createFilterModelForTable,
+  defaultTotalsFunction,
+  findSheetTableAt,
   findValidationRule,
   formatTsv,
   normalizeRangeRef,
@@ -31,6 +35,7 @@ import {
   type GoToSpecialKind,
   type PasteMode,
 } from '@react-sheets/sheet-features';
+import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
 import { executeUiCommand, isUiCommand } from './execute-command';
 import { PermissionService } from './permission-service';
@@ -45,6 +50,7 @@ import {
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
+import { syncWorkbookSheetTables, syncWorkbookSpills } from './formula-spill-sync';
 import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId } from './types';
 
@@ -600,7 +606,14 @@ export class SpreadsheetApplication {
 
   beginEdit(initialText?: string): void {
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    for (const spill of sheet.spillRanges) {
+      if (isSpillChild(spill, sel.primaryRowIndex, sel.primaryColumnIndex)) {
+        this.notify('Spill cells are read-only');
+        return;
+      }
+    }
+    const cell = sheet.cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
     this.editSession.begin({
       sheetId: this.activeSheetId,
       row: sel.primaryRowIndex,
@@ -1105,6 +1118,78 @@ export class SpreadsheetApplication {
       sel.ranges[sel.primaryRangeIndex] ??
       normalizeRangeRef({ sheetId: this.activeSheetId, startRow: 0, endRow: Math.min(40, sheet.rowCount - 1), startColumn: 0, endColumn: Math.min(sheet.columnCount - 1, 6) });
     this.runCommand('sheet.sort.multi', { sheetId: this.activeSheetId, range, criteria: criteria.map((c) => ({ column: c.colIdx, ascending: c.ascending })), hasHeader });
+  }
+
+  setRecalculationMode(mode: RecalculationMode): void {
+    this.runtime.formula.setRecalculationMode(mode);
+    this.refresh();
+  }
+
+  recalculateFormulas(): void {
+    this.runtime.formula.recalculate();
+    syncWorkbookSpills(this.runtime.formula, this.runtime.model);
+    this.refresh();
+    this.notify('Formulas recalculated');
+  }
+
+  createSheetTableFromSelection(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    if (range.endRow <= range.startRow || range.endColumn <= range.startColumn) {
+      this.notify('Select a multi-cell range before creating a table');
+      return;
+    }
+    const usedNames = new Set(sheet.sheetTables.map((table) => table.name.trim().toUpperCase()));
+    let tableIndex = sheet.sheetTables.length + 1;
+    while (usedNames.has(`TABLE${tableIndex}`)) tableIndex += 1;
+    const fieldNames = new Set<string>();
+    const columns: SheetTableModel['columns'] = [];
+    for (let column = range.startColumn; column <= range.endColumn; column++) {
+      const rawName = String(sheet.cells.get(range.startRow, column)?.value ?? '').trim() || `Column${column - range.startColumn + 1}`;
+      let name = rawName;
+      let suffix = 2;
+      while (fieldNames.has(name.toUpperCase())) name = `${rawName}${suffix++}`;
+      fieldNames.add(name.toUpperCase());
+      const columnIndex = column - range.startColumn;
+      columns.push({ id: nextId('col'), name, totalsFunction: defaultTotalsFunction(columnIndex) });
+    }
+    const table: SheetTableModel = {
+      id: nextId('sheet-table'),
+      sheetId: this.activeSheetId,
+      name: `Table${tableIndex}`,
+      range,
+      hasHeaderRow: true,
+      hasTotalRow: false,
+      showBandedRows: true,
+      showBandedColumns: false,
+      showFilterButton: true,
+      columns,
+    };
+    this.runCommand('sheetTable.add', table);
+    if (table.showFilterButton) {
+      this.runCommand('sheet.filter.set', { sheetId: this.activeSheetId, filter: createFilterModelForTable(table) });
+    }
+    syncWorkbookSheetTables(this.runtime.formula, this.runtime.model);
+    this.notify(`Sheet table ${table.name} created`);
+    this.refresh();
+  }
+
+  toggleSheetTableTotalRow(tableId?: string, enabled?: boolean): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selection = this.selectionService.getState();
+    const table = tableId
+      ? sheet.sheetTables.find((entry) => entry.id === tableId)
+      : findSheetTableAt(sheet, selection.primaryRowIndex, selection.primaryColumnIndex);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    const nextEnabled = enabled ?? !table.hasTotalRow;
+    this.runCommand('sheetTable.toggleTotalRow', { sheetId: this.activeSheetId, tableId: table.id, enabled: nextEnabled });
+    syncWorkbookSheetTables(this.runtime.formula, this.runtime.model);
+    syncWorkbookSpills(this.runtime.formula, this.runtime.model);
+    this.notify(nextEnabled ? `Total row added to ${table.name}` : `Total row removed from ${table.name}`);
+    this.refresh();
   }
 
   createDataTableFromSelection(): void {
