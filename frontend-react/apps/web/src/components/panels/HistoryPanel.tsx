@@ -31,6 +31,7 @@ export function HistoryPanel({ entries, remoteRevisions = [], onUndoTo, onClose 
                   <Text size="xs" weight="semibold" className="text-blue-700">#{revision.revision}</Text>
                   <Stack gap="none" className="min-w-0">
                     <Text size="xs" className="truncate">{revision.payload.mutations.length} mutation(s)</Text>
+                    <Text size="xs" tone="subtle" className="truncate">{revision.payload.mutations.slice(0, 3).map((mutation) => mutation.id).join(' · ') || 'Workbook metadata'}</Text>
                     <Text size="xs" tone="subtle">{new Date(revision.createdAt).toLocaleString()}</Text>
                   </Stack>
                 </Inline>
