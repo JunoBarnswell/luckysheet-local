@@ -1,0 +1,29 @@
+import { Button, Stack, Text } from '@react-sheets/ui-system';
+import type { PivotFieldDefinition } from './types';
+
+export interface PivotSlicerProps {
+  field: PivotFieldDefinition;
+  selectedValues: readonly string[];
+  disabled?: boolean;
+  onChange: (values: string[]) => void;
+}
+
+export function PivotSlicer({ disabled = false, field, onChange, selectedValues }: PivotSlicerProps) {
+  const values = field.values ?? [];
+  const allSelected = selectedValues.length === 0 || selectedValues.length === values.length;
+  return (
+    <Stack gap="xs" className="rounded-lg border border-blue-100 bg-blue-50/30 p-2">
+      <Text size="xs" weight="semibold">Slicer · {field.label}</Text>
+      <Button disabled={disabled} size="xs" variant="ghost" className="justify-start" onClick={() => onChange(allSelected ? [] : [...values])}>
+        {allSelected ? 'Clear filter' : 'Select all'}
+      </Button>
+      <Stack gap="xs" className="max-h-40 overflow-auto">
+        {values.map((value) => {
+          const selected = allSelected || selectedValues.includes(value);
+          const currentSelection = selectedValues.length === 0 ? [...values] : [...selectedValues];
+          return <Button key={value} disabled={disabled} aria-pressed={selected} size="xs" variant={selected ? 'soft' : 'ghost'} className="justify-start" onClick={() => onChange(selected ? currentSelection.filter((item) => item !== value) : [...currentSelection, value])}>{value}</Button>;
+        })}
+      </Stack>
+    </Stack>
+  );
+}

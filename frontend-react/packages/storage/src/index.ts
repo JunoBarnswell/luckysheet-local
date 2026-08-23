@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { CollaborationChangeSet, SnapshotResponse } from '@react-sheets/protocol';
-import { WorkbookModel, type CellData, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import { WorkbookModel, type CellData, type PivotModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
 
 const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -207,6 +207,15 @@ export class WorkbookStorage {
         const items = workbook.getSheet(mutation.sheetId).pivots;
         const index = items.findIndex((item) => item.id === mutation.params);
         if (index >= 0) items.splice(index, 1);
+      } else if (mutation.id === 'pivot.update') {
+        const params = mutation.params as { pivotId: string; layout?: PivotModel['layout']; slicers?: PivotModel['slicers']; timelines?: PivotModel['timelines']; chartReferences?: PivotModel['chartReferences'] };
+        const pivot = workbook.getSheet(mutation.sheetId).pivots.find((item) => item.id === params.pivotId);
+        if (pivot) {
+          if (params.layout) pivot.layout = structuredClone(params.layout);
+          if (params.slicers) pivot.slicers = structuredClone(params.slicers);
+          if (params.timelines) pivot.timelines = structuredClone(params.timelines);
+          if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
+        }
       } else if (mutation.id === 'shape.add') {
         workbook.getSheet(mutation.sheetId).shapes.push(mutation.params as never);
       } else if (mutation.id === 'shape.remove') {
@@ -283,22 +292,6 @@ export class WorkbookStorage {
     const params = mutation.params as { id: string; bounds: { x: number; y: number; width: number; height: number } };
     const shape = sheet.shapes.find((item) => item.id === params.id);
     if (shape && params.bounds) shape.bounds = { ...params.bounds };
-  } else if (mutation.id === 'pro.pivot.write') {
-    const sheet = workbook.getSheet(mutation.sheetId);
-    const params = mutation.params as {
-      pivotId: string;
-      targetStartRow: number;
-      targetStartColumn: number;
-      values: Array<Array<{ value: import('@react-sheets/core-model').CellValue; style?: import('@react-sheets/core-model').CellStyle }>>;
-    };
-    for (let r = 0; r < params.values.length; r++) {
-      const rowValues = params.values[r]!;
-      for (let c = 0; c < rowValues.length; c++) {
-        sheet.cells.set(params.targetStartRow + r, params.targetStartColumn + c, structuredClone(rowValues[c]!));
-      }
-    }
-    const pivot = sheet.pivots.find((item) => item.id === params.pivotId);
-    if (pivot) pivot.data = { ...(pivot.data ?? {}), lastWrittenAt: Date.now() };
   } else if (mutation.id === 'rows.hidden') {
     workbook.getSheet(mutation.sheetId).hiddenRows.add((mutation.params as { index: number }).index);
   } else if (mutation.id === 'rows.unhidden.all') {

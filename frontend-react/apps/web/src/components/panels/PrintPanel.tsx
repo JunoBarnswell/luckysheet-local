@@ -101,7 +101,7 @@ export function PrintPanel({ onPrint, onExportPdf, onClose }: PrintPanelProps) {
               icon="download"
               onClick={() => onExportPdf(getLayout())}
             >
-              Export High-Res PDF
+              Print / Save as PDF
             </Button>
           </div>
         </Stack>

@@ -1,6 +1,5 @@
-import type { ChartModel, PivotModel, RangeRef, ShapeModel, SparklineModel } from '@react-sheets/core-model';
+import type { ChartModel, PivotChartReference, PivotLayout, PivotModel, PivotSlicer, PivotTimeline, RangeRef, ShapeModel, SparklineModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
-import { buildPivotWriteback } from './pivot-write';
 
 export * from './chart-renderer';
 export * from './sparkline-renderer';
@@ -36,6 +35,16 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation('pivot.remove', (item, context) => {
     removeById(context.workbook.getSheet(item.sheetId).pivots, item.params as string);
   });
+  runtime.registry.registerMutation('pivot.update', (item, context) => {
+    const params = item.params as { pivotId: string; sheetId: string; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] };
+    const pivot = context.workbook.getSheet(params.sheetId).pivots.find((entry) => entry.id === params.pivotId);
+    if (pivot) {
+      if (params.layout) pivot.layout = structuredClone(params.layout);
+      if (params.slicers) pivot.slicers = structuredClone(params.slicers);
+      if (params.timelines) pivot.timelines = structuredClone(params.timelines);
+      if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
+    }
+  });
   runtime.registry.registerMutation('shape.add', (item, context) =>
     context.workbook.getSheet(item.sheetId).shapes.push(item.params as ShapeModel),
   );
@@ -57,6 +66,31 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     (params: AddChartParams) => params,
     (sheet) => sheet.charts,
   );
+  runtime.registry.registerCommand<{ pivotId: string; sheetId: string; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }>({
+    id: 'pro.pivot.update',
+    execute: (input, context) => {
+      const params = input as { pivotId: string; sheetId: string; layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] };
+      const pivot = context.workbook.getSheet(params.sheetId).pivots.find((entry) => entry.id === params.pivotId);
+      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const previous = { layout: structuredClone(pivot.layout), slicers: structuredClone(pivot.slicers), timelines: structuredClone(pivot.timelines), chartReferences: structuredClone(pivot.chartReferences) };
+      const affectedRanges = range(params.sheetId);
+      context.applyMutation({
+        id: 'pivot.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { pivotId: params.pivotId, sheetId: params.sheetId, ...previous }, affectedRanges }],
+        apply: () => {
+          if (params.layout) pivot.layout = structuredClone(params.layout);
+          if (params.slicers) pivot.slicers = structuredClone(params.slicers);
+          if (params.timelines) pivot.timelines = structuredClone(params.timelines);
+          if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
   registerAddCommand(
     runtime,
     'pro.pivot.add',
@@ -136,81 +170,6 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     (sheet) => sheet.shapes,
   );
 
-  // 数据透视写回
-  runtime.registry.registerMutation('pro.pivot.write', (item, context) => {
-    const params = item.params as {
-      sheetId: string;
-      pivotId: string;
-      targetStartRow: number;
-      targetStartColumn: number;
-      values: Array<Array<{ value: string | number | boolean | null }>>;
-    };
-    const sheet = context.workbook.getSheet(params.sheetId);
-    for (let r = 0; r < params.values.length; r++) {
-      const rowValues = params.values[r]!;
-      for (let c = 0; c < rowValues.length; c++) {
-        sheet.cells.set(params.targetStartRow + r, params.targetStartColumn + c, structuredClone(rowValues[c]!));
-      }
-    }
-  });
-  runtime.registry.registerCommand<{ sheetId: string; pivotId: string }>({
-    id: 'pro.pivot.write',
-    execute: (input, context) => {
-      const params = input as { sheetId: string; pivotId: string };
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const pivot = sheet.pivots.find((entry) => entry.id === params.pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const writeback = buildPivotWriteback(pivot, sheet);
-      const affectedRanges: RangeRef[] = [];
-      for (let r = 0; r < writeback.values.length; r++) {
-        affectedRanges.push({
-          sheetId: params.sheetId,
-          startRow: writeback.targetStartRow + r,
-          endRow: writeback.targetStartRow + r,
-          startColumn: writeback.targetStartColumn,
-          endColumn: writeback.targetStartColumn + writeback.values[r]!.length - 1,
-        });
-      }
-      context.applyMutation({
-        id: 'pro.pivot.write',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params: { ...params, ...writeback },
-        affectedRanges,
-        inverse: [
-          {
-            id: 'range.clear' as never,
-            unitId: context.workbook.unitId,
-            sheetId: params.sheetId,
-            params: {
-              sheetId: params.sheetId,
-              range: {
-                sheetId: params.sheetId,
-                startRow: writeback.targetStartRow,
-                endRow: writeback.targetStartRow + writeback.values.length - 1,
-                startColumn: writeback.targetStartColumn,
-                endColumn:
-                  writeback.targetStartColumn +
-                  Math.max(...writeback.values.map((row: { length: number }) => row.length)) -
-                  1,
-              },
-              mode: 'contents',
-            },
-            affectedRanges,
-          },
-        ],
-        apply: () => {
-          for (let r = 0; r < writeback.values.length; r++) {
-            const rowValues = writeback.values[r]!;
-            for (let c = 0; c < rowValues.length; c++) {
-              sheet.cells.set(writeback.targetStartRow + r, writeback.targetStartColumn + c, structuredClone(rowValues[c]!));
-            }
-          }
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
 }
 
 function registerAddCommand<T extends { id: string; sheetId: string }>(

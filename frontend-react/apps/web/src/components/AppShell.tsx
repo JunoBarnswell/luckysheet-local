@@ -7,8 +7,8 @@ export interface AppShellProps {
   formulaBar: ReactNode;
   isBusy: boolean;
   notice: string;
-  onMenu: () => void;
   onShare: () => void;
+  workbookMenu?: ReactNode;
   ribbon: ReactNode;
   saveState: SaveState;
   sheetTabs: ReactNode;
@@ -24,7 +24,7 @@ const saveStateCopy: Record<SaveState, { label: string; tone: string }> = {
   syncing: { label: 'Syncing', tone: 'text-sky-300' },
 };
 
-export function AppShell({ children, formulaBar, isBusy, notice, onMenu, onShare, ribbon, saveState, sheetTabs, statusBar, title, workspacePhase }: AppShellProps) {
+export function AppShell({ children, formulaBar, isBusy, notice, onShare, ribbon, saveState, sheetTabs, statusBar, title, workbookMenu, workspacePhase }: AppShellProps) {
   const saveCopy = saveStateCopy[saveState];
   return (
     <Box
@@ -62,7 +62,7 @@ export function AppShell({ children, formulaBar, isBusy, notice, onMenu, onShare
           </Inline>
           <Text size="xs" tone="subtle" className="hidden xl:inline">{notice}</Text>
           <Button aria-label="Share workbook" disabled={isBusy} icon="share" onClick={onShare} size="sm" variant="soft">Share</Button>
-          <Button aria-label="Open workbook menu" disabled={isBusy} icon="more-horizontal" iconOnly onClick={onMenu} size="sm" variant="ghost" className="text-slate-300 hover:bg-slate-800 hover:text-white" />
+          {workbookMenu}
         </Inline>
       </Box>
 

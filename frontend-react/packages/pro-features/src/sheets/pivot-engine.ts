@@ -1,122 +1,207 @@
-import type { CellData, PivotModel, RangeRef, WorkbookModel } from '@react-sheets/core-model';
+import type {
+  PivotAggregateFunction, PivotDataSource, PivotFieldCatalog, PivotFieldDataType, PivotFieldPlacement,
+  PivotFilter, PivotGroup, PivotModel, PivotResultCell, PivotResultNode, PivotResultTree, PivotScalar,
+  PivotSourceRowPath, PivotValueField, WorkbookModel, WorksheetModel, NormalizedPivotModel,
+} from '@react-sheets/core-model';
+import { normalizePivotDefinition } from '@react-sheets/core-model';
+
+interface SourceRow { values: Record<string, PivotScalar>; paths: PivotSourceRowPath[]; }
+interface AxisGroup { values: PivotScalar[]; rows: SourceRow[]; }
 
 export interface PivotResultTable {
   headers: string[];
-  rows: Array<{
-    keys: string[];
-    values: Array<number | string>;
-  }>;
-  grandTotal: Array<number | string>;
+  rows: Array<{ keys: string[]; values: PivotScalar[] }>;
+  grandTotal: PivotScalar[];
+  tree: PivotResultTree;
+}
+
+const jsonKey = (values: PivotScalar[]): string => JSON.stringify(values);
+const same = (left: PivotScalar, right: PivotScalar): boolean => left === right || (left == null && right == null);
+const display = (value: PivotScalar): string => value == null || value === '' ? '(blank)' : String(value);
+
+function toNumber(value: PivotScalar): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = Number(value.replace(/[$,%]/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compare(left: PivotScalar, right: PivotScalar): number {
+  if (same(left, right)) return 0;
+  if (left == null) return -1;
+  if (right == null) return 1;
+  const leftNumber = toNumber(left); const rightNumber = toNumber(right);
+  return leftNumber != null && rightNumber != null ? leftNumber - rightNumber : String(left).localeCompare(String(right));
+}
+
+function inferType(values: PivotScalar[]): PivotFieldDataType {
+  const present = values.filter((value) => value != null && value !== '');
+  if (!present.length) return 'mixed';
+  if (present.every((value) => typeof value === 'boolean')) return 'boolean';
+  if (present.every((value) => typeof value === 'number' && Number.isFinite(value))) return 'number';
+  const dateLike = present.every((value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value) && !Number.isNaN(Date.parse(value)));
+  if (dateLike) return 'date';
+  if (present.every((value) => typeof value === 'string')) return 'text';
+  return 'mixed';
+}
+
+function sourceRange(pivot: PivotModel | NormalizedPivotModel): PivotDataSource {
+  return pivot.dataSource ?? { kind: 'worksheet-range', range: pivot.sourceRange };
+}
+
+function readTable(sheet: WorksheetModel, range: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number }): SourceRow[] {
+  const names: string[] = [];
+  for (let column = range.startColumn; column <= range.endColumn; column++) names.push(String(sheet.cells.get(range.startRow, column)?.value ?? `Col${column - range.startColumn + 1}`));
+  const rows: SourceRow[] = [];
+  for (let row = range.startRow + 1; row <= range.endRow; row++) {
+    const values: Record<string, PivotScalar> = {};
+    names.forEach((name, index) => { values[name] = sheet.cells.get(row, range.startColumn + index)?.value ?? null; });
+    rows.push({ values, paths: [{ sheetId: range.sheetId, row }] });
+  }
+  return rows;
+}
+
+function joinTables(workbook: WorkbookModel, source: Extract<PivotDataSource, { kind: 'worksheet-ranges' }>): SourceRow[] {
+  if (!source.ranges.length) return [];
+  let current = readTable(workbook.getSheet(source.ranges[0]!.sheetId), source.ranges[0]!);
+  for (let index = 1; index < source.ranges.length; index++) {
+    const range = source.ranges[index]!; const right = readTable(workbook.getSheet(range.sheetId), range);
+    const relationship = source.relationships.find((candidate) => candidate.left.sheetId === source.ranges[index - 1]!.sheetId && candidate.right.sheetId === range.sheetId);
+    if (!relationship) throw new Error('Every local worksheet range must have an adjacent typed relationship');
+    const joined: SourceRow[] = [];
+    for (const left of current) {
+      const matches = right.filter((row) => same(left.values[relationship.left.field] ?? null, row.values[relationship.right.field] ?? null));
+      if (!matches.length && relationship.join === 'left') joined.push(left);
+      for (const match of matches) joined.push({ values: { ...left.values, ...match.values }, paths: [...left.paths, ...match.paths] });
+    }
+    current = joined;
+  }
+  return current;
+}
+
+function readSource(workbook: WorkbookModel, pivot: PivotModel | NormalizedPivotModel): SourceRow[] {
+  const source = sourceRange(pivot);
+  return source.kind === 'worksheet-range' ? readTable(workbook.getSheet(source.range.sheetId), source.range) : joinTables(workbook, source);
+}
+
+export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel | NormalizedPivotModel): PivotFieldCatalog {
+  if (pivot.fieldCatalog) return structuredClone(pivot.fieldCatalog);
+  const rows = readSource(workbook, pivot); const names = new Set<string>();
+  rows.forEach((row) => Object.keys(row.values).forEach((name) => names.add(name)));
+  return { fields: [...names].map((name, ordinal) => {
+    const values = rows.map((row) => row.values[name] ?? null);
+    return { id: name, name, ordinal, dataType: inferType(values), values: [...new Map(values.filter((value) => value != null).map((value) => [JSON.stringify(value), value])).values()] };
+  }) };
+}
+
+function matchesFilter(row: SourceRow, filter: PivotFilter): boolean {
+  const value = row.values[filter.field] ?? null;
+  if (filter.kind === 'top-items') throw new Error('top-items filters must be applied by the topItems stage');
+  if (filter.kind === 'manual') return filter.exclude ? !filter.selected.some((item) => same(item, value)) : filter.selected.some((item) => same(item, value));
+  const leftNumber = toNumber(value); const rightNumber = toNumber(filter.value); const order = leftNumber != null && rightNumber != null ? leftNumber - rightNumber : compare(value, filter.value);
+  switch (filter.operator) {
+    case 'equals': return same(value, filter.value); case 'not-equals': return !same(value, filter.value); case 'contains': return String(value ?? '').includes(String(filter.value ?? ''));
+    case 'greater-than': return order > 0; case 'greater-or-equal': return order >= 0; case 'less-than': return order < 0; case 'less-or-equal': return order <= 0;
+  }
+}
+
+function aggregate(rows: SourceRow[], field: string, operation: PivotAggregateFunction): number | null {
+  const raw = rows.map((row) => row.values[field] ?? null); const numbers = raw.map(toNumber).filter((value): value is number => value != null);
+  switch (operation) {
+    case 'count': return raw.filter((value) => value != null && value !== '').length;
+    case 'count-numbers': return numbers.length;
+    case 'sum': return numbers.reduce((sum, value) => sum + value, 0);
+    case 'average': return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
+    case 'min': return numbers.length ? Math.min(...numbers) : null;
+    case 'max': return numbers.length ? Math.max(...numbers) : null;
+    case 'product': return numbers.length ? numbers.reduce((product, value) => product * value, 1) : null;
+    case 'distinct-count': return new Set(raw.filter((value) => value != null).map((value) => JSON.stringify(value))).size;
+    case 'stdev': case 'var': return sampleVariance(numbers, operation === 'stdev');
+    case 'stdevp': case 'varp': return populationVariance(numbers, operation === 'stdevp');
+  }
+}
+function sampleVariance(numbers: number[], squareRoot: boolean): number | null { if (numbers.length < 2) return null; const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length; const variance = numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (numbers.length - 1); return squareRoot ? Math.sqrt(variance) : variance; }
+function populationVariance(numbers: number[], squareRoot: boolean): number | null { if (!numbers.length) return null; const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length; const variance = numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / numbers.length; return squareRoot ? Math.sqrt(variance) : variance; }
+
+function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
+  if (!group || value == null) return value;
+  if (group.kind === 'manual') return group.groups.find((candidate) => candidate.items.some((item) => same(item, value)))?.name ?? value;
+  if (group.kind === 'number') { const number = toNumber(value); if (number == null || group.interval <= 0) return value; const start = group.start ?? 0; return start + Math.floor((number - start) / group.interval) * group.interval; }
+  const date = new Date(String(value)); if (Number.isNaN(date.getTime())) return value;
+  if (group.unit === 'year') return date.getFullYear(); if (group.unit === 'quarter') return `${date.getFullYear()} Q${Math.floor(date.getMonth() / 3) + 1}`; if (group.unit === 'month') return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  if (group.unit === 'week') return Math.ceil((((date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) / 86400000) + date.getDay() + 1) / 7);
+  return date.toISOString().slice(0, 10);
+}
+
+function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[]): AxisGroup[] {
+  const map = new Map<string, AxisGroup>();
+  for (const row of rows) { const values = placements.map((placement) => grouped(row.values[placement.field] ?? null, placement.group)); const group = map.get(jsonKey(values)) ?? { values, rows: [] }; group.rows.push(row); map.set(jsonKey(values), group); }
+  const placement = placements[placements.length - 1]; const result = [...map.values()].sort((left, right) => {
+    if (placement?.sort?.by === 'value' && placement.sort.valueField) return (aggregate(left.rows, placement.sort.valueField, 'sum') ?? 0) - (aggregate(right.rows, placement.sort.valueField, 'sum') ?? 0);
+    for (let index = 0; index < left.values.length; index++) { const order = compare(left.values[index] ?? null, right.values[index] ?? null); if (order) return order; } return 0;
+  });
+  if (placement?.sort?.direction === 'descending') result.reverse(); return result;
+}
+
+function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
+  let result = rows;
+  for (const filter of filters) {
+    if (filter.kind !== 'top-items' || filter.count < 1) continue;
+    const buckets = new Map<string, SourceRow[]>(); for (const row of result) { const bucketKey = JSON.stringify(row.values[filter.field] ?? null); const bucket = buckets.get(bucketKey) ?? []; bucket.push(row); buckets.set(bucketKey, bucket); }
+    const ranked = [...buckets.values()].sort((left, right) => (aggregate(left, filter.valueField, 'sum') ?? 0) - (aggregate(right, filter.valueField, 'sum') ?? 0)); if (filter.direction === 'top') ranked.reverse(); result = ranked.slice(0, filter.count).flat();
+  }
+  return result;
+}
+
+function matchesSlicersAndTimelines(rows: SourceRow[], pivot: NormalizedPivotModel): SourceRow[] {
+  const slicers = pivot.slicers ?? [];
+  const timelines = pivot.timelines ?? [];
+  return rows.filter((row) => slicers.every((slicer) => slicer.selected.length === 0 || slicer.selected.some((value) => same(value, row.values[slicer.field] ?? null))) && timelines.every((timeline) => {
+    const raw = row.values[timeline.field];
+    if (raw == null) return false;
+    const date = new Date(String(raw));
+    if (Number.isNaN(date.getTime())) return false;
+    const start = timeline.start ? new Date(timeline.start).getTime() : Number.NEGATIVE_INFINITY;
+    const end = timeline.end ? new Date(timeline.end).getTime() : Number.POSITIVE_INFINITY;
+    return date.getTime() >= start && date.getTime() <= end;
+  }));
+}
+
+function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValueField[]): PivotResultCell[] {
+  return columns.map((column) => { const columnRows = rows.filter((row) => column.rows.includes(row)); return { kind: 'detail', columnPath: column.values, sourceRowPaths: columnRows.flatMap((row) => row.paths), values: values.map((value) => aggregate(columnRows, value.field, value.summarizeBy)) }; });
+}
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotValueField[], showSubtotals: boolean): PivotResultNode[] {
+  if (depth >= placements.length) return [];
+  return axisGroups(rows, [placements[depth]!]).map((group) => { const children = resultNodes(group.rows, placements, depth + 1, columns, values, showSubtotals); const leaf = children.length === 0; return { kind: leaf ? 'leaf' : 'subtotal', field: placements[depth]!.field, key: group.values[0] ?? null, label: display(group.values[0] ?? null), depth, children, values: resultCells(group.rows, columns, values), subtotal: showSubtotals && !leaf, sourceRowPaths: group.rows.flatMap((row) => row.paths) }; });
+}
+
+function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
+  const leaves: PivotResultNode[] = []; const collect = (nodes: PivotResultNode[]) => nodes.forEach((node) => node.children.length ? collect(node.children) : leaves.push(node)); collect(tree.rows);
+  const raw = new Map<PivotResultCell, PivotScalar[]>(); const snapshot = (nodes: PivotResultNode[]) => nodes.forEach((node) => { node.values.forEach((cell) => raw.set(cell, [...cell.values])); snapshot(node.children); }); snapshot(tree.rows);
+  const rawValues = (cell: PivotResultCell | undefined, index: number): PivotScalar | null => cell ? raw.get(cell)?.[index] ?? null : null;
+  const visit = (nodes: PivotResultNode[], parent?: PivotResultNode) => nodes.forEach((node) => {
+    node.values.forEach((cell, columnIndex) => fields.forEach((field, valueIndex) => {
+      const spec = field.showAs ?? { kind: 'normal' as const }; const current = toNumber(rawValues(cell, valueIndex)); if (current == null || spec.kind === 'normal') return;
+      const grand = toNumber(tree.grandTotal?.values[valueIndex] ?? null); const rowTotal = node.values.reduce((sum, item) => sum + (toNumber(rawValues(item, valueIndex)) ?? 0), 0); const columnTotal = leaves.reduce((sum, item) => sum + (toNumber(rawValues(item.values[columnIndex], valueIndex)) ?? 0), 0); const parentTotal = parent ? toNumber(rawValues(parent.values[columnIndex], valueIndex)) : null;
+      if (spec.kind === 'grand-percentage') cell.values[valueIndex] = grand ? current / grand : null;
+      else if (spec.kind === 'row-percentage') cell.values[valueIndex] = rowTotal ? current / rowTotal : null;
+      else if (spec.kind === 'column-percentage') cell.values[valueIndex] = columnTotal ? current / columnTotal : null;
+      else if (spec.kind === 'parent-percentage') cell.values[valueIndex] = parentTotal ? current / parentTotal : null;
+      else if (spec.kind === 'difference' || spec.kind === 'percentage-difference') { const base = spec.base === 'grand' ? grand : spec.base === 'row' ? rowTotal : spec.base === 'column' ? columnTotal : parentTotal; cell.values[valueIndex] = base == null ? null : spec.kind === 'difference' ? current - base : base ? (current - base) / base : null; }
+      else if (spec.kind === 'running-total') { const end = spec.axis === 'row' ? leaves.indexOf(node) : columnIndex; if (spec.axis === 'row') cell.values[valueIndex] = leaves.slice(0, end + 1).reduce((sum, item) => sum + (toNumber(rawValues(item.values[columnIndex], valueIndex)) ?? 0), 0); else cell.values[valueIndex] = node.values.slice(0, end + 1).reduce((sum, item) => sum + (toNumber(rawValues(item, valueIndex)) ?? 0), 0); }
+      else if (spec.kind === 'rank') { const series = spec.axis === 'row' ? leaves.map((item) => toNumber(rawValues(item.values[columnIndex], valueIndex))) : node.values.map((item) => toNumber(rawValues(item, valueIndex))); const ranked = series.filter((value): value is number => value != null).sort((left, right) => spec.direction === 'ascending' ? left - right : right - left); cell.values[valueIndex] = ranked.indexOf(current) + 1; }
+      else if (spec.kind === 'index') cell.values[valueIndex] = grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
+    }));
+    visit(node.children, node);
+  }); visit(tree.rows);
+}
+
+export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
+  const definition = normalizePivotDefinition(pivot); let rows = matchesSlicersAndTimelines(readSource(workbook, definition), definition); rows = rows.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter))); rows = topItems(rows, definition.layout.filters);
+  const catalog = getPivotFieldCatalog(workbook, definition); const columns = definition.layout.columns.length ? axisGroups(rows, definition.layout.columns) : [{ values: [], rows }]; const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? { kind: 'grand-total', columnPath: [], values: definition.layout.values.map((field) => aggregate(rows, field.field, field.summarizeBy)), sourceRowPaths: rows.flatMap((row) => row.paths) } : null;
+  const tree: PivotResultTree = { schema: 'PivotResultTreeV1', pivotId: definition.id, fields: catalog, columnPaths: columns.map((column) => column.values), rows: resultNodes(rows, definition.layout.rows, 0, columns, definition.layout.values, definition.layout.showSubtotals), grandTotal, sourceRowPaths: rows.flatMap((row) => row.paths) }; applyShowAs(tree, definition.layout.values); return tree;
 }
 
 export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): PivotResultTable {
-  const sheet = workbook.getSheet(pivot.sourceRange.sheetId);
-  const { startRow, endRow, startColumn, endColumn } = pivot.sourceRange;
-
-  if (startRow >= endRow || startColumn >= endColumn) {
-    return { headers: [], rows: [], grandTotal: [] };
-  }
-
-  // 1. Read header names
-  const headers: string[] = [];
-  for (let c = startColumn; c <= endColumn; c++) {
-    const cell = sheet.cells.get(startRow, c);
-    headers.push(String(cell?.value ?? `Col${c - startColumn + 1}`));
-  }
-
-  // 2. Read data rows
-  const data: Array<Record<string, unknown>> = [];
-  for (let r = startRow + 1; r <= endRow; r++) {
-    const rowObj: Record<string, unknown> = {};
-    for (let c = startColumn; c <= endColumn; c++) {
-      const headerName = headers[c - startColumn]!;
-      const cell = sheet.cells.get(r, c);
-      rowObj[headerName] = cell?.value ?? null;
-    }
-    data.push(rowObj);
-  }
-
-  // 3. Group by rowFields
-  const groups = new Map<string, Array<Record<string, unknown>>>();
-  for (const item of data) {
-    const groupKey = pivot.rowFields.map((f) => String(item[f] ?? '(blank)')).join(' | ');
-    let list = groups.get(groupKey);
-    if (!list) {
-      list = [];
-      groups.set(groupKey, list);
-    }
-    list.push(item);
-  }
-
-  // 4. Aggregate values
-  const resultRows: PivotResultTable['rows'] = [];
-  for (const [groupKey, items] of groups) {
-    const keys = groupKey.split(' | ');
-    const values: Array<number | string> = [];
-
-    for (const valField of pivot.valueFields) {
-      const fieldName = valField.field;
-      const op = valField.summarizeBy;
-      const numList: number[] = [];
-
-      for (const item of items) {
-        const val = item[fieldName];
-        if (typeof val === 'number') numList.push(val);
-        else if (typeof val === 'string' && !Number.isNaN(Number(val))) numList.push(Number(val));
-      }
-
-      if (op === 'count') {
-        values.push(items.length);
-      } else if (op === 'sum') {
-        values.push(numList.reduce((a, b) => a + b, 0));
-      } else if (op === 'average') {
-        values.push(numList.length > 0 ? numList.reduce((a, b) => a + b, 0) / numList.length : 0);
-      } else if (op === 'min') {
-        values.push(numList.length > 0 ? Math.min(...numList) : 0);
-      } else if (op === 'max') {
-        values.push(numList.length > 0 ? Math.max(...numList) : 0);
-      } else if (op === 'product') {
-        values.push(numList.length > 0 ? numList.reduce((a, b) => a * b, 1) : 0);
-      }
-    }
-
-    resultRows.push({ keys, values });
-  }
-
-  // 5. Grand Totals
-  const grandTotal: Array<number | string> = [];
-  for (const valField of pivot.valueFields) {
-    const fieldName = valField.field;
-    const op = valField.summarizeBy;
-    const numList: number[] = [];
-
-    for (const item of data) {
-      const val = item[fieldName];
-      if (typeof val === 'number') numList.push(val);
-      else if (typeof val === 'string' && !Number.isNaN(Number(val))) numList.push(Number(val));
-    }
-
-    if (op === 'count') {
-      grandTotal.push(data.length);
-    } else if (op === 'sum') {
-      grandTotal.push(numList.reduce((a, b) => a + b, 0));
-    } else if (op === 'average') {
-      grandTotal.push(numList.length > 0 ? numList.reduce((a, b) => a + b, 0) / numList.length : 0);
-    } else if (op === 'min') {
-      grandTotal.push(numList.length > 0 ? Math.min(...numList) : 0);
-    } else if (op === 'max') {
-      grandTotal.push(numList.length > 0 ? Math.max(...numList) : 0);
-    }
-  }
-
-  const resultHeaders = [
-    ...pivot.rowFields,
-    ...pivot.valueFields.map((v) => v.displayName || `${v.summarizeBy.toUpperCase()} of ${v.field}`),
-  ];
-
-  return {
-    headers: resultHeaders,
-    rows: resultRows,
-    grandTotal,
-  };
+  const tree = computePivotResult(workbook, pivot); const definition = normalizePivotDefinition(pivot); const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) })); const headers = [...definition.layout.rows.map((field) => field.field), ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? `${field.summarizeBy.toUpperCase()} of ${field.field}`}` : field.displayName ?? `${field.summarizeBy.toUpperCase()} of ${field.field}`))]; return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }

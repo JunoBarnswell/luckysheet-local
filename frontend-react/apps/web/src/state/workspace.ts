@@ -10,7 +10,14 @@ import {
   type FilterModel,
   type FreezeModel,
   type MergeSpan,
+  type PivotFieldDefinition,
+  type PivotLayout,
   type PivotModel,
+  type PivotChartReference,
+  type PivotSlicer,
+  type PivotTimeline,
+  type PivotResultTree,
+  type PivotSourceRowPath,
   type RangeRef,
   type ShapeModel,
   type SparklineModel,
@@ -40,7 +47,7 @@ import {
   type CollaborationMutation,
   type SnapshotResponse,
 } from '@react-sheets/protocol';
-import { buildXlsxArchiveBase64, registerProSheetCommands, type PrintLayout } from '@react-sheets/pro-features';
+import { buildXlsxArchiveBase64, computePivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, registerProSheetCommands, type PrintLayout } from '@react-sheets/pro-features';
 
 export type WorkspacePhase = 'empty' | 'error' | 'loading' | 'ready';
 export type RibbonTabId = 'data' | 'home' | 'insert' | 'review' | 'view';
@@ -84,6 +91,7 @@ export interface SheetCell {
   value: string;
   /** 单元格级标记(由视图构建阶段计算) */
   hasComment?: boolean;
+  commentText?: string;
   invalid?: boolean;
   hyperlink?: string;
   /** 条件格式覆盖 */
@@ -104,6 +112,7 @@ export interface SheetView {
   rows: SheetRow[];
   charts: ChartModel[];
   pivots: PivotModel[];
+  pivotResults: Record<string, PivotResultTree>;
   shapes: ShapeModel[];
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
@@ -129,6 +138,7 @@ export interface PeerCursor {
 }
 
 export interface WorkspaceState {
+  workbookName: string;
   selection: SelectionState;
   /** 主单元格地址(派生,供公式栏/状态栏使用) */
   activeCell: string;
@@ -162,8 +172,8 @@ export interface WorkspaceActions {
   movePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   jumpEdge: (direction: 'up' | 'down' | 'left' | 'right', extend?: boolean) => void;
   selectAll: () => void;
-  selectRowHeader: (row: number, mode?: 'replace' | 'add') => void;
-  selectColumnHeader: (column: number, mode?: 'replace' | 'add') => void;
+  selectRowHeader: (startRow: number, endRow?: number, mode?: 'replace' | 'add') => void;
+  selectColumnHeader: (startColumn: number, endColumn?: number, mode?: 'replace' | 'add') => void;
   // 编辑
   beginEdit: (initialText?: string) => void;
   cancelEdit: () => void;
@@ -187,6 +197,8 @@ export interface WorkspaceActions {
   updateChartBounds: (id: string, bounds: ChartModel['bounds']) => void;
   removeChart: (id: string) => void;
   addPivot: (pivot: PivotModel) => void;
+  updatePivotLayout: (pivotId: string, layout: PivotLayout) => void;
+  updatePivotConfiguration: (pivotId: string, patch: { layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }) => void;
   refreshPivot: (id: string) => void;
   removePivot: (id: string) => void;
   addShape: (shape: ShapeModel) => void;
@@ -247,6 +259,8 @@ export interface WorkspaceActions {
   setSelectedFloatingId: (id: string | null) => void;
   removeFloatingObject: (kind: 'chart' | 'shape', id: string) => void;
   getActiveSheetName: () => string;
+  getPivotFieldCatalog: (range: RangeRef) => PivotFieldDefinition[];
+  showPivotDetails: (paths: PivotSourceRowPath[]) => void;
 }
 
 export interface UseWorkspaceStateOptions {
@@ -341,80 +355,8 @@ function toFormulaDisplay(value: FormulaValue): string {
   return value == null ? '' : String(value);
 }
 
-function seedWorkbook(runtime: WorkspaceRuntime): void {
-  const values: CellData[][] = [
-    [
-      { value: 'Q3 Growth Plan', style: { bold: true, fontSize: 13, background: '#f1f5f9' } },
-      { value: 'Owner', style: { bold: true, background: '#f1f5f9' } },
-      { value: 'Status', style: { bold: true, background: '#f1f5f9' } },
-      { value: 'Target', style: { bold: true, background: '#f1f5f9' } },
-      { value: 'Actual', style: { bold: true, background: '#f1f5f9' } },
-      { value: 'Variance', style: { bold: true, background: '#f1f5f9' } },
-    ],
-    [
-      { value: 'User Activation' },
-      { value: 'Maya Chen' },
-      { value: 'On track' },
-      { value: 0.42, numberFormat: '0%' },
-      { value: 0.38, numberFormat: '0%' },
-      { value: -0.04, numberFormat: '0%' },
-    ],
-    [
-      { value: 'Retention Rate' },
-      { value: 'Noah Williams' },
-      { value: 'Needs review' },
-      { value: 0.68, numberFormat: '0%' },
-      { value: 0.64, numberFormat: '0%' },
-      { value: -0.04, numberFormat: '0%' },
-    ],
-    [
-      { value: 'Enterprise Expansion' },
-      { value: 'Ava Patel' },
-      { value: 'On track' },
-      { value: 120000, numberFormat: '$#,##0' },
-      { value: 132000, numberFormat: '$#,##0' },
-      { value: 0.1, numberFormat: '0%' },
-    ],
-    [
-      { value: 'Referral Engine' },
-      { value: 'Liam Garcia' },
-      { value: 'At risk' },
-      { value: 0.16, numberFormat: '0%' },
-      { value: 0.11, numberFormat: '0%' },
-      { value: -0.05, numberFormat: '0%' },
-    ],
-    [
-      { value: 'Quarter Total', style: { bold: true } },
-      { value: 'Team Aggregate' },
-      { value: 'Active' },
-      { value: null, formula: '=SUM(D2:D5)' },
-      { value: null, formula: '=SUM(E2:E5)' },
-      { value: null, formula: '=D6-E6' },
-    ],
-  ];
-
-  runtime.commands.execute('sheet.range.set', {
-    sheetId: 'sheet-1',
-    startRow: 0,
-    startColumn: 0,
-    values,
-  });
-
-  for (let row = 0; row < values.length; row += 1) {
-    for (let column = 0; column < (values[row]?.length ?? 0); column += 1) {
-      const cell = values[row]?.[column];
-      if (!cell) continue;
-      const address = { sheetId: 'sheet-1', row, column };
-      if (cell.formula) runtime.formula.setFormula(address, cell.formula);
-      else if (cell.value != null) runtime.formula.setValue(address, cell.value);
-    }
-  }
-
-  runtime.commands.clearHistory();
-}
-
 function createWorkspaceRuntime(): WorkspaceRuntime {
-  const model = new WorkbookModel(resolveUnitId(), 'Q3 Growth Planning');
+  const model = new WorkbookModel(resolveUnitId(), 'Untitled workbook');
   const commands = new CommandRuntime(model);
   registerSheetCommands(commands);
   registerProSheetCommands(commands);
@@ -432,7 +374,6 @@ function createWorkspaceRuntime(): WorkspaceRuntime {
     collab: null,
   };
   attachCoreListeners(runtime);
-  seedWorkbook(runtime);
   return runtime;
 }
 
@@ -628,6 +569,7 @@ function formatDisplayValue(
 }
 
 function toSheetView(
+  workbook: WorkbookModel,
   sheet: WorksheetModel,
   formula: FormulaEngine,
   showInvalid: boolean,
@@ -659,6 +601,7 @@ function toSheetView(
         style,
         value,
         hasComment: Boolean(modelCell?.comment),
+        commentText: modelCell?.comment?.text,
         invalid: showInvalid && modelCell?.value != null && !validation.valid,
         hyperlink: modelCell?.hyperlink,
         overlay,
@@ -668,6 +611,15 @@ function toSheetView(
   }
 
   const isEmpty = sheet.cells.count() === 0;
+  const pivotResults: Record<string, PivotResultTree> = {};
+  for (const pivot of sheet.pivots) {
+    try {
+      pivotResults[pivot.id] = computePivotResult(workbook, pivot);
+    } catch {
+      // An invalid pivot remains visible in the model so the UI can report it;
+      // a failed projection must not prevent the worksheet from rendering.
+    }
+  }
 
   return {
     id: sheet.id,
@@ -677,6 +629,7 @@ function toSheetView(
     isEmpty,
     charts: [...sheet.charts],
     pivots: [...sheet.pivots],
+    pivotResults,
     shapes: [...sheet.shapes],
     sparklines: [...sheet.sparklines],
     conditionalFormats: [...sheet.conditionalFormats],
@@ -755,6 +708,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
 
     const applyRemote = (message: CollaborationMessage) => {
       if (message.type === 'revision.created') {
+        if (message.payload.unitId !== runtime.model.unitId) return;
         // 幂等:自己提交的 changeset 经服务器回播时跳过
         if (runtime.ownOperationIds.has(message.payload.operationId)) return;
         runtime.commands.applyRemoteMutations(
@@ -767,6 +721,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
         runtime.handlers.onSaveState?.('saved');
       } else if (message.type === 'cursor.updated' || message.type === 'presence.updated') {
+        if (message.unitId && message.unitId !== runtime.model.unitId) return;
         const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
         const color = PEER_COLORS[Math.abs(hashCode(message.actorId)) % PEER_COLORS.length]!;
         setPeers((current) => {
@@ -827,6 +782,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         if (!active) return;
         runtime.handlers.onSaveState?.('saved');
         runtime.handlers.onNotice?.('Workbook restored from server');
+        setPhase('ready');
         setActiveSheetId(runtime.model.activeSheetId);
         refresh();
       } catch {
@@ -837,11 +793,13 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           if (!active) return;
           runtime.handlers.onSaveState?.('saved');
           runtime.handlers.onNotice?.('SQLite sync connected');
+          setPhase('ready');
           refresh();
         } catch {
           if (!active) return;
-          runtime.handlers.onSaveState?.('offline');
-          runtime.handlers.onNotice?.('Running local in-memory engine');
+           runtime.handlers.onSaveState?.('offline');
+           runtime.handlers.onNotice?.('Running local in-memory engine');
+           setPhase('ready');
         }
       }
     })();
@@ -851,7 +809,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   }, [runtime, refresh]);
 
   const sheets = useMemo(
-    () => runtime.model.getSheets().map((sheet) => toSheetView(sheet, runtime.formula, true)),
+    () => runtime.model.getSheets().map((sheet) => toSheetView(runtime.model, sheet, runtime.formula, true)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [modelVersion, runtime],
   );
@@ -1021,15 +979,15 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   }, [selectRange, selectedSheet.rowCount]);
 
   const selectRowHeader = useCallback(
-    (row: number, mode: 'replace' | 'add' = 'replace') => {
-      selectRange({ startRow: row, startColumn: 0, endRow: row, endColumn: columns.length - 1 }, mode);
+    (startRow: number, endRow = startRow, mode: 'replace' | 'add' = 'replace') => {
+      selectRange({ startRow, startColumn: 0, endRow, endColumn: columns.length - 1 }, mode);
     },
     [selectRange],
   );
 
   const selectColumnHeader = useCallback(
-    (column: number, mode: 'replace' | 'add' = 'replace') => {
-      selectRange({ startRow: 0, startColumn: column, endRow: selectedSheet.rowCount - 1, endColumn: column }, mode);
+    (startColumn: number, endColumn = startColumn, mode: 'replace' | 'add' = 'replace') => {
+      selectRange({ startRow: 0, startColumn, endRow: selectedSheet.rowCount - 1, endColumn }, mode);
     },
     [selectRange, selectedSheet.rowCount],
   );
@@ -1181,8 +1139,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
 
   // ---- Ribbon 动作 ----
 
-  const handleRibbonAction = useCallback(
-    (action: string, payload?: unknown) => {
+  const handleRibbonAction = (action: string, payload?: unknown) => {
       const sheet = runtime.model.getSheet(activeSheetId);
       const primaryRange = selection.ranges[selection.primaryRangeIndex]
         ?? normalizeRangeRef({
@@ -1342,13 +1299,21 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           refresh();
           break;
         case 'autosum': {
-          const rowLabel = selection.primaryRowIndex + 1;
-          const endLabel = columnLabel(Math.max(0, selection.primaryColumnIndex - 1));
-          const formula = ` =SUM(A${rowLabel}:${endLabel}${rowLabel})`.trim();
-          setFormulaDraft(formula);
-          overrideTargetRef.current = { row: selection.primaryRowIndex, column: selection.primaryColumnIndex };
-          commitFormula(formula);
-          overrideTargetRef.current = null;
+          let sumStart = selection.primaryRowIndex - 1;
+          while (sumStart >= 0) {
+            const above = sheet.cells.get(sumStart, selection.primaryColumnIndex);
+            if (!above || typeof above.value !== 'number') break;
+            sumStart -= 1;
+          }
+          sumStart += 1;
+          if (sumStart < selection.primaryRowIndex) {
+            const label = columnLabelOf(selection.primaryColumnIndex);
+            const formula = '=SUM(' + label + (sumStart + 1) + ':' + label + selection.primaryRowIndex + ')';
+            setFormulaDraft(formula);
+            overrideTargetRef.current = { row: selection.primaryRowIndex, column: selection.primaryColumnIndex };
+            commitFormula(formula);
+            overrideTargetRef.current = null;
+          }
           break;
         }
         case 'function-wizard':
@@ -1378,40 +1343,40 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           break;
         }
         case 'insert-row':
-          actionsProxy.current.insertRowsAtPrimary?.(1);
+          insertRowsAtPrimary(1);
           break;
         case 'insert-column':
-          actionsProxy.current.insertColumnsAtPrimary?.(1);
+          insertColumnsAtPrimary(1);
           break;
         case 'delete-row':
-          actionsProxy.current.deleteRowsAtPrimary?.();
+          deleteRowsAtPrimary();
           break;
         case 'delete-column':
-          actionsProxy.current.deleteColumnsAtPrimary?.();
+          deleteColumnsAtPrimary();
           break;
         case 'hide-row':
-          actionsProxy.current.hideRowsAtPrimary?.();
+          hideRowsAtPrimary();
           break;
         case 'hide-column':
-          actionsProxy.current.hideColumnsAtPrimary?.();
+          hideColumnsAtPrimary();
           break;
         case 'unhide-all':
-          actionsProxy.current.unhideAll?.();
+          unhideAll();
           break;
         case 'transpose':
-          actionsProxy.current.transposeSelection?.();
+          transposeSelection();
           break;
         case 'flip-h':
-          actionsProxy.current.flipSelection?.('h');
+          flipSelection('h');
           break;
         case 'flip-v':
-          actionsProxy.current.flipSelection?.('v');
+          flipSelection('v');
           break;
         case 'split-column':
-          if (typeof payload === 'string') actionsProxy.current.splitByDelimiter?.(payload);
+          if (typeof payload === 'string') splitByDelimiter(payload);
           break;
         case 'banded-toggle':
-          actionsProxy.current.toggleBandedRows?.();
+          toggleBandedRows();
           break;
         case 'freeze-top-row':
           runtime.commands.execute('sheet.freeze.set', {
@@ -1447,7 +1412,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           refresh();
           break;
         case 'filter-clear':
-          actionsProxy.current.clearFilter?.();
+          clearFilter();
           break;
         case 'apply-filter-selection': {
           const activeRange = selection.ranges[selection.primaryRangeIndex];
@@ -1502,19 +1467,13 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
                 binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
               }
               return btoa(binary);
-            }).then((base64) => actionsProxy.current.importXlsxBase64?.(base64));
+              }).then((base64) => importXlsxBase64(base64)).catch(() => setNotice('Import failed'));
           };
           input.click();
           break;
         }
         case 'find-replace':
           setShowFindReplace(true);
-          break;
-        case 'banded':          setShowFindReplace(true);
-          break;
-        case 'banded':
-        case 'banded-toggle':
-          actionsProxy.current.toggleBandedRows?.();
           break;
         case 'zoom-in':
           setZoomState((current) => Math.min(200, current + 10));
@@ -1525,27 +1484,33 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         case 'zoom-100':
           setZoomState(100);
           break;
-        case 'freeze-top-row':
-          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: 0, ySplit: selection.primaryRowIndex + 1, startRow: selection.primaryRowIndex + 1, startColumn: 0 } });
-          refresh();
-          break;
-        case 'freeze-first-col':
-          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: selection.primaryColumnIndex + 1, ySplit: 0, startRow: 0, startColumn: selection.primaryColumnIndex + 1 } });
-          refresh();
-          break;
-        case 'freeze-at-primary':
-          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: selection.primaryColumnIndex, ySplit: selection.primaryRowIndex, startRow: selection.primaryRowIndex, startColumn: selection.primaryColumnIndex } });
-          refresh();
-          break;
-        case 'unfreeze':
-          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 } });
-          refresh();
-          break;
         case 'open-chart':
           setActivePanel('chart');
           break;
         case 'open-pivot':
           setActivePanel('pivot');
+          if (sheet.pivots.length === 0) {
+            const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn
+              ? primaryRange
+              : { sheetId: activeSheetId, startRow: 0, endRow: Math.max(1, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(1, sheet.columnCount - 1) };
+            const fieldCatalog = buildPivotFieldCatalog(runtime.model, { id: 'pivot-source', sheetId: activeSheetId, sourceRange, rowFields: [], columnFields: [], valueFields: [], filterFields: [] }).fields;
+            const rowField = fieldCatalog.find((field) => field.dataType !== 'number')?.id ?? fieldCatalog[0]?.id;
+            const valueField = fieldCatalog.find((field) => field.dataType === 'number')?.id ?? fieldCatalog[0]?.id;
+            if (rowField && valueField) {
+              const summarizeBy = fieldCatalog.find((field) => field.id === valueField)?.dataType === 'number' ? 'sum' : 'count';
+              runtime.commands.execute('pro.pivot.add', {
+                id: 'pivot-' + Math.random().toString(36).slice(2, 8),
+                sheetId: activeSheetId,
+                sourceRange,
+                rowFields: [rowField],
+                columnFields: [],
+                valueFields: [{ field: valueField, summarizeBy }],
+                filterFields: [],
+                layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
+              });
+              refresh();
+            }
+          }
           break;
         case 'open-shape':
           setActivePanel('shape');
@@ -1570,52 +1535,12 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           setActivePanel('inspector');
           setNotice('Comments are shown in the inspector panel');
           break;
-        case 'function-wizard':
-          setShowFunctionWizard(true);
-          break;
-        case 'autosum': {
-          const sheetModel = runtime.model.getSheet(activeSheetId);
-          let sumStart = selection.primaryRowIndex - 1;
-          while (sumStart >= 0) {
-            const above = sheetModel.cells.get(sumStart, selection.primaryColumnIndex);
-            if (!above || typeof above.value !== 'number') break;
-            sumStart -= 1;
-          }
-          sumStart += 1;
-          if (sumStart < selection.primaryRowIndex) {
-            const label = columnLabelOf(selection.primaryColumnIndex);
-            const formula = '=SUM(' + label + (sumStart + 1) + ':' + label + selection.primaryRowIndex + ')';
-            actionsProxy.current.setFormulaDraft?.(formula);
-            actionsProxy.current.beginEdit?.(formula);
-          }
-          break;
-        }
-        case 'sort-dialog':
-          setShowSortDialog(true);
-          break;
-        case 'sort-asc':
-        case 'sort-desc': {
-          const ascending = action === 'sort-asc';
-          runtime.commands.execute('sheet.sort', {
-            sheetId: activeSheetId,
-            range: selection.ranges[selection.primaryRangeIndex] ?? singleCellRange(selection.primaryRowIndex, selection.primaryColumnIndex),
-            sortColumn: selection.primaryColumnIndex,
-            ascending,
-            hasHeader: true,
-          });
-          refresh();
-          break;
-        }
         default:
           break;
       }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeSheetId, columns.length, phase, refresh, runtime, selection],
-  );
+  };
 
   // ==== 动作实现(截断恢复) ====
-  const actionsProxy = useRef<Partial<WorkspaceActions>>({});
 
   const columnLabelOf = (column: number): string => {
     let label = '';
@@ -1745,13 +1670,24 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const addPivot = useCallback((pivot: PivotModel) => {
     if (phase !== 'ready') return;
     runtime.commands.execute('pro.pivot.add', pivot);
-    runtime.commands.execute('pro.pivot.write', { sheetId: pivot.sheetId, pivotId: pivot.id });
     refresh();
   }, [phase, refresh, runtime]);
-
   const refreshPivot = useCallback((pivotId: string) => {
     if (phase !== 'ready') return;
-    runtime.commands.execute('pro.pivot.write', { sheetId: activeSheetId, pivotId });
+    const pivot = runtime.model.getSheet(activeSheetId).pivots.find((entry) => entry.id === pivotId);
+    if (!pivot) return;
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const updatePivotLayout = useCallback((pivotId: string, layout: PivotLayout) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.pivot.update', { sheetId: activeSheetId, pivotId, layout });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const updatePivotConfiguration = useCallback((pivotId: string, patch: { layout?: PivotLayout; slicers?: PivotSlicer[]; timelines?: PivotTimeline[]; chartReferences?: PivotChartReference[] }) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.pivot.update', { sheetId: activeSheetId, pivotId, ...patch });
     refresh();
   }, [activeSheetId, phase, refresh, runtime]);
 
@@ -2049,7 +1985,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     const response = await fetch('/api/v1/files/import-xlsx', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ xlsxBase64: base64 }),
+      body: JSON.stringify({ base64 }),
     });
     if (!response.ok) throw new Error('Import failed: ' + response.status);
     const result = (await response.json()) as SnapshotResponse;
@@ -2059,6 +1995,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     setSelection(createInitialSelection());
     refresh();
     setNotice('XLSX imported');
+    setPhase('ready');
   }, [refresh, runtime]);
 
   const sortRange = useCallback(
@@ -2098,6 +2035,35 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   }, [activeSheetId, phase, runtime]);
 
   const getActiveSheetName = useCallback(() => runtime.model.getSheet(activeSheetId).name, [activeSheetId, runtime]);
+
+  const getPivotFieldCatalog = useCallback((range: RangeRef): PivotFieldDefinition[] => {
+    const pivot: PivotModel = {
+      id: 'pivot-field-catalog',
+      sheetId: range.sheetId,
+      sourceRange: range,
+      rowFields: [],
+      columnFields: [],
+      valueFields: [],
+      filterFields: [],
+    };
+    return buildPivotFieldCatalog(runtime.model, pivot).fields;
+  }, [runtime]);
+
+  const showPivotDetails = useCallback((paths: PivotSourceRowPath[]) => {
+    if (phase !== 'ready' || paths.length === 0) return;
+    const first = paths[0]!;
+    const source = runtime.model.getSheet(first.sheetId);
+    const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    runtime.commands.execute('sheet.add', { id, name: 'Pivot Details' });
+    const values: CellData[][] = [];
+    for (const path of paths) {
+      const rowSheet = runtime.model.getSheet(path.sheetId);
+      values.push(Array.from({ length: source.columnCount }, (_, column) => structuredClone(rowSheet.cells.get(path.row, column) ?? { value: null })));
+    }
+    if (values.length > 0) runtime.commands.execute('sheet.range.set', { sheetId: id, startRow: 0, startColumn: 0, values });
+    setActiveSheetId(id);
+    refresh();
+  }, [phase, refresh, runtime]);
 
   const getRangeMatrix = useCallback((range: RangeRef): CellData[][] => {
     const sheet = runtime.model.getSheet(range.sheetId);
@@ -2193,8 +2159,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const closeFindReplace = useCallback(() => setShowFindReplace(false), []);
   const setShowPrintPreview = useCallback((open: boolean) => setShowPrintPreviewState(open), []);
 
-  const actions = useMemo<WorkspaceActions>(
-    () => ({
+  const actions: WorkspaceActions = {
       selectCell,
       selectRange,
       movePrimary,
@@ -2221,6 +2186,8 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       updateChartBounds,
       removeChart,
       addPivot,
+      updatePivotLayout,
+      updatePivotConfiguration,
       refreshPivot,
       removePivot,
       addShape,
@@ -2273,6 +2240,8 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       setSelectedFloatingId,
       removeFloatingObject,
       getActiveSheetName,
+      getPivotFieldCatalog,
+      showPivotDetails,
       setZoom: (nextZoom: number) => setZoomState(Math.max(50, Math.min(200, nextZoom))),
       commitFormula: (overrideValue?: string) => {
         if (overrideValue !== undefined) {
@@ -2285,14 +2254,12 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
       closeSortDialog,
       closeFindReplace,
       setShowPrintPreview,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  };
 
   const historyEntries = useMemo(() => runtime.commands.getUndoEntries(), [modelVersion, runtime]);
 
   const state = useMemo<WorkspaceState>(() => ({
+    workbookName: runtime.model.name,
     selectedFloatingId,
     selection,
     activeCell,
@@ -2315,7 +2282,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     showPrintPreview,
     actorId,
     collabStatus,
-  }), [activeCell, activePanel, activeSheetId, actorId, collabStatus, editingCell, formulaDraft, historyEntries, notice, peers, phase, ribbonTab, saveState, selectedFloatingId, selectedSheet, selection, sheets, showFindReplace, showFunctionWizard, showPrintPreview, showSortDialog, zoom]);
+  }), [activeCell, activePanel, activeSheetId, actorId, collabStatus, editingCell, formulaDraft, historyEntries, modelVersion, notice, peers, phase, ribbonTab, saveState, selectedFloatingId, selectedSheet, selection, sheets, showFindReplace, showFunctionWizard, showPrintPreview, showSortDialog, zoom]);
 
   return { actions, state };
 }

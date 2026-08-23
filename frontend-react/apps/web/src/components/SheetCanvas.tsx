@@ -64,7 +64,6 @@ export interface SheetCanvasProps {
   onFloatingRemove: (kind: "chart" | "shape" | "image", id: string) => void;
   onAction: (action: string, payload?: unknown) => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
-  onFilterColumn: (column: number) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
@@ -118,7 +117,6 @@ export function SheetCanvas({
   onFloatingRemove,
   onAction,
   onApplyFilter,
-  onFilterColumn,
   getValidationList,
   onRetry,
   onCreateSheet,

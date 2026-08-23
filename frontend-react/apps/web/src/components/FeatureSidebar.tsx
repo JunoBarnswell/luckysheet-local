@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Box,
   Button,
@@ -11,23 +11,23 @@ import {
   PanelTitle,
   Stack,
   StatePanel,
-  Tab,
   TabList,
   Tabs,
   Text,
+  TextInput,
   Textarea,
 } from '@react-sheets/ui-system';
 import type {
   ChartModel,
   ConditionalFormatRule,
   DataValidationRule,
-  PivotModel,
   ShapeModel,
   SparklineModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { PrintLayout } from '@react-sheets/pro-features';
 import type { SheetView, SidebarPanelId, WorkspacePhase } from '../state/workspace';
+import type { PivotDefinition as PivotUiDefinition, PivotFieldDefinition as PivotUiFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult as PivotUiResult } from './pivot/types';
 import { ChartPanel } from './panels/ChartPanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
@@ -44,14 +44,18 @@ export interface FeatureSidebarProps {
   selectedRange?: { startRow: number; endRow: number; startColumn: number; endColumn: number };
   getRangeMatrix?: unknown;
   getRangeNumbers?: unknown;
-  onRefreshPivot?: (id: string) => void;
   onPanelChange: (panel: SidebarPanelId) => void;
   onRetry: () => void;
   phase: WorkspacePhase;
   sheet: SheetView;
   sheetId: string;
   charts: ChartModel[];
-  pivots: PivotModel[];
+  pivotDefinition?: PivotUiDefinition;
+  pivotFieldCatalog?: readonly PivotUiFieldDefinition[];
+  pivotResult?: PivotUiResult;
+  onShowPivotDetails?: (paths: import('@react-sheets/core-model').PivotSourceRowPath[]) => void;
+  pivotPanelState?: PivotPanelState;
+  pivotCallbacks?: PivotPanelCallbacks;
   shapes: ShapeModel[];
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
@@ -59,8 +63,6 @@ export interface FeatureSidebarProps {
   historyEntries: readonly HistoryEntry[];
   onAddChart: (chart: ChartModel) => void;
   onRemoveChart: (id: string) => void;
-  onAddPivot: (pivot: PivotModel) => void;
-  onRemovePivot: (id: string) => void;
   onAddShape: (shape: ShapeModel) => void;
   onRemoveShape: (id: string) => void;
   onAddSparkline: (sparkline: SparklineModel) => void;
@@ -115,6 +117,7 @@ function InspectorPanel({
 }) {
   const cells = sheet.rows.flatMap((row) => row.cells).filter((cell) => cell.value !== '');
   const selected = cells.find((cell) => cell.address === activeCell);
+  const selectedCell = sheet.rows.flatMap((row) => row.cells).find((cell) => cell.address === activeCell);
   const numericValues = cells
     .map((cell) => Number(cell.value.replace(/[$,%]/g, '')))
     .filter((value) => Number.isFinite(value));
@@ -148,6 +151,8 @@ function InspectorPanel({
       </Panel>
 
       <CommentHyperlinkForms
+        commentText={selectedCell?.commentText ?? ''}
+        hyperlinkUrl={selectedCell?.hyperlink ?? ''}
         onAddComment={onAddComment}
         onRemoveComment={onRemoveComment}
         onSetHyperlink={onSetHyperlink}
@@ -182,7 +187,12 @@ export function FeatureSidebar({
   sheet,
   sheetId,
   charts,
-  pivots,
+  pivotDefinition,
+  pivotFieldCatalog,
+  pivotResult,
+  onShowPivotDetails,
+  pivotPanelState,
+  pivotCallbacks,
   shapes,
   sparklines,
   conditionalFormats,
@@ -190,9 +200,6 @@ export function FeatureSidebar({
   historyEntries,
   onAddChart,
   onRemoveChart,
-  onAddPivot,
-  onRefreshPivot,
-  onRemovePivot,
   onAddShape,
   onRemoveShape,
   onAddSparkline,
@@ -236,30 +243,32 @@ export function FeatureSidebar({
       <Tabs className="shrink-0 border-b border-slate-200 bg-white px-2 pt-2">
         <TabList label="Feature panels" className="grid grid-cols-5 gap-0.5">
           {panels.slice(0, 5).map((panel) => (
-            <Tab
+            <Button
               key={panel.id}
-              active={panel.id === activePanel}
+              aria-pressed={panel.id === activePanel}
               disabled={disabled}
               onClick={() => onPanelChange(panel.id)}
+              variant={panel.id === activePanel ? 'soft' : 'ghost'}
               className="flex-col gap-0.5 px-0.5 py-1.5"
             >
               <Icon name={panel.icon} size="xs" />
               <span className="text-[10px] font-medium leading-none">{panel.label}</span>
-            </Tab>
+            </Button>
           ))}
         </TabList>
         <TabList label="Pro feature panels" className="grid grid-cols-4 gap-0.5 border-t border-slate-100 py-1">
           {panels.slice(5).map((panel) => (
-            <Tab
+            <Button
               key={panel.id}
-              active={panel.id === activePanel}
+              aria-pressed={panel.id === activePanel}
               disabled={disabled}
               onClick={() => onPanelChange(panel.id)}
+              variant={panel.id === activePanel ? 'soft' : 'ghost'}
               className="flex-col gap-0.5 px-0.5 py-1"
             >
               <Icon name={panel.icon} size="xs" />
               <span className="text-[10px] font-medium leading-none">{panel.label}</span>
-            </Tab>
+            </Button>
           ))}
         </TabList>
       </Tabs>
@@ -299,12 +308,12 @@ export function FeatureSidebar({
         ) : null}
         {phase === 'ready' && activePanel === 'pivot' ? (
           <PivotPanel
-            sheetId={sheetId}
-            pivots={pivots}
-            defaultSourceRange={selectionText}
-            onRefreshPivot={onRefreshPivot}
-            onAddPivot={onAddPivot}
-            onRemovePivot={onRemovePivot}
+            definition={pivotDefinition}
+            fieldCatalog={pivotFieldCatalog}
+            result={pivotResult}
+            onShowDetails={onShowPivotDetails}
+            state={pivotPanelState}
+            callbacks={pivotCallbacks}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'shape' ? (
@@ -353,11 +362,15 @@ export function FeatureSidebar({
 
 
 function CommentHyperlinkForms({
+  commentText: initialCommentText,
+  hyperlinkUrl: initialHyperlinkUrl,
   onAddComment,
   onRemoveComment,
   onSetHyperlink,
   onRemoveHyperlink,
 }: {
+  commentText: string;
+  hyperlinkUrl: string;
   onAddComment?: (text: string) => void;
   onRemoveComment?: () => void;
   onSetHyperlink?: (url: string) => void;
@@ -365,6 +378,9 @@ function CommentHyperlinkForms({
 }) {
   const [commentText, setCommentText] = useState('');
   const [hyperlinkUrl, setHyperlinkUrl] = useState('');
+
+  useEffect(() => setCommentText(initialCommentText), [initialCommentText]);
+  useEffect(() => setHyperlinkUrl(initialHyperlinkUrl), [initialHyperlinkUrl]);
 
   return (
     <Stack gap="md">
@@ -414,12 +430,11 @@ function CommentHyperlinkForms({
         </PanelHeader>
         <PanelBody>
           <Stack gap="sm">
-            <input
+            <TextInput
               type="url"
               placeholder="https://example.com"
               value={hyperlinkUrl}
               onChange={(event) => setHyperlinkUrl(event.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-accent dark:border-slate-600 dark:bg-slate-800"
             />
             <Inline gap="sm" className="justify-end">
               {onRemoveHyperlink ? (

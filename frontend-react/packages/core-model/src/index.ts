@@ -102,23 +102,8 @@ export interface ChartModel {
   showDataLabels?: boolean;
 }
 
-export interface PivotValueField {
-  field: string;
-  summarizeBy: 'sum' | 'count' | 'average' | 'min' | 'max' | 'product';
-  displayName?: string;
-}
-
-export interface PivotModel {
-  id: string;
-  sheetId: SheetId;
-  sourceRange: RangeRef;
-  targetAnchor?: { row: Row; column: Column };
-  rowFields: string[];
-  columnFields: string[];
-  valueFields: PivotValueField[];
-  filterFields: string[];
-  data?: Record<string, unknown>;
-}
+import type { PivotModel } from './pivot';
+export * from './pivot';
 
 export interface ShapeModel {
   id: string;

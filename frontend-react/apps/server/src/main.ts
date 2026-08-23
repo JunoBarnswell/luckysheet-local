@@ -36,7 +36,22 @@ function unzipXlsxBase64(base64: string): Record<string, string> {
 
 const storage = new WorkbookStorage();
 const port = Number(process.env.REACT_SHEETS_SERVER_PORT ?? 4181);
-const clients = new Set<import('ws').WebSocket>();
+const clientsByUnit = new Map<string, Set<import('ws').WebSocket>>();
+
+function joinUnit(unitId: string, socket: import('ws').WebSocket): Set<import('ws').WebSocket> {
+  const clients = clientsByUnit.get(unitId) ?? new Set<import('ws').WebSocket>();
+  clients.add(socket);
+  clientsByUnit.set(unitId, clients);
+  return clients;
+}
+
+function leaveUnit(unitId: string | null, socket: import('ws').WebSocket): void {
+  if (!unitId) return;
+  const clients = clientsByUnit.get(unitId);
+  if (!clients) return;
+  clients.delete(socket);
+  if (clients.size === 0) clientsByUnit.delete(unitId);
+}
 
 function createDefaultSnapshot(unitId: string) {
   return new WorkbookModel(unitId, 'React Sheets Workbook').snapshot();
@@ -149,8 +164,8 @@ const server = createServer(async (request, response) => {
 
 const webSocketServer = new WebSocketServer({ server });
 webSocketServer.on('connection', (socket) => {
-  clients.add(socket);
-  socket.once('close', () => clients.delete(socket));
+  let clientUnitId: string | null = null;
+  socket.once('close', () => leaveUnit(clientUnitId, socket));
   socket.send(
     encodeMessage({
       type: 'presence.updated',
@@ -165,6 +180,9 @@ webSocketServer.on('connection', (socket) => {
       const message = decodeMessage(raw.toString());
 
       if (message.type === 'changeset.submit') {
+        leaveUnit(clientUnitId, socket);
+        clientUnitId = message.payload.unitId;
+        const unitClients = joinUnit(clientUnitId, socket);
         const revision = storage.appendChangeSet(message.payload);
         socket.send(
           encodeMessage({
@@ -178,15 +196,18 @@ webSocketServer.on('connection', (socket) => {
           payload: message.payload,
           revision,
         });
-        for (const client of clients) {
+        for (const client of unitClients) {
           if (client !== socket && client.readyState === client.OPEN) {
             client.send(revisionMessage);
           }
         }
       } else if (message.type === 'presence.updated' || message.type === 'cursor.updated') {
+        leaveUnit(clientUnitId, socket);
+        clientUnitId = message.unitId;
+        const unitClients = joinUnit(clientUnitId, socket);
         // Broadcast presence/cursor to other clients
         const broadcast = encodeMessage(message as never);
-        for (const client of clients) {
+        for (const client of unitClients) {
           if (client !== socket && client.readyState === client.OPEN) {
             client.send(broadcast);
           }

@@ -34,5 +34,16 @@ export default defineConfig({
   build: {
     outDir: path.resolve(projectRoot, 'dist/web'),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replaceAll('\\', '/');
+          if (normalized.includes('/packages/formula-engine/') || normalized.includes('/packages/render-engine/')) return 'sheet-engine';
+          if (normalized.includes('/packages/pro-features/')) return 'pro-features';
+          if (normalized.includes('/packages/core-model/') || normalized.includes('/packages/command-runtime/')) return 'sheet-model';
+          return undefined;
+        },
+      },
+    },
   },
 });
