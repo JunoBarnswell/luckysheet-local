@@ -7,7 +7,7 @@
  * WorkbookSnapshot or an operation envelope.
  */
 export const WORKSPACE_DATABASE_NAME = 'react-sheets-workspaces';
-export const WORKSPACE_DATABASE_VERSION = 4;
+export const WORKSPACE_DATABASE_VERSION = 5;
 
 export const WORKSPACE_STORE_NAME = 'workspaces';
 export const DATA_BLOCK_STORE_NAME = 'dataBlocks';
@@ -24,6 +24,33 @@ export type IndexedDbFactoryLike = IDBFactory | IndexedDbFactory;
 export interface IndexedDbStoreOptions {
   databaseName?: string;
   indexedDB?: IndexedDbFactoryLike | null;
+  /** Optional owner namespace for source blocks/overlays. */
+  unitId?: string | (() => string);
+}
+
+/**
+ * Browser-persistent source records are keyed by workbook as well as their
+ * source id.  This prevents two workbooks that happen to use the same source
+ * id from sharing bytes or overlays.  Existing callers without a namespace
+ * retain their legacy key so old focused stores remain readable.
+ */
+export function resolveWorkspaceUnitId(options: Pick<IndexedDbStoreOptions, 'unitId'> = {}): string | null {
+  const value = typeof options.unitId === 'function' ? options.unitId() : options.unitId;
+  return value?.trim() || null;
+}
+
+export function namespaceWorkspaceSourceId(unitId: string | null | undefined, sourceId: string): string {
+  const normalizedUnitId = unitId?.trim();
+  if (!normalizedUnitId || sourceId.startsWith(`unit:${normalizedUnitId}:source:`)) return sourceId;
+  return `unit:${normalizedUnitId}:source:${sourceId}`;
+}
+
+export function unnamespaceWorkspaceSourceId(sourceId: string): string {
+  const marker = ':source:';
+  const markerIndex = sourceId.indexOf(marker);
+  return markerIndex >= 0 && sourceId.startsWith('unit:')
+    ? sourceId.slice(markerIndex + marker.length)
+    : sourceId;
 }
 
 function resolveFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {

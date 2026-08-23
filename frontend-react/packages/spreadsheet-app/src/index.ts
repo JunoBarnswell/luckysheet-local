@@ -40,6 +40,7 @@ export {
   exchangeImportXlsx,
   summarizeCompatibilityReport,
 } from './features/xlsx';
+export * from './features/workbook-catalog';
 export {
   buildPersistenceMeta,
   LocalWorkspaceStore,

@@ -2,7 +2,7 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from './cn';
 import { Icon, type IconName } from './Icon';
 
-export type ButtonVariant = 'danger' | 'ghost' | 'outline' | 'primary' | 'secondary' | 'soft';
+export type ButtonVariant = 'brand' | 'danger' | 'ghost' | 'outline' | 'primary' | 'secondary' | 'soft';
 export type ButtonSize = 'xs' | 'sm' | 'md' | 'lg';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -15,6 +15,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variants: Record<ButtonVariant, string> = {
+  brand: 'bg-brand text-white shadow-brand-sm hover:bg-brand-dark',
   primary: 'bg-accent text-white shadow-sm shadow-accent/20 hover:bg-blue-700',
   secondary: 'border border-slate-200 bg-white text-ink shadow-sm hover:border-accent/40 hover:bg-blue-50/50',
   outline: 'border border-line bg-transparent text-ink hover:border-accent/50 hover:bg-blue-50/40',

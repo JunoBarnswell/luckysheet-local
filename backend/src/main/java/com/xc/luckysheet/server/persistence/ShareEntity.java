@@ -8,6 +8,8 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -19,6 +21,7 @@ import java.util.UUID;
 })
 public class ShareEntity {
     @Id
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "share_id", nullable = false)
     private UUID shareId;
 

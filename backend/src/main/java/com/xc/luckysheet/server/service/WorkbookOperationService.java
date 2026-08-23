@@ -8,7 +8,6 @@ import com.xc.luckysheet.server.contract.AuditRecord;
 import com.xc.luckysheet.server.contract.CheckpointResponse;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
-import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
@@ -17,7 +16,6 @@ import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
-import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.config.CoordinationProperties;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.mutation.MutationPreparation;
@@ -65,25 +63,11 @@ public class WorkbookOperationService {
         this.coordination = coordination;
     }
 
-    @Transactional
-    public WorkbookSnapshotResponse create(CreateWorkbookRequest request, String actor) {
-        if (store.find(request.unitId()).isPresent()) throw ServiceException.conflict("Workbook already exists");
-        Instant now = Instant.now();
-        String snapshotJson = writeJson(request.snapshot());
-        store.insertWorkbook(request.unitId(), request.name().trim(), snapshotJson, now);
-        store.insertAcl(request.unitId(), actor, WorkbookAclRole.OWNER, now);
-        store.insertCheckpoint(request.unitId(), 0, snapshotJson, checksum(snapshotJson), now);
-        return response(request.unitId(), request.snapshot(), 0, checksum(snapshotJson));
-    }
-
-    public List<WorkbookSummary> list(String actor) {
-        return store.listForSubject(actor);
-    }
-
     public WorkbookSnapshotResponse readSnapshot(String unitId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow row = requireWorkbook(unitId);
         JsonNode snapshot = currentSnapshot(row);
+        if (snapshot.isObject()) ((ObjectNode) snapshot).put("name", row.name());
         String json = writeJson(snapshot);
         return response(unitId, snapshot, row.revision(), checksum(json));
     }

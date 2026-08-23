@@ -4,7 +4,15 @@ import { Icon } from './Icon';
 
 export interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   error?: boolean;
+  options?: readonly SelectOption[];
+  placeholder?: string;
   sizeVariant?: 'sm' | 'md' | 'lg';
+}
+
+export interface SelectOption {
+  disabled?: boolean;
+  label: string;
+  value: string;
 }
 
 const selectSizes = {
@@ -14,7 +22,7 @@ const selectSizes = {
 };
 
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(
-  { className, error, sizeVariant = 'md', children, ...props },
+  { className, error, sizeVariant = 'md', children, options, placeholder, ...props },
   ref,
 ) {
   return (
@@ -31,7 +39,8 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
         )}
         {...props}
       >
-        {children}
+        {placeholder ? <option value="">{placeholder}</option> : null}
+        {options ? options.map((option) => <option key={option.value} disabled={option.disabled} value={option.value}>{option.label}</option>) : children}
       </select>
       <Icon
         name="chevron-down"

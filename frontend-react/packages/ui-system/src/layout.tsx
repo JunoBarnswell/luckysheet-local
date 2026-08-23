@@ -51,6 +51,7 @@ type TextElement = 'label' | 'p' | 'small' | 'span' | 'strong';
 export interface TextProps extends HTMLAttributes<HTMLElement> {
   as?: TextElement;
   children?: ReactNode;
+  htmlFor?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   tone?: 'default' | 'muted' | 'subtle' | 'inverse' | 'accent' | 'success' | 'danger';
   weight?: 'normal' | 'medium' | 'semibold' | 'bold';

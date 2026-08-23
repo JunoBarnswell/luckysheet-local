@@ -113,6 +113,11 @@ export interface OperationCommitResponse {
   operation: CommittedOperationEnvelope;
 }
 
+export interface CheckpointResponse {
+  created: boolean;
+  snapshot: SnapshotResponse;
+}
+
 /**
  * Authentication is deliberately supplied by the host application.  The
  * protocol package never reads cookies, localStorage or a client-provided
@@ -491,17 +496,6 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   return value as WorkbookSnapshot;
 }
 
-function validateSnapshotResponse(value: unknown): SnapshotResponse {
-  if (!value || typeof value !== 'object') throw new Error('snapshot.response payload must be an object');
-  const input = value as Record<string, unknown>;
-  if (!input.snapshot || typeof input.snapshot !== 'object') throw new Error('snapshot.response requires snapshot');
-  const snapshot = validateWorkbookSnapshot(input.snapshot);
-  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) {
-    throw new Error('snapshot.response requires a valid revision');
-  }
-  return { snapshot, revision: Number(input.revision) };
-}
-
 function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('workbook access response must be an object');
@@ -723,6 +717,113 @@ export interface WorkbookSummary {
   name: string;
   revision: number;
   updatedAt: string;
+  role?: WorkbookAclRole;
+  ownerSubject?: string;
+  spaceId?: string;
+  spaceName?: string;
+  folderId?: string;
+  locationPath?: string[];
+  storageLocation?: WorkbookStorageLocation;
+  syncStatus?: WorkbookSyncStatus;
+  lifecycle?: WorkbookLifecycle;
+  source?: WorkbookSourceKind;
+  sourceFileName?: string;
+  deletedAt?: string;
+  lastOpenedAt?: string;
+  favorite?: boolean;
+}
+
+export type WorkbookSourceKind = 'native' | 'xlsx-import';
+export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
+export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
+export type WorkbookLifecycle = 'active' | 'trashed';
+export type WorkbookCatalogView = 'all' | 'owned' | 'recent' | 'shared' | 'trash';
+
+export interface WorkbookCatalogQuery {
+  folderId?: string;
+  query?: string;
+  spaceId?: string;
+  view?: WorkbookCatalogView;
+}
+
+export interface WorkbookCreateMetadata {
+  folderId?: string;
+  source?: WorkbookSourceKind;
+  spaceId?: string;
+}
+
+export interface WorkbookMetadataPatch {
+  folderId?: string | null;
+  name?: string;
+  spaceId?: string | null;
+}
+
+export interface WorkbookCopyRequest {
+  folderId?: string;
+  name?: string;
+  spaceId?: string;
+}
+
+export interface WorkbookUserState {
+  autoSave?: boolean;
+  autoSync?: boolean;
+  defaultCreateLocation?: 'local' | 'remote';
+  favorite?: boolean;
+  importCompatibilityLevel?: 'standard' | 'strict';
+  language?: string;
+  lastOpenedAt?: string;
+  offlineCache?: boolean;
+  theme?: 'light' | 'system';
+  unitId: string;
+}
+
+export type WorkspaceSpaceKind = 'personal' | 'team';
+
+export interface WorkspaceSpace {
+  createdAt: string;
+  createdBy: string;
+  kind: WorkspaceSpaceKind;
+  name: string;
+  role?: WorkbookAclRole;
+  spaceId: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceFolder {
+  folderId: string;
+  name: string;
+  parentFolderId?: string;
+  spaceId: string;
+  updatedAt: string;
+}
+
+export interface SpaceMember {
+  role: WorkbookAclRole;
+  spaceId: string;
+  subject: string;
+  updatedAt: string;
+}
+
+export interface WorkbookSourceArtifactMetadata {
+  byteLength: number;
+  checksum: string;
+  createdAt?: string;
+  fileName: string;
+  mimeType?: string;
+  unitId: string;
+  updatedAt: string;
+}
+
+export interface WorkbookImportRequest extends WorkbookCreateMetadata {
+  artifact: Blob;
+  artifactFileName: string;
+  snapshot: WorkbookSnapshot;
+}
+
+export interface WorkbookImportResponse {
+  artifact: WorkbookSourceArtifactMetadata;
+  snapshot: WorkbookSnapshot;
+  summary: WorkbookSummary;
 }
 
 export interface RevisionRecord {
@@ -740,6 +841,11 @@ export interface RemoteDataBlockMetadata {
   checksum: string;
   byteLength: number;
   updatedAt: string;
+}
+
+async function sha256(blob: Blob): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
 export class WorkbookApiClient {
@@ -801,16 +907,187 @@ export class WorkbookApiClient {
     return validateWorkbookAccessResponse(result);
   }
 
-  async createWorkbook(snapshot: WorkbookSnapshot): Promise<SnapshotResponse> {
-    return this.json<SnapshotResponse>('/api/workbooks', {
-      method: 'POST',
+  async listWorkbookAcl(unitId: string): Promise<WorkbookAclRecord[]> {
+    return this.json<WorkbookAclRecord[]>(`/api/workbooks/${encodeURIComponent(unitId)}/acl`);
+  }
+
+  async putWorkbookAcl(unitId: string, subject: string, role: WorkbookAclRole): Promise<WorkbookAclRecord> {
+    return this.json<WorkbookAclRecord>(`/api/workbooks/${encodeURIComponent(unitId)}/acl/${encodeURIComponent(subject)}`, {
+      method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ unitId: snapshot.unitId, name: snapshot.name, snapshot }),
+      body: JSON.stringify({ role }),
     });
   }
 
-  async listWorkbooks(): Promise<WorkbookSummary[]> {
-    return this.json<WorkbookSummary[]>('/api/workbooks');
+  async deleteWorkbookAcl(unitId: string, subject: string): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/acl/${encodeURIComponent(subject)}`, { method: 'DELETE' });
+  }
+
+  async createWorkbook(snapshot: WorkbookSnapshot, metadata: WorkbookCreateMetadata = {}): Promise<SnapshotResponse> {
+    return this.json<SnapshotResponse>('/api/workbooks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ unitId: snapshot.unitId, name: snapshot.name, snapshot, ...metadata }),
+    });
+  }
+
+  async listWorkbooks(query: WorkbookCatalogQuery = {}): Promise<WorkbookSummary[]> {
+    const search = new URLSearchParams();
+    if (query.view) search.set('view', query.view);
+    if (query.spaceId) search.set('spaceId', query.spaceId);
+    if (query.folderId) search.set('folderId', query.folderId);
+    if (query.query) search.set('query', query.query);
+    const suffix = search.size > 0 ? `?${search.toString()}` : '';
+    return this.json<WorkbookSummary[]>(`/api/workbooks${suffix}`);
+  }
+
+  async updateWorkbook(unitId: string, patch: WorkbookMetadataPatch): Promise<WorkbookSummary> {
+    return this.json<WorkbookSummary>(`/api/workbooks/${encodeURIComponent(unitId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async copyWorkbook(unitId: string, request: WorkbookCopyRequest = {}): Promise<WorkbookSummary> {
+    return this.json<WorkbookSummary>(`/api/workbooks/${encodeURIComponent(unitId)}/copy`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+  }
+
+  async moveToTrash(unitId: string): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}`, { method: 'DELETE' });
+  }
+
+  async restoreFromTrash(unitId: string): Promise<WorkbookSummary> {
+    return this.json<WorkbookSummary>(`/api/workbooks/${encodeURIComponent(unitId)}/restore-from-trash`, { method: 'POST' });
+  }
+
+  async purgeWorkbook(unitId: string): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/purge`, { method: 'DELETE' });
+  }
+
+  async getWorkbookUserState(unitId: string): Promise<WorkbookUserState> {
+    return this.json<WorkbookUserState>(`/api/workbooks/${encodeURIComponent(unitId)}/user-state`);
+  }
+
+  async putWorkbookUserState(unitId: string, state: Omit<WorkbookUserState, 'unitId'>): Promise<WorkbookUserState> {
+    return this.json<WorkbookUserState>(`/api/workbooks/${encodeURIComponent(unitId)}/user-state`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(state),
+    });
+  }
+
+  async listSpaces(): Promise<WorkspaceSpace[]> {
+    return this.json<WorkspaceSpace[]>('/api/spaces');
+  }
+
+  async createSpace(input: Pick<WorkspaceSpace, 'kind' | 'name'>): Promise<WorkspaceSpace> {
+    return this.json<WorkspaceSpace>('/api/spaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async listFolders(spaceId: string): Promise<WorkspaceFolder[]> {
+    return this.json<WorkspaceFolder[]>(`/api/spaces/${encodeURIComponent(spaceId)}/folders`);
+  }
+
+  async createFolder(spaceId: string, input: Pick<WorkspaceFolder, 'name' | 'parentFolderId'>): Promise<WorkspaceFolder> {
+    return this.json<WorkspaceFolder>(`/api/spaces/${encodeURIComponent(spaceId)}/folders`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async updateFolder(folderId: string, input: Pick<WorkspaceFolder, 'name' | 'parentFolderId'>): Promise<WorkspaceFolder> {
+    return this.json<WorkspaceFolder>(`/api/folders/${encodeURIComponent(folderId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async deleteFolder(folderId: string): Promise<void> {
+    await this.request(`/api/folders/${encodeURIComponent(folderId)}`, { method: 'DELETE' });
+  }
+
+  async listSpaceMembers(spaceId: string): Promise<SpaceMember[]> {
+    return this.json<SpaceMember[]>(`/api/spaces/${encodeURIComponent(spaceId)}/members`);
+  }
+
+  async putSpaceMember(spaceId: string, subject: string, role: WorkbookAclRole): Promise<SpaceMember> {
+    return this.json<SpaceMember>(`/api/spaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(subject)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+  }
+
+  async deleteSpaceMember(spaceId: string, subject: string): Promise<void> {
+    await this.request(`/api/spaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(subject)}`, { method: 'DELETE' });
+  }
+
+  async createWorkbookImport(input: WorkbookImportRequest): Promise<WorkbookImportResponse> {
+    const form = new FormData();
+    form.append('file', input.artifact, input.artifactFileName);
+    form.append('snapshot', JSON.stringify(input.snapshot));
+    if (input.snapshot.name) form.append('name', input.snapshot.name);
+    if (input.spaceId) form.append('spaceId', input.spaceId);
+    if (input.folderId) form.append('folderId', input.folderId);
+    return this.json<WorkbookImportResponse>('/api/workbook-imports', { method: 'POST', body: form });
+  }
+
+  async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
+    const checksum = await sha256(artifact);
+    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/source-artifact`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-content-sha256': checksum,
+        'x-file-name': encodeURIComponent(fileName),
+      },
+      body: artifact,
+    });
+  }
+
+  async getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }> {
+    const response = await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/source-artifact`);
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const fileNameMatch = /filename="?([^";]+)"?/i.exec(disposition);
+    const fileName = fileNameMatch?.[1];
+    const checksum = response.headers.get('x-content-sha256');
+    const byteLength = Number(response.headers.get('content-length') ?? 0);
+    if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
+    const artifact = await response.blob();
+    return {
+      artifact,
+      metadata: {
+        byteLength: byteLength || artifact.size,
+        checksum,
+        fileName,
+        mimeType: response.headers.get('content-type') ?? undefined,
+        unitId,
+        updatedAt: response.headers.get('last-modified') ?? new Date().toISOString(),
+      },
+    };
+  }
+
+  async commitOperation(unitId: string, operation: OperationEnvelope): Promise<OperationCommitResponse> {
+    return this.json<OperationCommitResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/operations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(operation),
+    });
+  }
+
+  async checkpointWorkbook(unitId: string): Promise<CheckpointResponse> {
+    return this.json<CheckpointResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/checkpoints`, { method: 'POST' });
   }
 
   async listRevisions(unitId: string): Promise<RevisionRecord[]> {
@@ -906,16 +1183,12 @@ export class WorkbookApiClient {
 }
 
 /**
- * Collaboration messages. Client-originated presence/cursor messages do
- * not carry actorId; the server adds it to broadcast messages after token
- * verification. There is intentionally no legacy message decoder.
+ * WebSocket is a committed-event and ephemeral-presence channel. Durable
+ * workbook mutations travel only through WorkbookApiClient.commitOperation.
+ * Client presence/cursor messages do not carry actorId; the server adds it to
+ * broadcasts after token verification.
  */
 export type OperationMessage =
-  | { type: 'snapshot.request'; unitId: string }
-  | { type: 'snapshot.response'; payload: SnapshotResponse }
-  | { type: 'changeset.submit'; payload: OperationEnvelope }
-  | { type: 'changeset.ack'; operationId: string; revision: number }
-  | { type: 'changeset.reject'; operationId: string; error: ApiError }
   | { type: 'revision.created'; payload: CommittedOperationEnvelope; revision: number }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown }
@@ -923,8 +1196,6 @@ export type OperationMessage =
   | { type: 'cursor.broadcast'; unitId: string; actorId: string; state: unknown };
 
 export type ClientOperationMessage =
-  | { type: 'snapshot.request'; unitId: string }
-  | { type: 'changeset.submit'; payload: OperationEnvelope }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown };
 
@@ -998,23 +1269,6 @@ export function decodeOperationMessage(input: string): OperationMessage {
   }
   const message = raw as Record<string, unknown>;
   switch (message.type) {
-    case 'changeset.submit':
-      return { type: 'changeset.submit', payload: validateOperationEnvelope(message.payload) };
-    case 'snapshot.request':
-      if (!isNonEmptyString(message.unitId)) throw new Error('snapshot.request requires unitId');
-      return { type: 'snapshot.request', unitId: message.unitId };
-    case 'snapshot.response':
-      return { type: 'snapshot.response', payload: validateSnapshotResponse(message.payload) };
-    case 'changeset.ack':
-      if (!isNonEmptyString(message.operationId) || !Number.isSafeInteger(message.revision) || Number(message.revision) < 1) {
-        throw new Error('changeset.ack requires operationId and revision');
-      }
-      return { type: 'changeset.ack', operationId: message.operationId, revision: Number(message.revision) };
-    case 'changeset.reject':
-      if (!isNonEmptyString(message.operationId) || !message.error || typeof message.error !== 'object') {
-        throw new Error('changeset.reject requires operationId and error');
-      }
-      return { type: 'changeset.reject', operationId: message.operationId, error: message.error as ApiError };
     case 'revision.created':
       if (!Number.isSafeInteger(message.revision) || Number(message.revision) < 1) throw new Error('revision.created requires revision');
       return {
@@ -1040,8 +1294,7 @@ export function decodeOperationMessage(input: string): OperationMessage {
 
 export function decodeClientOperationMessage(input: string): ClientOperationMessage {
   const message = decodeOperationMessage(input);
-  if (message.type === 'changeset.submit' || message.type === 'snapshot.request'
-    || message.type === 'presence.updated' || message.type === 'cursor.updated') return message;
+  if (message.type === 'presence.updated' || message.type === 'cursor.updated') return message;
   throw new Error(`Server-only collaboration message: ${message.type}`);
 }
 

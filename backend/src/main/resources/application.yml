@@ -6,7 +6,7 @@ spring:
   application:
     name: luckysheet-canonical
   datasource:
-    url: ${DATABASE_URL:jdbc:h2:file:./data/luckysheet_canonical;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false}
+    url: ${DATABASE_URL:jdbc:h2:file:./data/luckysheet_canonical;DB_CLOSE_DELAY=-1;CASE_INSENSITIVE_IDENTIFIERS=TRUE}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
     hikari:
@@ -14,12 +14,18 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:update}
+      ddl-auto: ${JPA_DDL_AUTO:validate}
     properties:
       hibernate:
         jdbc:
           time_zone: UTC
         format_sql: false
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:true}
+    baseline-version: ${FLYWAY_BASELINE_VERSION:1}
+    baseline-description: ${FLYWAY_BASELINE_DESCRIPTION:current-schema}
+    validate-on-migrate: true
   jackson:
     deserialization:
       fail-on-unknown-properties: true

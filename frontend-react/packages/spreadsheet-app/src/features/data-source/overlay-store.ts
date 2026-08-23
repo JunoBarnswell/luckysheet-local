@@ -1,8 +1,10 @@
 import { computeChecksum } from '../persistence/checksum';
 import {
   openWorkspaceDatabase,
+  namespaceWorkspaceSourceId,
   requestResult,
   resolveIndexedDbFactory,
+  resolveWorkspaceUnitId,
   transactionComplete,
   OVERLAY_STORE_NAME,
   WORKSPACE_DATABASE_NAME,
@@ -33,6 +35,11 @@ export interface SparseOverlayStore {
 export interface SparseOverlayStoreOptions {
   databaseName?: string;
   indexedDB?: IndexedDbFactoryLike | null;
+  unitId?: string | (() => string);
+}
+
+function storageSourceId(options: Pick<SparseOverlayStoreOptions, 'unitId'>, sourceId: string): string {
+  return namespaceWorkspaceSourceId(resolveWorkspaceUnitId(options), sourceId);
 }
 
 const memoryDatabases = new Map<string, Map<string, SparseOverlayRecord>>();
@@ -172,22 +179,31 @@ function memoryRecords(databaseName: string): Map<string, SparseOverlayRecord> {
 /** In-memory implementation used by tests and non-browser runtimes. */
 export class MemorySparseOverlayStore implements SparseOverlayStore {
   private readonly records = new Map<string, SparseOverlayRecord>();
+  private readonly options: SparseOverlayStoreOptions;
+
+  constructor(options: SparseOverlayStoreOptions = {}) {
+    this.options = options;
+  }
 
   async put(sourceId: string, blockId: string, overlay: SparseCellOverlayMetadata): Promise<SparseOverlayRecord> {
     validateIdentity(sourceId, blockId, overlay?.revision);
-    const record = buildRecord(sourceId, blockId, overlay);
-    this.records.set(recordKey(sourceId, blockId, record.revision), clone(record));
+    const storageId = storageSourceId(this.options, sourceId);
+    const record = buildRecord(storageId, blockId, overlay);
+    this.records.set(recordKey(storageId, blockId, record.revision), clone(record));
     return clone(record);
   }
 
   async get(sourceId: string, blockId: string, revision: number): Promise<SparseOverlayRecord | null> {
     validateIdentity(sourceId, blockId, revision);
-    const value = this.records.get(recordKey(sourceId, blockId, revision));
+    const storageId = storageSourceId(this.options, sourceId);
+    const value = this.records.get(recordKey(storageId, blockId, revision))
+      ?? (storageId === sourceId ? undefined : this.records.get(recordKey(sourceId, blockId, revision)));
     if (!value) return null;
     try {
       return validateRecord(clone(value));
     } catch {
-      this.records.delete(recordKey(sourceId, blockId, revision));
+      this.records.delete(recordKey(storageId, blockId, revision));
+      if (storageId !== sourceId) this.records.delete(recordKey(sourceId, blockId, revision));
       return null;
     }
   }
@@ -200,14 +216,16 @@ export class MemorySparseOverlayStore implements SparseOverlayStore {
   async removeBlock(sourceId: string, blockId: string): Promise<void> {
     if (!sourceId.trim()) fail('requires a source id');
     if (!blockId.trim()) fail('requires a block id');
-    const prefix = blockPrefix(sourceId, blockId);
-    for (const key of this.records.keys()) if (key.startsWith(prefix)) this.records.delete(key);
+    const storageId = storageSourceId(this.options, sourceId);
+    const prefixes = [blockPrefix(storageId, blockId), ...(storageId === sourceId ? [] : [blockPrefix(sourceId, blockId)])];
+    for (const key of this.records.keys()) if (prefixes.some((prefix) => key.startsWith(prefix))) this.records.delete(key);
   }
 
   async removeSource(sourceId: string): Promise<void> {
     if (!sourceId.trim()) fail('requires a source id');
-    const prefix = sourcePrefix(sourceId);
-    for (const key of this.records.keys()) if (key.startsWith(prefix)) this.records.delete(key);
+    const storageId = storageSourceId(this.options, sourceId);
+    const prefixes = [sourcePrefix(storageId), ...(storageId === sourceId ? [] : [sourcePrefix(sourceId)])];
+    for (const key of this.records.keys()) if (prefixes.some((prefix) => key.startsWith(prefix))) this.records.delete(key);
   }
 }
 
@@ -215,9 +233,11 @@ export class MemorySparseOverlayStore implements SparseOverlayStore {
 export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
   private readonly databaseName: string;
   private readonly factory: IndexedDbFactoryLike | null;
+  private readonly options: SparseOverlayStoreOptions;
   private databasePromise: Promise<IDBDatabase> | null = null;
 
   constructor(options: SparseOverlayStoreOptions = {}) {
+    this.options = options;
     this.databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
     if (!this.databaseName.trim()) fail('database name cannot be empty');
     this.factory = resolveIndexedDbFactory(options.indexedDB);
@@ -235,7 +255,8 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
 
   async put(sourceId: string, blockId: string, overlay: SparseCellOverlayMetadata): Promise<SparseOverlayRecord> {
     validateIdentity(sourceId, blockId, overlay?.revision);
-    const record = buildRecord(sourceId, blockId, overlay);
+    const storageId = storageSourceId(this.options, sourceId);
+    const record = buildRecord(storageId, blockId, overlay);
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readwrite');
     transaction.objectStore(OVERLAY_STORE_NAME).put(record);
@@ -248,11 +269,16 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readonly');
     const complete = transactionComplete(transaction);
-    const value = await requestResult(transaction.objectStore(OVERLAY_STORE_NAME).get([sourceId, blockId, revision])) as SparseOverlayRecord | undefined;
+    const store = transaction.objectStore(OVERLAY_STORE_NAME);
+    const storageId = storageSourceId(this.options, sourceId);
+    let value = await requestResult(store.get([storageId, blockId, revision])) as SparseOverlayRecord | undefined;
+    if (!value && storageId !== sourceId) value = await requestResult(store.get([sourceId, blockId, revision])) as SparseOverlayRecord | undefined;
     await complete;
     if (!value) return null;
     try {
-      if (value.sourceId !== sourceId || value.blockId !== blockId || value.revision !== revision) {
+      if ((value.sourceId !== storageId && value.sourceId !== sourceId)
+        || value.blockId !== blockId
+        || value.revision !== revision) {
         fail('record key does not match the requested source, block, and revision');
       }
       return validateRecord(value);
@@ -266,7 +292,10 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
     validateIdentity(sourceId, blockId, revision);
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readwrite');
-    transaction.objectStore(OVERLAY_STORE_NAME).delete([sourceId, blockId, revision]);
+    const store = transaction.objectStore(OVERLAY_STORE_NAME);
+    const storageId = storageSourceId(this.options, sourceId);
+    store.delete([storageId, blockId, revision]);
+    if (storageId !== sourceId) store.delete([sourceId, blockId, revision]);
     await transactionComplete(transaction);
   }
 
@@ -276,8 +305,12 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readwrite');
     const store = transaction.objectStore(OVERLAY_STORE_NAME);
+    const storageId = storageSourceId(this.options, sourceId);
     const complete = transactionComplete(transaction);
-    const rows = await requestResult(store.index('sourceBlock').getAll([sourceId, blockId])) as SparseOverlayRecord[];
+    const rows = [
+      ...await requestResult(store.index('sourceBlock').getAll([storageId, blockId])) as SparseOverlayRecord[],
+      ...(storageId === sourceId ? [] : await requestResult(store.index('sourceBlock').getAll([sourceId, blockId])) as SparseOverlayRecord[]),
+    ];
     for (const row of rows) store.delete([row.sourceId, row.blockId, row.revision]);
     await complete;
   }
@@ -287,8 +320,12 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
     const database = await this.database();
     const transaction = database.transaction(OVERLAY_STORE_NAME, 'readwrite');
     const store = transaction.objectStore(OVERLAY_STORE_NAME);
+    const storageId = storageSourceId(this.options, sourceId);
     const complete = transactionComplete(transaction);
-    const rows = await requestResult(store.index('sourceId').getAll(IDBKeyRange.only(sourceId))) as SparseOverlayRecord[];
+    const rows = [
+      ...await requestResult(store.index('sourceId').getAll(IDBKeyRange.only(storageId))) as SparseOverlayRecord[],
+      ...(storageId === sourceId ? [] : await requestResult(store.index('sourceId').getAll(IDBKeyRange.only(sourceId))) as SparseOverlayRecord[]),
+    ];
     for (const row of rows) store.delete([row.sourceId, row.blockId, row.revision]);
     await complete;
   }
@@ -298,8 +335,10 @@ export class IndexedDbSparseOverlayStore implements SparseOverlayStore {
 export class LocalSparseOverlayStore implements SparseOverlayStore {
   private readonly indexedDb: IndexedDbSparseOverlayStore | null;
   private readonly records: Map<string, SparseOverlayRecord>;
+  private readonly options: SparseOverlayStoreOptions;
 
   constructor(options: SparseOverlayStoreOptions = {}) {
+    this.options = options;
     const databaseName = options.databaseName ?? DEFAULT_DATABASE_NAME;
     if (!databaseName.trim()) fail('database name cannot be empty');
     this.records = memoryRecords(databaseName);
@@ -311,20 +350,24 @@ export class LocalSparseOverlayStore implements SparseOverlayStore {
   put(sourceId: string, blockId: string, overlay: SparseCellOverlayMetadata): Promise<SparseOverlayRecord> {
     if (this.indexedDb) return this.indexedDb.put(sourceId, blockId, overlay);
     validateIdentity(sourceId, blockId, overlay?.revision);
-    const record = buildRecord(sourceId, blockId, overlay);
-    this.records.set(recordKey(sourceId, blockId, record.revision), clone(record));
+    const storageId = storageSourceId(this.options, sourceId);
+    const record = buildRecord(storageId, blockId, overlay);
+    this.records.set(recordKey(storageId, blockId, record.revision), clone(record));
     return Promise.resolve(clone(record));
   }
 
   async get(sourceId: string, blockId: string, revision: number): Promise<SparseOverlayRecord | null> {
     if (this.indexedDb) return this.indexedDb.get(sourceId, blockId, revision);
     validateIdentity(sourceId, blockId, revision);
-    const value = this.records.get(recordKey(sourceId, blockId, revision));
+    const storageId = storageSourceId(this.options, sourceId);
+    const value = this.records.get(recordKey(storageId, blockId, revision))
+      ?? (storageId === sourceId ? undefined : this.records.get(recordKey(sourceId, blockId, revision)));
     if (!value) return null;
     try {
       return validateRecord(clone(value));
     } catch {
-      this.records.delete(recordKey(sourceId, blockId, revision));
+      this.records.delete(recordKey(storageId, blockId, revision));
+      if (storageId !== sourceId) this.records.delete(recordKey(sourceId, blockId, revision));
       return null;
     }
   }
@@ -332,7 +375,9 @@ export class LocalSparseOverlayStore implements SparseOverlayStore {
   remove(sourceId: string, blockId: string, revision: number): Promise<void> {
     if (this.indexedDb) return this.indexedDb.remove(sourceId, blockId, revision);
     validateIdentity(sourceId, blockId, revision);
-    this.records.delete(recordKey(sourceId, blockId, revision));
+    const storageId = storageSourceId(this.options, sourceId);
+    this.records.delete(recordKey(storageId, blockId, revision));
+    if (storageId !== sourceId) this.records.delete(recordKey(sourceId, blockId, revision));
     return Promise.resolve();
   }
 
@@ -340,16 +385,18 @@ export class LocalSparseOverlayStore implements SparseOverlayStore {
     if (this.indexedDb) return this.indexedDb.removeBlock(sourceId, blockId);
     if (!sourceId.trim()) fail('requires a source id');
     if (!blockId.trim()) fail('requires a block id');
-    const prefix = blockPrefix(sourceId, blockId);
-    for (const key of this.records.keys()) if (key.startsWith(prefix)) this.records.delete(key);
+    const storageId = storageSourceId(this.options, sourceId);
+    const prefixes = [blockPrefix(storageId, blockId), ...(storageId === sourceId ? [] : [blockPrefix(sourceId, blockId)])];
+    for (const key of this.records.keys()) if (prefixes.some((prefix) => key.startsWith(prefix))) this.records.delete(key);
     return Promise.resolve();
   }
 
   removeSource(sourceId: string): Promise<void> {
     if (this.indexedDb) return this.indexedDb.removeSource(sourceId);
     if (!sourceId.trim()) fail('requires a source id');
-    const prefix = sourcePrefix(sourceId);
-    for (const key of this.records.keys()) if (key.startsWith(prefix)) this.records.delete(key);
+    const storageId = storageSourceId(this.options, sourceId);
+    const prefixes = [sourcePrefix(storageId), ...(storageId === sourceId ? [] : [sourcePrefix(sourceId)])];
+    for (const key of this.records.keys()) if (prefixes.some((prefix) => key.startsWith(prefix))) this.records.delete(key);
     return Promise.resolve();
   }
 }

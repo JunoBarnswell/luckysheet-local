@@ -12,14 +12,27 @@ import java.util.List;
 public class AccessControlService {
     private final WorkbookStore store;
     private final GuestShareService guestShares;
+    private final WorkbookAuthorizationService authorization;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public AccessControlService(WorkbookStore store, GuestShareService guestShares, WorkbookAuthorizationService authorization) {
+        this.store = store;
+        this.guestShares = guestShares;
+        this.authorization = authorization;
+    }
+
+    /** Constructor retained for pure operation-service unit tests. */
     public AccessControlService(WorkbookStore store, GuestShareService guestShares) {
         this.store = store;
         this.guestShares = guestShares;
+        this.authorization = null;
     }
 
     public WorkbookAclRole require(String unitId, String subject, WorkbookAclRole required) {
-        WorkbookAclRole actual = store.findRole(unitId, subject).orElse(null);
+        WorkbookAclRole actual = authorization == null
+                ? store.findRole(unitId, subject).orElse(null)
+                : authorization.role(unitId, subject).orElse(null);
+        if (actual == null) actual = store.findRole(unitId, subject).orElse(null);
         if (actual == null) actual = guestShares.roleFor(unitId, subject);
         if (actual == null) throw ServiceException.forbidden("Workbook access denied");
         if (!actual.includes(required)) throw ServiceException.forbidden("Workbook role " + required + " is required");

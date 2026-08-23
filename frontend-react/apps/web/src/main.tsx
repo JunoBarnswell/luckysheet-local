@@ -1,6 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import { AuthProvider } from './auth/AuthProvider';
+import { ApplicationServicesProvider } from './ApplicationServicesProvider';
 import { registerOfflineShell } from './offline-shell';
 import './styles.css';
 
@@ -12,6 +14,10 @@ registerOfflineShell();
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <AuthProvider>
+      <ApplicationServicesProvider>
+        <App />
+      </ApplicationServicesProvider>
+    </AuthProvider>
   </StrictMode>,
 );

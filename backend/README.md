@@ -2,9 +2,7 @@
 
 This directory is the only Java backend. It is a Spring Boot 3 service targeting Java 21 with a Spring Data JPA/Hibernate persistence boundary, OIDC Resource Server JWT verification, and a WebSocket endpoint at `/ws`.
 
-The default configuration uses an H2 file database and `spring.jpa.hibernate.ddl-auto=update`, so a fresh checkout starts without a database migration step. The same entity model can use PostgreSQL, MySQL, or SQLite by supplying the corresponding JDBC URL, username/password, driver on the runtime classpath, and (for SQLite) a Hibernate dialect, for example `SPRING_JPA_DATABASE_PLATFORM=org.hibernate.community.dialect.SQLiteDialect`.
-
-For a deployed database, set `JPA_DDL_AUTO=validate` after the first schema creation if schema changes are managed outside the application. JSON snapshots and operation payloads are stored as portable long text; data blocks use Hibernate's portable long-binary mapping. No PostgreSQL `jsonb`, cast syntax, upsert syntax, or Flyway migration is required by the canonical persistence path.
+The default configuration uses an H2 file database and Flyway migrations. `spring.jpa.hibernate.ddl-auto=validate` is the default; schema changes are applied by `src/main/resources/db/migration/V1__baseline.sql` and `V2__catalog.sql`. Existing pre-Flyway databases are automatically baselined at version 1 and receive the catalog migration. JSON snapshots and operation payloads are portable long text; workbook data blocks and XLSX source artifacts use JPA long-binary mappings.
 
 Database overrides and authentication settings for a deployed environment:
 
@@ -23,6 +21,17 @@ operations, revisions, snapshots, and the durable coordination outbox. Redis
 contains only published notifications and expiring presence/cursor state.
 
 `/health` is a liveness endpoint. Every `/api/**` route and the `/ws` handshake require a verified Bearer token. The JWT `sub` claim is the only actor identity used for ACL decisions; request actor fields are not accepted.
+
+The workbook catalog contract is:
+
+- `GET /api/workbooks?view=recent|shared|trash&spaceId=&folderId=&query=` returns actor-enriched `WorkbookSummary` items. `locationPath` is a structured string array.
+- `POST /api/workbooks` creates a native workbook in the actor's personal space unless `spaceId`/`folderId` are supplied.
+- `PATCH /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/copy`, `DELETE /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/restore-from-trash`, and `DELETE /api/workbooks/{unitId}/purge` manage metadata and lifecycle. Purge requires a previously trashed owner workbook.
+- `GET/PUT /api/workbooks/{unitId}/user-state` manages actor-specific favorite, last-opened, autosave/sync, default cloud location, offline cache, import compatibility, language, and theme state.
+- `GET/PUT /api/workbooks/{unitId}/source-artifact` streams the XLSX source artifact with an SHA-256 header. `POST /api/workbook-imports` accepts `file` and a browser-parsed `snapshot` multipart part and creates a new workbook atomically.
+- `GET/POST /api/spaces`, `/api/spaces/{spaceId}/folders`, and `/api/spaces/{spaceId}/members` manage spaces, folder trees, and membership. Effective workbook access is the strongest of owner, workbook ACL, and space membership.
+
+Workbook mutations are written only through `POST /api/workbooks/{unitId}/operations`. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.
 
 The request contract is `OperationEnvelope`. It contains operation identity, workbook identity, revision metadata and mutation intent only. The committed response adds server-owned `actorId`, `revision`, `committedAt` and `affectedRanges`.
 

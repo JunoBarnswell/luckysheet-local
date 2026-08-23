@@ -15,7 +15,9 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      // The sheet canvas starts below the full ribbon/formula chrome. Keep
+      // cell C9 inside the visible canvas for pointer-selection regressions.
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 960 } },
     },
   ],
   webServer: {

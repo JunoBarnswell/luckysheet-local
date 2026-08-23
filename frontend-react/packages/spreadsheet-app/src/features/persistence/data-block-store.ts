@@ -2,8 +2,10 @@ import type { DataBlockRef } from '@react-sheets/core-model';
 import { computeBinaryChecksum } from './checksum';
 import {
   DATA_BLOCK_STORE_NAME,
+  namespaceWorkspaceSourceId,
   openWorkspaceDatabase,
   requestResult,
+  resolveWorkspaceUnitId,
   transactionComplete,
   type IndexedDbStoreOptions,
   WORKSPACE_DATABASE_NAME,
@@ -63,11 +65,17 @@ async function assertRecord(record: DataBlockRecord): Promise<void> {
 export class LocalDataBlockStore {
   private readonly options: IndexedDbStoreOptions;
   private readonly databaseName: string;
+  private readonly unitId: string | (() => string) | undefined;
   private database: Promise<IDBDatabase | null> | null = null;
 
   constructor(options: IndexedDbStoreOptions = {}) {
     this.options = options;
     this.databaseName = options.databaseName ?? WORKSPACE_DATABASE_NAME;
+    this.unitId = options.unitId;
+  }
+
+  private storageSourceId(sourceId: string): string {
+    return namespaceWorkspaceSourceId(resolveWorkspaceUnitId({ unitId: this.unitId }), sourceId);
   }
 
   private async getDatabase(): Promise<IDBDatabase | null> {
@@ -80,7 +88,7 @@ export class LocalDataBlockStore {
     if (checksum !== ref.checksum) throw new Error(`Data block checksum does not match manifest: ${ref.id}`);
     const record: DataBlockRecord = {
       schema: 'DataBlockRecord',
-      sourceId: ref.dataSourceId,
+      sourceId: this.storageSourceId(ref.dataSourceId),
       blockId: ref.id,
       checksum,
       bytes: cloneBytes(bytes),
@@ -102,10 +110,21 @@ export class LocalDataBlockStore {
     const database = await this.getDatabase();
     let record: DataBlockRecord | undefined;
     if (!database) {
-      record = memoryRecords(this.databaseName).get(recordKey(ref.dataSourceId, ref.id));
+      const storageSourceId = this.storageSourceId(ref.dataSourceId);
+      record = memoryRecords(this.databaseName).get(recordKey(storageSourceId, ref.id));
+      if (!record && storageSourceId !== ref.dataSourceId) {
+        // Read the pre-namespace record once so existing workbooks are not
+        // stranded after the key-space migration.
+        record = memoryRecords(this.databaseName).get(recordKey(ref.dataSourceId, ref.id));
+      }
     } else {
       const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readonly');
-      record = await requestResult(transaction.objectStore(DATA_BLOCK_STORE_NAME).get([ref.dataSourceId, ref.id])) as DataBlockRecord | undefined;
+      const store = transaction.objectStore(DATA_BLOCK_STORE_NAME);
+      const storageSourceId = this.storageSourceId(ref.dataSourceId);
+      record = await requestResult(store.get([storageSourceId, ref.id])) as DataBlockRecord | undefined;
+      if (!record && storageSourceId !== ref.dataSourceId) {
+        record = await requestResult(store.get([ref.dataSourceId, ref.id])) as DataBlockRecord | undefined;
+      }
       await transactionComplete(transaction);
     }
     if (!record) return null;
@@ -121,27 +140,36 @@ export class LocalDataBlockStore {
 
   async remove(sourceId: string, blockId: string): Promise<void> {
     const database = await this.getDatabase();
+    const storageSourceId = this.storageSourceId(sourceId);
     if (!database) {
-      memoryRecords(this.databaseName).delete(recordKey(sourceId, blockId));
+      const records = memoryRecords(this.databaseName);
+      records.delete(recordKey(storageSourceId, blockId));
+      if (storageSourceId !== sourceId) records.delete(recordKey(sourceId, blockId));
       return;
     }
     const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
-    transaction.objectStore(DATA_BLOCK_STORE_NAME).delete([sourceId, blockId]);
+    const store = transaction.objectStore(DATA_BLOCK_STORE_NAME);
+    store.delete([storageSourceId, blockId]);
+    if (storageSourceId !== sourceId) store.delete([sourceId, blockId]);
     await transactionComplete(transaction);
   }
 
   async removeSource(sourceId: string): Promise<void> {
     const database = await this.getDatabase();
+    const storageSourceId = this.storageSourceId(sourceId);
     if (!database) {
       const records = memoryRecords(this.databaseName);
       for (const key of records.keys()) {
-        if (key.startsWith(`${sourceId}:`)) records.delete(key);
+        if (key.startsWith(`${storageSourceId}:`) || (storageSourceId !== sourceId && key.startsWith(`${sourceId}:`))) records.delete(key);
       }
       return;
     }
     const transaction = database.transaction(DATA_BLOCK_STORE_NAME, 'readwrite');
     const index = transaction.objectStore(DATA_BLOCK_STORE_NAME).index('sourceId');
-    const rows = await requestResult(index.getAll(IDBKeyRange.only(sourceId))) as DataBlockRecord[];
+    const rows = [
+      ...await requestResult(index.getAll(IDBKeyRange.only(storageSourceId))) as DataBlockRecord[],
+      ...(storageSourceId === sourceId ? [] : await requestResult(index.getAll(IDBKeyRange.only(sourceId))) as DataBlockRecord[]),
+    ];
     for (const row of rows) transaction.objectStore(DATA_BLOCK_STORE_NAME).delete([row.sourceId, row.blockId]);
     await transactionComplete(transaction);
   }

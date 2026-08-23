@@ -13,4 +13,6 @@ public interface CheckpointEntityRepository extends JpaRepository<CheckpointEnti
 
     @Query("select c from CheckpointEntity c where c.id.unitId = :unitId and c.id.revision <= :revision order by c.id.revision desc")
     java.util.List<CheckpointEntity> findLatestAtOrBefore(@Param("unitId") String unitId, @Param("revision") long revision, Pageable pageable);
+
+    void deleteByIdUnitId(String unitId);
 }

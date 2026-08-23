@@ -43,6 +43,31 @@ function offlineShellManifestPlugin() {
 export default defineConfig({
   root: path.resolve(projectRoot, 'apps/web'),
   plugins: [react(), offlineShellManifestPlugin()],
+  resolve: {
+    alias: [
+      { find: 'react/jsx-dev-runtime', replacement: path.resolve(projectRoot, 'node_modules/react/jsx-dev-runtime.js') },
+      { find: 'react/jsx-runtime', replacement: path.resolve(projectRoot, 'node_modules/react/jsx-runtime.js') },
+      { find: 'react-dom', replacement: path.resolve(projectRoot, 'node_modules/react-dom') },
+      { find: 'react', replacement: path.resolve(projectRoot, 'node_modules/react') },
+    ],
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+  },
+  server: {
+    proxy: {
+      '/api': {
+        changeOrigin: true,
+        target: process.env.REACT_SHEETS_API_ORIGIN ?? 'http://127.0.0.1:8082',
+      },
+      '/ws': {
+        changeOrigin: true,
+        target: process.env.REACT_SHEETS_API_ORIGIN ?? 'http://127.0.0.1:8082',
+        ws: true,
+      },
+    },
+  },
   build: {
     outDir: webOutputDirectory,
     emptyOutDir: true,

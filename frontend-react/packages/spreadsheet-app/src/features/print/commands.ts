@@ -168,31 +168,41 @@ function applyPrintDocumentReplace(context: CommandContext, sheetId: string, nex
   context.applyMutation({ id: 'print.document.replace', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(next) }, affectedRanges, inverse: [{ id: 'print.document.replace', unitId: context.workbook.unitId, sheetId, params: { sheetId, document: normalizePrintDocument(previous) }, affectedRanges }], apply: () => replacePrintDocument(context.workbook, next) });
 }
 
-function applySheetViewToggle(
-  context: CommandContext,
-  mutationId: 'pageLayout.gridlines.view.set' | 'pageLayout.headings.view.set',
-  params: PrintToggleCommandParams,
-  previous: boolean,
-): void {
+function applyGridlineViewToggle(context: CommandContext, params: PrintToggleCommandParams, previous: boolean): void {
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
-    id: mutationId,
+    id: 'pageLayout.gridlines.view.set',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params,
     affectedRanges,
     inverse: [{
-      id: mutationId,
+      id: 'pageLayout.gridlines.view.set',
       unitId: context.workbook.unitId,
       sheetId: params.sheetId,
       params: { sheetId: params.sheetId, enabled: previous },
       affectedRanges,
     }],
-    apply: () => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      if (mutationId === 'pageLayout.gridlines.view.set') sheet.showGridlines = params.enabled;
-      else sheet.showHeaders = params.enabled;
-    },
+    apply: () => { context.workbook.getSheet(params.sheetId).showGridlines = params.enabled; },
+  });
+}
+
+function applyHeadingsViewToggle(context: CommandContext, params: PrintToggleCommandParams, previous: boolean): void {
+  const affectedRanges = sheetRange(params.sheetId);
+  context.applyMutation({
+    id: 'pageLayout.headings.view.set',
+    unitId: context.workbook.unitId,
+    sheetId: params.sheetId,
+    params,
+    affectedRanges,
+    inverse: [{
+      id: 'pageLayout.headings.view.set',
+      unitId: context.workbook.unitId,
+      sheetId: params.sheetId,
+      params: { sheetId: params.sheetId, enabled: previous },
+      affectedRanges,
+    }],
+    apply: () => { context.workbook.getSheet(params.sheetId).showHeaders = params.enabled; },
   });
 }
 
@@ -364,7 +374,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       if (!isPrintToggle(params)) throw new Error('pageLayout.gridlines.view.set requires enabled');
       const previous = context.workbook.getSheet(params.sheetId).showGridlines;
-      applySheetViewToggle(context, 'pageLayout.gridlines.view.set', params, previous);
+      applyGridlineViewToggle(context, params, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });
@@ -374,7 +384,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
     execute(params, context): CommandResult {
       if (!isPrintToggle(params)) throw new Error('pageLayout.headings.view.set requires enabled');
       const previous = context.workbook.getSheet(params.sheetId).showHeaders;
-      applySheetViewToggle(context, 'pageLayout.headings.view.set', params, previous);
+      applyHeadingsViewToggle(context, params, previous);
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: sheetRange(params.sheetId) };
     },
   });

@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xc.luckysheet.server.contract.AclEntry;
 import com.xc.luckysheet.server.contract.AuditRecord;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
-import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.persistence.AuditEntity;
 import com.xc.luckysheet.server.persistence.AuditEntityRepository;
 import com.xc.luckysheet.server.persistence.CheckpointEntity;
@@ -76,16 +75,6 @@ public class WorkbookStore {
         return workbooks.findForUpdate(unitId).map(this::workbookRow);
     }
 
-    public List<WorkbookSummary> listForSubject(String subject) {
-        return workbooks.findAllAccessibleTo(subject).stream()
-                .map(row -> new WorkbookSummary(row.getUnitId(), row.getName(), row.getRevision(), row.getUpdatedAt()))
-                .toList();
-    }
-
-    public void insertWorkbook(String unitId, String name, String snapshotJson, Instant now) {
-        workbooks.save(new WorkbookEntity(unitId, name, snapshotJson, 0, 0, now, now));
-    }
-
     public void updateWorkbook(String unitId, long revision, String snapshotJson, long snapshotRevision, Instant now) {
         WorkbookEntity entity = workbooks.findById(unitId).orElseThrow(() -> new IllegalStateException("Workbook not found: " + unitId));
         entity.updateSnapshot(revision, snapshotJson, snapshotRevision, now);
@@ -96,10 +85,6 @@ public class WorkbookStore {
         WorkbookEntity entity = workbooks.findById(unitId).orElseThrow(() -> new IllegalStateException("Workbook not found: " + unitId));
         entity.updateRevision(revision, now);
         workbooks.save(entity);
-    }
-
-    public void insertAcl(String unitId, String subject, WorkbookAclRole role, Instant now) {
-        acl.save(new WorkbookAclEntity(unitId, subject, role, now, now));
     }
 
     public List<AclEntry> listAcl(String unitId) {

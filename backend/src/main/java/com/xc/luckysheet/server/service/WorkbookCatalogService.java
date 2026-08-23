@@ -1,0 +1,457 @@
+package com.xc.luckysheet.server.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
+import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
+import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
+import com.xc.luckysheet.server.contract.UserStateRequest;
+import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
+import com.xc.luckysheet.server.contract.WorkbookImportResponse;
+import com.xc.luckysheet.server.contract.WorkbookLifecycle;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
+import com.xc.luckysheet.server.contract.WorkbookSource;
+import com.xc.luckysheet.server.contract.WorkbookSummary;
+import com.xc.luckysheet.server.contract.WorkbookSyncStatus;
+import com.xc.luckysheet.server.contract.WorkbookUserState;
+import com.xc.luckysheet.server.persistence.AuditEntityRepository;
+import com.xc.luckysheet.server.persistence.CheckpointEntityRepository;
+import com.xc.luckysheet.server.persistence.DataBlockEntityRepository;
+import com.xc.luckysheet.server.persistence.OperationEntityRepository;
+import com.xc.luckysheet.server.persistence.OutboxEntityRepository;
+import com.xc.luckysheet.server.persistence.ShareEntityRepository;
+import com.xc.luckysheet.server.persistence.SpaceMemberEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookAclEntity;
+import com.xc.luckysheet.server.persistence.WorkbookAclEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookEntity;
+import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntity;
+import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookUserStateEntity;
+import com.xc.luckysheet.server.persistence.WorkbookUserStateEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkspaceFolderEntity;
+import com.xc.luckysheet.server.persistence.WorkspaceFolderEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntity;
+import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntityRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Instant;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.HexFormat;
+
+/** The sole backend catalog boundary for workbook resources and their artifacts. */
+@Service
+public class WorkbookCatalogService {
+    public static final long MAX_XLSX_BYTES = 50L * 1024L * 1024L;
+
+    private final WorkbookEntityRepository workbooks;
+    private final WorkbookAclEntityRepository acl;
+    private final WorkbookUserStateEntityRepository userStates;
+    private final WorkbookSourceArtifactEntityRepository artifacts;
+    private final WorkspaceSpaceEntityRepository spaces;
+    private final WorkspaceFolderEntityRepository folders;
+    private final SpaceMemberEntityRepository members;
+    private final WorkspaceService workspace;
+    private final WorkbookAuthorizationService authorization;
+    private final WorkbookOperationService operations;
+    private final CheckpointEntityRepository checkpoints;
+    private final OperationEntityRepository operationEntities;
+    private final OutboxEntityRepository outbox;
+    private final AuditEntityRepository audits;
+    private final ShareEntityRepository shares;
+    private final DataBlockEntityRepository blocks;
+    private final ObjectMapper mapper;
+
+    public WorkbookCatalogService(
+            WorkbookEntityRepository workbooks,
+            WorkbookAclEntityRepository acl,
+            WorkbookUserStateEntityRepository userStates,
+            WorkbookSourceArtifactEntityRepository artifacts,
+            WorkspaceSpaceEntityRepository spaces,
+            WorkspaceFolderEntityRepository folders,
+            SpaceMemberEntityRepository members,
+            WorkspaceService workspace,
+            WorkbookAuthorizationService authorization,
+            WorkbookOperationService operations,
+            CheckpointEntityRepository checkpoints,
+            OperationEntityRepository operationEntities,
+            OutboxEntityRepository outbox,
+            AuditEntityRepository audits,
+            ShareEntityRepository shares,
+            DataBlockEntityRepository blocks,
+            ObjectMapper mapper
+    ) {
+        this.workbooks = workbooks;
+        this.acl = acl;
+        this.userStates = userStates;
+        this.artifacts = artifacts;
+        this.spaces = spaces;
+        this.folders = folders;
+        this.members = members;
+        this.workspace = workspace;
+        this.authorization = authorization;
+        this.operations = operations;
+        this.checkpoints = checkpoints;
+        this.operationEntities = operationEntities;
+        this.outbox = outbox;
+        this.audits = audits;
+        this.shares = shares;
+        this.blocks = blocks;
+        this.mapper = mapper;
+    }
+
+    @Transactional
+    public WorkbookSnapshotResponse create(CreateWorkbookRequest request, String actor) {
+        WorkbookEntity entity = createEntity(request, actor);
+        return snapshotResponse(entity, request.snapshot());
+    }
+
+    public List<WorkbookSummary> list(String actor, String view, String spaceId, String folderId, String query) {
+        String normalizedView = view == null || view.isBlank() ? "recent" : view.trim().toLowerCase();
+        boolean trashOnly = "trash".equals(normalizedView);
+        boolean includeTrash = trashOnly;
+        boolean sharedOnly = "shared".equals(normalizedView);
+        boolean ownedOnly = "owned".equals(normalizedView);
+        String normalizedQuery = query == null || query.isBlank() ? null : query.trim();
+        List<WorkbookEntity> rows = workbooks.findCatalogCandidates(actor, includeTrash, trashOnly, sharedOnly, ownedOnly,
+                blankToNull(spaceId), blankToNull(folderId), normalizedQuery);
+        if (rows.isEmpty()) return List.of();
+
+        List<String> unitIds = rows.stream().map(WorkbookEntity::getUnitId).toList();
+        List<String> spaceIds = rows.stream().map(WorkbookEntity::getSpaceId).filter(this::nonBlank).distinct().toList();
+        List<String> folderIds = rows.stream().map(WorkbookEntity::getFolderId).filter(this::nonBlank).distinct().toList();
+        Map<String, WorkbookAclRole> directRoles = new HashMap<>();
+        acl.findForSubjectAndUnits(actor, unitIds).forEach(item -> directRoles.put(item.getId().getUnitId(), item.getRole()));
+        Map<String, WorkbookAclRole> spaceRoles = new HashMap<>();
+        if (!spaceIds.isEmpty()) workspaceMembers(spaceIds, actor).forEach(item -> spaceRoles.put(item.getId().getSpaceId(), item.getRole()));
+        Map<String, WorkspaceSpaceEntity> spaceMap = new HashMap<>();
+        if (!spaceIds.isEmpty()) spaces.findAllById(spaceIds).forEach(item -> spaceMap.put(item.getSpaceId(), item));
+        Map<String, WorkspaceFolderEntity> folderMap = new HashMap<>();
+        if (!spaceIds.isEmpty()) folders.findBySpaceIdInOrderByName(spaceIds).forEach(item -> folderMap.put(item.getFolderId(), item));
+        Map<String, WorkbookUserStateEntity> stateMap = new HashMap<>();
+        userStates.findByIdUnitIdInAndIdSubject(unitIds, actor).forEach(item -> stateMap.put(item.getId().getUnitId(), item));
+        Map<String, String> artifactNames = new HashMap<>();
+        artifacts.findByUnitIdIn(unitIds).forEach(item -> artifactNames.put(item.getUnitId(), item.getFileName()));
+
+        return rows.stream().map(row -> {
+            WorkbookAclRole role = row.getOwnerSubject().equals(actor) ? WorkbookAclRole.OWNER : directRoles.get(row.getUnitId());
+            role = max(role, row.getSpaceId() == null ? null : spaceRoles.get(row.getSpaceId()));
+            if (role == null) role = WorkbookAclRole.VIEWER;
+            WorkbookUserStateEntity state = stateMap.get(row.getUnitId());
+            WorkspaceSpaceEntity space = row.getSpaceId() == null ? null : spaceMap.get(row.getSpaceId());
+            WorkspaceFolderEntity folder = row.getFolderId() == null ? null : folderMap.get(row.getFolderId());
+            return summary(row, role, state, space, folder, folderMap, artifactNames.get(row.getUnitId()));
+        }).toList();
+    }
+
+    @Transactional
+    public WorkbookSummary update(String unitId, UpdateWorkbookRequest request, String actor) {
+        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        WorkbookAclRole current = requireRole(unitId, actor, WorkbookAclRole.EDITOR);
+        if (entity.getLifecycle() == WorkbookLifecycle.TRASHED && !current.includes(WorkbookAclRole.OWNER)) {
+            throw ServiceException.forbidden("Only the workbook owner can modify a trashed workbook");
+        }
+        String targetSpaceId = request.spaceId() == null ? entity.getSpaceId() : blankToNull(request.spaceId());
+        String targetFolderId = request.folderId() == null ? entity.getFolderId() : blankToNull(request.folderId());
+        boolean crossSpace = !java.util.Objects.equals(targetSpaceId, entity.getSpaceId());
+        if (crossSpace && !current.includes(WorkbookAclRole.OWNER)) {
+            throw ServiceException.forbidden("Only the workbook owner can move it across spaces");
+        }
+        if (targetSpaceId == null) {
+            targetSpaceId = workspace.ensurePersonalSpace(actor).getSpaceId();
+        }
+        workspace.requireFolder(targetSpaceId, targetFolderId, actor, WorkbookAclRole.EDITOR);
+        workspace.require(targetSpaceId, actor, WorkbookAclRole.EDITOR);
+        Instant now = Instant.now();
+        entity.updateMetadata(request.name() == null ? null : request.name().trim(), targetSpaceId, targetFolderId, now);
+        workbooks.save(entity);
+        if (crossSpace) acl.deleteNonOwner(unitId, entity.getOwnerSubject());
+        return summaryForActor(entity, actor);
+    }
+
+    @Transactional
+    public WorkbookSummary copy(String unitId, CopyWorkbookRequest request, String actor) {
+        WorkbookEntity source = requireActiveOrTrashed(unitId);
+        requireRole(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookSnapshotResponse sourceSnapshot = operations.readSnapshot(unitId, actor);
+        String targetSpaceId = request == null || request.spaceId() == null ? source.getSpaceId() : blankToNull(request.spaceId());
+        if (targetSpaceId == null) targetSpaceId = workspace.ensurePersonalSpace(actor).getSpaceId();
+        workspace.require(targetSpaceId, actor, WorkbookAclRole.EDITOR);
+        String targetFolderId = request == null || request.folderId() == null ? source.getFolderId() : blankToNull(request.folderId());
+        workspace.requireFolder(targetSpaceId, targetFolderId, actor, WorkbookAclRole.EDITOR);
+        String name = request == null || request.name() == null || request.name().isBlank()
+                ? source.getName() + " - 副本" : request.name().trim();
+        String targetId = UUID.randomUUID().toString();
+        JsonNode copiedSnapshot = normalizeCopiedSnapshot(sourceSnapshot.snapshot(), targetId, name);
+        CreateWorkbookRequest create = new CreateWorkbookRequest(targetId, name, copiedSnapshot, targetSpaceId,
+                targetFolderId, source.getSource());
+        WorkbookEntity copied = createEntity(create, actor);
+        WorkbookSourceArtifactEntity sourceArtifact = artifacts.findById(unitId).orElse(null);
+        if (sourceArtifact != null) {
+            Instant now = Instant.now();
+            artifacts.save(new WorkbookSourceArtifactEntity(targetId, sourceArtifact.getFileName(), sourceArtifact.getMimeType(),
+                    sourceArtifact.getChecksum(), sourceArtifact.getByteLength(), sourceArtifact.getContent().clone(),
+                    sourceArtifact.getDetectedFeaturesJson(), now, now));
+        }
+        return summaryForActor(copied, actor);
+    }
+
+    @Transactional
+    public WorkbookSummary moveToTrash(String unitId, String actor) {
+        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        requireRole(unitId, actor, WorkbookAclRole.OWNER);
+        if (entity.getLifecycle() == WorkbookLifecycle.TRASHED) return summaryForActor(entity, actor);
+        entity.moveToTrash(Instant.now());
+        workbooks.save(entity);
+        return summaryForActor(entity, actor);
+    }
+
+    @Transactional
+    public WorkbookSummary restoreFromTrash(String unitId, String actor) {
+        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        requireRole(unitId, actor, WorkbookAclRole.OWNER);
+        if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) return summaryForActor(entity, actor);
+        entity.restoreFromTrash(Instant.now());
+        workbooks.save(entity);
+        return summaryForActor(entity, actor);
+    }
+
+    @Transactional
+    public void purge(String unitId, String actor) {
+        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        requireRole(unitId, actor, WorkbookAclRole.OWNER);
+        if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) throw ServiceException.conflict("Workbook must be in trash before purge");
+        artifacts.deleteById(unitId);
+        userStates.deleteByIdUnitId(unitId);
+        blocks.deleteByIdUnitId(unitId);
+        checkpoints.deleteByIdUnitId(unitId);
+        operationEntities.deleteByUnitId(unitId);
+        outbox.deleteByUnitId(unitId);
+        audits.deleteByUnitId(unitId);
+        shares.deleteByUnitId(unitId);
+        acl.deleteAll(acl.findAllForWorkbook(unitId));
+        workbooks.deleteById(unitId);
+    }
+
+    public WorkbookUserState getUserState(String unitId, String actor) {
+        requireRole(unitId, actor, WorkbookAclRole.VIEWER);
+        return userStates.findByIdUnitIdAndIdSubject(unitId, actor)
+                .map(this::userState)
+                .orElseGet(() -> new WorkbookUserState(unitId, false, null, true, true, "remote", "standard", null, true, "system", null));
+    }
+
+    @Transactional
+    public WorkbookUserState putUserState(String unitId, UserStateRequest request, String actor) {
+        requireRole(unitId, actor, WorkbookAclRole.VIEWER);
+        Instant now = Instant.now();
+        WorkbookUserStateEntity state = userStates.findByIdUnitIdAndIdSubject(unitId, actor)
+                .orElseGet(() -> new WorkbookUserStateEntity(unitId, actor, false, null, now));
+        state.update(request.favorite(), request.lastOpenedAt(), request.autoSave(), request.autoSync(),
+                request.defaultCreateLocation(), request.importCompatibilityLevel(), request.language(),
+                request.offlineCache(), request.theme(), now);
+        userStates.save(state);
+        return userState(state);
+    }
+
+    @Transactional
+    public WorkbookArtifactResponse putArtifact(String unitId, String fileName, String mimeType, String checksum,
+                                                byte[] content, String actor) {
+        requireRole(unitId, actor, WorkbookAclRole.EDITOR);
+        validateArtifact(fileName, checksum, content);
+        String actual = checksum(content);
+        if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("XLSX artifact checksum mismatch");
+        Instant now = Instant.now();
+        WorkbookSourceArtifactEntity entity = artifacts.findById(unitId).orElseGet(() ->
+                new WorkbookSourceArtifactEntity(unitId, safeFileName(fileName), safeMimeType(mimeType), actual,
+                        content.length, content.clone(), "[]", now, now));
+        entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), "[]", now);
+        artifacts.save(entity);
+        return artifactResponse(entity);
+    }
+
+    public WorkbookSourceArtifactEntity getArtifact(String unitId, String actor) {
+        requireRole(unitId, actor, WorkbookAclRole.VIEWER);
+        return artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook XLSX artifact not found"));
+    }
+
+    @Transactional
+    public WorkbookImportResponse importXlsx(MultipartFile file, String name, String spaceId, String folderId,
+                                             String snapshotJson, String actor) {
+        if (file == null || file.isEmpty()) throw ServiceException.validation("XLSX file is required");
+        if (file.getSize() > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX file exceeds 50 MiB");
+        if (snapshotJson == null || snapshotJson.isBlank()) throw ServiceException.validation("Parsed workbook snapshot is required");
+        JsonNode snapshot;
+        try {
+            snapshot = mapper.readTree(snapshotJson);
+        } catch (IOException error) {
+            throw ServiceException.validation("Parsed workbook snapshot is invalid");
+        }
+        if (snapshot == null || !snapshot.isObject()) throw ServiceException.validation("Parsed workbook snapshot must be an object");
+        String resolvedName = name == null || name.isBlank() ? file.getOriginalFilename() : name;
+        if (resolvedName == null || resolvedName.isBlank()) resolvedName = "导入的工作簿";
+        byte[] content;
+        try {
+            content = file.getBytes();
+        } catch (IOException error) {
+            throw ServiceException.unavailable("Unable to read XLSX artifact");
+        }
+        String unitId = snapshot.path("unitId").asText("").trim();
+        if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
+        WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
+                WorkbookSource.XLSX_IMPORT), actor);
+        String digest = checksum(content);
+        Instant now = Instant.now();
+        WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
+                safeFileName(file.getOriginalFilename() == null ? resolvedName + ".xlsx" : file.getOriginalFilename()),
+                safeMimeType(file.getContentType()), digest, content.length, content, "[]", now, now);
+        artifacts.save(artifact);
+        return new WorkbookImportResponse(entity.getUnitId(), entity.getRevision(), artifact.getChecksum(),
+                summaryForActor(entity, actor), snapshot.deepCopy(), artifactResponse(artifact));
+    }
+
+    private WorkbookEntity createEntity(CreateWorkbookRequest request, String actor) {
+        if (workbooks.existsById(request.unitId())) throw ServiceException.conflict("Workbook already exists");
+        WorkspaceSpaceEntity space = request.spaceId() == null || request.spaceId().isBlank()
+                ? workspace.ensurePersonalSpace(actor)
+                : workspace.require(request.spaceId(), actor, WorkbookAclRole.EDITOR);
+        String folderId = blankToNull(request.folderId());
+        workspace.requireFolder(space.getSpaceId(), folderId, actor, WorkbookAclRole.EDITOR);
+        Instant now = Instant.now();
+        WorkbookEntity entity = new WorkbookEntity(request.unitId(), request.name().trim(), writeJson(request.snapshot()), 0, 0,
+                now, now, actor, space.getSpaceId(), folderId,
+                com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE,
+                request.source(), WorkbookLifecycle.ACTIVE, null);
+        workbooks.save(entity);
+        acl.save(new WorkbookAclEntity(request.unitId(), actor, WorkbookAclRole.OWNER, now, now));
+        checkpoints.save(new com.xc.luckysheet.server.persistence.CheckpointEntity(request.unitId(), 0, entity.getSnapshotJson(),
+                checksum(entity.getSnapshotJson().getBytes(StandardCharsets.UTF_8)), now));
+        return entity;
+    }
+
+    /**
+     * A copied workbook is a new resource identity. All workbook-scoped
+     * embedded documents must follow that identity before persistence; this
+     * prevents the copied print state from being rejected or remaining bound
+     * to the source workbook at the next load.
+     */
+    private JsonNode normalizeCopiedSnapshot(JsonNode source, String targetUnitId, String targetName) {
+        if (source == null || !source.isObject()) throw ServiceException.validation("Workbook snapshot must be an object");
+        ObjectNode copy = ((ObjectNode) source).deepCopy();
+        copy.put("unitId", targetUnitId);
+        copy.put("name", targetName);
+        JsonNode printDocuments = copy.get("printDocuments");
+        if (printDocuments != null && !printDocuments.isNull()) {
+            if (!printDocuments.isArray()) throw ServiceException.validation("printDocuments must be an array");
+            for (JsonNode raw : (ArrayNode) printDocuments) {
+                if (!raw.isObject()) throw ServiceException.validation("Print document must be an object");
+                ((ObjectNode) raw).put("unitId", targetUnitId);
+            }
+        }
+        return copy;
+    }
+
+    private WorkbookSummary summaryForActor(WorkbookEntity entity, String actor) {
+        Map<String, WorkspaceFolderEntity> folderMap = new HashMap<>();
+        if (entity.getSpaceId() != null) folders.findBySpaceIdOrderByName(entity.getSpaceId()).forEach(item -> folderMap.put(item.getFolderId(), item));
+        return summary(entity, requireRole(entity.getUnitId(), actor, WorkbookAclRole.VIEWER),
+                userStates.findByIdUnitIdAndIdSubject(entity.getUnitId(), actor).orElse(null),
+                entity.getSpaceId() == null ? null : spaces.findById(entity.getSpaceId()).orElse(null),
+                entity.getFolderId() == null ? null : folderMap.get(entity.getFolderId()), folderMap,
+                artifacts.findById(entity.getUnitId()).map(WorkbookSourceArtifactEntity::getFileName).orElse(null));
+    }
+
+    private WorkbookSummary summary(WorkbookEntity row, WorkbookAclRole role, WorkbookUserStateEntity state,
+                                    WorkspaceSpaceEntity space, WorkspaceFolderEntity folder,
+                                    Map<String, WorkspaceFolderEntity> folderMap, String sourceFileName) {
+        List<String> path = locationPath(space, folder, folderMap);
+        return new WorkbookSummary(row.getUnitId(), row.getName(), row.getRevision(), row.getUpdatedAt(), role,
+                blankToNull(row.getOwnerSubject()), row.getSpaceId(), row.getFolderId(), path,
+                space == null ? null : space.getName(), sourceFileName, row.getStorageLocation(),
+                WorkbookSyncStatus.SYNCED, row.getLifecycle(), row.getSource(), state != null && state.isFavorite(),
+                state == null ? null : state.getLastOpenedAt(), row.getDeletedAt());
+    }
+
+    private List<String> locationPath(WorkspaceSpaceEntity space, WorkspaceFolderEntity folder,
+                                      Map<String, WorkspaceFolderEntity> folderMap) {
+        if (space == null) return List.of();
+        java.util.LinkedList<String> path = new java.util.LinkedList<>();
+        path.addFirst(space.getName());
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        WorkspaceFolderEntity current = folder;
+        while (current != null && seen.add(current.getFolderId())) {
+            path.add(1, current.getName());
+            current = current.getParentId() == null ? null : folderMap.get(current.getParentId());
+        }
+        return List.copyOf(path);
+    }
+
+    private WorkbookSnapshotResponse snapshotResponse(WorkbookEntity entity, JsonNode snapshot) {
+        String json = writeJson(snapshot);
+        return new WorkbookSnapshotResponse(entity.getUnitId(), snapshot.deepCopy(), entity.getRevision(), checksum(json.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private WorkbookUserState userState(WorkbookUserStateEntity state) {
+        return new WorkbookUserState(state.getId().getUnitId(), state.isFavorite(), state.getLastOpenedAt(), state.isAutoSave(),
+                state.isAutoSync(), state.getDefaultCreateLocation(), state.getImportCompatibilityLevel(), state.getLanguage(),
+                state.isOfflineCache(), state.getTheme(), state.getUpdatedAt());
+    }
+
+    private WorkbookArtifactResponse artifactResponse(WorkbookSourceArtifactEntity artifact) {
+        return new WorkbookArtifactResponse(artifact.getUnitId(), artifact.getFileName(), artifact.getMimeType(), artifact.getChecksum(),
+                artifact.getByteLength(), artifact.getCreatedAt(), artifact.getUpdatedAt());
+    }
+
+    private WorkbookEntity requireActiveOrTrashed(String unitId) {
+        if (unitId == null || unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("unitId is invalid");
+        return workbooks.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+    }
+
+    private WorkbookAclRole requireRole(String unitId, String actor, WorkbookAclRole required) {
+        WorkbookAclRole role = authorization.role(unitId, actor).orElse(null);
+        if (role == null) throw ServiceException.forbidden("Workbook access denied");
+        if (!role.includes(required)) throw ServiceException.forbidden("Workbook role " + required + " is required");
+        return role;
+    }
+
+    private List<com.xc.luckysheet.server.persistence.SpaceMemberEntity> workspaceMembers(Collection<String> spaceIds, String actor) {
+        return members.findByIdSpaceIdInAndIdSubject(spaceIds, actor);
+    }
+
+    private WorkbookAclRole max(WorkbookAclRole left, WorkbookAclRole right) {
+        if (left == null) return right;
+        if (right == null) return left;
+        return left.includes(right) ? left : right;
+    }
+
+    private void validateArtifact(String fileName, String checksum, byte[] content) {
+        if (content == null || content.length == 0 || content.length > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX artifact size is invalid");
+        if (checksum == null || !checksum.matches("[A-Fa-f0-9]{64}")) throw ServiceException.validation("XLSX artifact checksum is invalid");
+        if (fileName != null && fileName.length() > 500) throw ServiceException.validation("XLSX file name is too long");
+    }
+
+    private String safeFileName(String value) {
+        if (value == null || value.isBlank()) return "workbook.xlsx";
+        try {
+            return java.net.URLDecoder.decode(value, java.nio.charset.StandardCharsets.UTF_8).replaceAll("[\\r\\n]", "_");
+        } catch (IllegalArgumentException ignored) {
+            return value.replaceAll("[\\r\\n]", "_");
+        }
+    }
+    private String safeMimeType(String value) { return value == null || value.isBlank() ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : value; }
+    private String writeJson(Object value) { try { return mapper.writeValueAsString(value); } catch (Exception error) { throw new IllegalStateException("Unable to serialize workbook snapshot", error); } }
+    private String checksum(byte[] content) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content)); } catch (Exception error) { throw new IllegalStateException("SHA-256 is unavailable", error); } }
+    private boolean nonBlank(String value) { return value != null && !value.isBlank(); }
+    private static String blankToNull(String value) { return value == null || value.isBlank() ? null : value; }
+}

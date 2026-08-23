@@ -2,6 +2,14 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function waitForWorkspace(page: Page) {
   await page.goto('/');
+  await expect(page.getByTestId('workbook-hub')).toBeVisible();
+  await page.getByRole('button', { name: '新建工作簿' }).click();
+  const createDialog = page.getByTestId('create-workbook-dialog');
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByLabel('工作簿名称').fill(`E2E ${Date.now()}`);
+  await createDialog.getByLabel('保存位置').selectOption('local');
+  await createDialog.getByRole('button', { name: '创建工作簿' }).click();
+  await expect(page).toHaveURL(/\/workbooks\/[^/]+$/);
   await expect(page.getByTestId('app-shell')).toBeVisible();
   await expect(page.getByTestId('app-shell')).toHaveAttribute('data-workspace-phase', 'ready');
 }

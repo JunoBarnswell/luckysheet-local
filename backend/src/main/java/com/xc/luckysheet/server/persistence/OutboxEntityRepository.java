@@ -20,4 +20,6 @@ public interface OutboxEntityRepository extends JpaRepository<OutboxEntity, UUID
     List<OutboxEntity> findPendingForUpdate(@Param("now") Instant now, Pageable pageable);
 
     List<OutboxEntity> findByPublishedAtIsNotNullAndPublishedAtBefore(Instant cutoff);
+
+    void deleteByUnitId(String unitId);
 }

@@ -67,7 +67,8 @@ class MutationDescriptorRegistryTest {
                 "table.add", "table.remove", "name.set", "name.remove",
                 "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set", "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source",
-                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore", "rows.permuted"
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore", "rows.permuted",
+                "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
         ), Set.copyOf(registry.acceptedIds()));
     }
 
@@ -252,10 +253,10 @@ class MutationDescriptorRegistryTest {
     void structuralTransformsUpdateCanonicalPivotSourceAndTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeights":{},"columnWidths":{},"notes":[],"commentThreads":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[
+                {"sheets":[{"id":"sheet-1","name":"Sheet 1","rowCount":10,"columnCount":10,"cells":{},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeights":{},"columnWidths":{},"notes":[],"commentThreads":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[
                   {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 ]}]}
-                """));
+                """);
         OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","at":1,"count":1}
                 """));

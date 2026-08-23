@@ -11,4 +11,6 @@ public interface AuditEntityRepository extends JpaRepository<AuditEntity, java.u
     }
 
     List<AuditEntity> findByUnitIdOrderByOccurredAtDesc(String unitId, org.springframework.data.domain.Pageable pageable);
+
+    void deleteByUnitId(String unitId);
 }

@@ -12,8 +12,8 @@ import {
   validateWorkbookSnapshot,
 } from './index';
 
-test('collaboration messages round-trip through the operation wire contract', () => {
-  const message = { type: 'changeset.ack' as const, operationId: 'op-1', revision: 2 };
+test('WebSocket presence messages round-trip without becoming a mutation transport', () => {
+  const message = { type: 'cursor.updated' as const, unitId: 'unit-1', state: { row: 2, column: 4, sheetId: 'sheet-1' } };
   assert.deepEqual(decodeMessage(encodeMessage(message)), message);
 });
 
@@ -55,7 +55,7 @@ test('collaboration messages reject actor-bearing presence and legacy changesets
       mutations: [],
       createdAt: new Date().toISOString(),
     },
-  })), /Unsupported operation schema/);
+  })), /Unsupported collaboration message/);
 });
 
 test('WorkbookApiClient injects bearer authentication and fails closed without a provider', async () => {

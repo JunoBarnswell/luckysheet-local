@@ -16,6 +16,7 @@ export type IconName =
   | 'chart'
   | 'check'
   | 'check-circle'
+  | 'clock'
   | 'chevron-down'
   | 'chevron-left'
   | 'chevron-right'
@@ -27,14 +28,19 @@ export type IconName =
   | 'copy'
   | 'dollar-sign'
   | 'download'
+  | 'external-link'
   | 'eye'
   | 'file-plus'
+  | 'file-spreadsheet'
   | 'file-text'
   | 'filter'
   | 'freeze'
   | 'function'
+  | 'folder'
+  | 'folder-open'
   | 'grid'
   | 'help'
+  | 'home'
   | 'history'
   | 'info'
   | 'italic'
@@ -42,17 +48,22 @@ export type IconName =
   | 'layout'
   | 'loader'
   | 'lock'
+  | 'maximize'
   | 'menu'
+  | 'minimize'
   | 'merge-cells'
   | 'more-horizontal'
+  | 'more-vertical'
   | 'paint-bucket'
   | 'palette'
+  | 'pencil'
   | 'percent'
   | 'plus'
   | 'printer'
   | 'redo'
   | 'refresh'
   | 'rows'
+  | 'save'
   | 'scissors'
   | 'search'
   | 'settings'
@@ -61,6 +72,7 @@ export type IconName =
   | 'share'
   | 'sliders'
   | 'sort'
+  | 'star'
   | 'sparkles'
   | 'sparkline'
   | 'strikethrough'
@@ -123,6 +135,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <path d="m5 12 4.5 4.5L19 7" />;
     case 'check-circle':
       return <><circle cx="12" cy="12" r="9" /><path d="m8 12 2.5 2.5L16 9" /></>;
+    case 'clock':
+      return <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3 2" /></>;
     case 'chevron-down':
       return <path d="m6 9 6 6 6-6" />;
     case 'chevron-left':
@@ -145,10 +159,14 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></>;
     case 'download':
       return <><path d="M12 4v10" /><path d="m8 10 4 4 4-4" /><path d="M5 19h14" /></>;
+    case 'external-link':
+      return <><path d="M14 5h5v5" /><path d="m19 5-8 8" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>;
     case 'eye':
       return <><path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z" /><circle cx="12" cy="12" r="2" /></>;
     case 'file-plus':
       return <><path d="M7 3.5h6l4 4V20H7a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" /><path d="M13 3.5v4h4" /><path d="M12 11v5M9.5 13.5h5" /></>;
+    case 'file-spreadsheet':
+      return <><path d="M7 3.5h6l4 4V20H7a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" /><path d="M13 3.5v4h4" /><rect x="8" y="11" width="6" height="5" rx=".5" /><path d="M8 13.5h6M10 11v5M12 11v5" /></>;
     case 'file-text':
       return <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" /></>;
     case 'filter':
@@ -157,10 +175,16 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><rect x="5" y="5" width="14" height="14" rx="1" /><path d="M5 10h14M10 5v14" /><path d="m16 8 2-2" /></>;
     case 'function':
       return <path d="M7.5 19c1.4-2.8 2.2-6.2 2.7-10.5h5.3M8 6h7M6 13h8" />;
+    case 'folder':
+      return <path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9Z" />;
+    case 'folder-open':
+      return <><path d="M3.5 8.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 1.9 2.6l-1.6 5.4a2 2 0 0 1-1.9 1.4H5a2 2 0 0 1-1.9-1.4L1.9 11a2 2 0 0 1 1.6-2.5Z" /><path d="M3 11h16" /></>;
     case 'grid':
       return <><rect x="4.5" y="4.5" width="15" height="15" rx="2" /><path d="M4.5 10h15M4.5 15h15M10 4.5v15M15 4.5v15" /></>;
     case 'help':
       return <><circle cx="12" cy="12" r="9" /><path d="M9.6 9a2.5 2.5 0 1 1 4.1 1.94c-.9.7-1.7 1.14-1.7 2.56" /><path d="M12 16.5h.01" /></>;
+    case 'home':
+      return <><path d="m4 11 8-7 8 7" /><path d="M6 10v9h12v-9" /><path d="M10 19v-5h4v5" /></>;
     case 'history':
       return <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5M12 7v5l4 2" /></>;
     case 'info':
@@ -175,16 +199,24 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <path d="M12 4a8 8 0 1 0 8 8" />;
     case 'lock':
       return <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /><path d="M12 14v2" /></>;
+    case 'maximize':
+      return <><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M4 16v4h4" /><path d="M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5" /></>;
     case 'menu':
       return <><path d="M5 7h14M5 12h14M5 17h14" /></>;
+    case 'minimize':
+      return <path d="M5 17h14" />;
     case 'merge-cells':
       return <><rect x="4" y="6" width="16" height="12" rx="2" /><path d="M9 12h6M12 9v6" strokeDasharray="2 2" /><path d="m7 12 2-2M7 12l2 2M17 12l-2-2M17 12l2 2" /></>;
     case 'more-horizontal':
       return <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" /></>;
+    case 'more-vertical':
+      return <><circle cx="12" cy="5" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none" /></>;
     case 'paint-bucket':
       return <><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z" /><path d="m5 2 5 5" /><path d="M2 13h15" /><path d="M22 20a2 2 0 1 1-4 0c0-1.6 2-4 2-4s2 2.4 2 4Z" /></>;
     case 'palette':
       return <path d="M12 4a8 8 0 0 0 0 16h1.1a1.9 1.9 0 0 0 .7-3.67A1.9 1.9 0 0 1 14.5 14H16a4 4 0 0 0 4-4 7 7 0 0 0-8-6Z" />;
+    case 'pencil':
+      return <><path d="m4 16-.8 4.8L8 20l10.8-10.8a2.5 2.5 0 0 0-3.5-3.5L4 16Z" /><path d="m13.5 7.5 3 3" /></>;
     case 'percent':
       return <><line x1="19" y1="5" x2="5" y2="19" /><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>;
     case 'plus':
@@ -197,6 +229,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M19 8a7 7 0 1 0 1 6" /><path d="M19 4v4h-4" /></>;
     case 'rows':
       return <><rect x="5" y="5" width="14" height="5" rx="1" /><rect x="5" y="14" width="14" height="5" rx="1" /></>;
+    case 'save':
+      return <><path d="M5 4h12l2 2v14H5V4Z" /><path d="M8 4v6h8V4M8 20v-6h8v6" /></>;
     case 'scissors':
       return <><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12" /></>;
     case 'search':
@@ -213,6 +247,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="17" r="2" /></>;
     case 'sort':
       return <><path d="M8 5v14" /><path d="m5 8 3-3 3 3" /><path d="M16 19V5" /><path d="m13 16 3 3 3-3" /></>;
+    case 'star':
+      return <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z" />;
     case 'sparkles':
       return <><path d="m12 3 1.3 5.7L19 10l-5.7 1.3L12 17l-1.3-5.7L5 10l5.7-1.3L12 3Z" /><path d="m19 16 .5 2.2L22 19l-2.5.8L19 22l-.5-2.2L16 19l2.5-.8L19 16Z" /></>;
     case 'sparkline':

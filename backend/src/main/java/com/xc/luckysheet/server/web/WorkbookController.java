@@ -12,6 +12,12 @@ import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
+import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
+import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
+import com.xc.luckysheet.server.contract.UserStateRequest;
+import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
+import com.xc.luckysheet.server.contract.WorkbookUserState;
+import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntity;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
@@ -20,6 +26,7 @@ import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
 import com.xc.luckysheet.server.service.ActorIdentity;
 import com.xc.luckysheet.server.service.WorkbookOperationService;
 import com.xc.luckysheet.server.service.WorkbookDataBlockService;
+import com.xc.luckysheet.server.service.WorkbookCatalogService;
 import com.xc.luckysheet.server.service.QueryExecutionService;
 import com.xc.luckysheet.server.service.GuestShareService;
 import jakarta.validation.Valid;
@@ -32,6 +39,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -49,31 +57,100 @@ public class WorkbookController {
     private final QueryExecutionService queries;
     private final GuestShareService guestShares;
     private final WorkbookDataBlockService dataBlocks;
+    private final WorkbookCatalogService catalog;
 
     public WorkbookController(
             WorkbookOperationService operations,
             WebSocketSessionRegistry sessions,
             QueryExecutionService queries,
             GuestShareService guestShares,
-            WorkbookDataBlockService dataBlocks
+            WorkbookDataBlockService dataBlocks,
+            WorkbookCatalogService catalog
     ) {
         this.operations = operations;
         this.sessions = sessions;
         this.queries = queries;
         this.guestShares = guestShares;
         this.dataBlocks = dataBlocks;
+        this.catalog = catalog;
     }
 
     @PostMapping
     public ResponseEntity<WorkbookSnapshotResponse> create(@Valid @RequestBody CreateWorkbookRequest request, Authentication authentication) {
         ActorIdentity.requireRegisteredActor(authentication);
-        WorkbookSnapshotResponse response = operations.create(request, ActorIdentity.subject(authentication));
+        WorkbookSnapshotResponse response = catalog.create(request, ActorIdentity.subject(authentication));
         return ResponseEntity.created(URI.create("/api/workbooks/" + request.unitId())).body(response);
     }
 
     @GetMapping
-    public List<WorkbookSummary> list(Authentication authentication) {
-        return operations.list(ActorIdentity.subject(authentication));
+    public List<WorkbookSummary> list(
+            @RequestParam(required = false) String view,
+            @RequestParam(required = false) String spaceId,
+            @RequestParam(required = false) String folderId,
+            @RequestParam(name = "query", required = false) String query,
+            Authentication authentication
+    ) {
+        return catalog.list(ActorIdentity.subject(authentication), view, spaceId, folderId, query);
+    }
+
+    @PatchMapping("/{unitId}")
+    public WorkbookSummary update(@PathVariable String unitId, @Valid @RequestBody UpdateWorkbookRequest request, Authentication authentication) {
+        return catalog.update(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @PostMapping("/{unitId}/copy")
+    public WorkbookSummary copy(@PathVariable String unitId, @RequestBody(required = false) CopyWorkbookRequest request, Authentication authentication) {
+        return catalog.copy(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @DeleteMapping("/{unitId}")
+    public ResponseEntity<Void> moveToTrash(@PathVariable String unitId, Authentication authentication) {
+        catalog.moveToTrash(unitId, ActorIdentity.subject(authentication));
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{unitId}/restore-from-trash")
+    public WorkbookSummary restoreFromTrash(@PathVariable String unitId, Authentication authentication) {
+        return catalog.restoreFromTrash(unitId, ActorIdentity.subject(authentication));
+    }
+
+    @DeleteMapping("/{unitId}/purge")
+    public ResponseEntity<Void> purge(@PathVariable String unitId, Authentication authentication) {
+        catalog.purge(unitId, ActorIdentity.subject(authentication));
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/{unitId}/user-state")
+    public WorkbookUserState userState(@PathVariable String unitId, Authentication authentication) {
+        return catalog.getUserState(unitId, ActorIdentity.subject(authentication));
+    }
+
+    @PutMapping("/{unitId}/user-state")
+    public WorkbookUserState updateUserState(@PathVariable String unitId, @Valid @RequestBody UserStateRequest request, Authentication authentication) {
+        return catalog.putUserState(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @PutMapping(value = "/{unitId}/source-artifact", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public WorkbookArtifactResponse putSourceArtifact(
+            @PathVariable String unitId,
+            @RequestHeader(value = "X-File-Name", required = false) String fileName,
+            @RequestHeader(value = "Content-Type", required = false) String mimeType,
+            @RequestHeader("X-Content-SHA256") String checksum,
+            @RequestBody byte[] content,
+            Authentication authentication
+    ) {
+        return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping(value = "/{unitId}/source-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
+        WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(artifact.getMimeType()))
+                .contentLength(artifact.getByteLength())
+                .header("X-Content-SHA256", artifact.getChecksum())
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + artifact.getFileName().replace("\"", "") + "\"")
+                .body(artifact.getContent());
     }
 
     @GetMapping("/{unitId}/snapshot")

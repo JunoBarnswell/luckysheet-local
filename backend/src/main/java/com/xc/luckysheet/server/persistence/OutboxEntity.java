@@ -19,6 +19,7 @@ import java.util.UUID;
 }, uniqueConstraints = @UniqueConstraint(name = "coordination_outbox_unit_revision_uk", columnNames = {"unit_id", "revision"}))
 public class OutboxEntity {
     @Id
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "event_id", nullable = false)
     private UUID eventId;
 

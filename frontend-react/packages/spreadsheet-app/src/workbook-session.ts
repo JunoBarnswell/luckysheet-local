@@ -19,7 +19,6 @@ import type {
   PivotDefinition,
   RangeRef,
   ShapeDrawingPayload,
-  SheetSnapshot,
   SheetTableModel,
   SheetDataRegion,
   SparklineModel,
@@ -96,10 +95,8 @@ import {
   type PivotControlRecord,
 } from './features/pivot-controls';
 import {
-  encodeSheetDataRegion,
   prepareDataRegionMaterialization,
   resolveCell as resolveWorkbookCell,
-  type EncodedSheetDataBlock,
 } from './features/data-source';
 import {
   buildCellNote,
@@ -124,11 +121,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import {
-  exchangeImportXlsx,
-  exchangeExportXlsx,
-  summarizeCompatibilityReport,
-} from './features/xlsx';
+import { exchangeExportXlsx, summarizeCompatibilityReport } from './features/xlsx';
 import {
   buildPrintSnapshot,
   getPrintDocument,
@@ -314,44 +307,6 @@ export interface DefinedNameCommandInput {
   sheetId?: string;
   hidden?: boolean;
   comment?: string;
-}
-
-function snapshotUsedRange(sheet: SheetSnapshot): RangeRef | undefined {
-  let startRow = Number.POSITIVE_INFINITY;
-  let startColumn = Number.POSITIVE_INFINITY;
-  let endRow = -1;
-  let endColumn = -1;
-  for (const [rawRow, columns] of Object.entries(sheet.cells)) {
-    const row = Number(rawRow);
-    if (!Number.isSafeInteger(row)) continue;
-    for (const rawColumn of Object.keys(columns)) {
-      const column = Number(rawColumn);
-      if (!Number.isSafeInteger(column)) continue;
-      startRow = Math.min(startRow, row);
-      startColumn = Math.min(startColumn, column);
-      endRow = Math.max(endRow, row);
-      endColumn = Math.max(endColumn, column);
-    }
-  }
-  if (!Number.isFinite(startRow) || !Number.isFinite(startColumn)) return undefined;
-  return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
-}
-
-function preserveSparseOverlayCell(cell: CellData): boolean {
-  return cell.formula !== undefined || cell.style !== undefined || cell.numberFormat !== undefined
-    || cell.comment !== undefined || cell.note !== undefined || cell.hyperlinkDetail !== undefined;
-}
-
-function removeBlockMaterializedCells(sheet: SheetSnapshot, range: RangeRef): void {
-  for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-    const columns = sheet.cells[String(row)];
-    if (!columns) continue;
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const cell = columns[String(column)];
-      if (cell && !preserveSparseOverlayCell(cell)) delete columns[String(column)];
-    }
-    if (Object.keys(columns).length === 0) delete sheet.cells[String(row)];
-  }
 }
 
 export function getInitialSessionPhase(): AppPhase {
@@ -1347,10 +1302,26 @@ export class WorkbookSession {
     this.emit();
     try {
       void reason;
+      const remoteWorkbook = !this.runtime.localOnly && this.runtime.remoteSyncRequested;
+      if (remoteWorkbook && !this.runtime.remoteConnected) {
+        await this.runtime.checkpointWorkspace();
+        this.saveState = 'offline';
+        this.syncPersistenceMeta();
+        this.notify('Local checkpoint saved; waiting to sync with the server');
+        return;
+      }
+      if (remoteWorkbook) {
+        const flushed = await this.runtime.collaboration?.offlineQueue.flushAll();
+        if (flushed && (flushed.failed > 0 || this.runtime.collaboration?.offlineQueue.getPendingCount())) {
+          throw new Error('Pending changes could not be committed before checkpointing');
+        }
+        const checkpoint = await this.runtime.api.checkpointWorkbook(this.runtime.model.unitId);
+        this.runtime.remoteRevision = checkpoint.snapshot.revision;
+      }
       await this.runtime.checkpointWorkspace();
       this.saveState = 'saved';
       this.syncPersistenceMeta();
-      this.notify('Local workbook checkpoint saved');
+      this.notify(remoteWorkbook ? 'Workbook saved to server' : 'Local workbook checkpoint saved');
     } catch (error) {
       this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'error';
       this.notify(error instanceof Error ? error.message : 'Save failed');
@@ -3377,101 +3348,6 @@ export class WorkbookSession {
     return {
       lastWhatIfResult: this.lastWhatIfResult,
     };
-  }
-
-  private async prepareLargeDataRegions(snapshot: WorkbookSnapshot): Promise<EncodedSheetDataBlock[]> {
-    const preparedBlocks: EncodedSheetDataBlock[] = [];
-    snapshot.dataSources ??= [];
-    const existingSourceIds = new Set(snapshot.dataSources.map((source) => source.id));
-    for (const sheet of snapshot.sheets) {
-      if (sheet.dataRegions?.length) continue;
-      const range = snapshotUsedRange(sheet);
-      if (!range || range.endRow <= range.startRow) continue;
-      const sourceId = `source:${sheet.id}:${range.startRow}:${range.startColumn}:${range.endRow}:${range.endColumn}`;
-      if (existingSourceIds.has(sourceId)) continue;
-      const encoded = await encodeSheetDataRegion({
-        sheet,
-        range,
-        sourceId,
-        sourceName: `${sheet.name} data`,
-        regionId: `${sourceId}:region`,
-        revision: this.version,
-      });
-      if (!encoded) continue;
-      // Bytes are committed first. The snapshot is changed only after every
-      // referenced block has passed its local checksum write.
-      for (const block of encoded.blocks) {
-        await this.runtime.workspacePersistence.dataBlocks.put(block.ref, block.payload);
-      }
-      snapshot.dataSources.push(encoded.manifest);
-      sheet.dataRegions ??= [];
-      sheet.dataRegions.push(encoded.region);
-      removeBlockMaterializedCells(sheet, range);
-      preparedBlocks.push(...encoded.blocks);
-      existingSourceIds.add(sourceId);
-    }
-    return preparedBlocks;
-  }
-
-  async importXlsxBuffer(buffer: ArrayBuffer, fileName = 'import.xlsx'): Promise<void> {
-    if (!this.canExecute('xlsx.import')) {
-      this.notify('You do not have permission to import workbooks');
-      return;
-    }
-    this.phase = 'loading';
-    this.emit();
-    try {
-      const imported = await exchangeImportXlsx({ fileName, buffer, execution: this.xlsxExecution, revision: this.version });
-      if (!imported.snapshot) throw new Error('XLSX import did not produce a workbook snapshot');
-      const preparedBlocks = await this.prepareLargeDataRegions(imported.snapshot);
-      hydrateRuntime(this.runtime, {
-        snapshot: imported.snapshot,
-        revision: this.runtime.remoteRevision,
-      });
-      this.compatibilityReport = imported.report as CompatibilityReport;
-      // Preserve only the original archive across the session. Reconstructing
-      // the package inside the export Worker avoids retaining a duplicate
-      // expanded OOXML graph on the UI thread.
-      this.xlsxPackage = undefined;
-      this.xlsxSourceArtifact = imported.sourceArtifact;
-      this.runtime.remoteConnected = false;
-      if (typeof window !== 'undefined') {
-        window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(imported.snapshot.unitId)}`);
-      }
-      this.activeSheetId = this.runtime.model.primarySheetId;
-      this.selectionService.resetForSheet(this.activeSheetId);
-      for (const block of preparedBlocks) {
-        // The synchronizer uploads only metadata-addressed bytes; it never
-        // places bytes in an operation envelope.
-        await this.runtime.dataBlocks.put(block.ref, block.payload);
-      }
-      this.runtime.localRevision += 1;
-      const checkpointSnapshot = this.runtime.model.snapshot();
-      const pendingJournal = this.runtime.operationJournal.read(checkpointSnapshot.unitId);
-      this.runtime.workspaceRecord = imported.sourceArtifact
-        ? await this.runtime.workspacePersistence.checkpointWithArtifact(
-          checkpointSnapshot,
-          this.runtime.localRevision,
-          this.runtime.remoteRevision,
-          this.runtime.localOnly ? 'local-only' : 'remote',
-          imported.sourceArtifact,
-          pendingJournal,
-        )
-        : await this.runtime.workspacePersistence.checkpoint(
-          checkpointSnapshot,
-          this.runtime.localRevision,
-          this.runtime.remoteRevision,
-          this.runtime.localOnly ? 'local-only' : 'remote',
-          pendingJournal,
-        );
-      this.phase = 'ready';
-      this.notify(summarizeCompatibilityReport(this.compatibilityReport));
-      this.refresh();
-    } catch (error) {
-      this.phase = 'error';
-      this.notify(error instanceof Error ? error.message : 'XLSX import failed');
-      this.emit();
-    }
   }
 
   async exportXlsxWorkbook(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string } | null> {

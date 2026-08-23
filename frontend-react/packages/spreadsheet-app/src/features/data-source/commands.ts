@@ -213,31 +213,89 @@ function applyDataSourceMutation(workbook: CommandContext['workbook'], id: DataS
   }
 }
 
-function applyMutation(
+function applyDataSourceAdd(
   context: CommandContext,
-  id: DataSourceMutationId,
   sheetId: string,
-  params: unknown,
-  inverseId: DataSourceMutationId,
-  inverseParams: unknown,
+  source: DataSourceManifest,
   affectedRanges: RangeRef[],
 ): void {
-  mutationParams(id, params);
-  mutationParams(inverseId, inverseParams);
   context.applyMutation({
-    id,
+    id: 'dataSource.add',
     unitId: context.workbook.unitId,
     sheetId,
-    params,
+    params: { source },
     affectedRanges,
-    inverse: [{
-      id: inverseId,
-      unitId: context.workbook.unitId,
-      sheetId,
-      params: inverseParams,
-      affectedRanges,
-    }],
-    apply: () => applyDataSourceMutation(context.workbook, id, params, sheetId),
+    inverse: [{ id: 'dataSource.remove', unitId: context.workbook.unitId, sheetId, params: { sourceId: source.id }, affectedRanges }],
+    apply: () => applyDataSourceMutation(context.workbook, 'dataSource.add', { source }, sheetId),
+  });
+}
+
+function applyDataSourceUpdate(
+  context: CommandContext,
+  sheetId: string,
+  source: DataSourceManifest,
+  previous: DataSourceManifest,
+  affectedRanges: RangeRef[],
+): void {
+  context.applyMutation({
+    id: 'dataSource.update',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { source },
+    affectedRanges,
+    inverse: [{ id: 'dataSource.update', unitId: context.workbook.unitId, sheetId, params: { source: previous }, affectedRanges }],
+    apply: () => applyDataSourceMutation(context.workbook, 'dataSource.update', { source }, sheetId),
+  });
+}
+
+function applyDataSourceRemove(
+  context: CommandContext,
+  sheetId: string,
+  source: DataSourceManifest,
+  affectedRanges: RangeRef[],
+): void {
+  context.applyMutation({
+    id: 'dataSource.remove',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { sourceId: source.id },
+    affectedRanges,
+    inverse: [{ id: 'dataSource.add', unitId: context.workbook.unitId, sheetId, params: { source }, affectedRanges }],
+    apply: () => applyDataSourceMutation(context.workbook, 'dataSource.remove', { sourceId: source.id }, sheetId),
+  });
+}
+
+function applyDataRegionAdd(
+  context: CommandContext,
+  sheetId: string,
+  region: SheetDataRegion,
+  affectedRanges: RangeRef[],
+): void {
+  context.applyMutation({
+    id: 'dataRegion.add',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { region },
+    affectedRanges,
+    inverse: [{ id: 'dataRegion.remove', unitId: context.workbook.unitId, sheetId, params: { regionId: region.id }, affectedRanges }],
+    apply: () => applyDataSourceMutation(context.workbook, 'dataRegion.add', { region }, sheetId),
+  });
+}
+
+function applyDataRegionRemove(
+  context: CommandContext,
+  sheetId: string,
+  region: SheetDataRegion,
+  affectedRanges: RangeRef[],
+): void {
+  context.applyMutation({
+    id: 'dataRegion.remove',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { regionId: region.id },
+    affectedRanges,
+    inverse: [{ id: 'dataRegion.add', unitId: context.workbook.unitId, sheetId, params: { region }, affectedRanges }],
+    apply: () => applyDataSourceMutation(context.workbook, 'dataRegion.remove', { regionId: region.id }, sheetId),
   });
 }
 
@@ -376,7 +434,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
       const source = normalizeDataSourceForCommand(context.workbook, params.sheetId, params.source);
       if (context.workbook.dataSources.has(source.id)) throw new Error(`Data source already exists: ${source.id}`);
       const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
-      applyMutation(context, 'dataSource.add', params.sheetId, { source }, 'dataSource.remove', { sourceId: source.id }, affectedRanges);
+      applyDataSourceAdd(context, params.sheetId, source, affectedRanges);
       return result(context, affectedRanges);
     },
   });
@@ -388,7 +446,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
       const previous = context.workbook.getDataSource(params.source.id);
       const source = normalizeDataSourceForCommand(context.workbook, params.sheetId, params.source);
       const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
-      applyMutation(context, 'dataSource.update', params.sheetId, { source }, 'dataSource.update', { source: previous }, affectedRanges);
+      applyDataSourceUpdate(context, params.sheetId, source, previous, affectedRanges);
       return result(context, affectedRanges);
     },
   });
@@ -399,7 +457,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
       const params = removeSourceCommandParams(input);
       const source = context.workbook.getDataSource(params.sourceId);
       const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
-      applyMutation(context, 'dataSource.remove', params.sheetId, { sourceId: params.sourceId }, 'dataSource.add', { source }, affectedRanges);
+      applyDataSourceRemove(context, params.sheetId, source, affectedRanges);
       return result(context, affectedRanges);
     },
   });
@@ -413,7 +471,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
         throw new Error(`Sheet data region already exists: ${region.id}`);
       }
       const affectedRanges = regionRanges(region);
-      applyMutation(context, 'dataRegion.add', params.sheetId, { region }, 'dataRegion.remove', { regionId: region.id }, affectedRanges);
+      applyDataRegionAdd(context, params.sheetId, region, affectedRanges);
       return result(context, affectedRanges);
     },
   });
@@ -424,7 +482,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
       const params = removeRegionCommandParams(input);
       const region = findRegion(context.workbook, params.sheetId, params.regionId);
       const affectedRanges = regionRanges(region);
-      applyMutation(context, 'dataRegion.remove', params.sheetId, { regionId: params.regionId }, 'dataRegion.add', { region }, affectedRanges);
+      applyDataRegionRemove(context, params.sheetId, region, affectedRanges);
       return result(context, affectedRanges);
     },
   });

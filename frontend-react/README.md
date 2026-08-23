@@ -1,6 +1,6 @@
 # React Sheets
 
-独立的 React + Canvas 电子表格。前端是 local-first PWA：未连接服务端时可打开本地工作簿、编辑单元格、计算公式、导入/导出 XLSX、打印 PDF、执行本地文件型查询和 What-if；协同、匿名共享、可信 ACL、审计与数据库查询只在唯一 Java `backend/` 连接后启用。
+独立的 React + Canvas 电子表格。启动首先进入 `/workbooks` 文件中心；Catalog 管理多个工作簿资源，编辑器路由 `/workbooks/:unitId` 始终只挂载一个 `WorkbookSession`。未连接服务端时可创建/打开本地工作簿、编辑、导入/导出 XLSX；云端目录、空间/文件夹、共享、ACL、回收站和协同由唯一 Java `backend/` 提供。
 
 ## 唯一链路
 
@@ -11,10 +11,11 @@ UI intent
 → typed mutation + inverse
 → WorkbookModel / FormulaEngine
 → IndexedDB workspace checkpoint + operation journal
-→ optional Java operation commit and WebSocket broadcast
+→ REST `POST /api/workbooks/{unitId}/operations`
+→ durable backend commit + WebSocket `revision.created` broadcast
 ```
 
-没有 Node 服务、旧 Luckysheet 协议、`pro-features`、双模型或兼容桥。
+没有 Node 服务、旧 Luckysheet 协议、双模型、原地 XLSX 替换或 Catalog/编辑器兼容桥。
 
 ## 开发
 
@@ -25,7 +26,9 @@ npm run dev
 
 Web：`http://127.0.0.1:4180/`
 
-连接 Java 服务时，由部署环境提供 OIDC token、PostgreSQL 连接与可选 Redis。浏览器不保存数据库凭证；JSON、CSV、TSV、XLSX 文件型查询可在本地执行，数据库查询由后端执行。
+复制 `.env.example` 并由部署环境提供 OIDC public-client 配置。浏览器使用 Authorization Code + PKCE，不在工作簿、IndexedDB 快照或 URL 中存储 bearer token。开发时 Vite 将 `/api` 和 `/ws` 同源代理到 `REACT_SHEETS_API_ORIGIN`；生产环境也必须保持同源。
+
+详细的文件中心模型、空间/文件夹、权限、导入导出和像素验收基线见 [workbook-hub-prd.md](docs/workbook-hub-prd.md)。
 
 ## 验收
 

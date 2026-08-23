@@ -219,7 +219,7 @@ export interface PivotDefinition {
   nativeMetadata?: PivotNativeMetadata;
 }
 
-/** Public alias used by workbook collections; there is exactly one Pivot shape. */
+/** Public model name used by workbook collections; there is exactly one Pivot shape. */
 export type PivotModel = PivotDefinition;
 
 export interface PivotSourceRowPath {

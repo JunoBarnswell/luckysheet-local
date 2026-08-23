@@ -9,4 +9,6 @@ public interface OperationEntityRepository extends JpaRepository<OperationEntity
     Optional<OperationEntity> findByUnitIdAndActorSubjectAndClientSequence(String unitId, String actorSubject, long clientSequence);
 
     List<OperationEntity> findByUnitIdOrderByRevisionDesc(String unitId);
+
+    void deleteByUnitId(String unitId);
 }

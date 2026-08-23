@@ -15,6 +15,7 @@ import java.util.UUID;
 @Table(name = "operation_audit", indexes = @Index(name = "operation_audit_unit_time_idx", columnList = "unit_id,occurred_at"))
 public class AuditEntity {
     @Id
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "audit_id", nullable = false)
     private UUID auditId;
 

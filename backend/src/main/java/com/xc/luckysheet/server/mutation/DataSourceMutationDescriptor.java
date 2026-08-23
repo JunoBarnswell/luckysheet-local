@@ -48,7 +48,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         return switch (id()) {
             case "dataSource.add", "dataSource.update" -> sourceRanges(root, validateSourceMutation(root, mutation, params));
             case "dataSource.remove" -> sourceRanges(root, currentSource(root, params));
-            case "dataRegion.add" -> List.of(validateRegion(root, mutation.sheetId(), params));
+            case "dataRegion.add" -> List.of(regionRange(root, mutation.sheetId(), params));
             case "dataRegion.remove" -> List.of(currentRegion(root, mutation.sheetId(), params));
             default -> throw ServiceException.validation("Unsupported data-source mutation: " + id());
         };
@@ -243,6 +243,11 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         if (headerRow < range.startRow() || headerRow > range.endRow()) throw ServiceException.validation("Sheet data region headerRow is outside its range");
         nonNegative(region, "revision");
         return region;
+    }
+
+    private RangeRef regionRange(ObjectNode root, String sheetId, ObjectNode params) {
+        ObjectNode region = validateRegion(root, sheetId, params);
+        return SnapshotMutationSupport.range(root, region.get("range"));
     }
 
     private RangeRef currentRegion(ObjectNode root, String sheetId, ObjectNode params) {

@@ -75,7 +75,7 @@ export interface SpreadsheetRuntime {
   formulaCalculation: Promise<void>;
   persistenceReady: Promise<void>;
   pendingLocalOperations: Array<{ operationId: string; mutations: MutationInfo[] }>;
-  checkpointWorkspace: () => Promise<void>;
+  checkpointWorkspace: (advanceLocalRevision?: boolean) => Promise<void>;
   connectors: ConnectorRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -115,7 +115,10 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
   const operationJournal = new OperationJournalStore();
-  const workspacePersistence = new WorkspacePersistence(options.persistence, operationJournal);
+  const workspacePersistence = new WorkspacePersistence({
+    ...options.persistence,
+    unitId: () => runtime?.model.unitId ?? model.unitId,
+  }, operationJournal);
   const api = new WorkbookApiClient({ authTokenProvider: options.authTokenProvider, shareTokenProvider: options.shareTokenProvider });
   let runtime!: SpreadsheetRuntime;
   const dataBlocks = new DataBlockSynchronizer(workspacePersistence.dataBlocks, api, {
@@ -643,8 +646,23 @@ export function startCollaborationSession(
       return;
     }
     runtime.collaboration ??= new CollaborationSession(runtime.commands);
-    runtime.collaboration.attachTransport((operation) => {
-      return runtime.collab?.send({ type: 'changeset.submit', payload: operation }) ?? false;
+    runtime.collaboration.attachTransport(async (operation) => {
+      runtime.ownOperationIds.add(operation.operationId);
+      try {
+        const committed = await runtime.api.commitOperation(runtime.model.unitId, operation);
+        const revision = committed.operation.revision;
+        runtime.remoteRevision = Math.max(runtime.remoteRevision, revision);
+        runtime.collaboration?.acknowledge(operation.operationId, revision);
+        await runtime.checkpointWorkspace(false);
+        runtime.handlers.onSaveState?.('saved');
+        return revision;
+      } catch (error) {
+        runtime.ownOperationIds.delete(operation.operationId);
+        runtime.collaboration?.reject(operation.operationId, error instanceof Error ? error : new Error(String(error)));
+        runtime.handlers.onSaveState?.('conflict');
+        runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Change could not be committed');
+        throw error;
+      }
     });
     runtime.collaboration.setRevision(runtime.remoteRevision);
 
@@ -656,18 +674,7 @@ export function startCollaborationSession(
     runtime.collab = client;
 
     const applyRemote = (message: OperationMessage) => {
-      if (message.type === 'snapshot.response') {
-        const response = message.payload;
-        if (response.snapshot.unitId !== runtime.model.unitId) return;
-        hydrateRuntime(runtime, response);
-        runtime.remoteRevision = response.revision;
-        runtime.collaboration?.setRevision(response.revision);
-        void runtime.api.getAccess(runtime.model.unitId)
-          .then((access) => runtime.handlers.onAccessRole?.(access.role))
-          .catch(() => runtime.handlers.onAccessRole?.(null));
-        void loadHistoryAndReplayPending(runtime);
-        runtime.handlers.onMutationsApplied?.();
-      } else if (message.type === 'revision.created') {
+      if (message.type === 'revision.created') {
         if (message.payload.unitId !== runtime.model.unitId) return;
         if (runtime.ownOperationIds.has(message.payload.operationId)) return;
         runtime.collaboration?.applyRemote(message.payload);
@@ -676,24 +683,6 @@ export function startCollaborationSession(
         void checkpointWorkspace(runtime, false);
         runtime.handlers.onMutationsApplied?.();
         void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
-      } else if (message.type === 'changeset.ack') {
-        runtime.ownOperationIds.add(message.operationId);
-        runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
-        runtime.collaboration?.acknowledge(message.operationId, message.revision);
-        void checkpointWorkspace(runtime, false);
-        runtime.handlers.onSaveState?.('saved');
-        void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
-      } else if (message.type === 'changeset.reject') {
-        runtime.ownOperationIds.delete(message.operationId);
-        runtime.collaboration?.reject(message.operationId, message.error);
-        void checkpointWorkspace(runtime, false);
-        runtime.handlers.onSaveState?.('conflict');
-        runtime.handlers.onNotice?.(`Change rejected: ${message.error.message}`);
-        void runtime.api.getSnapshot(runtime.model.unitId).then((snapshot) => {
-          hydrateRuntime(runtime, snapshot);
-          runtime.collaboration?.setRevision(snapshot.revision);
-          runtime.handlers.onMutationsApplied?.();
-        }).catch(() => undefined);
       } else if (message.type === 'cursor.broadcast' || message.type === 'presence.broadcast') {
         if (!message.unitId || message.unitId !== runtime.model.unitId) return;
         if (message.type === 'presence.broadcast' && (message.state as { status?: string } | null)?.status === 'offline') {
@@ -722,7 +711,6 @@ export function startCollaborationSession(
       if (status === 'closed') runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
       else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
       if (status === 'open') {
-        client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
         void runtime.collaboration?.offlineQueue.flushAll().then(({ failed }) => {
           if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
         });

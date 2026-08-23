@@ -12,8 +12,8 @@ import { CollaborativeUndoStack } from './collaborative-undo';
 import { PresenceStore } from './presence';
 
 export interface CollaborationSessionOptions {
-  /** Sends an operation over the authenticated transport. */
-  send?: (operation: OperationEnvelope) => boolean;
+  /** Sends an operation over the authenticated REST transport. */
+  send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>;
   createOperationId?: () => string;
   /** Durable operation journal; workbook snapshots are not stored here. */
   loadPending?: () => { operations: readonly OperationEnvelope[]; nextClientSequence: number } | null;
@@ -34,7 +34,7 @@ export class CollaborationSession {
   readonly collaborativeUndo = new CollaborativeUndoStack();
 
   private runtime: CommandRuntime;
-  private send?: (operation: OperationEnvelope) => boolean;
+  private send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>;
   private readonly createOperationId: () => string;
   private clientSequence = 0;
   private baseRevision = 0;
@@ -72,7 +72,7 @@ export class CollaborationSession {
     this.runtime = runtime;
   }
 
-  attachTransport(send?: (operation: OperationEnvelope) => boolean): void {
+  attachTransport(send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>): void {
     this.send = send;
   }
 
@@ -258,14 +258,32 @@ export class CollaborationSession {
     return entry ? this.collaborativeUndo.createCompensatingCommand(entry) : undefined;
   }
 
-  private flushOperation(operation: OperationEnvelope): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
-      this.ackWaiters.set(operation.operationId, { resolve, reject });
-      if (!this.send?.(operation)) {
-        this.ackWaiters.delete(operation.operationId);
-        reject(new Error('Collaboration socket unavailable'));
-      }
+  private async flushOperation(operation: OperationEnvelope): Promise<number> {
+    if (!this.send) throw new Error('Collaboration transport unavailable');
+    let resolveAck!: (revision: number) => void;
+    let rejectAck!: (cause: unknown) => void;
+    const ack = new Promise<number>((resolve, reject) => {
+      resolveAck = resolve;
+      rejectAck = reject;
     });
+    this.ackWaiters.set(operation.operationId, { resolve: resolveAck, reject: rejectAck });
+    let result: boolean | number;
+    try {
+      result = await this.send(operation);
+    } catch (error) {
+      this.ackWaiters.delete(operation.operationId);
+      throw error;
+    }
+    if (typeof result === 'number') {
+      this.ackWaiters.delete(operation.operationId);
+      this.acknowledge(operation.operationId, result);
+      return result;
+    }
+    if (!result) {
+      this.ackWaiters.delete(operation.operationId);
+      throw new Error('Collaboration transport unavailable');
+    }
+    return ack;
   }
 
   private classifyEnvelope(operation: OperationEnvelope): ReturnType<typeof classifyMutation>[] {

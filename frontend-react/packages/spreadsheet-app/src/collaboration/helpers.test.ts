@@ -62,6 +62,31 @@ describe('collaboration helpers', () => {
     assert.equal(session.offlineQueue.getStatus('op-ack'), 'acked');
   });
 
+  it('flushes a REST-style async transport and clears only after the returned revision', async () => {
+    const workbook = new WorkbookModel('wb-rest', 'Collab');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const committed: string[] = [];
+    const session = new CollaborationSession(runtime, {
+      send: async (operation) => {
+        committed.push(operation.operationId);
+        return 8;
+      },
+    });
+    session.enqueueLocalMutations([{
+      id: 'cell.set',
+      unitId: workbook.unitId,
+      sheetId: workbook.primarySheetId,
+      params: { sheetId: workbook.primarySheetId, row: 0, column: 0, value: { value: 8 } },
+      affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    }], workbook.unitId, 'op-rest');
+    session.offlineQueue.setOnline(true);
+    await session.offlineQueue.flushAll();
+    assert.deepEqual(committed, ['op-rest']);
+    assert.equal(session.getRevision(), 8);
+    assert.equal(session.offlineQueue.getPendingCount(), 0);
+  });
+
   it('rejects unknown mutations and unmatched acknowledgements', () => {
     const workbook = new WorkbookModel('wb-unknown', 'Collab');
     const runtime = new CommandRuntime(workbook);

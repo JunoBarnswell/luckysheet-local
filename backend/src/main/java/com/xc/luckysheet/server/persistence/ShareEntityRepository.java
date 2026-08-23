@@ -19,4 +19,6 @@ public interface ShareEntityRepository extends JpaRepository<ShareEntity, UUID> 
 
     @Query("select s from ShareEntity s where s.shareId = :shareId and s.revokedAt is null and s.expiresAt > :now")
     Optional<ShareEntity> findActive(@Param("shareId") UUID shareId, @Param("now") Instant now);
+
+    void deleteByUnitId(String unitId);
 }
