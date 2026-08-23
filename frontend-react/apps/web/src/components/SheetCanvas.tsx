@@ -18,27 +18,23 @@ import {
   type ChromeState,
   type FloatingDrawable,
   type FloatingHit,
-  type HeaderHit,
   type Rect,
   createEmptyChromeState,
 } from "@react-sheets/render-engine";
 import type {
-  ChartDrawingPayload,
   DrawingObject,
   DrawingPayload,
   PivotGridProjection,
   PivotHitTest,
   PivotProjectionCell,
-  PivotSlicerDrawingPayload,
   PivotSourceRowPath,
-  PivotTimelineDrawingPayload,
   PivotResultTree,
   RangeRef,
   SparklineModel,
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
-import { createSpreadsheetShortcutRegistry, resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -109,21 +105,6 @@ export interface SheetCanvasProps {
   onCreateSheet: () => void;
 }
 
-interface DragState {
-  kind: "select" | "fill" | "col-resize" | "row-resize" | "floating-move" | "floating-resize";
-  startRow: number;
-  startColumn: number;
-  anchorRow: number;
-  anchorColumn: number;
-  currentRow: number;
-  currentColumn: number;
-  additive: boolean;
-  extend: boolean;
-  resizeStartSize: number;
-  resizeIndex: number;
-    floating?: { id: string; kind: 'chart' | 'shape' | 'image'; handle?: string; rotation?: number; startBounds: Rect; startLocal: { x: number; y: number } };
-}
-
 function mergeAtCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }) {
   return sheet.merges.find((merge) =>
     cell.row >= merge.range.startRow && cell.row <= merge.range.endRow
@@ -141,14 +122,6 @@ function intersectsRange(
 ): boolean {
   return first.startRow <= second.endRow && second.startRow <= first.endRow
     && first.startColumn <= second.endColumn && second.startColumn <= first.endColumn;
-}
-
-function containsRange(
-  outer: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-  inner: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-): boolean {
-  return outer.startRow <= inner.startRow && outer.endRow >= inner.endRow
-    && outer.startColumn <= inner.startColumn && outer.endColumn >= inner.endColumn;
 }
 
 function expandRangeForMerges(sheet: CanvasSheetSnapshot, range: RangeRef): RangeRef {
@@ -170,27 +143,6 @@ function expandRangeForMerges(sheet: CanvasSheetSnapshot, range: RangeRef): Rang
     }
   }
   return expanded;
-}
-
-function resolveDragCell(
-  engine: CanvasRenderEngine,
-  sheet: CanvasSheetSnapshot,
-  local: { x: number; y: number },
-  drag: DragState,
-): { row: number; column: number } | null {
-  const headerHit = engine.headerHitAtLocal(local);
-  const hitCell = engine.cellAtLocalPoint(local);
-  const isRowDrag = drag.floating?.id === "row";
-  const isColDrag = drag.floating?.id === "col";
-  if (isRowDrag) {
-    if (headerHit?.kind === "row") return { row: headerHit.index, column: 0 };
-    return hitCell ? { row: hitCell.row, column: 0 } : null;
-  }
-  if (isColDrag) {
-    if (headerHit?.kind === "col") return { row: 0, column: headerHit.index };
-    return hitCell ? { row: 0, column: hitCell.column } : null;
-  }
-  return hitCell ? resolveMergedCell(sheet, hitCell) : null;
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState['selection'] {
@@ -358,11 +310,8 @@ export function SheetCanvas({
   onCreateSheet,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
-  const shortcutRegistryRef = useRef<ReturnType<typeof createSpreadsheetShortcutRegistry> | null>(null);
-  if (!shortcutRegistryRef.current) shortcutRegistryRef.current = createSpreadsheetShortcutRegistry();
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<DragState | null>(null);
   const contextRangeRef = useRef<RangeRef | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
@@ -371,15 +320,6 @@ export function SheetCanvas({
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
   const [engineReady, setEngineReady] = useState(false);
-  const transientSelectionRef = useRef<SelectionState | null>(null);
-  const editingActiveRef = useRef(false);
-  const autoScrollFrameRef = useRef<number | null>(null);
-  const autoScrollPointRef = useRef<{ x: number; y: number } | null>(null);
-
-  useEffect(() => {
-    editingActiveRef.current = Boolean(editingCell);
-  }, [editingCell]);
-  const transientSelectionFrameRef = useRef<number | null>(null);
 
   const zoomFactor = zoom / 100;
 
@@ -597,7 +537,7 @@ export function SheetCanvas({
   // 选区变化 → 滚动至可见
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine || dragRef.current) return;
+    if (!engine || canvasInteraction.dragRef.current) return;
     engine.ensureVisible(selection.activeCell);
   }, [selection.activeCell]);
 
@@ -659,7 +599,7 @@ export function SheetCanvas({
       setContextMenu({ x: event.clientX, y: event.clientY, open: true });
       return;
     }
-    const local = localPointOf(event);
+    const local = canvasInteraction.localPointOf(event);
     const headerHit = engine.headerHitAtLocal(local);
     setContextHit(null);
     contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? null;
@@ -737,7 +677,7 @@ export function SheetCanvas({
       }
     }
     setContextMenu({ x: event.clientX, y: event.clientY, open: true });
-  }, [localPointOf, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
+  }, [canvasInteraction.localPointOf, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
 
   // ---------- 编辑器定位(随滚动更新) ----------
 

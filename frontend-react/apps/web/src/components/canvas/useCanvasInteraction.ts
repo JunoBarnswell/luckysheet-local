@@ -16,6 +16,7 @@ import type {
 } from "@react-sheets/core-model";
 import {
   createSpreadsheetShortcutRegistry,
+  resolveContextHit,
   type AppPhase,
   type CanvasSheetSnapshot,
   type ResolvedContextHit,
@@ -800,7 +801,14 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       event.preventDefault();
       const activeRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? { sheetId, startRow: selection.activeCell.row, endRow: selection.activeCell.row, startColumn: selection.activeCell.column, endColumn: selection.activeCell.column };
       contextRangeRef.current = activeRange;
-      setContextHit(activePivotContextHit ?? null);
+      setContextHit(activePivotContextHit ?? resolveContextHit({
+        sheetId,
+        cell: {
+          row: selection.activeCell.row,
+          column: selection.activeCell.column,
+          range: activeRange,
+        },
+      }));
       const bounds = containerRef.current?.getBoundingClientRect();
       setContextMenu({ x: (bounds?.left ?? 0) + 24, y: (bounds?.top ?? 0) + 24, open: true });
       if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
