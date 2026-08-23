@@ -10,8 +10,8 @@ function selectCell(app: WorkbookSession, row: number, column: number): void {
     sheetId,
     ranges: [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }],
     primaryRangeIndex: 0,
-    primaryRowIndex: row,
-    primaryColumnIndex: column,
+    activeCell: { row, column },
+    anchorCell: { row, column },
   });
 }
 

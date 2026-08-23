@@ -370,6 +370,33 @@ export class CanvasRenderEngine {
     return { x: content.x - pane.offset.x + pane.rect.x, y: content.y - pane.offset.y + pane.rect.y };
   }
 
+  /**
+   * Convert a content range into one screen rect per visible freeze pane.
+   * DOM overlays must use this instead of assuming the main pane is the only
+   * coordinate space.
+   */
+  contentRangeToScreenRects(range: CellRange): Rect[] {
+    const content = this.skeletonModel.getRangeRect(range);
+    if (!content) return [];
+    const panes = this.lastPlan?.panes
+      ?? computeRenderPanes(this.skeletonModel, this.viewport.getSnapshot(), this.freezeSplits, this.headerOrigin);
+    const rects: Rect[] = [];
+    for (const pane of panes) {
+      const left = Math.max(content.x, pane.offset.x);
+      const top = Math.max(content.y, pane.offset.y);
+      const right = Math.min(content.x + content.width, pane.offset.x + pane.rect.width);
+      const bottom = Math.min(content.y + content.height, pane.offset.y + pane.rect.height);
+      if (right <= left || bottom <= top) continue;
+      rects.push({
+        x: left - pane.offset.x + pane.rect.x,
+        y: top - pane.offset.y + pane.rect.y,
+        width: right - left,
+        height: bottom - top,
+      });
+    }
+    return rects;
+  }
+
   hitTestFloating(local: Point): FloatingHit | null {
     const selectedId = this.chrome.selectedFloatingId;
     // 已选中对象的缩放手柄优先

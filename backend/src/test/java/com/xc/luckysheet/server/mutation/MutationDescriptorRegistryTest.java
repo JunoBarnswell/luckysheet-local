@@ -67,7 +67,7 @@ class MutationDescriptorRegistryTest {
                 "table.add", "table.remove", "name.set", "name.remove",
                 "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set", "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source",
-                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore", "rows.permuted", "sheet.rename"
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore", "rows.permuted"
         ), Set.copyOf(registry.acceptedIds()));
     }
 
@@ -76,12 +76,12 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
                 "automation.recording.changed",
-                "sheet.add", "sheet.remove", "sheet.duplicated", "sheet.restore",
+                "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore",
                 "hyperlink.set", "hyperlink.remove",
                 "query.load.workbook-table",
                 "workbook.restore"
         ), registry.unavailableReasons().keySet());
-        assertEquals("Requires identity remapping for scoped names, object payloads, print state and source relationships.", registry.unavailableReasons().get("sheet.duplicated"));
+        assertEquals("Requires a shared formula-reference AST rename transform; raw text replacement is forbidden.", registry.unavailableReasons().get("sheet.rename"));
     }
 
     @Test
@@ -262,25 +262,6 @@ class MutationDescriptorRegistryTest {
         assertEquals("=Sheet1!A3", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Sheet1!A3", current.path("definedNames").path("Sales").asText());
         assertEquals(2, current.path("sheets").get(0).path("hiddenRows").get(0).asInt());
-    }
-
-    @Test
-    void sheetRenameUsesParsedReferencesAndDoesNotTouchStringLiterals() throws Exception {
-        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
-        JsonNode snapshot = mapper.readTree("""
-                {"sheets":[
-                  {"id":"sheet-1","name":"Old Name","rowCount":5,"columnCount":3,"cells":{},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0}},
-                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"='Old Name'!A1+\\\"Old Name!A1\\\""}}},"freeze":{"xSplit":0,"ySplit":0,"startRow":0,"startColumn":0}}
-                ],"definedNames":{"Total":"='Old Name'!A1"},"definedNameModels":[{"name":"Total","formula":"='Old Name'!A1","scope":"workbook"}]}
-                """);
-        OperationMutation rename = new OperationMutation("sheet.rename", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","name":"New Name"}
-                """));
-
-        JsonNode current = registry.prepare(snapshot, rename, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, rename);
-        assertEquals("New Name", current.path("sheets").get(0).path("name").asText());
-        assertEquals("='New Name'!A1+\"Old Name!A1\"", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
-        assertEquals("='New Name'!A1", current.path("definedNames").path("Total").asText());
     }
 
     @Test

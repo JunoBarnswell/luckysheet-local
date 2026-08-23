@@ -113,16 +113,21 @@ function drawSelection(options: ChromeDrawOptions): void {
       isPrimary ? 2 : 1,
     );
     if (isPrimary) {
-      const primaryRange = {
-        startRow: chrome.selection.primary.row,
-        endRow: chrome.selection.primary.row,
-        startColumn: chrome.selection.primary.column,
-        endColumn: chrome.selection.primary.column,
-      };
-      const primaryRect = contentRangeRect(skeleton, primaryRange);
+      const primaryRange = selectionRanges[chrome.selection.primaryIndex] ?? selectionRanges[0]!;
+      const primaryCell = { row: primaryRange.endRow, column: primaryRange.endColumn };
+      const primaryRect = contentRangeRect(skeleton, {
+        startRow: primaryCell.row,
+        endRow: primaryCell.row,
+        startColumn: primaryCell.column,
+        endColumn: primaryCell.column,
+      });
       if (primaryRect) {
-        const mainPane = panes.find((pane) => pane.id === "main") ?? panes.at(-1)!;
-        const t = paneTransform(mainPane);
+        const targetPane = panes.find((pane) => pane.range
+          && primaryCell.row >= pane.range.startRow && primaryCell.row <= pane.range.endRow
+          && primaryCell.column >= pane.range.startColumn && primaryCell.column <= pane.range.endColumn)
+          ?? panes.find((pane) => pane.id === "main")
+          ?? panes.at(-1)!;
+        const t = paneTransform(targetPane);
         const handleX = primaryRect.x + primaryRect.width + t.dx - theme.fillHandleSize / 2;
         const handleY = primaryRect.y + primaryRect.height + t.dy - theme.fillHandleSize / 2;
         context.fillStyle = theme.selectionBorder;
@@ -376,7 +381,7 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
     for (let column = pane.range.startColumn; column <= pane.range.endColumn; column++) {
       const left = skeleton.getColumnLeft(column) + t.dx;
       const width = skeleton.getColumnWidth(column);
-      const isSelected = isColumnSelected(chrome, column);
+       const isSelected = isColumnSelected(chrome, column);
       if (isSelected) {
         context.fillStyle = "#dbeafe";
         context.fillRect(left, origin.y, width, COL_HEADER_HEIGHT);
@@ -391,7 +396,7 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
     for (let row = pane.range.startRow; row <= pane.range.endRow; row++) {
       const top = skeleton.getRowTop(row) + t.dy;
       const height = skeleton.getRowHeight(row);
-      const isSelected = isRowSelected(chrome, row);
+       const isSelected = isRowSelected(chrome, row);
       if (isSelected) {
         context.fillStyle = "#dbeafe";
         context.fillRect(0, top, origin.x, height);
@@ -405,27 +410,29 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
   }
 
   // 全选角块
-  context.fillStyle = chrome.selection.ranges.some(isSelectAllRange) ? "#dbeafe" : theme.headerBackground;
+  context.fillStyle = chrome.selection.ranges.some((range) => isSelectAllRange(range, skeleton)) ? "#dbeafe" : theme.headerBackground;
   context.fillRect(0, 0, origin.x, origin.y);
   context.strokeStyle = theme.headerBorder;
   context.strokeRect(0.5, 0.5, origin.x - 1, origin.y - 1);
   context.textAlign = "left";
 }
 
-function isColumnSelected(chrome: ChromeState, column: number): boolean {
+export function isColumnSelected(chrome: ChromeState, column: number): boolean {
   return chrome.selection.ranges.some((range) =>
-    range.startColumn <= column && column <= range.endColumn
-    && range.startRow === 0 && range.endRow >= 999);
+    range.startColumn <= column && column <= range.endColumn);
 }
 
-function isRowSelected(chrome: ChromeState, row: number): boolean {
+export function isRowSelected(chrome: ChromeState, row: number): boolean {
   return chrome.selection.ranges.some((range) =>
-    range.startRow <= row && row <= range.endRow
-    && range.startColumn === 0 && range.endColumn >= 25);
+    range.startRow <= row && row <= range.endRow);
 }
 
-function isSelectAllRange(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): boolean {
-  return range.startRow === 0 && range.startColumn === 0 && range.endRow >= 999 && range.endColumn >= 25;
+export function isSelectAllRange(
+  range: { startRow: number; endRow: number; startColumn: number; endColumn: number },
+  skeleton: SheetSkeleton,
+): boolean {
+  return range.startRow === 0 && range.startColumn === 0
+    && range.endRow >= skeleton.rowCount - 1 && range.endColumn >= skeleton.columnCount - 1;
 }
 
 void ROW_HEADER_WIDTH;

@@ -43,8 +43,8 @@ describe('WorkbookSession sparkline integration', () => {
       sheetId,
       ranges: [{ sheetId, startRow: 2, endRow: 2, startColumn: 1, endColumn: 3 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 2,
-      primaryColumnIndex: 1,
+      activeCell: { row: 2, column: 1 },
+      anchorCell: { row: 2, column: 1 },
     });
     const sparklineId = app.insertQuickSparkline('column');
     assert.ok(sparklineId);
@@ -69,8 +69,8 @@ describe('WorkbookSession sparkline integration', () => {
       sheetId,
       ranges: [{ sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 3 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 1,
-      primaryColumnIndex: 1,
+      activeCell: { row: 1, column: 1 },
+      anchorCell: { row: 1, column: 1 },
     });
     const sparklineId = app.insertQuickSparkline('line');
     assert.ok(sparklineId);
@@ -96,8 +96,8 @@ describe('WorkbookSession sparkline integration', () => {
       sheetId,
       ranges: [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 0,
-      primaryColumnIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
     });
     const sparklineId = app.insertQuickSparkline('line');
     assert.ok(sparklineId);

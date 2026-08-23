@@ -19,7 +19,15 @@ export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEd
   const composingRef = useRef(false);
 
   useEffect(() => {
-    textareaRef.current?.focus({ preventScroll: true });
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    // Direct typing opens the editor with its first character as the initial
+    // draft. Explicitly place the caret after it; browsers otherwise retain a
+    // start-of-text selection during this focus transition and produce
+    // `ello-h` / `1+2=` style reordered input.
+    const end = textarea.value.length;
+    textarea.setSelectionRange(end, end);
   }, []);
 
   useEffect(() => {

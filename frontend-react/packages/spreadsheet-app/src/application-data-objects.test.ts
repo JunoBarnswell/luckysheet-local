@@ -14,8 +14,8 @@ function selectRange(
     sheetId,
     ranges: [{ sheetId, startRow, endRow, startColumn, endColumn }],
     primaryRangeIndex: 0,
-    primaryRowIndex: startRow,
-    primaryColumnIndex: startColumn,
+    activeCell: { row: startRow, column: startColumn },
+    anchorCell: { row: startRow, column: startColumn },
   });
 }
 

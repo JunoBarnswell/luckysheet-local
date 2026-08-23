@@ -107,7 +107,6 @@ public class MutationDescriptorRegistry {
         for (String id : WorkbookStateMutationDescriptor.IDS) register(new WorkbookStateMutationDescriptor(id));
         for (String id : QueryMutationDescriptor.IDS) register(new QueryMutationDescriptor(id));
         for (String id : StructuralMutationDescriptor.IDS) register(new StructuralMutationDescriptor(id));
-        register(new SheetRenameMutationDescriptor());
         registerUnavailableKnownMutations();
     }
 

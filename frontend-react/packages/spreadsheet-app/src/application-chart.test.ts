@@ -53,8 +53,8 @@ describe('WorkbookSession chart integration', () => {
       sheetId: app.getActiveSheetId(),
       ranges: [{ sheetId: app.getActiveSheetId(), startRow: 1, endRow: 4, startColumn: 0, endColumn: 2 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 1,
-      primaryColumnIndex: 0,
+      activeCell: { row: 1, column: 0 },
+      anchorCell: { row: 1, column: 0 },
     });
     app.insertQuickChart('bar');
     const snapshot = app.getUiSnapshot();

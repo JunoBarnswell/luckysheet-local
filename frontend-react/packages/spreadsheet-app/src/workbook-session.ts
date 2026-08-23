@@ -371,7 +371,7 @@ export class WorkbookSession {
   start(): void {
     this.persistenceDispose = startPersistenceSession(this.runtime);
     this.collabDispose = startCollaborationSession(this.runtime, () =>
-      `${this.activeSheetId}:${this.selectionService.getState().primaryRowIndex}:${this.selectionService.getState().primaryColumnIndex}`,
+      `${this.activeSheetId}:${this.selectionService.getState().activeCell.row}:${this.selectionService.getState().activeCell.column}`,
       this.runtime.authTokenProvider,
       this.runtime.shareTokenProvider,
     );
@@ -597,20 +597,27 @@ export class WorkbookSession {
         anchorCell?: { row: number; column: number };
       };
       if (selectionParams.ranges.length === 0) return;
-      this.selectionService.applyFromRanges(selectionParams.ranges);
       const primaryIndex = selectionParams.primaryRangeIndex ?? 0;
       const primaryRange = selectionParams.ranges[primaryIndex] ?? selectionParams.ranges[0]!;
       const primary = selectionParams.primaryCell ?? { row: primaryRange.startRow, column: primaryRange.startColumn };
-      this.selectionService.setPrimaryCell(primary.row, primary.column);
-      if (selectionParams.anchorCell) {
-        this.selectionService.setAnchor(selectionParams.anchorCell.row, selectionParams.anchorCell.column);
-      }
+      this.selectionService.applyState({
+        ranges: selectionParams.ranges,
+        primaryRangeIndex: primaryIndex,
+        activeCell: primary,
+        anchorCell: selectionParams.anchorCell ?? primary,
+      });
       this.syncDraftFromPrimary();
       return;
     }
     if (!WorkbookSession.SELECTION_COMMAND_IDS.has(commandId)) return;
     if (result.affectedRanges.length === 0) return;
-    this.selectionService.applyFromRanges(result.affectedRanges);
+    const first = result.affectedRanges[0]!;
+    this.selectionService.applyState({
+      ranges: result.affectedRanges,
+      primaryRangeIndex: 0,
+      activeCell: { row: first.startRow, column: first.startColumn },
+      anchorCell: { row: first.startRow, column: first.startColumn },
+    });
     this.syncDraftFromPrimary();
   }
 
@@ -935,7 +942,7 @@ export class WorkbookSession {
 
   syncDraftFromPrimary(): void {
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
+    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.activeCell.row, sel.activeCell.column);
     this.formulaDraft = cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
     this.emit();
   }
@@ -1000,10 +1007,10 @@ export class WorkbookSession {
     this.runCommand('sheet.freeze.set', {
       sheetId: this.activeSheetId,
       freeze: {
-        xSplit: sel.primaryColumnIndex,
-        ySplit: sel.primaryRowIndex,
-        startRow: sel.primaryRowIndex,
-        startColumn: sel.primaryColumnIndex,
+        xSplit: sel.activeCell.column,
+        ySplit: sel.activeCell.row,
+        startRow: sel.activeCell.row,
+        startColumn: sel.activeCell.column,
       },
     });
     this.refresh();
@@ -1020,8 +1027,8 @@ export class WorkbookSession {
   jumpEdge(direction: 'up' | 'down' | 'left' | 'right', extend = false): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const sel = this.selectionService.getState();
-    let row = sel.primaryRowIndex;
-    let column = sel.primaryColumnIndex;
+    let row = sel.activeCell.row;
+    let column = sel.activeCell.column;
     const step = direction === 'up' ? -1 : direction === 'down' ? 1 : direction === 'left' ? -1 : 1;
     const horizontal = direction === 'left' || direction === 'right';
     let cursor = horizontal ? column : row;
@@ -1033,11 +1040,7 @@ export class WorkbookSession {
     }
     if (horizontal) column = Math.max(0, Math.min(sheet.columnCount - 1, cursor));
     else row = Math.max(0, Math.min(sheet.rowCount - 1, cursor));
-    if (extend) this.movePrimary(row - sel.primaryRowIndex, column - sel.primaryColumnIndex, { extend: true });
-    else {
-      this.selectionService.setPrimary(row, column);
-      this.syncDraftFromPrimary();
-    }
+    this.movePrimary(row - sel.activeCell.row, column - sel.activeCell.column, { extend });
     this.emit();
   }
 
@@ -1052,16 +1055,16 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     for (const spill of sheet.spillRanges) {
-      if (isSpillChild(spill, sel.primaryRowIndex, sel.primaryColumnIndex)) {
+      if (isSpillChild(spill, sel.activeCell.row, sel.activeCell.column)) {
         this.notify('Spill cells are read-only');
         return;
       }
     }
-    const cell = sheet.cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
+    const cell = sheet.cells.get(sel.activeCell.row, sel.activeCell.column);
     this.editSession.begin({
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
       cell,
       selection: this.selectionService.getSnapshot(),
       initialText,
@@ -1078,8 +1081,8 @@ export class WorkbookSession {
   commitFormula(overrideValue?: string): boolean {
     if (this.phase !== 'ready') return false;
     const sel = this.selectionService.getState();
-    const row = this.overrideTarget?.row ?? sel.primaryRowIndex;
-    const column = this.overrideTarget?.column ?? sel.primaryColumnIndex;
+    const row = this.overrideTarget?.row ?? sel.activeCell.row;
+    const column = this.overrideTarget?.column ?? sel.activeCell.column;
     const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
     const style = this.runtime.model.getSheet(this.activeSheetId).cells.get(row, column)?.style;
     try {
@@ -1515,13 +1518,13 @@ export class WorkbookSession {
     this.refresh();
   }
   addConditionalFormat(rule: ConditionalFormatRule): void {
-    this.runCommand('sheet.cf.add', { rule });
+    this.runCommand('sheet.cf.add', { sheetId: this.activeSheetId, rule });
   }
   removeConditionalFormat(ruleId: string): void {
     this.runCommand('sheet.cf.remove', { sheetId: this.activeSheetId, ruleId });
   }
   addDataValidation(rule: DataValidationRule): void {
-    this.runCommand('sheet.dv.add', { rule });
+    this.runCommand('sheet.dv.add', { sheetId: this.activeSheetId, rule });
   }
   removeDataValidation(ruleId: string): void {
     this.runCommand('sheet.dv.remove', { sheetId: this.activeSheetId, ruleId });
@@ -1532,16 +1535,16 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     const thread = buildCommentThread(
       this.activeSheetId,
-      sel.primaryRowIndex,
-      sel.primaryColumnIndex,
+      sel.activeCell.row,
+      sel.activeCell.column,
       this.actorId,
       text,
       nextId('thread'),
     );
     this.runCommand('comment.add', {
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
       thread,
     });
     this.notify('Comment added');
@@ -1590,33 +1593,33 @@ export class WorkbookSession {
   }
 
   insertRowsAtPrimary(count: number): void {
-    this.runCommand('sheet.rows.insert', { sheetId: this.activeSheetId, at: this.selectionService.getState().primaryRowIndex, count });
+    this.runCommand('sheet.rows.insert', { sheetId: this.activeSheetId, at: this.selectionService.getState().activeCell.row, count });
   }
   deleteRowsAtPrimary(): void {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
-    this.runCommand('sheet.rows.delete', { sheetId: this.activeSheetId, at: range?.startRow ?? sel.primaryRowIndex, count: (range?.endRow ?? sel.primaryRowIndex) - (range?.startRow ?? sel.primaryRowIndex) + 1 });
+    this.runCommand('sheet.rows.delete', { sheetId: this.activeSheetId, at: range?.startRow ?? sel.activeCell.row, count: (range?.endRow ?? sel.activeCell.row) - (range?.startRow ?? sel.activeCell.row) + 1 });
   }
   insertColumnsAtPrimary(count: number): void {
-    this.runCommand('sheet.columns.insert', { sheetId: this.activeSheetId, at: this.selectionService.getState().primaryColumnIndex, count });
+    this.runCommand('sheet.columns.insert', { sheetId: this.activeSheetId, at: this.selectionService.getState().activeCell.column, count });
   }
   deleteColumnsAtPrimary(): void {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
-    this.runCommand('sheet.columns.delete', { sheetId: this.activeSheetId, at: range?.startColumn ?? sel.primaryColumnIndex, count: (range?.endColumn ?? sel.primaryColumnIndex) - (range?.startColumn ?? sel.primaryColumnIndex) + 1 });
+    this.runCommand('sheet.columns.delete', { sheetId: this.activeSheetId, at: range?.startColumn ?? sel.activeCell.column, count: (range?.endColumn ?? sel.activeCell.column) - (range?.startColumn ?? sel.activeCell.column) + 1 });
   }
   hideRowsAtPrimary(): void {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
-    const start = range?.startRow ?? sel.primaryRowIndex;
-    const end = range?.endRow ?? sel.primaryRowIndex;
+    const start = range?.startRow ?? sel.activeCell.row;
+    const end = range?.endRow ?? sel.activeCell.row;
     for (let row = start; row <= end; row++) this.runCommand('sheet.row.hide', { sheetId: this.activeSheetId, index: row });
   }
   hideColumnsAtPrimary(): void {
     const sel = this.selectionService.getState();
     const range = sel.ranges[sel.primaryRangeIndex];
-    const start = range?.startColumn ?? sel.primaryColumnIndex;
-    const end = range?.endColumn ?? sel.primaryColumnIndex;
+    const start = range?.startColumn ?? sel.activeCell.column;
+    const end = range?.endColumn ?? sel.activeCell.column;
     for (let column = start; column <= end; column++) this.runCommand('sheet.column.hide', { sheetId: this.activeSheetId, index: column });
   }
   unhideAll(): void {
@@ -1639,7 +1642,7 @@ export class WorkbookSession {
   splitByDelimiter(delimiter: string): void {
     const sel = this.selectionService.getState();
     const sheet = this.getSelectedSheet();
-    this.runCommand('data.splitColumn', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, delimiter, maxColumns: Math.min(sheet.columnCount - sel.primaryColumnIndex - 1, 8) });
+    this.runCommand('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(sheet.columnCount - sel.activeCell.column - 1, 8) });
   }
 
   copy(): void {
@@ -1662,7 +1665,7 @@ export class WorkbookSession {
     if (internal) {
       this.runCommand('sheet.range.paste', {
         sheetId: this.activeSheetId,
-        targetOrigin: { row: sel.primaryRowIndex, column: sel.primaryColumnIndex },
+        targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
         mode,
       });
@@ -1679,7 +1682,7 @@ export class WorkbookSession {
       };
       this.runCommand('sheet.range.paste', {
         sheetId: this.activeSheetId,
-        targetOrigin: { row: sel.primaryRowIndex, column: sel.primaryColumnIndex },
+        targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard,
         mode,
       });
@@ -1689,6 +1692,11 @@ export class WorkbookSession {
   }
   clearFormats(): void {
     this.runCommand('sheet.range.clear', { sheetId: this.activeSheetId, range: this.getPrimaryRange(), mode: 'formats' });
+  }
+
+  clearSelection(mode: 'contents' | 'formats' = 'contents'): void {
+    this.runCommand('sheet.range.clear', { sheetId: this.activeSheetId, range: this.getPrimaryRange(), mode });
+    this.syncDraftFromPrimary();
   }
 
   private getRangeMatrix(range: RangeRef): CellData[][] {
@@ -1841,7 +1849,7 @@ export class WorkbookSession {
 
   getValidationForPrimary(): DataValidationRule | undefined {
     const sel = this.selectionService.getState();
-    return findValidationRule(this.runtime.model.getSheet(this.activeSheetId), sel.primaryRowIndex, sel.primaryColumnIndex);
+    return findValidationRule(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
   }
   getValidationAt(row: number, column: number): string[] | undefined {
     const rule = findValidationRule(this.runtime.model.getSheet(this.activeSheetId), row, column);
@@ -2313,7 +2321,7 @@ export class WorkbookSession {
     const selection = this.selectionService.getState();
     const table = tableId
       ? sheet.sheetTables.find((entry) => entry.id === tableId)
-      : findSheetTableAt(sheet, selection.primaryRowIndex, selection.primaryColumnIndex);
+      : findSheetTableAt(sheet, selection.activeCell.row, selection.activeCell.column);
     if (!table) {
       this.notify('Select a cell inside a sheet table first');
       return;
@@ -2397,7 +2405,7 @@ export class WorkbookSession {
     const range = normalizeRangeRef(this.getPrimaryRange());
     const selection = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const column = selection.primaryColumnIndex;
+    const column = selection.activeCell.column;
     const targetRange: RangeRef = {
       sheetId: this.activeSheetId,
       startRow: range.startRow,
@@ -2476,7 +2484,7 @@ export class WorkbookSession {
     if (!text.trim()) return;
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
+    const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
     if (!thread) return;
     const reply = buildCommentReply(this.actorId, text, nextId('reply'));
     this.runCommand('comment.reply', { sheetId: this.activeSheetId, threadId: thread.id, reply });
@@ -2486,7 +2494,7 @@ export class WorkbookSession {
   resolveComment(): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
+    const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
     if (!thread || thread.resolved) return;
     this.runCommand('comment.resolve', {
       sheetId: this.activeSheetId,
@@ -2500,7 +2508,7 @@ export class WorkbookSession {
   removeComment(): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
+    const thread = findCommentThreadAt(sheet, sel.activeCell.row, sel.activeCell.column);
     if (!thread) return;
     this.runCommand('comment.remove', { sheetId: this.activeSheetId, threadId: thread.id });
     this.notify('Comment removed');
@@ -2512,8 +2520,8 @@ export class WorkbookSession {
     const note = buildCellNote(this.actorId, text, nextId('note'));
     this.runCommand('note.set', {
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
       note,
     });
     this.notify('Note added');
@@ -2523,8 +2531,8 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     this.runCommand('note.remove', {
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
     });
     this.notify('Note removed');
     this.refresh();
@@ -2533,8 +2541,8 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     this.runCommand('note.visibility', {
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
       visible,
     });
     this.refresh();
@@ -2545,8 +2553,8 @@ export class WorkbookSession {
     const hyperlink = parseUrlHyperlink(url, nextId('link'));
     this.runCommand('hyperlink.set', {
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
       hyperlink,
     });
     this.notify('Hyperlink inserted');
@@ -2555,11 +2563,11 @@ export class WorkbookSession {
   removeHyperlink(): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    if (!getCellHyperlink(sheet, sel.primaryRowIndex, sel.primaryColumnIndex)) return;
+    if (!getCellHyperlink(sheet, sel.activeCell.row, sel.activeCell.column)) return;
     this.runCommand('hyperlink.remove', {
       sheetId: this.activeSheetId,
-      row: sel.primaryRowIndex,
-      column: sel.primaryColumnIndex,
+      row: sel.activeCell.row,
+      column: sel.activeCell.column,
     });
     this.notify('Hyperlink removed');
     this.refresh();

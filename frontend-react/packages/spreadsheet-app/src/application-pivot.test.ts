@@ -57,8 +57,8 @@ describe('WorkbookSession pivot integration', () => {
       sheetId,
       ranges: [{ sheetId, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 0,
-      primaryColumnIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
     });
     const pivotId = app.insertQuickPivot();
     assert.ok(pivotId);

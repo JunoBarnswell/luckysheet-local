@@ -20,7 +20,7 @@ describe('WorkbookSession permission integration', () => {
   it('blocks viewer cell edits and surfaces a notice instead of mutating', () => {
     const app = new WorkbookSession();
     applyServerRole(app, 'viewer');
-    app.runCommand('sheet.cell.set', { sheetId: app.getActiveSheetId(), row: 0, column: 0, value: { value: 'blocked' } });
+    app.dispatch({ commandId: 'sheet.cell.set', params: { sheetId: app.getActiveSheetId(), row: 0, column: 0, value: { value: 'blocked' } } });
     assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).cells.get(0, 0)?.value, undefined);
     assert.match(app.getUiSnapshot().notice, /viewer|edit-cell|Permission/i);
   });
@@ -34,8 +34,8 @@ describe('WorkbookSession permission integration', () => {
       sheetId: app.getActiveSheetId(),
       ranges: [{ sheetId: app.getActiveSheetId(), startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 0,
-      primaryColumnIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
     });
     app.addComment('Visible to reviewers');
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(0, 0)?.commentText, 'Visible to reviewers');
@@ -47,8 +47,8 @@ describe('WorkbookSession permission integration', () => {
       sheetId: app.getActiveSheetId(),
       ranges: [{ sheetId: app.getActiveSheetId(), startRow: 1, endRow: 2, startColumn: 1, endColumn: 2 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 1,
-      primaryColumnIndex: 1,
+      activeCell: { row: 1, column: 1 },
+      anchorCell: { row: 1, column: 1 },
     });
     app.protectSelection(['format']);
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());

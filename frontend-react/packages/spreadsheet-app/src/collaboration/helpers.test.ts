@@ -52,7 +52,7 @@ describe('collaboration helpers', () => {
       id: 'cell.set',
       unitId: 'wb-1',
       sheetId: 'sheet-1',
-      params: { row: 1, column: 1, value: { value: 2 } },
+      params: { sheetId: 'sheet-1', row: 1, column: 1, value: { value: 2 } },
       affectedRanges: [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }],
     }], 'wb-1', 'op-ack');
     assert.equal(session.offlineQueue.getPendingCount(), 1);
@@ -129,7 +129,7 @@ describe('collaboration helpers', () => {
       id: 'cell.set',
       unitId: 'wb-1',
       sheetId: 'sheet-1',
-      params: { row: 9, column: 0, value: { value: 2 } },
+      params: { sheetId: 'sheet-1', row: 9, column: 0, value: { value: 2 } },
       affectedRanges: [{ sheetId: 'sheet-1', startRow: 9, endRow: 9, startColumn: 0, endColumn: 0 }],
     }], 'wb-1', 'op-pending');
     session.recordCommittedMutations([{

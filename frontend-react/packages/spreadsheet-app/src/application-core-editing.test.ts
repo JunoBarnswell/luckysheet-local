@@ -9,8 +9,8 @@ function selectCell(app: WorkbookSession, row: number, column: number): void {
     sheetId,
     ranges: [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }],
     primaryRangeIndex: 0,
-    primaryRowIndex: row,
-    primaryColumnIndex: column,
+    activeCell: { row, column },
+    anchorCell: { row, column },
   });
 }
 
@@ -106,10 +106,8 @@ describe('WorkbookSession core editing integration', () => {
     app.applyCanvasSelection({
       ranges: [{ sheetId, startRow: 1, endRow: 8, startColumn: 0, endColumn: 2 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 8,
-      primaryColumnIndex: 2,
-      anchorRowIndex: 1,
-      anchorColumnIndex: 0,
+      activeCell: { row: 8, column: 2 },
+      anchorCell: { row: 1, column: 0 },
     });
     assert.equal(app.getUiSnapshot().activeCell, 'C9');
 
@@ -141,8 +139,8 @@ describe('WorkbookSession core editing integration', () => {
       sheetId,
       ranges: [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }],
       primaryRangeIndex: 0,
-      primaryRowIndex: 0,
-      primaryColumnIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
     });
     app.shiftCells('down');
 

@@ -448,14 +448,14 @@ function WorkspaceApp() {
   };
 
   const formatCellsInitial = useMemo(() => {
-    const cell = state.selectedSheet.getCell(state.selection.primaryRowIndex, state.selection.primaryColumnIndex);
+    const cell = state.selectedSheet.getCell(state.selection.activeCell.row, state.selection.activeCell.column);
     const style = cell?.style ?? {};
     return {
       numberFormat: style.numberFormat ?? "general",
       style: { ...style },
     };
-  }, [state.showFormatCells, state.selection.primaryRowIndex, state.selection.primaryColumnIndex, state.selectedSheet, state.version]);
-  const selectedCellStyle = state.selectedSheet.getCell(state.selection.primaryRowIndex, state.selection.primaryColumnIndex)?.style ?? {};
+  }, [state.showFormatCells, state.selection.activeCell.row, state.selection.activeCell.column, state.selectedSheet, state.version]);
+  const selectedCellStyle = state.selectedSheet.getCell(state.selection.activeCell.row, state.selection.activeCell.column)?.style ?? {};
 
   return (
     <>
@@ -641,6 +641,7 @@ function WorkspaceApp() {
                 params: { sheetId: state.activeSheetId, drawingId },
               })}
               onCommand={dispatchCommand}
+              onClearSelection={(mode) => session.clearSelection(mode)}
               onCopy={() => session.copy()}
               onCut={() => session.cut()}
               onPaste={() => session.paste()}

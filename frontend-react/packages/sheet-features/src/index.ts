@@ -215,7 +215,8 @@ function isRange(value: unknown): value is RangeRef {
 }
 
 function isCellData(value: unknown): value is CellData {
-  return isRecord(value) && 'value' in value;
+  return isRecord(value)
+    && ('value' in value || typeof value.formula === 'string');
 }
 
 function isCellSetMutation(value: unknown): value is SetCellValueParams {
@@ -949,7 +950,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'ClearRange', validate: isClearRangeMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
-      inverseIds: ['range.clear.restore'],
+      inverseIds: ['range.clear.restore', 'cell.restore'],
     },
   });
 

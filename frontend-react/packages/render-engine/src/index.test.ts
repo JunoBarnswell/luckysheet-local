@@ -9,6 +9,9 @@ import {
   calculateScrollDelta,
   createEmptyChromeState,
   defaultHeaderOffset,
+  isColumnSelected,
+  isRowSelected,
+  isSelectAllRange,
   mergeCellRanges,
   rangeToViewportRect,
 } from './index';
@@ -373,5 +376,33 @@ test('contentToMainScreen selects the cell pane for frozen rows and columns', ()
   const main = renderSkeleton.getCellRect(4, 2)!;
   assert.deepEqual(engine.contentToMainScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
   assert.deepEqual(engine.contentToMainScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 196, y: 124 });
+  engine.dispose();
+});
+
+test('selection header projection highlights ordinary rectangles and explicit skeleton bounds', () => {
+  const chrome = createEmptyChromeState();
+  chrome.selection.ranges = [{ startRow: 1, endRow: 8, startColumn: 0, endColumn: 2 }];
+  assert.equal(isColumnSelected(chrome, 0), true);
+  assert.equal(isColumnSelected(chrome, 2), true);
+  assert.equal(isColumnSelected(chrome, 3), false);
+  assert.equal(isRowSelected(chrome, 1), true);
+  assert.equal(isRowSelected(chrome, 8), true);
+  assert.equal(isRowSelected(chrome, 9), false);
+  assert.equal(isSelectAllRange({ startRow: 0, endRow: 19, startColumn: 0, endColumn: 9 }, skeleton), true);
+  assert.equal(isSelectAllRange({ startRow: 0, endRow: 999, startColumn: 0, endColumn: 25 }, skeleton), true);
+  assert.equal(isSelectAllRange({ startRow: 0, endRow: 18, startColumn: 0, endColumn: 9 }, skeleton), false);
+});
+
+test('content range screen geometry splits overlays across frozen panes', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const engine = new CanvasRenderEngine({
+    skeleton: renderSkeleton,
+    viewport: { width: 300, height: 220, scrollX: 30, scrollY: 20, devicePixelRatio: 1 },
+  });
+  engine.setFreeze({ xSplit: 1, ySplit: 1 });
+  engine.render();
+  const rects = engine.contentRangeToScreenRects({ startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 });
+  assert.ok(rects.some((rect) => rect.x === 46 && rect.y === 24));
+  assert.ok(rects.length >= 2);
   engine.dispose();
 });
