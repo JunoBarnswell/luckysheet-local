@@ -447,12 +447,18 @@ export class CanvasRenderEngine {
   render(): RenderPlan {
     this.assertActive();
     const viewport = this.viewport.getSnapshot();
+    const scrolling = this.previousViewport !== null
+      && (this.previousViewport.scrollX !== viewport.scrollX || this.previousViewport.scrollY !== viewport.scrollY);
     const plan = calculateRenderPlan({
       skeleton: this.skeletonModel,
       viewport,
       previousViewport: this.previousViewport,
       dirtyRanges: this.dirtyRanges.toArray(),
-      forceFull: this.forceFullRedraw,
+      // The scroll-blit path can copy stale/transparent pixels when the
+      // visible range crosses virtual rows, zoomed geometry, or pane edges.
+      // Keep the delta calculation for diagnostics, but redraw every visible
+      // pane for an actual engine scroll so the grid can never become white.
+      forceFull: this.forceFullRedraw || scrolling,
       chromeDirty: this.chromeDirty,
       layers: this.layerDefinitions,
       freeze: this.freezeSplits,

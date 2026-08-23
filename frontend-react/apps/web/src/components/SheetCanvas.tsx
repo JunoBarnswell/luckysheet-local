@@ -1071,16 +1071,13 @@ export function SheetCanvas({
         x: Math.max(currentOrigin.x + 1, Math.min(currentHost.clientWidth - 1, point.x)),
         y: Math.max(currentOrigin.y + 1, Math.min(currentHost.clientHeight - 1, point.y)),
       };
-      const cell = resolveDragCell(currentEngine, sheet, queryPoint, currentDrag);
-      if (cell) {
-        currentDrag.currentRow = cell.row;
-        currentDrag.currentColumn = cell.column;
-        if (currentDrag.kind === "fill") {
-          const vertical = Math.abs(cell.row - currentDrag.anchorRow) >= Math.abs(cell.column - currentDrag.anchorColumn);
-          currentDrag.currentRow = vertical ? cell.row : currentDrag.anchorRow;
-          currentDrag.currentColumn = vertical ? currentDrag.anchorColumn : cell.column;
-          setFillPreview({
-            startRow: Math.min(currentDrag.startRow, currentDrag.currentRow),
+        const cell = resolveDragCell(currentEngine, sheet, queryPoint, currentDrag);
+        if (cell) {
+          currentDrag.currentRow = cell.row;
+          currentDrag.currentColumn = cell.column;
+          if (currentDrag.kind === "fill") {
+            setFillPreview({
+              startRow: Math.min(currentDrag.startRow, currentDrag.currentRow),
             endRow: Math.max(currentDrag.anchorRow, currentDrag.currentRow),
             startColumn: Math.min(currentDrag.startColumn, currentDrag.currentColumn),
             endColumn: Math.max(currentDrag.anchorColumn, currentDrag.currentColumn),
@@ -1127,6 +1124,7 @@ export function SheetCanvas({
       if (event.button === 2) return; // 右键交给 contextmenu
       if ((event.target as Element).closest('[aria-label="Cell editor"]')) return;
       stopAutoScroll();
+      setFillPreview(null);
       const engine = engineRef.current;
       const host = containerRef.current;
       if (!engine || !host) return;
@@ -1339,6 +1337,7 @@ export function SheetCanvas({
       }
 
       if (drag.kind === "col-resize" || drag.kind === "row-resize") {
+        setFillPreview(null);
         stopAutoScroll();
         const content = engine.localToContent(local);
         const boundary = drag.kind === "col-resize"
@@ -1352,6 +1351,7 @@ export function SheetCanvas({
       }
 
       if (drag.kind === "floating-move" && drag.floating) {
+        setFillPreview(null);
         stopAutoScroll();
         const deltaX = local.x - drag.floating.startLocal.x;
         const deltaY = local.y - drag.floating.startLocal.y;
@@ -1371,6 +1371,7 @@ export function SheetCanvas({
       }
 
       if (drag.kind === "floating-resize" && drag.floating?.handle) {
+        setFillPreview(null);
         stopAutoScroll();
         const handle = drag.floating.handle;
         const start = drag.floating.startBounds;
@@ -1410,9 +1411,8 @@ export function SheetCanvas({
           : hitCell ? resolveMergedCell(sheet, hitCell) : null;
       if (!cell) return;
       if (drag.kind === "fill") {
-        const vertical = Math.abs(cell.row - drag.anchorRow) >= Math.abs(cell.column - drag.anchorColumn);
-        drag.currentRow = vertical ? cell.row : drag.anchorRow;
-        drag.currentColumn = vertical ? drag.anchorColumn : cell.column;
+        drag.currentRow = cell.row;
+        drag.currentColumn = cell.column;
         setFillPreview({
           startRow: Math.min(drag.startRow, drag.currentRow),
           endRow: Math.max(drag.anchorRow, drag.currentRow),
@@ -1492,10 +1492,17 @@ export function SheetCanvas({
           intersectsRange(target, merge.range) && !containsRange(target, merge.range));
         if (!partialMerge && (target.endRow !== drag.anchorRow || target.endColumn !== drag.anchorColumn)) {
           onFillRange(target);
+          onSelectionChange({
+            ranges: [target],
+            primaryRangeIndex: 0,
+            activeCell: { row: drag.currentRow, column: drag.currentColumn },
+            anchorCell: { row: drag.startRow, column: drag.startColumn },
+          });
         }
         return;
       }
       if (drag.kind === "select") {
+        setFillPreview(null);
         if (drag.extend) {
           clearTransientSelection();
           onExtendSelection?.(drag.currentRow, drag.currentColumn);
@@ -1695,6 +1702,7 @@ export function SheetCanvas({
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
+    setFillPreview(null);
     const engine = engineRef.current;
     if (!engine || phase !== "ready") {
       setContextMenu({ x: event.clientX, y: event.clientY, open: true });

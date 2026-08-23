@@ -184,6 +184,18 @@ test('CanvasRenderEngine keeps rendering state independent from DOM mounting', (
   assert.throws(() => engine.render(), /disposed/);
 });
 
+test('CanvasRenderEngine fully redraws visible panes after scroll to avoid stale white regions', () => {
+  const engine = new CanvasRenderEngine({ skeleton, viewport: viewport() });
+  const initial = engine.render();
+  assert.equal(initial.fullRedraw, true);
+  engine.scrollTo(0, 40);
+  const scrolled = engine.render();
+  assert.equal(scrolled.scrollDelta.canBlit, true);
+  assert.equal(scrolled.fullRedraw, true);
+  assert.ok(scrolled.layers.every((layer) => layer.mode === 'full'));
+  engine.dispose();
+});
+
 test('SheetSkeleton handles custom dimensions and coordinate lookups accurately', () => {
   const customSkeleton = new SheetSkeleton({
     rowCount: 100,

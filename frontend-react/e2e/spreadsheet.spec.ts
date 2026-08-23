@@ -239,9 +239,10 @@ test.describe('spreadsheet baseline', () => {
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
     await page.mouse.move(box.x + 46 + 110 - 4, box.y + 24 + 28 - 4);
     await page.mouse.down();
-    await page.mouse.move(box.x + 46 + 110, box.y + 24 + 3 * 28);
+    await page.mouse.move(box.x + 46 + 2 * 110 + 55, box.y + 24 + 2 * 28 + 14);
     await page.mouse.up();
-    await page.getByTestId('name-box').fill('A3');
+    await expect(page.getByTestId('name-box')).toHaveValue('C3');
+    await page.getByTestId('name-box').fill('C3');
     await page.getByTestId('name-box').press('Enter');
     await expect(page.getByTestId('formula-input')).toHaveValue('fill-source-unique');
   });
