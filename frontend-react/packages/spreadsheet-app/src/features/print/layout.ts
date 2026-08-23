@@ -1,11 +1,13 @@
 import type { RangeRef, SheetId, WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
-import type { PrintLayout } from '@react-sheets/pro-features';
 import { usedRangeOfSheet } from '../../application-helpers';
 import {
   computePrintPages,
   createDefaultPrintLayout,
+  getPrintDocument,
   type PageSetup,
   type PaperSize,
+  type PrintDocument,
+  type PrintLayout,
   type PrintLayoutModel,
   type PrintPageInfo,
 } from './index';
@@ -44,6 +46,8 @@ function mmToPt(mm: number): number {
 
 function mapPaperSize(paper: PrintLayout['paper']): PaperSize {
   switch (paper) {
+    case 'A3':
+      return 'a3';
     case 'Letter':
       return 'letter';
     case 'Legal':
@@ -69,17 +73,19 @@ export function printLayoutToPageSetup(layout: PrintLayout): PageSetup {
     scale: layout.scale ?? 100,
     fitToWidth: layout.fitToWidth ? 1 : undefined,
     fitToHeight: layout.fitToHeight ? 1 : undefined,
-    printGridlines: false,
-    printHeadings: false,
-    centerHorizontally: false,
-    centerVertically: false,
+    printGridlines: layout.printGridlines ?? false,
+    printHeadings: layout.printHeadings ?? false,
+    centerHorizontally: layout.centerHorizontally ?? false,
+    centerVertically: layout.centerVertically ?? false,
+    headerText: layout.headerText,
+    footerText: layout.footerText,
   };
 }
 
 export function pageSetupToPrintLayout(setup: PageSetup): PrintLayout {
   const ptToMm = (pt: number) => Math.round((pt / MM_TO_PT) * 10) / 10;
   const paper: PrintLayout['paper'] =
-    setup.paperSize === 'letter' ? 'Letter' : setup.paperSize === 'legal' ? 'Legal' : 'A4';
+    setup.paperSize === 'a3' ? 'A3' : setup.paperSize === 'letter' ? 'Letter' : setup.paperSize === 'legal' ? 'Legal' : 'A4';
   return {
     paper,
     orientation: setup.orientation,
@@ -92,6 +98,12 @@ export function pageSetupToPrintLayout(setup: PageSetup): PrintLayout {
     scale: setup.scale,
     fitToWidth: Boolean(setup.fitToWidth),
     fitToHeight: Boolean(setup.fitToHeight),
+    printGridlines: setup.printGridlines,
+    printHeadings: setup.printHeadings,
+    centerHorizontally: setup.centerHorizontally,
+    centerVertically: setup.centerVertically,
+    headerText: setup.headerText,
+    footerText: setup.footerText,
   };
 }
 
@@ -147,59 +159,21 @@ export function buildPrintLayoutModel(
   sheetId: SheetId,
   uiLayout: PrintLayout,
   printArea: RangeRef,
+  document?: PrintDocument,
 ): PrintLayoutModel {
   const base = createDefaultPrintLayout(unitId, sheetId);
   return {
     ...base,
     pageSetup: printLayoutToPageSetup(uiLayout),
     printAreas: [{ sheetId, range: printArea }],
+    pageBreaks: document?.pageBreaks ? structuredClone(document.pageBreaks) : [],
     repeatRows: uiLayout.repeatRows
       ? { start: uiLayout.repeatRows.startRow, end: uiLayout.repeatRows.endRow }
-      : undefined,
+      : document?.repeatRows,
+    repeatColumns: uiLayout.repeatColumns
+      ? { start: uiLayout.repeatColumns.startColumn, end: uiLayout.repeatColumns.endColumn }
+      : document?.repeatColumns,
   };
-}
-
-function computePagesWithFit(
-  model: PrintLayoutModel,
-  uiLayout: PrintLayout,
-  rowHeight: number,
-  colWidth: number,
-): PrintPageInfo[] {
-  const area = model.printAreas[0];
-  if (!area) return [];
-  const { range } = area;
-  const totalRows = range.endRow - range.startRow + 1;
-  const totalCols = range.endColumn - range.startColumn + 1;
-  const baseRowsPerPage = model.pageSetup.orientation === 'portrait' ? 40 : 28;
-  const baseColsPerPage = model.pageSetup.orientation === 'portrait' ? 8 : 12;
-  const rowsPerPage = uiLayout.fitToHeight ? totalRows : baseRowsPerPage;
-  const colsPerPage = uiLayout.fitToWidth ? totalCols : baseColsPerPage;
-
-  if (!uiLayout.fitToWidth && !uiLayout.fitToHeight) {
-    return computePrintPages(model, rowHeight, colWidth);
-  }
-
-  const pages: PrintPageInfo[] = [];
-  const rowPages = Math.max(1, Math.ceil(totalRows / rowsPerPage));
-  const colPages = Math.max(1, Math.ceil(totalCols / colsPerPage));
-  let pageIndex = 0;
-
-  for (let rowPage = 0; rowPage < rowPages; rowPage += 1) {
-    for (let colPage = 0; colPage < colPages; colPage += 1) {
-      const startRow = range.startRow + rowPage * rowsPerPage;
-      const endRow = Math.min(range.endRow, startRow + rowsPerPage - 1);
-      const startColumn = range.startColumn + colPage * colsPerPage;
-      const endColumn = Math.min(range.endColumn, startColumn + colsPerPage - 1);
-      pages.push({
-        pageIndex: pageIndex++,
-        sheetId: area.sheetId,
-        range: { sheetId: area.sheetId, startRow, endRow, startColumn, endColumn },
-        widthPx: (endColumn - startColumn + 1) * colWidth,
-        heightPx: (endRow - startRow + 1) * rowHeight,
-      });
-    }
-  }
-  return pages;
 }
 
 export function toPrintPageSnapshots(pages: PrintPageInfo[]): PrintPageSnapshot[] {
@@ -213,18 +187,25 @@ export function toPrintPageSnapshots(pages: PrintPageInfo[]): PrintPageSnapshot[
 export function buildPrintSnapshot(
   workbook: WorkbookModel,
   activeSheetId: SheetId,
-  uiLayout: PrintLayout,
+  uiLayout?: PrintLayout,
   selectionRange?: RangeRef,
 ): PrintSnapshot {
   const sheet = workbook.getSheet(activeSheetId);
-  const printArea = resolvePrintArea(sheet, selectionRange);
-  const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, uiLayout, printArea);
+  const document = getPrintDocument(workbook, activeSheetId);
+  const effectiveLayout = uiLayout ?? pageSetupToPrintLayout(document.pageSetup);
+  const storedArea = document.printAreas.find((area) => area.sheetId === activeSheetId)?.range;
+  const printArea = selectionRange ? resolvePrintArea(sheet, selectionRange) : storedArea ?? resolvePrintArea(sheet);
+  const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, document);
+  model.rowHeights = { ...sheet.rowHeights };
+  model.columnWidths = { ...sheet.columnWidths };
+  model.hiddenRows = new Set(sheet.hiddenRows);
+  model.hiddenColumns = new Set(sheet.hiddenColumns);
   const rowHeight = averageRowHeight(sheet, printArea);
   const colWidth = averageColumnWidth(sheet, printArea);
-  const pages = computePagesWithFit(model, uiLayout, rowHeight, colWidth);
+  const pages = computePrintPages(model, rowHeight, colWidth);
   const pageSnapshots = toPrintPageSnapshots(pages);
   return {
-    layout: uiLayout,
+    layout: effectiveLayout,
     model,
     pages,
     pageSnapshots,

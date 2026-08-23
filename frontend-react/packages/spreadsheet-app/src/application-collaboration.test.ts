@@ -8,6 +8,7 @@ import { SpreadsheetApplication } from './application';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { classifyMutation } from './collaboration/operation-types';
 import { rebaseMutation } from './collaboration/ot-rebase';
+import { createSpreadsheetRuntime } from './runtime';
 
 describe('SpreadsheetApplication collaboration integration', () => {
   it('exposes collaboration snapshot defaults when session is offline', () => {
@@ -55,5 +56,22 @@ describe('SpreadsheetApplication collaboration integration', () => {
     });
     assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.value, 'remote');
     assert.equal(runtime.undo(), false);
+  });
+
+  it('turns local undo into a durable compensating operation', () => {
+    const runtime = createSpreadsheetRuntime();
+    const sheetId = runtime.model.activeSheetId;
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId,
+      row: 0,
+      column: 0,
+      value: { value: 'local' },
+    });
+    assert.equal(runtime.collaboration?.offlineQueue.getPendingCount(), 1);
+    assert.equal(runtime.commands.undo(), true);
+    const pending = runtime.collaboration?.offlineQueue.getPending() ?? [];
+    assert.equal(pending.length, 2);
+    assert.notEqual(pending[0]?.operation.operationId, pending[1]?.operation.operationId);
+    assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 0), undefined);
   });
 });

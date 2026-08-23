@@ -127,19 +127,20 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
   const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
   columns.forEach((column, index) => target.cells.set(params.targetAnchor.row, params.targetAnchor.column + index, { value: column.label }));
 
-  params.sourceRowPaths.forEach((_, rowOffset) => {
-    // The command payload is row-oriented: each entry identifies a source row
-    // for one result row.  The common worksheet-range form remains fully
-    // cross-sheet safe because the path carries its authoritative sheet id.
-    const path = params.sourceRowPaths[rowOffset];
-    if (!path) return;
-    const source = context.workbook.getSheet(path.sheetId);
+  const ranges = pivotSourceRanges(pivot);
+  const rowsPerResult = Math.max(ranges.length, 1);
+  const resultRowCount = Math.ceil(params.sourceRowPaths.length / rowsPerResult);
+  for (let rowOffset = 0; rowOffset < resultRowCount; rowOffset += 1) {
+    // Joined pivots flatten one path per source range into the result tree.
+    // Re-group those paths deterministically before reading detail values.
+    const paths = params.sourceRowPaths.slice(rowOffset * rowsPerResult, (rowOffset + 1) * rowsPerResult);
     columns.forEach((column, columnOffset) => {
-      const row = column.range.sheetId === path.sheetId ? path.row : undefined;
-      const value = row === undefined ? null : source.cells.get(row, column.column)?.value ?? null;
+      const path = paths.find((entry) => entry.sheetId === column.range.sheetId);
+      const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
+      const value = source && path ? source.cells.get(path.row, column.column)?.value ?? null : null;
       target.cells.set(params.targetAnchor.row + rowOffset + 1, params.targetAnchor.column + columnOffset, { value });
     });
-  });
+  }
 }
 
 function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): void {
@@ -301,12 +302,12 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   });
   commandIds.push('pivot.refresh');
 
-  registerMutationHandler<PivotDrillDownParams>(runtime, 'pivot.drilldown.add', (params, context) => {
-    writePivotDrillDown(context, params);
+  runtime.registry.registerMutation<PivotDrillDownParams>('pivot.drilldown.add', (item, context) => {
+    writePivotDrillDown(context, item.params);
   });
-  registerMutationHandler<PivotDrillDownRemoveParams>(runtime, 'pivot.drilldown.remove', (params, context) => {
-    if (!context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Unknown drill-down target: ${params.targetSheetId}`);
-    context.workbook.removeSheet(params.targetSheetId);
+  runtime.registry.registerMutation<PivotDrillDownRemoveParams>('pivot.drilldown.remove', (item, context) => {
+    if (!context.workbook.sheets.has(item.params.targetSheetId)) throw new Error(`Unknown drill-down target: ${item.params.targetSheetId}`);
+    context.workbook.removeSheet(item.params.targetSheetId);
   });
 
   const registerLayoutPatch = <P extends { sheetId: string; pivotId: string }>(
@@ -406,9 +407,11 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
       if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
       const columns = drillDownColumns(context, pivot).length;
+      const sourceRangeCount = pivot.dataSource?.kind === 'worksheet-ranges' ? Math.max(pivot.dataSource.ranges.length, 1) : 1;
+      const detailRows = Math.ceil(params.sourceRowPaths.length / sourceRangeCount);
       const affectedRanges: RangeRef[] = [
         { sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
-        { sheetId: params.targetSheetId, startRow: params.targetAnchor.row, endRow: params.targetAnchor.row + params.sourceRowPaths.length, startColumn: params.targetAnchor.column, endColumn: params.targetAnchor.column + Math.max(columns - 1, 0) },
+        { sheetId: params.targetSheetId, startRow: params.targetAnchor.row, endRow: params.targetAnchor.row + detailRows, startColumn: params.targetAnchor.column, endColumn: params.targetAnchor.column + Math.max(columns - 1, 0) },
       ];
       context.applyMutation({
         id: 'pivot.drilldown.add',

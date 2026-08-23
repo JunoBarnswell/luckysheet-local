@@ -28,7 +28,7 @@ import type {
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
-import type { PrintLayout } from '@react-sheets/pro-features';
+import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition, CapabilityDescriptor, PlatformCapability } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import type { PivotModel } from '@react-sheets/core-model';
@@ -712,5 +712,4 @@ function CommentHyperlinkForms({
     </Stack>
   );
 }
-
 

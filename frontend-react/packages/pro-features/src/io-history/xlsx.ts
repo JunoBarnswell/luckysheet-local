@@ -183,9 +183,9 @@ export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookS
       cells,
       merges: [],
       freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
-      charts: [],
       pivots: [],
-      shapes: [],
+      drawings: [],
+      drawingPayloads: {},
       sparklines: [],
     });
 
@@ -201,9 +201,9 @@ export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookS
       cells: {},
       merges: [],
       freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
-      charts: [],
       pivots: [],
-      shapes: [],
+      drawings: [],
+      drawingPayloads: {},
       sparklines: [],
     });
   }

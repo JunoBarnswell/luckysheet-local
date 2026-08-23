@@ -24,13 +24,14 @@ export function revisionToHistoryMeta(record: RevisionRecord): HistoryEntryMeta 
 }
 
 export function buildRestoreParams(
-  snapshot: WorkbookSnapshotV1,
   targetRevision: number,
   reason?: string,
 ): RestoreCommandParams {
+  if (!Number.isSafeInteger(targetRevision) || targetRevision < 0) {
+    throw new Error('targetRevision must be a non-negative integer');
+  }
   return {
     targetRevision,
-    snapshot: structuredClone(snapshot),
     reason,
   };
 }

@@ -6,6 +6,7 @@ import {
   type FacadeCellOperation,
   type FacadeProgram,
 } from './dsl';
+import { DEFAULT_SANDBOX_POLICY, ScriptSandbox } from './sandbox';
 
 export interface AutomationRunParams {
   source: string;
@@ -16,10 +17,21 @@ export interface AutomationRunParams {
 
 export interface AutomationPlanResult extends CommandResult {
   plan: {
+    schema: 'AutomationPlanV1';
     kind: 'facade-dsl';
     statements: number;
     operations: number;
+    sourceHash: string;
+    sourceLength: number;
+    cellCount: number;
+    affectedRanges: readonly RangeRef[];
+    limits: { maxSourceLength: number; maxStatements: number; maxCells: number; maxOperations: number; maxDurationMs: number };
+    serializable: true;
   };
+}
+
+export interface AutomationCommandOptions {
+  sandbox?: ScriptSandbox;
 }
 
 interface RecordingState {
@@ -114,9 +126,10 @@ function applyRecordingState(state: RecordingState, next: boolean, context: Comm
   });
 }
 
-export function registerAutomationCommands(registry: CommandRegistry): void {
+export function registerAutomationCommands(registry: CommandRegistry, options: AutomationCommandOptions = {}): void {
   registerCellMutationHandlers(registry);
   const state: RecordingState = { recording: false };
+  const sandbox = options.sandbox ?? new ScriptSandbox(DEFAULT_SANDBOX_POLICY);
   registry.registerMutation<{ recording: boolean }>('automation.recording.changed', (item) => {
     state.recording = item.params.recording;
   });
@@ -125,16 +138,35 @@ export function registerAutomationCommands(registry: CommandRegistry): void {
     id: 'automation.run',
     execute(params, context): AutomationPlanResult {
       if (!params || typeof params.source !== 'string') throw new Error('Automation source is required');
+      if (Object.prototype.hasOwnProperty.call(params, 'program')) {
+        throw new Error('Automation command accepts source only; program payload is not serializable');
+      }
       // Always parse the source supplied to the command. A caller cannot
-      // smuggle an AST with executable JavaScript through the optional hint.
-      const program = parseFacadeScript(params.source);
+      // smuggle an AST with executable JavaScript through an out-of-band hint.
+      const program = sandbox.parse(params.source);
       const plan = buildFacadePlan(context.workbook, program);
-      for (const operation of plan.operations) applyPlannedCellOperation(operation, context);
+      sandbox.assertPlanAllowed(plan);
+      const deadline = Date.now() + sandbox.getTimeoutMs();
+      for (const operation of plan.operations) {
+        if (Date.now() > deadline) throw new Error(`Automation exceeded ${sandbox.getTimeoutMs()}ms execution limit`);
+        applyPlannedCellOperation(operation, context);
+      }
       return {
         operationId: context.operationId,
         mutationCount: plan.operations.length,
         affectedRanges: [...plan.affectedRanges],
-        plan: { kind: 'facade-dsl', statements: plan.statements.length, operations: plan.operations.length },
+        plan: {
+          schema: 'AutomationPlanV1',
+          kind: 'facade-dsl',
+          statements: plan.statements.length,
+          operations: plan.operations.length,
+          sourceHash: hashSource(params.source),
+          sourceLength: program.sourceLength,
+          cellCount: program.cellCount,
+          affectedRanges: structuredClone(plan.affectedRanges),
+          limits: sandbox.getPolicy(),
+          serializable: true,
+        },
       };
     },
   });
@@ -156,4 +188,15 @@ export function registerAutomationCommands(registry: CommandRegistry): void {
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
     },
   });
+}
+
+function hashSource(source: string): string {
+  // Deterministic, non-secret plan identity. This is metadata only and is not
+  // used as an authorization or integrity primitive.
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }

@@ -42,12 +42,12 @@ function stableSerialize(value: unknown): string {
 
 function fingerprint(value: unknown): string {
   const input = stableSerialize(value);
-  let hash = 0x811c9dc5;
+  let hash = 0xcbf29ce484222325n;
   for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
+    hash ^= BigInt(input.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return hash.toString(16).padStart(16, '0');
 }
 
 function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
@@ -78,7 +78,7 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
   return {
     pivotId: pivot.id,
     sourceRevision: sourceRevision(workbook, pivot),
-    layoutRevision: fingerprint({ sourceRange: pivot.sourceRange, dataSource: pivot.dataSource, layout: pivot.layout }),
+    layoutRevision: fingerprint({ sourceRange: pivot.sourceRange, dataSource: pivot.dataSource, fieldCatalog: pivot.fieldCatalog, layout: pivot.layout }),
     filterRevision: fingerprint({ filters: pivot.layout.filters, slicers: pivot.slicers, timelines: pivot.timelines, linked: linkedFilterDefinitions(workbook, pivot) }),
   };
 }

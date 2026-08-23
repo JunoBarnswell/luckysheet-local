@@ -423,6 +423,7 @@ export type MutationSource = 'command' | 'undo' | 'redo' | 'remote';
 
 export type MutationListener = (mutation: MutationInfo, source: MutationSource) => void;
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
+export type HistoryReplayListener = (source: 'undo' | 'redo', entry: HistoryEntry) => void;
 
 export class CommandRuntime {
   private readonly undoStack: HistoryEntry[] = [];
@@ -431,6 +432,7 @@ export class CommandRuntime {
   private transactionDepth = 0;
   private readonly mutationListeners: MutationListener[] = [];
   private readonly commandListeners: CommandListener[] = [];
+  private readonly historyReplayListeners: HistoryReplayListener[] = [];
 
   constructor(
     readonly workbook: WorkbookModel,
@@ -450,6 +452,14 @@ export class CommandRuntime {
     return () => {
       const idx = this.commandListeners.indexOf(listener);
       if (idx >= 0) this.commandListeners.splice(idx, 1);
+    };
+  }
+
+  onHistoryReplay(listener: HistoryReplayListener): () => void {
+    this.historyReplayListeners.push(listener);
+    return () => {
+      const idx = this.historyReplayListeners.indexOf(listener);
+      if (idx >= 0) this.historyReplayListeners.splice(idx, 1);
     };
   }
 
@@ -548,6 +558,7 @@ export class CommandRuntime {
     if (!entry) return false;
     this.applyHistory(entry.undo, 'undo');
     this.redoStack.push(entry);
+    for (const listener of this.historyReplayListeners) listener('undo', entry);
     return true;
   }
 
@@ -556,6 +567,7 @@ export class CommandRuntime {
     if (!entry) return false;
     this.applyHistory(entry.redo, 'redo');
     this.undoStack.push(entry);
+    for (const listener of this.historyReplayListeners) listener('redo', entry);
     return true;
   }
 

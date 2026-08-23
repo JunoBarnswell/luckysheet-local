@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { getCellNote } from '@react-sheets/core-model';
 import { SpreadsheetApplication } from './application';
-import { findCommentThreadAt } from './features/review';
+import { findCommentThreadAt, getCellHyperlink } from './features/review';
 
 function selectCell(app: SpreadsheetApplication, row: number, column: number): void {
   const sheetId = app.getActiveSheetId();
@@ -64,13 +64,11 @@ describe('SpreadsheetApplication review integration', () => {
     selectCell(app, 2, 2);
     app.setHyperlink('https://example.com/docs');
     const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
-    const cell = sheet.cells.get(2, 2);
-    assert.equal(cell?.hyperlinkDetail?.target.kind, 'url');
+    assert.equal(getCellHyperlink(sheet, 2, 2)?.target.kind, 'url');
     assert.equal(app.getUiSnapshot().selectedSheet.getCell(2, 2)?.hyperlink, 'https://example.com/docs');
 
     app.removeHyperlink();
-    assert.equal(sheet.cells.get(2, 2)?.hyperlink, undefined);
-    assert.equal(sheet.cells.get(2, 2)?.hyperlinkDetail, undefined);
+    assert.equal(getCellHyperlink(sheet, 2, 2), undefined);
   });
 
   it('addNote and removeNote route through note.set and note.remove', () => {

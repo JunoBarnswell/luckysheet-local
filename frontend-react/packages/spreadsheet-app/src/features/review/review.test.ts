@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel, getCellNote } from '@react-sheets/core-model';
-import { getCellHyperlink, registerReviewFeature, serializeHyperlink } from './commands';
+import { registerReviewFeature, serializeHyperlink } from './commands';
+import { getCellHyperlink } from './helpers';
 
 describe('review feature', () => {
   it('keeps notes separate from comment threads and supports hyperlinks', () => {
@@ -102,5 +103,23 @@ describe('review feature', () => {
     assert.throws(() => runtime.execute('comment.resolve', {
       sheetId: 'sheet-1', threadId: 'thread-1', resolved: true,
     }), /resolvedAt/);
+  });
+
+  it('keeps co-located threads independent by threadId', () => {
+    const workbook = new WorkbookModel('review-thread-id', 'Thread ids');
+    const runtime = new CommandRuntime(workbook);
+    registerReviewFeature(runtime);
+    const base = { sheetId: 'sheet-1', row: 2, column: 2, author: 'Alice', createdAt: '2026-01-01', replies: [] };
+    runtime.execute('comment.add', { ...base, thread: { ...base, id: 'thread-a', text: 'A' } });
+    runtime.execute('comment.add', { ...base, thread: { ...base, id: 'thread-b', text: 'B' } });
+    runtime.execute('comment.resolve', {
+      sheetId: 'sheet-1', threadId: 'thread-a', resolved: true, resolvedAt: '2026-01-02T00:00:00.000Z',
+    });
+    runtime.execute('comment.remove', { sheetId: 'sheet-1', threadId: 'thread-b' });
+
+    const threads = workbook.getSheet('sheet-1').commentThreads;
+    assert.equal(threads.length, 1);
+    assert.equal(threads[0]?.id, 'thread-a');
+    assert.equal(threads[0]?.resolvedAt, '2026-01-02T00:00:00.000Z');
   });
 });

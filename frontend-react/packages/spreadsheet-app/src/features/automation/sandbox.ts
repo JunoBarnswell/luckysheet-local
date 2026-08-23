@@ -4,6 +4,7 @@ import {
   type FacadeDslLimits,
   type FacadeProgram,
 } from './dsl';
+import type { FacadePlan } from './dsl';
 
 /**
  * Limits for the data-only Facade DSL.  The old implementation attempted to
@@ -13,11 +14,13 @@ import {
  */
 export interface SandboxPolicy extends FacadeDslLimits {
   maxDurationMs: number;
+  maxOperations: number;
 }
 
 export const DEFAULT_SANDBOX_POLICY: SandboxPolicy = {
   ...DEFAULT_FACADE_DSL_LIMITS,
   maxDurationMs: 5000,
+  maxOperations: 100_000,
 };
 
 export class ScriptSandbox {
@@ -44,4 +47,26 @@ export class ScriptSandbox {
   getTimeoutMs(): number {
     return this.policy.maxDurationMs;
   }
+
+  assertPlanAllowed(plan: FacadePlan): void {
+    if (plan.operations.length > this.policy.maxOperations) {
+      throw new Error(`Automation plan exceeds ${this.policy.maxOperations} operations`);
+    }
+    if (!isSerializable(plan)) {
+      throw new Error('Automation plan is not serializable');
+    }
+  }
+
+  getPolicy(): SandboxPolicy {
+    return structuredClone(this.policy);
+  }
+}
+
+function isSerializable(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.every((item) => isSerializable(item, seen));
+  return Object.entries(value as Record<string, unknown>).every(([key, entry]) => typeof key === 'string' && isSerializable(entry, seen));
 }

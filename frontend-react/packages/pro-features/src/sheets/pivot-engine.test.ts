@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel, type PivotModel, type PivotValueField } from '@react-sheets/core-model';
-import { computePivotResult, computePivotTable } from './pivot-engine';
+import { computePivotResult, computePivotTable, getPivotRevisionKey } from './pivot-engine';
 import { buildPivotWriteback } from './pivot-write';
 
 function workbook(): WorkbookModel {
@@ -119,5 +119,56 @@ describe('pivot domain engine', () => {
     const result = computePivotTable(workbook(), pivot);
     assert.deepEqual(result.headers, ['Region', 'SUM of Amount']);
     assert.equal(result.rows.length, 3);
+  });
+
+  it('invalidates the derived result when source, layout or filters change', () => {
+    const source = workbook();
+    const pivot = model([{ field: 'Amount', summarizeBy: 'sum' }]);
+    pivot.layout.rows = [{ field: 'Region' }];
+    const first = computePivotResult(source, pivot);
+    const firstKey = getPivotRevisionKey(source, pivot);
+    const second = computePivotResult(source, pivot);
+    assert.deepEqual(second, first);
+    assert.notEqual(second, first, 'callers receive a clone, never the mutable cache entry');
+
+    source.getSheet('sheet-1').cells.set(1, 3, { value: 10 });
+    const afterSource = computePivotResult(source, pivot);
+    assert.equal(afterSource.grandTotal?.values[0], 24);
+    assert.notEqual(getPivotRevisionKey(source, pivot).sourceRevision, firstKey.sourceRevision);
+
+    pivot.layout.values[0] = { field: 'Amount', summarizeBy: 'count' };
+    const afterLayout = computePivotResult(source, pivot);
+    assert.equal(afterLayout.grandTotal?.values[0], 5);
+    assert.notEqual(getPivotRevisionKey(source, pivot).layoutRevision, firstKey.layoutRevision);
+
+    pivot.layout.filters = [{ kind: 'manual', field: 'Region', selected: ['East'] }];
+    const afterFilter = computePivotResult(source, pivot);
+    assert.equal(afterFilter.grandTotal?.values[0], 2);
+    assert.notEqual(getPivotRevisionKey(source, pivot).filterRevision, firstKey.filterRevision);
+  });
+
+  it('reads a source range from another sheet and applies linked slicers there', () => {
+    const source = workbook();
+    const sourceSheet = source.addSheet('source-2', 'Source 2');
+    const sourceRows = [
+      ['Region', 'Amount'],
+      ['East', 7],
+      ['West', 11],
+    ];
+    sourceRows.forEach((row, rowIndex) => row.forEach((value, columnIndex) => sourceSheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = model([{ field: 'Amount', summarizeBy: 'sum' }]);
+    pivot.sheetId = 'sheet-1';
+    pivot.sourceRange = { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+    pivot.layout.rows = [{ field: 'Region' }];
+    const linked = model([{ field: 'Amount', summarizeBy: 'sum' }]);
+    linked.id = 'linked';
+    linked.sheetId = 'source-2';
+    linked.sourceRange = { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+    linked.slicers = [{ id: 'slicer-region', field: 'Region', selected: ['West'], connectedPivotIds: [pivot.id] }];
+    source.getSheet('sheet-1').pivots.push(pivot);
+    sourceSheet.pivots.push(linked);
+    const result = computePivotResult(source, pivot);
+    assert.equal(result.grandTotal?.values[0], 11);
+    assert.equal(result.rows[0]?.label, 'West');
   });
 });

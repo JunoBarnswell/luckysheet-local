@@ -1,9 +1,12 @@
 import type {
   CellData,
   CellStyle,
-  ChartModel,
+  ChartDrawingPayload,
   ConditionalFormatRule,
   DataValidationRule,
+  DrawingObject,
+  DrawingTransform,
+  ImageDrawingPayload,
   PivotFieldDefinition,
   PivotLayout,
   PivotModel,
@@ -12,8 +15,7 @@ import type {
   PivotTimeline,
   PivotAggregateFunction,
   RangeRef,
-  ShapeModel,
-  FloatingImage,
+  ShapeDrawingPayload,
   SheetTableModel,
   SparklineModel,
   SparklineGroup,
@@ -21,7 +23,6 @@ import type {
 } from '@react-sheets/core-model';
 import type { HistoryEntry, CommandResult } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
-import type { PrintLayout } from '@react-sheets/pro-features';
 import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from '@react-sheets/pro-features';
 import {
   collectFindReplacements,
@@ -69,15 +70,12 @@ import { columnLabel } from './address';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
 import { syncWorkbookSheetTables, syncWorkbookSpills } from './formula-spill-sync';
 import {
-  buildImageDrawingAdd,
-  buildShapeDrawingAdd,
+  buildDrawingAdd,
   findDrawingByPayloadId,
   resolveDrawingMoveTransform,
 } from './features/drawing';
 import {
   buildChartInsertParams,
-  buildChartMetadataPatch,
-  resolveChartInsertCommandId,
 } from './features/drawing';
 import {
   buildPivotModel,
@@ -88,6 +86,7 @@ import {
   buildCommentReply,
   buildCommentThread,
   findCommentThreadAt,
+  getCellHyperlink,
   parseUrlHyperlink,
 } from './features/review';
 import {
@@ -102,7 +101,6 @@ import {
 } from './features/history';
 import {
   buildPersistenceMeta,
-  buildLocalDraftRecord,
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import {
@@ -115,7 +113,7 @@ import {
   type PrintPageSnapshot,
   type PrintSnapshot,
 } from './features/print';
-import { browserPrintHook, PdfExportService } from './features/print';
+import { browserPrintHook, PdfExportService, type PrintLayout } from './features/print';
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
 import {
   buildQueryResultSnapshot,
@@ -374,7 +372,12 @@ export class SpreadsheetApplication {
 
   private syncPersistenceMeta(): void {
     const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
-    const meta = buildPersistenceMeta(this.runtime.model.snapshot(), this.runtime.remoteRevision, draft);
+    const meta = buildPersistenceMeta(
+      this.runtime.model.snapshot(),
+      this.runtime.remoteRevision,
+      draft,
+      this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
+    );
     this.hasLocalDraft = meta.hasLocalDraft;
     this.persistenceChecksum = meta.checksum;
   }
@@ -685,8 +688,9 @@ export class SpreadsheetApplication {
 
   restoreFromSnapshot(snapshot: import('@react-sheets/core-model').WorkbookSnapshotV1, targetRevision: number, reason?: string): void {
     try {
-      this.runCommand('history.restore', buildRestoreParams(snapshot, targetRevision, reason));
-      this.notify(`Restored workbook to revision ${targetRevision}`);
+      void snapshot;
+      this.runCommand('history.restore', { targetRevision, reason });
+      this.notify(`Restore request submitted for revision ${targetRevision}`);
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Permission denied');
     }
@@ -734,7 +738,12 @@ export class SpreadsheetApplication {
 
   getPersistenceSnapshot(): PersistenceSnapshotMeta {
     const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
-    return buildPersistenceMeta(this.runtime.model.snapshot(), this.runtime.remoteRevision, draft);
+    return buildPersistenceMeta(
+      this.runtime.model.snapshot(),
+      this.runtime.remoteRevision,
+      draft,
+      this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
+    );
   }
 
   async saveWorkbook(reason = 'Manual save'): Promise<void> {
@@ -784,6 +793,7 @@ export class SpreadsheetApplication {
 
   clearLocalDraft(): void {
     this.runtime.draftStore.clear(this.runtime.model.unitId);
+    this.runtime.collaboration?.clearPending();
     this.runCommand('persistence.draft.clear');
     this.syncPersistenceMeta();
     this.notify('Local draft cleared');
@@ -1101,46 +1111,44 @@ export class SpreadsheetApplication {
 
   // ---- Pro / data features ----
 
-  addChart(chart: ChartModel): void {
-    const drawingId = nextId('draw');
-    const insertCommand = resolveChartInsertCommandId(chart.type);
-    if (insertCommand === 'chart.insert') {
-      this.runCommand('chart.insert', buildChartInsertParams(chart, drawingId));
-    } else {
-      this.runCommand(insertCommand, {
-        sheetId: chart.sheetId,
-        chartId: chart.id,
-        drawingId,
-        bounds: chart.bounds,
-        sourceRanges: chart.sourceRanges,
-        title: chart.title,
-      });
+  addChart(drawing: DrawingObject, payload: ChartDrawingPayload): void {
+    if (drawing.kind !== 'chart' || payload.kind !== 'chart' || drawing.payloadId !== payload.chartId) {
+      throw new Error(`Chart drawing and payload identity mismatch: ${drawing.id}`);
     }
-    const metadataPatch = buildChartMetadataPatch(chart);
-    if (metadataPatch) {
-      this.runCommand('chart.update', { sheetId: chart.sheetId, chartId: chart.id, payload: metadataPatch });
-    }
-    this.runCommand('drawing.select', { sheetId: chart.sheetId, drawingIds: [drawingId] });
-    this.selectedFloatingId = chart.id;
-    this.notify(chart.title ? `Added chart "${chart.title}"` : `Added ${chart.type} chart`);
+    this.runCommand('chart.insert', buildChartInsertParams(drawing, payload));
+    this.runCommand('drawing.select', { sheetId: drawing.sheetId, drawingIds: [drawing.id] });
+    this.selectedFloatingId = drawing.payloadId;
+    this.notify(payload.title ? `Added chart "${payload.title}"` : `Added ${payload.chartType} chart`);
     this.refresh();
   }
-  insertQuickChart(type: ChartModel['type'] = 'column'): void {
+  insertQuickChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
     const range = normalizeRangeRef(this.getPrimaryRange());
-    this.addChart({
-      id: nextId('chart'),
+    const payloadId = nextId('chart');
+    const drawing: DrawingObject = {
+      id: nextId('draw'),
       sheetId: this.activeSheetId,
-      type,
+      kind: 'chart',
+      anchor: { kind: 'absolute' },
+      transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 },
+      zIndex: 0,
+      payloadId,
+    };
+    const payload: ChartDrawingPayload = {
+      kind: 'chart',
+      chartId: payloadId,
+      chartType: type,
       title: 'Chart',
       sourceRanges: [{ ...range, sheetId: this.activeSheetId }],
-      bounds: { x: 96, y: 96, width: 480, height: 280 },
-    });
+      legendPosition: 'bottom',
+      showDataLabels: false,
+    };
+    this.addChart(drawing, payload);
   }
-  updateChartType(chartId: string, chartType: ChartModel['type']): void {
+  updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType']): void {
     this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType });
     this.refresh();
   }
-  updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartModel['series'], categoryRange?: RangeRef): void {
+  updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartDrawingPayload['series'], categoryRange?: RangeRef): void {
     this.runCommand('chart.setSeries', {
       sheetId: this.activeSheetId,
       chartId,
@@ -1150,7 +1158,7 @@ export class SpreadsheetApplication {
     });
     this.refresh();
   }
-  setChartLegend(chartId: string, legendPosition: NonNullable<ChartModel['legendPosition']>): void {
+  setChartLegend(chartId: string, legendPosition: NonNullable<ChartDrawingPayload['legendPosition']>): void {
     this.runCommand('chart.setLegend', { sheetId: this.activeSheetId, chartId, legendPosition });
     this.refresh();
   }
@@ -1158,7 +1166,7 @@ export class SpreadsheetApplication {
     this.runCommand('chart.setDataLabels', { sheetId: this.activeSheetId, chartId, showDataLabels });
     this.refresh();
   }
-  updateChartBounds(id: string, bounds: ChartModel['bounds']): void {
+  updateChartBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
     if (move) {
@@ -1271,18 +1279,29 @@ export class SpreadsheetApplication {
       delete this.runtime.pivotResults[pivotId];
     }
   }
-  addShape(shape: ShapeModel): void {
-    const drawingId = nextId('draw');
-    this.runCommand('drawing.add.shape', buildShapeDrawingAdd(this.activeSheetId, shape, drawingId));
-    this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawingId] });
-    this.selectedFloatingId = shape.id;
-    this.notify(`Added ${shape.type} shape`);
+  addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
+    if (drawing.kind !== 'shape' || payload.kind !== 'shape') {
+      throw new Error(`Shape drawing and payload kind mismatch: ${drawing.id}`);
+    }
+    this.runCommand('drawing.add.shape', buildDrawingAdd(drawing, payload));
+    this.runCommand('drawing.select', { sheetId: drawing.sheetId, drawingIds: [drawing.id] });
+    this.selectedFloatingId = drawing.payloadId;
+    this.notify(`Added ${payload.type} shape`);
     this.refresh();
   }
-  insertQuickShape(type: ShapeModel['type'] = 'rounded-rectangle'): void {
-    const shape: ShapeModel = {
-      id: nextId('shape'),
+  insertQuickShape(type: ShapeDrawingPayload['type'] = 'rounded-rectangle'): void {
+    const payloadId = nextId('shape');
+    const drawing: DrawingObject = {
+      id: nextId('draw'),
       sheetId: this.activeSheetId,
+      kind: 'shape',
+      anchor: { kind: 'absolute' },
+      transform: { x: 96, y: 96, width: 160, height: 60, rotation: 0 },
+      zIndex: 0,
+      payloadId,
+    };
+    const payload: ShapeDrawingPayload = {
+      kind: 'shape',
       type,
       text: type === 'callout' ? 'Note' : '',
       fill: '#dbeafe',
@@ -1290,11 +1309,10 @@ export class SpreadsheetApplication {
       strokeWidth: 2,
       textColor: '#1e3a8a',
       fontSize: 13,
-      bounds: { x: 96, y: 96, width: 160, height: 60 },
     };
-    this.addShape(shape);
+    this.addShape(drawing, payload);
   }
-  updateShapeBounds(id: string, bounds: ShapeModel['bounds']): void {
+  updateShapeBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
     if (move) {
@@ -1302,8 +1320,7 @@ export class SpreadsheetApplication {
       this.refresh();
       return;
     }
-    this.runCommand('shape.move', { id, sheetId: this.activeSheetId, bounds });
-    this.refresh();
+    this.notify('Shape is not registered as a drawing object');
   }
   removeShape(id: string): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -1318,15 +1335,17 @@ export class SpreadsheetApplication {
     if (this.selectedFloatingId === id) this.selectedFloatingId = null;
     this.refresh();
   }
-  addImage(image: FloatingImage): void {
-    const drawingId = nextId('draw');
-    this.runCommand('drawing.add.image', buildImageDrawingAdd(this.activeSheetId, image, drawingId));
-    this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawingId] });
-    this.selectedFloatingId = image.id;
+  addImage(drawing: DrawingObject, payload: ImageDrawingPayload): void {
+    if (drawing.kind !== 'image' || payload.kind !== 'image') {
+      throw new Error(`Image drawing and payload kind mismatch: ${drawing.id}`);
+    }
+    this.runCommand('drawing.add.image', buildDrawingAdd(drawing, payload));
+    this.runCommand('drawing.select', { sheetId: drawing.sheetId, drawingIds: [drawing.id] });
+    this.selectedFloatingId = drawing.payloadId;
     this.notify('Image placed on canvas');
     this.refresh();
   }
-  updateImageBounds(id: string, bounds: FloatingImage['bounds']): void {
+  updateImageBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const move = resolveDrawingMoveTransform(sheet, id, bounds);
     if (move) {
@@ -1852,11 +1871,24 @@ export class SpreadsheetApplication {
   private async executePdfExport(snapshot: PrintSnapshot): Promise<void> {
     const service = new PdfExportService(browserPrintHook);
     try {
-      await service.export(snapshot.model, snapshot.pages, {
+      const output = await service.export(snapshot.model, snapshot.pages, {
         filename: `${this.runtime.model.name || 'workbook'}.pdf`,
         title: this.runtime.model.name,
       });
-      this.notify('Choose Save as PDF in the print dialog');
+      if (typeof document !== 'undefined' && typeof URL !== 'undefined') {
+        const blob = output instanceof Blob
+          ? output
+          : new Blob([
+              output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer,
+            ], { type: 'application/pdf' });
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = `${this.runtime.model.name || 'workbook'}.pdf`;
+        link.click();
+        URL.revokeObjectURL(href);
+      }
+      this.notify('PDF exported');
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'PDF export failed');
     }
@@ -1989,9 +2021,9 @@ export class SpreadsheetApplication {
       this.notify('You do not have permission to stop recording');
       return this.recordedScript;
     }
-    this.runCommand('automation.record.stop', {});
     this.recorderDetach?.();
     this.recorderDetach = null;
+    this.runCommand('automation.record.stop', {});
     const statements = this.commandRecorder.stop();
     this.automationRecording = false;
     this.recordedScript = this.commandRecorder.toScript();
@@ -2484,8 +2516,8 @@ export class SpreadsheetApplication {
   }
   removeHyperlink(): void {
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    if (!cell?.hyperlink && !cell?.hyperlinkDetail) return;
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (!getCellHyperlink(sheet, sel.primaryRowIndex, sel.primaryColumnIndex)) return;
     this.runCommand('hyperlink.remove', {
       sheetId: this.activeSheetId,
       row: sel.primaryRowIndex,

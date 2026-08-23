@@ -1,9 +1,7 @@
 import type {
-  ChartModel,
   DrawingObject,
+  DrawingPayload,
   DrawingTransform,
-  FloatingImage,
-  ShapeModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import type { DrawingAddParams } from './commands';
@@ -19,60 +17,35 @@ export function boundsToTransform(
   return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height, rotation };
 }
 
-export function buildShapeDrawingAdd(sheetId: string, shape: ShapeModel, drawingId: string): DrawingAddParams {
+/** Build the sole drawing aggregate insertion payload.
+ *
+ * Callers are required to provide the canonical persisted pair. The helper
+ * validates their identity and makes a defensive copy; it does not translate
+ * legacy per-kind models into drawing data.
+ */
+export function buildDrawingAdd(drawing: DrawingObject, payload: DrawingPayload): DrawingAddParams {
+  if (drawing.sheetId.length === 0) throw new Error(`Drawing sheet is required: ${drawing.id}`);
+  if (drawing.payloadId.length === 0) throw new Error(`Drawing payload is required: ${drawing.id}`);
+  if (drawing.kind !== payload.kind) throw new Error(`Drawing payload kind mismatch: ${drawing.id}`);
+  if (payload.kind === 'chart' && payload.chartId !== drawing.payloadId) {
+    throw new Error(`Drawing payload identity mismatch: ${drawing.payloadId}`);
+  }
   return {
-    sheetId,
-    drawing: {
-      id: drawingId,
-      sheetId,
-      kind: 'shape',
-      anchor: { kind: 'absolute' },
-      transform: boundsToTransform(shape.bounds, shape.rotation ?? 0),
-      zIndex: 0,
-      payloadId: shape.id,
-    },
-    payload: {
-      kind: 'shape',
-      type: shape.type,
-      fill: shape.fill,
-      stroke: shape.stroke,
-      strokeWidth: shape.strokeWidth,
-      text: shape.text,
-      textColor: shape.textColor,
-      fontSize: shape.fontSize,
-    },
-  };
-}
-
-export function buildImageDrawingAdd(sheetId: string, image: FloatingImage, drawingId: string): DrawingAddParams {
-  return {
-    sheetId,
-    drawing: {
-      id: drawingId,
-      sheetId,
-      kind: 'image',
-      anchor: { kind: 'absolute' },
-      transform: boundsToTransform(image.bounds),
-      zIndex: 0,
-      payloadId: image.id,
-    },
-    payload: {
-      kind: 'image',
-      src: image.src,
-      name: image.name,
-    },
+    sheetId: drawing.sheetId,
+    drawing: structuredClone(drawing),
+    payload: structuredClone(payload),
   };
 }
 
 export function resolveDrawingMoveTransform(
   sheet: WorksheetModel,
   payloadId: string,
-  bounds: ChartModel['bounds'],
+  bounds: Pick<DrawingTransform, 'x' | 'y' | 'width' | 'height'> & { rotation?: number },
 ): { drawingId: string; transform: DrawingTransform } | undefined {
   const drawing = findDrawingByPayloadId(sheet, payloadId);
   if (!drawing) return undefined;
   return {
     drawingId: drawing.id,
-    transform: boundsToTransform(bounds, drawing.transform.rotation),
+    transform: boundsToTransform(bounds, bounds.rotation ?? drawing.transform.rotation ?? 0),
   };
 }

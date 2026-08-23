@@ -19,7 +19,7 @@ describe('M18 deterministic what-if commands', () => {
     registerSheetCommands(runtime);
     registerExtendedCommands(runtime.registry);
     const sheetId = workbook.activeSheetId;
-    runtime.execute('extended.whatIf.scenario', {
+    const command = runtime.execute('extended.whatIf.scenario', {
       sheetId,
       scenario: {
         id: 'growth',
@@ -27,6 +27,9 @@ describe('M18 deterministic what-if commands', () => {
         changingCells: [{ row: 0, column: 1, value: 25 }],
       },
     });
+    assert.equal((command as { plan?: { metadata?: { schema?: string; planHash?: string; sourceRevision?: string; deterministic?: boolean } } }).plan?.metadata?.schema, 'WhatIfPlanV1');
+    assert.equal((command as { plan?: { metadata?: { deterministic?: boolean } } }).plan?.metadata?.deterministic, true);
+    assert.ok((command as { plan?: { metadata?: { planHash?: string } } }).plan?.metadata?.planHash);
     assert.equal(runtime.getHistoryDepth().undo, 1);
     assert.equal(workbook.getSheet(sheetId).cells.get(0, 1)?.value, 25);
     assert.equal(runtime.undo(), true);

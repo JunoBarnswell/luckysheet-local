@@ -1,6 +1,4 @@
-export * from './chart-renderer';
 export * from './sparkline-renderer';
-export * from './shape-renderer';
 export * from './pivot-engine';
 export * from './pivot-write';
 export * from './pivot-panel-state';

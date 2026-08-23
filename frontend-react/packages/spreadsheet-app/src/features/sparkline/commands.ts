@@ -1,4 +1,4 @@
-import type { CommandRuntime } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import type { RangeRef, SparklineGroup, SparklineModel } from '@react-sheets/core-model';
 import { applyTrackedMutation, registerMutationHandler, removeById, sheetRange } from '../../command-helpers';
 
@@ -24,6 +24,163 @@ export interface SparklineGroupUpdateParams {
   patch: Partial<SparklineGroup>;
 }
 
+export interface SparklineGroupReplaceParams {
+  sheetId: string;
+  group: SparklineGroup;
+}
+
+interface SparklineMemberState {
+  sparklineId: string;
+  type: SparklineModel['type'];
+  groupId?: string;
+  showAxis?: boolean;
+  showMarkers?: boolean;
+}
+
+interface SparklineGroupState {
+  group: SparklineGroup;
+  index: number;
+}
+
+/** Complete state for the groups/members touched by one atomic transaction. */
+interface SparklineGroupStateParams {
+  sheetId: string;
+  groupIds: string[];
+  groups: SparklineGroupState[];
+  members: SparklineMemberState[];
+}
+
+function validateGroupMembers(sheet: ReturnType<CommandContext['workbook']['getSheet']>, group: SparklineGroup): void {
+  const ids = new Set<string>();
+  for (const sparklineId of group.sparklineIds) {
+    if (ids.has(sparklineId)) throw new Error(`Sparkline group contains duplicate member: ${sparklineId}`);
+    ids.add(sparklineId);
+    if (!sheet.sparklines.some((entry) => entry.id === sparklineId)) throw new Error(`Unknown sparkline member: ${sparklineId}`);
+  }
+}
+
+function captureGroupState(
+  sheet: ReturnType<CommandContext['workbook']['getSheet']>,
+  groupIds: Iterable<string>,
+  additionalMemberIds: Iterable<string> = [],
+): SparklineGroupStateParams {
+  const ids = [...new Set(groupIds)];
+  const groups = sheet.sparklineGroups
+    .map((group, index) => ({ group: structuredClone(group), index }))
+    .filter((entry) => ids.includes(entry.group.id));
+  const memberIds = new Set<string>([...groups.flatMap((entry) => entry.group.sparklineIds), ...additionalMemberIds]);
+  const members = sheet.sparklines
+    .filter((sparkline) => memberIds.has(sparkline.id))
+    .map((sparkline) => ({
+      sparklineId: sparkline.id,
+      type: sparkline.type,
+      groupId: sparkline.groupId,
+      showAxis: sparkline.showAxis,
+      showMarkers: sparkline.showMarkers,
+    }));
+  return { sheetId: sheet.id, groupIds: ids, groups, members };
+}
+
+function memberStateFromSparkline(sparkline: SparklineModel): SparklineMemberState {
+  return {
+    sparklineId: sparkline.id,
+    type: sparkline.type,
+    groupId: sparkline.groupId,
+    showAxis: sparkline.showAxis,
+    showMarkers: sparkline.showMarkers,
+  };
+}
+
+function applyGroupState(params: SparklineGroupStateParams, context: CommandContext): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const affected = new Set(params.groupIds);
+  // Remove only the groups participating in this transition.  Their exact
+  // positions are restored from the state payload below, keeping redo and
+  // remote replay deterministic.
+  for (let index = sheet.sparklineGroups.length - 1; index >= 0; index -= 1) {
+    if (affected.has(sheet.sparklineGroups[index]!.id)) sheet.sparklineGroups.splice(index, 1);
+  }
+  const orderedGroups = [...params.groups].sort((left, right) => left.index - right.index);
+  for (const entry of orderedGroups) {
+    const index = Math.max(0, Math.min(entry.index, sheet.sparklineGroups.length));
+    sheet.sparklineGroups.splice(index, 0, structuredClone(entry.group));
+  }
+  for (const state of params.members) {
+    const sparkline = sheet.sparklines.find((entry) => entry.id === state.sparklineId);
+    if (!sparkline) continue;
+    sparkline.type = state.type;
+    if (state.groupId === undefined) delete sparkline.groupId;
+    else sparkline.groupId = state.groupId;
+    if (state.showAxis === undefined) delete sparkline.showAxis;
+    else sparkline.showAxis = state.showAxis;
+    if (state.showMarkers === undefined) delete sparkline.showMarkers;
+    else sparkline.showMarkers = state.showMarkers;
+  }
+}
+
+function transitionForGroup(
+  sheet: ReturnType<CommandContext['workbook']['getSheet']>,
+  nextGroup: SparklineGroup,
+): { before: SparklineGroupStateParams; after: SparklineGroupStateParams } {
+  validateGroupMembers(sheet, nextGroup);
+  const current = sheet.sparklineGroups.find((entry) => entry.id === nextGroup.id);
+  const selectedIds = new Set(nextGroup.sparklineIds);
+  const oldGroups = sheet.sparklineGroups.filter((group) => group.id === nextGroup.id || group.sparklineIds.some((id) => selectedIds.has(id)));
+  const groupIds = [...new Set([nextGroup.id, ...oldGroups.map((group) => group.id)])];
+  const before = captureGroupState(sheet, groupIds, selectedIds);
+  const afterGroups = sheet.sparklineGroups
+    .filter((group) => !groupIds.includes(group.id))
+    .concat(oldGroups
+      .filter((group) => group.id !== nextGroup.id)
+      .map((group) => ({ ...structuredClone(group), sparklineIds: group.sparklineIds.filter((id) => !selectedIds.has(id)) })))
+    .concat(structuredClone(nextGroup));
+  const oldMemberState = new Map(before.members.map((state) => [state.sparklineId, state]));
+  const memberIds = new Set([...before.members.map((state) => state.sparklineId), ...nextGroup.sparklineIds]);
+  const afterMembers = [...memberIds].map((sparklineId) => {
+    const previous = oldMemberState.get(sparklineId);
+    const sparkline = sheet.sparklines.find((entry) => entry.id === sparklineId);
+    if (!sparkline) throw new Error(`Unknown sparkline member: ${sparklineId}`);
+    if (selectedIds.has(sparklineId)) return { sparklineId, type: nextGroup.type, groupId: nextGroup.id, showAxis: nextGroup.showAxis, showMarkers: nextGroup.showMarkers };
+    const retained = oldGroups.find((group) => group.id !== nextGroup.id && group.sparklineIds.includes(sparklineId));
+    if (retained) return previous ? { ...previous } : memberStateFromSparkline(sparkline);
+    return { sparklineId, type: previous?.type ?? sparkline.type };
+  });
+  const groupStateById = new Map(afterGroups.map((group) => [group.id, group]));
+  const after: SparklineGroupStateParams = {
+    sheetId: sheet.id,
+    groupIds,
+    groups: [...groupStateById.values()].map((group) => ({
+      group,
+      index: sheet.sparklineGroups.findIndex((entry) => entry.id === group.id) >= 0
+        ? sheet.sparklineGroups.findIndex((entry) => entry.id === group.id)
+        : sheet.sparklineGroups.length,
+    })),
+    members: afterMembers,
+  };
+  // Replacement should retain the target group's original position; newly
+  // created groups are appended after existing groups.
+  const targetIndex = current ? sheet.sparklineGroups.findIndex((entry) => entry.id === current.id) : sheet.sparklineGroups.length;
+  const targetState = after.groups.find((entry) => entry.group.id === nextGroup.id);
+  if (targetState) targetState.index = targetIndex;
+  return { before, after };
+}
+
+function transitionForGroupRemoval(
+  sheet: ReturnType<CommandContext['workbook']['getSheet']>,
+  groupId: string,
+): { before: SparklineGroupStateParams; after: SparklineGroupStateParams } {
+  const group = sheet.sparklineGroups.find((entry) => entry.id === groupId);
+  if (!group) throw new Error(`Unknown sparkline group: ${groupId}`);
+  const before = captureGroupState(sheet, [groupId]);
+  const after: SparklineGroupStateParams = {
+    sheetId: sheet.id,
+    groupIds: [groupId],
+    groups: [],
+    members: before.members.map((state) => ({ sparklineId: state.sparklineId, type: state.type })),
+  };
+  return { before, after };
+}
+
 export interface SparklineInsertDialogParams {
   sheetId: string;
   sparklineId: string;
@@ -46,38 +203,14 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     const sparkline = context.workbook.getSheet(params.sheetId).sparklines.find((entry) => entry.id === params.sparklineId);
     if (sparkline) Object.assign(sparkline, structuredClone(params.patch));
   });
-  registerMutationHandler<SparklineGroupCreateParams>(runtime, 'sparkline.group.create', (params, context) => {
-    const sheet = context.workbook.getSheet(params.sheetId);
-    sheet.sparklineGroups.push(structuredClone(params.group));
-    for (const sparklineId of params.group.sparklineIds) {
-      const sparkline = sheet.sparklines.find((entry) => entry.id === sparklineId);
-      if (sparkline) {
-        sparkline.groupId = params.group.id;
-        sparkline.showAxis = params.group.showAxis;
-        sparkline.showMarkers = params.group.showMarkers;
-      }
-    }
+  runtime.registry.registerMutation<SparklineGroupStateParams>('sparkline.group.add', (item, context) => {
+    applyGroupState(item.params, context);
   });
-  registerMutationHandler<{ sheetId: string; groupId: string }>(runtime, 'sparkline.group.remove', (params, context) => {
-    const sheet = context.workbook.getSheet(params.sheetId);
-    removeById(sheet.sparklineGroups, params.groupId);
-    for (const sparkline of sheet.sparklines) {
-      if (sparkline.groupId !== params.groupId) continue;
-      delete sparkline.groupId;
-      delete sparkline.showAxis;
-      delete sparkline.showMarkers;
-    }
+  runtime.registry.registerMutation<SparklineGroupStateParams>('sparkline.group.remove', (item, context) => {
+    applyGroupState(item.params, context);
   });
-  registerMutationHandler<SparklineGroupUpdateParams>(runtime, 'sparkline.group.update', (params, context) => {
-    const sheet = context.workbook.getSheet(params.sheetId);
-    const group = sheet.sparklineGroups.find((entry) => entry.id === params.groupId);
-    if (!group) return;
-    Object.assign(group, structuredClone(params.patch));
-    for (const sparkline of sheet.sparklines) {
-      if (sparkline.groupId !== params.groupId) continue;
-      if (params.patch.showAxis != null) sparkline.showAxis = params.patch.showAxis;
-      if (params.patch.showMarkers != null) sparkline.showMarkers = params.patch.showMarkers;
-    }
+  runtime.registry.registerMutation<SparklineGroupStateParams>('sparkline.group.replace', (item, context) => {
+    applyGroupState(item.params, context);
   });
 
   runtime.registry.registerCommand<SparklineInsertParams>({
@@ -155,19 +288,22 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<SparklineGroupCreateParams>({
     id: 'sparkline.group.create',
     execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (sheet.sparklineGroups.some((group) => group.id === params.group.id)) throw new Error(`Sparkline group already exists: ${params.group.id}`);
+      const { before, after } = transitionForGroup(sheet, structuredClone(params.group));
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation<SparklineGroupCreateParams, { sheetId: string; groupId: string }>(context, {
-        id: 'sparkline.group.create',
+      applyTrackedMutation<SparklineGroupStateParams>(context, {
+        id: 'sparkline.group.add',
         sheetId: params.sheetId,
-        params,
+        params: after,
         inverseId: 'sparkline.group.remove',
-        inverseParams: { sheetId: params.sheetId, groupId: params.group.id },
+        inverseParams: before,
         affectedRanges,
-        apply: () => runtime.registry.getMutation<SparklineGroupCreateParams>('sparkline.group.create')({
-          id: 'sparkline.group.create',
+        apply: () => runtime.registry.getMutation<SparklineGroupStateParams>('sparkline.group.add')({
+          id: 'sparkline.group.add',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params,
+          params: after,
           affectedRanges,
         }, context),
       });
@@ -179,29 +315,90 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<SparklineGroupUpdateParams>({
     id: 'sparkline.group.update',
     execute: (params, context) => {
-      const group = context.workbook.getSheet(params.sheetId).sparklineGroups.find((entry) => entry.id === params.groupId);
-      const previous = group ? structuredClone(group) : undefined;
-      const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation<SparklineGroupUpdateParams>(context, {
-        id: 'sparkline.group.update',
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const group = sheet.sparklineGroups.find((entry) => entry.id === params.groupId);
+      if (!group) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      const nextGroup: SparklineGroup = {
+        ...structuredClone(group),
+        ...structuredClone(params.patch),
         sheetId: params.sheetId,
-        params,
-        inverseParams: previous
-          ? { sheetId: params.sheetId, groupId: params.groupId, patch: previous }
-          : params,
+        sparklineIds: params.patch.sparklineIds ? [...params.patch.sparklineIds] : [...group.sparklineIds],
+      };
+      const { before, after } = transitionForGroup(sheet, nextGroup);
+      const affectedRanges = sheetRange(params.sheetId);
+      applyTrackedMutation<SparklineGroupStateParams>(context, {
+        id: 'sparkline.group.replace',
+        sheetId: params.sheetId,
+        params: after,
+        inverseId: 'sparkline.group.replace',
+        inverseParams: before,
         affectedRanges,
-        apply: () => runtime.registry.getMutation<SparklineGroupUpdateParams>('sparkline.group.update')({
-          id: 'sparkline.group.update',
+        apply: () => runtime.registry.getMutation<SparklineGroupStateParams>('sparkline.group.replace')({
+          id: 'sparkline.group.replace',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params,
+          params: after,
           affectedRanges,
         }, context),
       });
-      return { operationId: context.operationId, mutationCount: group ? 1 : 0, affectedRanges };
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
   commandIds.push('sparkline.group.update');
+
+  runtime.registry.registerCommand<SparklineGroupReplaceParams>({
+    id: 'sparkline.group.replace',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const current = sheet.sparklineGroups.find((group) => group.id === params.group.id);
+      if (!current) throw new Error(`Unknown sparkline group: ${params.group.id}`);
+      const { before, after } = transitionForGroup(sheet, structuredClone(params.group));
+      const affectedRanges = sheetRange(params.sheetId);
+      applyTrackedMutation<SparklineGroupStateParams>(context, {
+        id: 'sparkline.group.replace',
+        sheetId: params.sheetId,
+        params: after,
+        inverseId: 'sparkline.group.replace',
+        inverseParams: before,
+        affectedRanges,
+        apply: () => runtime.registry.getMutation<SparklineGroupStateParams>('sparkline.group.replace')({
+          id: 'sparkline.group.replace',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: after,
+          affectedRanges,
+        }, context),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('sparkline.group.replace');
+
+  runtime.registry.registerCommand<{ sheetId: string; groupId: string }>({
+    id: 'sparkline.group.remove',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const { before, after } = transitionForGroupRemoval(sheet, params.groupId);
+      const affectedRanges = sheetRange(params.sheetId);
+      applyTrackedMutation<SparklineGroupStateParams>(context, {
+        id: 'sparkline.group.remove',
+        sheetId: params.sheetId,
+        params: after,
+        inverseId: 'sparkline.group.add',
+        inverseParams: before,
+        affectedRanges,
+        apply: () => runtime.registry.getMutation<SparklineGroupStateParams>('sparkline.group.remove')({
+          id: 'sparkline.group.remove',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: after,
+          affectedRanges,
+        }, context),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('sparkline.group.remove');
 
   runtime.registry.registerCommand<{ sheetId: string; sparklineId: string }>({
     id: 'sparkline.remove',
@@ -238,7 +435,7 @@ export const SPARKLINE_MUTATION_IDS = [
   'sparkline.add',
   'sparkline.remove',
   'sparkline.update',
-  'sparkline.group.create',
+  'sparkline.group.add',
   'sparkline.group.remove',
-  'sparkline.group.update',
+  'sparkline.group.replace',
 ] as const;

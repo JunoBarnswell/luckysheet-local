@@ -35,7 +35,7 @@ describe('M6-M8 sheet feature commands', () => {
 
     const sheet = workbook.getSheet('sheet-1');
     assert.equal(sheet.drawings[0]?.kind, 'chart');
-    assert.equal(sheet.charts.length, 0);
+    assert.equal(sheet.drawings.length, 1);
     assert.equal(sheet.drawingPayloads.get('chart-1')?.kind, 'chart');
     assert.ok(CHART_COMMAND_IDS.every((commandId) => runtime.registry.hasCommand(commandId)));
   });
@@ -150,5 +150,58 @@ describe('M6-M8 sheet feature commands', () => {
     assert.equal(sparkline.groupId, 'group-1');
     assert.equal(sparkline.showAxis, true);
     assert.equal(sparkline.showMarkers, false);
+  });
+
+  it('group add/remove/replace preserves member state through undo and redo', () => {
+    const workbook = new WorkbookModel('sparkline-group-state-test', 'Sparkline Group State');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetFeatures(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.sparklines.push(
+      { id: 'spark-1', sheetId: 'sheet-1', anchor: { row: 0, column: 4 }, sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }, type: 'column', color: '#123456', showAxis: false },
+      { id: 'spark-2', sheetId: 'sheet-1', anchor: { row: 1, column: 4 }, sourceRange: { sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 0, endColumn: 2 }, type: 'line', color: '#abcdef', groupId: 'old-group', showAxis: true, showMarkers: true },
+    );
+    sheet.sparklineGroups.push({ id: 'old-group', sheetId: 'sheet-1', type: 'line', sparklineIds: ['spark-2'], showAxis: true, showMarkers: true });
+
+    runtime.execute('sparkline.group.create', {
+      sheetId: 'sheet-1',
+      group: { id: 'new-group', sheetId: 'sheet-1', type: 'win-loss', sparklineIds: ['spark-1', 'spark-2'], showAxis: true, showMarkers: false },
+    });
+    assert.deepEqual(sheet.sparklineGroups.map((group) => group.id), ['old-group', 'new-group']);
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-1')?.groupId, 'new-group');
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-1')?.type, 'win-loss');
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-2')?.showMarkers, false);
+
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(sheet.sparklineGroups.map((group) => group.id), ['old-group']);
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-1')?.groupId, undefined);
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-2')?.groupId, 'old-group');
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-2')?.type, 'line');
+    assert.equal(runtime.redo(), true);
+    assert.deepEqual(sheet.sparklineGroups.map((group) => group.id), ['old-group', 'new-group']);
+
+    runtime.execute('sparkline.group.remove', { sheetId: 'sheet-1', groupId: 'new-group' });
+    assert.equal(sheet.sparklineGroups.some((group) => group.id === 'new-group'), false);
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-1')?.groupId, undefined);
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.sparklineGroups.some((group) => group.id === 'new-group'), true);
+    assert.equal(sheet.sparklines.find((entry) => entry.id === 'spark-1')?.groupId, 'new-group');
+  });
+
+  it('keeps a cross-sheet sparkline source range intact', () => {
+    const workbook = new WorkbookModel('sparkline-cross-sheet-test', 'Sparkline Cross Sheet');
+    const source = workbook.addSheet('source-2', 'Source 2');
+    source.cells.set(0, 0, { value: 2 });
+    source.cells.set(0, 1, { value: 4 });
+    const runtime = new CommandRuntime(workbook);
+    registerSheetFeatures(runtime);
+    runtime.execute('sparkline.insertDataLocation', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-cross',
+      dataRange: { sheetId: 'source-2', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      location: { row: 2, column: 2 },
+      type: 'line',
+    });
+    assert.equal(workbook.getSheet('sheet-1').sparklines[0]?.sourceRange.sheetId, 'source-2');
   });
 });

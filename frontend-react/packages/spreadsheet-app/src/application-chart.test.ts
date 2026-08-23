@@ -7,12 +7,19 @@ describe('SpreadsheetApplication chart integration', () => {
     const app = new SpreadsheetApplication();
     const sheetId = app.getActiveSheetId();
     app.addChart({
-      id: 'chart-test-1',
+      id: 'draw-chart-test-1',
       sheetId,
-      type: 'column',
+      kind: 'chart',
+      payloadId: 'chart-test-1',
+      anchor: { kind: 'absolute' },
+      transform: { x: 60, y: 60, width: 320, height: 220, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'chart',
+      chartId: 'chart-test-1',
+      chartType: 'column',
       title: 'Revenue',
       sourceRanges: [{ sheetId, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }],
-      bounds: { x: 60, y: 60, width: 320, height: 220 },
       legendPosition: 'right',
       showDataLabels: true,
     });

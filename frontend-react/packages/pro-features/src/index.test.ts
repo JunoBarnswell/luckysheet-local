@@ -79,6 +79,10 @@ test('xlsx export produces valid OpenXML structure and imports back', () => {
   assert.equal(imported.sheets.length, 1);
   assert.equal(imported.sheets[0]?.name, 'Sheet1');
   assert.equal(imported.sheets[0]?.cells['1']?.['1']?.value, 150);
+  assert.deepEqual(imported.sheets[0]?.drawings, []);
+  assert.deepEqual(imported.sheets[0]?.drawingPayloads, {});
+  assert.equal('charts' in (imported.sheets[0] ?? {}), false);
+  assert.equal('shapes' in (imported.sheets[0] ?? {}), false);
 });
 
 test('pivot engine aggregates source data by dimensions and value fields', () => {

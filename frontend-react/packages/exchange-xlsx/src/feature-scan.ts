@@ -25,9 +25,14 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshotV1): string[] {
     }
     if (sheet.merges.length > 0) features.add('merges');
     if (sheet.freeze?.xSplit || sheet.freeze?.ySplit) features.add('freeze');
-    if (sheet.charts.length > 0) features.add('charts');
     if (sheet.pivots.length > 0) features.add('pivot');
-    if (sheet.shapes.length > 0) features.add('images');
+    // Floating objects are represented by one canonical collection. Scan the
+    // payloads instead of consulting removed per-kind arrays so XLSX reports
+    // cannot silently miss a chart/image created through the command runtime.
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'chart') features.add('charts');
+      else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');
+    }
     if (sheet.sparklines.length > 0 || sheet.sparklineGroups?.length) features.add('sparklines');
     if ((sheet.conditionalFormats?.length ?? 0) > 0) features.add('conditional-format');
     if ((sheet.dataValidations?.length ?? 0) > 0) features.add('validation');

@@ -18,6 +18,8 @@ import type {
   DefinedNameScope,
 } from './domain';
 import { normalizeDefinedNameModel } from './domain';
+import { migrateSnapshot } from './snapshot';
+import type { AnyWorkbookSnapshot } from './snapshot';
 
 export type CellValue = string | number | boolean | null;
 
@@ -149,44 +151,10 @@ export {
   type AnyWorkbookSnapshot,
 } from './snapshot';
 
-export interface ChartSeries {
-  name: string;
-  range: RangeRef;
-  color?: string;
-}
-
-export interface ChartModel {
-  id: string;
-  sheetId: SheetId;
-  pivotId?: string;
-  type: 'column' | 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter';
-  title?: string;
-  sourceRanges: RangeRef[];
-  series?: ChartSeries[];
-  categoryRange?: RangeRef;
-  bounds: { x: number; y: number; width: number; height: number };
-  legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
-  showDataLabels?: boolean;
-}
-
 import type { PivotModel } from './pivot';
 export * from './pivot';
 import type { WorkbookTableModel } from './data-model';
 export * from './data-model';
-
-export interface ShapeModel {
-  id: string;
-  sheetId: SheetId;
-  type: 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
-  bounds: { x: number; y: number; width: number; height: number };
-  fill: string;
-  stroke: string;
-  strokeWidth?: number;
-  text?: string;
-  textColor?: string;
-  fontSize?: number;
-  rotation?: number;
-}
 
 export interface SparklineModel {
   id: string;
@@ -204,15 +172,6 @@ export interface SparklineModel {
   groupId?: string;
   showAxis?: boolean;
   showMarkers?: boolean;
-}
-
-/** 浮动图片(以内容坐标定位) */
-export interface FloatingImage {
-  id: string;
-  sheetId: SheetId;
-  name?: string;
-  src: string;
-  bounds: { x: number; y: number; width: number; height: number };
 }
 
 /** 隔行色带规则 */
@@ -438,13 +397,10 @@ export class CellMatrix {
 export class WorksheetModel {
   readonly cells = new CellMatrix();
   readonly merges: MergeSpan[] = [];
-  readonly charts: ChartModel[] = [];
   readonly pivots: PivotModel[] = [];
-  readonly shapes: ShapeModel[] = [];
   readonly sparklines: SparklineModel[] = [];
   readonly conditionalFormats: ConditionalFormatRule[] = [];
   readonly dataValidations: DataValidationRule[] = [];
-  readonly images: FloatingImage[] = [];
   readonly sheetTables: SheetTableModel[] = [];
   readonly drawings: DrawingObject[] = [];
   readonly drawingPayloads = new Map<string, DrawingPayload>();
@@ -476,13 +432,10 @@ export class WorksheetModel {
     const copy = new WorksheetModel(id, name, this.rowCount, this.columnCount);
     this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
     copy.merges.push(...structuredClone(this.merges));
-    copy.charts.push(...structuredClone(this.charts));
     copy.pivots.push(...structuredClone(this.pivots));
-    copy.shapes.push(...structuredClone(this.shapes));
     copy.sparklines.push(...structuredClone(this.sparklines));
     copy.conditionalFormats.push(...structuredClone(this.conditionalFormats));
     copy.dataValidations.push(...structuredClone(this.dataValidations));
-    copy.images.push(...structuredClone(this.images));
     copy.filter = this.filter ? structuredClone(this.filter) : undefined;
     copy.bandedRule = this.bandedRule ? structuredClone(this.bandedRule) : undefined;
     Object.assign(copy.rowHeights, this.rowHeights);
@@ -550,13 +503,12 @@ export interface SheetSnapshotV1 {
   cells: Record<string, Record<string, CellData>>;
   merges: MergeSpan[];
   freeze: FreezeModel;
-  charts: ChartModel[];
   pivots: PivotModel[];
-  shapes: ShapeModel[];
   sparklines: SparklineModel[];
   sparklineGroups?: SparklineGroup[];
-  drawings?: DrawingObject[];
-  drawingPayloads?: Record<string, DrawingPayload>;
+  /** Canonical floating-object collection. Legacy per-kind collections are not part of snapshots. */
+  drawings: DrawingObject[];
+  drawingPayloads: Record<string, DrawingPayload>;
   notes?: Array<{ row: number; column: number; note: CellNote }>;
   commentThreads?: CommentThread[];
   conditionalFormats?: ConditionalFormatRule[];
@@ -566,7 +518,6 @@ export interface SheetSnapshotV1 {
   hiddenRows?: number[];
   hiddenColumns?: number[];
   tabColor?: string;
-  images?: FloatingImage[];
   bandedRule?: BandedRule;
   filter?: FilterModel;
   sheetTables?: SheetTableModel[];
@@ -762,9 +713,7 @@ export class WorkbookModel {
         cells: sheet.cells.toJSON(),
         merges: structuredClone(sheet.merges),
         freeze: { ...sheet.freeze },
-        charts: structuredClone(sheet.charts),
         pivots: structuredClone(sheet.pivots),
-        shapes: structuredClone(sheet.shapes),
         sparklines: structuredClone(sheet.sparklines),
         conditionalFormats: structuredClone(sheet.conditionalFormats),
         dataValidations: structuredClone(sheet.dataValidations),
@@ -773,7 +722,6 @@ export class WorkbookModel {
         hiddenRows: [...sheet.hiddenRows],
         hiddenColumns: [...sheet.hiddenColumns],
         tabColor: sheet.tabColor,
-        images: structuredClone(sheet.images),
         bandedRule: sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined,
         filter: sheet.filter ? structuredClone(sheet.filter) : undefined,
         sheetTables: structuredClone(sheet.sheetTables),
@@ -796,32 +744,28 @@ export class WorkbookModel {
     };
   }
 
-  static fromSnapshot(snapshot: WorkbookSnapshotV1): WorkbookModel {
-    if (snapshot.schema !== 'WorkbookSnapshotV1') throw new Error('Unsupported workbook snapshot');
-    const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
+  static fromSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookModel {
+    const canonical = migrateSnapshot(snapshot);
+    const workbook = new WorkbookModel(canonical.unitId, canonical.name);
     workbook.sheets.clear();
-    workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
-    workbook.definedNameModels.push(...structuredClone(snapshot.definedNameModels ?? Object.entries(workbook.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }))));
+    workbook.definedNames = canonical.definedNames ? { ...canonical.definedNames } : {};
+    workbook.definedNameModels.push(...structuredClone(canonical.definedNameModels ?? Object.entries(workbook.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }))));
     for (const entry of workbook.definedNameModels) {
       if (entry.scope === 'workbook' && workbook.definedNames[entry.name] === undefined) workbook.definedNames[entry.name] = entry.formula;
     }
-    for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
-    for (const input of snapshot.sheets) {
+    for (const table of canonical.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
+    for (const input of canonical.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);
       matrix.forEach((cell, row, column) => sheet.cells.set(row, column, cell));
       sheet.merges.push(...structuredClone(input.merges));
       sheet.freeze = { ...input.freeze };
-      sheet.charts.push(...structuredClone(input.charts));
       sheet.pivots.push(...structuredClone(input.pivots));
-      sheet.shapes.push(...structuredClone(input.shapes));
       sheet.sparklines.push(...structuredClone(input.sparklines));
       if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
-      if (input.drawings) sheet.drawings.push(...structuredClone(input.drawings));
-      if (input.drawingPayloads) {
-        for (const [key, payload] of Object.entries(input.drawingPayloads)) {
-          sheet.drawingPayloads.set(key, structuredClone(payload));
-        }
+      sheet.drawings.push(...structuredClone(input.drawings));
+      for (const [key, payload] of Object.entries(input.drawingPayloads)) {
+        sheet.drawingPayloads.set(key, structuredClone(payload));
       }
       if (input.notes) {
         for (const entry of input.notes) sheet.notes.set(noteCellKey(entry.row, entry.column), structuredClone(entry.note));
@@ -833,7 +777,6 @@ export class WorkbookModel {
       if (input.columnWidths) Object.assign(sheet.columnWidths, input.columnWidths);
       if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
       if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
-      if (input.images) sheet.images.push(...structuredClone(input.images));
       if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);
       if (input.filter) sheet.filter = structuredClone(input.filter);
       if (input.sheetTables) sheet.sheetTables.push(...structuredClone(input.sheetTables));
@@ -847,8 +790,8 @@ export class WorkbookModel {
       sheet.tabColor = input.tabColor;
       workbook.sheets.set(sheet.id, sheet);
     }
-    workbook.activeSheetId = snapshot.activeSheetId;
-    workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
+    workbook.activeSheetId = canonical.activeSheetId;
+    workbook.sheetOrder = canonical.sheets.map((sheet) => sheet.id);
     return workbook;
   }
 }

@@ -35,7 +35,7 @@ describe('drawing feature', () => {
     });
     assert.equal(workbook.getSheet('sheet-1').drawings[0]?.transform.x, 30);
     assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('img-1')?.kind, 'image');
-    assert.equal(workbook.getSheet('sheet-1').images.length, 0);
+    assert.equal(workbook.getSheet('sheet-1').drawings.filter((entry) => entry.kind === 'image').length, 1);
 
     runtime.execute('drawing.zorder', { sheetId: 'sheet-1', drawingId: 'draw-1', direction: 'front' });
     assert.ok((workbook.getSheet('sheet-1').drawings[0]?.zIndex ?? 0) > 1);

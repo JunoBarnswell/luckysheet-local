@@ -122,7 +122,7 @@ describe('structural operations', () => {
     assert.deepEqual(payload.sourceRanges[0], { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 1 });
     assert.deepEqual(payload.categoryRange, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 });
     assert.deepEqual(payload.series?.[0]?.range, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 1, endColumn: 1 });
-    assert.equal(sheet.charts.length, 0);
+    assert.equal(sheet.drawings.filter((drawing) => drawing.kind === 'chart').length, 1);
   });
 
   it('move-range clears stale destinations, offsets formulas, and rewrites external references', () => {

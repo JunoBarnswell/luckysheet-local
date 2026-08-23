@@ -26,17 +26,32 @@ export function createCompatibilityReport(input: {
   dateSystem: DateSystem;
   detectedFeatures: string[];
   unsupportedFeatures?: string[];
+  /** Features copied byte-for-byte from the source package. */
+  preservedFeatures?: Iterable<string>;
+  /** Features serialized by the editable snapshot writer. */
+  editableFeatures?: Iterable<string>;
 }): CompatibilityReport {
   const issues: CompatibilityIssue[] = [];
+  const preserved = new Set(input.preservedFeatures ?? []);
+  const editable = new Set(input.editableFeatures ?? LEVEL_A_FEATURES);
+  const unsupported = new Set(input.unsupportedFeatures ?? []);
 
   for (const feature of input.detectedFeatures) {
     const level = classifyFeature(feature);
-    if (level === 'C') {
+    if (unsupported.has(feature)) {
       issues.push({
-        level: 'C',
-        severity: 'info',
+        level,
+        severity: 'error',
         feature,
-        message: `${feature} will be preserved but not editable`,
+        message: `${feature} is not supported by this export path`,
+        preserved: false,
+      });
+    } else if (preserved.has(feature)) {
+      issues.push({
+        level,
+        severity: level === 'C' ? 'info' : 'warning',
+        feature,
+        message: `${feature} is preserved as original OOXML and is not edited by the snapshot writer`,
         preserved: true,
       });
     } else if (level === 'B' && input.importLevel === 'A') {
@@ -46,6 +61,14 @@ export function createCompatibilityReport(input: {
         feature,
         message: `${feature} imported with limited edit support`,
         preserved: true,
+      });
+    } else if (level === 'A' && !editable.has(feature)) {
+      issues.push({
+        level: 'A',
+        severity: 'error',
+        feature,
+        message: `${feature} is not supported by this export path`,
+        preserved: false,
       });
     }
   }

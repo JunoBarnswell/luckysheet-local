@@ -1,4 +1,5 @@
 import type { TableScalar } from '@react-sheets/core-model';
+import { validateQuerySteps, type QueryDefinition, type QueryRefreshPolicy, type QueryStep } from './query-steps';
 
 export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'xlsx' | 'sqlite';
 
@@ -13,7 +14,20 @@ export interface QueryResult {
   rowCount: number;
 }
 
-/** DataConnector SPI — CSV/TSV/JSON/REST/XLSX/SQLite */
+export interface QueryDefinitionPersistence {
+  schema: 'QueryDefinitionV1';
+  id: string;
+  name: string;
+  connectorId: string;
+  /** Connector configuration is deliberately redacted before persistence. */
+  connectorConfig: Record<string, unknown>;
+  steps: QueryStep[];
+  refreshOnOpen?: boolean;
+  refreshPolicy?: QueryRefreshPolicy;
+  sourceRevision: number;
+}
+
+/** DataConnector SPI. Only connectors registered by the host are executable. */
 export interface DataConnector {
   readonly kind: ConnectorKind;
   readonly id: string;
@@ -28,6 +42,7 @@ export class ConnectorRegistry {
 
   register(connector: DataConnector): void {
     if (this.connectors.has(connector.id)) throw new Error(`Connector already registered: ${connector.id}`);
+    if (!connector.id.trim() || !connector.kind) throw new Error('A connector must declare id and kind');
     this.connectors.set(connector.id, connector);
   }
 
@@ -42,7 +57,64 @@ export class ConnectorRegistry {
   }
 }
 
-/** 内置 JSON connector — 支持内联数组或 JSON 字符串 */
+/**
+ * Return a persistence-safe query definition.  Secrets and bearer material are
+ * never written to workbook snapshots or changesets.  The caller that owns a
+ * credential vault can merge secrets back at execution time.
+ */
+export function serializeQueryDefinition(query: QueryDefinition): QueryDefinitionPersistence {
+  if (!query.id.trim() || !query.name.trim()) throw new Error('Query id and name are required');
+  if (!query.connectorId.trim()) throw new Error('Query connectorId is required');
+  validateQuerySteps(query.steps);
+  return {
+    schema: 'QueryDefinitionV1',
+    id: query.id,
+    name: query.name,
+    connectorId: query.connectorId,
+    connectorConfig: redactConnectorConfig(query.connectorConfig),
+    steps: structuredClone(query.steps),
+    ...(query.refreshOnOpen === undefined ? {} : { refreshOnOpen: query.refreshOnOpen }),
+    ...(query.refreshPolicy === undefined ? {} : { refreshPolicy: structuredClone(query.refreshPolicy) }),
+    sourceRevision: query.sourceRevision ?? 0,
+  };
+}
+
+export function deserializeQueryDefinition(
+  persisted: QueryDefinitionPersistence,
+  secretConfig: Record<string, unknown> = {},
+): QueryDefinition {
+  if (persisted.schema !== 'QueryDefinitionV1') throw new Error('Unsupported query definition schema');
+  validateQuerySteps(persisted.steps);
+  return {
+    id: persisted.id,
+    name: persisted.name,
+    connectorId: persisted.connectorId,
+    connectorConfig: { ...structuredClone(persisted.connectorConfig), ...structuredClone(secretConfig) },
+    steps: structuredClone(persisted.steps),
+    ...(persisted.refreshOnOpen === undefined ? {} : { refreshOnOpen: persisted.refreshOnOpen }),
+    ...(persisted.refreshPolicy === undefined ? {} : { refreshPolicy: structuredClone(persisted.refreshPolicy) }),
+    sourceRevision: persisted.sourceRevision,
+  };
+}
+
+const SECRET_KEY = /(?:pass(word)?|secret|token|api[-_]?key|credential|authorization|private[-_]?key|client[-_]?secret)/i;
+
+function redactConnectorConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const redact = (value: unknown, key?: string): unknown => {
+    if (key && SECRET_KEY.test(key)) return '[redacted]';
+    if (Array.isArray(value)) return value.map((item) => redact(item));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [entryKey, redact(entryValue, entryKey)]));
+    }
+    if (typeof value === 'function' || typeof value === 'bigint' || typeof value === 'symbol' || value === undefined) {
+      throw new Error('Query connector configuration is not serializable');
+    }
+    return value;
+  };
+  return redact(config) as Record<string, unknown>;
+}
+
+/** Built-in JSON connector — supports inline arrays or JSON strings. */
 export class JsonDataConnector implements DataConnector {
   readonly kind = 'json' as const;
   readonly id = 'json';

@@ -1,5 +1,8 @@
-import { WorkbookModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import { WorkbookModel, type PivotResultTree, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
+import { FormulaEngine } from '@react-sheets/formula-engine';
+import { computePivotResult } from '@react-sheets/pro-features';
+import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from '../../ui-snapshot';
 
 export interface HistoryEntryMeta {
   revision: number;
@@ -8,90 +11,178 @@ export interface HistoryEntryMeta {
   category?: string;
   description?: string;
   createdAt: string;
-  snapshot?: WorkbookSnapshotV1;
 }
 
-/** 只读独立 WorkbookModel — 不污染当前 session */
+export interface HistoryPreviewProjection {
+  readonly revision: number;
+  readonly activeSheetId: string;
+  readonly sheets: readonly CanvasSheetSnapshot[];
+}
+
+/**
+ * A history preview owns its workbook, formula engine and derived projections.
+ * It never reuses the active runtime objects, and it exposes no command
+ * runtime, so rendering a preview cannot create mutations or history entries.
+ */
 export class HistoryPreviewSession {
   readonly workbook: WorkbookModel;
+  readonly formula: FormulaEngine;
   readonly revision: number;
   readonly meta: HistoryEntryMeta;
+  readonly derivedCache: ReadonlyMap<string, PivotResultTree>;
+  private readonly projection: readonly CanvasSheetSnapshot[];
+  private disposed = false;
 
-  private constructor(workbook: WorkbookModel, meta: HistoryEntryMeta) {
+  private constructor(
+    workbook: WorkbookModel,
+    formula: FormulaEngine,
+    meta: HistoryEntryMeta,
+    derivedCache: ReadonlyMap<string, PivotResultTree>,
+    projection: readonly CanvasSheetSnapshot[],
+  ) {
     this.workbook = workbook;
+    this.formula = formula;
     this.revision = meta.revision;
     this.meta = meta;
+    this.derivedCache = derivedCache;
+    this.projection = projection;
   }
 
   static fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshotV1): HistoryPreviewSession {
     const workbook = WorkbookModel.fromSnapshot(snapshot);
-    return new HistoryPreviewSession(workbook, meta);
+    const formula = hydratePreviewFormula(workbook);
+    const derivedCache = new Map<string, PivotResultTree>();
+    const pivotResults: Record<string, PivotResultTree> = {};
+    for (const sheet of workbook.getSheets()) {
+      for (const pivot of sheet.pivots) {
+        try {
+          const result = computePivotResult(workbook, pivot);
+          const cacheKey = pivotCacheKey(meta.revision, pivot.id);
+          derivedCache.set(cacheKey, structuredClone(result));
+          pivotResults[pivot.id] = result;
+        } catch {
+          // A corrupt historical pivot must not prevent the rest of the
+          // workbook from being previewed.
+        }
+      }
+    }
+    const projection = buildAllSheetSnapshots(workbook, formula, pivotResults);
+    return new HistoryPreviewSession(workbook, formula, meta, derivedCache, projection);
+  }
+
+  get ui(): HistoryPreviewProjection {
+    if (this.disposed) throw new Error('History preview session has been disposed');
+    return {
+      revision: this.revision,
+      activeSheetId: this.workbook.activeSheetId,
+      sheets: this.projection,
+    };
+  }
+
+  get sheets(): readonly CanvasSheetSnapshot[] {
+    return this.ui.sheets;
+  }
+
+  getSheet(sheetId: string): CanvasSheetSnapshot | undefined {
+    return this.ui.sheets.find((sheet) => sheet.id === sheetId);
   }
 
   dispose(): void {
-    // headless session — GC 即可
+    this.disposed = true;
   }
 }
 
 export interface RestoreCommandParams {
   targetRevision: number;
-  snapshot: WorkbookSnapshotV1;
   reason?: string;
 }
 
-/** Restore = 基于历史 snapshot 发新 Restore Command，生成新 revision，审计链不断 */
-export function registerHistoryCommands(registry: CommandRegistry): void {
-  registry.registerMutation('workbook.restore', (item, context) => {
-    const params = item.params as RestoreCommandParams;
-    const restored = WorkbookModel.fromSnapshot(params.snapshot);
-    context.workbook.sheets.clear();
-    context.workbook.tables.clear();
-    context.workbook.name = restored.name;
-    context.workbook.activeSheetId = restored.activeSheetId;
-    context.workbook.definedNames = { ...restored.definedNames };
-    for (const [id, sheet] of restored.sheets) {
-      context.workbook.sheets.set(id, sheet);
-    }
-    for (const [id, table] of restored.tables) {
-      context.workbook.tables.set(id, table);
-    }
-  });
+/** Server-produced mutation payload. The client command never accepts this shape. */
+export interface ServerRestoreMutationParams extends RestoreCommandParams {
+  serverGenerated: true;
+  snapshot: WorkbookSnapshotV1;
+}
 
-  registry.registerCommand({
+function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMutationParams {
+  if (!value || typeof value !== 'object') return false;
+  const input = value as Record<string, unknown>;
+  return input.serverGenerated === true
+    && Number.isSafeInteger(input.targetRevision)
+    && Number(input.targetRevision) >= 0
+    && Boolean(input.snapshot)
+    && (input.snapshot as { schema?: string }).schema === 'WorkbookSnapshotV1';
+}
+
+function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshotV1): void {
+  const restored = WorkbookModel.fromSnapshot(snapshot);
+  target.sheets.clear();
+  target.tables.clear();
+  target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
+  target.name = restored.name;
+  target.activeSheetId = restored.activeSheetId;
+  target.sheetOrder = [...restored.sheetOrder];
+  target.definedNames = { ...restored.definedNames };
+  for (const [id, sheet] of restored.sheets) target.sheets.set(id, sheet);
+  for (const [id, table] of restored.tables) target.tables.set(id, table);
+}
+
+/**
+ * Register the server-authoritative restore mutation and the client request
+ * command. A client request intentionally does not mutate the workbook: the
+ * server resolves targetRevision, authorizes it, and broadcasts the signed
+ * `workbook.restore` mutation carrying the materialized historical snapshot.
+ */
+export function registerHistoryCommands(registry: CommandRegistry): void {
+  registry.registerMutation<ServerRestoreMutationParams>(
+    'workbook.restore',
+    (item, context) => {
+      if (!isServerRestoreMutationParams(item.params)) {
+        throw new Error('workbook.restore must be a server-generated targetRevision mutation');
+      }
+      applyRestoredWorkbook(context.workbook, item.params.snapshot);
+    },
+    {
+      schema: { name: 'ServerRestoreMutationParams', validate: isServerRestoreMutationParams },
+      permission: { capability: 'history.restore' },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['workbook.restore'],
+    },
+  );
+
+  registry.registerCommand<RestoreCommandParams>({
     id: 'history.restore',
-    execute(params: RestoreCommandParams, context): CommandResult {
-      const previous = context.workbook.snapshot();
-      context.applyMutation({
-        id: 'workbook.restore',
-        unitId: context.workbook.unitId,
-        sheetId: context.workbook.activeSheetId,
-        params,
-        affectedRanges: [],
-        inverse: [{
-          id: 'workbook.restore',
-          unitId: context.workbook.unitId,
-          sheetId: context.workbook.activeSheetId,
-          params: { targetRevision: -1, snapshot: previous },
-          affectedRanges: [],
-        }],
-        apply() {
-          const restored = WorkbookModel.fromSnapshot(params.snapshot);
-          context.workbook.sheets.clear();
-          context.workbook.tables.clear();
-          context.workbook.name = restored.name;
-          context.workbook.activeSheetId = restored.activeSheetId;
-          context.workbook.definedNames = { ...restored.definedNames };
-          for (const [id, sheet] of restored.sheets) {
-            context.workbook.sheets.set(id, sheet);
-          }
-          for (const [id, table] of restored.tables) {
-            context.workbook.tables.set(id, table);
-          }
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    execute(params: RestoreCommandParams, _context): CommandResult {
+      if (!Number.isSafeInteger(params?.targetRevision) || params.targetRevision < 0) {
+        throw new Error('history.restore requires a non-negative targetRevision');
+      }
+      throw new Error('history.restore is server-authorized; submit the targetRevision request to the server');
     },
   });
+}
+
+function pivotCacheKey(revision: number, pivotId: string): string {
+  return `pivot:${pivotId}:source:${revision}:layout:${revision}:filter:${revision}`;
+}
+
+function hydratePreviewFormula(workbook: WorkbookModel): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
+  engine.setRecalculationMode('manual');
+  engine.setDefinedNames(workbook.definedNames);
+  for (const sheet of workbook.getSheets()) {
+    engine.setSpillEnvironment(sheet.id, {
+      rowCount: sheet.rowCount,
+      columnCount: sheet.columnCount,
+      isOccupied: (row, column) => sheet.cells.get(row, column) !== undefined,
+    });
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
+      else if (cell.value !== null) engine.setValue(address, cell.value as never);
+    });
+  }
+  engine.setRecalculationMode('automatic');
+  engine.recalculate();
+  return engine;
 }
 
 export class HistoryPanelStore {

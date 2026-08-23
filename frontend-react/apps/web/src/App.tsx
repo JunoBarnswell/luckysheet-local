@@ -37,7 +37,7 @@ import {
 import { getInitialLocale, localeLabels, persistLocale, shellLabels, type Locale } from "./i18n";
 import zhCN from "./locales/zh-CN.json";
 import enUS from "./locales/en-US.json";
-import type { PivotFieldDefinition as CorePivotFieldDefinition } from "@react-sheets/core-model";
+import type { ChartDrawingPayload, DrawingObject, PivotFieldDefinition as CorePivotFieldDefinition } from "@react-sheets/core-model";
 import type { PivotFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult } from "./components/pivot/types";
 
 function WorkspaceApp() {
@@ -200,15 +200,24 @@ function WorkspaceApp() {
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
       const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
-      app.addChart({
-        id: chartId,
-        pivotId: activePivot.id,
+      const drawing: DrawingObject = {
+        id: `drawing-${chartId}`,
         sheetId: activePivot.sheetId,
-        type: chart.type,
+        kind: "chart",
+        payloadId: chartId,
+        anchor: { kind: "absolute" },
+        transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 },
+        zIndex: 0,
+      };
+      const payload: ChartDrawingPayload = {
+        kind: "chart",
+        chartId,
+        pivotId: activePivot.id,
+        chartType: chart.type,
         title: chart.title,
         sourceRanges: [activePivot.sourceRange],
-        bounds: { x: 80, y: 80, width: 480, height: 280 },
-      });
+      };
+      app.addChart(drawing, payload);
       app.updatePivotConfiguration(activePivot.id, {
         chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }],
       });

@@ -115,12 +115,14 @@ export interface PersistenceSnapshotMeta {
   updatedAt: string;
   hasLocalDraft: boolean;
   draftUpdatedAt?: string;
+  pendingOperationCount: number;
 }
 
 export function buildPersistenceMeta(
   snapshot: WorkbookSnapshotV1,
   revision: number,
   draft?: LocalDraftRecord | null,
+  pendingOperationCount = 0,
 ): PersistenceSnapshotMeta {
   const snapshotJson = JSON.stringify(snapshot);
   return {
@@ -128,8 +130,9 @@ export function buildPersistenceMeta(
     revision,
     checksum: computeSnapshotChecksum(snapshotJson),
     updatedAt: new Date().toISOString(),
-    hasLocalDraft: Boolean(draft),
+    hasLocalDraft: Boolean(draft) || pendingOperationCount > 0,
     draftUpdatedAt: draft?.updatedAt,
+    pendingOperationCount,
   };
 }
 

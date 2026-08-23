@@ -1,53 +1,26 @@
 import type {
-  BandedRule,
-  CellData,
-  ChartModel,
-  ConditionalFormatRule,
-  DataValidationRule,
-  FilterModel,
-  FloatingImage,
-  FreezeModel,
-  MergeSpan,
-  PivotModel,
-  ShapeModel,
-  SheetId,
-  SparklineModel,
-  UnitId,
-  WorkbookTableModel,
   DefinedNameModel,
+  RangeRef,
+  SheetSnapshotV1,
+  SheetId,
+  WorkbookModel,
+  WorkbookSnapshotV1,
+  WorkbookTableModel,
+  UnitId,
 } from './index';
-import type { CommentThread, CellNote, DrawingObject, ProtectionRule, SheetTableModel, SpillRange } from './domain';
-import { WorkbookModel } from './index';
+import type {
+  DrawingObject,
+  DrawingPayload,
+} from './domain';
+import { WorkbookModel as WorkbookModelClass } from './index';
 
-export interface SheetSnapshotV2 {
-  id: SheetId;
-  name: string;
-  rowCount: number;
-  columnCount: number;
-  cells: Record<string, Record<string, CellData>>;
-  merges: MergeSpan[];
-  freeze: FreezeModel;
-  charts: ChartModel[];
-  pivots: PivotModel[];
-  shapes: ShapeModel[];
-  sparklines: SparklineModel[];
-  conditionalFormats?: ConditionalFormatRule[];
-  dataValidations?: DataValidationRule[];
-  rowHeights?: Record<number, number>;
-  columnWidths?: Record<number, number>;
-  hiddenRows?: number[];
-  hiddenColumns?: number[];
-  tabColor?: string;
-  images?: FloatingImage[];
-  bandedRule?: BandedRule;
-  filter?: FilterModel;
-  sheetTables?: SheetTableModel[];
-  drawings?: DrawingObject[];
-  notes?: Array<{ row: number; column: number; note: CellNote }>;
-  commentThreads?: CommentThread[];
-  spillRanges?: SpillRange[];
-  protectionRules?: ProtectionRule[];
-}
+/**
+ * The persisted snapshot format. Floating objects are represented only by
+ * the canonical drawing collection and payload map. Per-kind collections are
+ * intentionally absent from this type so new code cannot recreate the old
+ * dual model.
+ */
+export interface SheetSnapshotV2 extends SheetSnapshotV1 {}
 
 export interface WorkbookSnapshotV2 {
   schema: 'WorkbookSnapshotV2';
@@ -58,63 +31,228 @@ export interface WorkbookSnapshotV2 {
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
-  protectionRules?: ProtectionRule[];
+  protectionRules?: import('./domain').ProtectionRule[];
   sheets: SheetSnapshotV2[];
 }
 
-/** @deprecated use WorkbookSnapshotV2 */
-export interface WorkbookSnapshotV1 {
-  schema: 'WorkbookSnapshotV1';
-  unitId: UnitId;
-  name: string;
-  activeSheetId: SheetId;
-  definedNames?: Record<string, string>;
-  definedNameModels?: DefinedNameModel[];
-  tables?: WorkbookTableModel[];
-  sheets: Array<Omit<SheetSnapshotV2, 'sheetTables' | 'drawings' | 'notes' | 'commentThreads' | 'spillRanges' | 'protectionRules'>>;
+/**
+ * Input-only shapes for the one-time migration of snapshots written before
+ * the canonical DrawingObject/DrawingPayload model existed. These types are
+ * never emitted by the core model.
+ */
+interface LegacyChartSnapshot {
+  id: string;
+  sheetId: SheetId;
+  pivotId?: string;
+  type: 'column' | 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'combo';
+  title?: string;
+  sourceRanges: RangeRef[];
+  series?: Array<{ name: string; range: RangeRef; color?: string }>;
+  categoryRange?: RangeRef;
+  bounds: { x: number; y: number; width: number; height: number };
+  legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
+  showDataLabels?: boolean;
 }
 
-export type AnyWorkbookSnapshot = WorkbookSnapshotV1 | WorkbookSnapshotV2;
+interface LegacyShapeSnapshot {
+  id: string;
+  sheetId: SheetId;
+  type: 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
+  bounds: { x: number; y: number; width: number; height: number };
+  fill: string;
+  stroke: string;
+  strokeWidth?: number;
+  text?: string;
+  textColor?: string;
+  fontSize?: number;
+  rotation?: number;
+}
 
-export function migrateSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookSnapshotV2 {
-  if (snapshot.schema === 'WorkbookSnapshotV2') return snapshot;
+interface LegacyImageSnapshot {
+  id: string;
+  sheetId: SheetId;
+  name?: string;
+  src: string;
+  bounds: { x: number; y: number; width: number; height: number };
+}
+
+type LegacySheetSnapshotV1 = Omit<SheetSnapshotV1, 'drawings' | 'drawingPayloads'> & {
+  drawings?: DrawingObject[];
+  drawingPayloads?: Record<string, DrawingPayload>;
+  charts?: LegacyChartSnapshot[];
+  shapes?: LegacyShapeSnapshot[];
+  images?: LegacyImageSnapshot[];
+};
+
+interface LegacyWorkbookSnapshotV1 extends Omit<WorkbookSnapshotV1, 'sheets'> {
+  sheets: LegacySheetSnapshotV1[];
+}
+
+export type AnyWorkbookSnapshot = WorkbookSnapshotV1 | LegacyWorkbookSnapshotV1 | WorkbookSnapshotV2;
+
+function absoluteAnchor() {
+  return { kind: 'absolute' as const };
+}
+
+function absoluteTransform(bounds: { x: number; y: number; width: number; height: number }, rotation?: number) {
   return {
-    schema: 'WorkbookSnapshotV2',
-    schemaVersion: 2,
-    unitId: snapshot.unitId,
-    name: snapshot.name,
-    activeSheetId: snapshot.activeSheetId,
-    definedNames: snapshot.definedNames ? { ...snapshot.definedNames } : undefined,
-    definedNameModels: snapshot.definedNameModels?.map((entry) => structuredClone(entry)),
-    tables: snapshot.tables?.map((t) => structuredClone(t)),
-    sheets: snapshot.sheets.map((sheet) => ({
-      ...structuredClone(sheet),
-      sheetTables: [],
-      drawings: [],
-      notes: [],
-      commentThreads: [],
-      spillRanges: [],
-      protectionRules: [],
-    })),
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    ...(rotation === undefined ? {} : { rotation }),
   };
 }
 
-export function loadWorkbookFromSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookModel {
-  const v2 = migrateSnapshot(snapshot);
-  const workbook = WorkbookModel.fromSnapshot({
-    schema: 'WorkbookSnapshotV1',
-    unitId: v2.unitId,
-    name: v2.name,
-    activeSheetId: v2.activeSheetId,
-    definedNames: v2.definedNames,
-    definedNameModels: v2.definedNameModels,
-    tables: v2.tables,
-    sheets: v2.sheets,
-  });
-  return workbook;
+function addLegacyDrawing(
+  drawings: DrawingObject[],
+  payloads: Record<string, DrawingPayload>,
+  drawing: DrawingObject,
+  payload: DrawingPayload,
+): void {
+  // Canonical payloads/drawings win when a partially migrated snapshot has
+  // both representations. This makes migration idempotent.
+  if (drawings.some((entry) => entry.id === drawing.id)) return;
+  if (!payloads[drawing.payloadId]) payloads[drawing.payloadId] = structuredClone(payload);
+  drawings.push(structuredClone(drawing));
+}
+
+function migrateLegacyCollections(input: LegacySheetSnapshotV1): SheetSnapshotV1 {
+  const {
+    charts,
+    shapes,
+    images,
+    drawings: sourceDrawings,
+    drawingPayloads: sourcePayloads,
+    ...canonicalFields
+  } = structuredClone(input);
+  const drawings = sourceDrawings ?? [];
+  const drawingPayloads = sourcePayloads ?? {};
+
+  for (const chart of charts ?? []) {
+    addLegacyDrawing(
+      drawings,
+      drawingPayloads,
+      {
+        id: chart.id,
+        sheetId: chart.sheetId,
+        kind: 'chart',
+        anchor: absoluteAnchor(),
+        transform: absoluteTransform(chart.bounds),
+        zIndex: drawings.length,
+        payloadId: chart.id,
+      },
+      {
+        kind: 'chart',
+        chartId: chart.id,
+        chartType: chart.type,
+        title: chart.title,
+        pivotId: chart.pivotId,
+        sourceRanges: chart.sourceRanges,
+        series: chart.series,
+        categoryRange: chart.categoryRange,
+        legendPosition: chart.legendPosition,
+        showDataLabels: chart.showDataLabels,
+      },
+    );
+  }
+
+  for (const shape of shapes ?? []) {
+    addLegacyDrawing(
+      drawings,
+      drawingPayloads,
+      {
+        id: shape.id,
+        sheetId: shape.sheetId,
+        kind: 'shape',
+        anchor: absoluteAnchor(),
+        transform: absoluteTransform(shape.bounds, shape.rotation),
+        zIndex: drawings.length,
+        payloadId: shape.id,
+      },
+      {
+        kind: 'shape',
+        type: shape.type,
+        fill: shape.fill,
+        stroke: shape.stroke,
+        strokeWidth: shape.strokeWidth,
+        text: shape.text,
+        textColor: shape.textColor,
+        fontSize: shape.fontSize,
+      },
+    );
+  }
+
+  for (const image of images ?? []) {
+    addLegacyDrawing(
+      drawings,
+      drawingPayloads,
+      {
+        id: image.id,
+        sheetId: image.sheetId,
+        kind: 'image',
+        name: image.name,
+        anchor: absoluteAnchor(),
+        transform: absoluteTransform(image.bounds),
+        zIndex: drawings.length,
+        payloadId: image.id,
+      },
+      {
+        kind: 'image',
+        src: image.src,
+        name: image.name,
+      },
+    );
+  }
+
+  for (const drawing of drawings) {
+    if (!drawingPayloads[drawing.payloadId]) {
+      throw new Error(`Snapshot drawing ${drawing.id} has no payload ${drawing.payloadId}`);
+    }
+  }
+
+  return {
+    ...canonicalFields,
+    drawings,
+    drawingPayloads,
+  };
+}
+
+/** Convert any supported input into the canonical V2 snapshot exactly once. */
+export function migrateSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookSnapshotV2 {
+  if (snapshot.schema === 'WorkbookSnapshotV2') {
+    return {
+      schema: 'WorkbookSnapshotV2',
+      schemaVersion: 2,
+      unitId: snapshot.unitId,
+      name: snapshot.name,
+      activeSheetId: snapshot.activeSheetId,
+      definedNames: snapshot.definedNames ? { ...snapshot.definedNames } : undefined,
+      definedNameModels: snapshot.definedNameModels?.map((entry) => structuredClone(entry)),
+      tables: snapshot.tables?.map((table) => structuredClone(table)),
+      protectionRules: snapshot.protectionRules?.map((rule) => structuredClone(rule)),
+      sheets: snapshot.sheets.map((sheet) => migrateLegacyCollections(sheet)),
+    };
+  }
+
+  const legacy = snapshot as LegacyWorkbookSnapshotV1;
+  return {
+    schema: 'WorkbookSnapshotV2',
+    schemaVersion: 2,
+    unitId: legacy.unitId,
+    name: legacy.name,
+    activeSheetId: legacy.activeSheetId,
+    definedNames: legacy.definedNames ? { ...legacy.definedNames } : undefined,
+    definedNameModels: legacy.definedNameModels?.map((entry) => structuredClone(entry)),
+    tables: legacy.tables?.map((table) => structuredClone(table)),
+    sheets: legacy.sheets.map((sheet) => migrateLegacyCollections(sheet)),
+  };
+}
+
+export function loadWorkbookFromSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookModelClass {
+  return WorkbookModelClass.fromSnapshot(snapshot);
 }
 
 export function createWorkbookSnapshotV2(workbook: WorkbookModel): WorkbookSnapshotV2 {
-  const v1 = workbook.snapshot();
-  return migrateSnapshot(v1);
+  return migrateSnapshot(workbook.snapshot());
 }

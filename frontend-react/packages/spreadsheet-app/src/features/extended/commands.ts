@@ -10,6 +10,7 @@ import {
   type ScenarioDefinition,
   type WhatIfCellWrite,
   type WhatIfPlan,
+  type WhatIfPlanMetadata,
 } from './what-if';
 
 export interface ExtendedGoalSeekCommandParams extends GoalSeekParams {
@@ -71,7 +72,23 @@ function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
   });
 }
 
-function commandPlanResult(plan: WhatIfPlan, context: CommandContext): CommandResult & { plan: WhatIfPlan } {
+function commandPlanResult(
+  plan: WhatIfPlan,
+  definition: unknown,
+  capabilities: CapabilityRegistry,
+  context: CommandContext,
+): CommandResult & { plan: WhatIfPlan } {
+  if (!capabilities.isEnabled('what-if')) throw new Error('What-if capability is disabled');
+  const metadata: WhatIfPlanMetadata = {
+    schema: 'WhatIfPlanV1',
+    kind: plan.kind,
+    sourceRevision: hashValue(context.workbook.snapshot()),
+    planHash: hashValue({ definition, writes: plan.writes }),
+    definition: structuredClone(definition),
+    writeCount: plan.writes.length,
+    deterministic: true,
+  };
+  plan.metadata = metadata;
   const affectedRanges = plan.writes.map((write) => ({
     sheetId: write.sheetId,
     startRow: write.row,
@@ -98,7 +115,7 @@ export function registerExtendedCommands(
     id: 'extended.whatIf.goalSeek',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
       const sheetId = params.sheetId ?? context.workbook.activeSheetId;
-      return commandPlanResult(planGoalSeek(context.workbook, sheetId, params), context);
+      return commandPlanResult(planGoalSeek(context.workbook, sheetId, params), params, capabilities, context);
     },
   });
 
@@ -106,7 +123,7 @@ export function registerExtendedCommands(
     id: 'extended.whatIf.scenario',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
       const sheetId = params.sheetId ?? context.workbook.activeSheetId;
-      return commandPlanResult(planScenario(context.workbook, sheetId, params.scenario), context);
+      return commandPlanResult(planScenario(context.workbook, sheetId, params.scenario), params.scenario, capabilities, context);
     },
   });
 
@@ -114,7 +131,7 @@ export function registerExtendedCommands(
     id: 'extended.whatIf.dataTable',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
       const sheetId = params.sheetId ?? context.workbook.activeSheetId;
-      return commandPlanResult(planDataTable(context.workbook, sheetId, params), context);
+      return commandPlanResult(planDataTable(context.workbook, sheetId, params), params, capabilities, context);
     },
   });
 
@@ -130,4 +147,14 @@ export function registerExtendedCommands(
       };
     },
   });
+}
+
+function hashValue(value: unknown): string {
+  const text = JSON.stringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }

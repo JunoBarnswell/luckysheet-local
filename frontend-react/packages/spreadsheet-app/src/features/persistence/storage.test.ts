@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
+import type { OperationEnvelopeV2 } from '@react-sheets/protocol';
 import {
   LocalDraftStore,
+  LocalOperationStore,
   buildLocalDraftRecord,
   buildPersistenceMeta,
   isDraftNewerThanServer,
@@ -39,5 +41,25 @@ describe('persistence storage', () => {
     assert.equal(loaded?.revision, 5);
     store.clear('wb-store');
     assert.equal(store.read('wb-store'), null);
+  });
+
+  it('persists only a monotonic pending-operation journal with checksum validation', () => {
+    const store = new LocalOperationStore();
+    const operation: OperationEnvelopeV2 = {
+      schema: 'OperationEnvelopeV2',
+      operationId: 'offline-op-1',
+      unitId: 'wb-operation-store',
+      clientSequence: 7,
+      baseRevision: 3,
+      mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: { row: 0, column: 0, value: { value: 1 } } }],
+      createdAt: '2026-08-23T00:00:00.000Z',
+    };
+    store.write(operation.unitId, [operation], operation.clientSequence);
+    const loaded = store.read(operation.unitId);
+    assert.equal(loaded?.schema, 'PendingOperationJournalV1');
+    assert.equal(loaded?.nextClientSequence, 7);
+    assert.deepEqual(loaded?.operations, [operation]);
+    store.clear(operation.unitId);
+    assert.equal(store.read(operation.unitId), null);
   });
 });

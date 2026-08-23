@@ -5,13 +5,15 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
   buildQueryResultSnapshot,
+  buildQueryLoadPlan,
   createInlineJsonQuery,
   executeQueryDefinition,
+  InMemoryWorkbookTableQueryStore,
   queryResultToRangeValues,
   resolveLoadTarget,
   summarizeQueryResult,
 } from './runtime';
-import { createDefaultConnectorRegistry } from './index';
+import { createDefaultConnectorRegistry, deserializeQueryDefinition, serializeQueryDefinition } from './index';
 import { registerQueryCommands } from './commands';
 
 describe('query runtime', () => {
@@ -65,6 +67,24 @@ describe('query runtime', () => {
     });
     assert.equal(target.range?.startRow, 2);
     assert.equal(target.range?.startColumn, 1);
+    assert.equal(target.range?.endRow, 4);
+  });
+
+  it('fails closed for unsupported query steps', async () => {
+    const query = createInlineJsonQuery('q-unsupported', 'Unsupported', [{ A: 1 }], [{
+      id: 'custom-1', kind: 'custom', name: 'custom', config: {}, enabled: true,
+    }]);
+    await assert.rejects(() => executeQueryDefinition(createDefaultConnectorRegistry(), query), /not implemented/i);
+  });
+
+  it('persists definitions with redacted connector secrets and source revision', () => {
+    const query = { ...createInlineJsonQuery('q-persist', 'Persist', [{ A: 1 }]), connectorId: 'rest', connectorConfig: { url: 'https://example.test', apiKey: 'secret', nested: { token: 'bearer' } }, sourceRevision: 7 };
+    const persisted = serializeQueryDefinition(query);
+    assert.equal(persisted.connectorConfig.apiKey, '[redacted]');
+    assert.equal((persisted.connectorConfig.nested as Record<string, unknown>).token, '[redacted]');
+    const restored = deserializeQueryDefinition(persisted, { apiKey: 'secret' });
+    assert.equal(restored.connectorConfig.apiKey, 'secret');
+    assert.equal(restored.sourceRevision, 7);
   });
 });
 
@@ -87,5 +107,60 @@ describe('query commands', () => {
     const sheet = model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'Product');
     assert.equal(sheet.cells.get(1, 1)?.value, 9);
+  });
+
+  it('builds distinct load plans for sheet tables and pivots', () => {
+    const model = new WorkbookModel('wb-query-targets', 'Query');
+    const sheet = model.getSheet(model.activeSheetId);
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'Sales',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+      showFilterButton: true, columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+    });
+    const pivot = { id: 'pivot-1', sheetId: sheet.id, sourceRange: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 }, layout: { rows: [], columns: [], values: [], filters: [], showSubtotals: true, showGrandTotals: true } } as never;
+    sheet.pivots.push(pivot);
+    const query = createInlineJsonQuery('q-targets', 'Targets', [{ A: 1, B: 2 }]);
+    const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };
+    const store = { get: () => undefined, set: () => undefined, delete: () => undefined };
+    assert.equal(buildQueryLoadPlan(model, { query, target: { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result }, store).mutationId, 'query.load.sheet-table');
+    assert.equal(buildQueryLoadPlan(model, { query, target: { kind: 'pivot-source', pivotId: 'pivot-1' }, result }, store).mutationId, 'query.load.pivot-source');
+  });
+
+  it('applies and reverts sheet-table, workbook-table, and pivot-source loads', () => {
+    const model = new WorkbookModel('wb-query-replay', 'Query');
+    const runtime = new CommandRuntime(model);
+    registerSheetCommands(runtime);
+    const tableStore = new InMemoryWorkbookTableQueryStore();
+    registerQueryCommands(runtime.registry, { tableStore });
+    const sheet = model.getSheet(model.activeSheetId);
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'Sales',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+      showFilterButton: true, columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+    });
+    model.addTable({ id: 'workbook-table-1', name: 'Results', rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
+    const pivot = { id: 'pivot-1', sheetId: sheet.id, sourceRange: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 }, layout: { rows: [], columns: [], values: [], filters: [], showSubtotals: true, showGrandTotals: true } } as never;
+    sheet.pivots.push(pivot);
+    const query = createInlineJsonQuery('q-replay', 'Replay', [{ A: 1, B: 2 }]);
+    const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };
+
+    runtime.execute('query.load', { query, target: { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result });
+    assert.equal(sheet.cells.get(1, 1)?.value, 2);
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.cells.get(1, 1), undefined);
+
+    runtime.execute('query.load', { query, target: { kind: 'workbook-table', tableId: 'workbook-table-1' }, result });
+    assert.equal(model.getTable('workbook-table-1').rowCount, 1);
+    assert.equal(tableStore.get('workbook-table-1')?.result.rowCount, 1);
+    assert.equal(runtime.undo(), true);
+    assert.equal(model.getTable('workbook-table-1').rowCount, 0);
+
+    runtime.execute('query.load', { query, target: { kind: 'pivot-source', pivotId: 'pivot-1' }, result });
+    assert.equal(sheet.cells.get(6, 1)?.value, 2);
+    assert.equal(sheet.pivots[0]?.refreshRevision, 1);
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.cells.get(6, 1), undefined);
   });
 });

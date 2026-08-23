@@ -22,4 +22,32 @@ describe('pivot commands', () => {
     runtime.undo();
     assert.equal(workbook.getSheet('sheet-1').pivots[0]?.layout.rows.length, 1);
   });
+
+  it('drill-down is an add/remove sheet transaction with a real inverse', () => {
+    const workbook = new WorkbookModel('pivot-drilldown-test', 'Pivot Drilldown');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Amount'], ['East', 10], ['West', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const runtime = new CommandRuntime(workbook);
+    registerPivotFeature(runtime);
+    runtime.execute('pivot.add', {
+      id: 'pivot-1',
+      sheetId: 'sheet-1',
+      sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+      layout: { rows: [{ field: 'Region' }], columns: [], filters: [], values: [{ field: 'Amount', summarizeBy: 'sum' as const }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
+    });
+    runtime.execute('pivot.drillDown', {
+      sheetId: 'sheet-1',
+      pivotId: 'pivot-1',
+      label: 'East',
+      sourceRowPaths: [{ sheetId: 'sheet-1', row: 1 }],
+      targetSheetId: 'drill-1',
+      targetAnchor: { row: 0, column: 0 },
+    });
+    assert.equal(workbook.getSheet('drill-1').cells.get(0, 0)?.value, 'Region');
+    assert.equal(workbook.getSheet('drill-1').cells.get(1, 1)?.value, 10);
+    assert.equal(runtime.undo(), true);
+    assert.equal(workbook.sheets.has('drill-1'), false);
+    assert.equal(runtime.redo(), true);
+    assert.equal(workbook.getSheet('drill-1').cells.get(1, 0)?.value, 'East');
+  });
 });

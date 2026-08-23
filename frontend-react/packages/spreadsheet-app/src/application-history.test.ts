@@ -4,7 +4,7 @@ import { SpreadsheetApplication } from './application';
 import { buildRestoreParams } from './features/history';
 
 describe('SpreadsheetApplication history integration', () => {
-  it('restores workbook state through history.restore and rebuilds formulas', () => {
+  it('does not accept a client-provided snapshot as a restore mutation', () => {
     const app = new SpreadsheetApplication();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
@@ -23,7 +23,8 @@ describe('SpreadsheetApplication history integration', () => {
     assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 0)?.value, 'after');
 
     app.restoreFromSnapshot(snapshot, 1, 'test restore');
-    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 0)?.value, 'before');
+    assert.equal(app.getWorkbook().getSheet(sheetId).cells.get(0, 0)?.value, 'after');
+    assert.match(app.getUiSnapshot().notice, /server-authorized|restore/i);
     assert.equal(app.getUiSnapshot().historyPreviewRevision, null);
   });
 
@@ -45,19 +46,10 @@ describe('SpreadsheetApplication history integration', () => {
     assert.match(app.getUiSnapshot().notice, /viewer|restore|Permission/i);
   });
 
-  it('builds restore params with cloned snapshot payload', () => {
-    const snapshot = {
-      schema: 'WorkbookSnapshotV1' as const,
-      unitId: 'wb-1',
-      name: 'Clone',
-      activeSheetId: 'sheet-1',
-      definedNames: {},
-      tables: [],
-      sheets: [],
-    };
-    const params = buildRestoreParams(snapshot, 3, 'reason');
+  it('builds a target-revision restore request without a snapshot payload', () => {
+    const params = buildRestoreParams(3, 'reason');
     assert.equal(params.targetRevision, 3);
-    assert.notEqual(params.snapshot, snapshot);
+    assert.equal('snapshot' in params, false);
     assert.equal(params.reason, 'reason');
   });
 });

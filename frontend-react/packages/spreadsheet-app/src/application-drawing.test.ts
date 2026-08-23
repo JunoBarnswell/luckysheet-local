@@ -7,8 +7,15 @@ describe('SpreadsheetApplication drawing integration', () => {
     const app = new SpreadsheetApplication();
     const sheetId = app.getActiveSheetId();
     app.addShape({
-      id: 'shape-test-1',
+      id: 'draw-shape-test-1',
       sheetId,
+      kind: 'shape',
+      payloadId: 'shape-test-1',
+      anchor: { kind: 'absolute' },
+      transform: { x: 40, y: 40, width: 120, height: 48, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
       type: 'rectangle',
       fill: '#dbeafe',
       stroke: '#2563eb',
@@ -16,7 +23,6 @@ describe('SpreadsheetApplication drawing integration', () => {
       text: 'Box',
       textColor: '#1e3a8a',
       fontSize: 13,
-      bounds: { x: 40, y: 40, width: 120, height: 48 },
     });
 
     const sheet = app.getWorkbook().getSheet(sheetId);

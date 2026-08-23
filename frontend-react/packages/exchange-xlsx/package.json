@@ -5,6 +5,6 @@
   "main": "src/index.ts",
   "dependencies": {
     "@react-sheets/core-model": "workspace:*",
-    "@react-sheets/pro-features": "workspace:*"
+    "fflate": "^0.8.2"
   }
 }

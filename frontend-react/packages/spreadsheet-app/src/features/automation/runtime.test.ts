@@ -65,4 +65,13 @@ describe('CommandRecorder', () => {
     assert.match(recorder.toScript(), /getRange\('A1'\)/);
     assert.match(recorder.toScript(), /setFontWeight\('bold'\)/);
   });
+
+  it('fails explicitly when a command has no serializable Facade form', () => {
+    const recorder = new CommandRecorder();
+    const listener = recorder.createListener();
+    recorder.start();
+    assert.throws(() => listener('pivot.refresh', {}, {
+      operationId: 'op-3', mutationCount: 1, affectedRanges: [],
+    }), /Cannot serialize recorded command/i);
+  });
 });

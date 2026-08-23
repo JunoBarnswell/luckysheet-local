@@ -1,6 +1,7 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import type { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRecorder } from './command-recorder';
+import { registerAutomationCommands } from './commands';
 import { FacadeScriptRuntime, type ScriptRunResult } from './index';
 import { ScriptSandbox } from './sandbox';
 
@@ -29,6 +30,7 @@ export function runAutomationScript(
   source: string,
   sandbox = new ScriptSandbox(),
 ): ScriptRunResult {
+  if (!commands.registry.hasCommand('automation.run')) registerAutomationCommands(commands.registry);
   const runtime = new FacadeScriptRuntime(workbook, commands);
   return runtime.runScript(source.trim(), sandbox);
 }

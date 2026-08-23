@@ -8,6 +8,7 @@ import {
   resolvePrintArea,
   summarizePrintSnapshot,
 } from './layout';
+import { computePrintPages, createDefaultPrintLayout } from './index';
 
 describe('print layout', () => {
   it('builds print snapshots from workbook content', () => {
@@ -106,5 +107,18 @@ describe('print layout', () => {
     });
     assert.equal(model.repeatRows?.start, 0);
     assert.equal(model.printAreas[0]?.range.endRow, 10);
+  });
+
+  it('honors explicit row and column page breaks with one global page sequence', () => {
+    const model = createDefaultPrintLayout('wb-breaks', 'sheet-1');
+    model.printAreas = [{ sheetId: 'sheet-1', range: { sheetId: 'sheet-1', startRow: 0, endRow: 9, startColumn: 0, endColumn: 5 } }];
+    model.pageSetup.margins = { top: 12, right: 12, bottom: 12, left: 12, header: 0, footer: 0 };
+    model.pageBreaks = [{ sheetId: 'sheet-1', row: 5 }, { sheetId: 'sheet-1', column: 3 }];
+    const pages = computePrintPages(model, 20, 80);
+    assert.equal(pages.length, 4);
+    assert.deepEqual(pages.map((page) => page.pageIndex), [0, 1, 2, 3]);
+    assert.equal(pages[0]?.range.endRow, 4);
+    assert.equal(pages[2]?.range.startRow, 5);
+    assert.equal(pages[1]?.range.startColumn, 3);
   });
 });

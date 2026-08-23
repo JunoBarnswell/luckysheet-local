@@ -91,7 +91,8 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     context.workbook.getSheet(params.sheetId).notes.set(noteCellKey(params.row, params.column), structuredClone(params.note));
   });
   registerMutationHandler<NoteRemoveParams>(runtime, 'note.remove', (params, context) => {
-    context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column));
+    const removed = context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column));
+    if (!removed) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
   });
   registerMutationHandler<NoteVisibilityParams>(runtime, 'note.visibility', (params, context) => {
     const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { RangeRef } from '@react-sheets/core-model';
-import { paginateRange, type PrintLayout } from '@react-sheets/pro-features';
+import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import { Box, Button, Dialog, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
 
 export interface PrintPreviewRow { rowNumber: number; cells: readonly { value: string }[]; }
@@ -52,11 +52,22 @@ export function PrintPreviewDialog({
 
   const internalPages = useMemo(() => {
     if (!open || rowCount === 0 || columnCount === 0) return [];
-    return paginateRange(
-      { sheetId, startRow: 0, endRow: rowCount - 1, startColumn: 0, endColumn: columnCount - 1 },
-      Math.max(1, rowsPerPage),
-      Math.max(1, columnsPerPage),
-    );
+    const pages: PrintPreviewPage[] = [];
+    for (let startRow = 0; startRow < rowCount; startRow += Math.max(1, rowsPerPage)) {
+      for (let startColumn = 0; startColumn < columnCount; startColumn += Math.max(1, columnsPerPage)) {
+        pages.push({
+          page: pages.length + 1,
+          range: {
+            sheetId,
+            startRow,
+            endRow: Math.min(rowCount - 1, startRow + Math.max(1, rowsPerPage) - 1),
+            startColumn,
+            endColumn: Math.min(columnCount - 1, startColumn + Math.max(1, columnsPerPage) - 1),
+          },
+        });
+      }
+    }
+    return pages;
   }, [open, rowCount, columnCount, sheetId, rowsPerPage, columnsPerPage]);
 
   const pages = externalPages && externalPages.length > 0 ? externalPages : internalPages;
@@ -87,18 +98,7 @@ export function PrintPreviewDialog({
         <Inline gap="sm" className="items-center justify-between"><Button disabled={pageIndex <= 0} size="xs" variant="ghost" onClick={() => setPageIndex((index) => Math.max(0, index - 1))}>Previous page</Button><Text size="xs" tone="muted">{page ? `Page ${page.page} · Rows ${page.range.startRow + 1}-${page.range.endRow + 1} · ${columnLabel(page.range.startColumn)}-${columnLabel(page.range.endColumn)}` : 'No page'}</Text><Button disabled={pageIndex >= pages.length - 1} size="xs" variant="ghost" onClick={() => setPageIndex((index) => Math.min(pages.length - 1, index + 1))}>Next page</Button></Inline>
         <Inline gap="sm" className="justify-end">
           <Button variant="ghost" onClick={onClose}>Close</Button>
-          <Button variant="primary" onClick={() => {
-            if (layout) {
-              const styleId = 'react-sheets-print-layout';
-              document.getElementById(styleId)?.remove();
-              const style = document.createElement('style');
-              style.id = styleId;
-              style.textContent = `@page { size: ${layout.paper} ${layout.orientation}; margin: ${layout.margin.top}mm ${layout.margin.right}mm ${layout.margin.bottom}mm ${layout.margin.left}mm; }`;
-              document.head.appendChild(style);
-              window.setTimeout(() => style.remove(), 1000);
-            }
-            window.print();
-          }}>Print</Button>
+          <Button variant="primary" onClick={onClose}>Use Export PDF</Button>
         </Inline>
       </Stack>
     </Dialog>

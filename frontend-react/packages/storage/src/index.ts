@@ -6,7 +6,6 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel, type PivotLayout, type TableScalar, type WorkbookTableBlock, type WorkbookTableModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
 import {
   validateOperationEnvelopeV2,
-  type CollaborationChangeSet,
   type CommittedOperationEnvelopeV2,
   type OperationEnvelopeV2,
   type SnapshotResponse,
@@ -317,11 +316,11 @@ export class WorkbookStorage {
       throw new Error(`Workbook not found: ${unitId}`);
     }
     const baseRevision = row.snapshot_revision ?? 0;
-    const snapshot = migrateSnapshot(JSON.parse(row.snapshot_json) as WorkbookSnapshotV1);
-    const migratedJson = JSON.stringify(snapshot);
-    if (migratedJson !== row.snapshot_json) {
-      this.database.prepare('UPDATE workbooks SET snapshot_json = ? WHERE unit_id = ?').run(migratedJson, unitId);
-    }
+    // The compressed revision snapshot is the integrity-checked source for a
+    // baseline. The denormalized workbooks row is only a fast pointer and is
+    // never rewritten as a side effect of a read.
+    const stored = this.readStoredSnapshot(unitId, baseRevision);
+    const snapshot = stored ?? migrateSnapshot(JSON.parse(row.snapshot_json) as WorkbookSnapshotV1);
     if (baseRevision === row.revision) {
       return { snapshot, revision: row.revision };
     }
@@ -331,9 +330,7 @@ export class WorkbookStorage {
       .prepare('SELECT payload_json FROM changesets WHERE unit_id = ? AND revision > ? AND revision <= ? ORDER BY revision ASC')
       .all(unitId, baseRevision, row.revision) as Array<{ payload_json: string }>;
     for (const entry of changesets) {
-      const operation = JSON.parse(entry.payload_json) as
-        | CommittedOperationEnvelopeV2
-        | CollaborationChangeSet;
+      const operation = JSON.parse(entry.payload_json) as CommittedOperationEnvelopeV2;
       runtime.applyRemoteMutations(operation.mutations.map((mutation) => ({
         id: mutation.id,
         unitId: operation.unitId,
@@ -488,11 +485,6 @@ export class WorkbookStorage {
       }
       throw error;
     }
-  }
-
-  /** V1 writes are deliberately unavailable at the storage boundary. */
-  appendChangeSet(_changeSet: CollaborationChangeSet): never {
-    throw new Error('CollaborationChangeSetV1 is no longer accepted; submit OperationEnvelopeV2');
   }
 
   createDataTable(unitId: string, table: WorkbookTableModel, actorSubject: string): WorkbookTableModel {

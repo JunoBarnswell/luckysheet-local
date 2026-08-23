@@ -44,6 +44,11 @@ export {
   type PrintPageSnapshot,
   type PrintPreviewCommandParams,
   type PrintAreaSetCommandParams,
+  type PrintLayout,
+  type PrintDocument,
+  type PageSetup,
+  type PrintArea,
+  type PrintPageBreak,
 } from './features/print';
 export {
   buildQueryResultSnapshot,
@@ -73,7 +78,13 @@ export {
   evaluateCapability,
   type ExtendedSnapshot,
 } from './features/extended';
-export { HistoryPreviewSession, type HistoryEntryMeta } from './features/history';
+export {
+  HistoryPreviewSession,
+  type HistoryEntryMeta,
+  type HistoryPreviewProjection,
+  type RestoreCommandParams,
+  type ServerRestoreMutationParams,
+} from './features/history';
 export { CollaborationSession } from './collaboration';
 export { executeUiCommand, isUiCommand, type UiCommandId } from './execute-command';
 export { cellAddress, columnLabel, parseAddress } from './address';

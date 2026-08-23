@@ -45,4 +45,36 @@ describe('Facade automation DSL', () => {
     assert.equal(runtime.undo(), true);
     assert.equal(workbook.getSheet(workbook.activeSheetId).cells.get(0, 0), undefined);
   });
+
+  it('returns a serializable plan with resource limits', () => {
+    const workbook = new WorkbookModel('automation-plan', 'DSL');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerAutomationCommands(runtime.registry);
+    const result = runtime.execute('automation.run', { source: "sheet.getRange('A1').setValues([[1]]);" }) as { plan?: { schema?: string; sourceHash?: string; serializable?: boolean; limits?: { maxOperations: number } } };
+    assert.equal(result.plan?.schema, 'AutomationPlanV1');
+    assert.equal(result.plan?.serializable, true);
+    assert.ok(result.plan?.sourceHash);
+    assert.ok((result.plan?.limits?.maxOperations ?? 0) > 0);
+  });
+
+  it('rejects a script before writing when the operation budget is exceeded', () => {
+    const workbook = new WorkbookModel('automation-limit', 'DSL');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerAutomationCommands(runtime.registry, { sandbox: new ScriptSandbox({
+      ...new ScriptSandbox().getPolicy(), maxOperations: 1,
+    }) });
+    assert.throws(() => runtime.execute('automation.run', { source: "sheet.getRange('A1:A2').clear();" }), /exceeds 1 operations/i);
+    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
+  });
+
+  it('rejects an out-of-band AST payload explicitly', () => {
+    const workbook = new WorkbookModel('automation-wire', 'DSL');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerAutomationCommands(runtime.registry);
+    assert.throws(() => runtime.execute('automation.run', { source: "sheet.getRange('A1').clear();", program: () => undefined } as never), /source only|not serializable/i);
+    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
+  });
 });

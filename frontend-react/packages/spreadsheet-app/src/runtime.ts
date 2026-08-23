@@ -22,9 +22,7 @@ import {
 } from './formula-spill-sync';
 import {
   LocalDraftStore,
-  buildLocalDraftRecord,
-  isDraftNewerThanServer,
-  scheduleDebounced,
+  LocalOperationStore,
 } from './features/persistence';
 
 export interface RuntimeHandlers {
@@ -58,6 +56,7 @@ export interface SpreadsheetRuntime {
   collaboration: CollaborationSession | null;
   bootstrapDispose: (() => void) | null;
   draftStore: LocalDraftStore;
+  operationStore: LocalOperationStore;
   scheduleDraftWrite: () => void;
   connectors: ConnectorRegistry;
   capabilities: CapabilityRegistry;
@@ -99,6 +98,7 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
   const capabilities = createDefaultCapabilityRegistry();
   registerSpreadsheetFeatures(commands, drawing);
   const draftStore = new LocalDraftStore();
+  const operationStore = new LocalOperationStore();
   const runtime: SpreadsheetRuntime = {
     api: new WorkbookApiClient({ authTokenProvider: options.authTokenProvider }),
     formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
@@ -118,15 +118,27 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     collaboration: null,
     bootstrapDispose: null,
     draftStore,
+    operationStore,
     scheduleDraftWrite: () => undefined,
     connectors,
     capabilities,
     authTokenProvider: options.authTokenProvider,
   };
-  runtime.scheduleDraftWrite = scheduleDebounced(() => {
-    runtime.draftStore.write(buildLocalDraftRecord(runtime.model.snapshot(), runtime.remoteRevision));
-    runtime.handlers.onDraftUpdated?.();
-  }, 800);
+  // The offline journal stores only operation intent and a monotonic client
+  // sequence. Full workbook snapshots are server-owned persistence records;
+  // they are never written by this client-side runtime.
+  runtime.collaboration = new CollaborationSession(runtime.commands, {
+    loadPending: () => {
+      const journal = operationStore.read(runtime.model.unitId);
+      return journal
+        ? { operations: journal.operations, nextClientSequence: journal.nextClientSequence }
+        : null;
+    },
+    persistPending: (operations, nextClientSequence) => {
+      operationStore.write(runtime.model.unitId, operations, nextClientSequence);
+      runtime.handlers.onDraftUpdated?.();
+    },
+  });
   attachCoreListeners(runtime);
   return runtime;
 }
@@ -287,7 +299,6 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         params: mutation.params,
         affectedRanges: [...mutation.affectedRanges],
       });
-      runtime.scheduleDraftWrite();
     }),
   );
 
@@ -298,7 +309,30 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       runtime.pendingMutations = [];
       runtime.handlers.onMutationsApplied?.();
       if (batch.length === 0) return;
+      const history = runtime.commands.getUndoEntries().at(-1);
+      if (history) {
+        runtime.collaboration?.recordLocalUndo({
+          operationId: result.operationId,
+          undoMutations: history.undo,
+        });
+      }
       submitChangeset(runtime, result.operationId, batch);
+    }),
+  );
+
+  runtime.detachers.push(
+    runtime.commands.onHistoryReplay((source, entry) => {
+      if (!runtime.collaboration || entry.undo.length === 0) return;
+      const operation = source === 'undo'
+        ? runtime.collaboration.enqueueCompensatingMutations(
+          runtime.collaboration.undoOwnLast() ?? entry.undo,
+          runtime.model.unitId,
+        )
+        : runtime.collaboration.enqueueLocalMutations(entry.redo, runtime.model.unitId);
+      if (source === 'redo') {
+        runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.undo });
+      }
+      scheduleOperation(runtime, operation);
     }),
   );
 }
@@ -318,12 +352,26 @@ function submitChangeset(
     runtime.handlers.onSaveState?.('offline');
     return;
   }
-  runtime.ownOperationIds.add(operationId);
-  runtime.collaboration.enqueueLocalMutations(mutations, runtime.model.unitId, operationId);
+  const operation = runtime.collaboration.enqueueLocalMutations(mutations, runtime.model.unitId, operationId);
+  scheduleOperation(runtime, operation);
+}
+
+function scheduleOperation(
+  runtime: SpreadsheetRuntime,
+  operation: import('@react-sheets/protocol').OperationEnvelopeV2,
+): void {
+  if (!runtime.collaboration) return;
+  runtime.ownOperationIds.add(operation.operationId);
   runtime.handlers.onSaveState?.('saving');
-  void runtime.collaboration.offlineQueue.flushAll().then(({ failed }) => {
-    if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
-  });
+  // The operation is durable immediately. Only an open authenticated socket
+  // may start a flush; disconnected edits remain in the journal.
+  if (runtime.collab && runtime.collaboration.offlineQueue.getState() !== 'offline') {
+    void runtime.collaboration.offlineQueue.flushAll().then(({ failed }) => {
+      if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
+    });
+  } else {
+    runtime.handlers.onSaveState?.('offline');
+  }
 }
 
 export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revision?: number): void {
@@ -355,6 +403,45 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.pivotResults = {};
 }
 
+/** Replay durable local intent on top of the authoritative server snapshot. */
+export function replayPendingOperations(runtime: SpreadsheetRuntime): number {
+  const pending = runtime.collaboration?.getPendingOperations() ?? [];
+  let applied = 0;
+  for (const operation of pending) {
+    const items = operation.mutations.map((mutation) => {
+      const metadata = runtime.commands.registry.getMutationMetadata(mutation.id);
+      let affectedRanges: MutationInfo['affectedRanges'] = [];
+      try {
+        const resolved = metadata?.affectedRanges?.resolve(mutation.params as never);
+        if (Array.isArray(resolved)) affectedRanges = [...resolved];
+      } catch {
+        affectedRanges = [];
+      }
+      return {
+        id: mutation.id,
+        unitId: operation.unitId,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges,
+      } satisfies MutationInfo;
+    });
+    runtime.commands.applyRemoteMutations(items);
+    applied += 1;
+  }
+  return applied;
+}
+
+async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise<void> {
+  try {
+    const revisions = await runtime.api.listRevisions(runtime.model.unitId);
+    runtime.collaboration?.loadCommittedHistory(revisions.map((record) => record.payload));
+    runtime.handlers.onRemoteRevisions?.(revisions);
+  } catch {
+    runtime.handlers.onRemoteRevisions?.([]);
+  }
+  replayPendingOperations(runtime);
+}
+
 export function startCollaborationSession(
   runtime: SpreadsheetRuntime,
   getSelectionKey: () => string,
@@ -362,10 +449,9 @@ export function startCollaborationSession(
 ): () => void {
   if (typeof window === 'undefined') return () => undefined;
 
-  runtime.collaboration = new CollaborationSession(runtime.commands, {
-    send: (operation) => {
-      return runtime.collab?.send({ type: 'changeset.submit', payload: operation }) ?? false;
-    },
+  runtime.collaboration ??= new CollaborationSession(runtime.commands);
+  runtime.collaboration.attachTransport((operation) => {
+    return runtime.collab?.send({ type: 'changeset.submit', payload: operation }) ?? false;
   });
   runtime.collaboration.setRevision(runtime.remoteRevision);
 
@@ -376,13 +462,13 @@ export function startCollaborationSession(
   runtime.collab = client;
 
   const applyRemote = (message: OperationMessageV2) => {
-    if (message.type === 'snapshot.response') {
+      if (message.type === 'snapshot.response') {
       const response = message.payload;
       if (response.snapshot.unitId !== runtime.model.unitId) return;
       hydrateRuntime(runtime, response);
       runtime.remoteRevision = response.revision;
       runtime.collaboration?.setRevision(response.revision);
-      void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
+      void loadHistoryAndReplayPending(runtime);
       runtime.handlers.onMutationsApplied?.();
     } else if (message.type === 'revision.created') {
       if (message.payload.unitId !== runtime.model.unitId) return;
@@ -465,8 +551,8 @@ export function startCollaborationSession(
     detachMessage();
     detachStatus();
     client.close();
+    runtime.collaboration?.attachTransport(undefined);
     runtime.collab = null;
-    runtime.collaboration = null;
   };
 }
 
@@ -475,14 +561,8 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
   void (async () => {
     try {
       const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
-      const localDraft = runtime.draftStore.read(runtime.model.unitId);
-      if (localDraft && isDraftNewerThanServer(localDraft, snapshotResponse.revision)) {
-        hydrateRuntime(runtime, { snapshot: localDraft.snapshot, revision: localDraft.revision });
-        runtime.handlers.onNotice?.('Recovered newer local draft');
-      } else {
-        hydrateRuntime(runtime, snapshotResponse);
-      }
-      void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => runtime.handlers.onRemoteRevisions?.([]));
+      hydrateRuntime(runtime, snapshotResponse);
+      await loadHistoryAndReplayPending(runtime);
       runtime.remoteConnected = true;
       if (!active) return;
       runtime.handlers.onSaveState?.('saved');
@@ -494,6 +574,8 @@ export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void
     } catch {
       try {
         const created = await runtime.api.createWorkbook(runtime.model.snapshot());
+        hydrateRuntime(runtime, created);
+        replayPendingOperations(runtime);
         void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => runtime.handlers.onRemoteRevisions?.([]));
         runtime.remoteConnected = true;
         runtime.remoteRevision = Math.max(runtime.remoteRevision, created.revision);

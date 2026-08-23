@@ -1,35 +1,46 @@
 import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
-import { buildXlsxArchiveBase64, exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot } from '@react-sheets/pro-features';
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, strToU8, zipSync } from 'fflate';
+import {
+  bytesToBase64,
+  detectPackageFeatures,
+  exportSnapshotToXlsxPackage,
+  loadXlsxPackage,
+  parseLoadedXlsx,
+} from './ooxml';
+import type { DateSystem, XlsxPackage, XlsxZipLimits } from './types';
 
-export { buildXlsxArchiveBase64, exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot };
+export { bytesToBase64, detectPackageFeatures, loadXlsxPackage, parseLoadedXlsx };
 
-function decodeBase64(base64: string): Uint8Array {
-  const normalized = base64.replace(/^data:[^;]+;base64,/, '');
-  if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(normalized, 'base64'));
-  const binary = atob(normalized);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-export function unzipXlsxBase64(base64: string): Record<string, string> {
-  const entries = unzipSync(decodeBase64(base64));
+/** Readable XML view retained for callers that need to inspect a package. */
+export function unzipXlsxBase64(base64: string, limits?: Partial<XlsxZipLimits>): Record<string, string> {
+  const loaded = loadXlsxPackage(base64, limits);
   const files: Record<string, string> = {};
-  for (const [name, bytes] of Object.entries(entries)) {
-    files[name] = strFromU8(bytes);
-  }
+  for (const [name, bytes] of Object.entries(loaded.files)) files[name] = strFromU8(bytes);
   return files;
 }
 
-export function parseXlsxBase64ToSnapshot(base64: string): WorkbookSnapshotV1 {
-  const files = unzipXlsxBase64(base64);
-  if (!files['xl/workbook.xml']) {
-    throw new Error('Not a valid XLSX package');
-  }
-  return parseXlsxXmlToSnapshot(files);
+/** Parse an in-memory XML file map through the independent OOXML package reader. */
+export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookSnapshotV1 {
+  const parts: Record<string, Uint8Array> = Object.fromEntries(Object.entries(files).map(([name, value]) => [name, strToU8(value)]));
+  if (!parts['xl/workbook.xml']) throw new Error('Not a valid XLSX package: xl/workbook.xml is missing');
+  const loaded = loadXlsxPackage(bytesToBase64(zipSync(parts, { level: 0 })));
+  return parseLoadedXlsx(loaded).snapshot;
 }
 
-export function exportSnapshotToXlsxBase64(snapshot: WorkbookSnapshotV1): string {
-  return buildXlsxArchiveBase64(snapshot);
+/** Export a snapshot as a real OOXML ZIP package. */
+export function exportSnapshotToXlsxBase64(
+  snapshot: WorkbookSnapshotV1,
+  preserved?: XlsxPackage,
+  options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean } = {},
+): string {
+  return exportSnapshotToXlsxPackage(snapshot, {
+    dateSystem: options.dateSystem ?? preserved?.dateSystem ?? '1900',
+    includeCachedValues: options.includeCachedValues,
+    preserveMacros: options.preserveMacros ?? true,
+  }, preserved);
+}
+
+/** Build a package for callers that need a standalone byte payload. */
+export function zipXlsxParts(parts: Record<string, Uint8Array>): string {
+  return bytesToBase64(zipSync(parts, { level: 6 }));
 }

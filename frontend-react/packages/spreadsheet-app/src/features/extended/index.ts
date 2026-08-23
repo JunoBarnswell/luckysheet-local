@@ -7,6 +7,8 @@ export type PlatformCapability =
   | 'what-if'
   | 'groupby-pivotby';
 
+export const DISABLED_STUB_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY']);
+
 export interface CapabilityDescriptor {
   id: PlatformCapability;
   enabled: boolean;
@@ -52,6 +54,14 @@ export class CapabilityRegistry {
     if (!cap) return { canEnable: false, reason: 'Unknown capability' };
     if (cap.enabled) return { canEnable: true };
     return { canEnable: false, reason: cap.reason };
+  }
+
+  evaluateFormulaFunction(name: string): { enabled: boolean; reason?: string } {
+    const normalized = name.trim().toUpperCase();
+    if (DISABLED_STUB_FUNCTIONS.has(normalized)) {
+      return { enabled: false, reason: 'GROUPBY/PIVOTBY require full calculation and spill semantics' };
+    }
+    return { enabled: true };
   }
 }
 

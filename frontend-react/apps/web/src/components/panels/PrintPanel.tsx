@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text } from '@react-sheets/ui-system';
-import type { PrintLayout } from '@react-sheets/pro-features';
+import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 
 export interface PrintPanelProps {
   onPrint: (layout: PrintLayout) => void;

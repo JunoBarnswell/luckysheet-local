@@ -3,6 +3,18 @@ import { FormulaEngine } from '@react-sheets/formula-engine';
 
 export type WhatIfKind = 'goal-seek' | 'data-table' | 'scenario';
 
+export interface WhatIfPlanMetadata {
+  schema: 'WhatIfPlanV1';
+  kind: WhatIfKind;
+  /** Hash of the authoritative workbook state used to build this plan. */
+  sourceRevision: string;
+  /** Hash of definition + writes; useful for replay/audit, not authorization. */
+  planHash: string;
+  definition: unknown;
+  writeCount: number;
+  deterministic: true;
+}
+
 export interface GoalSeekParams {
   setCell: { row: number; column: number };
   toValue: number;
@@ -73,18 +85,21 @@ export interface GoalSeekPlan {
   kind: 'goal-seek';
   result: GoalSeekResult;
   writes: WhatIfCellWrite[];
+  metadata?: WhatIfPlanMetadata;
 }
 
 export interface ScenarioPlan {
   kind: 'scenario';
   result: ScenarioResult;
   writes: WhatIfCellWrite[];
+  metadata?: WhatIfPlanMetadata;
 }
 
 export interface DataTablePlan {
   kind: 'data-table';
   result: DataTableResult;
   writes: WhatIfCellWrite[];
+  metadata?: WhatIfPlanMetadata;
 }
 
 export type WhatIfPlan = GoalSeekPlan | ScenarioPlan | DataTablePlan;
