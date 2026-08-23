@@ -9,6 +9,7 @@ import { StatusBar } from "./components/StatusBar";
 import { FunctionWizardDialog } from "./components/dialogs/FunctionWizardDialog";
 import { SortDialog } from "./components/dialogs/SortDialog";
 import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
+import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
 import { getInitialWorkspacePhase, useWorkspaceState, type SelectionState } from "./state/workspace";
 
 export default function App() {
@@ -162,6 +163,10 @@ export default function App() {
             onRemoveDataValidation={actions.removeDataValidation}
             onPrint={actions.printWorkbook}
             onExportPdf={actions.exportPdf}
+            onAddComment={actions.addComment}
+            onRemoveComment={actions.removeComment}
+            onSetHyperlink={actions.setHyperlink}
+            onRemoveHyperlink={actions.removeHyperlink}
           />
         </Inline>
       </AppShell>
@@ -187,6 +192,14 @@ export default function App() {
         open={state.showFindReplace}
         onClose={actions.closeFindReplace}
         onReplaceAll={(params) => actions.findReplace(params)}
+      />
+
+      <PrintPreviewDialog
+        open={state.showPrintPreview}
+        onClose={() => actions.setShowPrintPreview(false)}
+        sheetId={state.activeSheetId}
+        rowCount={state.selectedSheet.rowCount}
+        columnCount={state.selectedSheet.columns.length}
       />
     </>
   );

@@ -74,14 +74,14 @@ export class SheetSkeleton {
     this.rowHeightsByModel = new Array(this.rowCount);
     for (let r = 0; r < this.rowCount; r++) {
       const override = options.rowHeights
-        ? (Array.isArray(options.rowHeights) ? options.rowHeights[r] : options.rowHeights.get(r))
+        ? ((options.rowHeights as readonly number[])[r] ?? (options.rowHeights as ReadonlyMap<number, number>).get(r))
         : undefined;
       this.rowHeightsByModel[r] = normalizeSize((override ?? this.defaultRowHeight) * this.zoom, 0);
     }
     this.columnWidthsByModel = new Array(this.columnCount);
     for (let c = 0; c < this.columnCount; c++) {
       const override = options.columnWidths
-        ? (Array.isArray(options.columnWidths) ? options.columnWidths[c] : options.columnWidths.get(c))
+        ? ((options.columnWidths as readonly number[])[c] ?? (options.columnWidths as ReadonlyMap<number, number>).get(c))
         : undefined;
       this.columnWidthsByModel[c] = normalizeSize((override ?? this.defaultColumnWidth) * this.zoom, 0);
     }

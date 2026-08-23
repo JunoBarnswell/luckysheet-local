@@ -11,9 +11,9 @@ export interface BoxProps extends HTMLAttributes<HTMLElement> {
 }
 
 export function Box({ as = 'div', className, children, ref, ...props }: BoxProps) {
-  const Component = as;
+  const Component = as as 'div';
   return (
-    <Component ref={ref} className={className} {...props}>
+    <Component ref={ref as Ref<HTMLDivElement>} className={className} {...props}>
       {children}
     </Component>
   );

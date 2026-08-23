@@ -1,8 +1,7 @@
-        row.map((value) => {
-          if (value === '') return { value: null };
-          const numeric = /^-?\d+(\.\\d+)?\$/.test(value) ? Number(value) : null;
-          return { value: numeric ?? value };
-        }),
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  WorkbookModel,
+  type CellComment,
   type CellData,
   type CellStyle,
   type ChartModel,
@@ -34,7 +33,13 @@ import {
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
-import { WorkbookApiClient, type CollaborationMutation, type SnapshotResponse } from '@react-sheets/protocol';
+import {
+  CollabSocketClient,
+  WorkbookApiClient,
+  type CollaborationMessage,
+  type CollaborationMutation,
+  type SnapshotResponse,
+} from '@react-sheets/protocol';
 import { buildXlsxArchiveBase64, registerProSheetCommands, type PrintLayout } from '@react-sheets/pro-features';
 
 export type WorkspacePhase = 'empty' | 'error' | 'loading' | 'ready';
@@ -265,12 +270,21 @@ interface WorkspaceRuntime {
   detachers: Array<() => void>;
   handlers: RuntimeHandlers;
   ownOperationIds: Set<string>;
+  collab: CollabSocketClient | null;
 }
 
 const UNIT_ID_STORAGE_KEY = 'react-sheets:unitId';
 const ACTOR_ID_STORAGE_KEY = 'react-sheets:actorId';
 
 const PEER_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+function hashCode(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
 
 function resolveUnitId(): string {
   if (typeof window === 'undefined') return 'wb-server-default';
@@ -415,6 +429,7 @@ function createWorkspaceRuntime(): WorkspaceRuntime {
     detachers: [],
     handlers: {},
     ownOperationIds: new Set(),
+    collab: null,
   };
   attachCoreListeners(runtime);
   seedWorkbook(runtime);
@@ -555,6 +570,17 @@ function submitChangeset(
 }
 
 // ---------- 启动恢复 ----------
+
+function rebuildFormulaInto(engine: FormulaEngine, workbook: WorkbookModel): void {
+  engine.reset();
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula) engine.setFormula(address, cell.formula);
+      else if (cell.value != null) engine.setValue(address, cell.value as never);
+    });
+  }
+}
 
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
@@ -703,6 +729,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const [showSortDialog, setShowSortDialog] = useState(false);
   const [showFindReplace, setShowFindReplace] = useState(false);
   const [showPrintPreview, setShowPrintPreviewState] = useState(false);
+  const [selectedFloatingId, setSelectedFloatingIdState] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerCursor[]>([]);
   const [collabStatus, setCollabStatus] = useState<'connecting' | 'open' | 'closed'>('closed');
 
@@ -716,6 +743,78 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     runtime.handlers.onNotice = setNotice;
     runtime.handlers.onMutationsApplied = () => refresh();
   }, [runtime, refresh]);
+
+  // P7 协同:?collab=1 时建立 WebSocket,接收远端变更(幂等)与光标
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!new URLSearchParams(window.location.search).has('collab')) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const client = new CollabSocketClient(protocol + '://' + window.location.host + '/api/v1/collab');
+    runtime.collab = client;
+
+    const applyRemote = (message: CollaborationMessage) => {
+      if (message.type === 'revision.created') {
+        // 幂等:自己提交的 changeset 经服务器回播时跳过
+        if (runtime.ownOperationIds.has(message.payload.operationId)) return;
+        runtime.commands.applyRemoteMutations(
+          message.payload.mutations.map((mutation) => ({ ...mutation, unitId: runtime.model.unitId })),
+        );
+        runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
+        runtime.handlers.onMutationsApplied?.();
+      } else if (message.type === 'changeset.ack') {
+        runtime.ownOperationIds.add(message.operationId);
+        runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
+        runtime.handlers.onSaveState?.('saved');
+      } else if (message.type === 'cursor.updated' || message.type === 'presence.updated') {
+        const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
+        const color = PEER_COLORS[Math.abs(hashCode(message.actorId)) % PEER_COLORS.length]!;
+        setPeers((current) => {
+          const others = current.filter((peer) => peer.actorId !== message.actorId);
+          return [
+            ...others,
+            {
+              actorId: message.actorId,
+              name: cursorState?.name ?? message.actorId.slice(0, 6),
+              color,
+              sheetId: cursorState?.sheetId ?? runtime.model.activeSheetId,
+              row: cursorState?.row ?? 0,
+              column: cursorState?.column ?? 0,
+            },
+          ];
+        });
+      }
+    };
+    const detachMessage = client.onMessage(applyRemote);
+    const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
+      setCollabStatus(status);
+      runtime.remoteConnected = status !== 'closed';
+    });
+    client.open();
+
+    // 本地光标广播
+    let lastBroadcast = '';
+    const broadcastTimer = window.setInterval(() => {
+      const key = activeSheetId + ':' + selection.primaryRowIndex + ':' + selection.primaryColumnIndex;
+      if (key === lastBroadcast) return;
+      lastBroadcast = key;
+      client.send({
+        type: 'cursor.updated',
+        unitId: runtime.model.unitId,
+        actorId,
+        state: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex, sheetId: activeSheetId },
+      });
+    }, 400);
+
+    return () => {
+      window.clearInterval(broadcastTimer);
+      detachMessage();
+      detachStatus();
+      client.close();
+      runtime.collab = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runtime]);
 
   // 启动恢复 / 创建 / 离线回退
   useEffect(() => {
@@ -1411,4 +1510,813 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         case 'find-replace':
           setShowFindReplace(true);
           break;
+        case 'banded':          setShowFindReplace(true);
+          break;
         case 'banded':
+        case 'banded-toggle':
+          actionsProxy.current.toggleBandedRows?.();
+          break;
+        case 'zoom-in':
+          setZoomState((current) => Math.min(200, current + 10));
+          break;
+        case 'zoom-out':
+          setZoomState((current) => Math.max(50, current - 10));
+          break;
+        case 'zoom-100':
+          setZoomState(100);
+          break;
+        case 'freeze-top-row':
+          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: 0, ySplit: selection.primaryRowIndex + 1, startRow: selection.primaryRowIndex + 1, startColumn: 0 } });
+          refresh();
+          break;
+        case 'freeze-first-col':
+          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: selection.primaryColumnIndex + 1, ySplit: 0, startRow: 0, startColumn: selection.primaryColumnIndex + 1 } });
+          refresh();
+          break;
+        case 'freeze-at-primary':
+          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: selection.primaryColumnIndex, ySplit: selection.primaryRowIndex, startRow: selection.primaryRowIndex, startColumn: selection.primaryColumnIndex } });
+          refresh();
+          break;
+        case 'unfreeze':
+          runtime.commands.execute('sheet.freeze.set', { sheetId: activeSheetId, freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 } });
+          refresh();
+          break;
+        case 'open-chart':
+          setActivePanel('chart');
+          break;
+        case 'open-pivot':
+          setActivePanel('pivot');
+          break;
+        case 'open-shape':
+          setActivePanel('shape');
+          break;
+        case 'open-sparkline':
+          setActivePanel('sparkline');
+          break;
+        case 'open-conditional-format':
+          setActivePanel('conditionalFormat');
+          break;
+        case 'open-data-validation':
+          setActivePanel('dataValidation');
+          break;
+        case 'open-history':
+          setActivePanel('history');
+          break;
+        case 'open-print':
+          setShowPrintPreviewState(true);
+          setActivePanel('print');
+          break;
+        case 'open-comments':
+          setActivePanel('inspector');
+          setNotice('Comments are shown in the inspector panel');
+          break;
+        case 'function-wizard':
+          setShowFunctionWizard(true);
+          break;
+        case 'autosum': {
+          const sheetModel = runtime.model.getSheet(activeSheetId);
+          let sumStart = selection.primaryRowIndex - 1;
+          while (sumStart >= 0) {
+            const above = sheetModel.cells.get(sumStart, selection.primaryColumnIndex);
+            if (!above || typeof above.value !== 'number') break;
+            sumStart -= 1;
+          }
+          sumStart += 1;
+          if (sumStart < selection.primaryRowIndex) {
+            const label = columnLabelOf(selection.primaryColumnIndex);
+            const formula = '=SUM(' + label + (sumStart + 1) + ':' + label + selection.primaryRowIndex + ')';
+            actionsProxy.current.setFormulaDraft?.(formula);
+            actionsProxy.current.beginEdit?.(formula);
+          }
+          break;
+        }
+        case 'sort-dialog':
+          setShowSortDialog(true);
+          break;
+        case 'sort-asc':
+        case 'sort-desc': {
+          const ascending = action === 'sort-asc';
+          runtime.commands.execute('sheet.sort', {
+            sheetId: activeSheetId,
+            range: selection.ranges[selection.primaryRangeIndex] ?? singleCellRange(selection.primaryRowIndex, selection.primaryColumnIndex),
+            sortColumn: selection.primaryColumnIndex,
+            ascending,
+            hasHeader: true,
+          });
+          refresh();
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeSheetId, columns.length, phase, refresh, runtime, selection],
+  );
+
+  // ==== 动作实现(截断恢复) ====
+  const actionsProxy = useRef<Partial<WorkspaceActions>>({});
+
+  const columnLabelOf = (column: number): string => {
+    let label = '';
+    let remaining = column + 1;
+    while (remaining > 0) {
+      const modulo = (remaining - 1) % 26;
+      label = String.fromCharCode(65 + modulo) + label;
+      remaining = Math.floor((remaining - 1) / 26);
+    }
+    return label;
+  };
+
+  const singleCellRange = (row: number, column: number): RangeRef => ({
+    sheetId: activeSheetId,
+    startRow: row,
+    endRow: row,
+    startColumn: column,
+    endColumn: column,
+  });
+
+  const cellStyleAt = (row: number, column: number): CellStyle | undefined =>
+    phase === 'ready' ? runtime.model.getSheet(activeSheetId).cells.get(row, column)?.style : undefined;
+
+  const primaryRangeOrDefault = (): RangeRef =>
+    selection.ranges[selection.primaryRangeIndex] ?? singleCellRange(selection.primaryRowIndex, selection.primaryColumnIndex);
+
+  function getRangeMatrixInternal(range: RangeRef): CellData[][] {
+    const sheet = runtime.model.getSheet(range.sheetId);
+    const rows: CellData[][] = [];
+    for (let r = range.startRow; r <= range.endRow; r++) {
+      const rowValues: CellData[] = [];
+      for (let c = range.startColumn; c <= range.endColumn; c++) {
+        const cell = sheet.cells.get(r, c);
+        rowValues.push(cell ? structuredClone(cell) : { value: null });
+      }
+      rows.push(rowValues);
+    }
+    return rows;
+  }
+
+  const copy = useCallback(() => {
+    if (phase !== 'ready') return;
+    void navigator.clipboard.writeText(formatTsv(getRangeMatrixInternal(primaryRangeOrDefault())));
+    setNotice('Range copied');
+  }, [phase, selection.primaryRangeIndex, selection.ranges]);
+
+  const cut = useCallback(() => {
+    if (phase !== 'ready') return;
+    const range = primaryRangeOrDefault();
+    void navigator.clipboard.writeText(formatTsv(getRangeMatrixInternal(range)));
+    runtime.commands.execute('sheet.range.clear', { sheetId: activeSheetId, range, mode: 'contents' });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const paste = useCallback(() => {
+    if (phase !== 'ready') return;
+    void navigator.clipboard.readText().then((text) => {
+      if (!text) return;
+      const values = parseTsv(text);
+      runtime.commands.execute('sheet.range.set', {
+        sheetId: activeSheetId,
+        startRow: selection.primaryRowIndex,
+        startColumn: selection.primaryColumnIndex,
+        values,
+      });
+      refresh();
+      setNotice('Pasted from clipboard');
+    });
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const clearFormats = useCallback(() => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.range.clear', { sheetId: activeSheetId, range: primaryRangeOrDefault(), mode: 'formats' });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const nextId = (prefix: string) => prefix + '-' + Math.random().toString(36).slice(2, 8);
+
+  const addChart = useCallback((chart: ChartModel) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.chart.add', chart);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const addShape = useCallback((shape: ShapeModel) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.shape.add', shape);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const addSparkline = useCallback((sparkline: SparklineModel) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.sparkline.add', sparkline);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const updateChartBounds = useCallback((id: string, bounds: ChartModel['bounds']) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.chart.move', { id, sheetId: activeSheetId, bounds });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const removeChart = useCallback((id: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.chart.remove', id as never);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const updateShapeBounds = useCallback((id: string, bounds: ShapeModel['bounds']) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.shape.move', { id, sheetId: activeSheetId, bounds });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const removeShape = useCallback((id: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.shape.remove', id as never);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const removeSparkline = useCallback((id: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.sparkline.remove', id as never);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const addPivot = useCallback((pivot: PivotModel) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.pivot.add', pivot);
+    runtime.commands.execute('pro.pivot.write', { sheetId: pivot.sheetId, pivotId: pivot.id });
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const refreshPivot = useCallback((pivotId: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.pivot.write', { sheetId: activeSheetId, pivotId });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const removePivot = useCallback((id: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('pro.pivot.remove', id as never);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const addConditionalFormat = useCallback((rule: ConditionalFormatRule) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.cf.add', { rule });
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const removeConditionalFormat = useCallback((ruleId: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.cf.remove', { sheetId: activeSheetId, ruleId });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const addDataValidation = useCallback((rule: DataValidationRule) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.dv.add', { rule });
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const removeDataValidation = useCallback((ruleId: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.dv.remove', { sheetId: activeSheetId, ruleId });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const addComment = useCallback((text: string) => {
+    if (phase !== 'ready' || !text.trim()) return;
+    const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+    const comment: CellComment = { id: nextId('cmt'), author: actorId, text: text.trim(), createdAt: new Date().toISOString() };
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      value: { ...(cell ?? { value: null }), comment },
+    });
+    refresh();
+  }, [actorId, activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const removeComment = useCallback(() => {
+    if (phase !== 'ready') return;
+    const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+    if (!cell?.comment) return;
+    const { comment: _removed, ...rest } = cell;
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      value: rest as CellData,
+    });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const setHyperlink = useCallback((url: string) => {
+    if (phase !== 'ready' || !url.trim()) return;
+    const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      value: { ...(cell ?? { value: null }), hyperlink: url.trim() },
+    });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const removeHyperlink = useCallback(() => {
+    if (phase !== 'ready') return;
+    const cell = runtime.model.getSheet(activeSheetId).cells.get(selection.primaryRowIndex, selection.primaryColumnIndex);
+    if (!cell?.hyperlink) return;
+    const { hyperlink: _dropped, ...rest } = cell;
+    runtime.commands.execute('sheet.cell.set', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      value: rest as CellData,
+    });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const applyFilter = useCallback(
+    (column: number, patch: { selectedValues?: string[] | null; conditionOperator?: string; conditionValue?: string }) => {
+      if (phase !== 'ready') return;
+      const sheet = runtime.model.getSheet(activeSheetId);
+      const baseRange = sheet.filter?.range
+        ?? normalizeRangeRef({
+          sheetId: activeSheetId,
+          startRow: 0,
+          endRow: Math.max(0, sheet.rowCount - 1),
+          startColumn: 0,
+          endColumn: Math.max(0, sheet.columnCount - 1),
+        });
+      const criteria: FilterModel['criteria'] = { ...(sheet.filter?.criteria ?? {}) };
+      criteria[column] = {
+        column,
+        selectedValues: patch.selectedValues ?? undefined,
+        conditionOperator: patch.conditionOperator,
+        conditionValue: patch.conditionValue,
+      };
+      runtime.commands.execute('sheet.filter.set', {
+        sheetId: activeSheetId,
+        filter: { sheetId: activeSheetId, range: baseRange, criteria },
+      });
+      refresh();
+    },
+    [activeSheetId, phase, refresh, runtime],
+  );
+
+  const clearFilter = useCallback(() => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('filter.remove', { sheetId: activeSheetId });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const findReplace = useCallback(
+    (params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }) => {
+      if (phase !== 'ready' || !params.find) return 0;
+      const patches = collectFindReplacements(runtime.model, params);
+      let count = 0;
+      for (const patch of patches) {
+        count += patch.values[0]!.length;
+        runtime.commands.execute('sheet.range.set', {
+          sheetId: patch.sheetId,
+          startRow: patch.startRow,
+          startColumn: patch.startColumn,
+          values: patch.values,
+        });
+      }
+      refresh();
+      setNotice(count + ' replacement(s) applied');
+      return count;
+    },
+    [phase, refresh, runtime],
+  );
+
+  const remapEngineStructure = (
+    axis: 'row' | 'column',
+    at: number,
+    count: number,
+    op: 'insert' | 'delete',
+  ) => {
+    try {
+      runtime.formula.remapStructure(activeSheetId, { axis, at, count, op });
+    } catch {
+      // 重映射失败时整体重建,保证正确性优先
+      runtime.formula.reset();
+      rebuildFormulaInto(runtime.formula, runtime.model);
+    }
+  };
+
+  const insertRowsAtPrimary = useCallback((count: number) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.rows.insert', { sheetId: activeSheetId, at: selection.primaryRowIndex, count });
+    remapEngineStructure('row', selection.primaryRowIndex, count, 'insert');
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryRowIndex]);
+
+  const deleteRowsAtPrimary = useCallback(() => {
+    if (phase !== 'ready') return;
+    const range = selection.ranges[selection.primaryRangeIndex];
+    runtime.commands.execute('sheet.rows.delete', {
+      sheetId: activeSheetId,
+      at: range?.startRow ?? selection.primaryRowIndex,
+      count: (range?.endRow ?? selection.primaryRowIndex) - (range?.startRow ?? selection.primaryRowIndex) + 1,
+    });
+    remapEngineStructure('row', range?.startRow ?? selection.primaryRowIndex, (range?.endRow ?? selection.primaryRowIndex) - (range?.startRow ?? selection.primaryRowIndex) + 1, 'delete');
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection]);
+
+  const insertColumnsAtPrimary = useCallback((count: number) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.columns.insert', { sheetId: activeSheetId, at: selection.primaryColumnIndex, count });
+    remapEngineStructure('column', selection.primaryColumnIndex, count, 'insert');
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection.primaryColumnIndex]);
+
+  const deleteColumnsAtPrimary = useCallback(() => {
+    if (phase !== 'ready') return;
+    const range = selection.ranges[selection.primaryRangeIndex];
+    runtime.commands.execute('sheet.columns.delete', {
+      sheetId: activeSheetId,
+      at: range?.startColumn ?? selection.primaryColumnIndex,
+      count: (range?.endColumn ?? selection.primaryColumnIndex) - (range?.startColumn ?? selection.primaryColumnIndex) + 1,
+    });
+    remapEngineStructure('column', range?.startColumn ?? selection.primaryColumnIndex, (range?.endColumn ?? selection.primaryColumnIndex) - (range?.startColumn ?? selection.primaryColumnIndex) + 1, 'delete');
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection]);
+
+  const hideRowsAtPrimary = useCallback(() => {
+    if (phase !== 'ready') return;
+    const range = selection.ranges[selection.primaryRangeIndex];
+    const start = range?.startRow ?? selection.primaryRowIndex;
+    const end = range?.endRow ?? selection.primaryRowIndex;
+    for (let row = start; row <= end; row++) {
+      runtime.commands.execute('rows.hidden', { sheetId: activeSheetId, index: row });
+    }
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection]);
+
+  const hideColumnsAtPrimary = useCallback(() => {
+    if (phase !== 'ready') return;
+    const range = selection.ranges[selection.primaryRangeIndex];
+    const start = range?.startColumn ?? selection.primaryColumnIndex;
+    const end = range?.endColumn ?? selection.primaryColumnIndex;
+    for (let column = start; column <= end; column++) {
+      runtime.commands.execute('columns.hidden', { sheetId: activeSheetId, index: column });
+    }
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection]);
+
+  const unhideAll = useCallback(() => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('rows.unhidden.all', { sheetId: activeSheetId });
+    runtime.commands.execute('columns.unhidden.all', { sheetId: activeSheetId });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const toggleBandedRows = useCallback(() => {
+    if (phase !== 'ready') return;
+    const sheet = runtime.model.getSheet(activeSheetId);
+    const next = sheet.bandedRule
+      ? null
+      : {
+          range: normalizeRangeRef({
+            sheetId: activeSheetId,
+            startRow: 0,
+            endRow: Math.max(0, sheet.rowCount - 1),
+            startColumn: 0,
+            endColumn: Math.max(0, sheet.columnCount - 1),
+          }),
+        firstColor: '#ffffff',
+        secondColor: '#f1f5f9',
+      };
+    runtime.commands.execute('sheet.banded.set', { sheetId: activeSheetId, rule: next });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const transposeSelection = useCallback(() => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('matrix.transpose', { sheetId: activeSheetId, range: primaryRangeOrDefault() });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const flipSelection = useCallback((direction: 'h' | 'v') => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('matrix.flip', {
+      sheetId: activeSheetId,
+      range: primaryRangeOrDefault(),
+      direction: direction === 'h' ? 'horizontal' : 'vertical',
+    });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const splitByDelimiter = useCallback((delimiter: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.splitColumn', {
+      sheetId: activeSheetId,
+      row: selection.primaryRowIndex,
+      column: selection.primaryColumnIndex,
+      delimiter,
+      maxColumns: Math.min(columns.length - selection.primaryColumnIndex - 1, 8),
+    });
+    refresh();
+  }, [activeSheetId, columns.length, phase, refresh, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const defineName = useCallback((name: string, value: string) => {
+    if (phase !== 'ready' || !name.trim()) return;
+    runtime.commands.execute('workbook.name.set', { name: name.trim().toUpperCase(), value });
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const removeName = useCallback((name: string) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('workbook.name.remove', { name });
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const printWorkbook = useCallback((_layout?: PrintLayout) => {
+    setNotice('Preparing print preview');
+    window.print();
+  }, []);
+
+  const exportPdf = useCallback((_layout?: PrintLayout) => {
+    setNotice('Use the browser print dialog and choose Save as PDF');
+    window.print();
+  }, []);
+
+  const importXlsxBase64 = useCallback(async (base64: string) => {
+    const response = await fetch('/api/v1/files/import-xlsx', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ xlsxBase64: base64 }),
+    });
+    if (!response.ok) throw new Error('Import failed: ' + response.status);
+    const result = (await response.json()) as SnapshotResponse;
+    hydrateRuntime(runtime, result);
+    runtime.remoteConnected = true;
+    setActiveSheetId(runtime.model.activeSheetId);
+    setSelection(createInitialSelection());
+    refresh();
+    setNotice('XLSX imported');
+  }, [refresh, runtime]);
+
+  const sortRange = useCallback(
+    (criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader: boolean) => {
+      if (phase !== 'ready' || criteria.length === 0) return;
+      const range = selection.ranges[selection.primaryRangeIndex]
+        ?? normalizeRangeRef({
+          sheetId: activeSheetId,
+          startRow: 0,
+          endRow: Math.min(40, selectedSheet.rowCount - 1),
+          startColumn: 0,
+          endColumn: Math.min(columns.length - 1, 6),
+        });
+      runtime.commands.execute('sheet.sort.multi', {
+        sheetId: activeSheetId,
+        range,
+        criteria: criteria.map((criterion) => ({ column: criterion.colIdx, ascending: criterion.ascending })),
+        hasHeader,
+      });
+      refresh();
+    },
+    [activeSheetId, columns.length, phase, refresh, runtime, selectedSheet.rowCount, selection],
+  );
+
+  const getValidationForPrimary = useCallback((): DataValidationRule | undefined => {
+    if (phase !== 'ready') return undefined;
+    const sheet = runtime.model.getSheet(activeSheetId);
+    return findValidationRule(sheet, selection.primaryRowIndex, selection.primaryColumnIndex);
+  }, [activeSheetId, phase, runtime, selection.primaryColumnIndex, selection.primaryRowIndex]);
+
+  const getValidationAt = useCallback((row: number, column: number): string[] | undefined => {
+    if (phase !== 'ready') return undefined;
+    const sheet = runtime.model.getSheet(activeSheetId);
+    const rule = findValidationRule(sheet, row, column);
+    if (!rule) return undefined;
+    return validationList(rule);
+  }, [activeSheetId, phase, runtime]);
+
+  const getActiveSheetName = useCallback(() => runtime.model.getSheet(activeSheetId).name, [activeSheetId, runtime]);
+
+  const getRangeMatrix = useCallback((range: RangeRef): CellData[][] => {
+    const sheet = runtime.model.getSheet(range.sheetId);
+    const rows: CellData[][] = [];
+    for (let r = range.startRow; r <= range.endRow; r++) {
+      const rowCells: CellData[] = [];
+      for (let c = range.startColumn; c <= range.endColumn; c++) {
+        rowCells.push(structuredClone(sheet.cells.get(r, c)) ?? { value: null });
+      }
+      rows.push(rowCells);
+    }
+    return rows;
+  }, [runtime]);
+
+  const getRangeNumbers = useCallback((range: RangeRef): number[] => {
+    const numbers: number[] = [];
+    for (const row of getRangeMatrix(range)) {
+      for (const cell of row) {
+        const numeric = typeof cell.value === 'number'
+          ? cell.value
+          : Number(String(cell.value ?? '').replace(/[$,%]/g, ''));
+        if (Number.isFinite(numeric) && cell.value !== '' && cell.value != null) numbers.push(numeric);
+      }
+    }
+    return numbers;
+  }, [getRangeMatrix]);
+
+  const setSelectedFloatingId = useCallback((id: string | null) => setSelectedFloatingIdState(id), []);
+  const removeFloatingObject = useCallback(
+    (kind: 'chart' | 'shape', id: string) => {
+      if (kind === 'chart') removeChart(id);
+      else removeShape(id);
+      setSelectedFloatingIdState(null);
+    },
+    [removeChart, removeShape],
+  );
+
+  const resizeRow = useCallback((row: number, heightPx: number) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.row.resize', { sheetId: activeSheetId, row, height: Math.max(18, heightPx) });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const resizeColumn = useCallback((column: number, widthPx: number) => {
+    if (phase !== 'ready') return;
+    runtime.commands.execute('sheet.column.resize', { sheetId: activeSheetId, column, width: Math.max(24, widthPx) });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime]);
+
+  const fillRange = useCallback((targetRange: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => {
+    if (phase !== 'ready') return;
+    const primary = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+    if (!primary) return;
+    runtime.commands.execute('sheet.autofill', {
+      sheetId: activeSheetId,
+      sourceRange: { sheetId: activeSheetId, startRow: primary.startRow, endRow: primary.endRow, startColumn: primary.startColumn, endColumn: primary.endColumn },
+      targetRange: { sheetId: activeSheetId, ...targetRange },
+    });
+    refresh();
+  }, [activeSheetId, phase, refresh, runtime, selection]);
+
+  const addSheet = useCallback(() => {
+    if (phase !== 'ready') return;
+    const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    runtime.commands.execute('sheet.add', { id, name: 'Sheet' + (runtime.model.getSheets().length + 1) });
+    setActiveSheetId(id);
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const renameSheet = useCallback((sheetId: string, name: string) => {
+    if (phase !== 'ready' || !name.trim()) return;
+    runtime.commands.execute('sheet.rename', { sheetId, name: name.trim() });
+    refresh();
+  }, [phase, refresh, runtime]);
+
+  const deleteSheet = useCallback((sheetId: string) => {
+    if (phase !== 'ready') return;
+    try {
+      runtime.commands.execute('sheet.remove', { id: sheetId });
+      if (activeSheetId === sheetId) {
+        const remaining = runtime.model.getSheets()[0];
+        if (remaining) setActiveSheetId(remaining.id);
+      }
+      refresh();
+    } catch {
+      setNotice('A workbook must keep at least one sheet');
+    }
+  }, [activeSheetId, phase, refresh, runtime]);
+
+
+  const closeFunctionWizard = useCallback(() => setShowFunctionWizard(false), []);
+  const closeSortDialog = useCallback(() => setShowSortDialog(false), []);
+  const closeFindReplace = useCallback(() => setShowFindReplace(false), []);
+  const setShowPrintPreview = useCallback((open: boolean) => setShowPrintPreviewState(open), []);
+
+  const actions = useMemo<WorkspaceActions>(
+    () => ({
+      selectCell,
+      selectRange,
+      movePrimary,
+      jumpEdge,
+      selectAll,
+      selectRowHeader,
+      selectColumnHeader,
+      beginEdit,
+      cancelEdit,
+      commitEdit,
+      setFormulaDraft,
+      insertRefIntoDraft,
+      toggleAbsoluteReference,
+      moveCell,
+      notify: setNotice as never,
+      redo,
+      retry,
+      selectSheet,
+      setActivePanel,
+      setRibbonTab,
+      undo,
+      handleRibbonAction,
+      addChart,
+      updateChartBounds,
+      removeChart,
+      addPivot,
+      refreshPivot,
+      removePivot,
+      addShape,
+      updateShapeBounds,
+      removeShape,
+      addSparkline,
+      removeSparkline,
+      addConditionalFormat,
+      removeConditionalFormat,
+      addDataValidation,
+      removeDataValidation,
+      addComment,
+      removeComment,
+      setHyperlink,
+      removeHyperlink,
+      applyFilter,
+      clearFilter,
+      findReplace,
+      insertRowsAtPrimary,
+      deleteRowsAtPrimary,
+      insertColumnsAtPrimary,
+      deleteColumnsAtPrimary,
+      hideRowsAtPrimary,
+      hideColumnsAtPrimary,
+      unhideAll,
+      toggleBandedRows,
+      transposeSelection,
+      flipSelection,
+      splitByDelimiter,
+      defineName,
+      removeName,
+      printWorkbook,
+      exportPdf,
+      importXlsxBase64,
+      sortRange,
+      getRangeMatrix,
+      getRangeNumbers,
+      getValidationForPrimary,
+      getValidationAt,
+      cut,
+      copy,
+      paste,
+      clearFormats,
+      addSheet,
+      renameSheet,
+      deleteSheet,
+      resizeRow,
+      resizeColumn,
+      fillRange,
+      setSelectedFloatingId,
+      removeFloatingObject,
+      getActiveSheetName,
+      setZoom: (nextZoom: number) => setZoomState(Math.max(50, Math.min(200, nextZoom))),
+      commitFormula: (overrideValue?: string) => {
+        if (overrideValue !== undefined) {
+          overrideTargetRef.current = { row: selection.primaryRowIndex, column: selection.primaryColumnIndex };
+        }
+        commitFormula(overrideValue);
+        overrideTargetRef.current = null;
+      },
+      closeFunctionWizard,
+      closeSortDialog,
+      closeFindReplace,
+      setShowPrintPreview,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const historyEntries = useMemo(() => runtime.commands.getUndoEntries(), [modelVersion, runtime]);
+
+  const state = useMemo<WorkspaceState>(() => ({
+    selectedFloatingId,
+    selection,
+    activeCell,
+    activePanel,
+    activeSheetId,
+    formulaDraft,
+    editingCell,
+    sheets,
+    selectedSheet,
+    ribbonTab,
+    saveState,
+    notice,
+    phase,
+    zoom,
+    peers,
+    historyEntries,
+    showFunctionWizard,
+    showSortDialog,
+    showFindReplace,
+    showPrintPreview,
+    actorId,
+    collabStatus,
+  }), [activeCell, activePanel, activeSheetId, actorId, collabStatus, editingCell, formulaDraft, historyEntries, notice, peers, phase, ribbonTab, saveState, selectedFloatingId, selectedSheet, selection, sheets, showFindReplace, showFunctionWizard, showPrintPreview, showSortDialog, zoom]);
+
+  return { actions, state };
+}
+

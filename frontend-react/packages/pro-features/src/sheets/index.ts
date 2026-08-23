@@ -1,5 +1,6 @@
 import type { ChartModel, PivotModel, RangeRef, ShapeModel, SparklineModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
+import { buildPivotWriteback } from './pivot-write';
 
 export * from './chart-renderer';
 export * from './sparkline-renderer';
@@ -188,7 +189,10 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
                 startRow: writeback.targetStartRow,
                 endRow: writeback.targetStartRow + writeback.values.length - 1,
                 startColumn: writeback.targetStartColumn,
-                endColumn: writeback.targetStartColumn + Math.max(...writeback.values.map((row) => row.length)) - 1,
+                endColumn:
+                  writeback.targetStartColumn +
+                  Math.max(...writeback.values.map((row: { length: number }) => row.length)) -
+                  1,
               },
               mode: 'contents',
             },

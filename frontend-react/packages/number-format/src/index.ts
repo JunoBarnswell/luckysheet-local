@@ -143,6 +143,8 @@ function analyzeTokens(tokens: readonly FormatToken[]): NumericPattern & { thous
         pattern.hasText = true;
         break;
       case 'literal': {
+        // ',' 一律视为千分位标记(thousands 检测在下方),不进入前后缀
+        if (token.text === ',') break;
         if (!seenDigit && !seenDecimal && pattern.decimalDigits.length === 0) pattern.prefix += token.text;
         else pattern.suffix += token.text;
         break;
@@ -159,15 +161,20 @@ function analyzeTokens(tokens: readonly FormatToken[]): NumericPattern & { thous
     void i;
   }
 
-  // 千分位:存在 ',' 字面量且其后(更靠右)有数字占位
-  let sawDigitAfterComma = false;
-  for (let i = tokens.length - 1; i >= 0; i--) {
+  // 千分位:',' 字面量与其右侧(同在整数部分内)的数字占位相邻即生效
+  for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]!;
-    if (token.kind === 'digit') sawDigitAfterComma = true;
-    else if (token.kind === 'literal' && token.text === ',' && sawDigitAfterComma) {
-      pattern.thousands = true;
-      break;
-    } else if (token.kind === 'decimal-point') break;
+    if (token.kind === 'literal' && token.text === ',') {
+      for (let j = i + 1; j < tokens.length; j++) {
+        const nextToken = tokens[j]!;
+        if (nextToken.kind === 'decimal-point') break;
+        if (nextToken.kind === 'digit') {
+          pattern.thousands = true;
+          break;
+        }
+      }
+      if (pattern.thousands) break;
+    }
   }
 
   return pattern;
@@ -307,7 +314,7 @@ export function formatValue(
     let output = '';
     for (const token of textSection.tokens) {
       if (token.kind === 'text-placeholder') output += value;
-      else if (token.kind === 'literal') output += token.text;
+      else if (token.kind === 'literal' && token.text !== ',') output += token.text;
     }
     return output.length > 0 ? output : value;
   }
@@ -335,7 +342,7 @@ export function formatValue(
   const [intRaw, decRaw = ''] = rounded.split('.');
 
   const minIntegers = pattern.integerDigits.filter((ch) => ch === '0').length;
-  let intText = intRaw;
+  let intText = intRaw ?? '0';
   while (intText.length < minIntegers) intText = `0${intText}`;
   if (pattern.thousands) intText = groupThousands(intText);
 

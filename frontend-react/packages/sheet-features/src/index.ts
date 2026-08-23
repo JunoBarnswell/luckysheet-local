@@ -9,6 +9,7 @@ import type {
   MergeSpan,
   RangeRef,
   WorkbookModel,
+  WorksheetModel,
 } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { shiftFormula } from './clipboard';
@@ -1199,7 +1200,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             id: 'cf.add',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { rule: previous } satisfies AddConditionalFormatParams,
+            params: { sheetId: params.sheetId, rule: previous } satisfies AddConditionalFormatParams,
             affectedRanges,
           },
         ],
@@ -1231,7 +1232,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           id: 'cf.add' as const,
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { rule } satisfies AddConditionalFormatParams,
+          params: { sheetId: params.sheetId, rule } satisfies AddConditionalFormatParams,
           affectedRanges: [] as RangeRef[],
         })),
         apply: () => {
@@ -1303,7 +1304,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             id: 'dv.add',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { rule: previous } satisfies AddDataValidationParams,
+            params: { sheetId: params.sheetId, rule: previous } satisfies AddDataValidationParams,
             affectedRanges,
           },
         ],

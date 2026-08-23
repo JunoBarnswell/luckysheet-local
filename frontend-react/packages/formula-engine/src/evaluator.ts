@@ -153,7 +153,7 @@ function evaluateFunction(
   name: string,
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
-): FormulaValue {
+): FormulaValue | EvaluationRange {
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context);
   if (native !== undefined) return native;

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Box,
   Button,
@@ -15,6 +15,7 @@ import {
   TabList,
   Tabs,
   Text,
+  Textarea,
 } from '@react-sheets/ui-system';
 import type {
   ChartModel,
@@ -70,6 +71,10 @@ export interface FeatureSidebarProps {
   onRemoveDataValidation: (id: string) => void;
   onPrint: (layout: PrintLayout) => void;
   onExportPdf: (layout: PrintLayout) => void;
+  onAddComment?: (text: string) => void;
+  onRemoveComment?: () => void;
+  onSetHyperlink?: (url: string) => void;
+  onRemoveHyperlink?: () => void;
 }
 
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
@@ -93,7 +98,21 @@ function InsightRow({ label, tone = 'muted', value }: { label: string; tone?: 'a
   );
 }
 
-function InspectorPanel({ activeCell, sheet }: { activeCell: string; sheet: SheetView }) {
+function InspectorPanel({
+  activeCell,
+  sheet,
+  onAddComment,
+  onRemoveComment,
+  onSetHyperlink,
+  onRemoveHyperlink,
+}: {
+  activeCell: string;
+  sheet: SheetView;
+  onAddComment?: (text: string) => void;
+  onRemoveComment?: () => void;
+  onSetHyperlink?: (url: string) => void;
+  onRemoveHyperlink?: () => void;
+}) {
   const cells = sheet.rows.flatMap((row) => row.cells).filter((cell) => cell.value !== '');
   const selected = cells.find((cell) => cell.address === activeCell);
   const numericValues = cells
@@ -127,6 +146,13 @@ function InspectorPanel({ activeCell, sheet }: { activeCell: string; sheet: Shee
           </Inline>
         </PanelBody>
       </Panel>
+
+      <CommentHyperlinkForms
+        onAddComment={onAddComment}
+        onRemoveComment={onRemoveComment}
+        onSetHyperlink={onSetHyperlink}
+        onRemoveHyperlink={onRemoveHyperlink}
+      />
 
       <Panel className="shadow-none">
         <PanelHeader>
@@ -177,6 +203,10 @@ export function FeatureSidebar({
   onRemoveDataValidation,
   onPrint,
   onExportPdf,
+  onAddComment,
+  onRemoveComment,
+  onSetHyperlink,
+  onRemoveHyperlink,
 }: FeatureSidebarProps) {
   const disabled = phase !== 'ready';
   const activePanelLabel = panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect';
@@ -248,7 +278,16 @@ export function FeatureSidebar({
         {phase === 'error' ? <StatePanel actionLabel="Try again" description="Panel data could not be loaded." kind="error" onAction={onRetry} /> : null}
         {phase === 'empty' ? <StatePanel actionLabel="Try again" description="Open a workbook to inspect." kind="empty" onAction={onRetry} /> : null}
 
-        {phase === 'ready' && activePanel === 'inspector' ? <InspectorPanel activeCell={activeCell} sheet={sheet} /> : null}
+        {phase === 'ready' && activePanel === 'inspector' ? (
+          <InspectorPanel
+            activeCell={activeCell}
+            sheet={sheet}
+            onAddComment={onAddComment}
+            onRemoveComment={onRemoveComment}
+            onSetHyperlink={onSetHyperlink}
+            onRemoveHyperlink={onRemoveHyperlink}
+          />
+        ) : null}
         {phase === 'ready' && activePanel === 'chart' ? (
           <ChartPanel
             sheetId={sheetId}
@@ -311,3 +350,101 @@ export function FeatureSidebar({
     </Box>
   );
 }
+
+
+function CommentHyperlinkForms({
+  onAddComment,
+  onRemoveComment,
+  onSetHyperlink,
+  onRemoveHyperlink,
+}: {
+  onAddComment?: (text: string) => void;
+  onRemoveComment?: () => void;
+  onSetHyperlink?: (url: string) => void;
+  onRemoveHyperlink?: () => void;
+}) {
+  const [commentText, setCommentText] = useState('');
+  const [hyperlinkUrl, setHyperlinkUrl] = useState('');
+
+  return (
+    <Stack gap="md">
+      <Panel className="shadow-none">
+        <PanelHeader>
+          <Inline gap="sm">
+            <Icon name="comment" size="sm" className="text-blue-600" />
+            <PanelTitle as="h3" size="sm">Comment</PanelTitle>
+          </Inline>
+        </PanelHeader>
+        <PanelBody>
+          <Stack gap="sm">
+            <Textarea
+              rows={3}
+              placeholder="Add a comment for the selected cell"
+              value={commentText}
+              onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setCommentText(event.target.value)}
+            />
+            <Inline gap="sm" className="justify-end">
+              {onRemoveComment ? (
+                <Button size="sm" variant="ghost" onClick={() => { onRemoveComment(); }}>
+                  Clear
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  if (!onAddComment || !commentText.trim()) return;
+                  onAddComment(commentText.trim());
+                  setCommentText('');
+                }}
+              >
+                Save comment
+              </Button>
+            </Inline>
+          </Stack>
+        </PanelBody>
+      </Panel>
+
+      <Panel className="shadow-none">
+        <PanelHeader>
+          <Inline gap="sm">
+            <Icon name="share" size="sm" className="text-blue-600" />
+            <PanelTitle as="h3" size="sm">Hyperlink</PanelTitle>
+          </Inline>
+        </PanelHeader>
+        <PanelBody>
+          <Stack gap="sm">
+            <input
+              type="url"
+              placeholder="https://example.com"
+              value={hyperlinkUrl}
+              onChange={(event) => setHyperlinkUrl(event.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-accent dark:border-slate-600 dark:bg-slate-800"
+            />
+            <Inline gap="sm" className="justify-end">
+              {onRemoveHyperlink ? (
+                <Button size="sm" variant="ghost" onClick={() => { onRemoveHyperlink(); }}>
+                  Remove
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  if (!onSetHyperlink || !hyperlinkUrl.trim()) return;
+                  onSetHyperlink(hyperlinkUrl.trim());
+                }}
+              >
+                Apply link
+              </Button>
+            </Inline>
+          </Stack>
+        </PanelBody>
+      </Panel>
+    </Stack>
+  );
+}
+
+
+
+

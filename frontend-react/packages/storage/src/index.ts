@@ -298,7 +298,7 @@ export class WorkbookStorage {
       }
     }
     const pivot = sheet.pivots.find((item) => item.id === params.pivotId);
-    if (pivot) pivot.lastWrittenAt = Date.now();
+    if (pivot) pivot.data = { ...(pivot.data ?? {}), lastWrittenAt: Date.now() };
   } else if (mutation.id === 'rows.hidden') {
     workbook.getSheet(mutation.sheetId).hiddenRows.add((mutation.params as { index: number }).index);
   } else if (mutation.id === 'rows.unhidden.all') {

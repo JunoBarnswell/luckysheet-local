@@ -29,6 +29,7 @@ export {
 export { StatePanel, type StatePanelKind, type StatePanelProps } from './StatePanel';
 export { Tab, TabDivider, TabList, TabPanel, Tabs, type TabListProps, type TabPanelProps, type TabProps } from './Tabs';
 export { TextInput, type TextInputProps } from './TextInput';
+export { Textarea, type TextareaProps } from './Textarea';
 export { ContextMenu, type ContextMenuItem, type ContextMenuProps } from './ContextMenu';
 export { Dialog, type DialogProps } from './Dialog';
 export { DropdownMenu, type DropdownMenuProps } from './DropdownMenu';

@@ -75,7 +75,7 @@ test('RenderPlan selects initial, dirty, scroll, and overlay lifecycle modes', (
   const initial = calculateRenderPlan({ skeleton, viewport: viewport() });
   assert.equal(initial.fullRedraw, true);
   assert.equal(initial.reason, 'initial');
-  assert.deepEqual(initial.layers.map((layer) => layer.mode), ['full', 'full', 'full', 'full']);
+  assert.deepEqual(initial.layers.map((layer) => layer.mode), ['full', 'full', 'full', 'full', 'full']);
 
   const dirty = calculateRenderPlan({
     skeleton,

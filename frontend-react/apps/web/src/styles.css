@@ -29,3 +29,18 @@
     @apply bg-blue-100 text-ink;
   }
 }
+
+/* P6:打印输出样式 —— 仅打印画布区域,隐藏应用外壳 */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  canvas,
+  canvas * {
+    visibility: visible;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+  }
+}
