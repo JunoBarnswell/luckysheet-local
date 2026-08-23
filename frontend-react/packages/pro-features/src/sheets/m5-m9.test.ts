@@ -23,8 +23,58 @@ describe('M6-M8 pro sheet commands', () => {
 
     const sheet = workbook.getSheet('sheet-1');
     assert.equal(sheet.drawings[0]?.kind, 'chart');
-    assert.equal(sheet.charts[0]?.type, 'column');
+    assert.equal(sheet.charts.length, 0);
+    assert.equal(sheet.drawingPayloads.get('chart-1')?.kind, 'chart');
     assert.ok(P1_CHART_COMMAND_IDS.every((commandId) => runtime.registry.hasCommand(commandId)));
+  });
+
+  it('preserves combo and stacked chart semantics in the canonical payload', () => {
+    const workbook = new WorkbookModel('chart-fidelity-test', 'Chart Fidelity');
+    const runtime = new CommandRuntime(workbook);
+    registerProSheetCommands(runtime);
+    const sourceRanges = [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }];
+
+    runtime.execute('chart.insert.combo', {
+      sheetId: 'sheet-1',
+      chartId: 'combo-1',
+      drawingId: 'draw-combo-1',
+      bounds: { x: 10, y: 10, width: 320, height: 220 },
+      sourceRanges,
+      stacked: 'percent',
+    });
+    const sheet = workbook.getSheet('sheet-1');
+    const payload = sheet.drawingPayloads.get('combo-1');
+    assert.equal(payload?.kind, 'chart');
+    if (payload?.kind !== 'chart') throw new Error('Expected chart payload');
+    assert.equal(payload.chartType, 'combo');
+    assert.equal(payload.stacked, 'percent');
+
+    runtime.execute('chart.setType', { sheetId: 'sheet-1', chartId: 'combo-1', chartType: 'combo', stacked: 'stacked' });
+    assert.equal((sheet.drawingPayloads.get('combo-1') as typeof payload)?.stacked, 'stacked');
+    assert.equal(runtime.undo(), true);
+    assert.equal((sheet.drawingPayloads.get('combo-1') as typeof payload)?.stacked, 'percent');
+  });
+
+  it('restores a removed chart drawing and payload exactly on undo', () => {
+    const workbook = new WorkbookModel('chart-remove-test', 'Chart Remove');
+    const runtime = new CommandRuntime(workbook);
+    registerProSheetCommands(runtime);
+    runtime.execute('chart.insert.column', {
+      sheetId: 'sheet-1',
+      chartId: 'chart-1',
+      drawingId: 'draw-chart-1',
+      bounds: { x: 40, y: 40, width: 320, height: 220 },
+      sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }],
+      stacked: 'stacked',
+    });
+    const beforeDrawings = structuredClone(workbook.getSheet('sheet-1').drawings);
+    const beforePayloads = structuredClone([...workbook.getSheet('sheet-1').drawingPayloads.entries()]);
+    runtime.execute('chart.remove', { sheetId: 'sheet-1', chartId: 'chart-1' });
+    assert.equal(workbook.getSheet('sheet-1').drawings.length, 0);
+    assert.equal(runtime.undo(), true);
+    const sheet = workbook.getSheet('sheet-1');
+    assert.deepEqual(sheet.drawings, beforeDrawings);
+    assert.deepEqual([...sheet.drawingPayloads.entries()], beforePayloads);
   });
 
   it('updates pivot layout through direct PivotModel helpers and commands', () => {

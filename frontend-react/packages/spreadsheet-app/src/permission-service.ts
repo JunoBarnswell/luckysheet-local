@@ -99,6 +99,13 @@ export class PermissionService {
       return { allowed: false, reason: `Role "${role}" cannot perform "${action}"`, blockedBy: 'share-role' };
     }
 
+    // A protection rule controls workbook content, not its owner-managed
+    // lifecycle. Otherwise a rule that does not explicitly allow "protect"
+    // could never be removed by the owner who created it.
+    if (action === 'protect' || action === 'share' || action === 'restore') {
+      return { allowed: true };
+    }
+
     for (const rule of this.allRules()) {
       if (!rule.locked) continue;
       const allowedActions = new Set(rule.allowedActions ?? []);

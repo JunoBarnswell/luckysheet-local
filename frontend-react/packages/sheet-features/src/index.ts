@@ -500,6 +500,52 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
   });
 
+  runtime.registry.registerMutation('range.clear', (item, context) => {
+    const params = item.params as ClearRangeParams;
+    const sheet = context.workbook.getSheet(params.sheetId);
+    for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
+      for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
+        const current = sheet.cells.get(row, column);
+        if (!current) continue;
+        if (params.mode === 'formats') {
+          const next = { ...current };
+          delete next.style;
+          delete next.styleId;
+          delete next.numberFormat;
+          delete next.displayValue;
+          sheet.cells.set(row, column, next);
+        } else if (params.mode === 'contents') {
+          const next = { ...current };
+          next.value = null;
+          delete next.formula;
+          delete next.displayValue;
+          sheet.cells.set(row, column, next);
+        } else {
+          sheet.cells.delete(row, column);
+        }
+      }
+    }
+  });
+
+  runtime.registry.registerMutation('style.set', (item, context) => {
+    const params = item.params as SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string };
+    const sheet = context.workbook.getSheet(params.sheetId);
+    const ranges = 'range' in params ? [params.range] : params.ranges;
+    const style = 'numberFormat' in params && !('style' in params)
+      ? { numberFormat: params.numberFormat }
+      : (params as SetRangeStyleParams).style;
+    for (const range of ranges) {
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+          const current = sheet.cells.get(row, column) ?? { value: null as CellData['value'] };
+          const next = { ...current, style: { ...(current.style ?? {}), ...style } };
+          if (style.numberFormat !== undefined) next.numberFormat = style.numberFormat;
+          sheet.cells.set(row, column, next);
+        }
+      }
+    }
+  });
+
   // 4. Range Clear
   runtime.registry.registerCommand<ClearRangeParams>({
     id: 'sheet.range.clear',
@@ -538,22 +584,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             },
           ],
         })),
-        apply: () => {
-          for (let r = params.range.startRow; r <= params.range.endRow; r++) {
-            for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
-              if (params.mode === 'formats') {
-                const cell = sheet.cells.get(r, c);
-                if (cell) {
-                  cell.style = undefined;
-                  cell.styleId = undefined;
-                  cell.numberFormat = undefined;
-                }
-              } else {
-                sheet.cells.delete(r, c);
-              }
-            }
-          }
-        },
+        apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -595,21 +626,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             },
           ],
         })),
-        apply: () => {
-          for (let r = params.range.startRow; r <= params.range.endRow; r++) {
-            for (let c = params.range.startColumn; c <= params.range.endColumn; c++) {
-              let cell = sheet.cells.get(r, c);
-              if (!cell) {
-                cell = { value: null };
-                sheet.cells.set(r, c, cell);
-              }
-              cell.style = { ...(cell.style ?? {}), ...params.style };
-              if (params.style.numberFormat !== undefined) {
-                cell.numberFormat = params.style.numberFormat;
-              }
-            }
-          }
-        },
+        apply: () => runtime.registry.getMutation('style.set')({ id: 'style.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

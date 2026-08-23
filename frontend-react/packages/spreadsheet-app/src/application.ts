@@ -1165,17 +1165,16 @@ export class SpreadsheetApplication {
       this.refresh();
       return;
     }
-    this.runCommand('chart.move', { id, sheetId: this.activeSheetId, bounds });
-    this.refresh();
+    this.notify('Chart is not registered as a drawing object');
   }
   removeChart(id: string): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const drawing = findDrawingByPayloadId(sheet, id);
-    const result = this.runtime.commands.execute('chart.remove', { sheetId: this.activeSheetId, chartId: id });
-    if (result.mutationCount === 0) {
-      const index = sheet.charts.findIndex((entry) => entry.id === id);
-      if (index >= 0) sheet.charts.splice(index, 1);
+    if (!drawing) {
+      this.notify('Chart is not registered as a drawing object');
+      return;
     }
+    this.runCommand('chart.remove', { sheetId: this.activeSheetId, chartId: id });
     if (drawing) this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
     if (this.selectedFloatingId === id) this.selectedFloatingId = null;
     this.refresh();
@@ -1312,7 +1311,8 @@ export class SpreadsheetApplication {
       this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
       this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
     } else {
-      this.runCommand('shape.remove', id);
+      this.notify('Shape is not registered as a drawing object');
+      return;
     }
     if (this.selectedFloatingId === id) this.selectedFloatingId = null;
     this.refresh();
@@ -1333,10 +1333,7 @@ export class SpreadsheetApplication {
       this.refresh();
       return;
     }
-    const image = sheet.images.find((entry) => entry.id === id);
-    if (!image) return;
-    image.bounds = { ...bounds };
-    this.refresh();
+    this.notify('Image is not registered as a drawing object');
   }
   removeImage(id: string): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -1345,8 +1342,8 @@ export class SpreadsheetApplication {
       this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
       this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
     } else {
-      const index = sheet.images.findIndex((entry) => entry.id === id);
-      if (index >= 0) sheet.images.splice(index, 1);
+      this.notify('Image is not registered as a drawing object');
+      return;
     }
     if (this.selectedFloatingId === id) this.selectedFloatingId = null;
     this.refresh();

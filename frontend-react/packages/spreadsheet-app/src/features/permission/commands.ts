@@ -21,7 +21,10 @@ export function registerPermissionCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
   registerMutationHandler<ProtectSetParams>(runtime, 'sheet.protect.set', (params, context) => {
-    context.workbook.getSheet(params.sheetId).protectionRules.push(structuredClone(params.rule));
+    const rules = context.workbook.getSheet(params.sheetId).protectionRules;
+    const existing = rules.findIndex((entry) => entry.id === params.rule.id);
+    if (existing >= 0) rules[existing] = structuredClone(params.rule);
+    else rules.push(structuredClone(params.rule));
   });
   registerMutationHandler<ProtectRemoveParams>(runtime, 'sheet.protect.remove', (params, context) => {
     removeById(context.workbook.getSheet(params.sheetId).protectionRules, params.ruleId);
@@ -30,17 +33,18 @@ export function registerPermissionCommands(runtime: CommandRuntime): string[] {
   const registerSimple = <P extends { sheetId: string }>(
     commandId: string,
     mutationId: string,
-    readPrevious: (params: P, context: import('@react-sheets/command-runtime').CommandContext) => unknown,
+    readInverse: (params: P, context: import('@react-sheets/command-runtime').CommandContext) => { id: string; params: unknown },
   ): void => {
     runtime.registry.registerCommand<P>({
       id: commandId,
       execute: (params, context) => {
-        const previous = readPrevious(params, context);
+        const inverse = readInverse(params, context);
         applyTrackedMutation(context, {
           id: mutationId,
           sheetId: params.sheetId,
           params,
-          inverseParams: previous ?? params,
+          inverseId: inverse.id,
+          inverseParams: inverse.params,
           affectedRanges: sheetWideRange(params.sheetId),
           apply: () => runtime.registry.getMutation(mutationId)({ id: mutationId, unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges: sheetWideRange(params.sheetId) }, context),
         });
@@ -50,10 +54,17 @@ export function registerPermissionCommands(runtime: CommandRuntime): string[] {
     commandIds.push(commandId);
   };
 
-  registerSimple<ProtectSetParams>('sheet.protect.set', 'sheet.protect.set', () => undefined);
+  registerSimple<ProtectSetParams>('sheet.protect.set', 'sheet.protect.set', (params, context) => {
+    const previous = context.workbook.getSheet(params.sheetId).protectionRules.find((entry) => entry.id === params.rule.id);
+    return previous
+      ? { id: 'sheet.protect.set', params: { sheetId: params.sheetId, rule: structuredClone(previous) } }
+      : { id: 'sheet.protect.remove', params: { sheetId: params.sheetId, ruleId: params.rule.id } };
+  });
   registerSimple<ProtectRemoveParams>('sheet.protect.remove', 'sheet.protect.remove', (params, context) => {
     const rule = context.workbook.getSheet(params.sheetId).protectionRules.find((entry) => entry.id === params.ruleId);
-    return rule ? { sheetId: params.sheetId, rule: structuredClone(rule) } : params;
+    return rule
+      ? { id: 'sheet.protect.set', params: { sheetId: params.sheetId, rule: structuredClone(rule) } }
+      : { id: 'sheet.protect.remove', params };
   });
 
   return commandIds;

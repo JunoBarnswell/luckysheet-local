@@ -3,12 +3,20 @@ import { randomUUID } from 'node:crypto';
 import { cpus } from 'node:os';
 import { WebSocketServer } from 'ws';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { decodeMessage, encodeMessage } from '@react-sheets/protocol';
+import {
+  decodeClientOperationMessageV2,
+  encodeOperationMessageV2,
+  type ApiError,
+  type OperationMessageV2,
+  type WorkbookAclRole,
+} from '@react-sheets/protocol';
 import { WorkbookStorage } from '@react-sheets/storage';
 import { computePivotResult } from '@react-sheets/pro-features';
 import { importXlsx, exportXlsx, parseXlsxXmlToSnapshot } from '@react-sheets/exchange-xlsx';
+import { AuthenticationError, JwtAuthenticator } from './auth';
 
 const storage = new WorkbookStorage();
+const authenticator = new JwtAuthenticator();
 const port = Number(process.env.REACT_SHEETS_SERVER_PORT ?? 4181);
 const clientsByUnit = new Map<string, Set<import('ws').WebSocket>>();
 
@@ -69,6 +77,31 @@ function sendJson(response: import('node:http').ServerResponse, status: number, 
   response.end(JSON.stringify(body));
 }
 
+function errorStatus(error: unknown): number {
+  if (typeof error === 'object' && error !== null && 'status' in error && typeof (error as { status?: unknown }).status === 'number') {
+    return (error as { status: number }).status;
+  }
+  if (error instanceof Error && /not found/i.test(error.message)) return 404;
+  if (error instanceof Error && /conflict/i.test(error.message)) return 409;
+  if (error instanceof Error && /required|invalid|unsupported|must be/i.test(error.message)) return 400;
+  return 500;
+}
+
+function errorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error && typeof (error as { code?: unknown }).code === 'string') {
+    return (error as { code: string }).code;
+  }
+  return errorStatus(error) >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_FAILED';
+}
+
+function protocolErrorCode(error: unknown): ApiError['code'] {
+  const code = errorCode(error);
+  if (code === 'VALIDATION_ERROR' || code === 'NOT_FOUND' || code === 'CONFLICT'
+    || code === 'UNAUTHENTICATED' || code === 'FORBIDDEN'
+    || code === 'AUTH_CONFIGURATION_ERROR' || code === 'INTERNAL_ERROR') return code;
+  return errorStatus(error) >= 500 ? 'INTERNAL_ERROR' : 'VALIDATION_ERROR';
+}
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
@@ -78,15 +111,61 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    let principal;
+    try {
+      principal = await authenticator.authenticateRequest(request);
+    } catch (error) {
+      const status = error instanceof AuthenticationError ? 401 : errorStatus(error);
+      sendJson(response, status, {
+        code: errorCode(error),
+        message: error instanceof Error ? error.message : 'Authentication failed',
+      });
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/v1/workbooks') {
-      sendJson(response, 200, storage.listWorkbooks());
+      sendJson(response, 200, storage.listWorkbooks(principal.subject));
+      return;
+    }
+
+    if (request.method === 'GET' && /^\/api\/v1\/workbooks\/[^/]+\/acl$/.test(url.pathname)) {
+      const unitId = decodeURIComponent(url.pathname.split('/')[4] ?? '');
+      if (!unitId) throw new Error('Workbook id is required');
+      sendJson(response, 200, { entries: storage.listAcl(unitId, principal.subject) });
+      return;
+    }
+
+    if (request.method === 'PUT' && /^\/api\/v1\/workbooks\/[^/]+\/acl\/[^/]+$/.test(url.pathname)) {
+      const parts = url.pathname.split('/');
+      const unitId = decodeURIComponent(parts[4] ?? '');
+      const subject = decodeURIComponent(parts[6] ?? '');
+      const body = JSON.parse(await readBody(request)) as { role?: string };
+      if (!unitId || !subject || !body.role) {
+        sendJson(response, 400, { code: 'VALIDATION_ERROR', message: 'ACL role is required' });
+        return;
+      }
+      if (!['owner', 'editor', 'commenter', 'viewer'].includes(body.role)) {
+        sendJson(response, 400, { code: 'VALIDATION_ERROR', message: 'Unsupported ACL role' });
+        return;
+      }
+      sendJson(response, 200, storage.grantAccess(unitId, principal.subject, subject, body.role as WorkbookAclRole));
+      return;
+    }
+
+    if (request.method === 'DELETE' && /^\/api\/v1\/workbooks\/[^/]+\/acl\/[^/]+$/.test(url.pathname)) {
+      const parts = url.pathname.split('/');
+      const unitId = decodeURIComponent(parts[4] ?? '');
+      const subject = decodeURIComponent(parts[6] ?? '');
+      if (!unitId || !subject) throw new Error('Workbook and subject are required');
+      storage.revokeAccess(unitId, principal.subject, subject);
+      sendJson(response, 200, {});
       return;
     }
 
     if (request.method === 'DELETE' && /^\/api\/v1\/workbooks\/[^/]+$/.test(url.pathname)) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');
-      storage.deleteWorkbook(unitId);
+      storage.deleteWorkbook(unitId, principal.subject);
       sendJson(response, 200, {});
       return;
     }
@@ -94,7 +173,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname.startsWith('/api/v1/workbooks/') && url.pathname.endsWith('/snapshot')) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');
-      sendJson(response, 200, storage.getSnapshot(unitId));
+      sendJson(response, 200, storage.getSnapshot(unitId, principal.subject));
       return;
     }
 
@@ -110,11 +189,11 @@ const server = createServer(async (request, response) => {
         return;
       }
       try {
-        sendJson(response, 200, storage.saveSnapshot(unitId, body.snapshot, body.baseRevision));
+        sendJson(response, 200, storage.saveSnapshot(unitId, body.snapshot, body.baseRevision, principal.subject));
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Save failed';
-        const status = message.includes('conflict') ? 409 : 400;
-        sendJson(response, status, { code: status === 409 ? 'CONFLICT' : 'VALIDATION_ERROR', message });
+        const status = errorStatus(error);
+        sendJson(response, status, { code: protocolErrorCode(error), message });
       }
       return;
     }
@@ -122,7 +201,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && /^\/api\/v1\/workbooks\/[^/]+\/revisions$/.test(url.pathname)) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');
-      sendJson(response, 200, { revisions: storage.listRevisions(unitId) });
+      sendJson(response, 200, { revisions: storage.listRevisions(unitId, principal.subject) });
       return;
     }
 
@@ -132,9 +211,9 @@ const server = createServer(async (request, response) => {
       const revision = Number(parts[6]);
       if (!unitId) throw new Error('Workbook id is required');
       try {
-        sendJson(response, 200, storage.getSnapshotAtRevision(unitId, revision));
-      } catch {
-        sendJson(response, 404, { code: 'NOT_FOUND', message: 'Revision snapshot not found' });
+        sendJson(response, 200, storage.getSnapshotAtRevision(unitId, revision, principal.subject));
+      } catch (error) {
+        sendJson(response, errorStatus(error), { code: protocolErrorCode(error), message: error instanceof Error ? error.message : 'Revision snapshot not found' });
       }
       return;
     }
@@ -144,7 +223,7 @@ const server = createServer(async (request, response) => {
       const unitId = parts[4];
       const revision = Number(parts[6]);
       if (!unitId) throw new Error('Workbook id is required');
-      const result = storage.getRevision(unitId, revision);
+      const result = storage.getRevision(unitId, revision, principal.subject);
       if (!result) {
         sendJson(response, 404, { code: 'NOT_FOUND', message: 'Revision not found' });
         return;
@@ -158,7 +237,7 @@ const server = createServer(async (request, response) => {
       if (!unitId) throw new Error('Workbook id is required');
       const body = JSON.parse(await readBody(request)) as { pivotId?: string };
       if (!body.pivotId) throw new Error('Pivot id is required');
-      const snapshot = storage.getSnapshot(unitId);
+      const snapshot = storage.getSnapshot(unitId, principal.subject);
       const workbook = WorkbookModel.fromSnapshot(snapshot.snapshot);
       const pivot = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === body.pivotId);
       if (!pivot) {
@@ -190,7 +269,7 @@ const server = createServer(async (request, response) => {
         blocks: [],
         revision: 0,
       };
-      sendJson(response, 201, storage.createDataTable(unitId, table));
+      sendJson(response, 201, storage.createDataTable(unitId, table, principal.subject));
       return;
     }
 
@@ -201,7 +280,7 @@ const server = createServer(async (request, response) => {
       if (!unitId || !tableId) throw new Error('Workbook and table ids are required');
       const body = JSON.parse(await readBody(request)) as { startRow?: number; rows?: Array<Array<string | number | boolean | null>> };
       if (body.startRow == null || !body.rows) throw new Error('Block startRow and rows are required');
-      sendJson(response, 201, storage.appendDataBlock(unitId, tableId, body.startRow, body.rows));
+      sendJson(response, 201, storage.appendDataBlock(unitId, tableId, body.startRow, body.rows, principal.subject));
       return;
     }
 
@@ -212,7 +291,7 @@ const server = createServer(async (request, response) => {
       if (!unitId || !tableId) throw new Error('Workbook and table ids are required');
       const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
       const limit = Math.max(1, Math.min(4096, Number(url.searchParams.get('limit') ?? 500) || 500));
-      sendJson(response, 200, storage.readDataRows(unitId, tableId, offset, limit));
+      sendJson(response, 200, storage.readDataRows(unitId, tableId, offset, limit, principal.subject));
       return;
     }
 
@@ -221,7 +300,7 @@ const server = createServer(async (request, response) => {
       const unitId = parts[4];
       const tableId = parts[6];
       if (!unitId || !tableId) throw new Error('Workbook and table ids are required');
-      storage.removeDataTable(unitId, tableId);
+      storage.removeDataTable(unitId, tableId, principal.subject);
       sendJson(response, 200, {});
       return;
     }
@@ -233,7 +312,7 @@ const server = createServer(async (request, response) => {
       };
       const snapshot = input.snapshot ?? createDefaultSnapshot(randomUUID());
       snapshot.name = input.name?.trim() || snapshot.name;
-      sendJson(response, 201, storage.createWorkbook(snapshot));
+      sendJson(response, 201, storage.createWorkbook(snapshot, principal.subject));
       return;
     }
 
@@ -245,7 +324,7 @@ const server = createServer(async (request, response) => {
         base64: body.base64,
         options: { compatibilityTarget: 'B' },
       });
-      const result = storage.createWorkbook(imported.snapshot);
+      const result = storage.createWorkbook(imported.snapshot, principal.subject);
       sendJson(response, 200, { ...result, report: imported.report });
       return;
     }
@@ -257,7 +336,7 @@ const server = createServer(async (request, response) => {
         snapshot = parseXlsxXmlToSnapshot(body.files);
       }
       if (!snapshot) throw new Error('No valid workbook data provided to import');
-      const result = storage.createWorkbook(snapshot);
+      const result = storage.createWorkbook(snapshot, principal.subject);
       sendJson(response, 200, result);
       return;
     }
@@ -265,7 +344,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname.startsWith('/api/v1/files/') && url.pathname.endsWith('/export')) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('File unitId is required');
-      const snapshotRes = storage.getSnapshot(unitId);
+      const snapshotRes = storage.getSnapshot(unitId, principal.subject);
       const fileName = url.searchParams.get('fileName') ?? `${snapshotRes.snapshot.name || 'workbook'}.xlsx`;
       const exported = await exportXlsx({
         snapshot: snapshotRes.snapshot,
@@ -285,100 +364,131 @@ const server = createServer(async (request, response) => {
     sendJson(response, 404, { code: 'NOT_FOUND', message: 'Route not found' });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal error';
-    sendJson(response, message.includes('not found') ? 404 : 409, { code: 'REQUEST_FAILED', message });
+    sendJson(response, errorStatus(error), { code: protocolErrorCode(error), message });
   }
 });
 
-const webSocketServer = new WebSocketServer({ server });
-webSocketServer.on('connection', (socket) => {
+const webSocketServer = new WebSocketServer({
+  server,
+  verifyClient: (info, done) => {
+    void authenticator.authenticateRequest(info.req).then(
+      () => done(true),
+      (error) => done(false, errorStatus(error), error instanceof Error ? error.message : 'Bearer authentication failed'),
+    );
+  },
+});
+
+webSocketServer.on('connection', async (socket, request) => {
+  let principal;
+  try {
+    // verifyClient protects the handshake; authenticate again here so the
+    // connection handler never relies on a client-provided actor field.
+    principal = await authenticator.authenticateRequest(request);
+  } catch {
+    socket.close(1008, 'Bearer authentication is required');
+    return;
+  }
   let clientUnitId: string | null = null;
-  let clientActorId: string | null = null;
+  const clientActorId = principal.subject;
+
   socket.once('close', () => {
     const unitId = clientUnitId;
-    const actorId = clientActorId;
     leaveUnit(unitId, socket);
-    if (!unitId || !actorId) return;
+    if (!unitId) return;
     const clients = clientsByUnit.get(unitId);
     if (!clients) return;
-    const message = encodeMessage({ type: 'presence.updated' as const, unitId, actorId, state: { status: 'offline' } });
+    const message = encodeOperationMessageV2({ type: 'presence.broadcast', unitId, actorId: clientActorId, state: { status: 'offline' } });
     for (const client of clients) if (client.readyState === client.OPEN) client.send(message);
   });
 
   socket.on('message', (raw) => {
-    try {
-      const message = decodeMessage(raw.toString());
+    void (async () => {
+      let message: OperationMessageV2;
+      try {
+        message = decodeClientOperationMessageV2(raw.toString());
+      } catch (error) {
+        socket.send(
+          encodeOperationMessageV2({
+            type: 'changeset.reject',
+            operationId: 'unknown',
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: error instanceof Error ? error.message : 'Invalid message',
+            },
+          }),
+        );
+        return;
+      }
 
-      if (message.type === 'changeset.submit') {
-        try {
-          leaveUnit(clientUnitId, socket);
-          clientUnitId = message.payload.unitId;
-          clientActorId = message.payload.actorId;
-          const unitClients = joinUnit(clientUnitId, socket);
-          const revision = storage.appendChangeSet(message.payload);
+      try {
+        if (message.type === 'changeset.submit') {
+          if (message.payload.unitId !== clientUnitId) {
+            leaveUnit(clientUnitId, socket);
+            clientUnitId = message.payload.unitId;
+          }
+          const result = storage.appendOperation(message.payload, principal.subject);
+          const unitClients = joinUnit(message.payload.unitId, socket);
           socket.send(
-            encodeMessage({
+            encodeOperationMessageV2({
               type: 'changeset.ack',
               operationId: message.payload.operationId,
-              revision,
+              revision: result.revision,
             }),
           );
-          const revisionMessage = encodeMessage({
+          const revisionMessage = encodeOperationMessageV2({
             type: 'revision.created',
-            payload: message.payload,
-            revision,
+            payload: result.operation,
+            revision: result.revision,
           });
           for (const client of unitClients) {
-            if (client !== socket && client.readyState === client.OPEN) {
-              client.send(revisionMessage);
-            }
+            if (client !== socket && client.readyState === client.OPEN) client.send(revisionMessage);
           }
-        } catch (error) {
+          return;
+        }
+
+        if (message.type === 'presence.updated' || message.type === 'cursor.updated') {
+          const role = storage.getRole(message.unitId, principal.subject);
+          if (!role) throw new Error('Workbook access denied');
+          leaveUnit(clientUnitId, socket);
+          clientUnitId = message.unitId;
+          const unitClients = joinUnit(clientUnitId, socket);
+          const broadcast = encodeOperationMessageV2({
+            type: message.type === 'presence.updated' ? 'presence.broadcast' : 'cursor.broadcast',
+            unitId: message.unitId,
+            actorId: principal.subject,
+            state: message.state,
+          });
+          for (const client of unitClients) {
+            if (client !== socket && client.readyState === client.OPEN) client.send(broadcast);
+          }
+          return;
+        }
+
+        if (message.type === 'snapshot.request') {
+          const snapshotRes = storage.getSnapshot(message.unitId, principal.subject);
           socket.send(
-            encodeMessage({
-              type: 'changeset.reject',
-              operationId: message.payload.operationId,
-              error: {
-                code: 'CONFLICT',
-                message: error instanceof Error ? error.message : 'Changeset rejected',
-              },
+            encodeOperationMessageV2({
+              type: 'snapshot.response',
+              payload: snapshotRes,
             }),
           );
+          return;
         }
-      } else if (message.type === 'presence.updated' || message.type === 'cursor.updated') {
-        leaveUnit(clientUnitId, socket);
-        clientUnitId = message.unitId;
-        clientActorId = message.actorId;
-        const unitClients = joinUnit(clientUnitId, socket);
-        // Broadcast presence/cursor to other clients
-        const broadcast = encodeMessage(message as never);
-        for (const client of unitClients) {
-          if (client !== socket && client.readyState === client.OPEN) {
-            client.send(broadcast);
-          }
-        }
-      } else if (message.type === 'snapshot.request') {
-        const snapshotRes = storage.getSnapshot(message.unitId);
+
+        throw new Error('Unsupported client collaboration message');
+      } catch (error) {
         socket.send(
-          encodeMessage({
-            type: 'snapshot.response',
-            unitId: message.unitId,
-            snapshot: snapshotRes.snapshot,
-            revision: snapshotRes.revision,
+          encodeOperationMessageV2({
+            type: 'changeset.reject',
+            operationId: message.type === 'changeset.submit' ? message.payload.operationId : 'unknown',
+            error: {
+              code: protocolErrorCode(error),
+              message: error instanceof Error ? error.message : 'Message rejected',
+            },
           }),
         );
       }
-    } catch (error) {
-      socket.send(
-        encodeMessage({
-          type: 'changeset.reject',
-          operationId: 'unknown',
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: error instanceof Error ? error.message : 'Invalid message',
-          },
-        }),
-      );
-    }
+    })();
   });
 });
 

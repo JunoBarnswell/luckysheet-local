@@ -1,5 +1,5 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
-import type { ChartDrawingPayload, ChartModel, DrawingObject, RangeRef } from '@react-sheets/core-model';
+import type { ChartDrawingPayload, DrawingObject, RangeRef, WorksheetModel } from '@react-sheets/core-model';
 import { applyTrackedMutation, registerMutationHandler, removeById, sheetRange } from './command-helpers';
 
 export type P1ChartType = ChartDrawingPayload['chartType'];
@@ -10,6 +10,9 @@ export interface ChartInsertParams {
   drawingId: string;
   bounds: { x: number; y: number; width: number; height: number };
   payload: ChartDrawingPayload;
+  /** Restore metadata. Normal insert callers omit this field. */
+  zIndex?: number;
+  rotation?: number;
 }
 
 export interface ChartUpdateParams {
@@ -45,81 +48,89 @@ export interface ChartSetSeriesParams {
   categoryRange?: RangeRef;
 }
 
-function findChartDrawing(sheet: ReturnType<CommandRuntime['workbook']['getSheet']>, chartId: string): { drawing: DrawingObject; payload: ChartDrawingPayload } | undefined {
+interface ChartRemoveParams {
+  sheetId: string;
+  chartId: string;
+}
+
+/** Resolve only the unified Drawing aggregate; no legacy chart projection is consulted. */
+function findChartDrawing(sheet: WorksheetModel, chartId: string): { drawing: DrawingObject; payload: ChartDrawingPayload } | undefined {
   const drawing = sheet.drawings.find((entry) => entry.kind === 'chart' && entry.payloadId === chartId);
   if (!drawing) return undefined;
   const payload = sheet.drawingPayloads.get(drawing.payloadId);
-  if (!payload || payload.kind !== 'chart') return undefined;
+  if (!payload || payload.kind !== 'chart') throw new Error(`Missing chart payload: ${chartId}`);
+  if (payload.chartId !== chartId) throw new Error(`Chart payload identity mismatch: ${chartId}`);
   return { drawing, payload };
 }
 
-function upsertLegacyChart(sheet: ReturnType<CommandRuntime['workbook']['getSheet']>, chartId: string, drawing: DrawingObject, payload: ChartDrawingPayload): void {
-  const chart: ChartModel = {
-    id: chartId,
-    sheetId: drawing.sheetId,
-    pivotId: payload.pivotId,
-    type: payload.chartType === 'combo' ? 'column' : payload.chartType,
-    title: payload.title,
-    sourceRanges: structuredClone(payload.sourceRanges),
-    series: payload.series?.map((entry) => ({ name: entry.name, range: entry.range, color: entry.color })),
-    categoryRange: payload.categoryRange ? structuredClone(payload.categoryRange) : undefined,
-    bounds: { ...drawing.transform },
-    legendPosition: payload.legendPosition,
-    showDataLabels: payload.showDataLabels,
-  };
-  removeById(sheet.charts, chartId);
-  sheet.charts.push(chart);
+function addChartDrawing(sheet: WorksheetModel, params: ChartInsertParams): void {
+  if (params.payload.kind !== 'chart' || params.payload.chartId !== params.chartId) {
+    throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
+  }
+  if (params.sheetId !== sheet.id) throw new Error(`Chart sheet mismatch: ${params.chartId}`);
+  if (sheet.drawings.some((entry) => entry.id === params.drawingId)) {
+    throw new Error(`Drawing already exists: ${params.drawingId}`);
+  }
+  if (sheet.drawingPayloads.has(params.chartId)) {
+    throw new Error(`Chart payload already exists: ${params.chartId}`);
+  }
+  sheet.drawings.push({
+    id: params.drawingId,
+    sheetId: params.sheetId,
+    kind: 'chart',
+    payloadId: params.chartId,
+    anchor: { kind: 'absolute' },
+    transform: { ...params.bounds, rotation: params.rotation ?? 0 },
+    zIndex: params.zIndex ?? (sheet.drawings.length + 1),
+  });
+  sheet.drawingPayloads.set(params.chartId, structuredClone(params.payload));
+}
+
+function removeChartDrawing(sheet: WorksheetModel, chartId: string): { drawing: DrawingObject; payload: ChartDrawingPayload } {
+  const current = findChartDrawing(sheet, chartId);
+  if (!current) throw new Error(`Unknown chart: ${chartId}`);
+  removeById(sheet.drawings, current.drawing.id);
+  sheet.drawingPayloads.delete(chartId);
+  return { drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
+}
+
+function updateChartDrawing(sheet: WorksheetModel, params: { sheetId: string; chartId: string; payload: ChartDrawingPayload }): void {
+  const current = findChartDrawing(sheet, params.chartId);
+  if (!current) throw new Error(`Unknown chart: ${params.chartId}`);
+  if (params.payload.kind !== 'chart' || params.payload.chartId !== params.chartId) {
+    throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
+  }
+  sheet.drawingPayloads.set(params.chartId, structuredClone(params.payload));
 }
 
 export function registerChartDrawingCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
   registerMutationHandler<ChartInsertParams>(runtime, 'chart.drawing.add', (params, context) => {
-    const sheet = context.workbook.getSheet(params.sheetId);
-    const drawing: DrawingObject = {
-      id: params.drawingId,
-      sheetId: params.sheetId,
-      kind: 'chart',
-      payloadId: params.chartId,
-      anchor: { kind: 'absolute' },
-      transform: { ...params.bounds, rotation: 0 },
-      zIndex: sheet.drawings.length + 1,
-    };
-    sheet.drawings.push(drawing);
-    sheet.drawingPayloads.set(params.chartId, structuredClone(params.payload));
-    upsertLegacyChart(sheet, params.chartId, drawing, params.payload);
+    addChartDrawing(context.workbook.getSheet(params.sheetId), params);
   });
 
   registerMutationHandler<{ sheetId: string; chartId: string; payload: ChartDrawingPayload }>(runtime, 'chart.drawing.update', (params, context) => {
-    const sheet = context.workbook.getSheet(params.sheetId);
-    const current = findChartDrawing(sheet, params.chartId);
-    if (!current) return;
-    const next = { ...current.payload, ...params.payload, kind: 'chart' as const };
-    sheet.drawingPayloads.set(params.chartId, structuredClone(next));
-    upsertLegacyChart(sheet, params.chartId, current.drawing, next);
+    updateChartDrawing(context.workbook.getSheet(params.sheetId), params);
   });
 
-  registerMutationHandler<{ sheetId: string; chartId: string }>(runtime, 'chart.drawing.remove', (params, context) => {
-    const sheet = context.workbook.getSheet(params.sheetId);
-    const current = findChartDrawing(sheet, params.chartId);
-    if (!current) return;
-    removeById(sheet.drawings, current.drawing.id);
-    sheet.drawingPayloads.delete(params.chartId);
-    removeById(sheet.charts, params.chartId);
+  registerMutationHandler<ChartRemoveParams>(runtime, 'chart.drawing.remove', (params, context) => {
+    removeChartDrawing(context.workbook.getSheet(params.sheetId), params.chartId);
   });
 
   runtime.registry.registerCommand<ChartInsertParams>({
     id: 'chart.insert',
     execute: (params, context) => {
+      if (params.payload.chartId !== params.chartId) throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation<ChartInsertParams, { sheetId: string; chartId: string }>(context, {
+      applyTrackedMutation<ChartInsertParams, ChartRemoveParams>(context, {
         id: 'chart.drawing.add',
         sheetId: params.sheetId,
         params,
         inverseId: 'chart.drawing.remove',
         inverseParams: { sheetId: params.sheetId, chartId: params.chartId },
         affectedRanges,
-        apply: () => runtime.registry.getMutation('chart.drawing.add')({ id: 'chart.drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),
+        apply: () => addChartDrawing(context.workbook.getSheet(params.sheetId), params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -137,14 +148,19 @@ export function registerChartDrawingCommands(runtime: CommandRuntime): string[] 
         const current = findChartDrawing(sheet, params.chartId);
         if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
         const nextPayload = patch(current.payload, params);
+        if (nextPayload.kind !== 'chart' || nextPayload.chartId !== params.chartId) {
+          throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
+        }
         const affectedRanges = sheetRange(params.sheetId);
+        const updateParams = { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload };
+        const inverseParams = { sheetId: params.sheetId, chartId: params.chartId, payload: current.payload };
         applyTrackedMutation(context, {
           id: 'chart.drawing.update',
           sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload },
-          inverseParams: { sheetId: params.sheetId, chartId: params.chartId, payload: current.payload },
+          params: updateParams,
+          inverseParams,
           affectedRanges,
-          apply: () => runtime.registry.getMutation('chart.drawing.update')({ id: 'chart.drawing.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload }, affectedRanges }, context),
+          apply: () => updateChartDrawing(context.workbook.getSheet(params.sheetId), updateParams),
         });
         return { operationId: context.operationId, mutationCount: 1, affectedRanges };
       },
@@ -166,14 +182,27 @@ export function registerChartDrawingCommands(runtime: CommandRuntime): string[] 
   runtime.registry.registerCommand<{ sheetId: string; chartId: string }>({
     id: 'chart.remove',
     execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const current = findChartDrawing(sheet, params.chartId);
+      if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation(context, {
+      const inverseParams: ChartInsertParams = {
+        sheetId: params.sheetId,
+        chartId: params.chartId,
+        drawingId: current.drawing.id,
+        bounds: { ...current.drawing.transform },
+        payload: structuredClone(current.payload),
+        zIndex: current.drawing.zIndex,
+        rotation: current.drawing.transform.rotation,
+      };
+      applyTrackedMutation<ChartRemoveParams, ChartInsertParams>(context, {
         id: 'chart.drawing.remove',
         sheetId: params.sheetId,
         params,
-        inverseParams: params,
+        inverseId: 'chart.drawing.add',
+        inverseParams,
         affectedRanges,
-        apply: () => runtime.registry.getMutation('chart.drawing.remove')({ id: 'chart.drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),
+        apply: () => removeChartDrawing(context.workbook.getSheet(params.sheetId), params.chartId),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -181,7 +210,15 @@ export function registerChartDrawingCommands(runtime: CommandRuntime): string[] 
   commandIds.push('chart.remove');
 
   for (const chartType of ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'] as const) {
-    runtime.registry.registerCommand<{ sheetId: string; chartId: string; drawingId: string; bounds: ChartInsertParams['bounds']; sourceRanges: RangeRef[]; title?: string }>({
+    runtime.registry.registerCommand<{
+      sheetId: string;
+      chartId: string;
+      drawingId: string;
+      bounds: ChartInsertParams['bounds'];
+      sourceRanges: RangeRef[];
+      title?: string;
+      stacked?: ChartDrawingPayload['stacked'];
+    }>({
       id: `chart.insert.${chartType}`,
       execute: (params, context) =>
         runtime.registry.getCommand<ChartInsertParams>('chart.insert').execute(
@@ -196,6 +233,7 @@ export function registerChartDrawingCommands(runtime: CommandRuntime): string[] 
               chartType,
               sourceRanges: params.sourceRanges,
               title: params.title,
+              stacked: params.stacked,
               legendPosition: 'bottom',
               showDataLabels: false,
             },

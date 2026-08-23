@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { CommandRuntime, type MutationInfo } from './index';
+import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
 
 test('CommandRuntime executes a registered command and tracks history', () => {
   const workbook = new WorkbookModel('unit-1', 'Runtime');
@@ -94,6 +94,7 @@ test('CommandRegistry guards against duplicate IDs and unknown lookups', () => {
   runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) });
   assert.throws(() => runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) }), /Duplicate command/);
   assert.throws(() => runtime.execute('non.existent', {}), /Unknown command/);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
 });
 
 test('remote mutations reject a different workbook unit', () => {
@@ -111,4 +112,123 @@ test('remote mutations reject a different workbook unit', () => {
     params: { row: 0, column: 0, value: 'invalid' },
     affectedRanges: [],
   }]), /Mutation unit mismatch/);
+});
+
+test('CommandRuntime rejects an unregistered mutation before touching the workbook', () => {
+  const workbook = new WorkbookModel('unit-unregistered', 'Unregistered');
+  const runtime = new CommandRuntime(workbook);
+  let applyCalled = false;
+  runtime.registry.registerCommand({
+    id: 'invalid.mutation',
+    execute: (_params: unknown, context) => {
+      const affectedRanges = [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+      context.applyMutation({
+        id: 'mutation.not.registered',
+        unitId: workbook.unitId,
+        sheetId: 'sheet-1',
+        params: {},
+        affectedRanges,
+        inverse: [],
+        apply: () => {
+          applyCalled = true;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  assert.throws(() => runtime.execute('invalid.mutation', {}), /Unknown mutation: mutation\.not\.registered/);
+  assert.equal(applyCalled, false);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
+});
+
+test('CommandRuntime rejects an inverse that is not registered before applying the mutation', () => {
+  const workbook = new WorkbookModel('unit-invalid-inverse', 'Invalid inverse');
+  const runtime = new CommandRuntime(workbook);
+  let applyCalled = false;
+  runtime.registry.registerMutation('primary.set', () => {
+    throw new Error('primary handler is not used for local apply');
+  });
+  runtime.registry.registerCommand({
+    id: 'invalid.inverse',
+    execute: (_params: unknown, context) => {
+      const affectedRanges = [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
+      context.applyMutation({
+        id: 'primary.set',
+        unitId: workbook.unitId,
+        sheetId: 'sheet-1',
+        params: {},
+        affectedRanges,
+        inverse: [{
+          id: 'inverse.not.registered',
+          unitId: workbook.unitId,
+          sheetId: 'sheet-1',
+          params: {},
+          affectedRanges,
+        }],
+        apply: () => {
+          applyCalled = true;
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  assert.throws(() => runtime.execute('invalid.inverse', {}), /unknown inverse inverse\.not\.registered/);
+  assert.equal(applyCalled, false);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
+});
+
+test('CommandRegistry validates schema, permission, affected ranges, and declared inverses', () => {
+  const registry = new CommandRegistry({ requireMutationMetadata: true });
+  const range = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const metadata = {
+    schema: { name: 'EmptyParams', validate: (value: unknown) => value !== null && typeof value === 'object' },
+    permission: { capability: 'sheet.write' },
+    affectedRanges: { resolve: () => [range] },
+    inverseIds: ['cell.restore'],
+  } as const;
+  registry.registerMutation({ id: 'cell.set', handler: () => undefined, metadata });
+  registry.registerMutation({
+    id: 'cell.restore',
+    handler: () => undefined,
+    metadata: {
+      schema: { name: 'EmptyParams', validate: (value: unknown) => value !== null && typeof value === 'object' },
+      permission: { capability: 'sheet.write' },
+      affectedRanges: { resolve: () => [range] },
+      inverseIds: ['cell.set'],
+    },
+  });
+
+  const result = registry.validateCompleteness();
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.issues, []);
+
+  const invalid = registry.validateMutation({
+    id: 'cell.set',
+    unitId: 'unit-1',
+    sheetId: 'sheet-1',
+    params: {},
+    affectedRanges: [],
+    inverse: [{ id: 'cell.restore', unitId: 'unit-1', sheetId: 'sheet-1', params: {}, affectedRanges: [range] }],
+    apply: () => undefined,
+  });
+  assert.equal(invalid.some((entry) => entry.code === 'invalid-affected-ranges'), true);
+});
+
+test('CommandRegistry completeness gate reports missing metadata and declared inverse drift', () => {
+  const registry = new CommandRegistry();
+  registry.registerMutation({
+    id: 'broken.registration',
+    handler: () => undefined,
+    metadata: { inverseIds: ['missing.inverse'] },
+  });
+
+  const result = registry.validateCompleteness();
+  assert.equal(result.ok, false);
+  assert.equal(result.issues.some((entry) => entry.code === 'missing-schema'), true);
+  assert.equal(result.issues.some((entry) => entry.code === 'missing-permission'), true);
+  assert.equal(result.issues.some((entry) => entry.code === 'missing-affected-ranges'), true);
+  assert.equal(result.issues.some((entry) => entry.code === 'unknown-inverse' && entry.inverseId === 'missing.inverse'), true);
+  assert.throws(() => registry.assertComplete(), /Mutation registry is incomplete/);
 });

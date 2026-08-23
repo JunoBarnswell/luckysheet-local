@@ -54,4 +54,19 @@ describe('SpreadsheetApplication permission integration', () => {
     assert.equal(sheet.protectionRules.length, 0);
     assert.equal(app.canExecute('sheet.cell.set', { row: 1, column: 1, value: { value: 9 } }), true);
   });
+
+  it('restores the exact protection rule through undo and redo', () => {
+    const app = new SpreadsheetApplication();
+    app.protectSelection(['format']);
+    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const rule = structuredClone(sheet.protectionRules[0]);
+    assert.ok(rule);
+    app.undo();
+    assert.equal(sheet.protectionRules.length, 0);
+    app.redo();
+    assert.deepEqual(sheet.protectionRules, [rule]);
+    app.unprotectSelection();
+    app.undo();
+    assert.deepEqual(sheet.protectionRules, [rule]);
+  });
 });

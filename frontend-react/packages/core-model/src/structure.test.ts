@@ -89,4 +89,39 @@ describe('structural operations', () => {
     assert.ok(sheet.notes.has('2:1'));
     assert.equal(sheet.commentThreads[0]?.row, 2);
   });
+
+  it('structural row shifts update chart source ranges in the canonical drawing payload', () => {
+    const workbook = new WorkbookModel('unit-drawing-structure', 'Drawing Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.drawings.push({
+      id: 'drawing-chart-1',
+      sheetId: sheet.id,
+      kind: 'chart',
+      payloadId: 'chart-1',
+      anchor: { kind: 'absolute' },
+      transform: { x: 0, y: 0, width: 100, height: 80 },
+      zIndex: 1,
+    });
+    sheet.drawingPayloads.set('chart-1', {
+      kind: 'chart',
+      chartId: 'chart-1',
+      chartType: 'combo',
+      stacked: 'percent',
+      sourceRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }],
+      categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
+      series: [{ name: 'Sales', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 } }],
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
+
+    const payload = sheet.drawingPayloads.get('chart-1');
+    assert.equal(payload?.kind, 'chart');
+    if (payload?.kind !== 'chart') throw new Error('Expected chart payload');
+    assert.equal(payload.chartType, 'combo');
+    assert.equal(payload.stacked, 'percent');
+    assert.deepEqual(payload.sourceRanges[0], { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 1 });
+    assert.deepEqual(payload.categoryRange, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 });
+    assert.deepEqual(payload.series?.[0]?.range, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 1, endColumn: 1 });
+    assert.equal(sheet.charts.length, 0);
+  });
 });

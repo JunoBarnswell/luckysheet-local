@@ -1,6 +1,13 @@
 import type { PivotResultTree, RangeRef, TableScalar, WorkbookSnapshotV1, WorkbookTableBlock, WorkbookTableModel } from '@react-sheets/core-model';
 
-export type ProtocolErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'CONFLICT' | 'INTERNAL_ERROR';
+export type ProtocolErrorCode =
+  | 'VALIDATION_ERROR'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'UNAUTHENTICATED'
+  | 'FORBIDDEN'
+  | 'AUTH_CONFIGURATION_ERROR'
+  | 'INTERNAL_ERROR';
 
 export interface ApiError {
   code: ProtocolErrorCode;
@@ -24,6 +31,118 @@ export interface CollaborationMutation {
   sheetId: string;
   params: unknown;
   affectedRanges: RangeRef[];
+}
+
+/**
+ * The only client-authored operation wire contract.
+ *
+ * Actor identity and affected ranges intentionally do not exist on this
+ * request type.  The server obtains the actor from the verified bearer token
+ * and derives ranges from the authoritative workbook/runtime state.  Keeping
+ * those values out of the request makes it impossible for a client to turn a
+ * claimed actor or range into an authorization decision by accident.
+ */
+export const OPERATION_ENVELOPE_V2_SCHEMA = 'OperationEnvelopeV2' as const;
+
+export interface OperationMutationV2 {
+  id: string;
+  sheetId: string;
+  params: unknown;
+}
+
+export interface OperationEnvelopeV2 {
+  schema: typeof OPERATION_ENVELOPE_V2_SCHEMA;
+  operationId: string;
+  unitId: string;
+  clientSequence: number;
+  baseRevision: number;
+  mutations: OperationMutationV2[];
+  createdAt: string;
+}
+
+/** Server-authored metadata added after authentication, validation and commit. */
+export interface CommittedOperationMutationV2 extends OperationMutationV2 {
+  /** Authoritative range calculated by the server; never read from client input. */
+  affectedRanges: RangeRef[];
+}
+
+export interface CommittedOperationEnvelopeV2 extends Omit<OperationEnvelopeV2, 'mutations'> {
+  actorId: string;
+  revision: number;
+  committedAt: string;
+  mutations: CommittedOperationMutationV2[];
+}
+
+export type WorkbookAclRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
+export interface WorkbookAclRecord {
+  unitId: string;
+  subject: string;
+  role: WorkbookAclRole;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OperationCommitResponse {
+  operation: CommittedOperationEnvelopeV2;
+}
+
+const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+
+/** Strict runtime validation used at the REST/WebSocket trust boundary. */
+export function validateOperationEnvelopeV2(value: unknown): OperationEnvelopeV2 {
+  if (!value || typeof value !== 'object') throw new Error('OperationEnvelopeV2 must be an object');
+  const input = value as Record<string, unknown>;
+  if (input.schema !== OPERATION_ENVELOPE_V2_SCHEMA) throw new Error('Unsupported operation schema');
+  if (!isNonEmptyString(input.operationId) || !isNonEmptyString(input.unitId)) {
+    throw new Error('operationId and unitId are required');
+  }
+  if (!Number.isSafeInteger(input.clientSequence) || Number(input.clientSequence) < 1) {
+    throw new Error('clientSequence must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(input.baseRevision) || Number(input.baseRevision) < 0) {
+    throw new Error('baseRevision must be a non-negative safe integer');
+  }
+  if (!isNonEmptyString(input.createdAt) || Number.isNaN(Date.parse(input.createdAt))) {
+    throw new Error('createdAt must be an ISO timestamp');
+  }
+  if (!Array.isArray(input.mutations) || input.mutations.length === 0) {
+    throw new Error('mutations must contain at least one mutation');
+  }
+
+  // Reject fields that used to be client-controlled security inputs instead
+  // of silently ignoring them.  This prevents accidental reintroduction of
+  // V1 semantics through an untyped JSON caller.
+  if ('actorId' in input || 'affectedRanges' in input) {
+    throw new Error('actorId and affectedRanges are server-owned fields');
+  }
+
+  const mutations = input.mutations.map((raw, index) => {
+    if (!raw || typeof raw !== 'object') throw new Error(`mutation[${index}] must be an object`);
+    const mutation = raw as Record<string, unknown>;
+    if (!isNonEmptyString(mutation.id) || !isNonEmptyString(mutation.sheetId)) {
+      throw new Error(`mutation[${index}] requires id and sheetId`);
+    }
+    if (!('params' in mutation)) throw new Error(`mutation[${index}] requires params`);
+    if ('affectedRanges' in mutation || 'actorId' in mutation) {
+      throw new Error(`mutation[${index}] contains server-owned fields`);
+    }
+    return {
+      id: mutation.id,
+      sheetId: mutation.sheetId,
+      params: mutation.params,
+    } satisfies OperationMutationV2;
+  });
+
+  return {
+    schema: OPERATION_ENVELOPE_V2_SCHEMA,
+    operationId: input.operationId,
+    unitId: input.unitId,
+    clientSequence: Number(input.clientSequence),
+    baseRevision: Number(input.baseRevision),
+    mutations,
+    createdAt: input.createdAt,
+  };
 }
 
 export interface SnapshotResponse {
@@ -232,6 +351,140 @@ export type CollaborationMessage =
   | { type: 'revision.created'; payload: CollaborationChangeSet; revision: number }
   | { type: 'presence.updated'; unitId: string; actorId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; actorId: string; state: unknown };
+
+/**
+ * V2 collaboration messages.  Client-originated presence/cursor messages do
+ * not carry actorId; the server adds it to broadcast messages after token
+ * verification.  The V1 message union above remains only for source-level
+ * migration and is not accepted by the V2 server endpoint.
+ */
+export type OperationMessageV2 =
+  | { type: 'snapshot.request'; unitId: string }
+  | { type: 'snapshot.response'; payload: SnapshotResponse }
+  | { type: 'changeset.submit'; payload: OperationEnvelopeV2 }
+  | { type: 'changeset.ack'; operationId: string; revision: number }
+  | { type: 'changeset.reject'; operationId: string; error: ApiError }
+  | { type: 'revision.created'; payload: CommittedOperationEnvelopeV2; revision: number }
+  | { type: 'presence.updated'; unitId: string; state: unknown }
+  | { type: 'cursor.updated'; unitId: string; state: unknown }
+  | { type: 'presence.broadcast'; unitId: string; actorId: string; state: unknown }
+  | { type: 'cursor.broadcast'; unitId: string; actorId: string; state: unknown };
+
+export type ClientOperationMessageV2 =
+  | { type: 'snapshot.request'; unitId: string }
+  | { type: 'changeset.submit'; payload: OperationEnvelopeV2 }
+  | { type: 'presence.updated'; unitId: string; state: unknown }
+  | { type: 'cursor.updated'; unitId: string; state: unknown };
+
+export function encodeOperationMessageV2(message: OperationMessageV2): string {
+  return JSON.stringify(message);
+}
+
+function validateCommittedOperationEnvelopeV2(value: unknown): CommittedOperationEnvelopeV2 {
+  if (!value || typeof value !== 'object') throw new Error('Committed operation must be an object');
+  const input = value as Record<string, unknown>;
+  if (input.schema !== OPERATION_ENVELOPE_V2_SCHEMA || !isNonEmptyString(input.operationId) || !isNonEmptyString(input.unitId)) {
+    throw new Error('Invalid committed operation schema');
+  }
+  if (!isNonEmptyString(input.actorId) || !Number.isSafeInteger(input.revision) || Number(input.revision) < 1) {
+    throw new Error('Invalid committed operation metadata');
+  }
+  if (!isNonEmptyString(input.committedAt) || Number.isNaN(Date.parse(input.committedAt))) {
+    throw new Error('Invalid committed operation timestamp');
+  }
+  const operation = validateOperationEnvelopeV2({
+    schema: input.schema,
+    operationId: input.operationId,
+    unitId: input.unitId,
+    clientSequence: input.clientSequence,
+    baseRevision: input.baseRevision,
+    createdAt: input.createdAt,
+    mutations: Array.isArray(input.mutations)
+      ? input.mutations.map((mutation) => {
+        if (!mutation || typeof mutation !== 'object') return mutation;
+        const candidate = mutation as Record<string, unknown>;
+        return {
+          id: candidate.id,
+          sheetId: candidate.sheetId,
+          params: candidate.params,
+        };
+      })
+      : input.mutations,
+  });
+  const mutations = (input.mutations as unknown[]).map((raw, index) => {
+    if (!raw || typeof raw !== 'object') throw new Error(`committed mutation[${index}] must be an object`);
+    const mutation = raw as Record<string, unknown>;
+    if (!Array.isArray(mutation.affectedRanges)) throw new Error(`committed mutation[${index}] requires affectedRanges`);
+    return { ...operation.mutations[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
+  });
+  return {
+    ...operation,
+    actorId: input.actorId,
+    revision: Number(input.revision),
+    committedAt: input.committedAt,
+    mutations,
+  };
+}
+
+export function decodeOperationMessageV2(input: string): OperationMessageV2 {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(input);
+  } catch {
+    throw new Error('Invalid collaboration JSON');
+  }
+  if (!raw || typeof raw !== 'object' || typeof (raw as Record<string, unknown>).type !== 'string') {
+    throw new Error('Invalid collaboration message');
+  }
+  const message = raw as Record<string, unknown>;
+  switch (message.type) {
+    case 'changeset.submit':
+      return { type: 'changeset.submit', payload: validateOperationEnvelopeV2(message.payload) };
+    case 'snapshot.request':
+      if (!isNonEmptyString(message.unitId)) throw new Error('snapshot.request requires unitId');
+      return { type: 'snapshot.request', unitId: message.unitId };
+    case 'snapshot.response':
+      if (!message.payload || typeof message.payload !== 'object') throw new Error('snapshot.response requires payload');
+      return { type: 'snapshot.response', payload: message.payload as SnapshotResponse };
+    case 'changeset.ack':
+      if (!isNonEmptyString(message.operationId) || !Number.isSafeInteger(message.revision) || Number(message.revision) < 1) {
+        throw new Error('changeset.ack requires operationId and revision');
+      }
+      return { type: 'changeset.ack', operationId: message.operationId, revision: Number(message.revision) };
+    case 'changeset.reject':
+      if (!isNonEmptyString(message.operationId) || !message.error || typeof message.error !== 'object') {
+        throw new Error('changeset.reject requires operationId and error');
+      }
+      return { type: 'changeset.reject', operationId: message.operationId, error: message.error as ApiError };
+    case 'revision.created':
+      if (!Number.isSafeInteger(message.revision) || Number(message.revision) < 1) throw new Error('revision.created requires revision');
+      return {
+        type: 'revision.created',
+        payload: validateCommittedOperationEnvelopeV2(message.payload),
+        revision: Number(message.revision),
+      };
+    case 'presence.updated':
+    case 'cursor.updated':
+      if (!isNonEmptyString(message.unitId)) throw new Error(`${message.type} requires unitId`);
+      if ('actorId' in message) throw new Error('actorId is server-owned');
+      return { type: message.type, unitId: message.unitId, state: message.state };
+    case 'presence.broadcast':
+    case 'cursor.broadcast':
+      if (!isNonEmptyString(message.unitId) || !isNonEmptyString(message.actorId)) {
+        throw new Error(`${message.type} requires unitId and actorId`);
+      }
+      return { type: message.type, unitId: message.unitId, actorId: message.actorId, state: message.state };
+    default:
+      throw new Error(`Unsupported collaboration message: ${String(message.type)}`);
+  }
+}
+
+export function decodeClientOperationMessageV2(input: string): ClientOperationMessageV2 {
+  const message = decodeOperationMessageV2(input);
+  if (message.type === 'changeset.submit' || message.type === 'snapshot.request'
+    || message.type === 'presence.updated' || message.type === 'cursor.updated') return message;
+  throw new Error(`Server-only collaboration message: ${message.type}`);
+}
 
 export function encodeMessage(message: CollaborationMessage): string {
   return JSON.stringify(message);

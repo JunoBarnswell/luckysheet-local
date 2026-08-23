@@ -4,32 +4,57 @@ import { DatabaseSync } from 'node:sqlite';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel, type PivotLayout, type TableScalar, type WorkbookTableBlock, type WorkbookTableModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
-import type { CollaborationChangeSet, CollaborationMutation, SnapshotResponse, WorkbookSummary } from '@react-sheets/protocol';
+import {
+  validateOperationEnvelopeV2,
+  type CollaborationChangeSet,
+  type CommittedOperationEnvelopeV2,
+  type OperationEnvelopeV2,
+  type SnapshotResponse,
+  type WorkbookAclRecord,
+  type WorkbookAclRole,
+  type WorkbookSummary,
+} from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures, DrawingRuntime } from '@react-sheets/spreadsheet-app';
 import { computeSnapshotChecksum } from './persistence-session';
 
-const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
-mkdirSync(dirname(databasePath), { recursive: true });
+const defaultDatabasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
+
+export interface WorkbookStorageOptions {
+  /** Absolute or relative SQLite path. Useful for isolated integration tests. */
+  databasePath?: string;
+}
+
+const ROLE_RANK: Record<WorkbookAclRole, number> = {
+  viewer: 1,
+  commenter: 2,
+  editor: 3,
+  owner: 4,
+};
+
+export class StorageAccessError extends Error {
+  readonly code = 'FORBIDDEN' as const;
+  readonly status = 403 as const;
+}
+
+export class StorageConflictError extends Error {
+  readonly code = 'CONFLICT' as const;
+  readonly status = 409 as const;
+}
+
+function requireSubject(subject: string): string {
+  const normalized = subject.trim();
+  if (!normalized) throw new StorageAccessError('Authenticated subject is required');
+  return normalized;
+}
+
+function assertRole(role: string): asserts role is WorkbookAclRole {
+  if (!(role in ROLE_RANK)) throw new Error(`Invalid workbook ACL role: ${role}`);
+}
 
 function createMutationRuntime(workbook: WorkbookModel): CommandRuntime {
   const runtime = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime, new DrawingRuntime());
   return runtime;
-}
-
-function rangesOverlap(left: CollaborationMutation['affectedRanges'][number], right: CollaborationMutation['affectedRanges'][number]): boolean {
-  return left.sheetId === right.sheetId
-    && left.startRow <= right.endRow
-    && right.startRow <= left.endRow
-    && left.startColumn <= right.endColumn
-    && right.startColumn <= left.endColumn;
-}
-
-function changesConflict(incoming: CollaborationChangeSet, committed: CollaborationChangeSet): boolean {
-  return incoming.mutations.some((left) => committed.mutations.some((right) => {
-    if (left.affectedRanges.length === 0 || right.affectedRanges.length === 0) return true;
-    return left.affectedRanges.some((leftRange) => right.affectedRanges.some((rightRange) => rangesOverlap(leftRange, rightRange)));
-  }));
 }
 
 function migrateSnapshot(snapshot: WorkbookSnapshotV1): WorkbookSnapshotV1 {
@@ -67,9 +92,12 @@ interface EncodedTableBlock {
 }
 
 export class WorkbookStorage {
-  private readonly database = new DatabaseSync(databasePath);
+  private readonly database: DatabaseSync;
 
-  constructor() {
+  constructor(options: WorkbookStorageOptions = {}) {
+    const databasePath = resolve(options.databasePath ?? process.env.REACT_SHEETS_DATABASE_PATH ?? defaultDatabasePath);
+    mkdirSync(dirname(databasePath), { recursive: true });
+    this.database = new DatabaseSync(databasePath);
     this.database.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS workbooks (
@@ -114,6 +142,16 @@ export class WorkbookStorage {
         created_at TEXT NOT NULL,
         PRIMARY KEY (unit_id, revision)
       );
+      CREATE TABLE IF NOT EXISTS workbook_acl (
+        unit_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'commenter', 'viewer')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (unit_id, subject)
+      );
+      CREATE INDEX IF NOT EXISTS workbook_acl_subject
+        ON workbook_acl(subject, unit_id);
     `);
     // Existing local databases predate snapshot_revision. This is a one-way
     // storage migration; a baseline snapshot is always revision 0 for them.
@@ -124,10 +162,84 @@ export class WorkbookStorage {
     }
   }
 
-  listWorkbooks(): WorkbookSummary[] {
+  close(): void {
+    this.database.close();
+  }
+
+  getAcl(unitId: string, actorSubject: string): WorkbookAclRecord[] {
+    this.requireRole(unitId, actorSubject, 'owner');
+    return this.listAclUnchecked(unitId);
+  }
+
+  listAcl(unitId: string, actorSubject: string): WorkbookAclRecord[] {
+    return this.getAcl(unitId, actorSubject);
+  }
+
+  grantAccess(unitId: string, actorSubject: string, subject: string, role: WorkbookAclRole): WorkbookAclRecord {
+    this.requireRole(unitId, actorSubject, 'owner');
+    const normalizedSubject = requireSubject(subject);
+    assertRole(role);
+    const now = new Date().toISOString();
+    this.database
+      .prepare(
+        `INSERT INTO workbook_acl (unit_id, subject, role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(unit_id, subject) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at`,
+      )
+      .run(unitId, normalizedSubject, role, now, now);
+    const record = this.database
+      .prepare('SELECT unit_id, subject, role, created_at, updated_at FROM workbook_acl WHERE unit_id = ? AND subject = ?')
+      .get(unitId, normalizedSubject) as {
+      unit_id?: string;
+      subject?: string;
+      role?: string;
+      created_at?: string;
+      updated_at?: string;
+    } | undefined;
+    if (!record?.unit_id || !record.subject || !record.role || !record.created_at || !record.updated_at) {
+      throw new Error('ACL record was not persisted');
+    }
+    assertRole(record.role);
+    return {
+      unitId: record.unit_id,
+      subject: record.subject,
+      role: record.role,
+      createdAt: record.created_at,
+      updatedAt: record.updated_at,
+    };
+  }
+
+  revokeAccess(unitId: string, actorSubject: string, subject: string): void {
+    this.requireRole(unitId, actorSubject, 'owner');
+    const normalizedSubject = requireSubject(subject);
+    const target = this.database
+      .prepare('SELECT role FROM workbook_acl WHERE unit_id = ? AND subject = ?')
+      .get(unitId, normalizedSubject) as { role?: string } | undefined;
+    if (target?.role === 'owner') throw new StorageAccessError('The workbook owner cannot be revoked');
+    this.database.prepare('DELETE FROM workbook_acl WHERE unit_id = ? AND subject = ?').run(unitId, normalizedSubject);
+  }
+
+  getRole(unitId: string, actorSubject: string): WorkbookAclRole | undefined {
+    const subject = requireSubject(actorSubject);
+    const row = this.database
+      .prepare('SELECT role FROM workbook_acl WHERE unit_id = ? AND subject = ?')
+      .get(unitId, subject) as { role?: string } | undefined;
+    if (!row?.role) return undefined;
+    assertRole(row.role);
+    return row.role;
+  }
+
+  listWorkbooks(actorSubject: string): WorkbookSummary[] {
+    const subject = requireSubject(actorSubject);
     const rows = this.database
-      .prepare('SELECT unit_id, name, revision, updated_at FROM workbooks ORDER BY updated_at DESC')
-      .all() as Array<{ unit_id: string; name: string; revision: number; updated_at: string }>;
+      .prepare(
+        `SELECT w.unit_id, w.name, w.revision, w.updated_at
+         FROM workbooks AS w
+         INNER JOIN workbook_acl AS a ON a.unit_id = w.unit_id
+         WHERE a.subject = ?
+         ORDER BY w.updated_at DESC`,
+      )
+      .all(subject) as Array<{ unit_id: string; name: string; revision: number; updated_at: string }>;
     return rows.map((row) => ({
       unitId: row.unit_id,
       name: row.name,
@@ -136,31 +248,68 @@ export class WorkbookStorage {
     }));
   }
 
-  deleteWorkbook(unitId: string): void {
-    this.database.prepare('DELETE FROM changesets WHERE unit_id = ?').run(unitId);
-    this.database.prepare('DELETE FROM snapshots WHERE unit_id = ?').run(unitId);
-    const tables = this.database.prepare('SELECT table_id FROM data_tables WHERE unit_id = ?').all(unitId) as Array<{ table_id: string }>;
-    for (const table of tables) this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(table.table_id);
-    this.database.prepare('DELETE FROM data_tables WHERE unit_id = ?').run(unitId);
-    this.database.prepare('DELETE FROM workbooks WHERE unit_id = ?').run(unitId);
+  deleteWorkbook(unitId: string, actorSubject: string): void {
+    this.requireRole(unitId, actorSubject, 'owner');
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM changesets WHERE unit_id = ?').run(unitId);
+      this.database.prepare('DELETE FROM snapshots WHERE unit_id = ?').run(unitId);
+      this.database.prepare('DELETE FROM workbook_acl WHERE unit_id = ?').run(unitId);
+      const tables = this.database.prepare('SELECT table_id FROM data_tables WHERE unit_id = ?').all(unitId) as Array<{ table_id: string }>;
+      for (const table of tables) this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(table.table_id);
+      this.database.prepare('DELETE FROM data_tables WHERE unit_id = ?').run(unitId);
+      this.database.prepare('DELETE FROM workbooks WHERE unit_id = ?').run(unitId);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
-  createWorkbook(snapshot: WorkbookSnapshotV1): SnapshotResponse {
+  createWorkbook(snapshot: WorkbookSnapshotV1, ownerSubject: string): SnapshotResponse {
+    const subject = requireSubject(ownerSubject);
     const now = new Date().toISOString();
-    this.database
-      .prepare(
-        `
-      INSERT INTO workbooks (unit_id, name, snapshot_json, revision, updated_at)
-      VALUES (?, ?, ?, 0, ?)
-      ON CONFLICT(unit_id) DO NOTHING
-    `,
-      )
-      .run(snapshot.unitId, snapshot.name, JSON.stringify(snapshot), now);
-    this.persistRevisionSnapshot(snapshot.unitId, 0, snapshot, now);
-    return this.getSnapshot(snapshot.unitId);
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const result = this.database
+        .prepare(
+          `
+        INSERT INTO workbooks (unit_id, name, snapshot_json, revision, updated_at)
+        VALUES (?, ?, ?, 0, ?)
+        ON CONFLICT(unit_id) DO NOTHING
+      `,
+        )
+        .run(snapshot.unitId, snapshot.name, JSON.stringify(snapshot), now);
+      if (Number(result.changes) === 0) {
+        this.database.exec('ROLLBACK');
+        this.requireRole(snapshot.unitId, subject, 'viewer');
+        return this.getSnapshot(snapshot.unitId, subject);
+      }
+      this.database
+        .prepare(
+          `INSERT INTO workbook_acl (unit_id, subject, role, created_at, updated_at)
+           VALUES (?, ?, 'owner', ?, ?)`,
+        )
+        .run(snapshot.unitId, subject, now, now);
+      this.persistRevisionSnapshot(snapshot.unitId, 0, snapshot, now);
+      this.database.exec('COMMIT');
+      return { snapshot: structuredClone(snapshot), revision: 0 };
+    } catch (error) {
+      try {
+        this.database.exec('ROLLBACK');
+      } catch {
+        // Preserve the original failure if the transaction was already closed.
+      }
+      throw error;
+    }
   }
 
-  getSnapshot(unitId: string): SnapshotResponse {
+  getSnapshot(unitId: string, actorSubject: string): SnapshotResponse {
+    this.requireRole(unitId, actorSubject, 'viewer');
+    return this.getSnapshotUnchecked(unitId);
+  }
+
+  private getSnapshotUnchecked(unitId: string): SnapshotResponse {
     const row = this.database
       .prepare('SELECT snapshot_json, snapshot_revision, revision FROM workbooks WHERE unit_id = ?')
       .get(unitId) as { snapshot_json?: string; snapshot_revision?: number; revision?: number } | undefined;
@@ -182,10 +331,15 @@ export class WorkbookStorage {
       .prepare('SELECT payload_json FROM changesets WHERE unit_id = ? AND revision > ? AND revision <= ? ORDER BY revision ASC')
       .all(unitId, baseRevision, row.revision) as Array<{ payload_json: string }>;
     for (const entry of changesets) {
-      const changeSet = JSON.parse(entry.payload_json) as CollaborationChangeSet;
-      runtime.applyRemoteMutations(changeSet.mutations.map((mutation) => ({
-        ...mutation,
-        unitId: changeSet.unitId,
+      const operation = JSON.parse(entry.payload_json) as
+        | CommittedOperationEnvelopeV2
+        | CollaborationChangeSet;
+      runtime.applyRemoteMutations(operation.mutations.map((mutation) => ({
+        id: mutation.id,
+        unitId: operation.unitId,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges: 'affectedRanges' in mutation ? mutation.affectedRanges : [],
       })));
     }
     return {
@@ -194,8 +348,39 @@ export class WorkbookStorage {
     };
   }
 
-  saveSnapshot(unitId: string, snapshot: WorkbookSnapshotV1, baseRevision: number): SnapshotResponse {
-    const current = this.getSnapshot(unitId);
+  private listAclUnchecked(unitId: string): WorkbookAclRecord[] {
+    const rows = this.database
+      .prepare('SELECT unit_id, subject, role, created_at, updated_at FROM workbook_acl WHERE unit_id = ? ORDER BY subject')
+      .all(unitId) as Array<{ unit_id: string; subject: string; role: string; created_at: string; updated_at: string }>;
+    return rows.map((row) => {
+      assertRole(row.role);
+      return {
+        unitId: row.unit_id,
+        subject: row.subject,
+        role: row.role,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    });
+  }
+
+  private requireRole(unitId: string, actorSubject: string, required: WorkbookAclRole): WorkbookAclRole {
+    const subject = requireSubject(actorSubject);
+    const row = this.database
+      .prepare('SELECT role FROM workbook_acl WHERE unit_id = ? AND subject = ?')
+      .get(unitId, subject) as { role?: string } | undefined;
+    if (!row?.role) throw new StorageAccessError('Workbook access denied');
+    assertRole(row.role);
+    if (ROLE_RANK[row.role] < ROLE_RANK[required]) {
+      throw new StorageAccessError(`Workbook role ${required} is required`);
+    }
+    return row.role;
+  }
+
+  saveSnapshot(unitId: string, snapshot: WorkbookSnapshotV1, baseRevision: number, actorSubject: string): SnapshotResponse {
+    this.requireRole(unitId, actorSubject, 'editor');
+    if (snapshot.unitId !== unitId) throw new Error('Snapshot unitId does not match route');
+    const current = this.getSnapshotUnchecked(unitId);
     if (current.revision !== baseRevision) {
       throw new Error('Revision conflict');
     }
@@ -216,69 +401,102 @@ export class WorkbookStorage {
     }
   }
 
-  appendChangeSet(changeSet: CollaborationChangeSet): number {
-    if (!changeSet.operationId || !changeSet.actorId || !Number.isSafeInteger(changeSet.clientSequence) || changeSet.clientSequence < 1) {
-      throw new Error('Invalid collaboration sequence');
-    }
-    const current = this.getSnapshot(changeSet.unitId);
-    const existing = this.database
-      .prepare('SELECT revision FROM changesets WHERE operation_id = ?')
-      .get(changeSet.operationId) as { revision?: number } | undefined;
-    if (existing?.revision != null) return existing.revision;
-    if (current.revision !== changeSet.baseRevision) {
-      const committedRows = this.database
-        .prepare('SELECT payload_json FROM changesets WHERE unit_id = ? AND revision > ? ORDER BY revision ASC')
-        .all(changeSet.unitId, changeSet.baseRevision) as Array<{ payload_json: string }>;
-      const hasConflict = committedRows.some((row) => changesConflict(changeSet, JSON.parse(row.payload_json) as CollaborationChangeSet));
-      if (hasConflict) throw new Error('Revision conflict');
-    }
+  /**
+   * Authenticated V2 operation commit.  The caller supplies only mutation
+   * intent; actor identity comes from the verified token and ranges are
+   * conservatively derived from the server workbook.  A stale base revision
+   * is rejected until the OT/rebase layer supplies a new envelope.
+   */
+  appendOperation(operationInput: OperationEnvelopeV2, actorSubject: string): { revision: number; operation: CommittedOperationEnvelopeV2 } {
+    const operation = validateOperationEnvelopeV2(operationInput);
+    const actor = requireSubject(actorSubject);
+    this.requireRole(operation.unitId, actor, 'editor');
 
-    const nextRevision = current.revision + 1;
-    const workbook = WorkbookModel.fromSnapshot(current.snapshot);
-    const runtime = createMutationRuntime(workbook);
-    runtime.applyRemoteMutations(
-      changeSet.mutations.map((mutation) => ({
-        ...mutation,
-        unitId: changeSet.unitId,
-      })),
-    );
-
-    const nextSnapshot = workbook.snapshot();
     this.database.exec('BEGIN IMMEDIATE');
     try {
+      const current = this.getSnapshotUnchecked(operation.unitId);
+      const existing = this.database
+        .prepare('SELECT revision, payload_json FROM changesets WHERE operation_id = ?')
+        .get(operation.operationId) as { revision?: number; payload_json?: string } | undefined;
+      if (existing?.revision != null && existing.payload_json) {
+        const committed = JSON.parse(existing.payload_json) as CommittedOperationEnvelopeV2;
+        if (committed.actorId !== actor) throw new StorageAccessError('Operation belongs to another subject');
+        this.database.exec('COMMIT');
+        return { revision: existing.revision, operation: committed };
+      }
+      if (current.revision !== operation.baseRevision) {
+        throw new StorageConflictError(`Revision conflict: expected ${current.revision}, received ${operation.baseRevision}`);
+      }
+
+      const workbook = WorkbookModel.fromSnapshot(current.snapshot);
+      const runtime = createMutationRuntime(workbook);
+      const committedMutations = operation.mutations.map((mutation) => {
+        const sheet = workbook.getSheet(mutation.sheetId);
+        if (!sheet) throw new Error(`Sheet not found: ${mutation.sheetId}`);
+        const affectedRanges = [{
+          sheetId: mutation.sheetId,
+          startRow: 0,
+          endRow: Math.max(0, sheet.rowCount - 1),
+          startColumn: 0,
+          endColumn: Math.max(0, sheet.columnCount - 1),
+        }];
+        return {
+          ...mutation,
+          affectedRanges,
+        };
+      });
+      runtime.applyRemoteMutations(committedMutations.map((mutation) => ({
+        id: mutation.id,
+        unitId: operation.unitId,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges: mutation.affectedRanges,
+      })));
+
+      const nextRevision = current.revision + 1;
+      const committedAt = new Date().toISOString();
+      const committed: CommittedOperationEnvelopeV2 = {
+        ...operation,
+        actorId: actor,
+        revision: nextRevision,
+        committedAt,
+        mutations: committedMutations,
+      };
+      const nextSnapshot = workbook.snapshot();
       this.database
         .prepare(
-          `
-        INSERT INTO changesets (operation_id, unit_id, revision, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `,
+          `INSERT INTO changesets (operation_id, unit_id, revision, payload_json, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
         )
-        .run(
-          changeSet.operationId,
-          changeSet.unitId,
-          nextRevision,
-          JSON.stringify(changeSet),
-          changeSet.createdAt,
-        );
+        .run(operation.operationId, operation.unitId, nextRevision, JSON.stringify(committed), committedAt);
       this.database
         .prepare('UPDATE workbooks SET revision = ?, updated_at = ? WHERE unit_id = ?')
-        .run(nextRevision, new Date().toISOString(), changeSet.unitId);
-      if (this.shouldPersistSnapshot(changeSet.unitId, nextRevision)) {
-        const now = new Date().toISOString();
+        .run(nextRevision, committedAt, operation.unitId);
+      if (this.shouldPersistSnapshot(operation.unitId, nextRevision)) {
         this.database
           .prepare('UPDATE workbooks SET snapshot_json = ?, snapshot_revision = ? WHERE unit_id = ?')
-          .run(JSON.stringify(nextSnapshot), nextRevision, changeSet.unitId);
-        this.persistRevisionSnapshot(changeSet.unitId, nextRevision, nextSnapshot, now);
+          .run(JSON.stringify(nextSnapshot), nextRevision, operation.unitId);
+        this.persistRevisionSnapshot(operation.unitId, nextRevision, nextSnapshot, committedAt);
       }
       this.database.exec('COMMIT');
-      return nextRevision;
+      return { revision: nextRevision, operation: committed };
     } catch (error) {
-      this.database.exec('ROLLBACK');
+      try {
+        this.database.exec('ROLLBACK');
+      } catch {
+        // Preserve the original error if SQLite already closed the transaction.
+      }
       throw error;
     }
   }
 
-  createDataTable(unitId: string, table: WorkbookTableModel): WorkbookTableModel {
+  /** V1 writes are deliberately unavailable at the storage boundary. */
+  appendChangeSet(_changeSet: CollaborationChangeSet): never {
+    throw new Error('CollaborationChangeSetV1 is no longer accepted; submit OperationEnvelopeV2');
+  }
+
+  createDataTable(unitId: string, table: WorkbookTableModel, actorSubject: string): WorkbookTableModel {
+    this.requireRole(unitId, actorSubject, 'editor');
     this.database.prepare(`
       INSERT INTO data_tables (table_id, unit_id, name, fields_json, row_count, block_size, revision)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -286,14 +504,16 @@ export class WorkbookStorage {
     return structuredClone(table);
   }
 
-  removeDataTable(unitId: string, tableId: string): void {
+  removeDataTable(unitId: string, tableId: string, actorSubject: string): void {
+    this.requireRole(unitId, actorSubject, 'editor');
     const table = this.database.prepare('SELECT table_id FROM data_tables WHERE table_id = ? AND unit_id = ?').get(tableId, unitId) as { table_id?: string } | undefined;
     if (!table?.table_id) throw new Error('Data table not found');
     this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(tableId);
     this.database.prepare('DELETE FROM data_tables WHERE table_id = ? AND unit_id = ?').run(tableId, unitId);
   }
 
-  appendDataBlock(unitId: string, tableId: string, startRow: number, rows: TableScalar[][]): WorkbookTableBlock {
+  appendDataBlock(unitId: string, tableId: string, startRow: number, rows: TableScalar[][], actorSubject: string): WorkbookTableBlock {
+    this.requireRole(unitId, actorSubject, 'editor');
     const table = this.database.prepare('SELECT * FROM data_tables WHERE table_id = ? AND unit_id = ?').get(tableId, unitId) as { fields_json?: string; block_size?: number; revision?: number } | undefined;
     if (!table?.fields_json || table.block_size == null || table.revision == null) throw new Error('Data table not found');
     if (!Number.isInteger(startRow) || startRow < 0 || rows.length > table.block_size) throw new Error('Invalid data block');
@@ -315,7 +535,8 @@ export class WorkbookStorage {
     return { id: blockId, tableId, startRow, rowCount: rows.length, storageKey: blockId, encoding: 'typed-column-v1' };
   }
 
-  readDataRows(unitId: string, tableId: string, offset: number, limit: number): { table: WorkbookTableModel; rows: TableScalar[][]; nextOffset?: number } {
+  readDataRows(unitId: string, tableId: string, offset: number, limit: number, actorSubject: string): { table: WorkbookTableModel; rows: TableScalar[][]; nextOffset?: number } {
+    this.requireRole(unitId, actorSubject, 'viewer');
     const tableRow = this.database.prepare('SELECT * FROM data_tables WHERE table_id = ? AND unit_id = ?').get(tableId, unitId) as { table_id?: string; name?: string; fields_json?: string; row_count?: number; block_size?: number; revision?: number } | undefined;
     if (!tableRow?.table_id || !tableRow.fields_json || tableRow.row_count == null || tableRow.block_size == null || tableRow.revision == null) throw new Error('Data table not found');
     const fields = JSON.parse(tableRow.fields_json) as WorkbookTableModel['fields'];
@@ -338,12 +559,14 @@ export class WorkbookStorage {
 
   listRevisions(
     unitId: string,
+    actorSubject: string,
   ): Array<{
     operationId: string;
     revision: number;
     createdAt: string;
-    payload: CollaborationChangeSet;
+    payload: CommittedOperationEnvelopeV2;
   }> {
+    this.requireRole(unitId, actorSubject, 'viewer');
     const rows = this.database
       .prepare(
         'SELECT operation_id, revision, created_at, payload_json FROM changesets WHERE unit_id = ? ORDER BY revision DESC',
@@ -354,16 +577,23 @@ export class WorkbookStorage {
       created_at: string;
       payload_json: string;
     }>;
-    return rows.map((row) => ({
-      operationId: row.operation_id,
-      revision: row.revision,
-      createdAt: row.created_at,
-      payload: JSON.parse(row.payload_json) as CollaborationChangeSet,
-    }));
+    return rows.map((row) => {
+      const payload = JSON.parse(row.payload_json) as CommittedOperationEnvelopeV2;
+      if (payload.schema !== 'OperationEnvelopeV2' || !payload.actorId) {
+        throw new Error(`Unsupported historical operation schema at revision ${row.revision}`);
+      }
+      return {
+        operationId: row.operation_id,
+        revision: row.revision,
+        createdAt: row.created_at,
+        payload,
+      };
+    });
   }
 
-  getSnapshotAtRevision(unitId: string, targetRevision: number): SnapshotResponse {
-    const current = this.getSnapshot(unitId);
+  getSnapshotAtRevision(unitId: string, targetRevision: number, actorSubject: string): SnapshotResponse {
+    this.requireRole(unitId, actorSubject, 'viewer');
+    const current = this.getSnapshotUnchecked(unitId);
     if (targetRevision < 0 || targetRevision > current.revision) {
       throw new Error(`Revision not found: ${targetRevision}`);
     }
@@ -388,7 +618,7 @@ export class WorkbookStorage {
     } else if (targetRevision === 0) {
       throw new Error(`Snapshot baseline missing for revision 0: ${unitId}`);
     } else {
-      return this.getSnapshotAtRevision(unitId, 0);
+      return this.getSnapshotAtRevision(unitId, 0, actorSubject);
     }
 
     const workbook = WorkbookModel.fromSnapshot(baseSnapshot);
@@ -400,7 +630,10 @@ export class WorkbookStorage {
       .all(unitId, fromRevision, targetRevision) as Array<{ payload_json: string }>;
 
     for (const row of rows) {
-      const changeSet = JSON.parse(row.payload_json) as CollaborationChangeSet;
+      const changeSet = JSON.parse(row.payload_json) as CommittedOperationEnvelopeV2;
+      if (changeSet.schema !== 'OperationEnvelopeV2' || !changeSet.actorId) {
+        throw new Error(`Unsupported historical operation schema at revision ${targetRevision}`);
+      }
       runtime.applyRemoteMutations(changeSet.mutations.map((mutation) => ({
         id: mutation.id,
         unitId: changeSet.unitId,
@@ -419,14 +652,16 @@ export class WorkbookStorage {
   getRevision(
     unitId: string,
     revision: number,
+    actorSubject: string,
   ):
     | {
         operationId: string;
         revision: number;
         createdAt: string;
-        payload: CollaborationChangeSet;
+        payload: CommittedOperationEnvelopeV2;
       }
     | undefined {
+    this.requireRole(unitId, actorSubject, 'viewer');
     const row = this.database
       .prepare(
         'SELECT operation_id, revision, created_at, payload_json FROM changesets WHERE unit_id = ? AND revision = ?',
@@ -442,11 +677,15 @@ export class WorkbookStorage {
     if (!row?.operation_id || row.revision == null || !row.created_at || !row.payload_json) {
       return undefined;
     }
+    const payload = JSON.parse(row.payload_json) as CommittedOperationEnvelopeV2;
+    if (payload.schema !== 'OperationEnvelopeV2' || !payload.actorId) {
+      throw new Error(`Unsupported historical operation schema at revision ${revision}`);
+    }
     return {
       operationId: row.operation_id,
       revision: row.revision,
       createdAt: row.created_at,
-      payload: JSON.parse(row.payload_json) as CollaborationChangeSet,
+      payload,
     };
   }
 

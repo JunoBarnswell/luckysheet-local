@@ -80,7 +80,7 @@ function applyAxis(
   shiftHiddenAndSizes(sheet, axis, at, count, direction);
   shiftSparklines(sheet, axis, at, count, direction);
   shiftPivots(sheet, axis, at, count, direction);
-  shiftCharts(sheet, axis, at, count, direction);
+  shiftChartPayloads(sheet, axis, at, count, direction);
   shiftDrawings(sheet, axis, at, count, direction);
   shiftSheetTables(sheet, axis, at, count, direction);
   shiftNotes(sheet, axis, at, count, direction);
@@ -193,10 +193,11 @@ function shiftBoundedMetadata(sheet: WorksheetModel, selection: RangeRef, rowDel
   }
   if (sheet.filter) shiftContainedRange(sheet.filter.range, selection, rowDelta, columnDelta);
   for (const table of sheet.sheetTables) shiftContainedRange(table.range, selection, rowDelta, columnDelta);
-  for (const chart of sheet.charts) {
-    for (const range of chart.sourceRanges) shiftContainedRange(range, selection, rowDelta, columnDelta);
-    if (chart.categoryRange) shiftContainedRange(chart.categoryRange, selection, rowDelta, columnDelta);
-    for (const series of chart.series ?? []) shiftContainedRange(series.range, selection, rowDelta, columnDelta);
+  for (const payload of sheet.drawingPayloads.values()) {
+    if (payload.kind !== 'chart') continue;
+    for (const range of payload.sourceRanges) shiftContainedRange(range, selection, rowDelta, columnDelta);
+    if (payload.categoryRange) shiftContainedRange(payload.categoryRange, selection, rowDelta, columnDelta);
+    for (const series of payload.series ?? []) shiftContainedRange(series.range, selection, rowDelta, columnDelta);
   }
   for (const pivot of sheet.pivots) {
     shiftContainedRange(pivot.sourceRange, selection, rowDelta, columnDelta);
@@ -504,11 +505,12 @@ function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
   }
 }
 
-function shiftCharts(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
-  for (const chart of sheet.charts) {
-    for (const range of chart.sourceRanges) shiftRangeRef(range, axis, at, count, direction);
-    if (chart.categoryRange) shiftRangeRef(chart.categoryRange, axis, at, count, direction);
-    for (const series of chart.series ?? []) shiftRangeRef(series.range, axis, at, count, direction);
+function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+  for (const payload of sheet.drawingPayloads.values()) {
+    if (payload.kind !== 'chart') continue;
+    for (const range of payload.sourceRanges) shiftRangeRef(range, axis, at, count, direction);
+    if (payload.categoryRange) shiftRangeRef(payload.categoryRange, axis, at, count, direction);
+    for (const series of payload.series ?? []) shiftRangeRef(series.range, axis, at, count, direction);
   }
 }
 
@@ -516,7 +518,6 @@ function shiftDrawings(sheet: WorksheetModel, axis: 'row' | 'column', at: number
   for (let index = sheet.drawings.length - 1; index >= 0; index--) {
     const drawing = sheet.drawings[index]!;
     shiftDrawingAnchor(drawing, axis, at, count, direction);
-    syncDrawingPayload(sheet, drawing);
   }
 }
 
@@ -538,20 +539,6 @@ function shiftDrawingAnchor(drawing: DrawingObject, axis: 'row' | 'column', at: 
       if (axis === 'row') drawing.anchor.endRow = shifted;
       else drawing.anchor.endColumn = shifted;
     }
-  }
-}
-
-function syncDrawingPayload(sheet: WorksheetModel, drawing: DrawingObject): void {
-  const bounds = { x: drawing.transform.x, y: drawing.transform.y, width: drawing.transform.width, height: drawing.transform.height };
-  if (drawing.kind === 'chart') {
-    const chart = sheet.charts.find((item) => item.id === drawing.payloadId);
-    if (chart) chart.bounds = bounds;
-  } else if (drawing.kind === 'shape') {
-    const shape = sheet.shapes.find((item) => item.id === drawing.payloadId);
-    if (shape) shape.bounds = bounds;
-  } else if (drawing.kind === 'image') {
-    const image = sheet.images.find((item) => item.id === drawing.payloadId);
-    if (image) image.bounds = bounds;
   }
 }
 
@@ -687,6 +674,28 @@ function applyMoveRange(
   }
   if (sheet.filter) relocate(sheet.filter.range);
   for (const table of sheet.sheetTables) relocate(table.range);
+  for (const drawing of sheet.drawings) {
+    if (drawing.anchor.kind === 'absolute') continue;
+    const row = drawing.anchor.row;
+    const column = drawing.anchor.column;
+    if (row == null || column == null || !rangeContains(source, {
+      sheetId: source.sheetId,
+      startRow: row,
+      endRow: row,
+      startColumn: column,
+      endColumn: column,
+    })) continue;
+    drawing.anchor.row = row + rowDelta;
+    drawing.anchor.column = column + colDelta;
+    if (drawing.anchor.endRow != null) drawing.anchor.endRow += rowDelta;
+    if (drawing.anchor.endColumn != null) drawing.anchor.endColumn += colDelta;
+  }
+  for (const payload of sheet.drawingPayloads.values()) {
+    if (payload.kind !== 'chart') continue;
+    for (const range of payload.sourceRanges) relocate(range);
+    if (payload.categoryRange) relocate(payload.categoryRange);
+    for (const series of payload.series ?? []) relocate(series.range);
+  }
   void workbook;
   void moved;
   return { removedCells: extracted };

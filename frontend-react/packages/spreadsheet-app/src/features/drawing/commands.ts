@@ -1,11 +1,8 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import type {
-  ChartModel,
   DrawingObject,
   DrawingPayload,
   DrawingTransform,
-  FloatingImage,
-  ShapeModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import { applyTrackedMutation, registerMutationHandler, removeById, sheetRange } from '../../command-helpers';
@@ -40,63 +37,50 @@ export interface DrawingRemoveParams {
   drawingId: string;
 }
 
-function syncLegacyCollections(sheet: WorksheetModel, drawing: DrawingObject, payload: DrawingPayload, mode: 'upsert' | 'remove'): void {
-  if (payload.kind === 'chart') {
-    const bounds = drawing.transform;
-    const chart: ChartModel = {
-      id: drawing.payloadId,
-      sheetId: drawing.sheetId,
-      pivotId: payload.pivotId,
-      type: payload.chartType === 'combo' ? 'column' : payload.chartType,
-      title: payload.title,
-      sourceRanges: structuredClone(payload.sourceRanges),
-      series: payload.series?.map((entry) => ({ name: entry.name, range: entry.range, color: entry.color })),
-      categoryRange: payload.categoryRange ? structuredClone(payload.categoryRange) : undefined,
-      bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
-      legendPosition: payload.legendPosition,
-      showDataLabels: payload.showDataLabels,
-    };
-    if (mode === 'remove') removeById(sheet.charts, chart.id);
-    else {
-      removeById(sheet.charts, chart.id);
-      sheet.charts.push(chart);
-    }
-    return;
+interface DrawingZOrderRestoreParams {
+  sheetId: string;
+  entries: Array<{ drawingId: string; zIndex: number }>;
+}
+
+/**
+ * Drawing is the only persisted floating-object aggregate.
+ *
+ * The worksheet still exposes deprecated projection arrays while the rest of
+ * the application migrates, but command mutations must never populate or
+ * synchronize them. Keeping that policy here prevents a second write source
+ * from reappearing when a new drawing kind is added.
+ */
+function addDrawing(sheet: WorksheetModel, drawing: DrawingObject, payload: DrawingPayload): void {
+  if (drawing.sheetId !== sheet.id) throw new Error(`Drawing sheet mismatch: ${drawing.id}`);
+  if (payload.kind !== drawing.kind) throw new Error(`Drawing payload kind mismatch: ${drawing.id}`);
+  if (payload.kind === 'chart' && payload.chartId !== drawing.payloadId) {
+    throw new Error(`Drawing payload identity mismatch: ${drawing.payloadId}`);
   }
-  if (payload.kind === 'shape' || payload.kind === 'textbox') {
-    const shape: ShapeModel = {
-      id: drawing.payloadId,
-      sheetId: drawing.sheetId,
-      type: payload.kind === 'textbox' ? 'callout' : payload.type,
-      bounds: { ...drawing.transform },
-      fill: payload.kind === 'textbox' ? '#ffffff' : payload.fill,
-      stroke: payload.kind === 'textbox' ? '#64748b' : payload.stroke,
-      strokeWidth: payload.kind === 'shape' ? payload.strokeWidth : 1,
-      text: payload.text,
-      textColor: payload.textColor,
-      fontSize: payload.fontSize,
-      rotation: drawing.transform.rotation,
-    };
-    if (mode === 'remove') removeById(sheet.shapes, shape.id);
-    else {
-      removeById(sheet.shapes, shape.id);
-      sheet.shapes.push(shape);
-    }
-    return;
+  if (sheet.drawings.some((entry) => entry.id === drawing.id)) {
+    throw new Error(`Drawing already exists: ${drawing.id}`);
   }
-  if (payload.kind === 'image') {
-    const image: FloatingImage = {
-      id: drawing.payloadId,
-      sheetId: drawing.sheetId,
-      name: payload.name,
-      src: payload.src,
-      bounds: { ...drawing.transform },
-    };
-    if (mode === 'remove') removeById(sheet.images, image.id);
-    else {
-      removeById(sheet.images, image.id);
-      sheet.images.push(image);
-    }
+  if (sheet.drawingPayloads.has(drawing.payloadId)) {
+    throw new Error(`Drawing payload already exists: ${drawing.payloadId}`);
+  }
+  sheet.drawings.push(structuredClone(drawing));
+  sheet.drawingPayloads.set(drawing.payloadId, structuredClone(payload));
+}
+
+function removeDrawing(sheet: WorksheetModel, drawingId: string): { drawing: DrawingObject; payload: DrawingPayload } {
+  const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
+  if (!drawing) throw new Error(`Unknown drawing: ${drawingId}`);
+  const payload = sheet.drawingPayloads.get(drawing.payloadId);
+  if (!payload) throw new Error(`Missing drawing payload: ${drawing.payloadId}`);
+  removeById(sheet.drawings, drawingId);
+  sheet.drawingPayloads.delete(drawing.payloadId);
+  return { drawing: structuredClone(drawing), payload: structuredClone(payload) };
+}
+
+function restoreZOrder(sheet: WorksheetModel, params: DrawingZOrderRestoreParams): void {
+  for (const entry of params.entries) {
+    const drawing = sheet.drawings.find((item) => item.id === entry.drawingId);
+    if (!drawing) throw new Error(`Unknown drawing: ${entry.drawingId}`);
+    drawing.zIndex = entry.zIndex;
   }
 }
 
@@ -123,31 +107,30 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
 
   registerMutationHandler<DrawingAddParams>(runtime, 'drawing.add', (params, context) => {
     const sheet = context.workbook.getSheet(params.sheetId);
-    sheet.drawings.push(structuredClone(params.drawing));
-    sheet.drawingPayloads.set(params.drawing.payloadId, structuredClone(params.payload));
-    syncLegacyCollections(sheet, params.drawing, params.payload, 'upsert');
+    addDrawing(sheet, params.drawing, params.payload);
   });
   registerMutationHandler<DrawingRemoveParams>(runtime, 'drawing.remove', (params, context) => {
     const sheet = context.workbook.getSheet(params.sheetId);
-    const drawing = removeById(sheet.drawings, params.drawingId);
-    const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
-    if (drawing?.payloadId) sheet.drawingPayloads.delete(drawing.payloadId);
-    if (drawing && payload) syncLegacyCollections(sheet, drawing, payload, 'remove');
+    removeDrawing(sheet, params.drawingId);
   });
   registerMutationHandler<DrawingTransformParams>(runtime, 'drawing.transform', (params, context) => {
     const sheet = context.workbook.getSheet(params.sheetId);
     const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
-    if (!drawing) return;
+    if (!drawing) throw new Error(`Unknown drawing: ${params.drawingId}`);
     drawing.transform = structuredClone(params.transform);
-    const payload = sheet.drawingPayloads.get(drawing.payloadId);
-    if (payload) syncLegacyCollections(sheet, drawing, payload, 'upsert');
   });
   registerMutationHandler<DrawingZOrderParams>(runtime, 'drawing.zorder', (params, context) => {
-    reorderDrawing(context.workbook.getSheet(params.sheetId), params.drawingId, params.direction);
+    const sheet = context.workbook.getSheet(params.sheetId);
+    if (!sheet.drawings.some((entry) => entry.id === params.drawingId)) throw new Error(`Unknown drawing: ${params.drawingId}`);
+    reorderDrawing(sheet, params.drawingId, params.direction);
   });
   registerMutationHandler<{ sheetId: string; drawingId: string; zIndex: number }>(runtime, 'drawing.zindex.set', (params, context) => {
     const drawing = context.workbook.getSheet(params.sheetId).drawings.find((entry) => entry.id === params.drawingId);
-    if (drawing) drawing.zIndex = params.zIndex;
+    if (!drawing) throw new Error(`Unknown drawing: ${params.drawingId}`);
+    drawing.zIndex = params.zIndex;
+  });
+  registerMutationHandler<DrawingZOrderRestoreParams>(runtime, 'drawing.zorder.restore', (params, context) => {
+    restoreZOrder(context.workbook.getSheet(params.sheetId), params);
   });
 
   const registerTransformCommand = (commandId: string, mutationId: string): void => {
@@ -156,7 +139,8 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       execute: (params, context) => {
         const sheet = context.workbook.getSheet(params.sheetId);
         const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
-        const previous = drawing ? structuredClone(drawing.transform) : structuredClone(params.transform);
+        if (!drawing) throw new Error(`Unknown drawing: ${params.drawingId}`);
+        const previous = structuredClone(drawing.transform);
         const affectedRanges = sheetRange(params.sheetId);
         applyTrackedMutation(context, {
           id: mutationId,
@@ -166,10 +150,8 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
           affectedRanges,
           apply: () => {
             const target = context.workbook.getSheet(params.sheetId).drawings.find((entry) => entry.id === params.drawingId);
-            if (!target) return;
+            if (!target) throw new Error(`Unknown drawing: ${params.drawingId}`);
             target.transform = structuredClone(params.transform);
-            const payload = context.workbook.getSheet(params.sheetId).drawingPayloads.get(target.payloadId);
-            if (payload) syncLegacyCollections(context.workbook.getSheet(params.sheetId), target, payload, 'upsert');
           },
         });
         return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -187,16 +169,21 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
-      const previous = drawing ? drawing.zIndex : 0;
+      if (!drawing) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      const previous = sheet.drawings.map((entry) => ({ drawingId: entry.id, zIndex: entry.zIndex }));
       const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation<DrawingZOrderParams, { sheetId: string; drawingId: string; zIndex: number }>(context, {
+      applyTrackedMutation<DrawingZOrderParams, DrawingZOrderRestoreParams>(context, {
         id: 'drawing.zorder',
         sheetId: params.sheetId,
         params,
-        inverseId: 'drawing.zindex.set',
-        inverseParams: { sheetId: params.sheetId, drawingId: params.drawingId, zIndex: previous },
+        inverseId: 'drawing.zorder.restore',
+        inverseParams: { sheetId: params.sheetId, entries: previous },
         affectedRanges,
-        apply: () => reorderDrawing(context.workbook.getSheet(params.sheetId), params.drawingId, params.direction),
+        apply: () => {
+          const target = context.workbook.getSheet(params.sheetId).drawings.find((entry) => entry.id === params.drawingId);
+          if (!target) throw new Error(`Unknown drawing: ${params.drawingId}`);
+          reorderDrawing(context.workbook.getSheet(params.sheetId), params.drawingId, params.direction);
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -216,12 +203,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
         params: { sheetId: params.sheetId, drawing, payload },
         inverseParams: { sheetId: params.sheetId, drawingId: drawing.id },
         affectedRanges,
-        apply: () => {
-          const sheet = context.workbook.getSheet(params.sheetId);
-          sheet.drawings.push(structuredClone(drawing));
-          sheet.drawingPayloads.set(drawing.payloadId, structuredClone(payload));
-          syncLegacyCollections(sheet, drawing, payload, 'upsert');
-        },
+        apply: () => addDrawing(context.workbook.getSheet(params.sheetId), drawing, payload),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -234,22 +216,19 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const sheet = context.workbook.getSheet(params.sheetId);
       const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
       const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+      if (!drawing) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      if (!payload) throw new Error(`Missing drawing payload: ${drawing.payloadId}`);
       const affectedRanges = sheetRange(params.sheetId);
       applyTrackedMutation(context, {
         id: 'drawing.remove',
         sheetId: params.sheetId,
         params,
-        inverseParams: drawing && payload ? { sheetId: params.sheetId, drawing: structuredClone(drawing), payload: structuredClone(payload) } : params,
+        inverseId: 'drawing.add',
+        inverseParams: { sheetId: params.sheetId, drawing: structuredClone(drawing), payload: structuredClone(payload) },
         affectedRanges,
-        apply: () => {
-          const current = context.workbook.getSheet(params.sheetId);
-          const removed = removeById(current.drawings, params.drawingId);
-          const removedPayload = removed ? current.drawingPayloads.get(removed.payloadId) : undefined;
-          if (removed?.payloadId) current.drawingPayloads.delete(removed.payloadId);
-          if (removed && removedPayload) syncLegacyCollections(current, removed, removedPayload, 'remove');
-        },
+        apply: () => removeDrawing(context.workbook.getSheet(params.sheetId), params.drawingId),
       });
-      return { operationId: context.operationId, mutationCount: drawing ? 1 : 0, affectedRanges };
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
   commandIds.push('drawing.remove');
@@ -269,4 +248,4 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
   return commandIds;
 }
 
-export const DRAWING_MUTATION_IDS = ['drawing.add', 'drawing.remove', 'drawing.transform', 'drawing.zorder'] as const;
+export const DRAWING_MUTATION_IDS = ['drawing.add', 'drawing.remove', 'drawing.transform', 'drawing.zorder', 'drawing.zindex.set', 'drawing.zorder.restore'] as const;
