@@ -66,7 +66,11 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         sheet.putObject("cells");
         sheet.putArray("dataRegions");
         sheet.putArray("merges");
-        sheet.putObject("freeze").put("xSplit", 0).put("ySplit", 0).put("startRow", 0).put("startColumn", 0);
+        sheet.putObject("pane").put("kind", "none");
+        sheet.put("defaultRowHeightPx", 20);
+        sheet.put("defaultColumnWidthPx", 64);
+        sheet.putObject("rowHeightsPx");
+        sheet.putObject("columnWidthsPx");
         sheet.putArray("pivots");
         sheet.putArray("sparklines");
         sheet.putArray("drawings");

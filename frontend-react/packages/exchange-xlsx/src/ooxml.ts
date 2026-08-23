@@ -2,14 +2,21 @@ import type {
   CellData,
   CellStyle,
   CellHyperlink,
+  ConditionalFormatRule,
+  DataValidationRule,
   DefinedNameModel,
   DrawingObject,
-  FreezeModel,
+  FilterModel,
   MergeSpan,
+  OutlineModel,
+  ProtectionRule,
+  RichTextRun,
   WorkbookSnapshot,
   SheetSnapshot,
   RangeRef,
+  WorksheetPane,
 } from '@react-sheets/core-model';
+import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
   child,
@@ -31,6 +38,17 @@ import {
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
+import {
+  DEFAULT_EXCEL_FONT_FAMILY,
+  DEFAULT_EXCEL_FONT_SIZE_PT,
+  DEFAULT_OOXML_FONT_MEASURER,
+  excelColumnWidthToPixels,
+  pixelsToExcelColumnWidth,
+  pixelsToPoints,
+  pointsToPixels,
+  type OoxmlFontMeasurer,
+  type OoxmlNormalFont,
+} from './ooxml-metrics';
 
 const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
@@ -53,9 +71,26 @@ export interface ParsedXlsxPackage {
   features: string[];
 }
 
+export interface ParseLoadedXlsxOptions {
+  fontMeasurer?: OoxmlFontMeasurer;
+  workbookName?: string;
+}
+
 interface StyleRecord {
   numberFormat?: string;
   style?: CellStyle;
+}
+
+interface SharedStringRecord {
+  value: string;
+  richText?: RichTextRun[];
+}
+
+interface StyleContext {
+  records: StyleRecord[];
+  differentialStyles: Array<CellStyle | undefined>;
+  normalFont: OoxmlNormalFont;
+  maximumDigitWidthPx: number;
 }
 
 interface SheetDescriptor {
@@ -131,7 +166,7 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
   };
 }
 
-export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
+export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedXlsxOptions = {}): ParsedXlsxPackage {
   const files = loaded.files;
   const workbookXml = parseXml(strFromU8(files['xl/workbook.xml']!));
   const workbook = firstElement(workbookXml, 'workbook');
@@ -142,7 +177,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
   for (let index = 0; index < sheetNodes.length; index += 1) {
     const node = sheetNodes[index]!;
     const relationId = node.attrs['r:id'] ?? node.attrs.id ?? '';
-    const relation = workbookRels.find((candidate) => candidate.id === relationId && candidate.type === REL_WORKSHEET);
+    const relation = workbookRels.find((candidate) => candidate.id === relationId && isRelationshipKind(candidate.type, 'worksheet'));
     const part = relation ? resolveTarget('xl/workbook.xml', relation.target) : `xl/worksheets/sheet${index + 1}.xml`;
     if (!files[part]) throw new Error(`Workbook sheet relation points to missing part: ${part}`);
     const sheetId = `sheet-${node.attrs.sheetId ?? index + 1}`;
@@ -156,20 +191,29 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
   }
   if (descriptors.length === 0) throw new Error('XLSX workbook has no worksheets');
 
-  const sharedStrings = parseSharedStrings(files['xl/sharedStrings.xml']);
-  const styles = parseStyles(files['xl/styles.xml']);
+  const sharedStringsPart = resolveWorkbookRelatedPart(workbookRels, 'sharedStrings', 'xl/sharedStrings.xml');
+  const stylesPart = resolveWorkbookRelatedPart(workbookRels, 'styles', 'xl/styles.xml');
+  const themePart = resolveWorkbookRelatedPart(workbookRels, 'theme', 'xl/theme/theme1.xml');
+  const sharedStrings = parseSharedStrings(files[sharedStringsPart]);
+  const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.package, sharedStrings, styles));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
+  const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 2,
-    unitId: `imported-${randomId()}`,
-    name: workbook.attrs.name ?? 'Imported Workbook',
+    version: 3,
+    unitId,
+    name: options.workbookName ?? 'Imported Workbook',
     definedNames,
     definedNameModels,
     dataSources: [],
+    printDocuments: sheets.flatMap((sheet, index) => parsePrintDocument(
+      firstElement(parseXml(strFromU8(files[descriptors[index]!.part]!)), 'worksheet'),
+      unitId,
+      sheet.id,
+    )),
     sheets,
   };
   attachNativePivots(snapshot, loaded.package.nativePivotGraph, loaded.package.sheetPartById);
@@ -201,6 +245,7 @@ export function exportSnapshotToXlsxPackage(
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const styleOutput = buildStyles(snapshot);
   const styleIndexes = collectStyleIndexes(snapshot);
+  const differentialStyleIndexes = collectDifferentialStyleIndexes(snapshot);
   const sharedOutput = buildSharedStrings(snapshot);
   const sheetRelationships: Record<string, XlsxRelationship[]> = {};
   for (let index = 0; index < snapshot.sheets.length; index += 1) {
@@ -213,7 +258,7 @@ export function exportSnapshotToXlsxPackage(
     for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
     const relationships = mergeRelationships(nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [])));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
   }
 
   const workbookRelations = mergeRelationships(
@@ -264,7 +309,8 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
   if (snapshot) {
     for (const sheet of snapshot.sheets) {
       if (sheet.merges.length) features.add('merges');
-      if (sheet.freeze.xSplit || sheet.freeze.ySplit) features.add('freeze');
+      if (sheet.pane.kind === 'frozen') features.add('freeze');
+      if (sheet.pane.kind === 'split') features.add('split');
       if (Object.values(sheet.cells).some((row) => Object.values(row).some((cell) => Boolean(cell.formula)))) features.add('formulas');
       if (sheet.conditionalFormats?.length) features.add('conditional-format');
       if (sheet.dataValidations?.length) features.add('validation');
@@ -287,53 +333,77 @@ function parseSheet(
   descriptor: SheetDescriptor,
   files: Record<string, Uint8Array>,
   pkg: XlsxPackage,
-  sharedStrings: string[],
-  styles: StyleRecord[],
+  sharedStrings: SharedStringRecord[],
+  styles: StyleContext,
 ): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
   const root = firstElement(parseXml(xml), 'worksheet');
   const cells: Record<string, Record<string, CellData>> = {};
+  const hyperlinks: NonNullable<SheetSnapshot['hyperlinks']> = [];
   const hiddenRows: number[] = [];
   const dimensions = parseRange(child(root, 'dimension')?.attrs.ref);
   const sheetData = child(root, 'sheetData');
+  const sheetFormat = child(root, 'sheetFormatPr');
+  const defaultRowHeightPt = finitePositive(sheetFormat?.attrs.defaultRowHeight, 15);
+  const defaultColumnWidthChars = finitePositive(sheetFormat?.attrs.defaultColWidth ?? sheetFormat?.attrs.baseColWidth, 8.7109375);
+  const defaultRowHeightPx = pointsToPixels(defaultRowHeightPt);
+  const defaultColumnWidthPx = excelColumnWidthToPixels(defaultColumnWidthChars, styles.maximumDigitWidthPx);
+  const rowHeightsPx = parseRowHeights(root);
+  const columnWidthsPx = parseColumnWidths(root, styles.maximumDigitWidthPx);
+  const pane = parsePane(root);
   let maxRow = dimensions?.endRow ?? 999;
   let maxColumn = dimensions?.endColumn ?? 25;
+  const cellEntries: Array<{ node: XmlNode; row: number; column: number }> = [];
   for (const rowNode of children(sheetData, 'row')) {
     const rowNumber = parsePositiveInt(rowNode.attrs.r, 1) - 1;
     maxRow = Math.max(maxRow, rowNumber);
     if (rowNode.attrs.hidden === '1' || rowNode.attrs.hidden === 'true') hiddenRows.push(rowNumber);
     for (const cellNode of children(rowNode, 'c')) {
       const address = parseA1(cellNode.attrs.r ?? 'A1');
-      if (!address) continue;
+      if (!address) throw new Error(`Worksheet ${descriptor.name} contains an invalid cell reference: ${cellNode.attrs.r ?? ''}`);
       maxColumn = Math.max(maxColumn, address.column);
+      maxRow = Math.max(maxRow, address.row);
+      cellEntries.push({ node: cellNode, row: address.row, column: address.column });
+    }
+  }
+
+  const sharedFormulaMasters = collectSharedFormulaMasters(cellEntries, descriptor);
+  for (const entry of cellEntries) {
+      const cellNode = entry.node;
+      const address = { row: entry.row, column: entry.column };
       const styleId = cellNode.attrs.s;
-      const style = styleId === undefined ? undefined : styles[Number(styleId)];
-      const formula = child(cellNode, 'f');
-      const value = readCellValue(cellNode, sharedStrings);
+      const style = styleId === undefined ? undefined : styles.records[Number(styleId)];
+      const valueRecord = readCellValue(cellNode, sharedStrings);
+      const formulaRecord = readFormula(cellNode, address, sharedFormulaMasters, descriptor);
       const cell: CellData = {
-        value,
-        ...(formula ? { formula: `=${textContent(formula)}` } : {}),
+        value: valueRecord.value,
+        ...(valueRecord.richText ? { richText: valueRecord.richText } : {}),
+        ...(formulaRecord.formula ? { formula: formulaRecord.formula } : {}),
+        ...(formulaRecord.metadata ? { formulaMetadata: formulaRecord.metadata } : {}),
+        ...(formulaRecord.formula && isScalar(valueRecord.value) ? { formulaValue: valueRecord.value } : {}),
         ...(styleId === undefined ? {} : { styleId }),
         ...(style?.style ? { style: structuredClone(style.style) } : {}),
         ...(style?.numberFormat ? { numberFormat: style.numberFormat } : {}),
       };
       const hyperlink = hyperlinkForCell(root, pkg.relationships[descriptor.part] ?? [], address.row, address.column);
-      if (hyperlink) cell.hyperlinkDetail = hyperlink;
+      if (hyperlink) hyperlinks.push({ row: address.row, column: address.column, hyperlink });
       cells[String(address.row)] ??= {};
       cells[String(address.row)]![String(address.column)] = cell;
-    }
   }
-  const freeze = parseFreeze(root);
   const merges = children(child(root, 'mergeCells'), 'mergeCell')
-    .map((node) => parseRange(node.attrs.ref))
-    .filter((range): range is RangeRef => Boolean(range))
+    .map((node) => requireSheetRange(node.attrs.ref, descriptor, 'merge'))
     .map((range) => ({ range: { ...range, sheetId: descriptor.id }, anchor: { row: range.startRow, column: range.startColumn } } satisfies MergeSpan));
+  validateNonOverlappingMerges(merges, descriptor);
   const hiddenColumns = parseHiddenColumns(root);
-  const rowHeights = parseRowHeights(root);
-  const columnWidths = parseColumnWidths(root);
-  const tabColor = child(child(root, 'sheetPr'), 'tabColor')?.attrs.rgb;
+  const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), []);
   const notes = parseNotes(root, descriptor, files, pkg);
   const sheetTables = parseSheetTables(root, descriptor, files, pkg);
+  const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
+  const dataValidations = parseDataValidations(root, descriptor);
+  const filter = parseAutoFilter(root, descriptor);
+  const outline = parseOutline(root);
+  const protectionRules = parseProtection(root, descriptor);
+  const sheetView = child(child(root, 'sheetViews'), 'sheetView');
   const rowCount = Math.max(1000, maxRow + 1);
   const columnCount = Math.max(26, maxColumn + 1);
   return {
@@ -343,19 +413,28 @@ function parseSheet(
     columnCount,
     cells,
     merges,
-    freeze,
+    pane,
     pivots: [],
     sparklines: [],
     drawings: [],
     drawingPayloads: {},
-    conditionalFormats: [],
-    dataValidations: [],
-    rowHeights,
-    columnWidths,
+    conditionalFormats,
+    dataValidations,
+    defaultRowHeightPx,
+    defaultColumnWidthPx,
+    rowHeightsPx,
+    columnWidthsPx,
     hiddenRows,
     hiddenColumns,
     tabColor,
+    ...(hyperlinks.length ? { hyperlinks } : {}),
     notes,
+    ...(filter ? { filter } : {}),
+    ...(outline ? { outline } : {}),
+    protectionRules,
+    showGridlines: sheetView?.attrs.showGridLines !== '0' && sheetView?.attrs.showGridLines !== 'false',
+    showHeaders: sheetView?.attrs.showRowColHeaders !== '0' && sheetView?.attrs.showRowColHeaders !== 'false',
+    zoom: finitePositive(sheetView?.attrs.zoomScale, 100),
     ...(sheetTables.length ? { sheetTables } : {}),
     hidden: descriptor.hidden,
   };
@@ -450,7 +529,7 @@ function parseSheetTables(
   return children(child(root, 'tableParts'), 'tablePart').flatMap((partNode) => {
     const relationId = partNode.attrs['r:id'] ?? partNode.attrs.id;
     if (!relationId) throw new Error(`Worksheet ${descriptor.part} tablePart is missing r:id`);
-    const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => candidate.id === relationId && candidate.type.endsWith('/table'));
+    const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => candidate.id === relationId && isRelationshipKind(candidate.type, 'table'));
     if (!relation) throw new Error(`Worksheet ${descriptor.part} table relation ${relationId} is missing`);
     const part = resolveTarget(descriptor.part, relation.target);
     const bytes = files[part];
@@ -480,59 +559,242 @@ function parseSheetTables(
   });
 }
 
-function parseSharedStrings(bytes: Uint8Array | undefined): string[] {
+function parseSharedStrings(bytes: Uint8Array | undefined): SharedStringRecord[] {
   if (!bytes) return [];
   const root = firstElement(parseXml(strFromU8(bytes)), 'sst');
-  return children(root, 'si').map((item) => descendants(item, 't').map(textContent).join(''));
+  return children(root, 'si').map(parseRichTextContainer);
 }
 
-function parseStyles(bytes: Uint8Array | undefined): StyleRecord[] {
-  if (!bytes) return [{}];
+function parseStyles(
+  bytes: Uint8Array | undefined,
+  themeBytes: Uint8Array | undefined,
+  measurer: OoxmlFontMeasurer,
+): StyleContext {
+  const fallbackFont = { family: DEFAULT_EXCEL_FONT_FAMILY, sizePt: DEFAULT_EXCEL_FONT_SIZE_PT };
+  if (!bytes) {
+    return { records: [{}], differentialStyles: [], normalFont: fallbackFont, maximumDigitWidthPx: measurer.maximumDigitWidthPx(fallbackFont) };
+  }
   const root = firstElement(parseXml(strFromU8(bytes)), 'styleSheet');
+  const themeColors = parseThemeColors(themeBytes);
   const customFormats = new Map<number, string>();
   for (const node of children(child(root, 'numFmts'), 'numFmt')) {
     const id = Number(node.attrs.numFmtId);
     const format = node.attrs.formatCode;
     if (Number.isFinite(id) && format) customFormats.set(id, format);
   }
+  const fonts = children(child(root, 'fonts'), 'font');
+  const fills = children(child(root, 'fills'), 'fill');
+  const borders = children(child(root, 'borders'), 'border');
+  const baseXfs = children(child(root, 'cellStyleXfs'), 'xf');
   const xfs = children(child(root, 'cellXfs'), 'xf');
-  return xfs.map((xf, index) => {
-    const numberFormat = customFormats.get(Number(xf.attrs.numFmtId)) ?? builtInNumberFormat(Number(xf.attrs.numFmtId));
-    const font = child(root, 'fonts')?.children[Number(xf.attrs.fontId) || 0];
-    const fill = child(root, 'fills')?.children[Number(xf.attrs.fillId) || 0];
-    const alignment = child(xf, 'alignment');
+  const normalStyle = children(child(root, 'cellStyles'), 'cellStyle').find((style) => (style.attrs.name ?? '').toLocaleLowerCase() === 'normal');
+  const normalBaseXf = baseXfs[Number(normalStyle?.attrs.xfId ?? 0)] ?? baseXfs[0];
+  const normalFontNode = fonts[Number(normalBaseXf?.attrs.fontId ?? 0)] ?? fonts[0];
+  const normalFont: OoxmlNormalFont = {
+    family: child(normalFontNode, 'name')?.attrs.val ?? fallbackFont.family,
+    sizePt: finitePositive(child(normalFontNode, 'sz')?.attrs.val, fallbackFont.sizePt),
+  };
+  const records = xfs.map((xf) => {
+    const base = baseXfs[Number(xf.attrs.xfId ?? 0)] ?? normalBaseXf;
+    const fontId = resolvedXfId(xf, base, 'fontId', 'applyFont');
+    const fillId = resolvedXfId(xf, base, 'fillId', 'applyFill');
+    const borderId = resolvedXfId(xf, base, 'borderId', 'applyBorder');
+    const numberFormatId = resolvedXfId(xf, base, 'numFmtId', 'applyNumberFormat');
+    const fontStyle = parseFontStyle(fonts[fontId], themeColors);
+    const background = parseFillColor(fills[fillId], themeColors);
+    const cellBorders = parseBorders(borders[borderId], themeColors);
+    const baseAlignment = child(base, 'alignment');
+    const alignment = xf.attrs.applyAlignment === '0' ? baseAlignment : child(xf, 'alignment') ?? baseAlignment;
+    const baseProtection = child(base, 'protection');
+    const protection = xf.attrs.applyProtection === '0' ? baseProtection : child(xf, 'protection') ?? baseProtection;
+    const rotation = alignment?.attrs.textRotation === '255' ? 90 : Number(alignment?.attrs.textRotation);
     const style: CellStyle = {
-      ...(child(font, 'name')?.attrs.val ? { fontFamily: child(font, 'name')!.attrs.val } : {}),
-      ...(child(font, 'sz')?.attrs.val ? { fontSize: Number(child(font, 'sz')!.attrs.val) } : {}),
-      ...(child(font, 'b') ? { bold: true } : {}),
-      ...(child(font, 'i') ? { italic: true } : {}),
-      ...(child(font, 'u') ? { underline: true } : {}),
-      ...(font && descendants(font, 'color')[0]?.attrs.rgb ? { textColor: descendants(font, 'color')[0]!.attrs.rgb } : {}),
-      ...(descendants(fill, 'fgColor')[0]?.attrs.rgb ? { background: descendants(fill, 'fgColor')[0]!.attrs.rgb } : {}),
+      ...fontStyle,
+      ...(background ? { background } : {}),
+      ...(cellBorders ? { borders: cellBorders } : {}),
       ...(alignment?.attrs.horizontal ? { horizontalAlignment: normalizeHorizontal(alignment.attrs.horizontal) } : {}),
       ...(alignment?.attrs.vertical ? { verticalAlignment: normalizeVertical(alignment.attrs.vertical) } : {}),
-      ...(alignment?.attrs.wrapText ? { wrapText: alignment.attrs.wrapText === '1' || alignment.attrs.wrapText === 'true' } : {}),
-      ...(alignment?.attrs.textRotation ? { textRotate: Number(alignment.attrs.textRotation) } : {}),
+      ...(alignment?.attrs.wrapText !== undefined ? { wrapText: xmlBoolean(alignment.attrs.wrapText) } : {}),
+      ...(Number.isFinite(rotation) ? { textRotate: rotation } : {}),
+      ...(protection?.attrs.locked !== undefined ? { locked: xmlBoolean(protection.attrs.locked) } : {}),
+      ...(protection?.attrs.hidden !== undefined ? { formulaHidden: xmlBoolean(protection.attrs.hidden) } : {}),
     };
-    return { numberFormat, style: Object.keys(style).length ? style : undefined, ...(index === 0 ? {} : {}) };
+    const numberFormat = customFormats.get(numberFormatId) ?? builtInNumberFormat(numberFormatId);
+    return { numberFormat, style: Object.keys(style).length ? style : undefined };
+  });
+  const differentialStyles = children(child(root, 'dxfs'), 'dxf').map((dxf) => {
+    const style: CellStyle = {
+      ...parseFontStyle(child(dxf, 'font'), themeColors),
+      ...(parseFillColor(child(dxf, 'fill'), themeColors) ? { background: parseFillColor(child(dxf, 'fill'), themeColors)! } : {}),
+      ...(parseBorders(child(dxf, 'border'), themeColors) ? { borders: parseBorders(child(dxf, 'border'), themeColors)! } : {}),
+    };
+    return Object.keys(style).length ? style : undefined;
+  });
+  return {
+    records: records.length ? records : [{}],
+    differentialStyles,
+    normalFont,
+    maximumDigitWidthPx: measurer.maximumDigitWidthPx(normalFont),
+  };
+}
+
+function resolvedXfId(xf: XmlNode, base: XmlNode | undefined, key: string, applyKey: string): number {
+  const own = xf.attrs[key];
+  if (own !== undefined && xf.attrs[applyKey] !== '0' && xf.attrs[applyKey] !== 'false') return Number(own) || 0;
+  return Number(base?.attrs[key] ?? own ?? 0) || 0;
+}
+
+function parseRichTextContainer(container: XmlNode): SharedStringRecord {
+  const runs = children(container, 'r');
+  if (!runs.length) return { value: descendants(container, 't').map(textContent).join('') };
+  const richText = runs.map((run) => {
+    const properties = child(run, 'rPr');
+    const known = new Set(['rFont', 'name', 'sz', 'b', 'i', 'u', 'strike', 'color']);
+    const preservedProperties = properties?.children
+      .map((property) => localName(property.name))
+      .filter((name) => !known.has(name)) ?? [];
+    const style = parseFontStyle(properties, []);
+    return {
+      text: descendants(run, 't').map(textContent).join(''),
+      ...(Object.keys(style).length ? { style } : {}),
+      ...(preservedProperties.length ? { preservedProperties } : {}),
+    } satisfies RichTextRun;
+  });
+  return { value: richText.map((run) => run.text).join(''), richText };
+}
+
+function parseFontStyle(font: XmlNode | undefined, themeColors: string[]): CellStyle {
+  if (!font) return {};
+  const sizePt = Number(child(font, 'sz')?.attrs.val);
+  const textColor = resolveColor(child(font, 'color'), themeColors);
+  return {
+    ...(child(font, 'name')?.attrs.val || child(font, 'rFont')?.attrs.val
+      ? { fontFamily: child(font, 'name')?.attrs.val ?? child(font, 'rFont')!.attrs.val }
+      : {}),
+    ...(Number.isFinite(sizePt) && sizePt > 0 ? { fontSizePx: pointsToPixels(sizePt) } : {}),
+    ...(child(font, 'b') ? { bold: xmlBoolean(child(font, 'b')?.attrs.val ?? '1') } : {}),
+    ...(child(font, 'i') ? { italic: xmlBoolean(child(font, 'i')?.attrs.val ?? '1') } : {}),
+    ...(child(font, 'u') ? { underline: xmlBoolean(child(font, 'u')?.attrs.val ?? '1') } : {}),
+    ...(child(font, 'strike') ? { strikethrough: xmlBoolean(child(font, 'strike')?.attrs.val ?? '1') } : {}),
+    ...(textColor ? { textColor } : {}),
+  };
+}
+
+function parseFillColor(fill: XmlNode | undefined, themeColors: string[]): string | undefined {
+  const pattern = child(fill, 'patternFill');
+  if (!pattern || pattern.attrs.patternType === 'none' || pattern.attrs.patternType === 'gray125') return undefined;
+  return resolveColor(child(pattern, 'fgColor') ?? child(pattern, 'bgColor'), themeColors);
+}
+
+function parseBorders(border: XmlNode | undefined, themeColors: string[]): CellStyle['borders'] | undefined {
+  if (!border) return undefined;
+  const result: NonNullable<CellStyle['borders']> = {};
+  for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+    const node = child(border, side);
+    const style = normalizeBorderStyle(node?.attrs.style);
+    if (!style) continue;
+    result[side] = { style, color: resolveColor(child(node, 'color'), themeColors) ?? '#000000' };
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+function normalizeBorderStyle(value: string | undefined): NonNullable<NonNullable<CellStyle['borders']>['top']>['style'] | undefined {
+  if (!value || value === 'none') return undefined;
+  if (value === 'double') return 'double';
+  if (value === 'thick') return 'thick';
+  if (value.startsWith('medium')) return 'medium';
+  if (value === 'dashed' || value === 'dotted' || value === 'dashDot' || value === 'dashDotDot' || value === 'slantDashDot') return 'dashed';
+  return 'thin';
+}
+
+const INDEXED_COLORS = [
+  '#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
+  '#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
+  '#800000', '#008000', '#000080', '#808000', '#800080', '#008080', '#C0C0C0', '#808080',
+  '#9999FF', '#993366', '#FFFFCC', '#CCFFFF', '#660066', '#FF8080', '#0066CC', '#CCCCFF',
+  '#000080', '#FF00FF', '#FFFF00', '#00FFFF', '#800080', '#800000', '#008080', '#0000FF',
+  '#00CCFF', '#CCFFFF', '#CCFFCC', '#FFFF99', '#99CCFF', '#FF99CC', '#CC99FF', '#FFCC99',
+  '#3366FF', '#33CCCC', '#99CC00', '#FFCC00', '#FF9900', '#FF6600', '#666699', '#969696',
+  '#003366', '#339966', '#003300', '#333300', '#993300', '#993366', '#333399', '#333333',
+] as const;
+
+function parseThemeColors(bytes: Uint8Array | undefined): string[] {
+  if (!bytes) return [];
+  const root = parseXml(strFromU8(bytes));
+  const scheme = descendants(root, 'clrScheme')[0];
+  if (!scheme) return [];
+  return scheme.children.map((entry) => {
+    const color = entry.children[0];
+    const value = color?.attrs.val ?? color?.attrs.lastClr;
+    return normalizeRgb(value) ?? '#000000';
   });
 }
 
+function resolveColor(node: XmlNode | undefined, themeColors: string[]): string | undefined {
+  if (!node) return undefined;
+  let color = normalizeRgb(node.attrs.rgb);
+  if (!color && node.attrs.theme !== undefined) color = themeColors[Number(node.attrs.theme)];
+  if (!color && node.attrs.indexed !== undefined) color = INDEXED_COLORS[Number(node.attrs.indexed)];
+  if (!color && xmlBoolean(node.attrs.auto ?? '0')) color = '#000000';
+  if (!color) return undefined;
+  const tint = Number(node.attrs.tint);
+  return Number.isFinite(tint) && tint !== 0 ? applyTint(color, tint) : color;
+}
+
+function normalizeRgb(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.replace(/^#/, '').trim();
+  if (/^[0-9a-f]{8}$/i.test(normalized)) return `#${normalized.slice(2).toUpperCase()}`;
+  if (/^[0-9a-f]{6}$/i.test(normalized)) return `#${normalized.toUpperCase()}`;
+  return undefined;
+}
+
+function applyTint(color: string, tint: number): string {
+  const rgb = [1, 3, 5].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16) / 255);
+  const max = Math.max(...rgb);
+  const min = Math.min(...rgb);
+  let h = 0;
+  let s = 0;
+  let l = (max + min) / 2;
+  const delta = max - min;
+  if (delta !== 0) {
+    s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+    if (max === rgb[0]) h = ((rgb[1]! - rgb[2]!) / delta + (rgb[1]! < rgb[2]! ? 6 : 0)) / 6;
+    else if (max === rgb[1]) h = ((rgb[2]! - rgb[0]!) / delta + 2) / 6;
+    else h = ((rgb[0]! - rgb[1]!) / delta + 4) / 6;
+  }
+  l = tint < 0 ? l * (1 + tint) : l * (1 - tint) + tint;
+  const hue = (p: number, q: number, value: number): number => {
+    let t = value;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const channels = s === 0
+    ? [l, l, l]
+    : (() => { const q = l < 0.5 ? l * (1 + s) : l + s - l * s; const p = 2 * l - q; return [hue(p, q, h + 1 / 3), hue(p, q, h), hue(p, q, h - 1 / 3)]; })();
+  return `#${channels.map((channel) => Math.round(Math.max(0, Math.min(1, channel)) * 255).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
 function buildSharedStrings(snapshot: WorkbookSnapshot): string {
-  const values: string[] = [];
+  const values: Array<{ value: string; richText?: RichTextRun[] }> = [];
   const lookup = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
         if (cell.formula || typeof cell.value !== 'string') continue;
-        if (!lookup.has(cell.value)) {
-          lookup.set(cell.value, values.length);
-          values.push(cell.value);
+        const key = JSON.stringify({ value: cell.value, richText: cell.richText });
+        if (!lookup.has(key)) {
+          lookup.set(key, values.length);
+          values.push({ value: cell.value, richText: cell.richText });
         }
       }
     }
   }
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si><t>${encodeXml(value)}</t></si>`).join('')}</sst>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si>${serializeRichText(value.value, value.richText)}</si>`).join('')}</sst>`;
 }
 
 function buildStyles(snapshot: WorkbookSnapshot): string {
@@ -560,37 +822,49 @@ function buildStyles(snapshot: WorkbookSnapshot): string {
   const numFmts = [...custom.entries()].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${encodeXml(code)}"/>`).join('');
   const fontIndexes = new Map<string, number>();
   const fillIndexes = new Map<string, number>();
+  const borderIndexes = new Map<string, number>();
   const fontRecords = ['<font><sz val="11"/><name val="Calibri"/></font>'];
   const fillRecords = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
+  const borderRecords = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
   for (const record of records) {
     const style = record.style;
-    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSize: style?.fontSize, bold: style?.bold, italic: style?.italic, underline: style?.underline, textColor: style?.textColor });
+    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, strikethrough: style?.strikethrough, textColor: style?.textColor });
     if (!fontIndexes.has(fontKey) && style) {
       const index = fontRecords.length;
       fontIndexes.set(fontKey, index);
-      fontRecords.push(`<font><sz val="${style.fontSize ?? 11}"/><name val="${encodeXml(style.fontFamily ?? 'Calibri')}"/>${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.textColor ? `<color rgb="${encodeXml(style.textColor)}"/>` : ''}</font>`);
+      fontRecords.push(`<font><sz val="${roundMetric(pixelsToPoints(style.fontSizePx ?? pointsToPixels(11)))}"/><name val="${encodeXml(style.fontFamily ?? 'Calibri')}"/>${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</font>`);
     }
     const fillKey = style?.background ?? '';
     if (fillKey && !fillIndexes.has(fillKey)) {
       const index = fillRecords.length;
       fillIndexes.set(fillKey, index);
-      fillRecords.push(`<fill><patternFill patternType="solid"><fgColor rgb="${encodeXml(fillKey)}"/><bgColor indexed="64"/></patternFill></fill>`);
+      fillRecords.push(`<fill><patternFill patternType="solid"><fgColor rgb="${ooxmlRgb(fillKey)}"/><bgColor indexed="64"/></patternFill></fill>`);
+    }
+    const borderKey = JSON.stringify(style?.borders ?? {});
+    if (style?.borders && !borderIndexes.has(borderKey)) {
+      const index = borderRecords.length;
+      borderIndexes.set(borderKey, index);
+      borderRecords.push(serializeBorders(style.borders));
     }
   }
-  const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
   const xfs = records.map((record) => {
     const style = record.style;
     const numFmtId = record.numberFormat ? (builtInNumberFormatId(record.numberFormat) ?? custom.get(record.numberFormat) ?? 0) : 0;
-    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSize: style?.fontSize, bold: style?.bold, italic: style?.italic, underline: style?.underline, textColor: style?.textColor });
+    const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, strikethrough: style?.strikethrough, textColor: style?.textColor });
     const fontId = style ? (fontIndexes.get(fontKey) ?? 0) : 0;
     const fillId = style?.background ? (fillIndexes.get(style.background) ?? 0) : 0;
-    const attrs = [`numFmtId="${numFmtId}"`, `fontId="${fontId}"`, `fillId="${fillId}"`, 'borderId="0"', 'xfId="0"'];
+    const borderId = style?.borders ? (borderIndexes.get(JSON.stringify(style.borders)) ?? 0) : 0;
+    const attrs = [`numFmtId="${numFmtId}"`, `fontId="${fontId}"`, `fillId="${fillId}"`, `borderId="${borderId}"`, 'xfId="0"', 'applyFont="1"', 'applyFill="1"', 'applyBorder="1"', 'applyNumberFormat="1"'];
     const alignment = style && (style.horizontalAlignment || style.verticalAlignment || style.wrapText || style.textRotate !== undefined)
       ? `<alignment${style.horizontalAlignment ? ` horizontal="${style.horizontalAlignment}"` : ''}${style.verticalAlignment ? ` vertical="${style.verticalAlignment}"` : ''}${style.wrapText ? ' wrapText="1"' : ''}${style.textRotate !== undefined ? ` textRotation="${style.textRotate}"` : ''}/>`
       : '';
-    return `<xf ${attrs.join(' ')}${alignment ? ` applyAlignment="1">${alignment}</xf>` : '/>'}`;
+    const protection = style && (style.locked !== undefined || style.formulaHidden !== undefined)
+      ? `<protection${style.locked !== undefined ? ` locked="${style.locked ? '1' : '0'}"` : ''}${style.formulaHidden !== undefined ? ` hidden="${style.formulaHidden ? '1' : '0'}"` : ''}/>`
+      : '';
+    return `<xf ${attrs.join(' ')}${alignment || protection ? ` applyAlignment="${alignment ? '1' : '0'}" applyProtection="${protection ? '1' : '0'}">${alignment}${protection}</xf>` : '/>'}`;
   }).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borders.length}">${borders.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs></styleSheet>`;
+  const differentialStyles = [...collectDifferentialStyleIndexes(snapshot).keys()].map((key) => `<dxf>${serializeDifferentialStyle(JSON.parse(key) as CellStyle)}</dxf>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs></styleSheet>`;
 }
 
 function prepareTableParts(
@@ -601,7 +875,7 @@ function prepareTableParts(
 ): { parts: Map<string, string>; required: Array<Pick<XlsxRelationship, 'type' | 'target'>> } {
   const tables = sheet.sheetTables ?? [];
   if (!tables.length) return { parts: new Map(), required: [] };
-  const existing = (preserved?.relationships[sourcePart] ?? []).filter((relation) => relation.type.endsWith('/table'));
+  const existing = (preserved?.relationships[sourcePart] ?? []).filter((relation) => isRelationshipKind(relation.type, 'table'));
   const usedParts = new Set(files.keys());
   let nextNumber = 1;
   const parts = new Map<string, string>();
@@ -654,6 +928,18 @@ function collectStyleIndexes(snapshot: WorkbookSnapshot): Map<string, number> {
   return indexes;
 }
 
+function collectDifferentialStyleIndexes(snapshot: WorkbookSnapshot): Map<string, number> {
+  const indexes = new Map<string, number>();
+  for (const sheet of snapshot.sheets) {
+    for (const rule of sheet.conditionalFormats ?? []) {
+      if (!rule.style) continue;
+      const key = JSON.stringify(rule.style);
+      if (!indexes.has(key)) indexes.set(key, indexes.size);
+    }
+  }
+  return indexes;
+}
+
 function buildWorksheetXml(
   sheet: SheetSnapshot,
   sourcePart: string,
@@ -661,29 +947,39 @@ function buildWorksheetXml(
   originalRoot: XmlNode | undefined,
   files: Map<string, Uint8Array>,
   styleIndexes: Map<string, number>,
+  differentialStyleIndexes: Map<string, number>,
   includeCachedValues: boolean,
   nativeDisplayCells?: Record<string, Record<string, CellData>>,
   nativeControls: NativePivotControlDefinition[] = [],
+  printDocument?: NonNullable<WorkbookSnapshot['printDocuments']>[number],
 ): string {
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
-  if (sheet.tabColor) xml += `<sheetPr><tabColor rgb="${encodeXml(sheet.tabColor)}"/></sheetPr>`;
+  if (sheet.tabColor || sheet.outline?.groups.length) xml += `<sheetPr>${sheet.tabColor ? `<tabColor rgb="${ooxmlRgb(sheet.tabColor)}"/>` : ''}${sheet.outline?.groups.length ? '<outlinePr summaryBelow="1" summaryRight="1"/>' : ''}</sheetPr>`;
   const dimension = inferDimension(sheet);
   if (dimension) xml += `<dimension ref="${dimension}"/>`;
-  if (sheet.freeze.xSplit || sheet.freeze.ySplit) {
-    const topLeft = `${columnToLetter(sheet.freeze.startColumn)}${sheet.freeze.startRow + 1}`;
-    xml += `<sheetViews><sheetView workbookViewId="0"><pane xSplit="${sheet.freeze.xSplit}" ySplit="${sheet.freeze.ySplit}" topLeftCell="${topLeft}" activePane="bottomRight" state="frozen"/></sheetView></sheetViews>`;
-  }
-  if (Object.keys(sheet.columnWidths ?? {}).length || (sheet.hiddenColumns?.length ?? 0)) {
-    xml += `<cols>${Object.entries(sheet.columnWidths ?? {}).map(([column, width]) => `<col min="${Number(column) + 1}" max="${Number(column) + 1}" width="${width}" customWidth="1"/>`).join('')}${(sheet.hiddenColumns ?? []).map((column) => `<col min="${column + 1}" max="${column + 1}" hidden="1"/>`).join('')}</cols>`;
+  const pane = sheet.pane;
+  const paneXml = pane.kind === 'none' ? '' : `<pane xSplit="${roundMetric(pane.xSplit)}" ySplit="${roundMetric(pane.ySplit)}" topLeftCell="${columnToLetter(pane.startColumn)}${pane.startRow + 1}" activePane="${pane.activePane ?? 'bottomRight'}"${pane.kind === 'frozen' ? ` state="${pane.state ?? 'frozen'}"` : ''}/>`;
+  xml += `<sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.showGridlines === false ? '0' : '1'}" showRowColHeaders="${sheet.showHeaders === false ? '0' : '1'}" zoomScale="${sheet.zoom ?? 100}">${paneXml}</sheetView></sheetViews>`;
+  xml += `<sheetFormatPr baseColWidth="8" defaultColWidth="${roundMetric(pixelsToExcelColumnWidth(sheet.defaultColumnWidthPx))}" defaultRowHeight="${roundMetric(pixelsToPoints(sheet.defaultRowHeightPx))}"/>`;
+  const outlinedColumns = sheet.outline?.groups.filter((group) => group.axis === 'column').flatMap((group) => Array.from({ length: group.end - group.start + 1 }, (_, offset) => group.start + offset)) ?? [];
+  const columnIndexes = [...new Set([...Object.keys(sheet.columnWidthsPx ?? {}).map(Number), ...(sheet.hiddenColumns ?? []), ...outlinedColumns])].sort((a, b) => a - b);
+  if (columnIndexes.length) {
+    xml += `<cols>${columnIndexes.map((column) => {
+      const width = sheet.columnWidthsPx?.[column];
+      const columnOutline = outlineLevelAt(sheet.outline, 'column', column);
+      return `<col min="${column + 1}" max="${column + 1}"${width === undefined ? '' : ` width="${roundMetric(pixelsToExcelColumnWidth(width))}" customWidth="1"`}${sheet.hiddenColumns?.includes(column) ? ' hidden="1"' : ''}${columnOutline ? ` outlineLevel="${columnOutline.level}"${columnOutline.collapsed ? ' collapsed="1"' : ''}` : ''}/>`;
+    }).join('')}</cols>`;
   }
   xml += '<sheetData>';
-  const rowKeys = [...new Set([...Object.keys(sheet.cells), ...Object.keys(nativeDisplayCells ?? {})])].map(Number).sort((a, b) => a - b);
+  const outlinedRows = sheet.outline?.groups.filter((group) => group.axis === 'row').flatMap((group) => Array.from({ length: group.end - group.start + 1 }, (_, offset) => group.start + offset)) ?? [];
+  const rowKeys = [...new Set([...Object.keys(sheet.cells), ...Object.keys(nativeDisplayCells ?? {}), ...Object.keys(sheet.rowHeightsPx ?? {}), ...(sheet.hiddenRows ?? []), ...outlinedRows])].map(Number).sort((a, b) => a - b);
   for (const row of rowKeys) {
     const cells = { ...(nativeDisplayCells?.[String(row)] ?? {}), ...(sheet.cells[String(row)] ?? {}) };
     const columns = Object.keys(cells).map(Number).sort((a, b) => a - b);
     const hidden = sheet.hiddenRows?.includes(row) ? ' hidden="1"' : '';
-    const height = sheet.rowHeights?.[row];
-    xml += `<row r="${row + 1}"${hidden}${height === undefined ? '' : ` ht="${height}" customHeight="1"`}>`;
+    const height = sheet.rowHeightsPx?.[row];
+    const rowOutline = outlineLevelAt(sheet.outline, 'row', row);
+    xml += `<row r="${row + 1}"${hidden}${height === undefined ? '' : ` ht="${roundMetric(pixelsToPoints(height))}" customHeight="1"`}${rowOutline ? ` outlineLevel="${rowOutline.level}"${rowOutline.collapsed ? ' collapsed="1"' : ''}` : ''}>`;
     for (const column of columns) {
       const cell = cells[String(column)];
       if (!cell) continue;
@@ -692,19 +988,26 @@ function buildWorksheetXml(
     xml += '</row>';
   }
   xml += '</sheetData>';
+  if (sheet.protectionRules?.length) xml += serializeProtection(sheet.protectionRules);
+  if (sheet.filter) xml += serializeAutoFilter(sheet.filter);
   if (sheet.merges.length) {
     xml += `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((merge) => `<mergeCell ref="${rangeToA1(merge.range)}"/>`).join('')}</mergeCells>`;
   }
-  const hyperlinks = Object.entries(sheet.cells).flatMap(([row, columns]) => Object.entries(columns).flatMap(([column, cell]) => {
-    if (!cell.hyperlinkDetail) return [];
-    const link = cell.hyperlinkDetail;
-    const address = `${columnToLetter(Number(column))}${Number(row) + 1}`;
-    const relation = relationships.find((candidate) => candidate.type === REL_HYPERLINK && candidate.target === hyperlinkTarget(link));
+  if (sheet.conditionalFormats?.length) xml += serializeConditionalFormats(sheet.conditionalFormats, differentialStyleIndexes);
+  if (sheet.dataValidations?.length) xml += serializeDataValidations(sheet.dataValidations);
+  const hyperlinks = (sheet.hyperlinks ?? []).map((entry) => {
+    const link = entry.hyperlink;
+    const address = `${columnToLetter(entry.column)}${entry.row + 1}`;
+    const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, 'hyperlink') && candidate.target === hyperlinkTarget(link));
     const target = link.target.kind === 'url' || link.target.kind === 'email';
-    return [`<hyperlink ref="${address}"${target && relation ? ` r:id="${relation.id}"` : ''}${link.target.kind === 'sheet' ? ` location="${encodeXml(link.target.address ?? '')}"` : ''}${link.tooltip ? ` tooltip="${encodeXml(link.tooltip)}"` : ''}/>`];
-  }));
+    const location = link.target.kind === 'sheet'
+      ? `${encodeXml(link.target.sheetId)}!${encodeXml(link.target.address ?? (link.target.row !== undefined && link.target.column !== undefined ? `${columnToLetter(link.target.column)}${link.target.row + 1}` : 'A1'))}`
+      : link.target.kind === 'name' ? encodeXml(link.target.name) : undefined;
+    return `<hyperlink ref="${address}"${target && relation ? ` r:id="${relation.id}"` : ''}${location ? ` location="${location}"` : ''}${link.tooltip ? ` tooltip="${encodeXml(link.tooltip)}"` : ''}/>`;
+  });
   if (hyperlinks.length) xml += `<hyperlinks>${hyperlinks.join('')}</hyperlinks>`;
-  const tableRelations = relationships.filter((relation) => relation.type.endsWith('/table'));
+  if (printDocument) xml += serializePrintDocument(printDocument);
+  const tableRelations = relationships.filter((relation) => isRelationshipKind(relation.type, 'table'));
   if (sheet.sheetTables?.length && tableRelations.length) {
     const tableParts = tableRelations.map((relation) => {
       const target = resolveTarget(sourcePart, relation.target);
@@ -713,7 +1016,7 @@ function buildWorksheetXml(
     });
     xml += `<tableParts count="${tableParts.length}">${tableParts.join('')}</tableParts>`;
   }
-  const pivotRelations = relationships.filter((relation) => relation.type.endsWith('/pivotTable'));
+  const pivotRelations = relationships.filter((relation) => isRelationshipKind(relation.type, 'pivotTable'));
   if (pivotRelations.length) {
     const pivotParts = pivotRelations.map((relation) => {
       const target = resolveTarget(sourcePart, relation.target);
@@ -722,7 +1025,7 @@ function buildWorksheetXml(
     });
     xml += `<pivotTableParts count="${pivotParts.length}">${pivotParts.join('')}</pivotTableParts>`;
   }
-  const drawingRelations = relationships.filter((relation) => relation.type === REL_DRAWING || relation.type.endsWith('/drawing'));
+  const drawingRelations = relationships.filter((relation) => isRelationshipKind(relation.type, 'drawing'));
   if (drawingRelations.length && !child(originalRoot, 'drawing')) xml += `<drawing r:id="${encodeXml(drawingRelations[0]!.id)}"/>`;
   // A drawing or other unsupported worksheet node is still emitted through its
   // original relationship. Native Pivot parts are rebuilt above from the
@@ -754,13 +1057,118 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   const styleAttr = style === undefined ? '' : ` s="${style}"`;
   if (cell.formula) {
     const formula = cell.formula.startsWith('=') ? cell.formula.slice(1) : cell.formula;
-    const cached = includeCachedValues && isScalar(cell.formulaValue) ? `<v>${encodeXml(String(cell.formulaValue))}</v>` : '';
-    return `<c r="${ref}"${styleAttr}${cached && typeof cell.formulaValue === 'string' ? ' t="str"' : ''}><f>${encodeXml(formula)}</f>${cached}</c>`;
+    const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
+    const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(String(cachedValue))}</v>` : '';
+    const metadata = cell.formulaMetadata;
+    const formulaAttrs = metadata?.kind === 'array'
+      ? ` t="array"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
+      : metadata?.kind === 'dataTable'
+        ? ` t="dataTable"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
+        : '';
+    return `<c r="${ref}"${styleAttr}${cached && typeof cachedValue === 'string' ? ' t="str"' : ''}><f${formulaAttrs}>${encodeXml(formula)}</f>${cached}</c>`;
   }
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;
   if (typeof cell.value === 'boolean') return `<c r="${ref}"${styleAttr} t="b"><v>${cell.value ? '1' : '0'}</v></c>`;
   if (typeof cell.value === 'number') return `<c r="${ref}"${styleAttr}><v>${Number.isFinite(cell.value) ? cell.value : 0}</v></c>`;
-  return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${encodeXml(cell.value)}</t></is></c>`;
+  return `<c r="${ref}"${styleAttr} t="inlineStr"><is>${serializeRichText(cell.value, cell.richText)}</is></c>`;
+}
+
+function serializeRichText(value: string, runs?: RichTextRun[]): string {
+  if (!runs?.length) return `<t xml:space="preserve">${encodeXml(value)}</t>`;
+  return runs.map((run) => {
+    const style = run.style;
+    const properties = style ? `<rPr>${style.fontFamily ? `<rFont val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</rPr>` : '';
+    return `<r>${properties}<t xml:space="preserve">${encodeXml(run.text)}</t></r>`;
+  }).join('');
+}
+
+function serializeBorders(borders: NonNullable<CellStyle['borders']>): string {
+  const side = (name: keyof typeof borders): string => {
+    const value = borders[name];
+    return value ? `<${name} style="${value.style}"><color rgb="${ooxmlRgb(value.color)}"/></${name}>` : `<${name}/>`;
+  };
+  return `<border>${side('left')}${side('right')}${side('top')}${side('bottom')}<diagonal/></border>`;
+}
+
+function serializeDifferentialStyle(style: CellStyle): string {
+  const font = style.fontFamily || style.fontSizePx || style.bold || style.italic || style.underline || style.strikethrough || style.textColor
+    ? `<font>${style.fontFamily ? `<name val="${encodeXml(style.fontFamily)}"/>` : ''}${style.fontSizePx ? `<sz val="${roundMetric(pixelsToPoints(style.fontSizePx))}"/>` : ''}${style.bold ? '<b/>' : ''}${style.italic ? '<i/>' : ''}${style.underline ? '<u/>' : ''}${style.strikethrough ? '<strike/>' : ''}${style.textColor ? `<color rgb="${ooxmlRgb(style.textColor)}"/>` : ''}</font>` : '';
+  const fill = style.background ? `<fill><patternFill patternType="solid"><fgColor rgb="${ooxmlRgb(style.background)}"/><bgColor indexed="64"/></patternFill></fill>` : '';
+  const border = style.borders ? serializeBorders(style.borders) : '';
+  return `${font}${fill}${border}`;
+}
+
+function serializeConditionalFormats(rules: ConditionalFormatRule[], differentialStyles: Map<string, number>): string {
+  return rules.map((rule, index) => {
+    const sqref = rule.ranges.map(rangeToA1).join(' ');
+    const dxfId = rule.style ? differentialStyles.get(JSON.stringify(rule.style)) : undefined;
+    const common = ` priority="${rule.priority ?? index + 1}"${dxfId === undefined ? '' : ` dxfId="${dxfId}"`}${rule.stopIfTrue ? ' stopIfTrue="1"' : ''}`;
+    let body = '';
+    let attrs = '';
+    if (rule.type === 'highlight') {
+      const expression = rule.operator === 'formula';
+      attrs = ` type="${expression ? 'expression' : 'cellIs'}"${expression ? '' : ` operator="${rule.operator ?? 'equal'}"`}`;
+      if (rule.value1 !== undefined) body += `<formula>${encodeXml(String(rule.value1).replace(/^=/, ''))}</formula>`;
+      if (rule.value2 !== undefined) body += `<formula>${encodeXml(String(rule.value2).replace(/^=/, ''))}</formula>`;
+    } else if (rule.type === 'topBottom') {
+      attrs = ` type="top10" rank="${rule.topBottom?.rank ?? 10}"${rule.topBottom?.direction === 'bottom' ? ' bottom="1"' : ''}${rule.topBottom?.percent ? ' percent="1"' : ''}`;
+    } else if (rule.type === 'dataBar') {
+      attrs = ' type="dataBar"';
+      body = `<dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="${ooxmlRgb(rule.barColor ?? '#638EC6')}"/></dataBar>`;
+    } else if (rule.type === 'colorScale') {
+      attrs = ' type="colorScale"';
+      const colors = [rule.minColor ?? '#F8696B', ...(rule.midColor ? [rule.midColor] : []), rule.maxColor ?? '#63BE7B'];
+      body = `<colorScale>${colors.map((_, colorIndex) => `<cfvo type="${colorIndex === 0 ? 'min' : colorIndex === colors.length - 1 ? 'max' : 'percentile'}"${colorIndex > 0 && colorIndex < colors.length - 1 ? ' val="50"' : ''}/>`).join('')}${colors.map((color) => `<color rgb="${ooxmlRgb(color)}"/>`).join('')}</colorScale>`;
+    } else {
+      attrs = ' type="iconSet"';
+      body = '<iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="67"/></iconSet>';
+    }
+    return `<conditionalFormatting sqref="${encodeXml(sqref)}"><cfRule${attrs}${common}>${body}</cfRule></conditionalFormatting>`;
+  }).join('');
+}
+
+function serializeDataValidations(rules: DataValidationRule[]): string {
+  const body = rules.map((rule) => {
+    const formula1 = rule.listSource?.kind === 'values'
+      ? `"${rule.listSource.values.join(',').replace(/"/g, '""')}"`
+      : rule.listSource?.kind === 'formula' ? rule.listSource.formula.replace(/^=/, '') : rule.formula1;
+    return `<dataValidation type="${rule.type === 'checkbox' ? 'list' : rule.type}" sqref="${encodeXml(rule.ranges.map(rangeToA1).join(' '))}"${rule.operator ? ` operator="${rule.operator}"` : ''}${rule.allowBlank ? ' allowBlank="1"' : ''}${rule.alertStyle ? ` errorStyle="${rule.alertStyle}"` : ''}${rule.showErrorMessage ? ' showErrorMessage="1"' : ''}${rule.showInputMessage ? ' showInputMessage="1"' : ''}${rule.showDropdown === false ? ' showDropDown="1"' : ''}${rule.promptTitle ? ` promptTitle="${encodeXml(rule.promptTitle)}"` : ''}${rule.promptMessage ? ` prompt="${encodeXml(rule.promptMessage)}"` : ''}${rule.errorTitle ? ` errorTitle="${encodeXml(rule.errorTitle)}"` : ''}${rule.errorMessage ? ` error="${encodeXml(rule.errorMessage)}"` : ''}>${formula1 ? `<formula1>${encodeXml(formula1)}</formula1>` : ''}${rule.formula2 ? `<formula2>${encodeXml(rule.formula2)}</formula2>` : ''}</dataValidation>`;
+  }).join('');
+  return `<dataValidations count="${rules.length}">${body}</dataValidations>`;
+}
+
+function serializeAutoFilter(filter: FilterModel): string {
+  const columns = Object.values(filter.criteria).map((condition) => {
+    const colId = condition.column - filter.range.startColumn;
+    if (condition.selectedValues?.length) return `<filterColumn colId="${colId}"><filters${condition.excludeBlanks === false ? ' blank="1"' : ''}>${condition.selectedValues.map((value) => `<filter val="${encodeXml(value)}"/>`).join('')}</filters></filterColumn>`;
+    if (condition.conditionValue !== undefined) return `<filterColumn colId="${colId}"><customFilters><customFilter${condition.conditionOperator ? ` operator="${encodeXml(condition.conditionOperator)}"` : ''} val="${encodeXml(condition.conditionValue)}"/>${condition.conditionValue2 !== undefined ? `<customFilter val="${encodeXml(condition.conditionValue2)}"/>` : ''}</customFilters></filterColumn>`;
+    return '';
+  }).join('');
+  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}</autoFilter>`;
+}
+
+function serializeProtection(rules: ProtectionRule[]): string {
+  const rule = rules.find((candidate) => candidate.scope === 'sheet');
+  if (!rule) return '';
+  const allow = rule.allow;
+  return `<sheetProtection sheet="1"${rule.passwordHash ? ` password="${encodeXml(rule.passwordHash)}"` : ''} selectLockedCells="${allow.selectLocked ? '0' : '1'}" selectUnlockedCells="${allow.selectUnlocked ? '0' : '1'}" formatCells="${allow.formatCells ? '0' : '1'}" insertRows="${allow.insertRows ? '0' : '1'}" insertColumns="${allow.insertColumns ? '0' : '1'}" deleteRows="${allow.deleteRows ? '0' : '1'}" deleteColumns="${allow.deleteColumns ? '0' : '1'}" sort="${allow.sort ? '0' : '1'}" autoFilter="${allow.autoFilter ? '0' : '1'}" objects="${allow.editObjects ? '0' : '1'}"/>`;
+}
+
+function serializePrintDocument(document: NonNullable<WorkbookSnapshot['printDocuments']>[number]): string {
+  const setup = document.pageSetup;
+  const paperSize = setup.paperSize === 'letter' ? 1 : setup.paperSize === 'legal' ? 5 : setup.paperSize === 'a3' ? 8 : setup.paperSize === 'a4' ? 9 : 0;
+  const printOptions = `<printOptions horizontalCentered="${setup.centerHorizontally ? '1' : '0'}" verticalCentered="${setup.centerVertically ? '1' : '0'}" headings="${setup.printHeadings ? '1' : '0'}" gridLines="${setup.printGridlines ? '1' : '0'}"/>`;
+  const margins = `<pageMargins left="${setup.margins.left}" right="${setup.margins.right}" top="${setup.margins.top}" bottom="${setup.margins.bottom}" header="${setup.margins.header}" footer="${setup.margins.footer}"/>`;
+  const pageSetup = `<pageSetup${paperSize ? ` paperSize="${paperSize}"` : ''} orientation="${setup.orientation}" scale="${setup.scale}"${setup.fitToWidth !== undefined ? ` fitToWidth="${setup.fitToWidth}"` : ''}${setup.fitToHeight !== undefined ? ` fitToHeight="${setup.fitToHeight}"` : ''}/>`;
+  const rows = document.pageBreaks.filter((entry) => entry.row !== undefined);
+  const columns = document.pageBreaks.filter((entry) => entry.column !== undefined);
+  return `${printOptions}${margins}${pageSetup}${rows.length ? `<rowBreaks count="${rows.length}" manualBreakCount="${rows.length}">${rows.map((entry) => `<brk id="${entry.row}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>` : ''}${columns.length ? `<colBreaks count="${columns.length}" manualBreakCount="${columns.length}">${columns.map((entry) => `<brk id="${entry.column}" min="0" max="1048575" man="1"/>`).join('')}</colBreaks>` : ''}`;
+}
+
+function outlineLevelAt(outline: OutlineModel | undefined, axis: 'row' | 'column', index: number): { level: number; collapsed: boolean } | undefined {
+  const matches = outline?.groups.filter((group) => group.axis === axis && index >= group.start && index <= group.end) ?? [];
+  if (!matches.length) return undefined;
+  return { level: Math.max(...matches.map((group) => group.level)), collapsed: matches.some((group) => group.collapsed) };
 }
 
 function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[]): string {
@@ -807,7 +1215,7 @@ function serializeWorkbookControlExtensions(original: XmlNode | undefined, contr
 }
 
 function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: XlsxPackage): string {
-  const relationFor = (target: string, type: string) => relationships.find((relation) => relation.type === type && resolveTarget('xl/workbook.xml', relation.target) === target)?.id ?? '';
+  const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget('xl/workbook.xml', relation.target) === target)?.id ?? '';
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
     const target = relativeTarget('xl/workbook.xml', descriptor.part);
@@ -900,7 +1308,7 @@ function mergeRelationships(existing: XlsxRelationship[], required: Array<Pick<X
   const used = new Set(result.map((relation) => relation.id));
   let next = 1;
   for (const request of required) {
-    const found = result.find((relation) => relation.type === request.type && relation.target === request.target && relation.targetMode === request.targetMode);
+    const found = result.find((relation) => relationshipKind(relation.type) === relationshipKind(request.type) && relation.target === request.target && relation.targetMode === request.targetMode);
     if (found) continue;
     let id = request.id ?? '';
     if (!id || used.has(id)) {
@@ -915,14 +1323,13 @@ function mergeRelationships(existing: XlsxRelationship[], required: Array<Pick<X
 
 function collectHyperlinkRelationships(sheet: SheetSnapshot, existing: XlsxRelationship[]): Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> {
   const links: Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> = [];
-  for (const row of Object.values(sheet.cells)) {
-    for (const cell of Object.values(row)) {
-      const target = cell.hyperlinkDetail?.target;
-      if (!target || (target.kind !== 'url' && target.kind !== 'email')) continue;
-      const href = hyperlinkTarget(cell.hyperlinkDetail!);
-      if (!existing.some((relation) => relation.type === REL_HYPERLINK && relation.target === href)) {
-        links.push({ type: REL_HYPERLINK, target: href, targetMode: 'External' });
-      }
+  for (const entry of sheet.hyperlinks ?? []) {
+    const target = entry.hyperlink.target;
+    if (target.kind !== 'url' && target.kind !== 'email') continue;
+    const href = hyperlinkTarget(entry.hyperlink);
+    if (!existing.some((relation) => isRelationshipKind(relation.type, 'hyperlink') && relation.target === href)
+      && !links.some((relation) => relation.target === href)) {
+      links.push({ type: REL_HYPERLINK, target: href, targetMode: 'External' });
     }
   }
   return links;
@@ -956,7 +1363,7 @@ function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row:
 }
 
 function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: XlsxPackage): SheetSnapshot['notes'] {
-  const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => candidate.type.endsWith('/comments'));
+  const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => isRelationshipKind(candidate.type, 'comments'));
   if (!relation) return [];
   const part = resolveTarget(descriptor.part, relation.target);
   const bytes = files[part];
@@ -980,12 +1387,309 @@ function parseDefinedNames(node: XmlNode | undefined, descriptors: SheetDescript
   });
 }
 
-function parseFreeze(root: XmlNode): FreezeModel {
+interface SharedFormulaMaster {
+  row: number;
+  column: number;
+  formula: string;
+  range?: string;
+}
+
+function collectSharedFormulaMasters(
+  entries: Array<{ node: XmlNode; row: number; column: number }>,
+  descriptor: SheetDescriptor,
+): Map<number, SharedFormulaMaster> {
+  const result = new Map<number, SharedFormulaMaster>();
+  for (const entry of entries) {
+    const formula = child(entry.node, 'f');
+    if (!formula || formula.attrs.t !== 'shared' || !textContent(formula).trim()) continue;
+    const index = Number(formula.attrs.si);
+    if (!Number.isSafeInteger(index) || index < 0) throw new Error(`Worksheet ${descriptor.name}!${columnToLetter(entry.column)}${entry.row + 1} has an invalid shared formula index`);
+    if (result.has(index)) throw new Error(`Worksheet ${descriptor.name} has duplicate shared formula master si=${index}`);
+    result.set(index, {
+      row: entry.row,
+      column: entry.column,
+      formula: `=${textContent(formula)}`,
+      ...(formula.attrs.ref ? { range: formula.attrs.ref } : {}),
+    });
+  }
+  return result;
+}
+
+function readFormula(
+  cell: XmlNode,
+  address: { row: number; column: number },
+  sharedMasters: Map<number, SharedFormulaMaster>,
+  descriptor: SheetDescriptor,
+): { formula?: string; metadata?: NonNullable<CellData['formulaMetadata']> } {
+  const node = child(cell, 'f');
+  if (!node) return {};
+  const kind = node.attrs.t ?? 'normal';
+  const raw = textContent(node).trim();
+  if (kind === 'dataTable') {
+    return { metadata: { kind: 'dataTable', ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: 'Excel data-table formulas are preserved from the source package', ...(raw ? { sourceFormula: `=${raw}` } : {}) } };
+  }
+  if (kind === 'shared') {
+    const index = Number(node.attrs.si);
+    if (!Number.isSafeInteger(index) || index < 0) throw new Error(`Worksheet ${descriptor.name}!${columnToLetter(address.column)}${address.row + 1} has an invalid shared formula index`);
+    const master = sharedMasters.get(index);
+    if (!master) throw new Error(`Worksheet ${descriptor.name}!${columnToLetter(address.column)}${address.row + 1} references missing shared formula master si=${index}`);
+    try {
+      const formula = address.row === master.row && address.column === master.column
+        ? formatFormula(parseFormula(master.formula))
+        : formatFormula(offsetAst(parseFormula(master.formula), address.row - master.row, address.column - master.column));
+      return { formula, metadata: { kind: 'shared', sharedIndex: index, ...(master.range ? { range: master.range } : {}) } };
+    } catch {
+      return {
+        metadata: {
+          kind: 'shared',
+          sharedIndex: index,
+          ...(master.range ? { range: master.range } : {}),
+          preservedOnly: true,
+          reason: 'Shared formula uses syntax outside the canonical formula AST',
+          sourceFormula: master.formula,
+        },
+      };
+    }
+  }
+  if (!raw) return {};
+  const formula = `=${raw}`;
+  const formulaKind = kind === 'array' ? 'array' : 'normal';
+  const unsupported = formulaPreserveReason(formula);
+  if (unsupported) return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: unsupported, sourceFormula: formula } };
+  try {
+    parseFormula(formula);
+    return { formula, metadata: formulaKind === 'normal' ? undefined : { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}) } };
+  } catch {
+    return { formula, metadata: { kind: formulaKind, ...(node.attrs.ref ? { range: node.attrs.ref } : {}), preservedOnly: true, reason: 'Formula syntax is not supported by the canonical AST', sourceFormula: formula } };
+  }
+}
+
+function formulaPreserveReason(formula: string): string | undefined {
+  if (/\[[^\]]+\]/.test(formula)) return 'External workbook reference is fail-closed';
+  if (/\bCUBE(?:VALUE|SET|MEMBER|RANKEDMEMBER|MEMBERPROPERTY)\s*\(/i.test(formula)) return 'CUBE formula requires an external OLAP calculation contract';
+  if (/\bINDIRECT\s*\(/i.test(formula)) return 'INDIRECT is preserved without local recalculation';
+  return undefined;
+}
+
+function parseConditionalFormats(root: XmlNode, descriptor: SheetDescriptor, styles: StyleContext): ConditionalFormatRule[] {
+  const result: ConditionalFormatRule[] = [];
+  let sequence = 0;
+  for (const container of children(root, 'conditionalFormatting')) {
+    const ranges = parseSqref(container.attrs.sqref, descriptor, 'conditional formatting');
+    for (const node of children(container, 'cfRule')) {
+      const formulas = children(node, 'formula').map(textContent);
+      const type = node.attrs.type;
+      const base = {
+        id: `cf-${descriptor.id}-${node.attrs.priority ?? ++sequence}`,
+        sheetId: descriptor.id,
+        ranges,
+        ...(Number.isFinite(Number(node.attrs.priority)) ? { priority: Number(node.attrs.priority) } : {}),
+        ...(node.attrs.stopIfTrue !== undefined ? { stopIfTrue: xmlBoolean(node.attrs.stopIfTrue) } : {}),
+        ...(styles.differentialStyles[Number(node.attrs.dxfId)] ? { style: structuredClone(styles.differentialStyles[Number(node.attrs.dxfId)]!) } : {}),
+      };
+      if (type === 'cellIs' || type === 'expression' || type === 'containsText' || type === 'notContainsText' || type === 'duplicateValues' || type === 'uniqueValues') {
+        result.push({
+          ...base,
+          type: 'highlight',
+          operator: normalizeConditionalOperator(type === 'cellIs' ? node.attrs.operator : type),
+          ...(formulas[0] !== undefined ? { value1: scalarFormulaValue(formulas[0]) } : {}),
+          ...(formulas[1] !== undefined ? { value2: scalarFormulaValue(formulas[1]) } : {}),
+        });
+      } else if (type === 'top10') {
+        result.push({ ...base, type: 'topBottom', operator: xmlBoolean(node.attrs.bottom ?? '0') ? 'bottom' : 'top', topBottom: { direction: xmlBoolean(node.attrs.bottom ?? '0') ? 'bottom' : 'top', rank: finitePositive(node.attrs.rank, 10), ...(xmlBoolean(node.attrs.percent ?? '0') ? { percent: true } : {}) } });
+      } else if (type === 'dataBar') {
+        const color = resolveColor(child(child(node, 'dataBar'), 'color'), []);
+        result.push({ ...base, type: 'dataBar', ...(color ? { barColor: color } : {}) });
+      } else if (type === 'colorScale') {
+        const colors = children(child(node, 'colorScale'), 'color').map((color) => resolveColor(color, [])).filter((value): value is string => Boolean(value));
+        result.push({ ...base, type: 'colorScale', ...(colors[0] ? { minColor: colors[0] } : {}), ...(colors.length === 3 && colors[1] ? { midColor: colors[1] } : {}), ...(colors.at(-1) ? { maxColor: colors.at(-1)! } : {}) });
+      } else if (type === 'iconSet') {
+        result.push({ ...base, type: 'iconSet' });
+      }
+    }
+  }
+  return result;
+}
+
+function normalizeConditionalOperator(value: string | undefined): ConditionalFormatRule['operator'] {
+  const map: Record<string, NonNullable<ConditionalFormatRule['operator']>> = {
+    greaterThan: 'greaterThan', lessThan: 'lessThan', between: 'between', equal: 'equal', notEqual: 'notEqual',
+    containsText: 'containsText', notContainsText: 'notContainsText', duplicateValues: 'duplicate', uniqueValues: 'unique', expression: 'formula',
+  };
+  return map[value ?? ''] ?? 'formula';
+}
+
+function scalarFormulaValue(value: string): string | number {
+  const number = Number(value);
+  return Number.isFinite(number) && value.trim() !== '' ? number : value;
+}
+
+function parseDataValidations(root: XmlNode, descriptor: SheetDescriptor): DataValidationRule[] {
+  const validations = children(child(root, 'dataValidations'), 'dataValidation');
+  return validations.flatMap((node, index) => {
+    const type = normalizeValidationType(node.attrs.type);
+    if (!type) return [];
+    const formula1 = textContent(child(node, 'formula1'));
+    const formula2 = textContent(child(node, 'formula2'));
+    const ranges = parseSqref(node.attrs.sqref, descriptor, 'data validation');
+    const listSource = type === 'list' && formula1
+      ? formula1.startsWith('"') && formula1.endsWith('"')
+        ? { kind: 'values' as const, values: formula1.slice(1, -1).split(',') }
+        : { kind: 'formula' as const, formula: formula1.startsWith('=') ? formula1 : `=${formula1}` }
+      : undefined;
+    return [{
+      id: `dv-${descriptor.id}-${index + 1}`,
+      sheetId: descriptor.id,
+      ranges,
+      type,
+      ...(normalizeValidationOperator(node.attrs.operator) ? { operator: normalizeValidationOperator(node.attrs.operator)! } : {}),
+      ...(formula1 ? { formula1 } : {}),
+      ...(formula2 ? { formula2 } : {}),
+      ...(node.attrs.allowBlank !== undefined ? { allowBlank: xmlBoolean(node.attrs.allowBlank) } : {}),
+      ...(node.attrs.errorStyle && ['stop', 'warning', 'information'].includes(node.attrs.errorStyle) ? { alertStyle: node.attrs.errorStyle as DataValidationRule['alertStyle'] } : {}),
+      ...(node.attrs.showErrorMessage !== undefined ? { showErrorMessage: xmlBoolean(node.attrs.showErrorMessage) } : {}),
+      ...(node.attrs.showInputMessage !== undefined ? { showInputMessage: xmlBoolean(node.attrs.showInputMessage) } : {}),
+      ...(node.attrs.showDropDown !== undefined ? { showDropdown: !xmlBoolean(node.attrs.showDropDown) } : {}),
+      ...(node.attrs.promptTitle ? { promptTitle: node.attrs.promptTitle, inputTitle: node.attrs.promptTitle } : {}),
+      ...(node.attrs.prompt ? { promptMessage: node.attrs.prompt, inputMessage: node.attrs.prompt } : {}),
+      ...(node.attrs.errorTitle ? { errorTitle: node.attrs.errorTitle } : {}),
+      ...(node.attrs.error ? { errorMessage: node.attrs.error } : {}),
+      ...(listSource ? { listSource } : {}),
+    }];
+  });
+}
+
+function normalizeValidationType(value: string | undefined): DataValidationRule['type'] | undefined {
+  const map: Record<string, DataValidationRule['type']> = { list: 'list', whole: 'whole', decimal: 'decimal', date: 'date', time: 'time', textLength: 'textLength', custom: 'custom' };
+  return map[value ?? ''];
+}
+
+function normalizeValidationOperator(value: string | undefined): DataValidationRule['operator'] | undefined {
+  const supported = new Set<DataValidationRule['operator']>(['between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'lessThan']);
+  return supported.has(value as DataValidationRule['operator']) ? value as DataValidationRule['operator'] : undefined;
+}
+
+function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): FilterModel | undefined {
+  const node = child(root, 'autoFilter');
+  if (!node?.attrs.ref) return undefined;
+  const range = requireSheetRange(node.attrs.ref, descriptor, 'auto filter');
+  const criteria: FilterModel['criteria'] = {};
+  for (const column of children(node, 'filterColumn')) {
+    const relative = Number(column.attrs.colId);
+    if (!Number.isSafeInteger(relative) || relative < 0) continue;
+    const absolute = range.startColumn + relative;
+    const filters = children(child(column, 'filters'), 'filter').map((filter) => filter.attrs.val ?? '');
+    const custom = children(child(column, 'customFilters'), 'customFilter');
+    criteria[absolute] = {
+      column: absolute,
+      ...(filters.length ? { selectedValues: filters } : {}),
+      ...(child(column, 'filters')?.attrs.blank !== undefined ? { excludeBlanks: !xmlBoolean(child(column, 'filters')!.attrs.blank) } : {}),
+      ...(custom[0]?.attrs.operator ? { conditionOperator: custom[0].attrs.operator } : {}),
+      ...(custom[0]?.attrs.val ? { conditionValue: custom[0].attrs.val } : {}),
+      ...(custom[1]?.attrs.val ? { conditionValue2: custom[1].attrs.val } : {}),
+    };
+  }
+  return { sheetId: descriptor.id, range: { ...range, sheetId: descriptor.id }, criteria };
+}
+
+function parseOutline(root: XmlNode): OutlineModel | undefined {
+  const groups: OutlineModel['groups'] = [];
+  const appendGroups = (nodes: XmlNode[], axis: 'row' | 'column', startAttr: string, endAttr: string): void => {
+    const entries = nodes.flatMap((node) => {
+      const level = Number(node.attrs.outlineLevel ?? 0);
+      if (!Number.isSafeInteger(level) || level <= 0) return [];
+      return [{ start: parsePositiveInt(node.attrs[startAttr], 1) - 1, end: parsePositiveInt(node.attrs[endAttr] ?? node.attrs[startAttr], 1) - 1, level, collapsed: xmlBoolean(node.attrs.collapsed ?? '0') }];
+    }).sort((a, b) => a.level - b.level || a.start - b.start);
+    for (const entry of entries) {
+      const previous = groups.at(-1);
+      if (previous && previous.axis === axis && previous.level === entry.level && previous.end + 1 === entry.start && previous.collapsed === entry.collapsed) previous.end = entry.end;
+      else groups.push({ id: `outline-${axis}-${entry.level}-${entry.start}`, axis, ...entry });
+    }
+  };
+  appendGroups(children(child(root, 'sheetData'), 'row'), 'row', 'r', 'r');
+  appendGroups(children(child(root, 'cols'), 'col'), 'column', 'min', 'max');
+  return groups.length ? { groups } : undefined;
+}
+
+function parseProtection(root: XmlNode, descriptor: SheetDescriptor): ProtectionRule[] {
+  const node = child(root, 'sheetProtection');
+  if (!node) return [];
+  return [{
+    id: `protection-${descriptor.id}`,
+    scope: 'sheet',
+    sheetId: descriptor.id,
+    passwordHash: node.attrs.password ?? node.attrs.hashValue,
+    locked: true,
+    allow: {
+      selectLocked: !xmlBoolean(node.attrs.selectLockedCells ?? '0'),
+      selectUnlocked: !xmlBoolean(node.attrs.selectUnlockedCells ?? '0'),
+      formatCells: !xmlBoolean(node.attrs.formatCells ?? '1'),
+      insertRows: !xmlBoolean(node.attrs.insertRows ?? '1'),
+      insertColumns: !xmlBoolean(node.attrs.insertColumns ?? '1'),
+      deleteRows: !xmlBoolean(node.attrs.deleteRows ?? '1'),
+      deleteColumns: !xmlBoolean(node.attrs.deleteColumns ?? '1'),
+      sort: !xmlBoolean(node.attrs.sort ?? '1'),
+      autoFilter: !xmlBoolean(node.attrs.autoFilter ?? '1'),
+      editObjects: !xmlBoolean(node.attrs.objects ?? '1'),
+    },
+  }];
+}
+
+function parsePrintDocument(root: XmlNode, unitId: string, sheetId: string): NonNullable<WorkbookSnapshot['printDocuments']> {
+  const pageSetup = child(root, 'pageSetup');
+  const margins = child(root, 'pageMargins');
+  const printOptions = child(root, 'printOptions');
+  const rowBreaks = children(child(root, 'rowBreaks'), 'brk');
+  const columnBreaks = children(child(root, 'colBreaks'), 'brk');
+  if (!pageSetup && !margins && !printOptions && !rowBreaks.length && !columnBreaks.length) return [];
+  const paper = Number(pageSetup?.attrs.paperSize);
+  return [{
+    schema: 'PrintDocument', unitId, sheetId,
+    pageSetup: {
+      paperSize: paper === 8 ? 'a3' : paper === 9 ? 'a4' : paper === 5 ? 'legal' : paper === 1 ? 'letter' : 'custom',
+      orientation: pageSetup?.attrs.orientation === 'landscape' ? 'landscape' : 'portrait',
+      margins: { top: finiteNumber(margins?.attrs.top, 0.75), right: finiteNumber(margins?.attrs.right, 0.7), bottom: finiteNumber(margins?.attrs.bottom, 0.75), left: finiteNumber(margins?.attrs.left, 0.7), header: finiteNumber(margins?.attrs.header, 0.3), footer: finiteNumber(margins?.attrs.footer, 0.3) },
+      scale: finitePositive(pageSetup?.attrs.scale, 100),
+      ...(pageSetup?.attrs.fitToWidth !== undefined ? { fitToWidth: Number(pageSetup.attrs.fitToWidth) } : {}),
+      ...(pageSetup?.attrs.fitToHeight !== undefined ? { fitToHeight: Number(pageSetup.attrs.fitToHeight) } : {}),
+      printGridlines: xmlBoolean(printOptions?.attrs.gridLines ?? '0'), printHeadings: xmlBoolean(printOptions?.attrs.headings ?? '0'),
+      centerHorizontally: xmlBoolean(printOptions?.attrs.horizontalCentered ?? '0'), centerVertically: xmlBoolean(printOptions?.attrs.verticalCentered ?? '0'),
+    },
+    printAreas: [],
+    pageBreaks: [
+      ...rowBreaks.flatMap((node) => Number.isSafeInteger(Number(node.attrs.id)) ? [{ sheetId, row: Number(node.attrs.id) }] : []),
+      ...columnBreaks.flatMap((node) => Number.isSafeInteger(Number(node.attrs.id)) ? [{ sheetId, column: Number(node.attrs.id) }] : []),
+    ],
+  }];
+}
+
+function parsePane(root: XmlNode): WorksheetPane {
   const pane = child(child(child(root, 'sheetViews'), 'sheetView'), 'pane');
+  if (!pane) return { kind: 'none' };
   const xSplit = Number(pane?.attrs.xSplit ?? 0) || 0;
   const ySplit = Number(pane?.attrs.ySplit ?? 0) || 0;
   const topLeft = pane?.attrs.topLeftCell ? parseA1(pane.attrs.topLeftCell) : undefined;
-  return { xSplit, ySplit, startRow: topLeft?.row ?? ySplit, startColumn: topLeft?.column ?? xSplit };
+  const activePane = normalizeActivePane(pane.attrs.activePane);
+  const state = pane.attrs.state;
+  if (state === 'frozen' || state === 'frozenSplit') {
+    return {
+      kind: 'frozen',
+      xSplit: Math.max(0, Math.trunc(xSplit)),
+      ySplit: Math.max(0, Math.trunc(ySplit)),
+      startRow: topLeft?.row ?? Math.max(0, Math.trunc(ySplit)),
+      startColumn: topLeft?.column ?? Math.max(0, Math.trunc(xSplit)),
+      ...(activePane ? { activePane } : {}),
+      state,
+    };
+  }
+  return {
+    kind: 'split',
+    xSplit: Math.max(0, xSplit),
+    ySplit: Math.max(0, ySplit),
+    startRow: topLeft?.row ?? 0,
+    startColumn: topLeft?.column ?? 0,
+    ...(activePane ? { activePane } : {}),
+  };
 }
 
 function parseHiddenColumns(root: XmlNode): number[] {
@@ -1003,32 +1707,36 @@ function parseRowHeights(root: XmlNode): Record<number, number> {
   const result: Record<number, number> = {};
   for (const row of children(child(root, 'sheetData'), 'row')) {
     if (row.attrs.ht === undefined) continue;
-    result[parsePositiveInt(row.attrs.r, 1) - 1] = Number(row.attrs.ht);
+    const points = Number(row.attrs.ht);
+    if (!Number.isFinite(points) || points < 0) throw new Error(`Worksheet row ${row.attrs.r ?? '?'} has an invalid height`);
+    result[parsePositiveInt(row.attrs.r, 1) - 1] = pointsToPixels(points);
   }
   return result;
 }
 
-function parseColumnWidths(root: XmlNode): Record<number, number> {
+function parseColumnWidths(root: XmlNode, maximumDigitWidthPx: number): Record<number, number> {
   const result: Record<number, number> = {};
   for (const col of children(child(root, 'cols'), 'col')) {
     if (col.attrs.width === undefined) continue;
     const start = parsePositiveInt(col.attrs.min, 1) - 1;
     const end = parsePositiveInt(col.attrs.max, start + 1) - 1;
-    for (let index = start; index <= end; index += 1) result[index] = Number(col.attrs.width);
+    const width = Number(col.attrs.width);
+    if (!Number.isFinite(width) || width < 0 || width > 255) throw new Error(`Worksheet column ${start + 1}:${end + 1} has an invalid width`);
+    for (let index = start; index <= end; index += 1) result[index] = excelColumnWidthToPixels(width, maximumDigitWidthPx);
   }
   return result;
 }
 
-function readCellValue(cell: XmlNode, sharedStrings: string[]): string | number | boolean | null {
+function readCellValue(cell: XmlNode, sharedStrings: SharedStringRecord[]): SharedStringRecord & { value: string | number | boolean | null } {
   const type = cell.attrs.t;
-  if (type === 'inlineStr') return descendants(cell, 't').map(textContent).join('');
+  if (type === 'inlineStr') return parseRichTextContainer(child(cell, 'is') ?? cell);
   const raw = textContent(child(cell, 'v'));
-  if (raw === '') return null;
-  if (type === 's') return sharedStrings[Number(raw)] ?? '';
-  if (type === 'b') return raw === '1' || raw.toLowerCase() === 'true';
-  if (type === 'e') return raw;
+  if (raw === '') return { value: null };
+  if (type === 's') return sharedStrings[Number(raw)] ?? { value: '' };
+  if (type === 'b') return { value: raw === '1' || raw.toLowerCase() === 'true' };
+  if (type === 'e' || type === 'str') return { value: raw };
   const number = Number(raw);
-  return Number.isNaN(number) ? raw : number;
+  return { value: Number.isNaN(number) ? raw : number };
 }
 
 function parseWorkbookDateSystem(xml: string): DateSystem {
@@ -1135,6 +1843,75 @@ function cloneParts(parts: Record<string, Uint8Array>): Record<string, Uint8Arra
 
 function isMacroPart(name: string): boolean {
   return name.toLowerCase().includes('vba') || name.toLowerCase().endsWith('.bin');
+}
+
+function relationshipKind(type: string): string {
+  const normalized = type.replace(/\/+$/, '');
+  return normalized.slice(normalized.lastIndexOf('/') + 1);
+}
+
+function isRelationshipKind(type: string, kind: string): boolean {
+  return relationshipKind(type).toLocaleLowerCase() === kind.toLocaleLowerCase();
+}
+
+function resolveWorkbookRelatedPart(relationships: XlsxRelationship[], kind: string, fallback: string): string {
+  const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, kind));
+  return relation ? resolveTarget('xl/workbook.xml', relation.target) : fallback;
+}
+
+function requireSheetRange(value: string | undefined, descriptor: SheetDescriptor, feature: string): RangeRef {
+  const range = parseRange(value);
+  if (!range || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn
+    || range.endRow > 1_048_575 || range.endColumn > 16_383) {
+    throw new Error(`Worksheet ${descriptor.name} has an invalid ${feature} range: ${value ?? ''}`);
+  }
+  return { ...range, sheetId: descriptor.id };
+}
+
+function parseSqref(value: string | undefined, descriptor: SheetDescriptor, feature: string): RangeRef[] {
+  if (!value?.trim()) throw new Error(`Worksheet ${descriptor.name} ${feature} is missing sqref`);
+  return value.trim().split(/\s+/).map((entry) => requireSheetRange(entry, descriptor, feature));
+}
+
+function validateNonOverlappingMerges(merges: MergeSpan[], descriptor: SheetDescriptor): void {
+  const sorted = [...merges].sort((left, right) => left.range.startRow - right.range.startRow || left.range.startColumn - right.range.startColumn);
+  for (let index = 0; index < sorted.length; index += 1) {
+    const current = sorted[index]!;
+    for (let candidateIndex = index + 1; candidateIndex < sorted.length; candidateIndex += 1) {
+      const candidate = sorted[candidateIndex]!;
+      if (candidate.range.startRow > current.range.endRow) break;
+      if (current.range.startColumn <= candidate.range.endColumn && candidate.range.startColumn <= current.range.endColumn) {
+        throw new Error(`Worksheet ${descriptor.name} has overlapping merges ${rangeToA1(current.range)} and ${rangeToA1(candidate.range)}`);
+      }
+    }
+  }
+}
+
+function normalizeActivePane(value: string | undefined): Exclude<WorksheetPane, { kind: 'none' }>['activePane'] | undefined {
+  return value === 'topLeft' || value === 'topRight' || value === 'bottomLeft' || value === 'bottomRight' ? value : undefined;
+}
+
+function xmlBoolean(value: string): boolean {
+  return value === '1' || value.toLocaleLowerCase() === 'true';
+}
+
+function finiteNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function finitePositive(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function roundMetric(value: number): string {
+  return Number(value.toFixed(8)).toString();
+}
+
+function ooxmlRgb(value: string): string {
+  const color = normalizeRgb(value) ?? '#000000';
+  return `FF${color.slice(1)}`;
 }
 
 function parseRange(value: string | undefined): RangeRef | undefined {

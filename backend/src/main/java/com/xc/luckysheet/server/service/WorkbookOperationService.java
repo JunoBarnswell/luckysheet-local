@@ -156,8 +156,9 @@ public class WorkbookOperationService {
         WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
         if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
         if (row.snapshotRevision() == row.revision()) {
-            JsonNode snapshot = readJson(row.snapshotJson());
-            return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(row.snapshotJson())), false);
+            JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(row.snapshotJson()), unitId);
+            String canonicalJson = writeJson(snapshot);
+            return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(canonicalJson)), false);
         }
         JsonNode snapshot = currentSnapshot(row);
         String json = writeJson(snapshot);
@@ -250,7 +251,7 @@ public class WorkbookOperationService {
     }
 
     private JsonNode currentSnapshot(WorkbookRow row) {
-        JsonNode snapshot = readJson(row.snapshotJson());
+        JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(row.snapshotJson()), row.unitId());
         if (row.snapshotRevision() == row.revision()) return snapshot;
         for (OperationRow operation : store.listOperations(row.unitId()).stream()
                 .filter(entry -> entry.revision() > row.snapshotRevision() && entry.revision() <= row.revision())
@@ -267,7 +268,7 @@ public class WorkbookOperationService {
         if (targetRevision == current.revision()) return currentSnapshot(current);
         CheckpointRow checkpoint = store.findCheckpoint(current.unitId(), targetRevision)
                 .orElseGet(() -> store.findLatestCheckpointAtOrBefore(current.unitId(), targetRevision).orElseThrow(() -> ServiceException.notFound("Snapshot checkpoint not found")));
-        JsonNode snapshot = readJson(checkpoint.snapshotJson());
+        JsonNode snapshot = WorkbookSnapshotValidator.migrateStored(readJson(checkpoint.snapshotJson()), current.unitId());
         if (checkpoint.revision() == targetRevision) return snapshot;
         for (OperationRow operation : store.listOperations(current.unitId()).stream()
                 .filter(entry -> entry.revision() > checkpoint.revision() && entry.revision() <= targetRevision)

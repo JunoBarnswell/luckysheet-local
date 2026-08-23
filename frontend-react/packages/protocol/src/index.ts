@@ -504,6 +504,18 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
       || !Array.isArray(sheet.sparklines)) {
       throw new Error(`WorkbookSnapshot sheet[${index}] has invalid grid data`);
     }
+    if (typeof sheet.defaultRowHeightPx !== 'number' || !Number.isFinite(sheet.defaultRowHeightPx) || sheet.defaultRowHeightPx <= 0
+      || typeof sheet.defaultColumnWidthPx !== 'number' || !Number.isFinite(sheet.defaultColumnWidthPx) || sheet.defaultColumnWidthPx <= 0
+      || !sheet.pane || typeof sheet.pane !== 'object' || Array.isArray(sheet.pane)
+      || !['none', 'frozen', 'split'].includes(String((sheet.pane as Record<string, unknown>).kind))) {
+      throw new Error(`WorkbookSnapshot sheet[${index}] has invalid pixel geometry`);
+    }
+    if (sheet.rowHeightsPx !== undefined && (!sheet.rowHeightsPx || typeof sheet.rowHeightsPx !== 'object' || Array.isArray(sheet.rowHeightsPx))) {
+      throw new Error(`WorkbookSnapshot sheet[${index}] rowHeightsPx is invalid`);
+    }
+    if (sheet.columnWidthsPx !== undefined && (!sheet.columnWidthsPx || typeof sheet.columnWidthsPx !== 'object' || Array.isArray(sheet.columnWidthsPx))) {
+      throw new Error(`WorkbookSnapshot sheet[${index}] columnWidthsPx is invalid`);
+    }
     if ('charts' in sheet || 'shapes' in sheet || 'images' in sheet) {
       throw new Error(`WorkbookSnapshot sheet[${index}] contains legacy drawing collections`);
     }

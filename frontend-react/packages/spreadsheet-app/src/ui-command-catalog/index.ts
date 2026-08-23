@@ -793,10 +793,10 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   callback('unprotect', 'review', 'protection', RIBBON_TEXT.commands.unprotect, (context) => context.actions.onUnprotectSelection(), 'lock'),
   intent('revisionLog', 'review', 'historyAudit', RIBBON_TEXT.commands.revisionLog, () => ({ type: 'panel.open', panel: 'history' }), 'history'),
 
-  command('freezeTopRow', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.freezeTopRow, 'freeze', { freeze: { xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0 } }),
-  command('freezeFirstColumn', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.freezeFirstColumn, 'freeze', { freeze: { xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 } }),
+  command('freezeTopRow', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.freezeTopRow, 'freeze', { pane: { kind: 'frozen', xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0, state: 'frozen' } }),
+  command('freezeFirstColumn', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.freezeFirstColumn, 'freeze', { pane: { kind: 'frozen', xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1, state: 'frozen' } }),
   callback('freezeAtSelection', 'view', 'freezePanes', RIBBON_TEXT.commands.freezeAtSelection, (context) => context.actions.onFreezeAtPrimary(), 'freeze'),
-  command('unfreezeAll', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.unfreezeAll, 'freeze', { freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 } }),
+  command('unfreezeAll', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.unfreezeAll, 'freeze', { pane: { kind: 'none' } }),
   intent('zoomIn', 'view', 'zoom', RIBBON_TEXT.commands.zoomIn, () => ({ type: 'zoom.adjust', delta: 10 }), 'zoom-in'),
   intent('zoomOut', 'view', 'zoom', RIBBON_TEXT.commands.zoomOut, () => ({ type: 'zoom.adjust', delta: -10 }), 'zoom-out'),
   intent('zoomReset', 'view', 'zoom', RIBBON_TEXT.commands.zoomReset, () => ({ type: 'zoom.set', value: 100 })),

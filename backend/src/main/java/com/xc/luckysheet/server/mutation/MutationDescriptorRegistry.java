@@ -32,7 +32,7 @@ public class MutationDescriptorRegistry {
             "automation.recording.changed", "banded.set",
             "cell.restore", "cell.set", "cells.shifted", "cells.shifted.restore",
             "cf.add", "cf.clear", "cf.remove",
-            "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all",
+            "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
             "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve",
             "dataRegion.add", "dataRegion.remove", "dataSource.add", "dataSource.remove", "dataSource.update",
             "drawing.add", "drawing.anchor", "drawing.payload.update", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.zorder", "drawing.zorder.restore",
@@ -47,7 +47,7 @@ public class MutationDescriptorRegistry {
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
-            "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore"
+            "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore", "xlsx.layout.repaired"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
             Map.entry("automation.recording.changed", "Recorder state is transient session state and must not enter workbook history."),
@@ -78,6 +78,9 @@ public class MutationDescriptorRegistry {
         register(new PresentationDescriptor("freeze.set"));
         register(new PresentationDescriptor("row.resize"));
         register(new PresentationDescriptor("column.resize"));
+        register(new PresentationDescriptor("column.defaultWidth.resize"));
+        register(new PresentationDescriptor("columns.visibility"));
+        register(new PresentationDescriptor("xlsx.layout.repaired"));
         register(new PresentationDescriptor("view.set"));
         register(new PresentationDescriptor("sheet.hidden"));
         register(new PresentationDescriptor("sheet.unhidden"));
@@ -418,7 +421,9 @@ public class MutationDescriptorRegistry {
                 case "merge.set", "merge.remove" -> List.of(ownRange(root, mutation.sheetId(), params));
                 case "row.resize" -> List.of(SnapshotMutationSupport.rowRange(root, mutation.sheetId(), params));
                 case "column.resize" -> List.of(SnapshotMutationSupport.columnRange(root, mutation.sheetId(), params));
-                case "freeze.set", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor" -> List.of();
+                case "columns.visibility" -> visibilityRanges(root, mutation.sheetId(), params);
+                case "xlsx.layout.repaired" -> layoutRepairRanges(root, params);
+                case "freeze.set", "view.set", "column.defaultWidth.resize", "sheet.hidden", "sheet.unhidden", "sheet.tabColor" -> List.of();
                 default -> throw ServiceException.validation("Unsupported presentation mutation: " + id());
             };
         }
@@ -433,8 +438,11 @@ public class MutationDescriptorRegistry {
                 case "merge.set" -> setMerge(root, sheet, mutation.sheetId(), params);
                 case "merge.remove" -> removeMerge(root, sheet, mutation.sheetId(), params);
                 case "freeze.set" -> freeze(params, sheet);
-                case "row.resize" -> resize(root, sheet, mutation.sheetId(), params, "rowHeights", "row", "height");
-                case "column.resize" -> resize(root, sheet, mutation.sheetId(), params, "columnWidths", "column", "width");
+                case "row.resize" -> resize(root, sheet, mutation.sheetId(), params, "rowHeightsPx", "row", "heightPx");
+                case "column.resize" -> resize(root, sheet, mutation.sheetId(), params, "columnWidthsPx", "column", "widthPx");
+                case "column.defaultWidth.resize" -> defaultColumnWidth(params, sheet);
+                case "columns.visibility" -> columnVisibility(root, sheet, mutation.sheetId(), params);
+                case "xlsx.layout.repaired" -> layoutRepair(root, params);
                 case "view.set" -> view(params, sheet);
                 case "sheet.hidden" -> sheet.put("hidden", true);
                 case "sheet.unhidden" -> sheet.put("hidden", false);
@@ -486,12 +494,94 @@ public class MutationDescriptorRegistry {
         }
 
         private void freeze(ObjectNode params, ObjectNode sheet) {
-            JsonNode freeze = params.get("freeze");
-            if (freeze == null || !freeze.isObject()) throw ServiceException.validation("freeze.set requires freeze");
+            JsonNode pane = params.get("pane");
+            if (pane == null || !pane.isObject()) throw ServiceException.validation("freeze.set requires pane");
+            String kind = pane.path("kind").asText();
+            if (!Set.of("none", "frozen", "split").contains(kind)) throw ServiceException.validation("pane.kind is invalid");
+            if ("none".equals(kind)) { sheet.set("pane", pane.deepCopy()); return; }
             for (String field : List.of("xSplit", "ySplit", "startRow", "startColumn")) {
-                if (!freeze.path(field).isIntegralNumber() || freeze.path(field).asInt() < 0) throw ServiceException.validation("freeze." + field + " must be non-negative integer");
+                if (!pane.path(field).isNumber() || pane.path(field).asDouble() < 0) throw ServiceException.validation("pane." + field + " must be non-negative");
             }
-            sheet.set("freeze", freeze.deepCopy());
+            if (!pane.path("startRow").isIntegralNumber() || !pane.path("startColumn").isIntegralNumber()) throw ServiceException.validation("pane start coordinates must be integers");
+            sheet.set("pane", pane.deepCopy());
+        }
+
+        private List<RangeRef> visibilityRanges(ObjectNode root, String sheetId, ObjectNode params) {
+            JsonNode states = params.get("states");
+            if (states == null || !states.isArray() || states.isEmpty()) throw ServiceException.validation("columns.visibility requires states");
+            List<RangeRef> ranges = new ArrayList<>();
+            for (JsonNode state : states) {
+                ObjectNode coordinate = params.objectNode().put("column", state.path("column").asInt(-1));
+                ranges.add(SnapshotMutationSupport.columnRange(root, sheetId, coordinate));
+            }
+            return List.copyOf(ranges);
+        }
+
+        private void columnVisibility(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+            ArrayNode states = (ArrayNode) params.path("states");
+            ArrayNode hidden = SnapshotMutationSupport.array(sheet, "hiddenColumns");
+            java.util.Set<Integer> values = new java.util.TreeSet<>();
+            hidden.forEach(value -> { if (value.isIntegralNumber()) values.add(value.asInt()); });
+            for (JsonNode state : states) {
+                int column = SnapshotMutationSupport.index(root, sheetId, (ObjectNode) state, "column");
+                if (!state.path("hidden").isBoolean()) throw ServiceException.validation("columns.visibility hidden must be boolean");
+                if (state.path("hidden").asBoolean()) values.add(column); else values.remove(column);
+            }
+            hidden.removeAll(); values.forEach(hidden::add);
+        }
+
+        private void defaultColumnWidth(ObjectNode params, ObjectNode sheet) {
+            JsonNode width = params.get("widthPx");
+            if (width == null || !width.isNumber() || width.asDouble() <= 0 || !Double.isFinite(width.asDouble())) throw ServiceException.validation("widthPx must be a positive number");
+            sheet.set("defaultColumnWidthPx", width.deepCopy());
+        }
+
+        private List<RangeRef> layoutRepairRanges(ObjectNode root, ObjectNode params) {
+            JsonNode repairs = params.get("sheets");
+            if (params.path("sourceChecksum").asText().isBlank() || repairs == null || !repairs.isArray() || repairs.isEmpty()) throw ServiceException.validation("xlsx.layout.repaired requires source checksum and sheets");
+            List<RangeRef> ranges = new ArrayList<>();
+            for (JsonNode repair : repairs) {
+                String sheetId = repair.path("sheetId").asText();
+                SnapshotMutationSupport.sheet(root, sheetId);
+                ranges.add(new RangeRef(sheetId, 0, SnapshotMutationSupport.MAX_ROW, 0, SnapshotMutationSupport.MAX_COLUMN));
+            }
+            return List.copyOf(ranges);
+        }
+
+        private void layoutRepair(ObjectNode root, ObjectNode params) {
+            for (JsonNode raw : params.path("sheets")) {
+                if (!raw.isObject()) throw ServiceException.validation("XLSX layout repair sheet is invalid");
+                ObjectNode repair = (ObjectNode) raw;
+                ObjectNode target = SnapshotMutationSupport.sheet(root, repair.path("sheetId").asText());
+                for (String field : List.of("defaultRowHeightPx", "defaultColumnWidthPx")) {
+                    JsonNode value = repair.get(field);
+                    if (value == null || !value.isNumber() || value.asDouble() <= 0 || !Double.isFinite(value.asDouble())) throw ServiceException.validation(field + " is invalid");
+                    target.set(field, value.deepCopy());
+                }
+                for (String field : List.of("rowHeightsPx", "columnWidthsPx")) {
+                    JsonNode value = repair.get(field);
+                    if (value == null || !value.isObject()) throw ServiceException.validation(field + " is invalid");
+                    target.set(field, value.deepCopy());
+                }
+                JsonNode pane = repair.get("pane");
+                if (pane == null || !pane.isObject()) throw ServiceException.validation("pane is invalid");
+                target.set("pane", pane.deepCopy());
+                JsonNode fonts = repair.get("fontSizesPx");
+                if (fonts == null || !fonts.isArray()) throw ServiceException.validation("fontSizesPx is invalid");
+                for (JsonNode font : fonts) {
+                    int row = font.path("row").asInt(-1);
+                    int column = font.path("column").asInt(-1);
+                    if (row < 0 || column < 0) throw ServiceException.validation("Font repair coordinate is invalid");
+                    ObjectNode cell = SnapshotMutationSupport.cell(target, new SnapshotMutationSupport.CellCoordinate(row, column), false);
+                    if (cell == null) continue;
+                    ObjectNode style = cell.path("style").isObject() ? (ObjectNode) cell.path("style") : cell.putObject("style");
+                    JsonNode value = font.get("fontSizePx");
+                    if (value == null || value.isNull()) style.remove("fontSizePx");
+                    else if (!value.isNumber() || value.asDouble() <= 0) throw ServiceException.validation("fontSizePx is invalid");
+                    else style.set("fontSizePx", value.deepCopy());
+                    if (style.isEmpty()) cell.remove("style");
+                }
+            }
         }
 
         private void resize(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection, String coordinateName, String valueName) {

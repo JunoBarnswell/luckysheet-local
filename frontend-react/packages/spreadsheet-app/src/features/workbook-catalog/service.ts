@@ -364,10 +364,18 @@ export class WorkbookCatalogService {
     if (input.buffer.byteLength > DEFAULT_XLSX_IMPORT_MAX_BYTES) {
       throw new WorkbookCatalogError('invalid-input', `XLSX file exceeds ${DEFAULT_XLSX_IMPORT_MAX_BYTES} byte limit`);
     }
+    let compatibilityTarget = input.options?.compatibilityTarget;
+    if (!compatibilityTarget && this.canUseRemote()) {
+      try {
+        compatibilityTarget = (await this.requireRemote().getUserPreferences()).importCompatibility;
+      } catch (error) {
+        if (!isRemoteUnavailable(error) && !(error instanceof ApiRequestError && [401, 403].includes(error.status))) throw error;
+      }
+    }
     const imported = await exchangeImportXlsx({
       fileName: input.fileName,
       buffer: input.buffer,
-      options: input.options,
+      options: { ...input.options, compatibilityTarget: compatibilityTarget ?? 'B' },
       workerPort: input.workerPort,
       execution: input.execution,
     });

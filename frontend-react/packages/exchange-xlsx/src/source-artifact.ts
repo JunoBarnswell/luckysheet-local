@@ -1,10 +1,11 @@
-import type { DateSystem, XlsxSourceArtifact } from './types';
+import { XLSX_CODEC_VERSION, type CompatibilityReport, type DateSystem, type XlsxSourceArtifact } from './types';
 
 export async function createXlsxSourceArtifact(input: {
   fileName: string;
   buffer: ArrayBuffer;
   dateSystem: DateSystem;
   detectedFeatures: Iterable<string>;
+  capabilityReport: CompatibilityReport;
 }): Promise<XlsxSourceArtifact> {
   const buffer = input.buffer.slice(0);
   return {
@@ -14,13 +15,21 @@ export async function createXlsxSourceArtifact(input: {
     checksum: await sha256Hex(buffer),
     dateSystem: input.dateSystem,
     detectedFeatures: [...new Set(input.detectedFeatures)],
+    xlsxCodecVersion: XLSX_CODEC_VERSION,
+    capabilityReport: structuredClone(input.capabilityReport),
   };
 }
 
 export async function verifyXlsxSourceArtifact(artifact: XlsxSourceArtifact): Promise<void> {
   if (artifact.schema !== 'XlsxSourceArtifact') throw new Error('Invalid XLSX source artifact schema');
+  if (artifact.xlsxCodecVersion !== undefined && (!Number.isSafeInteger(artifact.xlsxCodecVersion) || artifact.xlsxCodecVersion < 1)) throw new Error('Invalid XLSX codec version');
+  if (artifact.capabilityReport !== undefined && artifact.capabilityReport.schema !== 'CompatibilityReport') throw new Error('Invalid XLSX capability report');
   const actual = await sha256Hex(artifact.buffer);
   if (actual !== artifact.checksum) throw new Error('XLSX source artifact checksum does not match its buffer');
+}
+
+export function xlsxArtifactNeedsLayoutRepair(artifact: XlsxSourceArtifact): boolean {
+  return (artifact.xlsxCodecVersion ?? 1) < XLSX_CODEC_VERSION;
 }
 
 async function sha256Hex(buffer: ArrayBuffer): Promise<string> {

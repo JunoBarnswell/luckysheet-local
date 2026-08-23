@@ -1,4 +1,5 @@
 import React, { createContext, useContext } from 'react';
+import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-xlsx';
 import {
   Box,
   Button,
@@ -70,6 +71,11 @@ export interface RibbonProps {
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
   onFreezeAtPrimary: () => void;
+  onOpenColumnWidth: () => void;
+  onAutoFitColumns: () => void;
+  onHideColumns: () => void;
+  onUnhideColumns: () => void;
+  onOpenDefaultColumnWidth: () => void;
   /** Host-owned Create PivotTable dialog entry point. */
   onCreatePivotDialog?: () => void;
   /** Host-owned selection-aware sort builder. */
@@ -243,6 +249,11 @@ export function Ribbon({
   onTogglePrintHeadings,
   onAutoSum,
   onFreezeAtPrimary,
+  onOpenColumnWidth,
+  onAutoFitColumns,
+  onHideColumns,
+  onUnhideColumns,
+  onOpenDefaultColumnWidth,
   onCreatePivotDialog,
   buildSortDescriptor,
   onCreatePivot,
@@ -506,7 +517,7 @@ export function Ribbon({
                     title={homeText(locale, 'fontOptions')}
                     aria-label={homeText(locale, 'fontOptions')}
                     disabled={disabled || !homeState.canFormat}
-                    className={isMixed('fontFamily') || isMixed('fontSize') ? 'border border-dashed border-slate-400' : undefined}
+                    className={isMixed('fontFamily') || isMixed('fontSizePx') ? 'border border-dashed border-slate-400' : undefined}
                   />
                 )}
               >
@@ -530,16 +541,16 @@ export function Ribbon({
                     </Select>
                     <Text size="xs" tone="subtle">{homeText(locale, 'fontSize')}</Text>
                     <TextInput
-                      key={`${cellStyle.fontSize ?? 'default'}-${isMixed('fontSize')}`}
+                      key={`${cellStyle.fontSizePx ?? 'default'}-${isMixed('fontSizePx')}`}
                       aria-label={homeText(locale, 'fontSize')}
                       type="number"
                       min={1}
                       max={409}
-                      defaultValue={isMixed('fontSize') ? '' : String(cellStyle.fontSize ?? 11)}
-                      placeholder={isMixed('fontSize') ? homeText(locale, 'mixed') : undefined}
+                      defaultValue={isMixed('fontSizePx') ? '' : String(Number(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11)).toFixed(2)))}
+                      placeholder={isMixed('fontSizePx') ? homeText(locale, 'mixed') : undefined}
                       onBlur={(event) => {
                         const fontSize = Number(event.target.value);
-                        if (Number.isFinite(fontSize) && fontSize >= 1 && fontSize <= 409) emitStyle({ fontSize });
+                        if (Number.isFinite(fontSize) && fontSize >= 1 && fontSize <= 409) emitStyle({ fontSizePx: pointsToPixels(fontSize) });
                       }}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
@@ -708,6 +719,20 @@ export function Ribbon({
                     <CatalogButton id="clearContents" context={catalogContext} onExecute={(result) => { close(); executeCatalogResult(result); }} className="w-full justify-start" />
                     <CatalogButton id="clearFormats" context={catalogContext} onExecute={(result) => { close(); executeCatalogResult(result); }} className="w-full justify-start" />
                     <CatalogButton id="clearAll" context={catalogContext} onExecute={(result) => { close(); executeCatalogResult(result); }} className="w-full justify-start" />
+                  </Stack>
+                )}
+              </DropdownMenu>
+              <DropdownMenu
+                disabled={disabled}
+                trigger={<Button size="sm" variant="ghost" disabled={disabled} icon="columns" title="Format">Format</Button>}
+              >
+                {({ close }) => (
+                  <Stack gap="xs" className="min-w-48 p-1">
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onOpenColumnWidth(); }}>Column Width…</Button>
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onAutoFitColumns(); }}>AutoFit Column Width</Button>
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onOpenDefaultColumnWidth(); }}>Default Column Width…</Button>
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onHideColumns(); }}>Hide Columns</Button>
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onUnhideColumns(); }}>Unhide Columns</Button>
                   </Stack>
                 )}
               </DropdownMenu>

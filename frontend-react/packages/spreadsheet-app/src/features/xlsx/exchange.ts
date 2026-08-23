@@ -44,6 +44,7 @@ export interface XlsxExchangeResult {
 export function buildXlsxImportOptions(overrides: Partial<XlsxImportOptions> = {}): XlsxImportOptions {
   return {
     compatibilityTarget: overrides.compatibilityTarget ?? DEFAULT_XLSX_COMPATIBILITY,
+    compatibilityMode: overrides.compatibilityMode,
     dateSystem: overrides.dateSystem,
     preserveMacros: overrides.preserveMacros ?? false,
   };

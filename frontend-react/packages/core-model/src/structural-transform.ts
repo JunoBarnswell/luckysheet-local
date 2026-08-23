@@ -538,11 +538,11 @@ function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, se
 
   if (rowDelta !== 0) {
     remapBoundedSet(sheet.hiddenRows, selection.startRow, selection.endRow, rowDelta);
-    remapBoundedMap(sheet.rowHeights, selection.startRow, selection.endRow, rowDelta);
+    remapBoundedMap(sheet.rowHeightsPx, selection.startRow, selection.endRow, rowDelta);
   }
   if (columnDelta !== 0) {
     remapBoundedSet(sheet.hiddenColumns, selection.startColumn, selection.endColumn, columnDelta);
-    remapBoundedMap(sheet.columnWidths, selection.startColumn, selection.endColumn, columnDelta);
+    remapBoundedMap(sheet.columnWidthsPx, selection.startColumn, selection.endColumn, columnDelta);
   }
 }
 
@@ -681,27 +681,28 @@ function shiftFilter(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
 }
 
 function shiftFreeze(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+  if (sheet.pane.kind === 'none') return;
   if (axis === 'row') {
-    if (direction === 1 && sheet.freeze.ySplit >= at) sheet.freeze.ySplit += count;
-    if (direction === -1 && sheet.freeze.ySplit > at) sheet.freeze.ySplit = Math.max(0, sheet.freeze.ySplit - count);
-    if (direction === 1 && sheet.freeze.startRow >= at) sheet.freeze.startRow += count;
-    if (direction === -1 && sheet.freeze.startRow > at) sheet.freeze.startRow = Math.max(0, sheet.freeze.startRow - count);
+    if (sheet.pane.kind === 'frozen' && direction === 1 && sheet.pane.ySplit >= at) sheet.pane.ySplit += count;
+    if (sheet.pane.kind === 'frozen' && direction === -1 && sheet.pane.ySplit > at) sheet.pane.ySplit = Math.max(0, sheet.pane.ySplit - count);
+    if (direction === 1 && sheet.pane.startRow >= at) sheet.pane.startRow += count;
+    if (direction === -1 && sheet.pane.startRow > at) sheet.pane.startRow = Math.max(0, sheet.pane.startRow - count);
     return;
   }
-  if (direction === 1 && sheet.freeze.xSplit >= at) sheet.freeze.xSplit += count;
-  if (direction === -1 && sheet.freeze.xSplit > at) sheet.freeze.xSplit = Math.max(0, sheet.freeze.xSplit - count);
-  if (direction === 1 && sheet.freeze.startColumn >= at) sheet.freeze.startColumn += count;
-  if (direction === -1 && sheet.freeze.startColumn > at) sheet.freeze.startColumn = Math.max(0, sheet.freeze.startColumn - count);
+  if (sheet.pane.kind === 'frozen' && direction === 1 && sheet.pane.xSplit >= at) sheet.pane.xSplit += count;
+  if (sheet.pane.kind === 'frozen' && direction === -1 && sheet.pane.xSplit > at) sheet.pane.xSplit = Math.max(0, sheet.pane.xSplit - count);
+  if (direction === 1 && sheet.pane.startColumn >= at) sheet.pane.startColumn += count;
+  if (direction === -1 && sheet.pane.startColumn > at) sheet.pane.startColumn = Math.max(0, sheet.pane.startColumn - count);
 }
 
 function shiftHiddenAndSizes(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   if (axis === 'row') {
     remapIndexSet(sheet.hiddenRows, at, count, direction);
-    remapSizeMap(sheet.rowHeights, at, count, direction);
+    remapSizeMap(sheet.rowHeightsPx, at, count, direction);
     return;
   }
   remapIndexSet(sheet.hiddenColumns, at, count, direction);
-  remapSizeMap(sheet.columnWidths, at, count, direction);
+  remapSizeMap(sheet.columnWidthsPx, at, count, direction);
 }
 
 function remapIndexSet(set: Set<number>, at: number, count: number, direction: 1 | -1): void {

@@ -48,7 +48,7 @@ export interface CellRenderStyle {
   background?: string;
   textColor?: string;
   fontFamily?: string;
-  fontSize?: number;
+  fontSizePx?: number;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -182,6 +182,7 @@ export interface ResizePreview {
   axis: "row" | "column";
   index: number;
   sizePx: number;
+  label?: string;
 }
 
 export interface ChromeFilterButton {

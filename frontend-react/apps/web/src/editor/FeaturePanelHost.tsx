@@ -108,6 +108,10 @@ export function FeaturePanelHost({
           onRefreshRevisions={() => { void session.refreshRevisionLog(); }}
           compatibilityReport={state.compatibilityReport}
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
+          needsLayoutRepair={state.needsLayoutRepair}
+          layoutRepairPreview={state.layoutRepairPreview}
+          onPreviewLayoutRepair={() => { void session.previewXlsxLayoutRepair(); }}
+          onApplyLayoutRepair={() => { void session.applyXlsxLayoutRepair(); }}
           tables={state.tables}
           onReadDataRows={session.readDataTable.bind(session)}
           onRemoveDataTable={session.removeDataTable.bind(session)}

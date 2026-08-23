@@ -7,7 +7,7 @@ import type {
   DataValidationRule,
   DrawingObject,
   DrawingPayload,
-  FreezeModel,
+  WorksheetPane,
   MergeSpan,
   OutlineGroup,
   PivotModel,
@@ -101,9 +101,11 @@ export interface CanvasSheetSnapshot {
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
   merges: MergeSpan[];
-  freeze: FreezeModel;
-  rowHeights: Record<number, number>;
-  columnWidths: Record<number, number>;
+  pane: WorksheetPane;
+  defaultRowHeightPx: number;
+  defaultColumnWidthPx: number;
+  rowHeightsPx: Record<number, number>;
+  columnWidthsPx: Record<number, number>;
   hiddenRows: number[];
   hiddenColumns: number[];
   outlineGroups: OutlineGroup[];
@@ -260,7 +262,7 @@ export function buildCanvasSheetSnapshot(
     for (let column = 0; column < viewColumns.length; column += 1) {
       cells.push({ value: getCell(row, column)?.value ?? '' });
     }
-    previewRows.push({ rowNumber: row + 1, cells, height: sheet.rowHeights[row] ?? 28 });
+    previewRows.push({ rowNumber: row + 1, cells, height: sheet.rowHeightsPx[row] ?? sheet.defaultRowHeightPx });
   }
 
   const pivotResults: Record<string, PivotResultTree> = {};
@@ -308,9 +310,11 @@ export function buildCanvasSheetSnapshot(
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
     merges: [...sheet.merges],
-    freeze: { ...sheet.freeze },
-    rowHeights: { ...sheet.rowHeights },
-    columnWidths: { ...sheet.columnWidths },
+    pane: { ...sheet.pane },
+    defaultRowHeightPx: sheet.defaultRowHeightPx,
+    defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+    rowHeightsPx: { ...sheet.rowHeightsPx },
+    columnWidthsPx: { ...sheet.columnWidthsPx },
     hiddenRows: [...hiddenRows].sort((a, b) => a - b),
     hiddenColumns: [...hiddenColumns].sort((a, b) => a - b),
     outlineGroups: sheet.outline ? structuredClone(sheet.outline.groups) : [],

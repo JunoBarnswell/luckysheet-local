@@ -29,7 +29,7 @@ function memoryArtifacts(databaseName: string): Map<string, XlsxArtifactRecord> 
 }
 
 function copyArtifact(artifact: XlsxSourceArtifact): XlsxSourceArtifact {
-  return { ...artifact, buffer: artifact.buffer.slice(0), detectedFeatures: [...artifact.detectedFeatures] };
+  return { ...artifact, buffer: artifact.buffer.slice(0), detectedFeatures: [...artifact.detectedFeatures], ...(artifact.capabilityReport ? { capabilityReport: structuredClone(artifact.capabilityReport) } : {}) };
 }
 
 function copyRecord(record: XlsxArtifactRecord): XlsxArtifactRecord {

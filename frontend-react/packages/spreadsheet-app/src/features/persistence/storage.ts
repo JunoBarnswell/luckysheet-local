@@ -1,4 +1,4 @@
-import type { WorkbookSnapshot } from '@react-sheets/core-model';
+import { migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { computeChecksum, verifyChecksum } from './checksum';
@@ -102,6 +102,7 @@ const DEFAULT_WORKSPACE_USER_STATE: WorkspaceUserState = {
 export function normalizeWorkspaceRecord(record: WorkspaceRecord): WorkspaceRecord {
   return {
     ...clone(record),
+    snapshot: migrateStoredWorkbookSnapshot(record.snapshot),
     metadata: {
       ...DEFAULT_WORKSPACE_METADATA,
       ...(record.metadata ?? {}),

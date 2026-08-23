@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppShell, Box, Button, DropdownMenu, Inline, Stack } from "@react-sheets/ui-system";
 import { FormulaBar } from "../components/FormulaBar";
 import { SheetTabs } from "../components/SheetTabs";
@@ -13,6 +13,8 @@ import type { EditorCommandController } from "./command-controller";
 import { RibbonHost } from "./RibbonHost";
 import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
+import { ColumnDimensionController } from './column-dimension-controller';
+import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
 
 const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
@@ -60,6 +62,16 @@ export function EditorShell({
   onSetBackstageInfo,
   onOpenPrintPreview,
 }: EditorShellProps): ReactNode {
+  const sheetRef = useRef(state.selectedSheet);
+  const selectionRef = useRef(state.selection);
+  sheetRef.current = state.selectedSheet;
+  selectionRef.current = state.selection;
+  const columnDimensions = useMemo(
+    () => new ColumnDimensionController(session, () => sheetRef.current, () => selectionRef.current),
+    [session],
+  );
+  const [columnWidthDialog, setColumnWidthDialog] = useState<{ columns: number[]; defaultMode: boolean } | null>(null);
+  useEffect(() => () => columnDimensions.cancelAutoFit(), [columnDimensions]);
   const selectedCellStyle = state.homeRibbon.style;
   const formatCellsInitial = {
     numberFormat: selectedCellStyle.numberFormat ?? "general",
@@ -138,6 +150,9 @@ export function EditorShell({
             exportXlsx={exportXlsx}
             importXlsx={importXlsx}
             commands={controller}
+            columnDimensions={columnDimensions}
+            onOpenColumnWidthDialog={(columns) => setColumnWidthDialog({ columns, defaultMode: false })}
+            onOpenDefaultColumnWidthDialog={() => setColumnWidthDialog({ columns: columnDimensions.selectedColumns(), defaultMode: true })}
           />
         )}
         saveState={state.saveState}
@@ -229,7 +244,8 @@ export function EditorShell({
                 onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
                 onSelectAll={session.selectAll.bind(session)}
                 onResizeRow={session.resizeRow.bind(session)}
-                onResizeColumn={session.resizeColumn.bind(session)}
+                columnDimensions={columnDimensions}
+                onOpenColumnWidthDialog={(columns) => setColumnWidthDialog({ columns, defaultMode: false })}
                 onFillRange={session.fillRange.bind(session)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
@@ -278,6 +294,17 @@ export function EditorShell({
         formatCellsInitial={formatCellsInitial}
         pivotSourceOptions={controller.pivotSourceOptions}
         createPivotFromDialog={controller.createPivotFromDialog}
+      />
+      <ColumnWidthDialog
+        open={columnWidthDialog !== null}
+        columnCount={columnWidthDialog?.columns.length ?? 0}
+        defaultMode={columnWidthDialog?.defaultMode}
+        initialWidthPx={columnWidthDialog?.defaultMode ? state.selectedSheet.defaultColumnWidthPx : state.selectedSheet.columnWidthsPx[columnWidthDialog?.columns[0] ?? -1] ?? state.selectedSheet.defaultColumnWidthPx}
+        onClose={() => setColumnWidthDialog(null)}
+        onApply={(excelWidth) => {
+          if (columnWidthDialog?.defaultMode) columnDimensions.setDefaultExcelWidth(excelWidth);
+          else columnDimensions.setExcelWidth(columnWidthDialog?.columns ?? [], excelWidth);
+        }}
       />
     </>
   );

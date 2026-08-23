@@ -1,11 +1,14 @@
 /** XLSX 兼容级别 */
 export type CompatibilityLevel = 'A' | 'B' | 'C';
+export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
+export const XLSX_CODEC_VERSION = 3 as const;
 
 /** Excel 日期系统 */
 export type DateSystem = '1900' | '1904';
 
 export interface XlsxImportOptions {
   compatibilityTarget: CompatibilityLevel;
+  compatibilityMode?: XlsxCompatibilityMode;
   dateSystem?: DateSystem;
   preserveMacros?: boolean;
   /** Reject packages above the parser safety limits instead of attempting to inflate them. */
@@ -58,6 +61,10 @@ export interface XlsxSourceArtifact {
   checksum: string;
   dateSystem: DateSystem;
   detectedFeatures: string[];
+  /** Missing only on records created before codec provenance was introduced. */
+  xlsxCodecVersion?: number;
+  /** Missing only on legacy source-artifact records. */
+  capabilityReport?: CompatibilityReport;
 }
 
 export type NativePivotSource =

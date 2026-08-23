@@ -4,6 +4,7 @@ import { Ribbon } from "../components/Ribbon";
 import type { RibbonTabId, UiSessionIntent, UiSnapshot, WorkbookSession } from "@react-sheets/spreadsheet-app";
 import type { Locale } from "../i18n";
 import type { EditorCommandController } from "./command-controller";
+import type { ColumnDimensionController } from './column-dimension-controller';
 
 export interface RibbonHostProps {
   state: UiSnapshot;
@@ -15,6 +16,9 @@ export interface RibbonHostProps {
   saveWorkbook: () => void;
   exportXlsx: () => void | Promise<void>;
   importXlsx: () => void;
+  columnDimensions: ColumnDimensionController;
+  onOpenColumnWidthDialog: (columns: number[]) => void;
+  onOpenDefaultColumnWidthDialog: () => void;
   commands: Pick<
     EditorCommandController,
     | "buildSortDescriptor"
@@ -43,6 +47,9 @@ export function RibbonHost({
   saveWorkbook,
   exportXlsx,
   importXlsx,
+  columnDimensions,
+  onOpenColumnWidthDialog,
+  onOpenDefaultColumnWidthDialog,
   commands,
 }: RibbonHostProps): ReactNode {
   return (
@@ -81,6 +88,11 @@ export function RibbonHost({
       onTogglePrintHeadings={() => session.togglePrintHeadings()}
       onAutoSum={() => session.autoSum()}
       onFreezeAtPrimary={() => session.freezeAtPrimary()}
+      onOpenColumnWidth={() => onOpenColumnWidthDialog(columnDimensions.selectedColumns())}
+      onAutoFitColumns={() => { void columnDimensions.autoFit(columnDimensions.selectedColumns()); }}
+      onHideColumns={() => columnDimensions.setHidden(columnDimensions.selectedColumns(), true)}
+      onUnhideColumns={() => columnDimensions.setHidden(columnDimensions.selectedColumns(), false)}
+      onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
       buildSortDescriptor={commands.buildSortDescriptor}
       onCreatePivot={() => session.buildQuickPivotDescriptor()}

@@ -70,12 +70,12 @@ function pivot(unitId: string, name = '销售数据透视表模板'): WorkbookSn
   ]);
   styleRow(workbook, 0, 6, HEADER_STYLE);
   const sheet = workbook.getSheet(workbook.primarySheetId);
-  sheet.columnWidths[0] = 110;
-  sheet.columnWidths[1] = 90;
-  sheet.columnWidths[2] = 110;
-  sheet.columnWidths[3] = 100;
-  sheet.columnWidths[4] = 80;
-  sheet.columnWidths[5] = 100;
+  sheet.columnWidthsPx[0] = 110;
+  sheet.columnWidthsPx[1] = 90;
+  sheet.columnWidthsPx[2] = 110;
+  sheet.columnWidthsPx[3] = 100;
+  sheet.columnWidthsPx[4] = 80;
+  sheet.columnWidthsPx[5] = 100;
   return workbook.snapshot();
 }
 

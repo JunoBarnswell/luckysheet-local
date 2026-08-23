@@ -1,7 +1,7 @@
 import type {
   CellData,
   CellStyle,
-  FreezeModel,
+  WorksheetPane,
   RangeRef,
   WorkbookModel,
   WorksheetModel,
@@ -632,16 +632,16 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<{ sheetId: string; preset: FreezePreset }>({
     id: 'sheet.freeze.preset',
     execute: (params, context) => {
-      const freeze: FreezeModel = { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 };
+      const pane: WorksheetPane = params.preset === 'none'
+        ? { kind: 'none' }
+        : { kind: 'frozen', xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0, state: 'frozen' };
       if (params.preset === 'firstRow' || params.preset === 'both') {
-        freeze.ySplit = 1;
-        freeze.startRow = 1;
+        if (pane.kind === 'frozen') { pane.ySplit = 1; pane.startRow = 1; }
       }
       if (params.preset === 'firstColumn' || params.preset === 'both') {
-        freeze.xSplit = 1;
-        freeze.startColumn = 1;
+        if (pane.kind === 'frozen') { pane.xSplit = 1; pane.startColumn = 1; }
       }
-      return runtime.execute('sheet.freeze.set', { sheetId: params.sheetId, freeze });
+      return runtime.execute('sheet.freeze.set', { sheetId: params.sheetId, pane });
     },
   });
 
@@ -689,53 +689,6 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
-
-  runtime.registry.registerCommand<{ sheetId: string; row?: number; column?: number; rows?: number[]; columns?: number[] }>({
-    id: 'sheet.autofit',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const affectedRanges: RangeRef[] = [];
-      const rows = params.rows ?? (params.row !== undefined ? [params.row] : []);
-      const columns = params.columns ?? (params.column !== undefined ? [params.column] : []);
-      for (const row of rows) {
-        let maxHeight = 32;
-        for (let column = 0; column < sheet.columnCount; column++) {
-          const cell = sheet.cells.get(row, column);
-          const text = cell?.displayValue ?? (cell?.value == null ? '' : String(cell.value));
-          maxHeight = Math.max(maxHeight, 16 + Math.ceil(text.length / 12) * 14);
-        }
-        const prev = sheet.rowHeights[row] ?? 32;
-        context.applyMutation({
-          id: 'row.resize',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, row, height: maxHeight },
-          affectedRanges,
-          inverse: [{ id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row, height: prev }, affectedRanges }],
-          apply: () => { sheet.rowHeights[row] = maxHeight; },
-        });
-      }
-      for (const column of columns) {
-        let maxWidth = 128;
-        sheet.cells.forEach((cell, row, col) => {
-          if (col !== column) return;
-          const text = cell.displayValue ?? (cell.value == null ? '' : String(cell.value));
-          maxWidth = Math.max(maxWidth, 24 + text.length * 8);
-        });
-        const prev = sheet.columnWidths[column] ?? 128;
-        context.applyMutation({
-          id: 'column.resize',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, column, width: maxWidth },
-          affectedRanges,
-          inverse: [{ id: 'column.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, column, width: prev }, affectedRanges }],
-          apply: () => { sheet.columnWidths[column] = maxWidth; },
-        });
-      }
-      return { operationId: context.operationId, mutationCount: rows.length + columns.length, affectedRanges };
     },
   });
 

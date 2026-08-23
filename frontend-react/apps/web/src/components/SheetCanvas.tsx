@@ -39,6 +39,7 @@ import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
 import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
+import type { ColumnDimensionController } from '../editor/column-dimension-controller';
 
 export interface SheetCanvasProps {
   sheet: CanvasSheetSnapshot;
@@ -77,7 +78,8 @@ export interface SheetCanvasProps {
   onSelectAll: () => void;
   onExtendSelection?: (row: number, column: number) => void;
   onResizeRow: (row: number, heightPx: number) => void;
-  onResizeColumn: (column: number, widthPx: number) => void;
+  columnDimensions: ColumnDimensionController;
+  onOpenColumnWidthDialog: (columns: number[]) => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
   drawingSelectionMode?: boolean;
   onExitDrawingSelectionMode?: () => void;
@@ -284,7 +286,8 @@ export function SheetCanvas({
   onSelectAll,
   onExtendSelection,
   onResizeRow,
-  onResizeColumn,
+  columnDimensions,
+  onOpenColumnWidthDialog,
   onFillRange,
   drawingSelectionMode = false,
   onExitDrawingSelectionMode,
@@ -315,6 +318,7 @@ export function SheetCanvas({
   const contextRangeRef = useRef<RangeRef | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
+  const [contextHeader, setContextHeader] = useState<'row' | 'column' | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
   const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
@@ -328,16 +332,16 @@ export function SheetCanvas({
       new SheetSkeleton({
         rowCount: Math.max(sheet.rowCount, 200),
         columnCount: Math.max(sheet.columnCount, 26),
-        defaultRowHeight: 28,
-        defaultColumnWidth: 110,
-        rowHeights: new Map(Object.entries(sheet.rowHeights).map(([key, value]) => [Number(key), value])),
-        columnWidths: new Map(Object.entries(sheet.columnWidths).map(([key, value]) => [Number(key), value])),
+        defaultRowHeight: sheet.defaultRowHeightPx,
+        defaultColumnWidth: sheet.defaultColumnWidthPx,
+        rowHeights: new Map(Object.entries(sheet.rowHeightsPx).map(([key, value]) => [Number(key), value])),
+        columnWidths: new Map(Object.entries(sheet.columnWidthsPx).map(([key, value]) => [Number(key), value])),
         hiddenRows: new Set(sheet.hiddenRows),
         hiddenColumns: new Set(sheet.hiddenColumns ?? []),
         zoom: zoomFactor,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sheet.rowCount, sheet.columnCount, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, sheet.hiddenColumns, zoomFactor],
+    [sheet.rowCount, sheet.columnCount, sheet.defaultRowHeightPx, sheet.defaultColumnWidthPx, sheet.rowHeightsPx, sheet.columnWidthsPx, sheet.hiddenRows, sheet.hiddenColumns, zoomFactor],
   );
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
@@ -472,7 +476,9 @@ export function SheetCanvas({
     onPivotContextHit,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
-    onResizeColumn,
+    onResizeColumn={(column, widthPx) => columnDimensions.resizeBoundary(column, widthPx)}
+    onAutoFitColumn={(column) => columnDimensions.autoFit(columnDimensions.columnsForBoundary(column))}
+    onAutoFitRow={(row) => columnDimensions.autoFitRows([row])}
     onResizeRow,
     onSelectAll,
     onSelectionChange,
@@ -509,11 +515,11 @@ export function SheetCanvas({
     const engine = engineRef.current;
     if (!engine) return;
     engine.setFreeze(
-      sheet.freeze.xSplit > 0 || sheet.freeze.ySplit > 0
-        ? { xSplit: sheet.freeze.xSplit, ySplit: sheet.freeze.ySplit }
+      sheet.pane.kind === 'frozen' && (sheet.pane.xSplit > 0 || sheet.pane.ySplit > 0)
+        ? { xSplit: sheet.pane.xSplit, ySplit: sheet.pane.ySplit }
         : null,
     );
-  }, [sheet.freeze.xSplit, sheet.freeze.ySplit]);
+  }, [sheet.pane]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -568,6 +574,15 @@ export function SheetCanvas({
       ];
     }
     const getContextRange = () => contextRangeRef.current ?? selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+    if (contextHeader === 'column') {
+      const columns = columnDimensions.selectedColumns();
+      return [
+        { id: 'column-width', label: 'Column Width…', onSelect: () => onOpenColumnWidthDialog(columns) },
+        { id: 'column-autofit', label: 'AutoFit Column Width', onSelect: () => { void columnDimensions.autoFit(columns); } },
+        { id: 'column-hide', label: 'Hide Columns', onSelect: () => columnDimensions.setHidden(columns, true) },
+        { id: 'column-unhide', label: 'Unhide Columns', onSelect: () => columnDimensions.setHidden(columns, false) },
+      ];
+    }
     const items: ContextMenuItem[] = [
       { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: onCut },
       { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: onCopy },
@@ -587,7 +602,7 @@ export function SheetCanvas({
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
+  }, [columnDimensions, contextHeader, contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -602,6 +617,7 @@ export function SheetCanvas({
     const local = canvasInteraction.localPointOf(event);
     const headerHit = engine.headerHitAtLocal(local);
     setContextHit(null);
+    setContextHeader(headerHit?.kind === 'col' ? 'column' : headerHit?.kind === 'row' ? 'row' : null);
     contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? null;
     if (headerHit?.kind === "corner") {
       contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, skeleton.rowCount - 1), startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) };
@@ -617,13 +633,16 @@ export function SheetCanvas({
       });
     } else if (headerHit?.kind === "col") {
       const column = headerHit.index;
-      contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, skeleton.rowCount - 1), startColumn: column, endColumn: column };
-      onSelectionChange({
-        ranges: [{ sheetId, startRow: 0, endRow: Math.max(0, skeleton.rowCount - 1), startColumn: column, endColumn: column }],
-        primaryRangeIndex: 0,
-        activeCell: { row: 0, column },
-        anchorCell: { row: 0, column },
-      });
+      const alreadySelected = selection.ranges.some((range) => range.startRow === 0 && range.endRow >= sheet.rowCount - 1 && column >= range.startColumn && column <= range.endColumn);
+      if (!alreadySelected) {
+        contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: column, endColumn: column };
+        onSelectionChange({
+          ranges: [contextRangeRef.current],
+          primaryRangeIndex: 0,
+          activeCell: { row: 0, column },
+          anchorCell: { row: 0, column },
+        });
+      }
     } else {
       const hitCell = engine.cellAtLocalPoint(local);
       if (hitCell) {
@@ -740,8 +759,8 @@ export function SheetCanvas({
           <Inline gap="xs" className="items-center">
             <Text size="xs" tone="muted">Sheet</Text>
             <Text size="xs" weight="semibold">{sheet.name}</Text>
-            {sheet.freeze.xSplit > 0 || sheet.freeze.ySplit > 0 ? (
-              <Text size="xs" tone="subtle">frozen {sheet.freeze.xSplit}x{sheet.freeze.ySplit}</Text>
+            {sheet.pane.kind !== 'none' ? (
+              <Text size="xs" tone="subtle">{sheet.pane.kind} {sheet.pane.xSplit}x{sheet.pane.ySplit}</Text>
             ) : null}
           </Inline>
           <Text size="xs" tone="subtle">{activeCell}</Text>

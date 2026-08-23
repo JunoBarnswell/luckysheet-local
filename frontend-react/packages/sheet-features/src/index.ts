@@ -5,7 +5,7 @@ import type {
   ConditionalFormatRule,
   DataValidationRule,
   FilterModel,
-  FreezeModel,
+  WorksheetPane,
   MergeSpan,
   RangeRef,
   WorkbookTableModel,
@@ -16,6 +16,7 @@ import type {
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
+import type { XlsxLayoutRepairPlan } from '@react-sheets/exchange-xlsx';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { shiftFormula } from './clipboard';
 import { buildCellFromText } from './text-input';
@@ -126,7 +127,7 @@ export interface DeleteRowParams {
 export interface ResizeRowParams {
   sheetId: string;
   row: number;
-  height: number;
+  heightPx: number;
 }
 
 export interface InsertColumnParams {
@@ -144,7 +145,7 @@ export interface DeleteColumnParams {
 export interface ResizeColumnParams {
   sheetId: string;
   column: number;
-  width: number;
+  widthPx: number;
 }
 
 export interface SetMergeParams {
@@ -159,7 +160,7 @@ export interface RemoveMergeParams {
 
 export interface SetFreezeParams {
   sheetId: string;
-  freeze: FreezeModel;
+  pane: WorksheetPane;
 }
 
 export interface SetRangeStyleParams {
@@ -206,6 +207,20 @@ function cellRange(params: SetCellValueParams): RangeRef[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isWorksheetPane(value: unknown): value is WorksheetPane {
+  if (!isRecord(value) || !['none', 'frozen', 'split'].includes(String(value.kind))) return false;
+  if (value.kind === 'none') return true;
+  return typeof value.xSplit === 'number' && Number.isFinite(value.xSplit) && value.xSplit >= 0
+    && typeof value.ySplit === 'number' && Number.isFinite(value.ySplit) && value.ySplit >= 0
+    && Number.isSafeInteger(value.startRow) && Number(value.startRow) >= 0
+    && Number.isSafeInteger(value.startColumn) && Number(value.startColumn) >= 0;
+}
+
+function isColumnVisibilityMutation(value: unknown): value is { sheetId: string; states: Array<{ column: number; hidden: boolean }> } {
+  return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.states) && value.states.length > 0
+    && value.states.every((state) => isRecord(state) && Number.isSafeInteger(state.column) && Number(state.column) >= 0 && typeof state.hidden === 'boolean');
 }
 
 function isRange(value: unknown): value is RangeRef {
@@ -433,12 +448,99 @@ function restoreCell(
   else sheet.cells.delete(row, column);
 }
 
+interface XlsxLayoutRepairMutationParams {
+  sourceChecksum: string;
+  sheets: Array<{
+    sheetId: string;
+    defaultRowHeightPx: number;
+    defaultColumnWidthPx: number;
+    rowHeightsPx: Record<number, number>;
+    columnWidthsPx: Record<number, number>;
+    pane: WorksheetPane;
+    fontSizesPx: Array<{ row: number; column: number; fontSizePx: number | null }>;
+  }>;
+}
+
+function isLayoutRepairMutation(value: unknown): value is XlsxLayoutRepairMutationParams {
+  return isRecord(value) && typeof value.sourceChecksum === 'string' && value.sourceChecksum.length > 0 && Array.isArray(value.sheets)
+    && value.sheets.every((sheet) => isRecord(sheet) && typeof sheet.sheetId === 'string'
+      && typeof sheet.defaultRowHeightPx === 'number' && sheet.defaultRowHeightPx > 0
+      && typeof sheet.defaultColumnWidthPx === 'number' && sheet.defaultColumnWidthPx > 0
+      && isRecord(sheet.rowHeightsPx) && isRecord(sheet.columnWidthsPx) && isWorksheetPane(sheet.pane)
+      && Array.isArray(sheet.fontSizesPx) && sheet.fontSizesPx.every((entry) => isRecord(entry) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0 && Number.isSafeInteger(entry.column) && Number(entry.column) >= 0 && (entry.fontSizePx === null || (typeof entry.fontSizePx === 'number' && entry.fontSizePx > 0))));
+}
+
+function applyLayoutRepair(workbook: WorkbookModel, params: XlsxLayoutRepairMutationParams): void {
+  for (const repair of params.sheets) {
+    const sheet = workbook.getSheet(repair.sheetId);
+    sheet.defaultRowHeightPx = repair.defaultRowHeightPx;
+    sheet.defaultColumnWidthPx = repair.defaultColumnWidthPx;
+    for (const key of Object.keys(sheet.rowHeightsPx)) delete sheet.rowHeightsPx[Number(key)];
+    for (const key of Object.keys(sheet.columnWidthsPx)) delete sheet.columnWidthsPx[Number(key)];
+    Object.assign(sheet.rowHeightsPx, repair.rowHeightsPx);
+    Object.assign(sheet.columnWidthsPx, repair.columnWidthsPx);
+    sheet.pane = structuredClone(repair.pane);
+    for (const entry of repair.fontSizesPx) {
+      const cell = sheet.cells.get(entry.row, entry.column);
+      if (!cell) continue;
+      const style = { ...(cell.style ?? {}) };
+      if (entry.fontSizePx === null) delete style.fontSizePx;
+      else style.fontSizePx = entry.fontSizePx;
+      sheet.cells.set(entry.row, entry.column, { ...cell, style: Object.keys(style).length ? style : undefined });
+    }
+  }
+}
+
+function inverseLayoutRepair(workbook: WorkbookModel, params: XlsxLayoutRepairMutationParams): XlsxLayoutRepairMutationParams {
+  return {
+    sourceChecksum: params.sourceChecksum,
+    sheets: params.sheets.map((repair) => {
+      const sheet = workbook.getSheet(repair.sheetId);
+      return {
+        sheetId: repair.sheetId,
+        defaultRowHeightPx: sheet.defaultRowHeightPx,
+        defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+        rowHeightsPx: { ...sheet.rowHeightsPx },
+        columnWidthsPx: { ...sheet.columnWidthsPx },
+        pane: structuredClone(sheet.pane),
+        fontSizesPx: repair.fontSizesPx.map((entry) => ({ row: entry.row, column: entry.column, fontSizePx: sheet.cells.get(entry.row, entry.column)?.style?.fontSizePx ?? null })),
+      };
+    }),
+  };
+}
+
 export function registerSheetCommands(runtime: CommandRuntime): void {
   registerEditingCommands(runtime);
   registerDataToolCommands(runtime);
   registerSheetTableCommands(runtime);
   registerOutlineCommands(runtime);
   registerHomeCommands(runtime);
+
+  runtime.registry.registerMutation<XlsxLayoutRepairMutationParams>({
+    id: 'xlsx.layout.repaired',
+    handler: (item, context) => {
+      if (!isLayoutRepairMutation(item.params)) throw new Error('Invalid xlsx.layout.repaired mutation payload');
+      applyLayoutRepair(context.workbook, item.params);
+    },
+    metadata: {
+      schema: { name: 'XlsxLayoutRepair', validate: isLayoutRepairMutation },
+      permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => params.sheets.map((sheet) => ({ sheetId: sheet.sheetId, startRow: 0, endRow: 1_048_575, startColumn: 0, endColumn: 16_383 })), mode: 'declared' },
+      inverseIds: ['xlsx.layout.repaired'],
+    },
+  });
+  runtime.registry.registerCommand<XlsxLayoutRepairPlan>({
+    id: 'workbook.xlsx.layout.repair',
+    execute: (plan, context) => {
+      const params: XlsxLayoutRepairMutationParams = { sourceChecksum: plan.sourceChecksum, sheets: structuredClone(plan.sheets) };
+      if (!isLayoutRepairMutation(params)) throw new Error('Invalid XLSX layout repair plan');
+      if (!params.sheets.length) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const inverse = inverseLayoutRepair(context.workbook, params);
+      const affectedRanges = params.sheets.map((sheet) => ({ sheetId: sheet.sheetId, startRow: 0, endRow: 1_048_575, startColumn: 0, endColumn: 16_383 }));
+      context.applyMutation({ id: 'xlsx.layout.repaired', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params, affectedRanges, inverse: [{ id: 'xlsx.layout.repaired', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: inverse, affectedRanges }], apply: () => applyLayoutRepair(context.workbook, params) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',
@@ -1223,12 +1325,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<SetFreezeParams>({
     id: 'freeze.set',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isRecord(item.params.freeze)) throw new Error('Invalid freeze.set mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isWorksheetPane(item.params.pane)) throw new Error('Invalid freeze.set mutation payload');
       const params = item.params as SetFreezeParams;
-      context.workbook.getSheet(params.sheetId).freeze = { ...params.freeze };
+      context.workbook.getSheet(params.sheetId).pane = { ...params.pane };
     },
     metadata: {
-      schema: { name: 'SetFreeze', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.freeze) && Number.isInteger(value.freeze.xSplit) && Number.isInteger(value.freeze.ySplit) },
+      schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isWorksheetPane(value.pane) },
       permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['freeze.set'],
@@ -1239,7 +1341,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.freeze.set',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const prevFreeze = { ...sheet.freeze };
+      const previousPane = { ...sheet.pane };
       const affectedRanges: RangeRef[] = [];
 
       context.applyMutation({
@@ -1253,12 +1355,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             id: 'freeze.set',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, freeze: prevFreeze },
+            params: { sheetId: params.sheetId, pane: previousPane },
             affectedRanges,
           },
         ],
         apply: () => {
-          sheet.freeze = { ...params.freeze };
+          sheet.pane = { ...params.pane };
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -1269,12 +1371,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ResizeRowParams>({
     id: 'row.resize',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.row) || typeof item.params.height !== 'number' || item.params.height <= 0) throw new Error('Invalid row.resize mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.row) || typeof item.params.heightPx !== 'number' || item.params.heightPx <= 0) throw new Error('Invalid row.resize mutation payload');
       const params = item.params as ResizeRowParams;
-      context.workbook.getSheet(params.sheetId).rowHeights[params.row] = params.height;
+      context.workbook.getSheet(params.sheetId).rowHeightsPx[params.row] = params.heightPx;
     },
     metadata: {
-      schema: { name: 'ResizeRow', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.row) && typeof value.height === 'number' && Number(value.row) >= 0 && Number(value.height) > 0 },
+      schema: { name: 'ResizeRowPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.row) && typeof value.heightPx === 'number' && Number(value.row) >= 0 && Number(value.heightPx) > 0 },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowAffectedRange, mode: 'declared' },
       inverseIds: ['row.resize'],
@@ -1283,71 +1385,77 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ResizeColumnParams>({
     id: 'column.resize',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.column) || typeof item.params.width !== 'number' || item.params.width <= 0) throw new Error('Invalid column.resize mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.column) || typeof item.params.widthPx !== 'number' || item.params.widthPx <= 0) throw new Error('Invalid column.resize mutation payload');
       const params = item.params as ResizeColumnParams;
-      context.workbook.getSheet(params.sheetId).columnWidths[params.column] = params.width;
+      context.workbook.getSheet(params.sheetId).columnWidthsPx[params.column] = params.widthPx;
     },
     metadata: {
-      schema: { name: 'ResizeColumn', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.column) && typeof value.width === 'number' && Number(value.column) >= 0 && Number(value.width) > 0 },
+      schema: { name: 'ResizeColumnPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.column) && typeof value.widthPx === 'number' && Number(value.column) >= 0 && Number(value.widthPx) > 0 },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnAffectedRange, mode: 'declared' },
       inverseIds: ['column.resize'],
     },
   });
-
-  runtime.registry.registerCommand<ResizeRowParams>({
-    id: 'sheet.row.resize',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const prevHeight = sheet.rowHeights[params.row] ?? 32;
-      const affectedRanges: RangeRef[] = [];
-      context.applyMutation({
-        id: 'row.resize',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params,
-        affectedRanges,
-        inverse: [
-          {
-            id: 'row.resize',
-            unitId: context.workbook.unitId,
-            sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, row: params.row, height: prevHeight },
-            affectedRanges,
-          },
-        ],
-        apply: () => {
-          sheet.rowHeights[params.row] = params.height;
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+  runtime.registry.registerMutation<{ sheetId: string; widthPx: number }>({
+    id: 'column.defaultWidth.resize',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || typeof item.params.widthPx !== 'number' || !Number.isFinite(item.params.widthPx) || item.params.widthPx <= 0) throw new Error('Invalid column.defaultWidth.resize mutation payload');
+      context.workbook.getSheet(item.params.sheetId).defaultColumnWidthPx = item.params.widthPx;
+    },
+    metadata: {
+      schema: { name: 'ResizeDefaultColumnWidthPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && typeof value.widthPx === 'number' && Number.isFinite(value.widthPx) && value.widthPx > 0 },
+      permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: sheetScopeRange, mode: 'declared' },
+      inverseIds: ['column.defaultWidth.resize'],
     },
   });
 
-  runtime.registry.registerCommand<ResizeColumnParams>({
-    id: 'sheet.column.resize',
+  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'>>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'>> }>({
+    id: 'sheet.dimensions.apply',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const prevWidth = sheet.columnWidths[params.column] ?? 128;
       const affectedRanges: RangeRef[] = [];
-      context.applyMutation({
-        id: 'column.resize',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params,
-        affectedRanges,
-        inverse: [
-          {
+      let mutationCount = 0;
+      for (const row of params.rows ?? []) {
+        if (!Number.isSafeInteger(row.row) || row.row < 0 || !Number.isFinite(row.heightPx) || row.heightPx <= 0) throw new Error('Invalid row pixel size');
+        const mutationParams: ResizeRowParams = { sheetId: params.sheetId, ...row };
+        const previousHeightPx = sheet.rowHeightsPx[row.row] ?? sheet.defaultRowHeightPx;
+        context.applyMutation({
+          id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: mutationParams, affectedRanges,
+          inverse: [{ id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: row.row, heightPx: previousHeightPx }, affectedRanges }],
+          apply: () => { sheet.rowHeightsPx[row.row] = row.heightPx; },
+        });
+        mutationCount += 1;
+      }
+      for (const column of params.columns ?? []) {
+        if (!Number.isSafeInteger(column.column) || column.column < 0 || !Number.isFinite(column.widthPx) || column.widthPx <= 0) throw new Error('Invalid column pixel size');
+        const mutationParams: ResizeColumnParams = { sheetId: params.sheetId, ...column };
+        const previousWidthPx = sheet.columnWidthsPx[column.column] ?? sheet.defaultColumnWidthPx;
+        context.applyMutation({
             id: 'column.resize',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, column: params.column, width: prevWidth },
+            params: mutationParams,
             affectedRanges,
-          },
-        ],
-        apply: () => {
-          sheet.columnWidths[params.column] = params.width;
-        },
+            inverse: [{ id: 'column.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, column: column.column, widthPx: previousWidthPx }, affectedRanges }],
+            apply: () => { sheet.columnWidthsPx[column.column] = column.widthPx; },
+        });
+        mutationCount += 1;
+      }
+      return { operationId: context.operationId, mutationCount, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string; widthPx: number }>({
+    id: 'sheet.column.defaultWidth.set',
+    execute: (params, context) => {
+      if (!Number.isFinite(params.widthPx) || params.widthPx <= 0) throw new Error('Default column width must be positive pixels');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previousWidthPx = sheet.defaultColumnWidthPx;
+      const affectedRanges = sheetScopeRange(params);
+      context.applyMutation({
+        id: 'column.defaultWidth.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges,
+        inverse: [{ id: 'column.defaultWidth.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, widthPx: previousWidthPx }, affectedRanges }],
+        apply: () => { sheet.defaultColumnWidthPx = params.widthPx; },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1485,6 +1593,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['row.unhidden'],
     },
   });
+  runtime.registry.registerMutation<{ sheetId: string; states: Array<{ column: number; hidden: boolean }> }>({
+    id: 'columns.visibility',
+    handler: (item, context) => {
+      if (!isColumnVisibilityMutation(item.params)) throw new Error('Invalid columns.visibility mutation payload');
+      const hiddenColumns = context.workbook.getSheet(item.params.sheetId).hiddenColumns;
+      for (const state of item.params.states) {
+        if (state.hidden) hiddenColumns.add(state.column);
+        else hiddenColumns.delete(state.column);
+      }
+    },
+    metadata: {
+      schema: { name: 'ColumnsVisibility', validate: isColumnVisibilityMutation },
+      permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => params.states.map((state) => columnAffectedRange({ sheetId: params.sheetId, column: state.column })[0]!), mode: 'declared' },
+      inverseIds: ['columns.visibility'],
+    },
+  });
   runtime.registry.registerMutation<{ sheetId: string; index: number }>({
     id: 'row.unhidden',
     handler: (item, context) => {
@@ -1600,6 +1725,24 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         affectedRanges,
         inverse: [{ id: 'row.unhidden', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
         apply: () => hiddenRows.add(params.index),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  runtime.registry.registerCommand<{ sheetId: string; columns: number[]; hidden: boolean }>({
+    id: 'sheet.columns.visibility.set',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const columns = [...new Set(params.columns)].filter((column) => Number.isSafeInteger(column) && column >= 0 && column < sheet.columnCount);
+      const changed = columns.filter((column) => sheet.hiddenColumns.has(column) !== params.hidden);
+      if (!changed.length) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const states = changed.map((column) => ({ column, hidden: params.hidden }));
+      const inverseStates = changed.map((column) => ({ column, hidden: !params.hidden }));
+      const affectedRanges = states.map((state) => columnAffectedRange({ sheetId: params.sheetId, column: state.column })[0]!);
+      context.applyMutation({
+        id: 'columns.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, states }, affectedRanges,
+        inverse: [{ id: 'columns.visibility', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, states: inverseStates }, affectedRanges }],
+        apply: () => { for (const state of states) { if (state.hidden) sheet.hiddenColumns.add(state.column); else sheet.hiddenColumns.delete(state.column); } },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

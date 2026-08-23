@@ -126,9 +126,9 @@ export const CELL_STYLE_PRESETS: readonly HomeStylePreset[] = [
   { id: 'good', name: 'Good', style: { background: '#e2f0d9', textColor: '#006100' } },
   { id: 'bad', name: 'Bad', style: { background: '#ffc7ce', textColor: '#9c0006' } },
   { id: 'neutral', name: 'Neutral', style: { background: '#ffeb9c', textColor: '#9c6500' } },
-  { id: 'title', name: 'Title', style: { bold: true, fontSize: 18, horizontalAlignment: 'center' } },
-  { id: 'heading1', name: 'Heading 1', style: { bold: true, fontSize: 14 } },
-  { id: 'heading2', name: 'Heading 2', style: { bold: true, fontSize: 12 } },
+  { id: 'title', name: 'Title', style: { bold: true, fontSizePx: 24, horizontalAlignment: 'center' } },
+  { id: 'heading1', name: 'Heading 1', style: { bold: true, fontSizePx: 18.6666666667 } },
+  { id: 'heading2', name: 'Heading 2', style: { bold: true, fontSizePx: 16 } },
   { id: 'total', name: 'Total', style: { bold: true, borders: { top: { style: 'double', color: '#334155' } } } },
 ] as const;
 

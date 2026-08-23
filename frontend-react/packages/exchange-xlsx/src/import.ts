@@ -5,6 +5,8 @@ import { detectPackageFeatures, loadXlsxPackage, parseLoadedXlsx } from './ooxml
 import { nativePivotFeatureStatus } from './native-pivot';
 import { createXlsxSourceArtifact } from './source-artifact';
 import type { XlsxImportOptions, XlsxImportResult } from './types';
+import { sanitizeImportedWorkbookName } from './ooxml-metrics';
+import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
 
 export interface XlsxImportRequest {
   fileName: string;
@@ -17,39 +19,50 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
   const bytes = request.buffer instanceof Uint8Array ? request.buffer.slice() : new Uint8Array(request.buffer);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const loaded = loadXlsxPackage(buffer, request.options.limits);
-  const parsed = parseLoadedXlsx(loaded);
+  const importedName = sanitizeImportedWorkbookName(request.fileName);
+  const parsed = parseLoadedXlsx(loaded, { workbookName: importedName });
   const snapshot = parsed.snapshot;
+  snapshot.name = importedName;
   const dateSystem = request.options.dateSystem ?? parsed.package.dateSystem ?? parseDateSystem('');
   const snapshotFeatures = scanSnapshotFeatures(snapshot);
   const packageFeatures = detectPackageFeatures(parsed.package);
-  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures])];
+  const worksheetDetections = detectWorksheetCapabilities(loaded.files, parsed.package);
+  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...worksheetDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(snapshot, parsed.package.nativePivotGraph);
-  const editableFeatures = new Set(['cells', 'formulas', 'styles', 'merges', 'freeze', 'defined-names', 'hyperlinks', 'tables']);
+  const editableFeatures = new Set(detectedFeatures.filter((feature) => capabilityFor(feature).read !== 'none' && capabilityFor(feature).write !== 'none'));
+  editableFeatures.add('defined-names');
   if (nativeStatus.pivot) editableFeatures.add('pivot');
   if (nativeStatus.slicer) editableFeatures.add('slicer');
   if (nativeStatus.timeline) editableFeatures.add('timeline');
-  const preservedFeatures = new Set(packageFeatures.filter((feature) => !editableFeatures.has(feature)));
+  const preservedFeatures = new Set(detectedFeatures.filter((feature) => !editableFeatures.has(feature) && capabilityFor(feature).preserve !== 'none'));
   for (const feature of ['slicer', 'timeline'] as const) if (snapshotFeatures.includes(feature) && !editableFeatures.has(feature)) preservedFeatures.add(feature);
   const report = createCompatibilityReport({
     fileName: request.fileName,
     importLevel: request.options.compatibilityTarget,
     exportLevel: request.options.compatibilityTarget,
     dateSystem,
-    detectedFeatures,
+    detectedFeatures: [...detectedFeatures, ...worksheetDetections],
     preservedFeatures,
     editableFeatures,
+    unsupportedFeatures: detectedFeatures.filter((feature) => !editableFeatures.has(feature) && !preservedFeatures.has(feature)),
   });
   const completedReport = refreshCompatibilitySummary({ ...report, issues: [...report.issues, ...scanFormulaPreserveIssues(snapshot)] });
+  const mode = request.options.compatibilityMode ?? (request.options.compatibilityTarget === 'A' ? 'strict' : request.options.compatibilityTarget === 'C' ? 'best-effort' : 'balanced');
+  if (mode === 'strict') {
+    const unsafe = completedReport.issues.filter((issue) => issue.status === 'unsupported');
+    if (unsafe.length) throw new Error(`Strict XLSX import rejected unsafe capabilities: ${unsafe.map((issue) => `${issue.feature}${issue.location ? ` at ${issue.location}` : ''}`).join(', ')}`);
+  }
   const sourceArtifact = await createXlsxSourceArtifact({
     fileName: request.fileName,
     buffer,
     dateSystem,
     detectedFeatures,
+    capabilityReport: completedReport,
   });
 
   return {
     payload: {
-      name: request.fileName.replace(/\.xlsx$/i, ''),
+      name: importedName,
       sheetCount: snapshot.sheets.length,
       dateSystem,
       compatibilityLevel: request.options.compatibilityTarget,

@@ -142,6 +142,7 @@ function isArrayBuffer(value: unknown): value is ArrayBuffer {
 
 function assertXlsxOptions(value: Record<string, any>, kind: 'import' | 'export'): void {
   if (value.compatibilityTarget !== 'A' && value.compatibilityTarget !== 'B' && value.compatibilityTarget !== 'C') throw new Error(`Invalid XLSX ${kind} compatibility target`);
+  if (value.compatibilityMode !== undefined && !['strict', 'balanced', 'best-effort'].includes(value.compatibilityMode)) throw new Error(`Invalid XLSX ${kind} compatibility mode`);
   if (value.dateSystem !== undefined && value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error(`Invalid XLSX ${kind} date system`);
   if (value.preserveMacros !== undefined && typeof value.preserveMacros !== 'boolean') throw new Error(`Invalid XLSX ${kind} preserveMacros flag`);
   if (kind === 'import' && value.limits !== undefined) {

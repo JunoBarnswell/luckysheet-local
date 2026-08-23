@@ -274,7 +274,7 @@ function drawCustomBorders(context: CanvasRenderingContext2D, rect: Rect, cell: 
   context.lineWidth = 1;
 }
 
-function resolveDisplayText(cell: CellRenderData): string {
+export function resolveDisplayText(cell: CellRenderData): string {
   if (cell.displayValue !== undefined) return cell.displayValue;
   if (typeof cell.value === "number") {
     return formatValue(cell.value, cell.style?.numberFormat);
@@ -284,12 +284,52 @@ function resolveDisplayText(cell: CellRenderData): string {
   return String(cell.value);
 }
 
-function fontOf(style: CellRenderData["style"], theme: RenderTheme): string {
-  const size = style?.fontSize ?? 13;
+export function cellRenderFont(style: CellRenderData["style"], theme: RenderTheme): string {
+  const size = style?.fontSizePx ?? 13;
   const family = style?.fontFamily ? '"' + style.fontFamily + '", sans-serif' : "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
   const weight = style?.bold ? "700" : "400";
   const slant = style?.italic ? " italic" : "";
   return slant + " " + weight + " " + size + "px " + family;
+}
+
+export interface AutoFitMeasurement {
+  widthPx: number;
+  heightPx: number;
+}
+
+/** The sole text geometry calculation shared by CellRenderer and dimension AutoFit. */
+export function measureCellAutoFit(
+  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  cell: CellRenderData,
+  theme: RenderTheme,
+  availableWidthPx?: number,
+  reserveFilterButton = false,
+): AutoFitMeasurement {
+  const text = resolveDisplayText(cell);
+  const style = cell.style;
+  const padding = style?.padding ?? theme.cellPadding;
+  context.save();
+  context.font = cellRenderFont(style, theme);
+  const lines = text.split(/\r?\n/);
+  const rawWidth = Math.max(0, ...lines.map((line) => context.measureText(line).width));
+  const fontSizePx = style?.fontSizePx ?? 13;
+  const lineHeight = Math.max(fontSizePx * 1.25, 16);
+  let width = rawWidth + padding * 2 + (reserveFilterButton ? 18 : 0) + (style?.borders?.left ? 1 : 0) + (style?.borders?.right ? 1 : 0);
+  let lineCount = Math.max(1, lines.length);
+  if (style?.wrapText && availableWidthPx && availableWidthPx > padding * 2) {
+    lineCount = lines.reduce((count, line) => count + Math.max(1, Math.ceil(context.measureText(line).width / Math.max(1, availableWidthPx - padding * 2))), 0);
+    width = Math.min(width, availableWidthPx);
+  }
+  let height = lineCount * lineHeight + padding * 2 + (style?.borders?.top ? 1 : 0) + (style?.borders?.bottom ? 1 : 0);
+  const rotation = Math.abs((style?.textRotate ?? 0) * Math.PI / 180);
+  if (rotation > 0) {
+    const rotatedWidth = Math.abs(Math.cos(rotation)) * width + Math.abs(Math.sin(rotation)) * height;
+    const rotatedHeight = Math.abs(Math.sin(rotation)) * width + Math.abs(Math.cos(rotation)) * height;
+    width = rotatedWidth;
+    height = rotatedHeight;
+  }
+  context.restore();
+  return { widthPx: Math.ceil(width), heightPx: Math.ceil(height) };
 }
 
 function drawCellValue(
@@ -310,7 +350,7 @@ function drawCellValue(
   const vAlign = style?.verticalAlignment ?? "middle";
 
   context.save();
-  context.font = fontOf(style, theme);
+  context.font = cellRenderFont(style, theme);
   context.fillStyle = style?.textColor ?? theme.cellText;
   context.textBaseline = "middle";
 

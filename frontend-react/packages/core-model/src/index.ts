@@ -44,7 +44,8 @@ export interface CellBorders {
 export interface CellStyle {
   textRotate?: number;
   fontFamily?: string;
-  fontSize?: number;
+  /** Font size in 96-DPI CSS pixels. OOXML point sizes are converted at the import boundary. */
+  fontSizePx?: number;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -57,6 +58,8 @@ export interface CellStyle {
   numberFormat?: string;
   borders?: CellBorders;
   padding?: number;
+  locked?: boolean;
+  formulaHidden?: boolean;
 }
 
 export interface CellComment {
@@ -84,6 +87,10 @@ export interface CellData {
   styleId?: string;
   style?: CellStyle;
   numberFormat?: string;
+  /** Canonical rich text. `value` remains the plain-text projection used by formulas and search. */
+  richText?: RichTextRun[];
+  /** OOXML formula provenance used to preserve cached values for Excel-only formula families. */
+  formulaMetadata?: FormulaMetadata;
   /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
   formulaValue?: import('./domain').FormulaValue;
   note?: import('./domain').CellNote;
@@ -91,6 +98,22 @@ export interface CellData {
   /** @deprecated prefer hyperlinkDetail */
   hyperlink?: string;
   hyperlinkDetail?: CellHyperlink;
+}
+
+export interface RichTextRun {
+  text: string;
+  style?: Pick<CellStyle, 'fontFamily' | 'fontSizePx' | 'bold' | 'italic' | 'underline' | 'strikethrough' | 'textColor'>;
+  /** Names of OOXML run properties retained by the source package but not editable in the canonical model. */
+  preservedProperties?: string[];
+}
+
+export interface FormulaMetadata {
+  kind: 'normal' | 'shared' | 'array' | 'dataTable';
+  sharedIndex?: number;
+  range?: string;
+  preservedOnly?: boolean;
+  reason?: string;
+  sourceFormula?: string;
 }
 
 export interface RangeRef {
@@ -106,12 +129,26 @@ export interface MergeSpan {
   anchor: { row: Row; column: Column };
 }
 
-export interface FreezeModel {
-  xSplit: number;
-  ySplit: number;
-  startRow: Row;
-  startColumn: Column;
-}
+export type WorksheetPane =
+  | { kind: 'none' }
+  | {
+      kind: 'frozen';
+      xSplit: number;
+      ySplit: number;
+      startRow: Row;
+      startColumn: Column;
+      activePane?: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
+      state?: 'frozen' | 'frozenSplit';
+    }
+  | {
+      kind: 'split';
+      /** Native OOXML split positions. They are not row/column counts. */
+      xSplit: number;
+      ySplit: number;
+      startRow: Row;
+      startColumn: Column;
+      activePane?: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
+    };
 
 export type {
   SelectionSnapshot,
@@ -166,6 +203,7 @@ export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } fro
 export {
   loadWorkbookFromSnapshot,
   createWorkbookSnapshot,
+  migrateStoredWorkbookSnapshot,
   type WorkbookSnapshot,
 } from './snapshot';
 export {
@@ -448,12 +486,14 @@ export class WorksheetModel {
   hidden = false;
   filter?: FilterModel;
   bandedRule?: BandedRule;
-  readonly rowHeights: Record<number, number> = {};
-  readonly columnWidths: Record<number, number> = {};
+  defaultRowHeightPx = 20;
+  defaultColumnWidthPx = 64;
+  readonly rowHeightsPx: Record<number, number> = {};
+  readonly columnWidthsPx: Record<number, number> = {};
   readonly hiddenRows = new Set<number>();
   readonly hiddenColumns = new Set<number>();
   tabColor?: string;
-  freeze: FreezeModel = { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 };
+  pane: WorksheetPane = { kind: 'none' };
 
   /** 深拷贝当前工作表(删除工作表撤销恢复用) */
   cloneSheet(): WorksheetModel {
@@ -471,8 +511,10 @@ export class WorksheetModel {
     copy.dataValidations.push(...structuredClone(this.dataValidations));
     copy.filter = this.filter ? structuredClone(this.filter) : undefined;
     copy.bandedRule = this.bandedRule ? structuredClone(this.bandedRule) : undefined;
-    Object.assign(copy.rowHeights, this.rowHeights);
-    Object.assign(copy.columnWidths, this.columnWidths);
+    copy.defaultRowHeightPx = this.defaultRowHeightPx;
+    copy.defaultColumnWidthPx = this.defaultColumnWidthPx;
+    Object.assign(copy.rowHeightsPx, this.rowHeightsPx);
+    Object.assign(copy.columnWidthsPx, this.columnWidthsPx);
     for (const row of this.hiddenRows) copy.hiddenRows.add(row);
     for (const column of this.hiddenColumns) copy.hiddenColumns.add(column);
     copy.sheetTables.push(...structuredClone(this.sheetTables));
@@ -490,7 +532,7 @@ export class WorksheetModel {
     copy.zoom = this.zoom;
     copy.hidden = this.hidden;
     copy.tabColor = this.tabColor;
-    copy.freeze = { ...this.freeze };
+    copy.pane = { ...this.pane };
     return copy;
   }
 
@@ -537,7 +579,7 @@ export interface SheetSnapshot {
   cells: Record<string, Record<string, CellData>>;
   dataRegions?: SheetDataRegion[];
   merges: MergeSpan[];
-  freeze: FreezeModel;
+  pane: WorksheetPane;
   pivots: PivotModel[];
   sparklines: SparklineModel[];
   sparklineGroups?: SparklineGroup[];
@@ -549,8 +591,10 @@ export interface SheetSnapshot {
   commentThreads?: CommentThread[];
   conditionalFormats?: ConditionalFormatRule[];
   dataValidations?: DataValidationRule[];
-  rowHeights?: Record<number, number>;
-  columnWidths?: Record<number, number>;
+  defaultRowHeightPx: number;
+  defaultColumnWidthPx: number;
+  rowHeightsPx?: Record<number, number>;
+  columnWidthsPx?: Record<number, number>;
   hiddenRows?: number[];
   hiddenColumns?: number[];
   tabColor?: string;
@@ -845,7 +889,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 2,
+      version: 3,
       unitId: this.unitId,
       name: this.name,
       // Keep the legacy formula-map field as a derived wire projection for
@@ -864,13 +908,15 @@ export class WorkbookModel {
         cells: sheet.cells.toJSON(),
         dataRegions: structuredClone(sheet.dataRegions),
         merges: structuredClone(sheet.merges),
-        freeze: { ...sheet.freeze },
+        pane: { ...sheet.pane },
         pivots: structuredClone(sheet.pivots),
         sparklines: structuredClone(sheet.sparklines),
         conditionalFormats: structuredClone(sheet.conditionalFormats),
         dataValidations: structuredClone(sheet.dataValidations),
-        rowHeights: { ...sheet.rowHeights },
-        columnWidths: { ...sheet.columnWidths },
+        defaultRowHeightPx: sheet.defaultRowHeightPx,
+        defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+        rowHeightsPx: { ...sheet.rowHeightsPx },
+        columnWidthsPx: { ...sheet.columnWidthsPx },
         hiddenRows: [...sheet.hiddenRows],
         hiddenColumns: [...sheet.hiddenColumns],
         tabColor: sheet.tabColor,
@@ -902,7 +948,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 2) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 3) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
@@ -931,7 +977,7 @@ export class WorkbookModel {
       });
       if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
-      sheet.freeze = { ...input.freeze };
+      sheet.pane = { ...input.pane };
       sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
       sheet.sparklines.push(...structuredClone(input.sparklines));
       if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
@@ -948,8 +994,10 @@ export class WorkbookModel {
       if (input.commentThreads) sheet.commentThreads.push(...structuredClone(input.commentThreads));
       if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
       if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
-      if (input.rowHeights) Object.assign(sheet.rowHeights, input.rowHeights);
-      if (input.columnWidths) Object.assign(sheet.columnWidths, input.columnWidths);
+      sheet.defaultRowHeightPx = input.defaultRowHeightPx;
+      sheet.defaultColumnWidthPx = input.defaultColumnWidthPx;
+      if (input.rowHeightsPx) Object.assign(sheet.rowHeightsPx, input.rowHeightsPx);
+      if (input.columnWidthsPx) Object.assign(sheet.columnWidthsPx, input.columnWidthsPx);
       if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
       if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
       if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);

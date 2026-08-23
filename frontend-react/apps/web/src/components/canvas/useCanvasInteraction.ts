@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef } from "react";
+import { pixelsToExcelColumnWidth } from '@react-sheets/exchange-xlsx';
 import {
   CanvasRenderEngine,
   type ChromeState,
@@ -109,6 +110,8 @@ export interface CanvasInteractionOptions {
   onExtendSelection?: (row: number, column: number) => void;
   onResizeRow: (row: number, heightPx: number) => void;
   onResizeColumn: (column: number, widthPx: number) => void;
+  onAutoFitColumn: (column: number) => void | Promise<void>;
+  onAutoFitRow: (row: number) => void | Promise<void>;
   onFillRange: (target: CanvasFillPreview) => void;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: "replace" | "add" | "toggle") => void;
@@ -243,6 +246,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onPivotResolve,
     onPivotShowDetails,
     onResizeColumn,
+    onAutoFitColumn,
+    onAutoFitRow,
     onResizeRow,
     onSelectAll,
     onSelectionChange,
@@ -595,7 +600,11 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const content = engine.localToContent(local);
       const boundary = drag.kind === "col-resize" ? skeleton.getColumnLeft(drag.resizeIndex) : skeleton.getRowTop(drag.resizeIndex);
       const size = Math.max(24, (drag.kind === "col-resize" ? content.x : content.y) - boundary);
-      engine.setChrome({ ...chromeState, resizePreview: { axis: drag.kind === "col-resize" ? "column" : "row", index: drag.resizeIndex, sizePx: size } });
+      const modelSizePx = Math.round(size / (zoom / 100));
+      const label = drag.kind === 'col-resize'
+        ? `${pixelsToExcelColumnWidth(modelSizePx).toFixed(2)} chars (${modelSizePx}px)`
+        : `${modelSizePx}px`;
+      engine.setChrome({ ...chromeState, resizePreview: { axis: drag.kind === "col-resize" ? "column" : "row", index: drag.resizeIndex, sizePx: size, label } });
       return;
     }
     if (drag.kind === "floating-move" && drag.floating) {
@@ -653,7 +662,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const range = expandRangeForMerges(sheet, baseRange);
     const nextSelection: SelectionState = { ranges: [range], activeCell: { row: cell.row, column: cell.column }, primaryRangeIndex: 0, anchorCell: { row: drag.anchorRow, column: drag.anchorColumn } };
     queueTransientSelection(drag.additive ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, activeCell: nextSelection.activeCell, anchorCell: nextSelection.anchorCell } : nextSelection);
-  }, [chromeState, containerRef, engineRef, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll]);
+  }, [chromeState, containerRef, engineRef, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent) => {
     const drag = dragRef.current;
@@ -720,17 +729,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onPivotContextHit?.(null);
     const headerHit = engine.headerHitAtLocal(local);
     if (headerHit?.resizeBoundaryPx !== undefined) {
-      const column = headerHit.index;
-      let maxWidth = 60;
-      const context = engine.getCanvas("content")?.getContext("2d");
-      if (context) {
-        context.font = "13px Segoe UI, sans-serif";
-        for (let row = 0; row < Math.min(sheet.rowCount, 200); row += 1) {
-          const cell = sheet.getCell(row, column);
-          if (cell?.value) maxWidth = Math.max(maxWidth, context.measureText(cell.value).width + 16);
-        }
-      }
-      onResizeColumn(column, Math.round(maxWidth / (zoom / 100)));
+      if (headerHit.kind === 'col') void onAutoFitColumn(headerHit.index);
+      else void onAutoFitRow(headerHit.index);
       return;
     }
     const hitCell = engine.cellAtLocalPoint(local);
@@ -751,7 +751,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     onBeginEdit();
-  }, [engineRef, findPivotProjectionCell, getValidationList, isPivotValueCell, localPointOf, onBeginEdit, onPivotContextHit, onPivotResolve, onPivotShowDetails, onResizeColumn, setValidationDropdown, sheet, zoom]);
+  }, [engineRef, findPivotProjectionCell, getValidationList, isPivotValueCell, localPointOf, onAutoFitColumn, onAutoFitRow, onBeginEdit, onPivotContextHit, onPivotResolve, onPivotShowDetails, setValidationDropdown, sheet]);
 
   const handleWheel = useCallback((event: React.WheelEvent) => {
     const engine = engineRef.current;

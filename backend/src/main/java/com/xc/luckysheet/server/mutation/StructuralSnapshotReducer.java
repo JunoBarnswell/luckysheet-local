@@ -349,10 +349,12 @@ final class StructuralSnapshotReducer {
     }
 
     private static void shiftFreeze(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        ObjectNode freeze = SnapshotMutationSupport.requiredObject(sheet, "freeze");
+        ObjectNode freeze = SnapshotMutationSupport.requiredObject(sheet, "pane");
+        if ("none".equals(freeze.path("kind").asText())) return;
         String split = axis == FormulaReferenceTransformer.Axis.ROW ? "ySplit" : "xSplit";
         String start = axis == FormulaReferenceTransformer.Axis.ROW ? "startRow" : "startColumn";
-        for (String key : List.of(split, start)) {
+        List<String> keys = "frozen".equals(freeze.path("kind").asText()) ? List.of(split, start) : List.of(start);
+        for (String key : keys) {
             int value = freeze.path(key).asInt(0);
             if (direction == FormulaReferenceTransformer.Direction.INSERT && value >= at) freeze.put(key, value + count);
             if (direction == FormulaReferenceTransformer.Direction.DELETE && value > at) freeze.put(key, Math.max(0, value - count));
@@ -361,7 +363,7 @@ final class StructuralSnapshotReducer {
 
     private static void shiftHiddenAndSizes(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
         String hidden = axis == FormulaReferenceTransformer.Axis.ROW ? "hiddenRows" : "hiddenColumns";
-        String sizes = axis == FormulaReferenceTransformer.Axis.ROW ? "rowHeights" : "columnWidths";
+        String sizes = axis == FormulaReferenceTransformer.Axis.ROW ? "rowHeightsPx" : "columnWidthsPx";
         ArrayNode remapped = JsonNodeFactory.instance.arrayNode();
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, hidden)) {
             if (!raw.isIntegralNumber()) throw ServiceException.validation(hidden + " contains invalid index");
@@ -688,10 +690,10 @@ final class StructuralSnapshotReducer {
         }
         moveBoundedNotesAndComments(sheet, selection, rowDelta, columnDelta);
         if (rowDelta != 0) {
-            remapBoundedIndices(sheet, "hiddenRows", "rowHeights", selection.startRow(), selection.endRow(), rowDelta);
+            remapBoundedIndices(sheet, "hiddenRows", "rowHeightsPx", selection.startRow(), selection.endRow(), rowDelta);
         }
         if (columnDelta != 0) {
-            remapBoundedIndices(sheet, "hiddenColumns", "columnWidths", selection.startColumn(), selection.endColumn(), columnDelta);
+            remapBoundedIndices(sheet, "hiddenColumns", "columnWidthsPx", selection.startColumn(), selection.endColumn(), columnDelta);
         }
     }
 

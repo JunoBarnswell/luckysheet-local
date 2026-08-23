@@ -65,7 +65,7 @@ export type HomeSelectionValue<T> =
 export type HomeStyleKey = keyof Pick<
   CellStyle,
   | 'fontFamily'
-  | 'fontSize'
+  | 'fontSizePx'
   | 'bold'
   | 'italic'
   | 'underline'

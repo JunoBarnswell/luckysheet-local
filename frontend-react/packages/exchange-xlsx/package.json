@@ -5,6 +5,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@react-sheets/core-model": "file:../core-model",
+    "@react-sheets/formula-engine": "file:../formula-engine",
     "fflate": "^0.8.2"
   }
 }

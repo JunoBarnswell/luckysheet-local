@@ -2,6 +2,7 @@ package com.xc.luckysheet.server.contract;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.service.ServiceException;
 
 /**
@@ -53,7 +54,68 @@ public final class WorkbookSnapshotValidator {
                     || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()) {
                 throw ServiceException.validation("Workbook snapshot sheet grid is invalid");
             }
+            if (!sheet.path("defaultRowHeightPx").isNumber() || sheet.path("defaultRowHeightPx").asDouble() <= 0
+                    || !sheet.path("defaultColumnWidthPx").isNumber() || sheet.path("defaultColumnWidthPx").asDouble() <= 0
+                    || !sheet.path("pane").isObject()
+                    || !("none".equals(sheet.path("pane").path("kind").asText())
+                    || "frozen".equals(sheet.path("pane").path("kind").asText())
+                    || "split".equals(sheet.path("pane").path("kind").asText()))) {
+                throw ServiceException.validation("Workbook snapshot sheet pixel geometry is invalid");
+            }
         }
         return snapshot;
+    }
+
+    /** One-way migration used only when reading persisted v2 checkpoints. */
+    public static ObjectNode migrateStored(JsonNode value, String expectedUnitId) {
+        if (value == null || !value.isObject()) throw ServiceException.validation("Stored workbook snapshot must be an object");
+        ObjectNode snapshot = ((ObjectNode) value).deepCopy();
+        if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
+            return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) != 2 || !snapshot.path("sheets").isArray()) {
+            throw ServiceException.validation("Stored workbook snapshot version is invalid");
+        }
+        snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+        for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
+            if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
+            ObjectNode sheet = (ObjectNode) raw;
+            sheet.put("defaultRowHeightPx", positiveOr(sheet.get("defaultRowHeight"), 28));
+            sheet.put("defaultColumnWidthPx", positiveOr(sheet.get("defaultColumnWidth"), 110));
+            sheet.set("rowHeightsPx", copyObjectOrEmpty(sheet.get("rowHeights")));
+            sheet.set("columnWidthsPx", copyObjectOrEmpty(sheet.get("columnWidths")));
+            JsonNode freeze = sheet.get("freeze");
+            int xSplit = freeze == null ? 0 : freeze.path("xSplit").asInt(0);
+            int ySplit = freeze == null ? 0 : freeze.path("ySplit").asInt(0);
+            ObjectNode pane = sheet.putObject("pane");
+            if (xSplit > 0 || ySplit > 0) {
+                pane.put("kind", "frozen").put("xSplit", xSplit).put("ySplit", ySplit)
+                        .put("startRow", freeze.path("startRow").asInt(ySplit))
+                        .put("startColumn", freeze.path("startColumn").asInt(xSplit)).put("state", "frozen");
+            } else pane.put("kind", "none");
+            migrateFontSizes(sheet);
+            sheet.remove(java.util.List.of("defaultRowHeight", "defaultColumnWidth", "rowHeights", "columnWidths", "freeze"));
+        }
+        return requireCanonical(snapshot, expectedUnitId);
+    }
+
+    private static double positiveOr(JsonNode value, double fallback) {
+        return value != null && value.isNumber() && value.asDouble() > 0 ? value.asDouble() : fallback;
+    }
+
+    private static ObjectNode copyObjectOrEmpty(JsonNode value) {
+        return value != null && value.isObject() ? ((ObjectNode) value).deepCopy() : com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+    }
+
+    private static void migrateFontSizes(JsonNode value) {
+        if (value == null) return;
+        if (value.isArray()) value.forEach(WorkbookSnapshotValidator::migrateFontSizes);
+        if (!value.isObject()) return;
+        ObjectNode object = (ObjectNode) value;
+        if (object.path("fontSize").isNumber() && !object.has("fontSizePx")) object.set("fontSizePx", object.get("fontSize"));
+        object.remove("fontSize");
+        java.util.List<JsonNode> children = new java.util.ArrayList<>();
+        object.elements().forEachRemaining(children::add);
+        children.forEach(WorkbookSnapshotValidator::migrateFontSizes);
     }
 }

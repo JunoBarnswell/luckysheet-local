@@ -138,7 +138,7 @@ function averageRowHeight(sheet: WorksheetModel, range: RangeRef): number {
   let total = 0;
   let count = 0;
   for (let row = range.startRow; row <= range.endRow; row += 1) {
-    total += sheet.rowHeights[row] ?? 28;
+    total += sheet.rowHeightsPx[row] ?? sheet.defaultRowHeightPx;
     count += 1;
   }
   return count > 0 ? total / count : 28;
@@ -148,7 +148,7 @@ function averageColumnWidth(sheet: WorksheetModel, range: RangeRef): number {
   let total = 0;
   let count = 0;
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-    total += sheet.columnWidths[column] ?? 80;
+    total += sheet.columnWidthsPx[column] ?? sheet.defaultColumnWidthPx;
     count += 1;
   }
   return count > 0 ? total / count : 80;
@@ -213,8 +213,8 @@ export function buildPrintSnapshot(
   const storedArea = document.printAreas.find((area) => area.sheetId === activeSheetId)?.range;
   const printArea = selectionRange ? resolvePrintArea(sheet, selectionRange) : storedArea ?? resolvePrintArea(sheet);
   const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, document);
-  model.rowHeights = { ...sheet.rowHeights };
-  model.columnWidths = { ...sheet.columnWidths };
+  model.rowHeights = { ...sheet.rowHeightsPx };
+  model.columnWidths = { ...sheet.columnWidthsPx };
   model.hiddenRows = new Set(sheet.hiddenRows);
   model.hiddenColumns = new Set(sheet.hiddenColumns);
   const rowHeight = averageRowHeight(sheet, printArea);

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { CellBorders, CellStyle } from '@react-sheets/core-model';
+import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-xlsx';
 import { Box, Button, CheckToggle, ColorPicker, Dialog, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
@@ -195,8 +196,8 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
                     <TextInput
                       aria-label={homeText(activeLocale, 'fontSize')}
                       type="number"
-                      value={String(style.fontSize ?? 11)}
-                      onChange={(event) => setStyle({ fontSize: Math.max(8, Number(event.target.value) || 11) })}
+                      value={String(Number(pixelsToPoints(style.fontSizePx ?? pointsToPixels(11)).toFixed(2)))}
+                      onChange={(event) => setStyle({ fontSizePx: pointsToPixels(Math.max(1, Number(event.target.value) || 11)) })}
                     />
                   </Stack>
                   <Inline gap="sm" className="flex-wrap">

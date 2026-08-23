@@ -30,7 +30,7 @@ import type {
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
-import type { XlsxPackage, XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
+import type { XlsxLayoutRepairPlan, XlsxPackage, XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import { computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
@@ -231,6 +231,8 @@ export interface UiSnapshot {
   hasPendingOperations: boolean;
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
+  needsLayoutRepair: boolean;
+  layoutRepairPreview: XlsxLayoutRepairPlan | null;
   tables: readonly WorkbookTableModel[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
@@ -264,7 +266,7 @@ export interface UiSnapshot {
 
 const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'fontFamily',
-  'fontSize',
+  'fontSizePx',
   'bold',
   'italic',
   'underline',
@@ -358,6 +360,8 @@ export class WorkbookSession {
   private hasPendingOperations = false;
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
+  private needsLayoutRepair = false;
+  private layoutRepairPreview: XlsxLayoutRepairPlan | null = null;
   /** Runtime package plus local-only original ZIP context for honest export. */
   private xlsxPackage: XlsxPackage | undefined;
   private xlsxSourceArtifact: XlsxSourceArtifact | undefined;
@@ -519,7 +523,12 @@ export class WorkbookSession {
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
       const artifact = await this.runtime.workspacePersistence.xlsxArtifacts.load(this.runtime.model.unitId);
-      if (!this.disposed && generation === this.lifecycleGeneration && artifact) this.xlsxSourceArtifact = artifact;
+      if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
+        this.xlsxSourceArtifact = artifact;
+        const { xlsxArtifactNeedsLayoutRepair } = await import('@react-sheets/exchange-xlsx');
+        this.needsLayoutRepair = xlsxArtifactNeedsLayoutRepair(artifact);
+        if (this.needsLayoutRepair) this.notify('This XLSX was imported with an older geometry codec. Preview layout repair before applying changes.');
+      }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
     }).catch((error: unknown) => {
       if (!this.disposed && generation === this.lifecycleGeneration) this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
@@ -726,6 +735,8 @@ export class WorkbookSession {
       hasPendingOperations: this.hasPendingOperations,
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
+      needsLayoutRepair: this.needsLayoutRepair,
+      layoutRepairPreview: this.layoutRepairPreview,
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
       dataSources: [...this.runtime.model.dataSources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
@@ -1694,11 +1705,13 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     this.runCommand('sheet.freeze.set', {
       sheetId: this.activeSheetId,
-      freeze: {
+      pane: {
+        kind: 'frozen',
         xSplit: sel.activeCell.column,
         ySplit: sel.activeCell.row,
         startRow: sel.activeCell.row,
         startColumn: sel.activeCell.column,
+        state: 'frozen',
       },
     });
     this.refresh();
@@ -2838,10 +2851,35 @@ export class WorkbookSession {
     }
   }
   resizeRow(row: number, heightPx: number): void {
-    this.runCommand('sheet.row.resize', { sheetId: this.activeSheetId, row, height: Math.max(18, heightPx) });
+    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [{ row, heightPx: Math.max(1, heightPx) }] });
   }
   resizeColumn(column: number, widthPx: number): void {
-    this.runCommand('sheet.column.resize', { sheetId: this.activeSheetId, column, width: Math.max(24, widthPx) });
+    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: [{ column, widthPx: Math.max(1, widthPx) }] });
+  }
+  resizeColumns(columns: readonly number[], widthPx: number): void {
+    const unique = [...new Set(columns)].filter((column) => Number.isSafeInteger(column) && column >= 0);
+    if (!unique.length) return;
+    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: unique.map((column) => ({ column, widthPx: Math.max(1, widthPx) })) });
+  }
+  applyColumnWidths(entries: readonly { column: number; widthPx: number }[]): void {
+    const unique = new Map<number, number>();
+    for (const entry of entries) if (Number.isSafeInteger(entry.column) && entry.column >= 0 && Number.isFinite(entry.widthPx) && entry.widthPx > 0) unique.set(entry.column, entry.widthPx);
+    if (!unique.size) return;
+    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, columns: [...unique].map(([column, widthPx]) => ({ column, widthPx })) });
+  }
+  applyRowHeights(entries: readonly { row: number; heightPx: number }[]): void {
+    const unique = new Map<number, number>();
+    for (const entry of entries) if (Number.isSafeInteger(entry.row) && entry.row >= 0 && Number.isFinite(entry.heightPx) && entry.heightPx > 0) unique.set(entry.row, entry.heightPx);
+    if (!unique.size) return;
+    this.runCommand('sheet.dimensions.apply', { sheetId: this.activeSheetId, rows: [...unique].map(([row, heightPx]) => ({ row, heightPx })) });
+  }
+  setColumnsHidden(columns: readonly number[], hidden: boolean): void {
+    const unique = [...new Set(columns)].filter((column) => Number.isSafeInteger(column) && column >= 0);
+    if (!unique.length) return;
+    this.runCommand('sheet.columns.visibility.set', { sheetId: this.activeSheetId, columns: unique, hidden });
+  }
+  setDefaultColumnWidth(widthPx: number): void {
+    this.runCommand('sheet.column.defaultWidth.set', { sheetId: this.activeSheetId, widthPx: Math.max(1, widthPx) });
   }
   fillRange(targetRange: { startRow: number; endRow: number; startColumn: number; endColumn: number }): void {
     const sel = this.selectionService.getState();
@@ -3473,6 +3511,58 @@ export class WorkbookSession {
       this.notify(error instanceof Error ? error.message : 'XLSX export failed');
       return null;
     }
+  }
+
+  async previewXlsxLayoutRepair(): Promise<XlsxLayoutRepairPlan | null> {
+    if (!this.xlsxSourceArtifact) {
+      this.notify('The original XLSX is not available. Re-import the source file to repair layout safely.');
+      return null;
+    }
+    try {
+      const { createXlsxLayoutRepairPlan } = await import('@react-sheets/exchange-xlsx');
+      const plan = await createXlsxLayoutRepairPlan(this.runtime.model.snapshot(), this.xlsxSourceArtifact);
+      this.layoutRepairPreview = plan;
+      this.compatibilityReport = plan.report;
+      this.notify(`Layout repair preview: ${plan.summary.columns} columns, ${plan.summary.rows} rows, ${plan.summary.fonts} fonts, ${plan.summary.panes} panes.`);
+      this.refresh();
+      return plan;
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Unable to preview XLSX layout repair');
+      return null;
+    }
+  }
+
+  async applyXlsxLayoutRepair(): Promise<boolean> {
+    const plan = this.layoutRepairPreview;
+    const artifact = this.xlsxSourceArtifact;
+    if (!plan || !artifact) {
+      this.notify('Preview the XLSX layout repair before applying it.');
+      return false;
+    }
+    if (plan.sourceChecksum !== artifact.checksum) {
+      this.notify('The source XLSX changed after the preview. Generate a new repair preview.');
+      return false;
+    }
+    try {
+      this.runCommand('workbook.xlsx.layout.repair', plan);
+      const { createXlsxSourceArtifact } = await import('@react-sheets/exchange-xlsx');
+      const upgraded = await createXlsxSourceArtifact({ fileName: artifact.fileName, buffer: artifact.buffer, dateSystem: artifact.dateSystem, detectedFeatures: artifact.detectedFeatures, capabilityReport: plan.report });
+      await this.runtime.workspacePersistence.xlsxArtifacts.save(this.runtime.model.unitId, upgraded);
+      this.xlsxSourceArtifact = upgraded;
+      this.needsLayoutRepair = false;
+      this.layoutRepairPreview = null;
+      this.notify('XLSX layout repair applied without changing cell values or formulas.');
+      this.refresh();
+      return true;
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'XLSX layout repair failed');
+      return false;
+    }
+  }
+
+  clearXlsxLayoutRepairPreview(): void {
+    this.layoutRepairPreview = null;
+    this.refresh();
   }
 
   clearCompatibilityReport(): void {

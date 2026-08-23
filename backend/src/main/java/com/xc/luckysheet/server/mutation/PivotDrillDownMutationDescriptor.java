@@ -178,11 +178,13 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
         sheet.put("columnCount", 26);
         sheet.set("cells", JsonNodeFactory.instance.objectNode());
         sheet.set("merges", JsonNodeFactory.instance.arrayNode());
-        sheet.putObject("freeze").put("xSplit", 0).put("ySplit", 0).put("startRow", 0).put("startColumn", 0);
+        sheet.putObject("pane").put("kind", "none");
+        sheet.put("defaultRowHeightPx", 20);
+        sheet.put("defaultColumnWidthPx", 64);
         for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "notes", "commentThreads", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) sheet.set(property, JsonNodeFactory.instance.arrayNode());
         sheet.set("drawingPayloads", JsonNodeFactory.instance.objectNode());
-        sheet.set("rowHeights", JsonNodeFactory.instance.objectNode());
-        sheet.set("columnWidths", JsonNodeFactory.instance.objectNode());
+        sheet.set("rowHeightsPx", JsonNodeFactory.instance.objectNode());
+        sheet.set("columnWidthsPx", JsonNodeFactory.instance.objectNode());
         sheet.put("showGridlines", true);
         sheet.put("showHeaders", true);
         sheet.put("zoom", 100);

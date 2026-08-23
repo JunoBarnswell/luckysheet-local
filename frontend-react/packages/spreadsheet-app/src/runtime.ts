@@ -238,7 +238,8 @@ function synchronizeManualCellMutation(engine: FormulaEngine, workbook: Workbook
         const cell = sheet.cells.get(row, column);
         const address = { sheetId: sheet.id, row, column };
         if (!cell || (cell.formula === undefined && cell.value == null)) engine.clearCell(address);
-        else if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
+        else if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
+        else if (cell.value != null) engine.setValue(address, cell.value as never);
         else engine.setValue(address, cell.value as never);
       }
     }
@@ -261,7 +262,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
-      if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
+      if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
       else if (cell.value != null) engine.setValue(address, cell.value as never);
     });
   }

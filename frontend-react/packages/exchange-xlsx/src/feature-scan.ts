@@ -24,7 +24,8 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
       }
     }
     if (sheet.merges.length > 0) features.add('merges');
-    if (sheet.freeze?.xSplit || sheet.freeze?.ySplit) features.add('freeze');
+    if (sheet.pane?.kind === 'frozen') features.add('freeze');
+    if (sheet.pane?.kind === 'split') features.add('split');
     if (sheet.pivots.length > 0) features.add('pivot');
     // Floating objects are represented by one canonical collection. Scan the
     // payloads instead of consulting removed per-kind arrays so XLSX reports

@@ -203,6 +203,17 @@ function drawResizePreview(options: ChromeDrawOptions): void {
     }
   }
   context.stroke();
+  if (preview.label) {
+    context.font = '12px Inter, sans-serif';
+    const width = context.measureText(preview.label).width + 12;
+    const x = Math.max(origin.x + 4, Math.min(plan.viewport.width - width - 4, preview.axis === 'column' ? skeleton.getColumnLeft(preview.index) + preview.sizePx + 6 : origin.x + 6));
+    const y = preview.axis === 'column' ? origin.y + 6 : Math.max(origin.y + 4, Math.min(plan.viewport.height - 26, skeleton.getRowTop(preview.index) + preview.sizePx + 6));
+    context.fillStyle = '#0f172a';
+    context.fillRect(x, y, width, 22);
+    context.fillStyle = '#ffffff';
+    context.textBaseline = 'middle';
+    context.fillText(preview.label, x + 6, y + 11);
+  }
   context.restore();
 }
 
