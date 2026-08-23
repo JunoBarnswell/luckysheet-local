@@ -125,10 +125,12 @@ import {
 } from './features/query';
 import {
   createCommandRecorder,
+  runAutomationScriptAsync,
   SAMPLE_AUTOMATION_SCRIPT,
   summarizeScriptResult,
   type AutomationSnapshot,
 } from './features/automation';
+import type { AutomationWorkerFactory } from './features/automation';
 import { CommandRecorder } from './features/automation/command-recorder';
 import type { ScriptRunResult } from './features/automation';
 import type {
@@ -152,6 +154,7 @@ export interface WorkbookSessionOptions {
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
+  automationWorkerFactory?: AutomationWorkerFactory;
 }
 
 export interface UiSnapshot {
@@ -225,6 +228,7 @@ export class WorkbookSession {
   private readonly editSession = new EditSession();
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
+  private readonly automationWorkerFactory?: AutomationWorkerFactory;
 
   private phase: AppPhase;
   private saveState: SaveState = 'saved';
@@ -276,13 +280,14 @@ export class WorkbookSession {
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
 
-  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider }: WorkbookSessionOptions = {}) {
+  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory }: WorkbookSessionOptions = {}) {
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
     });
     this.permission = new PermissionService();
+    this.automationWorkerFactory = automationWorkerFactory;
     this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
@@ -2056,30 +2061,22 @@ export class WorkbookSession {
     };
   }
 
-  runAutomationScript(source: string): void {
+  async runAutomationScript(source: string): Promise<void> {
     if (!this.canExecute('automation.run')) {
       this.notify('You do not have permission to run scripts');
       return;
     }
-    const started = Date.now();
-    try {
-      const result = this.runCommand('automation.run', { source });
-      this.lastScriptResult = { ok: true, durationMs: Date.now() - started, mutationCount: result.mutationCount };
-    } catch (error) {
-      this.lastScriptResult = {
-        ok: false,
-        durationMs: Date.now() - started,
-        error: error instanceof Error ? error.message : 'Automation failed',
-      };
-    }
+    this.lastScriptResult = await runAutomationScriptAsync(this.runtime.model, this.runtime.commands, source, undefined, {
+      workerFactory: this.automationWorkerFactory,
+    });
     this.activePanel = 'automate';
     this.ribbonTab = 'automate';
     this.notify(summarizeScriptResult(this.lastScriptResult));
     this.refresh();
   }
 
-  runSampleAutomationScript(): void {
-    this.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
+  async runSampleAutomationScript(): Promise<void> {
+    await this.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
   }
 
   startAutomationRecording(): void {

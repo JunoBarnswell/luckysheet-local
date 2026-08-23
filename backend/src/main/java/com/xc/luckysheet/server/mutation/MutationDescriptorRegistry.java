@@ -58,6 +58,8 @@ public class MutationDescriptorRegistry {
             Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("rows.permuted", "Requires row permutation of formulas, objects, tables, validations and every structural participant."),
             Map.entry("sheet.rename", "Requires a shared formula-reference AST rename transform; raw text replacement is forbidden."),
+            Map.entry("sheet.add", "Requires the server-generated canonical sheet restore contract so its compensating remove remains replayable."),
+            Map.entry("sheet.remove", "Requires the server-generated canonical sheet restore contract so its inverse remains replayable."),
             Map.entry("sheet.duplicated", "Requires identity remapping for scoped names, object payloads, print state and source relationships."),
             Map.entry("sheet.restore", "Client-side live worksheet instances are not a canonical persisted sheet payload."),
             Map.entry("hyperlink.set", "The canonical workbook snapshot currently has no structured hyperlink collection."),

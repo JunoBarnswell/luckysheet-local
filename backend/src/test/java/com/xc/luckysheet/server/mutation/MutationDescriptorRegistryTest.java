@@ -56,7 +56,7 @@ class MutationDescriptorRegistryTest {
                 "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
-                "sheet.add", "sheet.remove", "sheet.reordered",
+                "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
                 "filter.set", "filter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
@@ -76,7 +76,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
                 "automation.recording.changed",
-                "sheet.duplicated", "sheet.restore",
+                "sheet.add", "sheet.remove", "sheet.duplicated", "sheet.restore",
                 "hyperlink.set", "hyperlink.remove",
                 "query.load.workbook-table",
                 "workbook.restore"

@@ -16,7 +16,7 @@ import java.util.Set;
 /** Reducers for sheet-owned metadata with an explicit JSON snapshot truth. */
 final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of(
-            "sheet.add", "sheet.remove", "sheet.reordered",
+            "sheet.reordered",
             "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
             "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
             "filter.set", "filter.remove",
@@ -35,8 +35,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         return switch (id()) {
-            case "sheet.add", "sheet.reordered" -> List.of();
-            case "sheet.remove" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
+            case "sheet.reordered" -> List.of();
             case "row.hidden", "row.unhidden" -> List.of(SnapshotMutationSupport.rowRange(root, mutation.sheetId(), renameIndex(params, "index", "row")));
             case "column.hidden", "column.unhidden" -> List.of(SnapshotMutationSupport.columnRange(root, mutation.sheetId(), renameIndex(params, "index", "column")));
             case "rows.unhidden.all", "rows.hidden.restore", "columns.unhidden.all", "columns.hidden.restore" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
@@ -60,8 +59,6 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         switch (id()) {
-            case "sheet.add" -> addSheet(root, mutation, params);
-            case "sheet.remove" -> removeSheet(root, mutation);
             case "sheet.reordered" -> reorderSheet(root, mutation, params);
             default -> applyToSheet(root, mutation, params);
         }
@@ -92,29 +89,6 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "sheetTable.remove" -> removeSheetTable(sheet, params);
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         }
-    }
-
-    private void addSheet(ObjectNode root, OperationMutation mutation, ObjectNode params) {
-        String id = SnapshotMutationSupport.text(params, "id");
-        String name = SnapshotMutationSupport.text(params, "name").trim();
-        if (name.isBlank() || name.length() > 255) throw ServiceException.validation("Worksheet name is invalid");
-        if (!id.equals(mutation.sheetId())) throw ServiceException.validation("sheet.add id must match mutation sheetId");
-        if (findSheet(root, id) != null) throw ServiceException.conflict("Sheet already exists: " + id);
-        int rowCount = optionalDimension(params.get("rowCount"), 1_000, "rowCount", SnapshotMutationSupport.MAX_ROW + 1);
-        int columnCount = optionalDimension(params.get("columnCount"), 26, "columnCount", SnapshotMutationSupport.MAX_COLUMN + 1);
-        SnapshotMutationSupport.sheets(root).add(defaultSheet(id, name, rowCount, columnCount));
-    }
-
-    private void removeSheet(ObjectNode root, OperationMutation mutation) {
-        ArrayNode sheets = SnapshotMutationSupport.sheets(root);
-        if (sheets.size() <= 1) throw ServiceException.validation("A workbook must keep at least one worksheet");
-        int index = sheetIndex(sheets, mutation.sheetId());
-        if (index < 0) throw ServiceException.notFound("Sheet not found: " + mutation.sheetId());
-        ObjectNode removed = (ObjectNode) sheets.get(index);
-        String removedName = SnapshotMutationSupport.text(removed, "name");
-        sheets.remove(index);
-        invalidateRemovedSheetReferences(root, mutation.sheetId(), removedName);
-        removeSheetScopedWorkbookState(root, mutation.sheetId());
     }
 
     private void reorderSheet(ObjectNode root, OperationMutation mutation, ObjectNode params) {
@@ -289,86 +263,6 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return range;
     }
 
-    private ObjectNode defaultSheet(String id, String name, int rowCount, int columnCount) {
-        ObjectNode sheet = JsonNodeFactory.instance.objectNode();
-        sheet.put("id", id);
-        sheet.put("name", name);
-        sheet.put("rowCount", rowCount);
-        sheet.put("columnCount", columnCount);
-        sheet.set("cells", JsonNodeFactory.instance.objectNode());
-        sheet.set("merges", JsonNodeFactory.instance.arrayNode());
-        ObjectNode freeze = sheet.putObject("freeze");
-        freeze.put("xSplit", 0);
-        freeze.put("ySplit", 0);
-        freeze.put("startRow", 0);
-        freeze.put("startColumn", 0);
-        for (String property : List.of("pivots", "sparklines", "sparklineGroups", "drawings", "notes", "commentThreads", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "protectionRules")) {
-            sheet.set(property, JsonNodeFactory.instance.arrayNode());
-        }
-        sheet.set("drawingPayloads", JsonNodeFactory.instance.objectNode());
-        sheet.set("rowHeights", JsonNodeFactory.instance.objectNode());
-        sheet.set("columnWidths", JsonNodeFactory.instance.objectNode());
-        sheet.put("showGridlines", true);
-        sheet.put("showHeaders", true);
-        sheet.put("zoom", 100);
-        sheet.put("hidden", false);
-        sheet.putObject("outline").set("groups", JsonNodeFactory.instance.arrayNode());
-        return sheet;
-    }
-
-    private void removeSheetScopedWorkbookState(ObjectNode root, String sheetId) {
-        removeDocumentsForSheet(root, sheetId);
-        ArrayNode names = SnapshotMutationSupport.array(root, "definedNameModels");
-        for (int index = names.size() - 1; index >= 0; index--) {
-            JsonNode name = names.get(index);
-            if (name.isObject() && "sheet".equals(name.path("scope").asText()) && sheetId.equals(name.path("sheetId").asText())) names.remove(index);
-        }
-    }
-
-    private void invalidateRemovedSheetReferences(ObjectNode root, String removedSheetId, String removedSheetName) {
-        for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
-            if (!raw.isObject()) throw ServiceException.validation("Workbook contains an invalid sheet");
-            ObjectNode cells = SnapshotMutationSupport.cells((ObjectNode) raw);
-            cells.fields().forEachRemaining(row -> {
-                if (!row.getValue().isObject()) throw ServiceException.validation("Cell row must be an object");
-                ((ObjectNode) row.getValue()).fields().forEachRemaining(column -> {
-                    if (!column.getValue().isObject()) throw ServiceException.validation("Cell payload must be an object");
-                    ObjectNode cell = (ObjectNode) column.getValue();
-                    if (!cell.path("formula").isTextual()) return;
-                    String original = cell.path("formula").asText();
-                    String rewritten = FormulaReferenceTransformer.invalidateSheet(original, removedSheetId, removedSheetName);
-                    if (!original.equals(rewritten)) {
-                        cell.put("formula", rewritten);
-                        cell.remove("formulaValue");
-                    }
-                });
-            });
-        }
-        ObjectNode names = SnapshotMutationSupport.object(root, "definedNames");
-        names.fields().forEachRemaining(entry -> {
-            if (entry.getValue().isTextual()) names.put(entry.getKey(), FormulaReferenceTransformer.invalidateSheet(entry.getValue().asText(), removedSheetId, removedSheetName));
-        });
-        for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
-            if (!raw.isObject() || !raw.path("formula").isTextual()) continue;
-            ObjectNode model = (ObjectNode) raw;
-            model.put("formula", FormulaReferenceTransformer.invalidateSheet(model.path("formula").asText(), removedSheetId, removedSheetName));
-        }
-    }
-
-    private void removeDocumentsForSheet(ObjectNode root, String sheetId) {
-        ArrayNode documents = SnapshotMutationSupport.array(root, "printDocuments");
-        for (int index = documents.size() - 1; index >= 0; index--) {
-            if (sheetId.equals(documents.get(index).path("sheetId").asText())) documents.remove(index);
-        }
-    }
-
-    private ObjectNode findSheet(ObjectNode root, String sheetId) {
-        for (JsonNode candidate : SnapshotMutationSupport.sheets(root)) {
-            if (candidate.isObject() && sheetId.equals(candidate.path("id").asText())) return (ObjectNode) candidate;
-        }
-        return null;
-    }
-
     private int sheetIndex(ArrayNode sheets, String sheetId) {
         for (int index = 0; index < sheets.size(); index++) if (sheetId.equals(sheets.get(index).path("id").asText())) return index;
         return -1;
@@ -387,18 +281,12 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return false;
     }
 
-    private int optionalDimension(JsonNode value, int fallback, String name, int maximum) {
-        if (value == null || value.isNull()) return fallback;
-        if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 1 || value.intValue() > maximum) throw ServiceException.validation(name + " is invalid");
-        return value.intValue();
-    }
-
     private static boolean checksProtection(String id) {
-        return !id.equals("sheet.add") && !id.equals("sheet.reordered");
+        return !id.equals("sheet.reordered");
     }
 
     private static String protectionAction(String id) {
-        if (id.startsWith("sheetTable") || id.equals("sheet.add") || id.equals("sheet.remove") || id.equals("sheet.reordered")) return "structure";
+        if (id.startsWith("sheetTable") || id.equals("sheet.reordered")) return "structure";
         if (id.startsWith("cf") || id.startsWith("dv") || id.equals("banded.set") || id.equals("outline.set")) return "format";
         return "edit-cell";
     }
