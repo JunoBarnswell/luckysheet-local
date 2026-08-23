@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { SpreadsheetApplication } from './application';
 
 describe('SpreadsheetApplication chart integration', () => {
-  it('addChart routes through chart.insert and syncs drawings + legacy charts', () => {
+  it('addChart routes through the canonical drawing aggregate', () => {
     const app = new SpreadsheetApplication();
     const sheetId = app.getActiveSheetId();
     app.addChart({
@@ -17,23 +17,26 @@ describe('SpreadsheetApplication chart integration', () => {
       showDataLabels: true,
     });
 
+    const sheet = app.getWorkbook().getSheet(sheetId);
+    const drawing = sheet.drawings.find((entry) => entry.payloadId === 'chart-test-1');
+    assert.equal(drawing?.kind, 'chart');
+    assert.equal(sheet.drawingPayloads.get('chart-test-1')?.kind, 'chart');
+    assert.equal((sheet.drawingPayloads.get('chart-test-1') as { title?: string; legendPosition?: string }).title, 'Revenue');
+    assert.equal((sheet.drawingPayloads.get('chart-test-1') as { legendPosition?: string }).legendPosition, 'right');
     let snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedSheet.charts.length, 1);
-    assert.equal(snapshot.selectedSheet.charts[0]?.title, 'Revenue');
-    assert.equal(snapshot.selectedSheet.charts[0]?.legendPosition, 'right');
     assert.equal(snapshot.selectedFloatingId, 'chart-test-1');
 
     app.updateChartBounds('chart-test-1', { x: 120, y: 140, width: 320, height: 220 });
     snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedSheet.charts[0]?.bounds.x, 120);
+    assert.equal(sheet.drawings.find((entry) => entry.payloadId === 'chart-test-1')?.transform.x, 120);
 
     app.updateChartType('chart-test-1', 'line');
     snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedSheet.charts[0]?.type, 'line');
+    assert.equal((sheet.drawingPayloads.get('chart-test-1') as { chartType?: string }).chartType, 'line');
 
     app.removeChart('chart-test-1');
     snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedSheet.charts.length, 0);
+    assert.equal(sheet.drawings.some((entry) => entry.payloadId === 'chart-test-1'), false);
     assert.equal(snapshot.selectedFloatingId, null);
   });
 
@@ -48,9 +51,11 @@ describe('SpreadsheetApplication chart integration', () => {
     });
     app.insertQuickChart('bar');
     const snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedSheet.charts.length, 1);
-    assert.equal(snapshot.selectedSheet.charts[0]?.type, 'bar');
-    assert.deepEqual(snapshot.selectedSheet.charts[0]?.sourceRanges[0], {
+    const sheet = app.getWorkbook().getSheet(app.getActiveSheetId());
+    const drawing = sheet.drawings.find((entry) => entry.kind === 'chart');
+    const payload = sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { chartType?: string; sourceRanges?: unknown[] } | undefined;
+    assert.equal(payload?.chartType, 'bar');
+    assert.deepEqual(payload?.sourceRanges?.[0], {
       sheetId: app.getActiveSheetId(),
       startRow: 1,
       endRow: 4,

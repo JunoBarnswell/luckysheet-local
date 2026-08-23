@@ -341,8 +341,9 @@ export class SpreadsheetApplication {
 
   start(): void {
     this.persistenceDispose = startPersistenceSession(this.runtime);
-    this.collabDispose = startCollaborationSession(this.runtime, this.actorId, () =>
+    this.collabDispose = startCollaborationSession(this.runtime, () =>
       `${this.activeSheetId}:${this.selectionService.getState().primaryRowIndex}:${this.selectionService.getState().primaryColumnIndex}`,
+      this.runtime.authTokenProvider,
     );
   }
 

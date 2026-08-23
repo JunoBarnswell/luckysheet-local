@@ -16,12 +16,14 @@ describe('history-bridge', () => {
       revision: 2,
       createdAt: '2026-01-01T00:00:00.000Z',
       payload: {
-        schema: 'CollaborationChangeSetV1',
+        schema: 'OperationEnvelopeV2',
         operationId: 'op-1',
         unitId: 'wb-1',
         actorId: 'actor-1',
         clientSequence: 1,
         baseRevision: 1,
+        revision: 2,
+        committedAt: '2026-01-01T00:00:00.000Z',
         createdAt: '2026-01-01T00:00:00.000Z',
         mutations: [{
           id: 'cell.set',
@@ -46,12 +48,14 @@ describe('history-bridge', () => {
       revision: 1,
       createdAt: '2026-01-01T00:00:00.000Z',
       payload: {
-        schema: 'CollaborationChangeSetV1',
+        schema: 'OperationEnvelopeV2',
         operationId: 'op-1',
         unitId: 'wb-1',
         actorId: 'actor-1',
         clientSequence: 1,
         baseRevision: 0,
+        revision: 1,
+        committedAt: '2026-01-01T00:00:00.000Z',
         createdAt: '2026-01-01T00:00:00.000Z',
         mutations: [{
           id: 'cell.set',

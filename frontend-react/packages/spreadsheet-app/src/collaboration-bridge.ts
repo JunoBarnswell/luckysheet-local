@@ -96,5 +96,5 @@ export function updatePresenceFromPeer(
 
 export function acknowledgeChangeSet(session: CollaborationSession, revision: number, operationId?: string): void {
   session.setRevision(revision);
-  if (operationId) session.offlineQueue.dequeueByOperationId(operationId);
+  if (operationId) session.acknowledge(operationId, revision);
 }

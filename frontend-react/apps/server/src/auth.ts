@@ -71,13 +71,33 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
   };
 }
 
-export function extractBearerToken(headers: Pick<IncomingHttpHeaders, 'authorization'>): string {
+function decodeBearerSubprotocol(value: string): string | undefined {
+  const match = /(?:^|,)\s*bearer\.([A-Za-z0-9_-]+)\s*(?:,|$)/.exec(value);
+  if (!match?.[1]) return undefined;
+  try {
+    const base64 = match[1].replaceAll('-', '+').replaceAll('_', '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const token = Buffer.from(padded, 'base64').toString('utf8').trim();
+    return token || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function extractBearerToken(headers: Pick<IncomingHttpHeaders, 'authorization' | 'sec-websocket-protocol'>): string {
   const value = headers.authorization;
   if (Array.isArray(value)) throw new AuthenticationError('Exactly one bearer token is required');
-  if (!value) throw new AuthenticationError('Bearer authentication is required');
-  const match = /^Bearer\s+(\S+)$/i.exec(value.trim());
-  if (!match?.[1]) throw new AuthenticationError('Authorization must use the Bearer scheme');
-  return match[1];
+  if (value) {
+    const match = /^Bearer\s+(\S+)$/i.exec(value.trim());
+    if (!match?.[1]) throw new AuthenticationError('Authorization must use the Bearer scheme');
+    return match[1];
+  }
+  const subprotocol = headers['sec-websocket-protocol'];
+  if (!Array.isArray(subprotocol) && subprotocol) {
+    const token = decodeBearerSubprotocol(subprotocol);
+    if (token) return token;
+  }
+  throw new AuthenticationError('Bearer authentication is required');
 }
 
 export class JwtAuthenticator {
@@ -109,7 +129,7 @@ export class JwtAuthenticator {
     return this.authenticateHeaders(request.headers);
   }
 
-  async authenticateHeaders(headers: Pick<IncomingHttpHeaders, 'authorization'>): Promise<AuthenticatedPrincipal> {
+  async authenticateHeaders(headers: Pick<IncomingHttpHeaders, 'authorization' | 'sec-websocket-protocol'>): Promise<AuthenticatedPrincipal> {
     if (this.configurationError) throw this.configurationError;
     if (!this.config || !this.remoteJwks) throw new AuthenticationConfigurationError('Authentication is not configured');
     const token = extractBearerToken(headers);

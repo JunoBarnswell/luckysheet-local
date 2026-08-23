@@ -546,7 +546,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         }
         kept.push(rowValues);
       }
-      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range: params.range, mode: 'contents' });
+      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range: params.range, mode: 'all' });
       return runtime.execute('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: params.range.startRow,

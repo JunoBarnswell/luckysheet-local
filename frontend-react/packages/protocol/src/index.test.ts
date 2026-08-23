@@ -5,10 +5,12 @@ import {
   decodeOperationMessageV2,
   encodeMessage,
   encodeOperationMessageV2,
+  AuthenticationRequiredError,
+  WorkbookApiClient,
   validateOperationEnvelopeV2,
 } from './index';
 
-test('collaboration messages round-trip through the v1 wire contract', () => {
+test('collaboration messages round-trip through the V2 wire contract', () => {
   const message = { type: 'changeset.ack' as const, operationId: 'op-1', revision: 2 };
   assert.deepEqual(decodeMessage(encodeMessage(message)), message);
 });
@@ -52,4 +54,21 @@ test('V2 collaboration messages reject legacy actor-bearing presence and changes
       createdAt: new Date().toISOString(),
     },
   })), /Unsupported operation schema/);
+});
+
+test('WorkbookApiClient injects bearer authentication and fails closed without a provider', async () => {
+  let request: RequestInit | undefined;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'token-123',
+    fetchImpl: async (_input, init) => {
+      request = init;
+      return new Response(JSON.stringify({ snapshot: { unitId: 'unit-1' }, revision: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  await api.getSnapshot('unit-1');
+  assert.equal(new Headers(request?.headers).get('authorization'), 'Bearer token-123');
+  await assert.rejects(() => new WorkbookApiClient().getSnapshot('unit-1'), AuthenticationRequiredError);
 });

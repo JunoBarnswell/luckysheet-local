@@ -57,6 +57,16 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
       }
     }
   });
+  registerMutationHandler<{ sheetId: string; groupId: string }>(runtime, 'sparkline.group.remove', (params, context) => {
+    const sheet = context.workbook.getSheet(params.sheetId);
+    removeById(sheet.sparklineGroups, params.groupId);
+    for (const sparkline of sheet.sparklines) {
+      if (sparkline.groupId !== params.groupId) continue;
+      delete sparkline.groupId;
+      delete sparkline.showAxis;
+      delete sparkline.showMarkers;
+    }
+  });
   registerMutationHandler<SparklineGroupUpdateParams>(runtime, 'sparkline.group.update', (params, context) => {
     const group = context.workbook.getSheet(params.sheetId).sparklineGroups.find((entry) => entry.id === params.groupId);
     if (!group) return;
@@ -174,6 +184,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         id: 'sparkline.remove',
         sheetId: params.sheetId,
         params,
+        inverseId: previous ? 'sparkline.add' : 'sparkline.remove',
         inverseParams: previous ? { sheetId: params.sheetId, sparkline: previous } : params,
         affectedRanges,
         apply: () => runtime.registry.getMutation('sparkline.remove')({ id: 'sparkline.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }, context),

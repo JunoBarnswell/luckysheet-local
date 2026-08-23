@@ -87,7 +87,72 @@ export interface OperationCommitResponse {
   operation: CommittedOperationEnvelopeV2;
 }
 
+/**
+ * Authentication is deliberately supplied by the host application.  The
+ * protocol package never reads cookies, localStorage or a client-provided
+ * actor id.  A missing/empty token is an authentication failure, not an
+ * unauthenticated fallback.
+ */
+export type AuthTokenProvider = () => string | null | Promise<string | null>;
+
+export interface WorkbookApiClientOptions {
+  baseUrl?: string;
+  authTokenProvider?: AuthTokenProvider;
+  fetchImpl?: typeof fetch;
+}
+
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code: ProtocolErrorCode | 'REQUEST_FAILED';
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    message: string,
+    status: number,
+    code: ProtocolErrorCode | 'REQUEST_FAILED' = 'REQUEST_FAILED',
+    details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+export class AuthenticationRequiredError extends Error {
+  readonly status = 401;
+  readonly code = 'UNAUTHENTICATED' as const;
+
+  constructor(message = 'Bearer authentication is required') {
+    super(message);
+    this.name = 'AuthenticationRequiredError';
+  }
+}
+
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+
+function isRangeRef(value: unknown): value is RangeRef {
+  if (!value || typeof value !== 'object') return false;
+  const range = value as Record<string, unknown>;
+  return isNonEmptyString(range.sheetId)
+    && Number.isSafeInteger(range.startRow) && Number(range.startRow) >= 0
+    && Number.isSafeInteger(range.endRow) && Number(range.endRow) >= Number(range.startRow)
+    && Number.isSafeInteger(range.startColumn) && Number(range.startColumn) >= 0
+    && Number.isSafeInteger(range.endColumn) && Number(range.endColumn) >= Number(range.startColumn);
+}
+
+function validateSnapshotResponse(value: unknown): SnapshotResponse {
+  if (!value || typeof value !== 'object') throw new Error('snapshot.response payload must be an object');
+  const input = value as Record<string, unknown>;
+  if (!input.snapshot || typeof input.snapshot !== 'object') throw new Error('snapshot.response requires snapshot');
+  const snapshot = input.snapshot as Record<string, unknown>;
+  if (!isNonEmptyString(snapshot.unitId)) throw new Error('snapshot.response requires snapshot.unitId');
+  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) {
+    throw new Error('snapshot.response requires a valid revision');
+  }
+  return value as SnapshotResponse;
+}
 
 /** Strict runtime validation used at the REST/WebSocket trust boundary. */
 export function validateOperationEnvelopeV2(value: unknown): OperationEnvelopeV2 {
@@ -206,157 +271,160 @@ export interface RevisionRecord {
   operationId: string;
   revision: number;
   createdAt: string;
-  payload: CollaborationChangeSet;
+  payload: CommittedOperationEnvelopeV2;
 }
 
 export class WorkbookApiClient {
-  constructor(private readonly baseUrl = '') {}
+  private readonly baseUrl: string;
+  private readonly authTokenProvider?: AuthTokenProvider;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: WorkbookApiClientOptions = {}) {
+    this.baseUrl = options.baseUrl ?? '';
+    this.authTokenProvider = options.authTokenProvider;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  private async request(path: string, init: RequestInit = {}): Promise<Response> {
+    if (!this.authTokenProvider) throw new AuthenticationRequiredError('An AuthTokenProvider must be injected');
+    const rawToken = await this.authTokenProvider();
+    const token = rawToken?.trim();
+    if (!token) throw new AuthenticationRequiredError();
+    const headers = new Headers(init.headers);
+    headers.set('authorization', `Bearer ${token}`);
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    if (response.ok) return response;
+
+    let payload: Partial<ApiError> | undefined;
+    try {
+      const candidate = await response.clone().json() as unknown;
+      if (candidate && typeof candidate === 'object') payload = candidate as Partial<ApiError>;
+    } catch {
+      // The status remains authoritative when a server returns a non-JSON
+      // failure body.  Do not swallow the request failure itself.
+    }
+    throw new ApiRequestError(
+      typeof payload?.message === 'string' ? payload.message : `Request failed: ${response.status}`,
+      response.status,
+      payload?.code ?? 'REQUEST_FAILED',
+      payload?.details,
+    );
+  }
+
+  private async json<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.request(path, init);
+    try {
+      return await response.json() as T;
+    } catch {
+      throw new ApiRequestError(`Invalid JSON response from ${path}`, response.status, 'INTERNAL_ERROR');
+    }
+  }
 
   async getSnapshot(unitId: string): Promise<SnapshotResponse> {
-    const response = await fetch(
-      `${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/snapshot`,
+    return this.json<SnapshotResponse>(
+      `/api/v1/workbooks/${encodeURIComponent(unitId)}/snapshot`,
     );
-    if (!response.ok) throw new Error(`Workbook snapshot fetch failed: ${response.status}`);
-    return response.json() as Promise<SnapshotResponse>;
   }
 
   async createWorkbook(snapshot: WorkbookSnapshotV1): Promise<SnapshotResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks`, {
+    return this.json<SnapshotResponse>('/api/v1/workbooks', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ snapshot }),
     });
-    if (!response.ok) throw new Error(`Workbook creation failed: ${response.status}`);
-    return response.json() as Promise<SnapshotResponse>;
   }
 
   async createEmptyWorkbook(name = 'Untitled workbook'): Promise<SnapshotResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks`, {
+    return this.json<SnapshotResponse>('/api/v1/workbooks', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
     });
-    if (!response.ok) throw new Error(`Workbook creation failed: ${response.status}`);
-    return response.json() as Promise<SnapshotResponse>;
   }
 
   async listWorkbooks(): Promise<WorkbookSummary[]> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks`);
-    if (!response.ok) throw new Error(`Workbook list fetch failed: ${response.status}`);
-    return response.json() as Promise<WorkbookSummary[]>;
+    return this.json<WorkbookSummary[]>('/api/v1/workbooks');
   }
 
   async deleteWorkbook(unitId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error(`Workbook deletion failed: ${response.status}`);
+    await this.request(`/api/v1/workbooks/${encodeURIComponent(unitId)}`, { method: 'DELETE' });
   }
 
   async listRevisions(unitId: string): Promise<RevisionRecord[]> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions`);
-    if (!response.ok) throw new Error(`Revision history fetch failed: ${response.status}`);
-    const body = await response.json() as { revisions: RevisionRecord[] };
+    const body = await this.json<{ revisions: RevisionRecord[] }>(`/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions`);
     return body.revisions;
   }
 
   async getRevisionSnapshot(unitId: string, revision: number): Promise<SnapshotResponse> {
-    const response = await fetch(
-      `${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
+    return this.json<SnapshotResponse>(
+      `/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
     );
-    if (!response.ok) throw new Error(`Revision snapshot fetch failed: ${response.status}`);
-    return response.json() as Promise<SnapshotResponse>;
   }
 
   async saveSnapshot(unitId: string, snapshot: WorkbookSnapshotV1, baseRevision: number): Promise<SnapshotResponse> {
-    const response = await fetch(
-      `${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/snapshot`,
+    return this.json<SnapshotResponse>(
+      `/api/v1/workbooks/${encodeURIComponent(unitId)}/snapshot`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ snapshot, baseRevision }),
       },
     );
-    if (response.status === 409) throw new Error('Revision conflict');
-    if (!response.ok) throw new Error(`Workbook snapshot save failed: ${response.status}`);
-    return response.json() as Promise<SnapshotResponse>;
   }
 
   async importXlsxBase64(base64: string, fileName = 'import.xlsx'): Promise<XlsxImportResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/files/import-xlsx`, {
+    return this.json<XlsxImportResponse>('/api/v1/files/import-xlsx', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ base64, fileName }),
     });
-    if (!response.ok) throw new Error(`XLSX import failed: ${response.status}`);
-    return response.json() as Promise<XlsxImportResponse>;
   }
 
   async exportXlsx(unitId: string, fileName?: string): Promise<XlsxExportResponse> {
     const query = fileName ? `?fileName=${encodeURIComponent(fileName)}` : '';
-    const response = await fetch(
-      `${this.baseUrl}/api/v1/files/${encodeURIComponent(unitId)}/export${query}`,
+    return this.json<XlsxExportResponse>(
+      `/api/v1/files/${encodeURIComponent(unitId)}/export${query}`,
     );
-    if (!response.ok) throw new Error(`XLSX export failed: ${response.status}`);
-    return response.json() as Promise<XlsxExportResponse>;
   }
 
   async calculatePivot(unitId: string, pivotId: string): Promise<PivotCalculationResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/calculations/pivot`, {
+    return this.json<PivotCalculationResponse>(`/api/v1/workbooks/${encodeURIComponent(unitId)}/calculations/pivot`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pivotId }),
     });
-    if (!response.ok) throw new Error(`Pivot calculation failed: ${response.status}`);
-    return response.json() as Promise<PivotCalculationResponse>;
   }
 
   async createDataTable(unitId: string, table: WorkbookTableModel): Promise<WorkbookTableModel> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables`, {
+    return this.json<WorkbookTableModel>(`/api/v1/workbooks/${encodeURIComponent(unitId)}/tables`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(table),
     });
-    if (!response.ok) throw new Error(`Data table creation failed: ${response.status}`);
-    return response.json() as Promise<WorkbookTableModel>;
   }
 
   async appendDataBlock(unitId: string, tableId: string, startRow: number, rows: TableScalar[][]): Promise<WorkbookTableBlock> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/blocks`, {
+    return this.json<WorkbookTableBlock>(`/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/blocks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ startRow, rows }),
     });
-    if (!response.ok) throw new Error(`Data block upload failed: ${response.status}`);
-    return response.json() as Promise<WorkbookTableBlock>;
   }
 
   async deleteDataTable(unitId: string, tableId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error(`Data table deletion failed: ${response.status}`);
+    await this.request(`/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}`, { method: 'DELETE' });
   }
 
   async readDataRows(unitId: string, tableId: string, offset = 0, limit = 500): Promise<TableRowsResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/rows?offset=${offset}&limit=${limit}`);
-    if (!response.ok) throw new Error(`Data table query failed: ${response.status}`);
-    return response.json() as Promise<TableRowsResponse>;
+    return this.json<TableRowsResponse>(`/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/rows?offset=${offset}&limit=${limit}`);
   }
 
 }
 
-export type CollaborationMessage =
-  | { type: 'snapshot.request'; unitId: string }
-  | { type: 'snapshot.response'; unitId?: string; snapshot?: WorkbookSnapshotV1; revision?: number; payload?: SnapshotResponse }
-  | { type: 'changeset.submit'; payload: CollaborationChangeSet }
-  | { type: 'changeset.ack'; operationId: string; revision: number }
-  | { type: 'changeset.reject'; operationId: string; error: ApiError }
-  | { type: 'revision.created'; payload: CollaborationChangeSet; revision: number }
-  | { type: 'presence.updated'; unitId: string; actorId: string; state: unknown }
-  | { type: 'cursor.updated'; unitId: string; actorId: string; state: unknown };
-
 /**
- * V2 collaboration messages.  Client-originated presence/cursor messages do
+ * V2 collaboration messages. Client-originated presence/cursor messages do
  * not carry actorId; the server adds it to broadcast messages after token
- * verification.  The V1 message union above remains only for source-level
- * migration and is not accepted by the V2 server endpoint.
+ * verification.  There is intentionally no V1 message decoder.
  */
 export type OperationMessageV2 =
   | { type: 'snapshot.request'; unitId: string }
@@ -376,7 +444,14 @@ export type ClientOperationMessageV2 =
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown };
 
+/** The public collaboration message surface is V2 only. */
+export type CollaborationMessage = OperationMessageV2;
+
 export function encodeOperationMessageV2(message: OperationMessageV2): string {
+  return JSON.stringify(message);
+}
+
+export function encodeClientOperationMessageV2(message: ClientOperationMessageV2): string {
   return JSON.stringify(message);
 }
 
@@ -415,6 +490,7 @@ function validateCommittedOperationEnvelopeV2(value: unknown): CommittedOperatio
     if (!raw || typeof raw !== 'object') throw new Error(`committed mutation[${index}] must be an object`);
     const mutation = raw as Record<string, unknown>;
     if (!Array.isArray(mutation.affectedRanges)) throw new Error(`committed mutation[${index}] requires affectedRanges`);
+    if (!mutation.affectedRanges.every(isRangeRef)) throw new Error(`committed mutation[${index}] contains invalid affectedRanges`);
     return { ...operation.mutations[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
   });
   return {
@@ -444,8 +520,7 @@ export function decodeOperationMessageV2(input: string): OperationMessageV2 {
       if (!isNonEmptyString(message.unitId)) throw new Error('snapshot.request requires unitId');
       return { type: 'snapshot.request', unitId: message.unitId };
     case 'snapshot.response':
-      if (!message.payload || typeof message.payload !== 'object') throw new Error('snapshot.response requires payload');
-      return { type: 'snapshot.response', payload: message.payload as SnapshotResponse };
+      return { type: 'snapshot.response', payload: validateSnapshotResponse(message.payload) };
     case 'changeset.ack':
       if (!isNonEmptyString(message.operationId) || !Number.isSafeInteger(message.revision) || Number(message.revision) < 1) {
         throw new Error('changeset.ack requires operationId and revision');
@@ -486,30 +561,47 @@ export function decodeClientOperationMessageV2(input: string): ClientOperationMe
   throw new Error(`Server-only collaboration message: ${message.type}`);
 }
 
-export function encodeMessage(message: CollaborationMessage): string {
-  return JSON.stringify(message);
+export function encodeMessage(message: OperationMessageV2): string {
+  return encodeOperationMessageV2(message);
 }
 
-export function decodeMessage(input: string): CollaborationMessage {
-  const message = JSON.parse(input) as CollaborationMessage;
-  if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
-    throw new Error('Invalid collaboration message');
-  }
-  return message;
+export function decodeMessage(input: string): OperationMessageV2 {
+  return decodeOperationMessageV2(input);
 }
 
 /** 连接状态 */
 export type CollabSocketStatus = 'connecting' | 'open' | 'closed';
 
 export interface CollabSocketOptions {
+  /** Required token source for the browser handshake. */
+  authTokenProvider: AuthTokenProvider;
   /** 断线重连基础延迟(毫秒),指数退避 */
   reconnectBaseDelayMs?: number;
   /** 重连延迟上限(毫秒) */
   reconnectMaxDelayMs?: number;
+  /** Injectable constructor for deterministic browser/Node tests. */
+  webSocketFactory?: (url: string, protocols: string | string[]) => WebSocket;
 }
 
-type CollabSocketListener = (message: CollaborationMessage) => void;
+type CollabSocketListener = (message: OperationMessageV2) => void;
 type StatusListener = (status: CollabSocketStatus) => void;
+type ProtocolErrorListener = (error: Error) => void;
+
+const BEARER_SUBPROTOCOL_PREFIX = 'bearer.';
+
+function encodeBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+}
+
+/** Browser-safe bearer token transport for a WebSocket handshake. */
+export function createBearerSubprotocol(token: string): string {
+  const normalized = token.trim();
+  if (!normalized) throw new AuthenticationRequiredError();
+  return `${BEARER_SUBPROTOCOL_PREFIX}${encodeBase64Url(normalized)}`;
+}
 
 /**
  * 浏览器端协同 WebSocket 客户端。
@@ -521,20 +613,21 @@ export class CollabSocketClient {
   private socket: WebSocket | null = null;
   private readonly messageListeners = new Set<CollabSocketListener>();
   private readonly statusListeners = new Set<StatusListener>();
-  private readonly pendingOutbound: string[] = [];
+  private readonly protocolErrorListeners = new Set<ProtocolErrorListener>();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closedByUser = false;
+  private connecting = false;
 
   constructor(
     private readonly url: string,
-    private readonly options: CollabSocketOptions = {},
+    private readonly options: CollabSocketOptions,
   ) {}
 
   get status(): CollabSocketStatus {
-    if (this.socket?.readyState === WebSocket.OPEN) return 'open';
+    if (this.socket?.readyState === 1) return 'open';
     if (this.closedByUser) return 'closed';
-    return this.socket || this.reconnectTimer ? 'connecting' : 'closed';
+    return this.socket || this.reconnectTimer || this.connecting ? 'connecting' : 'closed';
   }
 
   open(): void {
@@ -554,15 +647,13 @@ export class CollabSocketClient {
     this.emitStatus('closed');
   }
 
-  /** 发送消息;未连接时进入队列,连接恢复后冲刷。返回是否即时发出。 */
-  send(message: CollaborationMessage): boolean {
-    const encoded = encodeMessage(message);
-    if (this.socket?.readyState === WebSocket.OPEN) {
+  /** 发送 V2 客户端消息；未连接时返回 false，由 OfflineQueue 保留 operation。 */
+  send(message: ClientOperationMessageV2): boolean {
+    const encoded = encodeClientOperationMessageV2(message);
+    if (this.socket?.readyState === 1) {
       this.socket.send(encoded);
       return true;
     }
-    if (message.type !== 'changeset.submit') return false;
-    this.pendingOutbound.push(encoded);
     return false;
   }
 
@@ -577,32 +668,51 @@ export class CollabSocketClient {
     return () => this.statusListeners.delete(listener);
   }
 
-  /** 仅用于测试:取出当前待发队列长度 */
-  get queuedCount(): number {
-    return this.pendingOutbound.length;
+  onProtocolError(listener: ProtocolErrorListener): () => void {
+    this.protocolErrorListeners.add(listener);
+    return () => this.protocolErrorListeners.delete(listener);
   }
 
-  private connect(): void {
+  private async connect(): Promise<void> {
+    this.connecting = true;
     this.emitStatus('connecting');
-    const socket = new WebSocket(this.url);
+    let token: string | null;
+    try {
+      token = (await this.options.authTokenProvider())?.trim() || null;
+    } catch (cause) {
+      this.connecting = false;
+      this.failClosed(cause instanceof Error ? cause : new Error('Unable to resolve bearer token'));
+      return;
+    }
+    if (!token) {
+      this.connecting = false;
+      this.failClosed(new AuthenticationRequiredError());
+      return;
+    }
+    if (this.closedByUser) {
+      this.connecting = false;
+      return;
+    }
+    const factory = this.options.webSocketFactory ?? ((target: string, protocols: string | string[]) => new WebSocket(target, protocols));
+    const socket = factory(this.url, createBearerSubprotocol(token));
     this.socket = socket;
+    this.connecting = false;
 
     socket.onopen = () => {
       this.reconnectAttempt = 0;
       this.emitStatus('open');
-      while (this.pendingOutbound.length > 0 && socket.readyState === WebSocket.OPEN) {
-        const encoded = this.pendingOutbound.shift();
-        if (encoded !== undefined) socket.send(encoded);
-      }
     };
 
     socket.onmessage = (event) => {
-      if (typeof event.data !== 'string') return;
+      if (typeof event.data !== 'string') {
+        this.failClosed(new Error('Collaboration server sent a non-text message'));
+        return;
+      }
       try {
-        const message = decodeMessage(event.data);
+        const message = decodeOperationMessageV2(event.data);
         for (const listener of this.messageListeners) listener(message);
-      } catch {
-        // 非法消息直接丢弃,保持连接可用
+      } catch (cause) {
+        this.failClosed(cause instanceof Error ? cause : new Error('Invalid collaboration server message'));
       }
     };
 
@@ -635,5 +745,18 @@ export class CollabSocketClient {
 
   private emitStatus(status: CollabSocketStatus): void {
     for (const listener of this.statusListeners) listener(status);
+  }
+
+  private failClosed(error: Error): void {
+    this.closedByUser = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    for (const listener of this.protocolErrorListeners) listener(error);
+    this.socket?.close(1002, error.message.slice(0, 120));
+    this.socket = null;
+    this.connecting = false;
+    this.emitStatus('closed');
   }
 }

@@ -35,14 +35,16 @@ describe('SpreadsheetApplication collaboration integration', () => {
     const workbook = new WorkbookModel('wb-collab', 'Collab');
     const runtime = new CommandRuntime(workbook);
     registerSpreadsheetFeatures(runtime, new DrawingRuntime());
-    const session = new CollaborationSession(runtime, { actorId: 'actor-1' });
+    const session = new CollaborationSession(runtime);
     session.applyRemote({
-      schema: 'CollaborationChangeSetV1',
+      schema: 'OperationEnvelopeV2',
       operationId: 'remote-op',
       unitId: 'wb-collab',
       actorId: 'actor-2',
       clientSequence: 1,
       baseRevision: 0,
+      revision: 1,
+      committedAt: new Date().toISOString(),
       mutations: [{
         id: 'cell.set',
         sheetId: 'sheet-1',
