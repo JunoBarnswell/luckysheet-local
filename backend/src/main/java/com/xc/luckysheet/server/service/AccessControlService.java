@@ -26,6 +26,11 @@ public class AccessControlService {
         return actual;
     }
 
+    /** Returns only a role derived from persistent ACL or a verified share token. */
+    public WorkbookAclRole currentRole(String unitId, String subject) {
+        return require(unitId, subject, WorkbookAclRole.VIEWER);
+    }
+
     public List<AclEntry> list(String unitId, String subject) {
         require(unitId, subject, WorkbookAclRole.OWNER);
         return store.listAcl(unitId);

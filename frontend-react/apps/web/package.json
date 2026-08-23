@@ -1,0 +1,18 @@
+{
+  "name": "@react-sheets/web",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@react-sheets/command-runtime": "file:../../packages/command-runtime",
+    "@react-sheets/core-model": "file:../../packages/core-model",
+    "@react-sheets/exchange-xlsx": "file:../../packages/exchange-xlsx",
+    "@react-sheets/formula-engine": "file:../../packages/formula-engine",
+    "@react-sheets/protocol": "file:../../packages/protocol",
+    "@react-sheets/render-engine": "file:../../packages/render-engine",
+    "@react-sheets/sheet-features": "file:../../packages/sheet-features",
+    "@react-sheets/spreadsheet-app": "file:../../packages/spreadsheet-app",
+    "@react-sheets/ui-system": "file:../../packages/ui-system",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  }
+}

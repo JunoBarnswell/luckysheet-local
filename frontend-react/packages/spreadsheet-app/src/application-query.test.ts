@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
 
-describe('SpreadsheetApplication query integration', () => {
+describe('WorkbookSession query integration', () => {
   it('loads inline json queries into the active sheet', async () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const query = createInlineJsonQuery('demo-query', 'Demo', [
       { Region: 'East', Units: 12 },
       { Region: 'West', Units: 8 },
@@ -23,7 +23,7 @@ describe('SpreadsheetApplication query integration', () => {
   });
 
   it('refreshes a loaded query through query.refresh', async () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const query = createInlineJsonQuery('refresh-query', 'Refresh', [{ Value: 1 }]);
     await app.loadQuery(query);
     await app.refreshQuery('refresh-query');
@@ -31,7 +31,7 @@ describe('SpreadsheetApplication query integration', () => {
   });
 
   it('tests json connector configuration', async () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const result = await app.testQueryConnection('json', {
       data: [{ A: 1 }],
     });
@@ -39,8 +39,9 @@ describe('SpreadsheetApplication query integration', () => {
   });
 
   it('blocks query.load for viewers', async () => {
-    const app = new SpreadsheetApplication();
-    app.setShareRole('viewer');
+    const app = new WorkbookSession();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
     await app.loadQuery(createInlineJsonQuery('blocked', 'Blocked', [{ A: 1 }]));
     assert.equal(app.getUiSnapshot().lastQueryResult, null);
     assert.match(app.getUiSnapshot().notice, /permission|viewer|query/i);

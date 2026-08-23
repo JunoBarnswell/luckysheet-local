@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 import { buildRestoreParams } from './features/history';
 
-describe('SpreadsheetApplication history integration', () => {
+describe('WorkbookSession history integration', () => {
   it('does not accept a client-provided snapshot as a restore mutation', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -29,7 +29,7 @@ describe('SpreadsheetApplication history integration', () => {
   });
 
   it('undoes session history to a selected entry index', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'step-1' } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 'step-2' } });
@@ -39,8 +39,9 @@ describe('SpreadsheetApplication history integration', () => {
   });
 
   it('blocks history.restore for viewers', () => {
-    const app = new SpreadsheetApplication();
-    app.setShareRole('viewer');
+    const app = new WorkbookSession();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
     const snapshot = app['runtime'].model.snapshot();
     app.restoreFromSnapshot(snapshot, 0, 'blocked');
     assert.match(app.getUiSnapshot().notice, /viewer|restore|Permission/i);

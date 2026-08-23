@@ -1,0 +1,9 @@
+{
+  "name": "@react-sheets/formula-engine",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@react-sheets/number-format": "file:../number-format"
+  }
+}

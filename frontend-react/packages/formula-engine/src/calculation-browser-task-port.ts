@@ -1,0 +1,183 @@
+import {
+  assertCalculationTaskRequest,
+  assertCalculationTaskResult,
+  CALCULATION_TASK_PROTOCOL,
+  CALCULATION_TASK_VERSION,
+  type CalculationTaskCancellation,
+  type CalculationTaskPort,
+  type CalculationTaskRequest,
+  type CalculationTaskResult,
+} from './calculation-task-port';
+import type { FormulaCalculationSnapshot } from './calculation-state';
+
+/** Minimal real Worker surface so Node tests can provide an in-memory worker. */
+export interface CalculationBrowserWorker {
+  postMessage(message: unknown): void;
+  terminate(): void;
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void;
+  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: (event: { readonly data?: unknown; readonly message?: string }) => void): void;
+}
+
+export type CalculationBrowserWorkerFactory = () => CalculationBrowserWorker;
+
+export interface CalculationWorkerTaskRequest extends CalculationTaskRequest {
+  readonly snapshot: FormulaCalculationSnapshot;
+}
+
+interface PendingCalculation {
+  readonly request: CalculationTaskRequest;
+  readonly generation: number;
+  readonly resolve: (result: CalculationTaskResult) => void;
+}
+
+/**
+ * Browser-backed calculation transport. Every submitted task is posted to a
+ * module Worker; the source FormulaEngine is never executed by this class.
+ */
+export class BrowserCalculationTaskPort implements CalculationTaskPort {
+  readonly protocol = CALCULATION_TASK_PROTOCOL;
+  readonly version = CALCULATION_TASK_VERSION;
+
+  private readonly pending = new Map<string, PendingCalculation>();
+  private disposed = false;
+
+  constructor(
+    private readonly worker: CalculationBrowserWorker,
+    private readonly snapshotForTask: () => { readonly snapshot: FormulaCalculationSnapshot; readonly generation: number },
+    private readonly consumeResult: (result: CalculationTaskResult, generation: number) => void,
+  ) {
+    this.worker.addEventListener('message', this.handleMessage);
+    this.worker.addEventListener('error', this.handleFailure);
+    this.worker.addEventListener('messageerror', this.handleFailure);
+  }
+
+  submit(request: CalculationTaskRequest): Promise<CalculationTaskResult> {
+    assertCalculationTaskRequest(request);
+    if (this.disposed) return Promise.resolve(failedResult(request, 'CALCULATION_WORKER_DISPOSED', 'Calculation worker has been disposed'));
+    if (this.pending.has(request.taskId)) {
+      return Promise.resolve(failedResult(request, 'CALCULATION_TASK_DUPLICATE', `Calculation task already exists: ${request.taskId}`));
+    }
+
+    try {
+      const { snapshot, generation } = this.snapshotForTask();
+      const workerRequest: CalculationWorkerTaskRequest = { ...request, snapshot };
+      return new Promise<CalculationTaskResult>((resolve) => {
+        this.pending.set(request.taskId, { request, generation, resolve });
+        try {
+          this.worker.postMessage(workerRequest);
+        } catch (error) {
+          this.pending.delete(request.taskId);
+          resolve(failedResult(request, 'CALCULATION_WORKER_POST_FAILED', errorMessage(error)));
+        }
+      });
+    } catch (error) {
+      return Promise.resolve(failedResult(request, 'CALCULATION_SNAPSHOT_FAILED', errorMessage(error)));
+    }
+  }
+
+  cancel(taskId: string): void {
+    if (!taskId) return;
+    const pending = this.pending.get(taskId);
+    if (!pending) return;
+    this.pending.delete(taskId);
+    const cancellation: CalculationTaskCancellation = {
+      protocol: CALCULATION_TASK_PROTOCOL,
+      version: CALCULATION_TASK_VERSION,
+      kind: 'cancel',
+      taskId,
+    };
+    try {
+      this.worker.postMessage(cancellation);
+    } catch {
+      // The caller still receives a cancelled result; a broken worker cannot
+      // re-apply this task because the pending entry has already been removed.
+    }
+    pending.resolve({
+      protocol: CALCULATION_TASK_PROTOCOL,
+      version: CALCULATION_TASK_VERSION,
+      taskId,
+      revision: pending.request.revision,
+      status: 'cancelled',
+    });
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const taskId of [...this.pending.keys()]) this.cancel(taskId);
+    this.worker.removeEventListener('message', this.handleMessage);
+    this.worker.removeEventListener('error', this.handleFailure);
+    this.worker.removeEventListener('messageerror', this.handleFailure);
+    this.worker.terminate();
+  }
+
+  private readonly handleMessage = (event: { readonly data?: unknown }): void => {
+    let result: CalculationTaskResult;
+    try {
+      assertCalculationTaskResult(event.data);
+      result = event.data;
+    } catch {
+      this.failAll('CALCULATION_WORKER_PROTOCOL_ERROR', 'Calculation worker returned an invalid result');
+      return;
+    }
+    const pending = this.pending.get(result.taskId);
+    if (!pending) return;
+    this.pending.delete(result.taskId);
+    if (result.revision !== pending.request.revision) {
+      pending.resolve(failedResult(pending.request, 'CALCULATION_WORKER_REVISION_MISMATCH', 'Calculation worker returned a mismatched revision'));
+      return;
+    }
+    if (result.status === 'completed') {
+      try {
+        this.consumeResult(result, pending.generation);
+      } catch (error) {
+        pending.resolve(failedResult(pending.request, 'CALCULATION_RESULT_APPLY_FAILED', errorMessage(error)));
+        return;
+      }
+    }
+    pending.resolve(result);
+  };
+
+  private readonly handleFailure = (event: { readonly message?: string }): void => {
+    this.failAll('CALCULATION_WORKER_FAILED', event.message ?? 'Calculation worker failed');
+  };
+
+  private failAll(code: string, message: string): void {
+    for (const pending of this.pending.values()) {
+      pending.resolve(failedResult(pending.request, code, message));
+    }
+    this.pending.clear();
+  }
+}
+
+/**
+ * Creates the production browser Worker. Vite recognises this direct
+ * `new Worker(new URL(...))` expression and emits an independent worker
+ * module instead of executing formula calculation on the main thread.
+ */
+export function createBrowserCalculationWorker(): CalculationBrowserWorker | null {
+  if (typeof Worker === 'undefined') return null;
+  return new Worker(new URL('./calculation-browser-worker.ts', import.meta.url), {
+    type: 'module',
+    name: 'formula-calculation',
+  }) as unknown as CalculationBrowserWorker;
+}
+
+function failedResult(
+  request: CalculationTaskRequest,
+  code: string,
+  message: string,
+): CalculationTaskResult {
+  return {
+    protocol: CALCULATION_TASK_PROTOCOL,
+    version: CALCULATION_TASK_VERSION,
+    taskId: request.taskId,
+    revision: request.revision,
+    status: 'failed',
+    error: { code, message },
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Calculation worker failed';
+}

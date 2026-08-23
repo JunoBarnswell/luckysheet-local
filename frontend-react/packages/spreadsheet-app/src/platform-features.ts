@@ -32,7 +32,6 @@ export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
     'extended.whatIf.goalSeek',
     'extended.whatIf.scenario',
     'extended.whatIf.dataTable',
-    'extended.capability.evaluate',
     'sheet.protect.set',
     'sheet.protect.remove',
   ];

@@ -31,7 +31,7 @@ import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
-import type { QueryDefinition, CapabilityDescriptor, PlatformCapability } from '@react-sheets/spreadsheet-app';
+import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelResult, PivotPanelState } from './pivot/pivot-contract';
@@ -48,7 +48,7 @@ import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
-import type { CommandDescriptor } from '../domain/command-descriptor';
+import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
 export interface FeatureSidebarProps {
   activePanel: SidebarPanelId;
@@ -112,7 +112,6 @@ export interface FeatureSidebarProps {
   onRunAutomationScript?: (source: string) => void;
   onStartAutomationRecording?: () => void;
   onStopAutomationRecording?: () => void;
-  platformCapabilities?: readonly CapabilityDescriptor[];
   lastWhatIfMessage?: string | null;
   canRunExtended?: boolean;
   onGoalSeek?: (params: { setRow: number; setColumn: number; targetValue: number; changingRow: number; changingColumn: number }) => void;
@@ -127,7 +126,6 @@ export interface FeatureSidebarProps {
     changingValue: number;
     resultCell: { row: number; column: number };
   }) => void;
-  onEvaluateCapability?: (capability: PlatformCapability) => Promise<{ ok: boolean; message?: string }>;
   onAddComment?: (text: string) => void;
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
@@ -315,13 +313,11 @@ export function FeatureSidebar({
   onRunAutomationScript,
   onStartAutomationRecording,
   onStopAutomationRecording,
-  platformCapabilities = [] as readonly CapabilityDescriptor[],
   lastWhatIfMessage = null,
   canRunExtended = true,
   onGoalSeek,
   onRunDataTable,
   onRunScenario,
-  onEvaluateCapability,
   onAddComment,
   onReplyComment,
   onResolveComment,
@@ -493,14 +489,12 @@ export function FeatureSidebar({
         ) : null}
         {phase === 'ready' && activePanel === 'extended' ? (
           <ExtendedPanel
-            capabilities={platformCapabilities}
             lastWhatIfMessage={lastWhatIfMessage}
             canRunExtended={canRunExtended}
             sheetId={sheetId}
             onGoalSeek={onGoalSeek ?? (() => undefined)}
             onRunDataTable={onRunDataTable ?? (() => undefined)}
             onRunScenario={onRunScenario ?? (() => undefined)}
-            onEvaluateCapability={onEvaluateCapability ?? (async () => ({ ok: false, message: 'Unavailable' }))}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'query' ? (

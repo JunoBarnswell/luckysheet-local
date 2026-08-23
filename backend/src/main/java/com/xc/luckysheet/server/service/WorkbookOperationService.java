@@ -15,10 +15,12 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.config.CoordinationProperties;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
+import com.xc.luckysheet.server.mutation.MutationPreparation;
 import com.xc.luckysheet.server.store.CheckpointRow;
 import com.xc.luckysheet.server.store.OperationRow;
 import com.xc.luckysheet.server.store.OutboxRow;
@@ -89,6 +91,7 @@ public class WorkbookOperationService {
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor) {
         try {
+            if (operation == null) throw ServiceException.validation("Operation is required");
             return commitInternal(routeUnitId, operation, actor);
         } catch (ServiceException error) {
             auditRecorder.rejected(operation == null ? null : operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", error.getMessage());
@@ -98,7 +101,7 @@ public class WorkbookOperationService {
 
     private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor) {
         if (!routeUnitId.equals(operation.unitId())) throw ServiceException.validation("Operation unitId does not match route");
-        access.require(routeUnitId, actor, WorkbookAclRole.EDITOR);
+        WorkbookAclRole actorRole = access.require(routeUnitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow row = store.findForUpdate(routeUnitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + routeUnitId));
 
         OperationRow existing = store.findOperation(operation.operationId()).orElse(null);
@@ -112,7 +115,7 @@ public class WorkbookOperationService {
         if (sequenceExisting != null && !sequenceExisting.operationId().equals(operation.operationId())) {
             throw ServiceException.conflict("clientSequence was already committed");
         }
-        if (row.revision() != operation.baseRevision()) {
+        if (registry.requiresExactBase(operation.mutations()) && row.revision() != operation.baseRevision()) {
             throw ServiceException.conflict("Revision conflict; rebase against revision " + row.revision());
         }
 
@@ -120,9 +123,9 @@ public class WorkbookOperationService {
         JsonNode next = before;
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         for (OperationMutation mutation : operation.mutations()) {
-            List<RangeRef> ranges = registry.resolveRanges(next, mutation);
-            next = registry.applyPublicMutations(next, List.of(mutation));
-            committedMutations.add(CommittedOperationMutation.from(mutation, ranges));
+            MutationPreparation prepared = registry.prepare(next, mutation, actorRole);
+            next = prepared.descriptor().apply(next, mutation);
+            committedMutations.add(CommittedOperationMutation.from(mutation, prepared.affectedRanges()));
         }
 
         long nextRevision = row.revision() + 1;
@@ -204,6 +207,11 @@ public class WorkbookOperationService {
 
     public List<AclEntry> acl(String unitId, String actor) {
         return access.list(unitId, actor);
+    }
+
+    /** Read-only projection; it never accepts a browser-declared actor or role. */
+    public WorkbookAccessProjection accessProjection(String unitId, String actor) {
+        return new WorkbookAccessProjection(unitId, access.currentRole(unitId, actor));
     }
 
     public AclEntry grantAcl(String unitId, String actor, String target, WorkbookAclRole role) {

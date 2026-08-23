@@ -10,6 +10,7 @@ import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
+import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
@@ -104,6 +105,11 @@ public class WorkbookController {
     @GetMapping("/{unitId}/acl")
     public List<AclEntry> acl(@PathVariable String unitId, Authentication authentication) {
         return operations.acl(unitId, ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping("/{unitId}/access")
+    public WorkbookAccessProjection access(@PathVariable String unitId, Authentication authentication) {
+        return operations.accessProjection(unitId, ActorIdentity.subject(authentication));
     }
 
     @PutMapping("/{unitId}/acl/{subject}")

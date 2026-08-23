@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
 function selectRange(
-  app: SpreadsheetApplication,
+  app: WorkbookSession,
   startRow: number,
   startColumn: number,
   endRow: number,
   endColumn: number,
 ): void {
   const sheetId = app.getActiveSheetId();
-  app.execute('selection.set', {
+  app.runCommand('selection.set', {
     sheetId,
     ranges: [{ sheetId, startRow, endRow, startColumn, endColumn }],
     primaryRangeIndex: 0,
@@ -19,9 +19,9 @@ function selectRange(
   });
 }
 
-describe('SpreadsheetApplication data tools integration', () => {
+describe('WorkbookSession data tools integration', () => {
   it('textToColumnsFromSelection splits delimited text into columns', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -47,7 +47,7 @@ describe('SpreadsheetApplication data tools integration', () => {
   });
 
   it('removeDuplicatesFromSelection keeps unique rows', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -71,7 +71,7 @@ describe('SpreadsheetApplication data tools integration', () => {
   });
 
   it('groupRowsFromSelection adds an outline group to the sheet model', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     selectRange(app, 1, 0, 4, 3);
     app.groupRowsFromSelection();
@@ -84,7 +84,7 @@ describe('SpreadsheetApplication data tools integration', () => {
   });
 
   it('transposeSelection swaps rows and columns through matrix.transpose', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -106,7 +106,7 @@ describe('SpreadsheetApplication data tools integration', () => {
   });
 
   it('applyDataSubtotal writes grouped summary rows', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,

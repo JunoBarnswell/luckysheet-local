@@ -7,6 +7,8 @@ export * from './errors';
 export * from './evaluator';
 export * from './formula-engine';
 export * from './calculation-worker-entry';
+export * from './calculation-browser-task-port';
+export * from './calculation-state';
 export * from './functions';
 export * from './defined-names';
 export * from './formula-analysis';
@@ -17,7 +19,6 @@ export * from './values';
 export { type SpillModel, spillBlocked, STANDARD_FORMULA_ERRORS } from './spill';
 export * from './sheet-table-resolver';
 export * from './calculation-task-port';
-export * from './capabilities';
 export {
   anchorDisplayValue,
   isSpillChild,

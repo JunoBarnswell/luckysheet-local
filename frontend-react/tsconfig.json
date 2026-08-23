@@ -16,21 +16,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "@react-sheets/core-model": ["packages/core-model/src/index.ts"],
-      "@react-sheets/command-runtime": ["packages/command-runtime/src/index.ts"],
-      "@react-sheets/protocol": ["packages/protocol/src/index.ts"],
-      "@react-sheets/render-engine": ["packages/render-engine/src/index.ts"],
-      "@react-sheets/formula-engine": ["packages/formula-engine/src/index.ts"],
-      "@react-sheets/ui-system": ["packages/ui-system/src/index.ts"],
-      "@react-sheets/sheet-features": ["packages/sheet-features/src/index.ts"],
-      "@react-sheets/number-format": ["packages/number-format/src/index.ts"],
-      "@react-sheets/spreadsheet-app": ["packages/spreadsheet-app/src/index.ts"],
-      "@react-sheets/exchange-xlsx": ["packages/exchange-xlsx/src/index.ts"],
-      "@react-sheets/*": ["packages/*/src/index.ts"]
-    }
+    "jsx": "react-jsx"
   },
   "include": ["apps", "packages", "tools", "vite.config.ts", "playwright.config.ts", "e2e"]
 }

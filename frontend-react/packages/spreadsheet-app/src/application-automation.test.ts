@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 import { SAMPLE_AUTOMATION_SCRIPT } from './features/automation';
 
-describe('SpreadsheetApplication automation integration', () => {
+describe('WorkbookSession automation integration', () => {
   it('runs scripts through automation.run command path', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     app.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.cells.get(0, 0)?.value, 'Automated');
@@ -14,7 +14,7 @@ describe('SpreadsheetApplication automation integration', () => {
   });
 
   it('records commands into facade script text', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     app.startAutomationRecording();
     app.runCommand('sheet.cell.set', {
       sheetId: app.getActiveSheetId(),
@@ -29,8 +29,9 @@ describe('SpreadsheetApplication automation integration', () => {
   });
 
   it('blocks automation.run for viewers', () => {
-    const app = new SpreadsheetApplication();
-    app.setShareRole('viewer');
+    const app = new WorkbookSession();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
     app.runAutomationScript(SAMPLE_AUTOMATION_SCRIPT);
     assert.equal(app.getUiSnapshot().lastScriptResult, null);
     assert.match(app.getUiSnapshot().notice, /permission|viewer|script/i);

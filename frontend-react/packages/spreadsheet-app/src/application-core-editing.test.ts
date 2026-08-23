@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { copyRangeToClipboardData } from '@react-sheets/sheet-features';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-function selectCell(app: SpreadsheetApplication, row: number, column: number): void {
+function selectCell(app: WorkbookSession, row: number, column: number): void {
   const sheetId = app.getActiveSheetId();
-  app.execute('selection.set', {
+  app.runCommand('selection.set', {
     sheetId,
     ranges: [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }],
     primaryRangeIndex: 0,
@@ -14,15 +14,15 @@ function selectCell(app: SpreadsheetApplication, row: number, column: number): v
   });
 }
 
-describe('SpreadsheetApplication core editing integration', () => {
+describe('WorkbookSession core editing integration', () => {
   it('selectAddress jumps to the requested cell', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     assert.equal(app.selectAddress('C3'), true);
     assert.equal(app.getUiSnapshot().activeCell, 'C3');
   });
 
   it('paste special values copies values without formulas', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -42,7 +42,7 @@ describe('SpreadsheetApplication core editing integration', () => {
   });
 
   it('formatCells applies number format through sheet.format.set', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -58,7 +58,7 @@ describe('SpreadsheetApplication core editing integration', () => {
   });
 
   it('freezeAtPrimary updates worksheet freeze panes', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     selectCell(app, 2, 1);
     app.freezeAtPrimary();
@@ -69,7 +69,7 @@ describe('SpreadsheetApplication core editing integration', () => {
   });
 
   it('duplicateSheet creates a copy and switches to it', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sourceId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId: sourceId,
@@ -90,7 +90,7 @@ describe('SpreadsheetApplication core editing integration', () => {
   });
 
   it('selectSheet updates only transient workbook session state', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sourceId = app.getActiveSheetId();
     app.runCommand('sheet.add', { id: 'sheet-2', name: 'Second' });
 
@@ -101,7 +101,7 @@ describe('SpreadsheetApplication core editing integration', () => {
   });
 
   it('shiftCells down moves cell contents within the selected range', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -115,7 +115,7 @@ describe('SpreadsheetApplication core editing integration', () => {
       column: 0,
       value: { value: 'bottom' },
     });
-    app.execute('selection.set', {
+    app.runCommand('selection.set', {
       sheetId,
       ranges: [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }],
       primaryRangeIndex: 0,
@@ -130,7 +130,7 @@ describe('SpreadsheetApplication core editing integration', () => {
   });
 
   it('undo reverts the last core editing mutation', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,

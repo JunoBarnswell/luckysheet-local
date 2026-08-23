@@ -122,6 +122,26 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
   assert.equal(headers.has('authorization'), false);
 });
 
+test('WorkbookApiClient accepts access roles only from the server projection', async () => {
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor' });
+
+  const malformed = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'ownerish' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  await assert.rejects(() => malformed.getAccess('unit-access'), /invalid role/);
+});
+
 test('history restore request is target-revision-only and client API posts no snapshot', async () => {
   assert.deepEqual(validateHistoryRestoreRequest({ targetRevision: 3, reason: 'rollback' }), {
     targetRevision: 3,

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication drawing integration', () => {
+describe('WorkbookSession drawing integration', () => {
   it('addShape routes through the canonical drawing aggregate', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.addShape({
       id: 'draw-shape-test-1',
@@ -45,7 +45,7 @@ describe('SpreadsheetApplication drawing integration', () => {
   });
 
   it('insertQuickShape creates a drawable rectangle', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     app.insertQuickShape('rectangle');
     const snapshot = app.getUiSnapshot();
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());

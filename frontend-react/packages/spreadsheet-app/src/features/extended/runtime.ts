@@ -1,11 +1,6 @@
 import type { WorkbookModel } from '@react-sheets/core-model';
 import type { FormulaEngine } from '@react-sheets/formula-engine';
 import {
-  CapabilityRegistry,
-  type CapabilityDescriptor,
-  type PlatformCapability,
-} from './index';
-import {
   planDataTable,
   planGoalSeek,
   planScenario,
@@ -16,11 +11,6 @@ import {
   type DataTableParams,
   type DataTableResult,
 } from './what-if';
-
-export interface ExtendedSnapshot {
-  capabilities: CapabilityDescriptor[];
-  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
-}
 
 /**
  * Read-only host API.  What-if calculation is delegated to the isolated
@@ -53,13 +43,6 @@ export function runDataTable(
   params: DataTableParams,
 ): DataTableResult {
   return planDataTable(workbook, sheetId, params).result;
-}
-
-export function evaluateCapability(
-  registry: CapabilityRegistry,
-  id: PlatformCapability,
-): { canEnable: boolean; reason?: string } {
-  return registry.evaluate(id);
 }
 
 export function summarizeGoalSeekResult(result: GoalSeekResult): string {

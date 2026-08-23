@@ -5,11 +5,11 @@ import { SheetTabs } from "./components/SheetTabs";
 import { StatusBar } from "./components/StatusBar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { parseRangeInput } from "./domain/range-input";
-import type { CommandDescriptor } from "./domain/command-descriptor";
+import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
-  getInitialAppPhase,
-  useSpreadsheetApp,
+  getInitialSessionPhase,
+  useWorkbookSession,
   type SelectionState,
   type SidebarPanelId,
   type UiSessionIntent,
@@ -33,7 +33,7 @@ const WorkbookCatalog = lazy(() => import("./components/WorkbookCatalog").then((
 const SheetCanvas = lazy(() => import("./components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
 function WorkspaceApp() {
-  const { app, snapshot: state } = useSpreadsheetApp({ initialPhase: getInitialAppPhase() });
+  const { session, snapshot: state } = useWorkbookSession({ initialPhase: getInitialSessionPhase() });
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const previousPanelRef = useRef(state.activePanel);
@@ -43,12 +43,12 @@ function WorkspaceApp() {
     persistLocale(nextLocale);
   };
 
-  const executeCommand = (descriptor: CommandDescriptor) => {
-    app.execute(descriptor.commandId, descriptor.params);
+  const dispatchCommand = (descriptor: CommandDescriptor) => {
+    session.dispatch(descriptor);
   };
 
   const dispatchSessionIntent = (intent: UiSessionIntent) => {
-    app.dispatchUiSessionIntent(intent);
+    session.dispatchUiSessionIntent(intent);
   };
 
   useEffect(() => {
@@ -58,12 +58,12 @@ function WorkspaceApp() {
     previousPanelRef.current = state.activePanel;
   }, [state.activePanel]);
 
-  const copyWorkbookLink = () => { void app.createGuestShareLink('editor'); };
+  const copyWorkbookLink = () => { void session.createGuestShareLink('editor'); };
 
-  const saveWorkbook = () => { void app.saveWorkbook("Ribbon save"); };
+  const saveWorkbook = () => { void session.saveWorkbook("Ribbon save"); };
 
   const exportXlsx = async () => {
-    const exported = await app.exportXlsxWorkbook();
+    const exported = await session.exportXlsxWorkbook();
     if (!exported) return;
     const binary = window.atob(exported.base64);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -86,7 +86,7 @@ function WorkspaceApp() {
         const bytes = new Uint8Array(buffer);
         let binary = "";
         for (const byte of bytes) binary += String.fromCharCode(byte);
-        return app.importXlsxBase64(window.btoa(binary), file.name);
+        return session.importXlsxBase64(window.btoa(binary), file.name);
       });
     };
     input.click();
@@ -101,7 +101,7 @@ function WorkspaceApp() {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   };
   const buildQuickPivotCommand = (): CommandDescriptor | undefined => {
-    const fields = app.getPivotFieldCatalog(pivotSourceRange);
+    const fields = session.getPivotFieldCatalog(pivotSourceRange);
     const rowField = fields.find((field) => field.dataType !== "number")?.name ?? fields[0]?.name;
     const valueField = fields.find((field) => field.dataType === "number")?.name ?? fields[0]?.name;
     if (!rowField || !valueField) return undefined;
@@ -238,7 +238,7 @@ function WorkspaceApp() {
   const [activePivotId, setActivePivotId] = useState<string>();
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
-  const corePivotFields = pivotTree?.fields.fields ?? app.getPivotFieldCatalog(pivotSourceRange);
+  const corePivotFields = pivotTree?.fields.fields ?? session.getPivotFieldCatalog(pivotSourceRange);
   const pivotFields: PivotFieldDefinition[] = corePivotFields;
   const pivotResult: PivotPanelResult | undefined = pivotTree
     ? { rowCount: pivotTree.rows.length, columnCount: pivotTree.columnPaths.length, tree: pivotTree, summary: `${pivotTree.rows.length} row groups × ${pivotTree.columnPaths.length || 1} column groups` }
@@ -255,12 +255,12 @@ function WorkspaceApp() {
   };
   const updatePivotLayout = (nextLayout: PivotLayout) => {
     if (!activePivot) return;
-    executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, layout: nextLayout } });
-    app.notify("Pivot layout updated");
+    dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, layout: nextLayout } });
+    session.notify("Pivot layout updated");
   };
 
   const createPivot = () => {
-    const id = app.insertQuickPivot();
+    const id = session.insertQuickPivot();
     if (id) setActivePivotId(id);
   };
 
@@ -315,7 +315,7 @@ function WorkspaceApp() {
       if (existing?.kind === "manual") existing.selected = [...selectedValues];
       else next.filters.push({ kind: "manual", field: fieldId, selected: [...selectedValues] });
       updatePivotLayout(next);
-      app.notify("Pivot filter updated");
+      session.notify("Pivot filter updated");
     },
     onSortChange: (fieldId, direction) => {
       if (!activePivot) return;
@@ -339,16 +339,16 @@ function WorkspaceApp() {
     },
     onRefresh: () => {
       if (!activePivot) return;
-      executeCommand({ commandId: "pivot.refresh", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, refreshRevision: (activePivot.refreshRevision ?? 0) + 1, lastRefreshedAt: new Date().toISOString() } });
+      dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, refreshRevision: (activePivot.refreshRevision ?? 0) + 1, lastRefreshedAt: new Date().toISOString() } });
     },
     onSourceRangeChange: (sourceRange) => {
       if (!activePivot) return;
       const parsed = parseRangeInput(sourceRange, activePivot.sheetId);
       if (!parsed) {
-        app.notify("Invalid pivot source range");
+        session.notify("Invalid pivot source range");
         return;
       }
-      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, sourceRange: { sheetId: activePivot.sheetId, ...parsed } } });
+      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, sourceRange: { sheetId: activePivot.sheetId, ...parsed } } });
     },
     onLayoutChange: (layout) => {
       if (!activePivot) return;
@@ -368,28 +368,28 @@ function WorkspaceApp() {
     },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
-      const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
+      const connectedPivotIds = session.getConnectedPivotIds(activePivot.sourceRange);
       if (enabled) {
-        executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, slicers: [...(activePivot.slicers ?? []), { id: `slicer-${fieldId}`, field: fieldId, selected: [], connectedPivotIds }] } });
+        dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, slicers: [...(activePivot.slicers ?? []), { id: `slicer-${fieldId}`, field: fieldId, selected: [], connectedPivotIds }] } });
         return;
       }
-      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, slicers: (activePivot.slicers ?? []).filter((slicer) => slicer.field !== fieldId) } });
+      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, slicers: (activePivot.slicers ?? []).filter((slicer) => slicer.field !== fieldId) } });
     },
     onTimelineChange: (fieldId) => {
       if (!activePivot) return;
-      const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
+      const connectedPivotIds = session.getConnectedPivotIds(activePivot.sourceRange);
       if (!fieldId) {
-        executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [] } });
+        dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [] } });
         return;
       }
-      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds }] } });
+      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds }] } });
     },
     onTimelineRangeChange: (start, end) => {
       if (!activePivot) return;
       const timelineFieldId = activePivot.timelines?.[0]?.field;
       if (!timelineFieldId) return;
-      const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
-      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${timelineFieldId}`, field: timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds }] } });
+      const connectedPivotIds = session.getConnectedPivotIds(activePivot.sourceRange);
+      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${timelineFieldId}`, field: timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds }] } });
     },
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
@@ -411,8 +411,8 @@ function WorkspaceApp() {
         title: chart.title,
         sourceRanges: [activePivot.sourceRange],
       };
-      executeCommand({ commandId: "chart.insert", params: { sheetId: activePivot.sheetId, drawing, payload } });
-      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }] } });
+      dispatchCommand({ commandId: "chart.insert", params: { sheetId: activePivot.sheetId, drawing, payload } });
+      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }] } });
     },
   };
   const pivotPanelState: PivotPanelState = {
@@ -446,7 +446,7 @@ function WorkspaceApp() {
   const applySelection = (selection: SelectionState) => {
     const range = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
     if (!range) return;
-    app.selectRange(
+    session.selectRange(
       { startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn },
       selection.ranges.length > 1 ? "add" : "replace",
     );
@@ -471,13 +471,13 @@ function WorkspaceApp() {
             disabled={isBusy}
             formula={state.formulaDraft}
             locale={locale}
-            onCancel={app.cancelEdit}
-            onChange={app.setFormulaDraft}
+            onCancel={session.cancelEdit}
+            onChange={session.setFormulaDraft}
             onCommit={() => {
-              if (state.editingCell) app.commitEdit("down");
-              else app.commitFormula();
+              if (state.editingCell) session.commitEdit("down");
+              else session.commitFormula();
             }}
-            onNameBoxCommit={(value) => app.selectAddress(value)}
+            onNameBoxCommit={(value) => session.selectAddress(value)}
             onOpenWizard={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
             phase={state.phase}
           />
@@ -502,7 +502,7 @@ function WorkspaceApp() {
                 </Button>
                 <Button size="sm" variant="ghost" className="justify-start" onClick={() => {
                   const nextName = window.prompt('Enter workbook name:', state.workbookName);
-                  if (nextName?.trim()) app.renameWorkbook(nextName.trim());
+                  if (nextName?.trim()) session.renameWorkbook(nextName.trim());
                   close();
                 }}>
                   Rename workbook
@@ -527,19 +527,19 @@ function WorkspaceApp() {
           <Ribbon
             activeTab={state.ribbonTab}
             locale={locale}
-            onCommand={executeCommand}
+            onCommand={dispatchCommand}
             onSessionIntent={dispatchSessionIntent}
-            onCopy={() => app.copy()}
-            onCut={() => app.cut()}
-            onPaste={() => app.paste()}
-            onUndo={() => app.undo()}
-            onRedo={() => app.redo()}
+            onCopy={() => session.copy()}
+            onCut={() => session.cut()}
+            onPaste={() => session.paste()}
+            onUndo={() => session.undo()}
+            onRedo={() => session.redo()}
             onSave={saveWorkbook}
             onExportXlsx={() => void exportXlsx()}
             onImportXlsx={importXlsx}
-            onRecalculate={() => app.recalculateFormulas()}
+            onRecalculate={() => session.recalculateFormulas()}
             onAutoSum={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
-            onFreezeAtPrimary={() => app.freezeAtPrimary()}
+            onFreezeAtPrimary={() => session.freezeAtPrimary()}
             onCreatePivot={buildQuickPivotCommand}
             onCreateChart={buildQuickChartCommand}
             onCreateSparkline={buildQuickSparklineCommand}
@@ -547,8 +547,8 @@ function WorkspaceApp() {
             onBringDrawingForward={() => buildDrawingCommand("drawing.zorder", "forward")}
             onSendDrawingBackward={() => buildDrawingCommand("drawing.zorder", "backward")}
             onRemoveDrawing={() => buildDrawingCommand("drawing.remove")}
-            onCreateSheetTable={() => app.createSheetTableFromSelection()}
-            onCreateDataTable={() => app.createDataTableFromSelection()}
+            onCreateSheetTable={() => session.createSheetTableFromSelection()}
+            onCreateDataTable={() => session.createDataTableFromSelection()}
             onToggleSheetTableTotalRow={buildTotalRowCommand}
             onApplyFilterSelection={buildFilterSelectionCommand}
             onClearFilter={buildClearFilterCommand}
@@ -559,9 +559,9 @@ function WorkspaceApp() {
             onSubtotal={buildSubtotalCommand}
             onRemoveDuplicates={buildRemoveDuplicatesCommand}
             onTextToColumns={buildTextToColumnsCommand}
-            onTabChange={(tab) => app.setRibbonTab(tab)}
+            onTabChange={(tab) => session.setRibbonTab(tab)}
             phase={state.phase}
-            canExecute={app.canExecute.bind(app)}
+            canExecute={session.canExecute.bind(session)}
           />
         }
         saveState={state.saveState}
@@ -570,14 +570,14 @@ function WorkspaceApp() {
             activeSheetId={state.activeSheetId}
             locale={locale}
             disabled={isBusy}
-            onAdd={app.addSheet}
-            onSelect={app.selectSheet}
-            onRenameSheet={app.renameSheet}
-            onDeleteSheet={app.deleteSheet}
-            onDuplicateSheet={app.duplicateSheet}
-            onHideSheet={app.hideSheet}
-            onSetTabColor={app.setSheetTabColor}
-            onMoveSheet={app.moveSheet}
+            onAdd={session.addSheet}
+            onSelect={session.selectSheet}
+            onRenameSheet={session.renameSheet}
+            onDeleteSheet={session.deleteSheet}
+            onDuplicateSheet={session.duplicateSheet}
+            onHideSheet={session.hideSheet}
+            onSetTabColor={session.setSheetTabColor}
+            onMoveSheet={session.moveSheet}
             sheets={state.sheets}
           />
         }
@@ -585,8 +585,8 @@ function WorkspaceApp() {
           <StatusBar
             activeCell={state.activeCell}
             locale={locale}
-            onOpenShortcuts={() => app.notify("Shortcuts: Arrows / Tab / Enter / F2 / F4 / Ctrl+C/X/V/Z/Y/B/I/U")}
-            onZoomChange={app.setZoom}
+            onOpenShortcuts={() => session.notify("Shortcuts: Arrows / Tab / Enter / F2 / F4 / Ctrl+C/X/V/Z/Y/B/I/U")}
+            onZoomChange={session.setZoom}
             phase={state.phase}
             saveState={state.saveState}
             sheetCount={state.sheets.length}
@@ -621,42 +621,42 @@ function WorkspaceApp() {
               pivotResults={state.selectedSheet.pivotResults}
               sparklines={state.selectedSheet.sparklines}
               onSelectionChange={applySelection}
-              onExtendSelection={(row, column) => app.extendSelectionTo(row, column)}
-              onMovePrimary={(rowDelta, columnDelta, opts) => app.movePrimary(rowDelta, columnDelta, opts)}
-              onCommitCell={(value) => app.commitFormula(value)}
-              onBeginEdit={(initialText) => app.beginEdit(initialText)}
-              onCancelEdit={app.cancelEdit}
-              onCommitEdit={(moveAfter) => app.commitEdit(moveAfter ?? "down")}
-              onFormulaDraftChange={app.setFormulaDraft}
-              onAppendFormulaDraft={app.appendFormulaDraft.bind(app)}
-              onInsertRef={app.insertRefIntoDraft}
-              onToggleAbsolute={app.toggleAbsoluteReference}
-              onJumpEdge={(direction, extend) => app.jumpEdge(direction, extend)}
-              onSelectAll={app.selectAll}
-              onResizeRow={app.resizeRow}
-              onResizeColumn={app.resizeColumn}
-              onFillRange={app.fillRange}
-              onFloatingSelect={(hit) => app.setSelectedFloatingId(hit ? hit.id : null)}
-              onFloatingMove={(drawingId, bounds, rotation) => executeCommand({
+              onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
+              onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
+              onCommitCell={(value) => session.commitFormula(value)}
+              onBeginEdit={(initialText) => session.beginEdit(initialText)}
+              onCancelEdit={session.cancelEdit}
+              onCommitEdit={(moveAfter) => session.commitEdit(moveAfter ?? "down")}
+              onFormulaDraftChange={session.setFormulaDraft}
+              onAppendFormulaDraft={session.appendFormulaDraft.bind(session)}
+              onInsertRef={session.insertRefIntoDraft}
+              onToggleAbsolute={session.toggleAbsoluteReference}
+              onJumpEdge={(direction, extend) => session.jumpEdge(direction, extend)}
+              onSelectAll={session.selectAll}
+              onResizeRow={session.resizeRow}
+              onResizeColumn={session.resizeColumn}
+              onFillRange={session.fillRange}
+              onFloatingSelect={(hit) => session.setSelectedFloatingId(hit ? hit.id : null)}
+              onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({
                 commandId: "drawing.move",
                 params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } },
               })}
-              onFloatingRemove={(drawingId) => executeCommand({
+              onFloatingRemove={(drawingId) => dispatchCommand({
                 commandId: "drawing.remove",
                 params: { sheetId: state.activeSheetId, drawingId },
               })}
-              onCommand={executeCommand}
-              onCopy={() => app.copy()}
-              onCut={() => app.cut()}
-              onPaste={() => app.paste()}
-              onUndo={() => app.undo()}
-              onRedo={() => app.redo()}
+              onCommand={dispatchCommand}
+              onCopy={() => session.copy()}
+              onCut={() => session.cut()}
+              onPaste={() => session.paste()}
+              onUndo={() => session.undo()}
+              onRedo={() => session.redo()}
               onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
-              onApplyFilter={(column, patch) => app.applyFilter(column, patch)}
-              onToggleOutline={(groupId) => app.toggleOutlineGroup(groupId)}
-              getValidationList={app.getValidationAt}
-              onRetry={app.retry}
-              onCreateSheet={app.addSheet}
+              onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
+              onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}
+              getValidationList={session.getValidationAt}
+              onRetry={session.retry}
+              onCreateSheet={session.addSheet}
             />
             </Suspense>
           </Box>
@@ -672,7 +672,7 @@ function WorkspaceApp() {
             locale={locale}
             selectedRange={selectedRange}
             onPanelChange={selectPanel}
-            onRetry={app.retry}
+            onRetry={session.retry}
             phase={state.phase}
             sheet={state.selectedSheet}
             sheetId={state.activeSheetId}
@@ -684,7 +684,7 @@ function WorkspaceApp() {
             pivotFieldCatalog={pivotFields}
             pivotResult={pivotResult}
             onShowPivotDetails={(paths) => {
-              if (activePivot) app.showPivotDetails(activePivot.id, paths);
+              if (activePivot) session.showPivotDetails(activePivot.id, paths);
             }}
             pivotPanelState={pivotPanelState}
             pivotCallbacks={pivotCallbacks}
@@ -695,41 +695,40 @@ function WorkspaceApp() {
             remoteRevisions={state.remoteRevisions}
             historyPreviewRevision={state.historyPreviewRevision}
             canRestoreHistory={state.permissions.restore}
-            onUndoToHistory={app.undoToHistoryIndex.bind(app)}
-            onRestoreRevision={(revision) => { void app.restoreToRevision(revision); }}
-            onPreviewRevision={(revision) => { void app.previewRevision(revision); }}
-            onClearHistoryPreview={app.clearHistoryPreview.bind(app)}
-            onRefreshRevisions={() => { void app.refreshRevisionLog(); }}
+            onUndoToHistory={session.undoToHistoryIndex.bind(session)}
+            onRestoreRevision={(revision) => { void session.restoreToRevision(revision); }}
+            onPreviewRevision={(revision) => { void session.previewRevision(revision); }}
+            onClearHistoryPreview={session.clearHistoryPreview.bind(session)}
+            onRefreshRevisions={() => { void session.refreshRevisionLog(); }}
             compatibilityReport={state.compatibilityReport}
-            onClearCompatibilityReport={app.clearCompatibilityReport.bind(app)}
+            onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
             tables={state.tables}
-            onReadDataRows={app.readDataTable.bind(app)}
-            onRemoveDataTable={app.removeDataTable.bind(app)}
-            onCommand={executeCommand}
-            onAddSparkline={app.addSparkline}
-            onRemoveSparkline={app.removeSparkline}
-            onAddConditionalFormat={app.addConditionalFormat}
-            onRemoveConditionalFormat={app.removeConditionalFormat}
-            onAddDataValidation={app.addDataValidation}
-            onRemoveDataValidation={app.removeDataValidation}
-            onPrint={app.printWorkbook}
-            onExportPdf={app.exportPdf}
+            onReadDataRows={session.readDataTable.bind(session)}
+            onRemoveDataTable={session.removeDataTable.bind(session)}
+            onCommand={dispatchCommand}
+            onAddSparkline={session.addSparkline}
+            onRemoveSparkline={session.removeSparkline}
+            onAddConditionalFormat={session.addConditionalFormat}
+            onRemoveConditionalFormat={session.removeConditionalFormat}
+            onAddDataValidation={session.addDataValidation}
+            onRemoveDataValidation={session.removeDataValidation}
+            onPrint={session.printWorkbook}
+            onExportPdf={session.exportPdf}
             printPageCount={state.printPageCount}
             queryConnectors={state.queryConnectors}
             loadedQueries={state.loadedQueries}
             lastQueryResult={state.lastQueryResult}
             canQuery={state.permissions.query}
-            onLoadQuery={app.loadQuery.bind(app)}
-            onRefreshQuery={app.refreshQuery.bind(app)}
-            onTestQueryConnection={app.testQueryConnection.bind(app)}
+            onLoadQuery={session.loadQuery.bind(session)}
+            onRefreshQuery={session.refreshQuery.bind(session)}
+            onTestQueryConnection={session.testQueryConnection.bind(session)}
             automationRecording={state.automationRecording}
             recordedScript={state.recordedScript}
             lastScriptResult={state.lastScriptResult}
             canRunScripts={state.permissions.script}
-            onRunAutomationScript={app.runAutomationScript.bind(app)}
-            onStartAutomationRecording={app.startAutomationRecording.bind(app)}
-            onStopAutomationRecording={app.stopAutomationRecording.bind(app)}
-            platformCapabilities={state.platformCapabilities}
+            onRunAutomationScript={session.runAutomationScript.bind(session)}
+            onStartAutomationRecording={session.startAutomationRecording.bind(session)}
+            onStopAutomationRecording={session.stopAutomationRecording.bind(session)}
             lastWhatIfMessage={
               state.lastWhatIfResult && 'message' in state.lastWhatIfResult
                 ? state.lastWhatIfResult.message
@@ -739,14 +738,14 @@ function WorkspaceApp() {
             }
             canRunExtended={state.permissions.script}
             onGoalSeek={(params) => {
-              app.runGoalSeek({
+              session.runGoalSeek({
                 setCell: { row: params.setRow, column: params.setColumn },
                 toValue: params.targetValue,
                 byChangingCell: { row: params.changingRow, column: params.changingColumn },
               });
             }}
             onRunDataTable={(params) => {
-              app.runDataTableAnalysis({
+              session.runDataTableAnalysis({
                 tableRange: params.tableRange,
                 ...(params.inputMode === 'column'
                   ? { columnInputCell: params.inputCell }
@@ -754,7 +753,7 @@ function WorkspaceApp() {
               });
             }}
             onRunScenario={(params) => {
-              app.runScenarioAnalysis({
+              session.runScenarioAnalysis({
                 id: `scenario-${Date.now()}`,
                 name: params.name,
                 changingCells: [{
@@ -765,18 +764,14 @@ function WorkspaceApp() {
                 resultCells: [{ row: params.resultCell.row, column: params.resultCell.column }],
               });
             }}
-            onEvaluateCapability={async (capability) => {
-              const result = app.evaluatePlatformCapability(capability as import('@react-sheets/spreadsheet-app').PlatformCapability);
-              return { ok: result.canEnable, message: result.reason };
-            }}
-            onAddComment={app.addComment}
-            onReplyComment={app.replyComment}
-            onResolveComment={app.resolveComment}
-            onRemoveComment={app.removeComment}
-            onAddNote={app.addNote}
-            onRemoveNote={app.removeNote}
-            onSetHyperlink={app.setHyperlink}
-            onRemoveHyperlink={app.removeHyperlink}
+            onAddComment={session.addComment}
+            onReplyComment={session.replyComment}
+            onResolveComment={session.resolveComment}
+            onRemoveComment={session.removeComment}
+            onAddNote={session.addNote}
+            onRemoveNote={session.removeNote}
+            onSetHyperlink={session.setHyperlink}
+            onRemoveHyperlink={session.removeHyperlink}
           />
           </Suspense>
         </SidebarShell>
@@ -786,56 +781,56 @@ function WorkspaceApp() {
       <Suspense fallback={null}>
       <FunctionWizardDialog
         open={state.showFunctionWizard}
-        onClose={app.closeFunctionWizard}
+        onClose={session.closeFunctionWizard}
         onInsertFormula={(formula) => {
-          app.setFormulaDraft(formula);
-          app.commitFormula(formula);
+          session.setFormulaDraft(formula);
+          session.commitFormula(formula);
         }}
       />
 
       <SortDialog
         open={state.showSortDialog}
         columns={state.selectedSheet.columns}
-        onClose={app.closeSortDialog}
-        onSort={(criteria, hasHeader) => app.sortRange(criteria, hasHeader)}
+        onClose={session.closeSortDialog}
+        onSort={(criteria, hasHeader) => session.sortRange(criteria, hasHeader)}
       />
 
       <FindReplaceDialog
         open={state.showFindReplace}
         initialFind={state.findQuery}
-        onClose={app.closeFindReplace}
-        onReplaceAll={(params) => app.findReplace(params)}
+        onClose={session.closeFindReplace}
+        onReplaceAll={(params) => session.findReplace(params)}
       />
 
       <GoToDialog
         open={state.showGoTo}
-        onClose={app.closeGoTo}
-        onGoTo={(reference) => app.selectAddress(reference)}
-        onGoToSpecial={(kind) => app.goToSpecial(kind)}
+        onClose={session.closeGoTo}
+        onGoTo={(reference) => session.selectAddress(reference)}
+        onGoToSpecial={(kind) => session.goToSpecial(kind)}
       />
 
       <PasteSpecialDialog
         open={state.showPasteSpecial}
-        onClose={app.closePasteSpecial}
-        onPaste={(mode) => app.pasteSpecial(mode)}
+        onClose={session.closePasteSpecial}
+        onPaste={(mode) => session.pasteSpecial(mode)}
       />
 
       <FormatCellsDialog
         open={state.showFormatCells}
         initial={formatCellsInitial}
-        onClose={app.closeFormatCells}
-        onApply={(draft) => app.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
+        onClose={session.closeFormatCells}
+        onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
       />
 
       <ShiftCellsDialog
         open={state.showShiftCells}
-        onClose={app.closeShiftCells}
-        onShift={(direction) => app.shiftCells(direction)}
+        onClose={session.closeShiftCells}
+        onShift={(direction) => session.shiftCells(direction)}
       />
 
       <PrintPreviewDialog
         open={state.showPrintPreview}
-        onClose={() => app.setShowPrintPreview(false)}
+        onClose={() => session.setShowPrintPreview(false)}
         sheetId={state.activeSheetId}
         rowCount={state.selectedSheet.rowCount}
         columnCount={state.selectedSheet.columnCount}

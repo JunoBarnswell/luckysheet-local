@@ -1,10 +1,8 @@
 import React, { useState } from 'react';
-import type { CapabilityDescriptor, PlatformCapability } from '@react-sheets/spreadsheet-app';
 import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { parseRangeInput } from '../../domain/range-input';
 
 export interface ExtendedPanelProps {
-  capabilities: readonly CapabilityDescriptor[];
   lastWhatIfMessage?: string | null;
   canRunExtended: boolean;
   sheetId: string;
@@ -26,7 +24,6 @@ export interface ExtendedPanelProps {
     changingValue: number;
     resultCell: { row: number; column: number };
   }) => void;
-  onEvaluateCapability: (capability: PlatformCapability) => Promise<{ ok: boolean; message?: string }>;
   onClose?: () => void;
 }
 
@@ -41,10 +38,8 @@ function parseCell(input: string): { row: number; column: number } | null {
 
 export function ExtendedPanel({
   canRunExtended,
-  capabilities,
   lastWhatIfMessage,
   onClose,
-  onEvaluateCapability,
   onGoalSeek,
   onRunDataTable,
   onRunScenario,
@@ -67,7 +62,7 @@ export function ExtendedPanel({
   return (
     <Panel className="h-full border-0 bg-transparent shadow-none">
       <PanelHeader className="h-12 border-b border-slate-200 px-4">
-        <PanelTitle size="sm">Extended Capabilities</PanelTitle>
+        <PanelTitle size="sm">What-If Analysis</PanelTitle>
       </PanelHeader>
 
       <PanelBody className="p-4">
@@ -233,46 +228,11 @@ export function ExtendedPanel({
             </div>
           ) : null}
 
-          <div>
-            <Text size="xs" weight="semibold" className="mb-2 text-slate-700">Platform Capabilities</Text>
-            <Stack gap="sm">
-              {capabilities.map((capability) => (
-                <Panel key={capability.id} className="shadow-none">
-                  <PanelBody className="p-3">
-                    <Stack gap="xs">
-                      <Text size="sm" weight="semibold">{capability.id}</Text>
-                      <Text size="xs" tone="muted">
-                        {capability.enabled ? 'Enabled' : capability.reason ?? 'Disabled'}
-                      </Text>
-                      {!capability.enabled ? (
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => {
-                            void onEvaluateCapability(capability.id).then((result) => {
-                              setStatus(result.message ?? (result.ok ? 'Can enable' : 'Cannot enable'));
-                            });
-                          }}
-                        >
-                          Evaluate
-                        </Button>
-                      ) : null}
-                    </Stack>
-                  </PanelBody>
-                </Panel>
-              ))}
-            </Stack>
-          </div>
-
           {capabilityStatus ? (
             <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
               {capabilityStatus}
             </div>
           ) : null}
-
-          <Text size="xs" tone="muted">
-            GROUPBY / PIVOTBY matrix functions are available in the formula engine when the capability flag is enabled.
-          </Text>
         </Stack>
       </PanelBody>
 

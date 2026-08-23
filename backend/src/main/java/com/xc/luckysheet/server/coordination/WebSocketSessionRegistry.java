@@ -3,8 +3,10 @@ package com.xc.luckysheet.server.coordination;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
-import com.xc.luckysheet.server.security.GuestShareAuthentication;
-import com.xc.luckysheet.server.service.GuestShareService;
+import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.service.AccessControlService;
+import com.xc.luckysheet.server.service.ActorIdentity;
+import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.web.socket.CloseStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,14 +29,14 @@ public class WebSocketSessionRegistry {
     private static final int MAX_SEEN_EVENTS = 20_000;
 
     private final ObjectMapper mapper;
-    private final GuestShareService guestShares;
+    private final AccessControlService access;
     private final Map<String, Set<WebSocketSession>> sessionsByUnit = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenRevisionOperations = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenEphemeralEvents = new ConcurrentHashMap<>();
 
-    public WebSocketSessionRegistry(ObjectMapper mapper, GuestShareService guestShares) {
+    public WebSocketSessionRegistry(ObjectMapper mapper, AccessControlService access) {
         this.mapper = mapper;
-        this.guestShares = guestShares;
+        this.access = access;
     }
 
     public void join(String unitId, WebSocketSession session) {
@@ -104,24 +106,29 @@ public class WebSocketSessionRegistry {
         }
         for (WebSocketSession peer : sessions) {
             if (peer == origin || !peer.isOpen()) continue;
-            if (!guestIsActive(unitId, peer)) {
-                closeExpiredGuest(peer);
+            if (!sessionCanRead(unitId, peer)) {
+                closeRevokedSession(peer);
                 continue;
             }
             sendQuietly(peer, new TextMessage(json));
         }
     }
 
-    private boolean guestIsActive(String unitId, WebSocketSession session) {
-        if (!(session.getPrincipal() instanceof GuestShareAuthentication guest)) return true;
-        return guestShares.roleFor(unitId, guest.getName()) != null;
+    /** Re-check persistent ACL/share state before every remote delivery. */
+    private boolean sessionCanRead(String unitId, WebSocketSession session) {
+        try {
+            access.require(unitId, ActorIdentity.subject(session.getPrincipal()), WorkbookAclRole.VIEWER);
+            return true;
+        } catch (ServiceException error) {
+            return false;
+        }
     }
 
-    private void closeExpiredGuest(WebSocketSession session) {
+    private void closeRevokedSession(WebSocketSession session) {
         try {
             if (session.isOpen()) session.close(CloseStatus.POLICY_VIOLATION);
         } catch (IOException error) {
-            LOGGER.debug("Guest WebSocket was already closed", error);
+            LOGGER.debug("Revoked WebSocket was already closed", error);
         }
     }
 

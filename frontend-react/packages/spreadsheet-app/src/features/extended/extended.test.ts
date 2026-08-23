@@ -3,19 +3,9 @@ import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
-import { CapabilityRegistry } from './index';
 import { registerExtendedCommands } from './commands';
 
 describe('M18 deterministic what-if commands', () => {
-  it('keeps GROUPBY/PIVOTBY disabled by default', () => {
-    const registry = new CapabilityRegistry();
-    assert.equal(registry.isEnabled('groupby-pivotby'), false);
-    assert.match(registry.get('groupby-pivotby')?.reason ?? '', /disabled|implemented/i);
-    assert.equal(registry.evaluateFormulaFunction('GROUPBY').enabled, false);
-    assert.equal(registry.evaluateFormulaFunction('PIVOTBY').enabled, false);
-    assert.equal(registry.evaluateFormulaFunction('unregistered').enabled, false);
-  });
-
   it('applies scenario writes as one transaction and supports undo', () => {
     const workbook = new WorkbookModel('what-if-scenario', 'What-if');
     const runtime = new CommandRuntime(workbook);

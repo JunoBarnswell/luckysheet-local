@@ -1,0 +1,9 @@
+{
+  "name": "@react-sheets/protocol",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@react-sheets/core-model": "file:../core-model"
+  }
+}

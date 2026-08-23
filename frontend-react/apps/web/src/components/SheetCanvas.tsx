@@ -34,7 +34,7 @@ import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
 import type { PeerCursor, SelectionState, CanvasSheetSnapshot, AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
-import type { CommandDescriptor } from "../domain/command-descriptor";
+import type { CommandDescriptor } from "@react-sheets/command-runtime";
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 

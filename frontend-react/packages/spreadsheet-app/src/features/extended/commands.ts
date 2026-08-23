@@ -1,6 +1,5 @@
 import type { CellData, RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
-import { CapabilityRegistry, type PlatformCapability } from './index';
 import {
   planDataTable,
   planGoalSeek,
@@ -24,10 +23,6 @@ export interface ExtendedScenarioCommandParams {
 
 export interface ExtendedDataTableCommandParams extends DataTableParams {
   sheetId?: string;
-}
-
-export interface ExtendedCapabilityEvaluateParams {
-  capability: PlatformCapability;
 }
 
 function cellRange(sheetId: string, row: number, column: number): RangeRef[] {
@@ -75,10 +70,8 @@ function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
 function commandPlanResult(
   plan: WhatIfPlan,
   definition: unknown,
-  capabilities: CapabilityRegistry,
   context: CommandContext,
 ): CommandResult & { plan: WhatIfPlan } {
-  if (!capabilities.isEnabled('what-if')) throw new Error('What-if capability is disabled');
   const metadata: WhatIfPlanMetadata = {
     schema: 'WhatIfPlan',
     kind: plan.kind,
@@ -105,17 +98,14 @@ function commandPlanResult(
   };
 }
 
-export function registerExtendedCommands(
-  registry: CommandRegistry,
-  capabilities = new CapabilityRegistry(),
-): void {
+export function registerExtendedCommands(registry: CommandRegistry): void {
   ensureCellMutations(registry);
 
   registry.registerCommand<ExtendedGoalSeekCommandParams>({
     id: 'extended.whatIf.goalSeek',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
       const sheetId = params.sheetId ?? context.workbook.primarySheetId;
-      return commandPlanResult(planGoalSeek(context.workbook, sheetId, params), params, capabilities, context);
+      return commandPlanResult(planGoalSeek(context.workbook, sheetId, params), params, context);
     },
   });
 
@@ -123,7 +113,7 @@ export function registerExtendedCommands(
     id: 'extended.whatIf.scenario',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
       const sheetId = params.sheetId ?? context.workbook.primarySheetId;
-      return commandPlanResult(planScenario(context.workbook, sheetId, params.scenario), params.scenario, capabilities, context);
+      return commandPlanResult(planScenario(context.workbook, sheetId, params.scenario), params.scenario, context);
     },
   });
 
@@ -131,20 +121,7 @@ export function registerExtendedCommands(
     id: 'extended.whatIf.dataTable',
     execute(params, context): CommandResult & { plan: WhatIfPlan } {
       const sheetId = params.sheetId ?? context.workbook.primarySheetId;
-      return commandPlanResult(planDataTable(context.workbook, sheetId, params), params, capabilities, context);
-    },
-  });
-
-  registry.registerCommand<ExtendedCapabilityEvaluateParams>({
-    id: 'extended.capability.evaluate',
-    execute(params, context): CommandResult & { capability: ReturnType<CapabilityRegistry['evaluate']> } {
-      const evaluation = capabilities.evaluate(params.capability);
-      return {
-        operationId: context.operationId,
-        mutationCount: 0,
-        affectedRanges: [],
-        capability: evaluation,
-      };
+      return commandPlanResult(planDataTable(context.workbook, sheetId, params), params, context);
     },
   });
 }

@@ -43,7 +43,11 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/health").permitAll()
-                        .requestMatchers("/api/**", "/ws").authenticated()
+                        .requestMatchers("/api/**").authenticated()
+                        // WebSocket upgrades authenticate in the dedicated
+                        // handshake handler because browser WebSocket APIs
+                        // cannot attach a normal Authorization header.
+                        .requestMatchers("/ws").permitAll()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> { }));
         http.addFilterBefore(new GuestShareAuthenticationFilter(shares), BearerTokenAuthenticationFilter.class);

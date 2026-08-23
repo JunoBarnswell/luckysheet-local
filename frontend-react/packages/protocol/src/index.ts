@@ -72,6 +72,12 @@ export interface WorkbookAclRecord {
   updatedAt: string;
 }
 
+/** Server-calculated access projection for the authenticated or guest session. */
+export interface WorkbookAccessResponse {
+  unitId: string;
+  role: WorkbookAclRole;
+}
+
 export interface OperationCommitResponse {
   operation: CommittedOperationEnvelope;
 }
@@ -182,6 +188,18 @@ function validateSnapshotResponse(value: unknown): SnapshotResponse {
     throw new Error('snapshot.response requires a valid revision');
   }
   return { snapshot, revision: Number(input.revision) };
+}
+
+function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('workbook access response must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  if (!isNonEmptyString(input.unitId)) throw new Error('workbook access response requires unitId');
+  if (input.role !== 'owner' && input.role !== 'editor' && input.role !== 'commenter' && input.role !== 'viewer') {
+    throw new Error('workbook access response has an invalid role');
+  }
+  return { unitId: input.unitId, role: input.role };
 }
 
 /** Strict runtime validation used at the REST/WebSocket trust boundary. */
@@ -450,6 +468,11 @@ export class WorkbookApiClient {
     return this.json<SnapshotResponse>(
       `/api/workbooks/${encodeURIComponent(unitId)}/snapshot`,
     );
+  }
+
+  async getAccess(unitId: string): Promise<WorkbookAccessResponse> {
+    const result = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access`);
+    return validateWorkbookAccessResponse(result);
   }
 
   async createWorkbook(snapshot: WorkbookSnapshot): Promise<SnapshotResponse> {

@@ -74,4 +74,43 @@ test.describe('spreadsheet baseline', () => {
     await page.keyboard.press('Control+Z');
     await expect(page.getByTestId('formula-input')).toHaveValue('');
   });
+
+  test('F2 editing keeps Chinese IME text intact before one committed operation', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    await canvas.press('F2');
+    const editor = page.getByLabel('Cell editor');
+    await expect(editor).toBeFocused();
+    await editor.dispatchEvent('compositionstart');
+    await editor.fill('中文公式输入');
+    await editor.dispatchEvent('compositionend');
+    await editor.press('Enter');
+    await canvas.press('ArrowUp');
+    await expect(page.getByTestId('formula-input')).toHaveValue('中文公式输入');
+    await page.keyboard.press('Control+Z');
+    await expect(page.getByTestId('formula-input')).toHaveValue('');
+  });
+
+  test('local formula calculation and IndexedDB restore work without an API request', async ({ page }) => {
+    const apiRequests: string[] = [];
+    let socketCount = 0;
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.startsWith('/api/')) apiRequests.push(request.url());
+    });
+    page.on('websocket', () => { socketCount += 1; });
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    await page.keyboard.type('=1+2');
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('formula-input')).toHaveValue('');
+    await canvas.press('ArrowUp');
+    await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
+
+    await page.reload();
+    await expect(page.getByTestId('app-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    await focusCanvas(page);
+    await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
+    expect(apiRequests).toEqual([]);
+    expect(socketCount).toBe(0);
+  });
 });

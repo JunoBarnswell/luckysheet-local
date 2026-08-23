@@ -22,12 +22,15 @@ describe('permission policy', () => {
   });
 
   it('blocks viewer edits and protected range writes for editors', () => {
-    const permission = new PermissionService();
     const workbook = new WorkbookModel('wb', 'Permission');
-    permission.setShareRole('viewer-1', 'viewer');
-    assert.equal(canExecuteCommand(permission, workbook, 'sheet.cell.set', { row: 0, column: 0, value: { value: 1 } }, 'viewer-1', 'sheet-1').allowed, false);
+    const viewerPermission = new PermissionService();
+    viewerPermission.applyServerAccess('viewer');
+    viewerPermission.setOnline(true);
+    assert.equal(canExecuteCommand(viewerPermission, workbook, 'sheet.cell.set', { row: 0, column: 0, value: { value: 1 } }, 'viewer-1', 'sheet-1').allowed, false);
 
-    permission.setShareRole('editor-1', 'editor');
+    const editorPermission = new PermissionService();
+    editorPermission.applyServerAccess('editor');
+    editorPermission.setOnline(true);
     workbook.getSheet('sheet-1').protectionRules.push({
       id: 'rule-1',
       scope: 'range',
@@ -37,9 +40,9 @@ describe('permission policy', () => {
       allow: {},
       allowedActions: ['format'],
     });
-    const blocked = canExecuteCommand(permission, workbook, 'sheet.cell.set', { row: 1, column: 1, value: { value: 2 } }, 'editor-1', 'sheet-1');
+    const blocked = canExecuteCommand(editorPermission, workbook, 'sheet.cell.set', { row: 1, column: 1, value: { value: 2 } }, 'editor-1', 'sheet-1');
     assert.equal(blocked.allowed, false);
-    const formatAllowed = canExecuteCommand(permission, workbook, 'sheet.style.set', { range: { sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }, style: { bold: true } }, 'editor-1', 'sheet-1');
+    const formatAllowed = canExecuteCommand(editorPermission, workbook, 'sheet.style.set', { range: { sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }, style: { bold: true } }, 'editor-1', 'sheet-1');
     assert.equal(formatAllowed.allowed, true);
   });
 });

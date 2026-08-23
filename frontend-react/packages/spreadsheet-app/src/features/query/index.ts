@@ -1,5 +1,4 @@
 import type { QueryDefinitionSnapshot, TableScalar } from '@react-sheets/core-model';
-import { importXlsx } from '@react-sheets/exchange-xlsx';
 import { validateQuerySteps, type QueryDefinition, type QueryRefreshPolicy, type QueryStep } from './query-steps';
 
 export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'xlsx' | 'sqlite' | 'jdbc';
@@ -255,6 +254,7 @@ export class XlsxDataConnector implements DataConnector {
   private result: QueryResult = { columns: [], rows: [], rowCount: 0 };
   async connect(config: Record<string, unknown>): Promise<void> {
     const bytes = await readBytes(config);
+    const { importXlsx } = await import('@react-sheets/exchange-xlsx');
     const imported = await importXlsx({ fileName: typeof config.fileName === 'string' ? config.fileName : 'query.xlsx', buffer: bytes.slice().buffer as ArrayBuffer, options: { compatibilityTarget: 'A' } });
     const first = imported.snapshot.sheets[0];
     if (!first) throw new Error('XLSX workbook contains no worksheets');

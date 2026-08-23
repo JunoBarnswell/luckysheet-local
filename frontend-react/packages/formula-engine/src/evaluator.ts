@@ -1,10 +1,4 @@
 import type { BinaryOperator, CellAddress, FormulaAst } from './ast';
-import {
-  createFormulaCapabilityError,
-  getFormulaCapability,
-  isFormulaCapabilityEnabled,
-  type FormulaCapabilities,
-} from './capabilities';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
@@ -17,8 +11,6 @@ export interface FormulaEvaluationContext {
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;
-  /** Gated formula capabilities; omitted means all gated functions fail closed. */
-  readonly capabilities?: FormulaCapabilities;
   /** 定义名称解析:返回 undefined 视为 #NAME? */
   resolveName?(name: string): FormulaValue | undefined;
   /** 结构化表引用解析 */
@@ -186,19 +178,21 @@ function evaluateFunction(
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
 ): FormulaValue | EvaluationRange {
-  const capability = getFormulaCapability(name);
-  if (capability && !isFormulaCapabilityEnabled(context.capabilities, capability)) {
-    return createFormulaCapabilityError(name, capability, context.capabilities);
-  }
-
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context);
   if (native !== undefined) return native;
 
-  const fn = getBuiltinFunction(name, context.capabilities);
+  const fn = getBuiltinFunction(name);
   const evaluatedArgs: FormulaValue[] = [];
   const rawRanges: EvaluationValue[] = [];
-  for (const argument of argumentsList) {
+  for (let index = 0; index < argumentsList.length; index += 1) {
+    const argument = argumentsList[index]!;
+    const aggregate = aggregateIdentifierArgument(name, index, argument);
+    if (aggregate !== undefined) {
+      evaluatedArgs.push(aggregate);
+      rawRanges.push(aggregate);
+      continue;
+    }
     const value = evaluateNode(argument, context);
     rawRanges.push(value);
     if (isEvaluationRange(value)) {
@@ -225,6 +219,24 @@ function evaluateFunction(
   if (advanced !== undefined) return advanced;
 
   return createFormulaError('#NAME?', `Unknown function: ${name}`);
+}
+
+function aggregateIdentifierArgument(
+  functionName: string,
+  argumentIndex: number,
+  argument: FormulaAst,
+): 'SUM' | 'COUNT' | 'AVERAGE' | 'MIN' | 'MAX' | undefined {
+  const normalizedFunction = functionName.trim().toUpperCase();
+  const aggregateIndex = normalizedFunction === 'GROUPBY'
+    ? 2
+    : normalizedFunction === 'PIVOTBY'
+      ? 3
+      : -1;
+  if (argumentIndex !== aggregateIndex || argument.type !== 'name-reference') return undefined;
+  const aggregate = argument.name.trim().toUpperCase();
+  return aggregate === 'SUM' || aggregate === 'COUNT' || aggregate === 'AVERAGE' || aggregate === 'MIN' || aggregate === 'MAX'
+    ? aggregate
+    : undefined;
 }
 
 /** ROW / COLUMN / ADDRESS / OFFSET / INDIRECT:需要 AST 或返回区间引用 */

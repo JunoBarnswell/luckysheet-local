@@ -36,20 +36,41 @@ export interface MutationAffectedRangesMetadata<P = unknown> {
 }
 
 export interface MutationRegistrationMetadata<P = unknown> {
-  readonly schema?: MutationParamsSchema<P>;
-  readonly permission?: MutationPermissionMetadata;
-  readonly affectedRanges?: MutationAffectedRangesMetadata<P>;
-  /** Optional explicit inverse allow-list for this mutation. */
+  /** Canonical parameter contract; every production mutation must provide it. */
+  readonly schema: MutationParamsSchema<P>;
+  /** Canonical authorization capability; every production mutation must provide it. */
+  readonly permission: MutationPermissionMetadata;
+  /** Canonical affected-range resolver; every production mutation must provide it. */
+  readonly affectedRanges: MutationAffectedRangesMetadata<P>;
+  /**
+   * Inverse contract; all applied inverse ids must be declared here. Exactly
+   * one of `inversePolicy` and `inverseIds` is required; `inverseIds` is
+   * normalized into this policy at registration time.
+   */
+  readonly inversePolicy?: MutationInversePolicy;
+  /** Explicit inverse allow-list accepted by the registry and normalized to `inversePolicy`. */
   readonly inverseIds?: readonly string[];
 }
 
 /** Short public name for feature packages that expose a mutation contract. */
 export type MutationMetadata<P = unknown> = MutationRegistrationMetadata<P>;
 
+export interface MutationInversePolicy {
+  readonly allowedMutationIds: readonly string[];
+  readonly minCount: number;
+  readonly maxCount?: number;
+}
+
 export interface CommandResult {
   operationId: string;
   mutationCount: number;
   affectedRanges: RangeRef[];
+}
+
+/** The sole UI, script and host intent contract for a domain command. */
+export interface CommandDescriptor<Params = unknown> {
+  readonly commandId: string;
+  readonly params?: Params;
 }
 
 export interface OperationResult {
@@ -83,18 +104,21 @@ export type MutationHandler<P = unknown> = (item: MutationInfo<P>, context: Comm
 export interface MutationRegistration<P = unknown> {
   readonly id: string;
   readonly handler: MutationHandler<P>;
-  readonly metadata?: MutationRegistrationMetadata<P>;
+  readonly metadata: MutationRegistrationMetadata<P>;
 }
 
+/** Constructor options are intentionally non-permissive; metadata is always required. */
 export interface CommandRegistryOptions {
-  /**
-   * Make `validateCompleteness()` require schema, permission and affected-range
-   * declarations for every mutation. Existing feature registration remains
-   * readable during the migration, while production gates can opt into the
-   * strict contract and fail closed.
-   */
-  readonly requireMutationMetadata?: boolean;
+  readonly requireMutationMetadata?: true;
 }
+
+export type CanonicalMutationMetadata<P = unknown> = MutationRegistrationMetadata<P> & {
+  readonly inversePolicy: MutationInversePolicy;
+};
+
+type RegisteredMutation<P = unknown> = Omit<MutationRegistration<P>, 'metadata'> & {
+  readonly metadata: CanonicalMutationMetadata<P>;
+};
 
 export type MutationRegistryIssueCode =
   | 'invalid-registration'
@@ -106,7 +130,8 @@ export type MutationRegistryIssueCode =
   | 'invalid-inverse'
   | 'invalid-params'
   | 'invalid-affected-ranges'
-  | 'inverse-not-allowed';
+  | 'inverse-not-allowed'
+  | 'invalid-inverse-policy';
 
 export interface MutationRegistryIssue {
   readonly code: MutationRegistryIssueCode;
@@ -169,6 +194,63 @@ function formatIssues(issues: readonly MutationRegistryIssue[]): string {
   return issues.map((entry) => entry.message).join('; ');
 }
 
+function isValidInversePolicy(value: unknown): value is MutationInversePolicy {
+  if (!isRecord(value) || !Array.isArray(value.allowedMutationIds) || value.allowedMutationIds.length === 0
+    || !value.allowedMutationIds.every((entry) => typeof entry === 'string' && entry.length > 0)
+    || !Number.isSafeInteger(value.minCount) || Number(value.minCount) < 1) return false;
+  const minCount = Number(value.minCount);
+  return value.maxCount === undefined
+    || (Number.isSafeInteger(value.maxCount) && Number(value.maxCount) >= minCount);
+}
+
+function validateRegistrationMetadata(
+  id: string,
+  metadata: unknown,
+): { metadata?: CanonicalMutationMetadata; issues: MutationRegistryIssue[] } {
+  const issues: MutationRegistryIssue[] = [];
+  if (!isRecord(metadata)) {
+    issues.push(issue('invalid-registration', id, `Mutation ${id} requires canonical metadata`));
+    return { issues };
+  }
+  const schema = metadata.schema;
+  if (!isRecord(schema) || typeof schema.validate !== 'function') {
+    issues.push(issue('missing-schema', id, `Mutation ${id} must declare a parameter schema`));
+  }
+  const permission = metadata.permission;
+  if (!isRecord(permission) || typeof permission.capability !== 'string' || permission.capability.length === 0) {
+    issues.push(issue('missing-permission', id, `Mutation ${id} must declare a permission capability`));
+  } else if (permission.roles !== undefined
+    && (!Array.isArray(permission.roles) || !permission.roles.every((entry) => typeof entry === 'string' && entry.length > 0))) {
+    issues.push(issue('invalid-registration', id, `Mutation ${id} declares invalid permission roles`));
+  }
+  const affectedRanges = metadata.affectedRanges;
+  if (!isRecord(affectedRanges) || typeof affectedRanges.resolve !== 'function') {
+    issues.push(issue('missing-affected-ranges', id, `Mutation ${id} must declare an affected-range resolver`));
+  } else if (affectedRanges.mode !== undefined && affectedRanges.mode !== 'exact' && affectedRanges.mode !== 'declared') {
+    issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid affected-range mode`));
+  }
+  const inversePolicy = metadata.inversePolicy;
+  const inverseIds = metadata.inverseIds;
+  if (inversePolicy !== undefined && inverseIds !== undefined) {
+    issues.push(issue('invalid-inverse-policy', id, `Mutation ${id} must declare one inverse policy form`));
+  }
+  const normalizedPolicy = inversePolicy ?? (Array.isArray(inverseIds)
+    ? { allowedMutationIds: inverseIds, minCount: 1 }
+    : undefined);
+  if (!isValidInversePolicy(normalizedPolicy)) {
+    issues.push(issue('invalid-inverse-policy', id, `Mutation ${id} must declare a valid inverse policy`));
+  }
+  if (issues.length > 0) return { issues };
+  const { inversePolicy: _inversePolicy, inverseIds: _inverseIds, ...baseMetadata } = metadata;
+  return {
+    metadata: {
+      ...baseMetadata,
+      inversePolicy: normalizedPolicy as MutationInversePolicy,
+    } as CanonicalMutationMetadata,
+    issues,
+  };
+}
+
 function createOperationId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -179,9 +261,9 @@ function createOperationId(): string {
 export class CommandRegistry {
   private readonly commands = new Map<string, Command<unknown>>();
   private readonly operations = new Map<string, Operation<unknown>>();
-  private readonly mutations = new Map<string, MutationRegistration<unknown>>();
+  private readonly mutations = new Map<string, RegisteredMutation<unknown>>();
 
-  constructor(private readonly options: CommandRegistryOptions = {}) {}
+  constructor(_options: CommandRegistryOptions = {}) {}
 
   registerCommand<P>(command: Command<P>): void {
     if (!command.id || typeof command.id !== 'string' || typeof command.execute !== 'function') {
@@ -200,24 +282,44 @@ export class CommandRegistry {
   }
 
   registerMutation<P>(registration: MutationRegistration<P>): void;
+  /**
+   * Implementation-level call shape retained for feature migration. The
+   * metadata argument is optional only at the TypeScript boundary; omitting
+   * it is rejected immediately at runtime and by the static registry gate.
+   */
   registerMutation<P>(id: string, handler: MutationHandler<P>, metadata?: MutationRegistrationMetadata<P>): void;
   registerMutation<P>(
-    idOrRegistration: string | MutationRegistration<P>,
-    handler?: MutationHandler<P>,
-    metadata?: MutationRegistrationMetadata<P>,
+    registrationOrId: MutationRegistration<P> | string,
+    legacyHandler?: MutationHandler<P>,
+    legacyMetadata?: MutationRegistrationMetadata<P>,
   ): void {
-    const registration: MutationRegistration<P> =
-      typeof idOrRegistration === 'string'
-        ? { id: idOrRegistration, handler: handler as MutationHandler<P>, metadata }
-        : idOrRegistration;
-    if (!registration.id || typeof registration.id !== 'string') {
+    if (typeof registrationOrId === 'string') {
+      registrationOrId = {
+        id: registrationOrId,
+        handler: legacyHandler as MutationHandler<P>,
+        metadata: legacyMetadata as MutationRegistrationMetadata<P>,
+      };
+    }
+    if (!isRecord(registrationOrId)) {
+      throw new Error('Mutation registration requires a canonical object contract');
+    }
+    const candidate = registrationOrId as unknown as MutationRegistration<P>;
+    const normalized = validateRegistrationMetadata(candidate.id, candidate.metadata);
+    if (normalized.issues.length > 0 || !normalized.metadata) {
+      throw new Error(`Invalid mutation registration ${candidate.id}: ${formatIssues(normalized.issues)}`);
+    }
+    if (!candidate.id || typeof candidate.id !== 'string') {
       throw new Error('Mutation registration requires a non-empty id');
     }
-    if (typeof registration.handler !== 'function') {
-      throw new Error(`Mutation registration requires a handler: ${registration.id}`);
+    if (typeof candidate.handler !== 'function') {
+      throw new Error(`Mutation registration requires a handler: ${candidate.id}`);
     }
-    if (this.mutations.has(registration.id)) throw new Error(`Duplicate mutation: ${registration.id}`);
-    this.mutations.set(registration.id, registration as MutationRegistration<unknown>);
+    if (this.mutations.has(candidate.id)) throw new Error(`Duplicate mutation: ${candidate.id}`);
+    this.mutations.set(candidate.id, {
+      id: candidate.id,
+      handler: candidate.handler as MutationHandler<unknown>,
+      metadata: normalized.metadata as CanonicalMutationMetadata<unknown>,
+    });
   }
 
   getCommand<P>(id: string): Command<P> {
@@ -244,7 +346,7 @@ export class CommandRegistry {
     return registration as MutationRegistration<P>;
   }
 
-  getMutationMetadata<P>(id: string): MutationRegistrationMetadata<P> | undefined {
+  getMutationMetadata<P>(id: string): MutationRegistrationMetadata<P> {
     return this.getMutationRegistration<P>(id).metadata;
   }
 
@@ -273,13 +375,11 @@ export class CommandRegistry {
   }
 
   /**
-   * Validate all registered mutation contracts. This is intentionally
-   * separate from registration so a migration can register legacy handlers,
-   * run the gate, and receive an actionable list rather than a first-error
-   * failure.
+   * Validate all registered mutation contracts defensively. Registration
+   * rejects incomplete metadata immediately; this gate also detects registry
+   * state mutated through untyped JavaScript or an invalid runtime boundary.
    */
-  validateCompleteness(options: CommandRegistryOptions = {}): MutationRegistryCompletenessResult {
-    const requireMetadata = options.requireMutationMetadata ?? this.options.requireMutationMetadata ?? true;
+  validateCompleteness(): MutationRegistryCompletenessResult {
     const issues: MutationRegistryIssue[] = [];
 
     for (const registration of this.mutations.values()) {
@@ -288,24 +388,10 @@ export class CommandRegistry {
         issues.push(issue('invalid-registration', id || '<empty>', `Invalid mutation registration: ${id || '<empty>'}`));
         continue;
       }
-      if (!requireMetadata) continue;
-      if (!metadata?.schema) {
-        issues.push(issue('missing-schema', id, `Mutation ${id} must declare a parameter schema`));
-      } else if (typeof metadata.schema.validate !== 'function') {
-        issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid parameter schema`));
-      }
-      if (!metadata?.permission || typeof metadata.permission.capability !== 'string' || !metadata.permission.capability) {
-        issues.push(issue('missing-permission', id, `Mutation ${id} must declare a permission capability`));
-      }
-      if (!metadata?.affectedRanges) {
-        issues.push(issue('missing-affected-ranges', id, `Mutation ${id} must declare an affected-range resolver`));
-      } else if (typeof metadata.affectedRanges.resolve !== 'function') {
-        issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid affected-range resolver`));
-      }
-      if (metadata?.inverseIds !== undefined && !Array.isArray(metadata.inverseIds)) {
-        issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid inverse allow-list`));
-      }
-      for (const inverseId of Array.isArray(metadata?.inverseIds) ? metadata.inverseIds : []) {
+      const normalized = validateRegistrationMetadata(id, metadata);
+      issues.push(...normalized.issues);
+      if (!normalized.metadata) continue;
+      for (const inverseId of normalized.metadata.inversePolicy.allowedMutationIds) {
         if (!this.mutations.has(inverseId)) {
           issues.push(issue('unknown-inverse', id, `Mutation ${id} declares unknown inverse mutation ${inverseId}`, inverseId));
         }
@@ -315,8 +401,8 @@ export class CommandRegistry {
     return { ok: issues.length === 0, issues };
   }
 
-  assertComplete(options: CommandRegistryOptions = {}): void {
-    const result = this.validateCompleteness(options);
+  assertComplete(): void {
+    const result = this.validateCompleteness();
     if (!result.ok) throw new Error(`Mutation registry is incomplete: ${formatIssues(result.issues)}`);
   }
 
@@ -330,8 +416,15 @@ export class CommandRegistry {
     }
 
     this.validateMutationInfo(mutation, issues);
-    if (!Array.isArray(mutation.inverse) || mutation.inverse.length === 0) {
-      issues.push(issue('invalid-inverse', mutation.id, `Mutation ${mutation.id} must provide at least one inverse mutation`));
+    const inversePolicy = registration.metadata.inversePolicy;
+    if (!Array.isArray(mutation.inverse)
+      || mutation.inverse.length < inversePolicy.minCount
+      || (inversePolicy.maxCount !== undefined && mutation.inverse.length > inversePolicy.maxCount)) {
+      issues.push(issue(
+        'invalid-inverse',
+        mutation.id,
+        `Mutation ${mutation.id} inverse count violates its policy (${inversePolicy.minCount}${inversePolicy.maxCount === undefined ? '+' : `-${inversePolicy.maxCount}`})`,
+      ));
     } else {
       for (const inverse of mutation.inverse) {
         if (!isRecord(inverse) || typeof inverse.id !== 'string' || !inverse.id) {
@@ -348,7 +441,7 @@ export class CommandRegistry {
         const inverseIssues: MutationRegistryIssue[] = [];
         this.validateMutationInfo(inverse as MutationInfo, inverseIssues, mutation.id, inverse.id);
         issues.push(...inverseIssues);
-        if (registration.metadata?.inverseIds && !registration.metadata.inverseIds.includes(inverse.id)) {
+        if (!inversePolicy.allowedMutationIds.includes(inverse.id)) {
           issues.push(issue('inverse-not-allowed', mutation.id, `Mutation ${mutation.id} does not allow inverse ${inverse.id}`, inverse.id));
         }
       }
@@ -380,21 +473,19 @@ export class CommandRegistry {
       issues.push(issue('invalid-affected-ranges', ownerMutationId, `Mutation ${item.id} has invalid affected ranges`, inverseId));
     }
 
-    const schema = registration.metadata?.schema;
-    if (schema) {
-      let valid = false;
-      try {
-        valid = schema.validate(item.params);
-      } catch {
-        valid = false;
-      }
-      if (!valid) {
-        issues.push(issue('invalid-params', ownerMutationId, `Mutation ${item.id} parameters do not match ${schema.name ?? 'its schema'}`, inverseId));
-      }
+    const schema = registration.metadata.schema;
+    let valid = false;
+    try {
+      valid = schema.validate(item.params);
+    } catch {
+      valid = false;
+    }
+    if (!valid) {
+      issues.push(issue('invalid-params', ownerMutationId, `Mutation ${item.id} parameters do not match ${schema.name ?? 'its schema'}`, inverseId));
     }
 
-    const affectedRanges = registration.metadata?.affectedRanges;
-    if (affectedRanges && Array.isArray(item.affectedRanges)) {
+    const affectedRanges = registration.metadata.affectedRanges;
+    if (Array.isArray(item.affectedRanges)) {
       try {
         const declared = affectedRanges.resolve(item.params as never);
         if (!Array.isArray(declared) || !declared.every(isValidRangeRef)) {
@@ -468,6 +559,7 @@ export class CommandRuntime {
     // a protocol error and must not create an empty history entry or invoke a
     // host fallback.
     const command = this.registry.getCommand<P>(id);
+    this.registry.assertComplete();
     const operationId = createOperationId();
     const mutations: MutationInfo[] = [];
     const isRootTransaction = this.transactionDepth === 0;
@@ -554,6 +646,7 @@ export class CommandRuntime {
   }
 
   undo(): boolean {
+    this.registry.assertComplete();
     const entry = this.undoStack.pop();
     if (!entry) return false;
     this.applyHistory(entry.undo, 'undo');
@@ -563,6 +656,7 @@ export class CommandRuntime {
   }
 
   redo(): boolean {
+    this.registry.assertComplete();
     const entry = this.redoStack.pop();
     if (!entry) return false;
     this.applyHistory(entry.redo, 'redo');
@@ -576,6 +670,7 @@ export class CommandRuntime {
    * 以 'remote' 来源通知监听器(用于引擎同步/视图刷新),但不进入本地撤销栈。
    */
   applyRemoteMutations(items: readonly MutationInfo[]): void {
+    this.registry.assertComplete();
     this.applyHistory(items, 'remote');
   }
 

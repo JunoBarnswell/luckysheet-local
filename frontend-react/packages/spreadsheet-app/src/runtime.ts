@@ -2,9 +2,11 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
+  ApiRequestError,
   WorkbookApiClient,
   type AuthTokenProvider,
   type ShareTokenProvider,
+  type WorkbookAclRole,
   type OperationMessage,
   type SnapshotResponse,
 } from '@react-sheets/protocol';
@@ -12,7 +14,6 @@ import { CollabSocketClient } from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
 import { createDefaultConnectorRegistry, type ConnectorRegistry } from './features/query';
-import { createDefaultCapabilityRegistry, type CapabilityRegistry } from './features/extended';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
@@ -36,6 +37,7 @@ export interface RuntimeHandlers {
   onActiveSheetChange?: (sheetId: string) => void;
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
   onCollabStatus?: (status: 'connecting' | 'open' | 'closed') => void;
+  onAccessRole?: (role: WorkbookAclRole | null) => void;
   onPeersChange?: (peers: import('./types').PeerCursor[]) => void;
   onWorkspacePersisted?: () => void;
 }
@@ -63,11 +65,12 @@ export interface SpreadsheetRuntime {
   workspaceRecord: WorkspaceRecord | null;
   localRevision: number;
   localOnly: boolean;
+  remoteSyncRequested: boolean;
+  formulaCalculation: Promise<void>;
   persistenceReady: Promise<void>;
   pendingLocalOperations: Array<{ operationId: string; mutations: MutationInfo[] }>;
   checkpointWorkspace: () => Promise<void>;
   connectors: ConnectorRegistry;
-  capabilities: CapabilityRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
 }
@@ -79,7 +82,7 @@ export function resolveUnitId(): string {
   const routeMatch = /^\/workbooks\/([^/]+)\/?$/.exec(window.location.pathname);
   if (routeMatch?.[1]) return decodeURIComponent(routeMatch[1]);
   // Catalog selection is asynchronous and happens in initializePersistence;
-  // this stable sentinel avoids assigning workspace identity to localStorage.
+  // this stable sentinel never becomes a browser-storage identity.
   return 'wb-local-default';
 }
 
@@ -101,7 +104,6 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
-  const capabilities = createDefaultCapabilityRegistry();
   registerSpreadsheetFeatures(commands, drawing);
   const operationJournal = new OperationJournalStore();
   const workspacePersistence = new WorkspacePersistence(options.persistence, operationJournal);
@@ -128,17 +130,18 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     workspaceRecord: null,
     localRevision: 0,
     localOnly: options.localOnly ?? (!options.authTokenProvider && !options.shareTokenProvider),
+    remoteSyncRequested: Boolean(options.authTokenProvider || options.shareTokenProvider),
+    formulaCalculation: Promise.resolve(),
     persistenceReady: Promise.resolve(),
     pendingLocalOperations: [],
     checkpointWorkspace: () => Promise.resolve(),
     connectors,
-    capabilities,
     authTokenProvider: options.authTokenProvider,
     shareTokenProvider: options.shareTokenProvider,
   };
-  // The offline journal stores only operation intent and a monotonic client
-  // sequence. Full workbook snapshots are server-owned persistence records;
-  // they are never written by this client-side runtime.
+  // The offline journal records operation intent and its client sequence.
+  // The same IndexedDB transaction also checkpoints the canonical local
+  // workbook snapshot, so a closed browser can resume without any service.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
     loadPending: () => {
       const journal = operationJournal.read(runtime.model.unitId);
@@ -206,17 +209,16 @@ function synchronizeManualCellMutation(engine: FormulaEngine, workbook: Workbook
       }
     }
   }
-  syncWorkbookSpills(engine, workbook);
 }
 
 /**
- * Rehydrate one stable FormulaEngine instance from the canonical workbook
- * model.  Structural transforms move formula owners as well as references;
- * rebuilding the dependency index here avoids leaving an old owner address
- * behind after rows/columns or bounded shifts.
+ * Load only formula inputs from the canonical workbook. The actual evaluation
+ * is intentionally scheduled separately through FormulaEngine.recalculateAsync
+ * so browser calculation stays in its Worker.
  */
-function synchronizeFormulaEngine(engine: FormulaEngine, workbook: WorkbookModel): void {
+function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void {
   const mode = engine.getRecalculationMode();
+  engine.cancelCalculation();
   engine.reset();
   engine.setRecalculationMode('manual');
   engine.setDefinedNames(workbook.definedNames);
@@ -230,8 +232,78 @@ function synchronizeFormulaEngine(engine: FormulaEngine, workbook: WorkbookModel
     });
   }
   engine.setRecalculationMode(mode);
-  engine.recalculate();
-  syncWorkbookSpills(engine, workbook);
+}
+
+interface FormulaQueueState {
+  tail: Promise<void>;
+  scheduled: boolean;
+  epoch: number;
+  force: boolean;
+}
+
+const formulaQueueStates = new WeakMap<SpreadsheetRuntime, FormulaQueueState>();
+
+function localFormulaIdleState(runtime: SpreadsheetRuntime): import('./types').SaveState {
+  if (runtime.localOnly) return runtime.remoteSyncRequested ? 'offline' : 'saved';
+  if (!runtime.remoteConnected) return 'offline';
+  return runtime.collaboration?.offlineQueue.getPendingCount() ? 'syncing' : 'saved';
+}
+
+/**
+ * Coalesce formula input changes into one Worker task. A new mutation cancels
+ * the active task and advances the epoch, so a late worker result cannot
+ * mutate spills or render projections for an older workbook state.
+ */
+export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false): Promise<void> {
+  const state = formulaQueueStates.get(runtime) ?? {
+    tail: Promise.resolve(),
+    scheduled: false,
+    epoch: 0,
+    force: false,
+  } satisfies FormulaQueueState;
+  formulaQueueStates.set(runtime, state);
+  state.epoch += 1;
+  state.force ||= force;
+  runtime.formula.cancelCalculation();
+  if (state.scheduled) return runtime.formulaCalculation;
+
+  state.scheduled = true;
+  state.tail = state.tail
+    .catch(() => undefined)
+    .then(async () => {
+      state.scheduled = false;
+      const epoch = state.epoch;
+      const forceCalculation = state.force;
+      state.force = false;
+      const engine = runtime.formula;
+      const workbook = runtime.model;
+      loadFormulaInputs(engine, workbook);
+      if (engine.getRecalculationMode() === 'manual' && !forceCalculation) {
+        if (epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
+          runtime.handlers.onMutationsApplied?.();
+        }
+        return;
+      }
+
+      runtime.handlers.onSaveState?.('calculating');
+      try {
+        await engine.recalculateAsync();
+        if (epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
+        syncWorkbookSpills(engine, workbook);
+        void checkpointWorkspace(runtime, false).catch((error: unknown) => {
+          runtime.handlers.onSaveState?.('error');
+          runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local formula checkpoint failed');
+        });
+        runtime.handlers.onMutationsApplied?.();
+        runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
+      } catch (error) {
+        if (epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
+        runtime.handlers.onSaveState?.('error');
+        runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Formula calculation failed');
+      }
+    });
+  runtime.formulaCalculation = state.tail;
+  return state.tail;
 }
 
 function assertNoSpillChildWrite(
@@ -322,7 +394,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
           synchronizeManualCellMutation(runtime.formula, runtime.model, mutation);
         } else {
-          synchronizeFormulaEngine(runtime.formula, runtime.model);
+          void scheduleFormulaRecalculation(runtime);
         }
       }
     }),
@@ -419,7 +491,7 @@ function submitChangeset(
   mutations: MutationInfo[],
 ): void {
   if (!runtime.collaboration) {
-    runtime.handlers.onSaveState?.('offline');
+    runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
     return;
   }
   const operation = runtime.collaboration.enqueueLocalMutations(mutations, runtime.model.unitId, operationId);
@@ -440,28 +512,31 @@ function scheduleOperation(
       if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
     });
   } else {
-    runtime.handlers.onSaveState?.('offline');
+    runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
   }
 }
 
 export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revision?: number): void {
+  runtime.formula.disposeCalculationTasks();
   runtime.formula = rebuildFormulaEngine(runtime.model);
   if (revision != null) {
     runtime.remoteRevision = revision;
     runtime.collaboration?.setRevision(revision);
   }
   runtime.pivotResults = {};
+  void scheduleFormulaRecalculation(runtime);
 }
 
 function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
-  synchronizeFormulaEngine(engine, workbook);
+  loadFormulaInputs(engine, workbook);
   return engine;
 }
 
 export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotResponse): void {
   const workbook = WorkbookModel.fromSnapshot(response.snapshot);
   detachCoreListeners(runtime);
+  runtime.formula.disposeCalculationTasks();
   runtime.model = workbook;
   runtime.commands = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
@@ -471,6 +546,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.collaboration?.setRevision(response.revision);
   runtime.collaboration?.rebindCommands(runtime.commands);
   runtime.pivotResults = {};
+  void scheduleFormulaRecalculation(runtime);
 }
 
 /** Replay durable local intent on top of the authoritative server snapshot. */
@@ -550,6 +626,9 @@ export function startCollaborationSession(
         hydrateRuntime(runtime, response);
         runtime.remoteRevision = response.revision;
         runtime.collaboration?.setRevision(response.revision);
+        void runtime.api.getAccess(runtime.model.unitId)
+          .then((access) => runtime.handlers.onAccessRole?.(access.role))
+          .catch(() => runtime.handlers.onAccessRole?.(null));
         void loadHistoryAndReplayPending(runtime);
         runtime.handlers.onMutationsApplied?.();
       } else if (message.type === 'revision.created') {
@@ -604,7 +683,7 @@ export function startCollaborationSession(
       runtime.remoteConnected = status !== 'closed';
       runtime.collaboration?.offlineQueue.setOnline(status === 'open');
       if (status === 'closed') runtime.collaboration?.transportClosed();
-      if (status === 'closed') runtime.handlers.onSaveState?.('offline');
+      if (status === 'closed') runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
       else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
       if (status === 'open') {
         client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
@@ -673,6 +752,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.localRevision = localRecord.localRevision;
     runtime.remoteRevision = localRecord.serverRevision;
     runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
+    runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
     hydrateRuntime(runtime, {
       snapshot: localRecord.snapshot,
       revision: localRecord.serverRevision,
@@ -684,9 +764,10 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
 
   if (runtime.localOnly) {
     runtime.remoteConnected = false;
+    runtime.handlers.onAccessRole?.(null);
     runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
     if (isActive()) {
-      runtime.handlers.onSaveState?.('offline');
+      runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
       runtime.handlers.onMutationsApplied?.();
@@ -696,13 +777,16 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
 
   try {
     const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
+    const access = await runtime.api.getAccess(runtime.model.unitId);
     hydrateRuntime(runtime, snapshotResponse);
     runtime.remoteRevision = snapshotResponse.revision;
     runtime.localOnly = false;
+    runtime.remoteSyncRequested = true;
     replaceCollaborationSession(runtime, localRecord);
     await loadHistoryAndReplayPending(runtime);
     runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
     runtime.remoteConnected = true;
+    runtime.handlers.onAccessRole?.(access.role);
     if (isActive()) {
       runtime.handlers.onSaveState?.('saved');
       runtime.handlers.onNotice?.('Workbook restored from server');
@@ -711,33 +795,39 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       runtime.handlers.onMutationsApplied?.();
       runtime.handlers.onWorkspacePersisted?.();
     }
-  } catch {
-    try {
-      const created = await runtime.api.createWorkbook(runtime.model.snapshot());
-      hydrateRuntime(runtime, created);
-      runtime.remoteRevision = created.revision;
-      runtime.localOnly = false;
-      replaceCollaborationSession(runtime, localRecord);
-      runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
-      runtime.remoteConnected = true;
-      if (isActive()) {
-        runtime.handlers.onSaveState?.('saved');
-        runtime.handlers.onNotice?.('SQLite sync connected');
-        runtime.handlers.onPhaseChange?.('ready');
-        runtime.handlers.onMutationsApplied?.();
-      }
-    } catch {
-      runtime.localOnly = true;
+  } catch (error) {
+    // Authentication, authorization and an unknown shared workbook are
+    // authoritative server decisions. They must never be disguised as a new
+    // local workbook with the same URL. Only an actual unavailable service
+    // leaves the user in offline local mode.
+    if (isAuthoritativeRemoteFailure(error)) {
       runtime.remoteConnected = false;
-      runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
+      runtime.handlers.onAccessRole?.(null);
       if (isActive()) {
-        runtime.handlers.onSaveState?.('offline');
-        runtime.handlers.onNotice?.('Running local IndexedDB workspace');
-        runtime.handlers.onPhaseChange?.('ready');
-        runtime.handlers.onMutationsApplied?.();
+        runtime.handlers.onSaveState?.('error');
+        runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Server access was rejected');
+        runtime.handlers.onPhaseChange?.('error');
       }
+      return;
+    }
+
+    runtime.localOnly = true;
+    runtime.remoteConnected = false;
+    runtime.remoteSyncRequested = true;
+    runtime.handlers.onAccessRole?.(null);
+    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
+    if (isActive()) {
+      runtime.handlers.onSaveState?.('offline');
+      runtime.handlers.onNotice?.('Server unavailable; using local IndexedDB workspace');
+      runtime.handlers.onPhaseChange?.('ready');
+      runtime.handlers.onMutationsApplied?.();
     }
   }
+}
+
+function isAuthoritativeRemoteFailure(error: unknown): boolean {
+  return error instanceof ApiRequestError
+    && (error.status === 401 || error.status === 403 || error.status === 404);
 }
 
 async function hasValidRemoteBinding(runtime: SpreadsheetRuntime): Promise<boolean> {

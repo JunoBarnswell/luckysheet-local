@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,17 +32,22 @@ class OperationEnvelopeTest {
         assertFalse(json.contains("actorId"));
         assertFalse(json.contains("affectedRanges"));
         assertThrows(Exception.class, () -> mapper.readValue(json.replace("\"clientSequence\":1", "\"actorId\":\"spoof\",\"clientSequence\":1"), OperationEnvelope.class));
+        assertThrows(Exception.class, () -> mapper.readValue(json.replace("\"clientSequence\":1", "\"role\":\"owner\",\"clientSequence\":1"), OperationEnvelope.class));
     }
 
     @Test
     void committedContractContainsServerIdentityAndRanges() throws Exception {
         JsonNode params = mapper.readTree("{\"row\":0,\"column\":0,\"value\":{\"value\":\"ok\"}}");
+        Instant clientClock = Instant.parse("2000-01-01T00:00:00Z");
+        Instant serverClock = Instant.parse("2026-08-23T00:00:00Z");
         CommittedOperationEnvelope operation = CommittedOperationEnvelope.from(
-                new OperationEnvelope(OperationEnvelope.SCHEMA, "op-1", "unit-1", 1, 0, List.of(new OperationMutation("cell.set", "sheet-1", params)), Instant.now()),
-                "subject-1", 1, Instant.now(), List.of(new CommittedOperationMutation("cell.set", "sheet-1", params, List.of(new RangeRef("sheet-1", 0, 0, 0, 0))))
+                new OperationEnvelope(OperationEnvelope.SCHEMA, "op-1", "unit-1", 1, 0, List.of(new OperationMutation("cell.set", "sheet-1", params)), clientClock),
+                "subject-1", 1, serverClock, List.of(new CommittedOperationMutation("cell.set", "sheet-1", params, List.of(new RangeRef("sheet-1", 0, 0, 0, 0))))
         );
         String json = mapper.writeValueAsString(operation);
         assertTrue(json.contains("subject-1"));
         assertTrue(json.contains("affectedRanges"));
+        assertEquals(serverClock, operation.createdAt());
+        assertEquals(serverClock, operation.committedAt());
     }
 }

@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
 function selectRange(
-  app: SpreadsheetApplication,
+  app: WorkbookSession,
   startRow: number,
   startColumn: number,
   endRow: number,
   endColumn: number,
 ): void {
   const sheetId = app.getActiveSheetId();
-  app.execute('selection.set', {
+  app.runCommand('selection.set', {
     sheetId,
     ranges: [{ sheetId, startRow, endRow, startColumn, endColumn }],
     primaryRangeIndex: 0,
@@ -19,9 +19,9 @@ function selectRange(
   });
 }
 
-describe('SpreadsheetApplication data objects integration', () => {
+describe('WorkbookSession data objects integration', () => {
   it('createSheetTableFromSelection registers a sheet table with headers', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -44,7 +44,7 @@ describe('SpreadsheetApplication data objects integration', () => {
   });
 
   it('addConditionalFormat stores rules on the worksheet', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.addConditionalFormat({
       id: 'cf-1',
@@ -63,7 +63,7 @@ describe('SpreadsheetApplication data objects integration', () => {
   });
 
   it('addDataValidation stores validation rules on the worksheet', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.addDataValidation({
       id: 'dv-1',
@@ -80,7 +80,7 @@ describe('SpreadsheetApplication data objects integration', () => {
   });
 
   it('sortRange reorders values through sheet.sort.multi', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -102,7 +102,7 @@ describe('SpreadsheetApplication data objects integration', () => {
   });
 
   it('applyFilter sets filter criteria on the sheet', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.applyFilter(0, { selectedValues: ['East', 'West'] });
 

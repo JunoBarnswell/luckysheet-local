@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { exchangeExportXlsx, summarizeCompatibilityReport } from './features/xlsx';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
 describe('xlsx exchange', () => {
   it('exports workbook snapshots with compatibility summary', async () => {
@@ -14,9 +14,9 @@ describe('xlsx exchange', () => {
   });
 });
 
-describe('SpreadsheetApplication xlsx integration', () => {
+describe('WorkbookSession xlsx integration', () => {
   it('exports through xlsx.export command path', async () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     app.runCommand('sheet.cell.set', {
       sheetId: app.getActiveSheetId(),
       row: 0,
@@ -29,7 +29,7 @@ describe('SpreadsheetApplication xlsx integration', () => {
   });
 
   it('clears compatibility report from ui snapshot', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     app['compatibilityReport'] = {
       schema: 'CompatibilityReport',
       fileName: 'demo.xlsx',

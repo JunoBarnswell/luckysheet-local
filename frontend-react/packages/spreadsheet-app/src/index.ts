@@ -1,13 +1,13 @@
 export {
-  SpreadsheetApplication,
-  getInitialAppPhase,
+  WorkbookSession,
+  getInitialSessionPhase,
   resolveUnitId,
   resolveActorId,
   resolveShareToken,
-  type SpreadsheetApplicationOptions,
+  type WorkbookSessionOptions,
   type UiSnapshot,
-} from './application';
-export { useSpreadsheetApp, type UseSpreadsheetAppResult } from './react';
+} from './workbook-session';
+export { useWorkbookSession, type UseWorkbookSessionResult } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,
   getFeatureRegistry,
@@ -17,7 +17,6 @@ export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParam
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
-export { PermissionService, type ShareRole, type ActorContext, type PermissionCheckInput, type PermissionResult, type PermissionCapabilities } from './permission-service';
 export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './features/permission';
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
@@ -79,13 +78,10 @@ export {
   type AutomationSnapshot,
 } from './features/automation';
 export type { ScriptRunResult } from './features/automation';
-export type { PlatformCapability, CapabilityDescriptor } from './features/extended';
 export type { GoalSeekParams, GoalSeekResult } from './features/extended/what-if';
 export {
   runGoalSeek,
   summarizeGoalSeekResult,
-  evaluateCapability,
-  type ExtendedSnapshot,
 } from './features/extended';
 export {
   HistoryPreviewSession,

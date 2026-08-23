@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication local workspace integration', () => {
+describe('WorkbookSession local workspace integration', () => {
   it('exposes a canonical persistence checksum in the UI projection', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const meta = app.getPersistenceSnapshot();
     assert.equal(meta.unitId, app['runtime'].model.unitId);
     assert.equal(meta.checksum.length, 64);
@@ -12,7 +12,7 @@ describe('SpreadsheetApplication local workspace integration', () => {
   });
 
   it('checkpoints a local mutation as one canonical workspace record', async () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -28,7 +28,7 @@ describe('SpreadsheetApplication local workspace integration', () => {
   });
 
   it('saves locally without depending on a server role projection', async () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     await app.saveWorkbook('local save');
     assert.match(app.getUiSnapshot().notice, /checkpoint saved/i);
   });

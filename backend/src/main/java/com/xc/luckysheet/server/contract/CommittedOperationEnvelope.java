@@ -44,7 +44,9 @@ public record CommittedOperationEnvelope(
                 operation.baseRevision(),
                 revision,
                 mutations,
-                operation.createdAt(),
+                // Client clocks are neither trusted nor replay authority.
+                // The persisted envelope has one server-issued event time.
+                committedAt,
                 committedAt
         );
     }

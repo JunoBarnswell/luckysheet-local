@@ -15,7 +15,7 @@ import {
   type RibbonTabId,
 } from '@react-sheets/ui-system';
 import { SAMPLE_AUTOMATION_SCRIPT, type AppPhase, type SidebarPanelId, type UiSessionIntent } from '@react-sheets/spreadsheet-app';
-import type { CommandDescriptor } from '../domain/command-descriptor';
+import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import { localizeText, translate, translateRibbonTab, type Locale } from '../i18n';
 
 export interface RibbonProps {

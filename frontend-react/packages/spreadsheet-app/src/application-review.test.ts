@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { getCellNote } from '@react-sheets/core-model';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 import { findCommentThreadAt, getCellHyperlink } from './features/review';
 
-function selectCell(app: SpreadsheetApplication, row: number, column: number): void {
+function selectCell(app: WorkbookSession, row: number, column: number): void {
   const sheetId = app.getActiveSheetId();
-  app.execute('selection.set', {
+  app.runCommand('selection.set', {
     sheetId,
     ranges: [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }],
     primaryRangeIndex: 0,
@@ -15,9 +15,9 @@ function selectCell(app: SpreadsheetApplication, row: number, column: number): v
   });
 }
 
-describe('SpreadsheetApplication review integration', () => {
+describe('WorkbookSession review integration', () => {
   it('addComment routes through comment.add and appears in ui snapshot', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     selectCell(app, 1, 2);
     app.addComment('Please review totals');
 
@@ -32,7 +32,7 @@ describe('SpreadsheetApplication review integration', () => {
   });
 
   it('replyComment and resolveComment use comment.reply and comment.resolve', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     selectCell(app, 0, 0);
     app.addComment('Initial thread');
     app.replyComment('Follow-up');
@@ -49,7 +49,7 @@ describe('SpreadsheetApplication review integration', () => {
   });
 
   it('removeComment deletes the thread through comment.remove', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     selectCell(app, 3, 1);
     app.addComment('Temporary');
     app.removeComment();
@@ -60,7 +60,7 @@ describe('SpreadsheetApplication review integration', () => {
   });
 
   it('setHyperlink and removeHyperlink use hyperlink commands with detail payload', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     selectCell(app, 2, 2);
     app.setHyperlink('https://example.com/docs');
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
@@ -72,7 +72,7 @@ describe('SpreadsheetApplication review integration', () => {
   });
 
   it('addNote and removeNote route through note.set and note.remove', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     selectCell(app, 4, 0);
     app.addNote('Audit note');
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());

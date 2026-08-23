@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication chart integration', () => {
+describe('WorkbookSession chart integration', () => {
   it('addChart routes through the canonical drawing aggregate', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.addChart({
       id: 'draw-chart-test-1',
@@ -48,8 +48,8 @@ describe('SpreadsheetApplication chart integration', () => {
   });
 
   it('insertQuickChart uses the current selection as source range', () => {
-    const app = new SpreadsheetApplication();
-    app.execute('selection.set', {
+    const app = new WorkbookSession();
+    app.runCommand('selection.set', {
       sheetId: app.getActiveSheetId(),
       ranges: [{ sheetId: app.getActiveSheetId(), startRow: 1, endRow: 4, startColumn: 0, endColumn: 2 }],
       primaryRangeIndex: 0,

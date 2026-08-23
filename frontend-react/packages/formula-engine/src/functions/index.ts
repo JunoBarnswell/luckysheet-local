@@ -8,13 +8,6 @@ import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
 import { extendedMatrixFunctions } from './extended-matrix';
 import { dynamicArrayFunctions } from './dynamic-array';
-import {
-  createFormulaCapabilityError,
-  DEFAULT_FORMULA_CAPABILITIES,
-  getFormulaCapability,
-  isFormulaCapabilityEnabled,
-  type FormulaCapabilities,
-} from '../capabilities';
 
 export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => FormulaValue> = {
   ...mathFunctions,
@@ -26,17 +19,6 @@ export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => Formula
   ...informationFunctions,
   ...extendedMatrixFunctions,
   ...dynamicArrayFunctions,
-};
-
-export const FORMULA_ALIASES: Readonly<Record<string, string>> = {
-  '求和': 'SUM',
-  '计数': 'COUNT',
-  '平均值': 'AVERAGE',
-  '最大值': 'MAX',
-  '最小值': 'MIN',
-  '如果': 'IF',
-  '查找': 'LOOKUP',
-  '四舍五入': 'ROUND',
 };
 
 export interface FunctionDescriptor {
@@ -60,22 +42,10 @@ export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new
   }),
 );
 
-export function getBuiltinFunction(
-  name: string,
-  capabilities: FormulaCapabilities = DEFAULT_FORMULA_CAPABILITIES,
-): ((args: FormulaValue[]) => FormulaValue) | undefined {
-  const normalized = name.trim().toUpperCase();
-  const resolvedName = FORMULA_ALIASES[name.trim()] ?? normalized;
-  const fn = BUILTIN_FUNCTIONS[resolvedName];
-  if (!fn) return undefined;
-
-  const capability = getFormulaCapability(resolvedName);
-  if (capability && !isFormulaCapabilityEnabled(capabilities, capability)) {
-    return () => createFormulaCapabilityError(resolvedName, capability, capabilities);
-  }
-  return fn;
+export function getBuiltinFunction(name: string): ((args: FormulaValue[]) => FormulaValue) | undefined {
+  return BUILTIN_FUNCTIONS[name.trim().toUpperCase()];
 }
 
 export function getFunctionDescriptor(name: string): FunctionDescriptor | undefined {
-  return FUNCTION_DESCRIPTORS.get(FORMULA_ALIASES[name.trim()] ?? name.trim().toUpperCase());
+  return FUNCTION_DESCRIPTORS.get(name.trim().toUpperCase());
 }

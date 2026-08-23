@@ -168,7 +168,7 @@ export function SheetTabs({
       <Inline gap="sm" className="hidden shrink-0 md:flex">
         <Text size="xs" tone="subtle">{sheets.length} {locale === 'zh-CN' ? '个工作表' : 'worksheets'}</Text>
         <Box className="h-4 w-px bg-slate-200" />
-        <Text size="xs" tone="muted">{locale === 'zh-CN' ? '已自动保存到 WAL SQLite' : 'Auto-saved to WAL SQLite'}</Text>
+        <Text size="xs" tone="muted">{locale === 'zh-CN' ? '已自动保存到本地工作簿' : 'Auto-saved locally'}</Text>
       </Inline>
 
       <ContextMenu

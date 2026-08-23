@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { DrawingObject, DrawingPayload, ShapeDrawingPayload } from '@react-sheets/core-model';
-import type { CommandDescriptor } from '../../domain/command-descriptor';
+import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
 export interface ShapeEditorPanelProps {
   sheetId: string;

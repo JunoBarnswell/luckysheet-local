@@ -1,0 +1,6 @@
+{
+  "name": "@react-sheets/ui-system",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

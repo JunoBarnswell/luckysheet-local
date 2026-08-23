@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication print integration', () => {
+describe('WorkbookSession print integration', () => {
   it('exposes print metadata in ui snapshot after preview', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -26,7 +26,7 @@ describe('SpreadsheetApplication print integration', () => {
   });
 
   it('runs print.export through command path', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     app.exportPdf({
       paper: 'Letter',
       orientation: 'landscape',
@@ -39,7 +39,7 @@ describe('SpreadsheetApplication print integration', () => {
   });
 
   it('updates print area through print.area.set', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.setPrintArea({
       sheetId,
@@ -54,8 +54,9 @@ describe('SpreadsheetApplication print integration', () => {
   });
 
   it('allows viewers to preview print output', () => {
-    const app = new SpreadsheetApplication();
-    app.setShareRole('viewer');
+    const app = new WorkbookSession();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
     app.printWorkbook({
       paper: 'A4',
       orientation: 'portrait',

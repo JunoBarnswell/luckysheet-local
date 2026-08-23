@@ -18,6 +18,18 @@ const forbiddenTokens = [
   'handleRibbonAction',
 ];
 
+const forbiddenArchitectureNames = [
+  /\bbridge\b/i,
+  /\badapter\b/i,
+  /\bshim\b/i,
+  /\balias\b/i,
+  /\bpro\./i,
+  /@react-sheets\/(?:pro-features|storage)\b/i,
+  /\b(?:WorkbookSnapshot|OperationEnvelope|CommittedOperationEnvelope|WorkspaceRecord|PendingOperationJournal|PersistenceSession|Snapshot|Protocol|Api|Backend)V[0-9]+\b/i,
+  /\bschemaVersion\b/i,
+  /\/api\/v[0-9]+\b/i,
+];
+
 const testFilePattern = /(?:^|[/.])(?:[^/]+\.)?(?:test|spec)\.[^/]+$/i;
 const uiSourcePattern = /^apps\/web\//;
 const bridgeImportPattern = /(?:from|import\s*\()\s*['"][^'"]*-bridge(?:\.[^'"]+)?['"]/;
@@ -58,8 +70,8 @@ function collectUiArchitectureViolations(relPath, source) {
   return violations;
 }
 
-const packageImportPattern = /(?:from|import)\s+['"]@react-sheets\/([^'"]+)['"]/g;
-const appsImportPattern = /(?:from|import)\s+['"](?:\.\.?\/)+apps\//g;
+const packageImportPattern = /(?:from\s*|import\s*\()\s*['"]@react-sheets\/([^'"]+)['"]/g;
+const appsImportPattern = /(?:from|import)\s+['"](?:\.\.?\/)+apps\//;
 
 async function walk(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -71,6 +83,21 @@ async function walk(directory) {
     else if (/\.(ts|tsx|js|mjs|json)$/.test(entry.name)) files.push(target);
   }
   return files;
+}
+
+async function readDeclaredDependencies(owner) {
+  const packageFile = join(root, owner, 'package.json');
+  try {
+    const manifest = JSON.parse(await readFile(packageFile, 'utf8'));
+    return new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ]);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 function packageFromFile(file) {
@@ -122,6 +149,7 @@ const files = [
 
 const violations = [];
 const packageGraph = new Map();
+const declaredDependencies = new Map();
 
 for (const file of files) {
   const source = await readFile(file, 'utf8');
@@ -131,6 +159,11 @@ for (const file of files) {
   if (!skipForbiddenTokens) {
     for (const token of forbiddenTokens) {
       if (source.includes(token)) violations.push(`${relPath}: forbidden token "${token}"`);
+    }
+  }
+  if (!isTestFile(relPath)) {
+    for (const pattern of forbiddenArchitectureNames) {
+      if (pattern.test(source)) violations.push(`${relPath}: forbidden architecture name ${pattern}`);
     }
   }
 
@@ -144,15 +177,18 @@ for (const file of files) {
   }
 
   const ownerPackage = owner.replace(/^(apps|packages)\//, '');
+  if (!declaredDependencies.has(owner)) declaredDependencies.set(owner, await readDeclaredDependencies(owner));
+  const ownerDependencies = declaredDependencies.get(owner);
   for (const imported of collectPackageImports(source)) {
     if (owner.startsWith('packages/ui-system') && imported !== 'ui-system') {
       violations.push(`${relPath}: ui-system must not import @react-sheets/${imported}`);
       continue;
     }
-    if (owner.startsWith('apps/') && imported === 'storage' && ownerPackage === 'web') {
-      // web app may eventually use storage client-side; allow for now
-    }
     if (owner.startsWith('packages/') && imported === ownerPackage) continue;
+    const packageName = `@react-sheets/${imported}`;
+    if (!ownerDependencies?.has(packageName)) {
+      violations.push(`${relPath}: ${owner} imports ${packageName} without declaring it in package.json`);
+    }
     if (!packageGraph.has(ownerPackage)) packageGraph.set(ownerPackage, new Set());
     packageGraph.get(ownerPackage).add(imported);
   }

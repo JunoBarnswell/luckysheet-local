@@ -32,12 +32,32 @@ export function StatusBar({
   hasPendingOperations = false,
 }: StatusBarProps) {
   const disabled = phase !== 'ready';
+  const status = (() => {
+    switch (saveState) {
+      case 'saved':
+        return hasPendingOperations
+          ? { icon: 'loader' as const, label: locale === 'zh-CN' ? '离线待同步' : 'Offline pending sync', tone: 'text-amber-300 animate-spin' }
+          : { icon: 'cloud-check' as const, label: locale === 'zh-CN' ? '本地已保存' : 'Saved locally', tone: 'text-emerald-400' };
+      case 'saving':
+        return { icon: 'loader' as const, label: locale === 'zh-CN' ? '本地保存中' : 'Saving locally', tone: 'text-amber-300 animate-spin' };
+      case 'offline':
+        return { icon: 'cloud-check' as const, label: locale === 'zh-CN' ? '离线待同步' : 'Offline pending sync', tone: 'text-amber-300' };
+      case 'syncing':
+        return { icon: 'loader' as const, label: locale === 'zh-CN' ? '同步中' : 'Syncing', tone: 'text-amber-300 animate-spin' };
+      case 'conflict':
+        return { icon: 'alert-circle' as const, label: locale === 'zh-CN' ? '冲突' : 'Conflict', tone: 'text-rose-400' };
+      case 'calculating':
+        return { icon: 'loader' as const, label: locale === 'zh-CN' ? '计算中' : 'Calculating', tone: 'text-sky-300 animate-spin' };
+      case 'error':
+        return { icon: 'alert-circle' as const, label: locale === 'zh-CN' ? '错误' : 'Error', tone: 'text-rose-400' };
+    }
+  })();
   return (
     <Box aria-label="Workbook status bar" className="flex h-10 items-center justify-between gap-4 px-4">
       <Inline gap="md" className="min-w-0">
         <Inline gap="xs" className="shrink-0">
-          <Icon name={saveState === 'saved' ? 'cloud-check' : 'loader'} size="xs" className={saveState === 'saved' ? 'text-emerald-400' : 'animate-spin text-amber-300'} />
-          <Text size="xs" tone="inverse">{locale === 'zh-CN' ? (saveState === 'saved' ? (hasPendingOperations ? '离线待同步' : '本地已保存') : saveState === 'calculating' ? '计算中' : saveState === 'conflict' ? '存在冲突' : '保存中') : (saveState === 'saved' ? (hasPendingOperations ? 'Offline pending sync' : 'Saved locally') : saveState === 'calculating' ? 'Calculating' : saveState === 'conflict' ? 'Conflict' : 'Saving')}</Text>
+          <Icon name={status.icon} size="xs" className={status.tone} />
+          <Text size="xs" tone="inverse">{status.label}</Text>
         </Inline>
         <Box className="hidden h-3 w-px bg-slate-700 sm:block" />
         <Text size="xs" tone="subtle" className="hidden sm:inline">{locale === 'zh-CN' ? '单元格' : 'Cell'} {activeCell}</Text>

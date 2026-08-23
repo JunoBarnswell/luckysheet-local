@@ -1,0 +1,12 @@
+{
+  "name": "@react-sheets/sheet-features",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@react-sheets/command-runtime": "file:../command-runtime",
+    "@react-sheets/core-model": "file:../core-model",
+    "@react-sheets/formula-engine": "file:../formula-engine",
+    "@react-sheets/number-format": "file:../number-format"
+  }
+}

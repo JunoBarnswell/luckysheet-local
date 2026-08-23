@@ -4,15 +4,15 @@ import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { classifyMutation } from './collaboration/operation-types';
 import { rebaseMutation } from './collaboration/ot-rebase';
 import { createSpreadsheetRuntime } from './runtime';
 
-describe('SpreadsheetApplication collaboration integration', () => {
+describe('WorkbookSession collaboration integration', () => {
   it('exposes collaboration snapshot defaults when session is offline', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const snapshot = app.getCollaborationSnapshot();
     assert.equal(snapshot.pendingCount, 0);
     assert.equal(snapshot.offlineQueueState, 'offline');

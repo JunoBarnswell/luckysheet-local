@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication extended integration', () => {
+describe('WorkbookSession extended integration', () => {
   it('runs goal seek through extended.whatIf.goalSeek command path', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId,
@@ -31,16 +31,10 @@ describe('SpreadsheetApplication extended integration', () => {
     assert.equal(app.getUiSnapshot().activePanel, 'extended');
   });
 
-  it('evaluates disabled capabilities for solver', () => {
-    const app = new SpreadsheetApplication();
-    const result = app.evaluatePlatformCapability('solver');
-    assert.equal(result.canEnable, false);
-    assert.ok(app.getUiSnapshot().platformCapabilities.length >= 4);
-  });
-
   it('blocks goal seek for viewers', () => {
-    const app = new SpreadsheetApplication();
-    app.setShareRole('viewer');
+    const app = new WorkbookSession();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
     const result = app.runGoalSeek({
       setCell: { row: 0, column: 0 },
       toValue: 1,
@@ -51,7 +45,7 @@ describe('SpreadsheetApplication extended integration', () => {
   });
 
   it('runs scenario analysis through extended.whatIf.scenario command path', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=B1*2' } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 10 } });
@@ -70,7 +64,7 @@ describe('SpreadsheetApplication extended integration', () => {
   });
 
   it('runs data table through extended.whatIf.dataTable command path', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { formula: '=B1*2' } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 5 } });

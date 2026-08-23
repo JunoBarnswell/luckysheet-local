@@ -1,8 +1,9 @@
 import type { CellAddress } from './ast';
 import type { FormulaDependency } from './range-index';
+import type { ResolvedSpill } from './spill-resolver';
 import type { FormulaValue } from './values';
 
-/** Stable wire/protocol identity for the future calculation worker. */
+/** Stable wire identity for the calculation task transport. */
 export const CALCULATION_TASK_PROTOCOL = 'react-sheets.formula-calculation' as const;
 export const CALCULATION_TASK_VERSION = 1 as const;
 
@@ -33,6 +34,10 @@ export interface CalculationCellResult {
 export interface CalculationTaskReport {
   readonly recalculated: readonly CellAddress[];
   readonly results: readonly CalculationCellResult[];
+  /** Current spill projection after this task, used to replace stale spills. */
+  readonly spills?: readonly ResolvedSpill[];
+  /** Dirty roots that remain after the task under manual calculation mode. */
+  readonly pendingRoots?: readonly CellAddress[];
 }
 
 export interface CalculationTaskResult {
@@ -50,6 +55,15 @@ export interface CalculationTaskPort {
   readonly version: typeof CALCULATION_TASK_VERSION;
   submit(request: CalculationTaskRequest): Promise<CalculationTaskResult>;
   cancel(taskId: string): void;
+  dispose?(): void;
+}
+
+/** A cancellation message is safe to structured-clone to the browser Worker. */
+export interface CalculationTaskCancellation {
+  readonly protocol: typeof CALCULATION_TASK_PROTOCOL;
+  readonly version: typeof CALCULATION_TASK_VERSION;
+  readonly kind: 'cancel';
+  readonly taskId: string;
 }
 
 export function assertCalculationTaskRequest(request: CalculationTaskRequest): void {
@@ -73,6 +87,37 @@ export function assertCalculationTaskRequest(request: CalculationTaskRequest): v
   }
 }
 
+export function isCalculationTaskCancellation(value: unknown): value is CalculationTaskCancellation {
+  if (!isRecord(value)) return false;
+  return value.protocol === CALCULATION_TASK_PROTOCOL
+    && value.version === CALCULATION_TASK_VERSION
+    && value.kind === 'cancel'
+    && typeof value.taskId === 'string'
+    && value.taskId.length > 0;
+}
+
+export function assertCalculationTaskResult(value: unknown): asserts value is CalculationTaskResult {
+  if (!isRecord(value)) throw new Error('Calculation worker returned a non-object result');
+  if (value.protocol !== CALCULATION_TASK_PROTOCOL || value.version !== CALCULATION_TASK_VERSION) {
+    throw new Error('Calculation worker returned an unsupported result protocol');
+  }
+  if (typeof value.taskId !== 'string' || value.taskId.length === 0) {
+    throw new Error('Calculation worker result requires a taskId');
+  }
+  if (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0) {
+    throw new Error('Calculation worker result requires a non-negative revision');
+  }
+  if (value.status !== 'completed' && value.status !== 'cancelled' && value.status !== 'failed') {
+    throw new Error('Calculation worker result has an invalid status');
+  }
+  if (value.status === 'completed' && !isCalculationTaskReport(value.report)) {
+    throw new Error('Completed calculation worker result requires a report');
+  }
+  if (value.status === 'failed' && (!isRecord(value.error) || typeof value.error.code !== 'string' || typeof value.error.message !== 'string')) {
+    throw new Error('Failed calculation worker result requires an error');
+  }
+}
+
 function isCellAddress(value: CellAddress): boolean {
   return Boolean(value)
     && typeof value.sheetId === 'string'
@@ -83,11 +128,26 @@ function isCellAddress(value: CellAddress): boolean {
     && value.column >= 0;
 }
 
+function isCalculationTaskReport(value: unknown): value is CalculationTaskReport {
+  if (!isRecord(value) || !Array.isArray(value.recalculated) || !Array.isArray(value.results)) return false;
+  return value.recalculated.every((address) => isCellAddress(address as CellAddress))
+    && value.results.every(isCalculationCellResult)
+    && (value.spills === undefined || Array.isArray(value.spills))
+    && (value.pendingRoots === undefined || (Array.isArray(value.pendingRoots) && value.pendingRoots.every((address) => isCellAddress(address as CellAddress))));
+}
+
+function isCalculationCellResult(value: unknown): value is CalculationCellResult {
+  if (!isRecord(value) || !isCellAddress(value.address as CellAddress) || !Array.isArray(value.dependencies)) return false;
+  return typeof value.formula === 'undefined' || typeof value.formula === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /**
- * A real synchronous host for environments which do not have a Worker yet.
- * It implements the same versioned contract and never pretends to provide
- * thread isolation; a Worker host can replace it later without changing the
- * request/result protocol.
+ * Explicit synchronous fallback for environments without a browser Worker.
+ * It does not claim thread isolation; browser callers use BrowserCalculationTaskPort.
  */
 export class InlineCalculationTaskPort implements CalculationTaskPort {
   readonly protocol = CALCULATION_TASK_PROTOCOL;
@@ -148,4 +208,3 @@ export class InlineCalculationTaskPort implements CalculationTaskPort {
     if (taskId) this.cancelled.add(taskId);
   }
 }
-

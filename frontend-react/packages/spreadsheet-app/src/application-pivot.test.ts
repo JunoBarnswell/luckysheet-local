@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication pivot integration', () => {
+describe('WorkbookSession pivot integration', () => {
   it('addPivot computes a local pivot result tree', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -41,7 +41,7 @@ describe('SpreadsheetApplication pivot integration', () => {
   });
 
   it('insertQuickPivot builds a pivot from the current selection', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -53,7 +53,7 @@ describe('SpreadsheetApplication pivot integration', () => {
         [{ value: 'B' }, { value: 5 }],
       ],
     });
-    app.execute('selection.set', {
+    app.runCommand('selection.set', {
       sheetId,
       ranges: [{ sheetId, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
       primaryRangeIndex: 0,
@@ -68,7 +68,7 @@ describe('SpreadsheetApplication pivot integration', () => {
   });
 
   it('drillDownPivot creates a detail sheet through pivot.drillDown', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.addPivot({
       id: 'pivot-drill',
@@ -95,7 +95,7 @@ describe('SpreadsheetApplication pivot integration', () => {
   });
 
   it('setPivotSlicer and refreshPivot keep results in sync', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.addPivot({
       id: 'pivot-slicer',

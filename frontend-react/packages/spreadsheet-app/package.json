@@ -4,9 +4,12 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@react-sheets/core-model": "workspace:*",
-    "@react-sheets/command-runtime": "workspace:*",
-    "@react-sheets/exchange-xlsx": "workspace:*",
-    "@react-sheets/sheet-features": "workspace:*"
+    "@react-sheets/core-model": "file:../core-model",
+    "@react-sheets/command-runtime": "file:../command-runtime",
+    "@react-sheets/exchange-xlsx": "file:../exchange-xlsx",
+    "@react-sheets/formula-engine": "file:../formula-engine",
+    "@react-sheets/number-format": "file:../number-format",
+    "@react-sheets/protocol": "file:../protocol",
+    "@react-sheets/sheet-features": "file:../sheet-features"
   }
 }

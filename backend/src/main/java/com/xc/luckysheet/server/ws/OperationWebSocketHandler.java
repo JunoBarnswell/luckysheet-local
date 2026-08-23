@@ -79,8 +79,12 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
         String unitId = unitId(session);
         if (unitId != null) {
             sessions.leave(unitId, session);
-            EphemeralEvent event = ephemeral.offline(unitId, ActorIdentity.subject(session.getPrincipal()), session.getId());
-            sessions.broadcastEphemeral(event, session);
+            try {
+                EphemeralEvent event = ephemeral.offline(unitId, ActorIdentity.subject(session.getPrincipal()), session.getId());
+                sessions.broadcastEphemeral(event, session);
+            } catch (ServiceException ignored) {
+                // A rejected handshake has no actor to announce as offline.
+            }
         }
     }
 

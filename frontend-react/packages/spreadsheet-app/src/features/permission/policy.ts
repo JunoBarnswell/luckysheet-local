@@ -105,7 +105,6 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'extended.whatIf.goalSeek': 'script',
   'extended.whatIf.scenario': 'script',
   'extended.whatIf.dataTable': 'script',
-  'extended.capability.evaluate': 'navigate',
   'drawing.insert.rectangle': 'drawing',
   'drawing.zorder.forward': 'drawing',
   'drawing.zorder.backward': 'drawing',
@@ -145,7 +144,6 @@ export function resolveCommandAction(commandId: string): PermissionAction {
   if (commandId.startsWith('query.')) return 'query';
   if (commandId.startsWith('automation.')) return 'script';
   if (commandId.startsWith('extended.whatIf')) return 'script';
-  if (commandId.startsWith('extended.capability')) return 'navigate';
   if (commandId.startsWith('sheet.protect')) return 'protect';
   if (commandId.startsWith('ui.clipboard.copy')) return 'navigate';
   if (commandId.startsWith('ui.history.')) return 'edit-cell';
@@ -200,17 +198,11 @@ export function canExecuteCommand(
   activeSheetId: string,
 ): { allowed: boolean; reason?: string } {
   syncProtectionRulesFromWorkbook(permission, workbook);
-  const role = permission.getShareRole(actorId);
-  const action = resolveCommandAction(commandId);
-  const capabilities = ROLE_CAPABILITIES[role];
-  if (!capabilities.has(action)) {
-    return { allowed: false, reason: `Role "${role}" cannot perform "${action}"` };
-  }
   const affectedRanges = inferAffectedRanges(commandId, params, activeSheetId);
   const result = permission.canCheck({
     commandId,
     affectedRanges,
-    actor: { actorId, role },
+    actor: { actorId },
     params,
   });
   return { allowed: result.allowed, reason: result.reason };

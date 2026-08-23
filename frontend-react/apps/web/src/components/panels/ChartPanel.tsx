@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ChartDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
-import type { CommandDescriptor } from '../../domain/command-descriptor';
+import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
 export interface ChartPanelProps {
   sheetId: string;

@@ -21,7 +21,7 @@ import type {
   SparklineGroup,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
-import type { HistoryEntry, CommandResult } from '@react-sheets/command-runtime';
+import type { HistoryEntry, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider, TableRowsResponse } from '@react-sheets/protocol';
 import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from './features/pivot/engine';
 import {
@@ -60,6 +60,7 @@ import {
   resolveActorId,
   resolveShareToken,
   resolveUnitId,
+  scheduleFormulaRecalculation,
   startCollaborationSession,
   startPersistenceSession,
   type SpreadsheetRuntime,
@@ -67,7 +68,6 @@ import {
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
 import { columnLabel } from './address';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
-import { syncWorkbookSheetTables, syncWorkbookSpills } from './formula-spill-sync';
 import {
   buildDrawingAdd,
   findDrawingByPayloadId,
@@ -131,7 +131,6 @@ import {
 } from './features/automation';
 import { CommandRecorder } from './features/automation/command-recorder';
 import type { ScriptRunResult } from './features/automation';
-import type { CapabilityDescriptor, PlatformCapability } from './features/extended';
 import type {
   DataTableParams,
   DataTableResult,
@@ -149,7 +148,7 @@ import {
 import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId, UiSessionIntent } from './types';
 
-export interface SpreadsheetApplicationOptions {
+export interface WorkbookSessionOptions {
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -178,7 +177,7 @@ export interface UiSnapshot {
   pendingChangeSetCount: number;
   offlineQueueState: string;
   actorId: string;
-  shareRole: ShareRole;
+  shareRole: ShareRole | null;
   permissions: PermissionCapabilities;
   historyEntries: readonly HistoryEntry[];
   remoteRevisions: readonly RevisionRecord[];
@@ -206,25 +205,23 @@ export interface UiSnapshot {
   automationRecording: boolean;
   recordedScript: string;
   lastScriptResult: ScriptRunResult | null;
-  platformCapabilities: readonly CapabilityDescriptor[];
   lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
   version: number;
 }
 
 export interface ExtendedSnapshot {
-  capabilities: readonly CapabilityDescriptor[];
   lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
 }
 
-export function getInitialAppPhase(): AppPhase {
+export function getInitialSessionPhase(): AppPhase {
   if (typeof window === 'undefined') return 'ready';
   const queryPhase = new URLSearchParams(window.location.search).get('state');
-  return queryPhase === 'loading' || queryPhase === 'error' || queryPhase === 'empty' ? queryPhase : 'ready';
+  return queryPhase === 'error' || queryPhase === 'empty' ? queryPhase : 'loading';
 }
 
-export class SpreadsheetApplication {
+export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
-  private readonly permission = new PermissionService();
+  private readonly permission: PermissionService;
   private readonly editSession = new EditSession();
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
@@ -279,12 +276,14 @@ export class SpreadsheetApplication {
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
 
-  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider }: SpreadsheetApplicationOptions = {}) {
+  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider }: WorkbookSessionOptions = {}) {
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
     });
+    this.permission = new PermissionService();
+    this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
     this.activeSheetId = this.runtime.model.primarySheetId;
@@ -339,6 +338,18 @@ export class SpreadsheetApplication {
     };
     this.runtime.handlers.onCollabStatus = (status) => {
       this.collabStatus = status;
+      if (status === 'closed') this.permission.setOnline(false);
+      else if (this.permission.getShareRole()) this.permission.setOnline(true);
+      this.emit();
+    };
+    this.runtime.handlers.onAccessRole = (role) => {
+      if (role) {
+        this.permission.applyServerAccess(role);
+        this.permission.setOnline(true);
+      } else {
+        this.permission.clearServerAccess();
+        this.permission.setOnline(false);
+      }
       this.emit();
     };
     this.runtime.handlers.onPeersChange = (peer) => {
@@ -429,7 +440,7 @@ export class SpreadsheetApplication {
       offlineQueueState: collaboration.offlineQueueState,
       actorId: this.actorId,
       shareRole: this.getShareRole(),
-      permissions: this.permission.getCapabilities(this.actorId),
+      permissions: this.permission.getCapabilities(),
       historyEntries: this.runtime.commands.getUndoEntries(),
       remoteRevisions: this.remoteRevisions,
       historyPreviewRevision: this.historyPreview?.revision ?? null,
@@ -458,7 +469,6 @@ export class SpreadsheetApplication {
       automationRecording: this.automationRecording,
       recordedScript: this.recordedScript,
       lastScriptResult: this.lastScriptResult,
-      platformCapabilities: this.runtime.capabilities.list(),
       lastWhatIfResult: this.lastWhatIfResult,
       version: this.version,
     };
@@ -467,37 +477,11 @@ export class SpreadsheetApplication {
     return snapshot;
   };
 
-  execute(commandId: string, params?: unknown): void {
+  /** Dispatch one registered domain descriptor through the sole command path. */
+  dispatch(descriptor: CommandDescriptor): void {
     try {
-      // Chrome state is intentionally kept outside the command runtime.  The
-      // only string descriptors accepted here are the four transient intents;
-      // every other descriptor is a canonical registered domain command.
-      if (commandId === 'ui.panel.open') {
-        const value = params as { panel?: SidebarPanelId; notice?: string } | undefined;
-        if (value?.panel) this.dispatchUiSessionIntent({ type: 'panel.open', panel: value.panel, notice: value.notice });
-        return;
-      }
-      if (commandId === 'ui.dialog.open') {
-        const value = params as { dialog?: Extract<UiSessionIntent, { type: 'dialog.open' }>['dialog']; findQuery?: string } | undefined;
-        if (value?.dialog) this.dispatchUiSessionIntent({ type: 'dialog.open', dialog: value.dialog, findQuery: value.findQuery });
-        return;
-      }
-      if (commandId === 'ui.zoom.set') {
-        const value = params as { value?: number } | undefined;
-        this.dispatchUiSessionIntent({ type: 'zoom.set', value: value?.value ?? 100 });
-        return;
-      }
-      if (commandId === 'ui.zoom.adjust') {
-        const value = params as { delta?: number; value?: number } | undefined;
-        this.dispatchUiSessionIntent({ type: 'zoom.adjust', delta: value?.delta, value: value?.value });
-        return;
-      }
-      if (commandId === 'ui.notice') {
-        this.dispatchUiSessionIntent({ type: 'notice', message: String(params ?? '') });
-        return;
-      }
       if (this.phase !== 'ready') return;
-      this.runCommand(commandId, params);
+      this.runCommand(descriptor.commandId, descriptor.params);
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Permission denied');
     }
@@ -526,6 +510,9 @@ export class SpreadsheetApplication {
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
+    if (!this.runtime.commands.registry.hasCommand(commandId)) {
+      throw new Error(`Unknown command: ${commandId}`);
+    }
     this.assertPermission(commandId, params);
     const result = this.runtime.commands.execute(commandId, params);
     if (commandId === 'history.restore') {
@@ -541,6 +528,7 @@ export class SpreadsheetApplication {
   }
 
   canExecute(commandId: string, params?: unknown): boolean {
+    if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
     return canExecuteCommand(
       this.permission,
       this.runtime.model,
@@ -551,14 +539,8 @@ export class SpreadsheetApplication {
     ).allowed;
   }
 
-  getShareRole(): ShareRole {
-    return this.permission.getShareRole(this.actorId);
-  }
-
-  setShareRole(role: ShareRole): void {
-    this.permission.setShareRole(this.actorId, role);
-    this.notify(`Share role set to ${role}`);
-    this.refresh();
+  getShareRole(): ShareRole | null {
+    return this.permission.getShareRole();
   }
 
   protectSelection(allowedActions: string[] = ['format']): void {
@@ -621,7 +603,7 @@ export class SpreadsheetApplication {
       this.syncDraftFromPrimary();
       return;
     }
-    if (!SpreadsheetApplication.SELECTION_COMMAND_IDS.has(commandId)) return;
+    if (!WorkbookSession.SELECTION_COMMAND_IDS.has(commandId)) return;
     if (result.affectedRanges.length === 0) return;
     this.selectionService.applyFromRanges(result.affectedRanges);
     this.syncDraftFromPrimary();
@@ -709,6 +691,10 @@ export class SpreadsheetApplication {
   async createGuestShareLink(role: GuestShareRole = 'editor'): Promise<string | null> {
     if (this.runtime.localOnly || typeof window === 'undefined') {
       this.notify('Connect to the Java backend before creating a guest share link');
+      return null;
+    }
+    if (!this.canExecute('workbook.share.set')) {
+      this.notify('Server access does not allow sharing this workbook');
       return null;
     }
     try {
@@ -835,7 +821,7 @@ export class SpreadsheetApplication {
       this.syncPersistenceMeta();
       this.notify('Local workbook checkpoint saved');
     } catch (error) {
-      this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'offline';
+      this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'error';
       this.notify(error instanceof Error ? error.message : 'Save failed');
       this.emit();
     }
@@ -1246,7 +1232,7 @@ export class SpreadsheetApplication {
   }
   updatePivotConfiguration(
     pivotId: string,
-    patch: Parameters<SpreadsheetApplication['updatePivotLayout']>[1] extends PivotLayout
+    patch: Parameters<WorkbookSession['updatePivotLayout']>[1] extends PivotLayout
       ? { sourceRange?: RangeRef; layout?: PivotLayout; slicers?: PivotModel['slicers']; timelines?: PivotModel['timelines']; chartReferences?: PivotModel['chartReferences'] }
       : never,
   ): void {
@@ -2141,15 +2127,6 @@ export class SpreadsheetApplication {
         message: 'Permission denied',
       };
     }
-    if (!this.runtime.capabilities.isEnabled('what-if')) {
-      this.notify('What-if analysis is disabled for this workbook');
-      return {
-        kind: 'goal-seek',
-        status: 'not-converged',
-        iterations: 0,
-        message: 'What-if capability disabled',
-      };
-    }
     const command = this.runCommand('extended.whatIf.goalSeek', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
     const result = command.plan?.result as GoalSeekResult | undefined;
     if (!result) throw new Error('Goal Seek command did not return a plan');
@@ -2171,16 +2148,6 @@ export class SpreadsheetApplication {
         outputs: [],
       };
     }
-    if (!this.runtime.capabilities.isEnabled('what-if')) {
-      this.notify('What-if analysis is disabled for this workbook');
-      return {
-        kind: 'scenario',
-        status: 'failed',
-        scenarioId: scenario.id,
-        message: 'What-if capability disabled',
-        outputs: [],
-      };
-    }
     const command = this.runCommand('extended.whatIf.scenario', { sheetId: this.activeSheetId, scenario }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
     const result = command.plan?.result as ScenarioResult | undefined;
     if (!result) throw new Error('Scenario command did not return a plan');
@@ -2196,10 +2163,6 @@ export class SpreadsheetApplication {
       this.notify('You do not have permission to run data tables');
       return { kind: 'data-table', status: 'failed', message: 'Permission denied', filledCells: 0, writes: [] };
     }
-    if (!this.runtime.capabilities.isEnabled('what-if')) {
-      this.notify('What-if analysis is disabled for this workbook');
-      return { kind: 'data-table', status: 'failed', message: 'What-if capability disabled', filledCells: 0, writes: [] };
-    }
     const command = this.runCommand('extended.whatIf.dataTable', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
     const result = command.plan?.result as DataTableResult | undefined;
     if (!result) throw new Error('Data Table command did not return a plan');
@@ -2210,14 +2173,8 @@ export class SpreadsheetApplication {
     return result;
   }
 
-  evaluatePlatformCapability(capability: PlatformCapability): { canEnable: boolean; reason?: string } {
-    this.runCommand('extended.capability.evaluate', { capability });
-    return this.runtime.capabilities.evaluate(capability);
-  }
-
   getExtendedSnapshot(): ExtendedSnapshot {
     return {
-      capabilities: this.runtime.capabilities.list(),
       lastWhatIfResult: this.lastWhatIfResult,
     };
   }
@@ -2291,14 +2248,19 @@ export class SpreadsheetApplication {
 
   setRecalculationMode(mode: RecalculationMode): void {
     this.runtime.formula.setRecalculationMode(mode);
+    if (mode === 'automatic') void scheduleFormulaRecalculation(this.runtime);
     this.refresh();
   }
 
-  recalculateFormulas(): void {
-    this.runtime.formula.recalculate();
-    syncWorkbookSpills(this.runtime.formula, this.runtime.model);
+  async recalculateFormulas(): Promise<void> {
+    await scheduleFormulaRecalculation(this.runtime, true);
     this.refresh();
     this.notify('Formulas recalculated');
+  }
+
+  /** Resolves after the most recent asynchronous formula projection is visible. */
+  async waitForFormulaCalculation(): Promise<void> {
+    await this.runtime.formulaCalculation;
   }
 
   createSheetTableFromSelection(): void {
@@ -2338,7 +2300,6 @@ export class SpreadsheetApplication {
     if (table.showFilterButton) {
       this.runCommand('sheet.filter.set', { sheetId: this.activeSheetId, filter: createFilterModelForTable(table) });
     }
-    syncWorkbookSheetTables(this.runtime.formula, this.runtime.model);
     this.notify(`Sheet table ${table.name} created`);
     this.refresh();
   }
@@ -2355,8 +2316,6 @@ export class SpreadsheetApplication {
     }
     const nextEnabled = enabled ?? !table.hasTotalRow;
     this.runCommand('sheetTable.toggleTotalRow', { sheetId: this.activeSheetId, tableId: table.id, enabled: nextEnabled });
-    syncWorkbookSheetTables(this.runtime.formula, this.runtime.model);
-    syncWorkbookSpills(this.runtime.formula, this.runtime.model);
     this.notify(nextEnabled ? `Total row added to ${table.name}` : `Total row removed from ${table.name}`);
     this.refresh();
   }

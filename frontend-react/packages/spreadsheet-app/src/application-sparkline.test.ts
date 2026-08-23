@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SpreadsheetApplication } from './application';
+import { WorkbookSession } from './workbook-session';
 
-describe('SpreadsheetApplication sparkline integration', () => {
+describe('WorkbookSession sparkline integration', () => {
   it('addSparkline routes through sparkline.insert', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -31,7 +31,7 @@ describe('SpreadsheetApplication sparkline integration', () => {
   });
 
   it('insertQuickSparkline uses the current selection and places sparkline to the right', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -39,7 +39,7 @@ describe('SpreadsheetApplication sparkline integration', () => {
       startColumn: 1,
       values: [[{ value: 4 }, { value: 6 }, { value: 8 }]],
     });
-    app.execute('selection.set', {
+    app.runCommand('selection.set', {
       sheetId,
       ranges: [{ sheetId, startRow: 2, endRow: 2, startColumn: 1, endColumn: 3 }],
       primaryRangeIndex: 0,
@@ -57,7 +57,7 @@ describe('SpreadsheetApplication sparkline integration', () => {
   });
 
   it('createSparklineGroup and updateSparklineGroup sync group settings', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -65,7 +65,7 @@ describe('SpreadsheetApplication sparkline integration', () => {
       startColumn: 1,
       values: [[{ value: 2 }, { value: 4 }, { value: 6 }]],
     });
-    app.execute('selection.set', {
+    app.runCommand('selection.set', {
       sheetId,
       ranges: [{ sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 3 }],
       primaryRangeIndex: 0,
@@ -84,7 +84,7 @@ describe('SpreadsheetApplication sparkline integration', () => {
   });
 
   it('removeSparkline deletes through sparkline.remove command contract', () => {
-    const app = new SpreadsheetApplication();
+    const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,
@@ -92,7 +92,7 @@ describe('SpreadsheetApplication sparkline integration', () => {
       startColumn: 0,
       values: [[{ value: 1 }, { value: 2 }, { value: 3 }]],
     });
-    app.execute('selection.set', {
+    app.runCommand('selection.set', {
       sheetId,
       ranges: [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }],
       primaryRangeIndex: 0,

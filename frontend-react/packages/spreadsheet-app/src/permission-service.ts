@@ -15,7 +15,6 @@ export type ShareRole = 'owner' | 'editor' | 'commenter' | 'viewer';
 
 export interface ActorContext {
   actorId: string;
-  role: ShareRole;
 }
 
 export interface PermissionCheckInput {
@@ -30,6 +29,34 @@ export interface PermissionResult {
   reason?: string;
   blockedBy?: ProtectionRule | 'share-role';
 }
+
+const LOCAL_CAPABILITIES: PermissionCapabilities = Object.freeze({
+  navigate: true,
+  editCell: true,
+  format: true,
+  structure: true,
+  drawing: true,
+  protect: true,
+  share: false,
+  comment: true,
+  restore: true,
+  query: true,
+  script: true,
+});
+
+const UNKNOWN_REMOTE_CAPABILITIES: PermissionCapabilities = Object.freeze({
+  navigate: true,
+  editCell: false,
+  format: false,
+  structure: false,
+  drawing: false,
+  protect: false,
+  share: false,
+  comment: false,
+  restore: false,
+  query: false,
+  script: false,
+});
 
 function rangesOverlap(a: RangeRef, b: RangeRef): boolean {
   return a.sheetId === b.sheetId
@@ -52,7 +79,8 @@ export class PermissionService {
   private workbookRules: ProtectionRule[] = [];
   private sheetRules = new Map<string, ProtectionRule[]>();
   private rangeRules: ProtectionRule[] = [];
-  private shareRoles = new Map<string, ShareRole>();
+  private serverRole: ShareRole | null = null;
+  private online = false;
 
   setWorkbookRules(rules: ProtectionRule[]): void {
     this.workbookRules = [...rules];
@@ -66,23 +94,33 @@ export class PermissionService {
     this.rangeRules = [...rules];
   }
 
-  setShareRole(actorId: string, role: ShareRole): void {
-    this.shareRoles.set(actorId, role);
+  /** Consume the server-calculated projection; no UI or command can set it. */
+  applyServerAccess(role: ShareRole): void {
+    this.serverRole = role;
   }
 
-  getShareRole(actorId: string): ShareRole {
-    return this.shareRoles.get(actorId) ?? 'owner';
+  clearServerAccess(): void {
+    this.serverRole = null;
   }
 
-  getCapabilities(actorId: string): PermissionCapabilities {
-    return buildPermissionCapabilities(this.getShareRole(actorId));
+  setOnline(online: boolean): void {
+    this.online = online;
+  }
+
+  getShareRole(): ShareRole | null {
+    return this.serverRole;
+  }
+
+  getCapabilities(): PermissionCapabilities {
+    if (!this.online) return LOCAL_CAPABILITIES;
+    return this.serverRole ? buildPermissionCapabilities(this.serverRole) : UNKNOWN_REMOTE_CAPABILITIES;
   }
 
   canCheck(input: PermissionCheckInput): PermissionResult {
     if (isPermissionExempt(input.commandId)) return { allowed: true };
     const action = resolveCommandAction(input.commandId);
-    const role = input.actor.role ?? this.getShareRole(input.actor.actorId);
-    const capabilities = buildPermissionCapabilities(role);
+    const role = this.serverRole;
+    const capabilities = this.getCapabilities();
     const capabilityAllowed = action === 'navigate' ? capabilities.navigate
       : action === 'edit-cell' ? capabilities.editCell
         : action === 'format' ? capabilities.format
@@ -96,7 +134,7 @@ export class PermissionService {
                         : capabilities.script;
 
     if (!capabilityAllowed) {
-      return { allowed: false, reason: `Role "${role}" cannot perform "${action}"`, blockedBy: 'share-role' };
+      return { allowed: false, reason: `Server role "${role ?? 'unknown'}" cannot perform "${action}"`, blockedBy: 'share-role' };
     }
 
     // A protection rule controls workbook content, not its owner-managed
@@ -124,34 +162,16 @@ export class PermissionService {
   }
 
   checkCommand(commandId: string, params: unknown, actorId: string, activeSheetId: string): PermissionResult {
-    const role = this.getShareRole(actorId);
     return this.canCheck({
       commandId,
       affectedRanges: inferAffectedRanges(commandId, params, activeSheetId),
-      actor: { actorId, role },
+      actor: { actorId },
       params,
     });
   }
 
   syncFromWorkbook(workbook: WorkbookModel): void {
     syncProtectionRulesFromWorkbook(this, workbook);
-  }
-
-  /** @deprecated 兼容旧 API */
-  can(commandId: string, params?: unknown, actorId?: string, activeSheetId = 'sheet-1'): boolean {
-    const role = actorId ? this.getShareRole(actorId) : 'owner';
-    return this.canCheck({
-      commandId,
-      affectedRanges: inferAffectedRanges(commandId, params, activeSheetId),
-      actor: { actorId: actorId ?? 'local', role },
-      params,
-    }).allowed;
-  }
-
-  /** @deprecated 兼容旧 API */
-  assert(commandId: string, params?: unknown, actorId?: string, activeSheetId = 'sheet-1'): void {
-    const result = this.checkCommand(commandId, params, actorId ?? 'local', activeSheetId);
-    if (!result.allowed) throw new Error(result.reason ?? `Permission denied for command: ${commandId}`);
   }
 
   private allRules(): ProtectionRule[] {
