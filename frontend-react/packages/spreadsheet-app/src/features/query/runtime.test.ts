@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { CommandRuntime } from '@react-sheets/command-runtime';
+import { CommandRegistry, CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
   buildQueryResultSnapshot,
@@ -89,6 +89,12 @@ describe('query runtime', () => {
 });
 
 describe('query commands', () => {
+  it('exposes complete mutation contracts for definition and load replay', () => {
+    const registry = new CommandRegistry({ requireMutationMetadata: true });
+    registerQueryCommands(registry);
+    registry.assertComplete();
+  });
+
   it('loads query results into worksheet cells through query.load', () => {
     const model = new WorkbookModel('wb-query', 'Query');
     const runtime = new CommandRuntime(model);
@@ -107,6 +113,10 @@ describe('query commands', () => {
     const sheet = model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'Product');
     assert.equal(sheet.cells.get(1, 1)?.value, 9);
+    assert.equal(Array.isArray(model.getQueryDefinition('q-load')?.connectorConfig.data), true);
+    assert.deepEqual(model.getQueryDefinition('q-load')?.steps, []);
+    const restored = WorkbookModel.fromSnapshot(model.snapshot());
+    assert.deepEqual(restored.getQueryDefinition('q-load'), model.getQueryDefinition('q-load'));
   });
 
   it('builds distinct load plans for sheet tables and pivots', () => {
@@ -148,8 +158,10 @@ describe('query commands', () => {
 
     runtime.execute('query.load', { query, target: { kind: 'sheet-table', sheetId: sheet.id, tableId: 'table-1' }, result });
     assert.equal(sheet.cells.get(1, 1)?.value, 2);
+    assert.equal(model.getQueryDefinition('q-replay')?.id, 'q-replay');
     assert.equal(runtime.undo(), true);
     assert.equal(sheet.cells.get(1, 1), undefined);
+    assert.equal(model.getQueryDefinition('q-replay'), undefined);
 
     runtime.execute('query.load', { query, target: { kind: 'workbook-table', tableId: 'workbook-table-1' }, result });
     assert.equal(model.getTable('workbook-table-1').rowCount, 1);

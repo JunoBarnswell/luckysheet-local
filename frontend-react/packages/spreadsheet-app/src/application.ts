@@ -697,8 +697,17 @@ export class SpreadsheetApplication {
   }
 
   async restoreToRevision(revision: number): Promise<void> {
-    const response = await this.runtime.api.getRevisionSnapshot(this.runtime.model.unitId, revision);
-    this.restoreFromSnapshot(response.snapshot, revision, `Restore to revision ${revision}`);
+    const response = await this.runtime.api.restoreToRevision(
+      this.runtime.model.unitId,
+      revision,
+      `Restore to revision ${revision}`,
+    );
+    hydrateRuntime(this.runtime, response);
+    this.activeSheetId = this.runtime.model.activeSheetId;
+    this.selectionService.resetForSheet(this.activeSheetId);
+    this.clearHistoryPreview();
+    this.notify(`Restored workbook to revision ${revision}`);
+    this.refresh();
     await this.refreshRevisionLog();
   }
 

@@ -1,5 +1,5 @@
 import type { CellData, RangeRef, TableScalar, WorkbookModel, WorkbookTableModel } from '@react-sheets/core-model';
-import { serializeQueryDefinition, type ConnectorRegistry, type QueryResult } from './index';
+import { serializeQueryDefinition, type ConnectorRegistry, type QueryDefinitionPersistence, type QueryResult } from './index';
 import {
   QueryStepPipeline,
   validateQuerySteps,
@@ -32,6 +32,8 @@ export interface QueryLoadCommandPayload {
 export interface QueryCellLoadPayload {
   kind: 'cells';
   queryId: string;
+  /** Persistence-safe definition; this is part of the same atomic mutation as the load. */
+  queryDefinition: QueryDefinitionPersistence | null;
   target: LoadTarget;
   clearRange: RangeRef;
   values: CellData[][];
@@ -42,6 +44,8 @@ export interface QueryCellLoadPayload {
 export interface QueryWorkbookTableLoadPayload {
   kind: 'workbook-table';
   queryId: string;
+  /** Persistence-safe definition; this is part of the same atomic mutation as the load. */
+  queryDefinition: QueryDefinitionPersistence | null;
   tableId: string;
   table: WorkbookTableModel;
   result: QueryResult;
@@ -243,6 +247,8 @@ export function buildQueryLoadPlan(
   tableStore: WorkbookTableQueryStore,
 ): QueryLoadPlan {
   validateQueryDefinition(params.query);
+  const persistedDefinition = serializeQueryDefinition(params.query);
+  const previousDefinition = workbook.getQueryDefinition(params.query.id) ?? null;
   if (!params.result || !Array.isArray(params.result.columns) || !Array.isArray(params.result.rows)) {
     throw new Error('Query result is invalid');
   }
@@ -257,10 +263,11 @@ export function buildQueryLoadPlan(
     const endColumn = Math.max(target.range.endColumn ?? startColumn, startColumn + Math.max(params.result.columns.length, 1) - 1);
     const clearRange: RangeRef = { sheetId: target.sheetId, startRow, endRow, startColumn, endColumn };
     assertRangeBounds(workbook, clearRange);
-    const payload: QueryCellLoadPayload = { kind: 'cells', queryId: params.query.id, target: structuredClone(target), clearRange, values };
+    const payload: QueryCellLoadPayload = { kind: 'cells', queryId: params.query.id, queryDefinition: persistedDefinition, target: structuredClone(target), clearRange, values };
     const inverse: QueryCellLoadPayload = {
       kind: 'cells',
       queryId: params.query.id,
+      queryDefinition: previousDefinition,
       target: structuredClone(target),
       clearRange,
       values: [],
@@ -283,10 +290,10 @@ export function buildQueryLoadPlan(
     const values = buildQueryCellValues(params.result, table.hasHeaderRow);
     const loadRange: RangeRef = { ...tableRange, endRow: tableRange.endRow - totalRows };
     const payload: QueryCellLoadPayload = {
-      kind: 'cells', queryId: params.query.id, target: structuredClone(target), clearRange: loadRange, values,
+      kind: 'cells', queryId: params.query.id, queryDefinition: persistedDefinition, target: structuredClone(target), clearRange: loadRange, values,
     };
     const inverse: QueryCellLoadPayload = {
-      kind: 'cells', queryId: params.query.id, target: structuredClone(target), clearRange: loadRange, values: [],
+      kind: 'cells', queryId: params.query.id, queryDefinition: previousDefinition, target: structuredClone(target), clearRange: loadRange, values: [],
     };
     Object.assign(inverse, { previousCells: previousCells(workbook, loadRange) });
     return { mutationId: 'query.load.sheet-table', payload, inverse, affectedRanges: [tableRange] };
@@ -317,11 +324,11 @@ export function buildQueryLoadPlan(
       revision: table.revision + 1,
     };
     const payload: QueryWorkbookTableLoadPayload = {
-      kind: 'workbook-table', queryId: params.query.id, tableId: table.id, table: nextTable,
+      kind: 'workbook-table', queryId: params.query.id, queryDefinition: persistedDefinition, tableId: table.id, table: nextTable,
       result: structuredClone(params.result), sourceRevision: params.query.sourceRevision ?? 0,
     };
     const inverse: QueryWorkbookTableLoadPayload = {
-      kind: 'workbook-table', queryId: params.query.id, tableId: table.id, table: structuredClone(table),
+      kind: 'workbook-table', queryId: params.query.id, queryDefinition: previousDefinition, tableId: table.id, table: structuredClone(table),
       result: previous?.result ?? { columns: [], rows: [], rowCount: 0 }, sourceRevision: previous?.sourceRevision ?? 0,
     };
     Object.assign(inverse, { previousTable: structuredClone(table), previousRecord: previous });
@@ -341,11 +348,11 @@ export function buildQueryLoadPlan(
     }
     assertRangeBounds(workbook, sourceRange);
     const payload: QueryCellLoadPayload = {
-      kind: 'cells', queryId: params.query.id, target: structuredClone(target), clearRange: sourceRange, values,
+      kind: 'cells', queryId: params.query.id, queryDefinition: persistedDefinition, target: structuredClone(target), clearRange: sourceRange, values,
       pivot: { sheetId: found.sheetId, pivotId: found.pivot.id, nextRefreshRevision: (found.pivot.refreshRevision ?? 0) + 1, nextRefreshedAt: new Date().toISOString() },
     };
     const inverse: QueryCellLoadPayload = {
-      kind: 'cells', queryId: params.query.id, target: structuredClone(target), clearRange: sourceRange, values: [],
+      kind: 'cells', queryId: params.query.id, queryDefinition: previousDefinition, target: structuredClone(target), clearRange: sourceRange, values: [],
       pivot: { sheetId: found.sheetId, pivotId: found.pivot.id, nextRefreshRevision: found.pivot.refreshRevision ?? 0, nextRefreshedAt: found.pivot.lastRefreshedAt ?? '' },
     };
     Object.assign(inverse, { previousCells: previousCells(workbook, sourceRange) });

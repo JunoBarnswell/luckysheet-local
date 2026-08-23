@@ -7,6 +7,7 @@ import {
   encodeOperationMessageV2,
   AuthenticationRequiredError,
   WorkbookApiClient,
+  validateHistoryRestoreRequest,
   validateOperationEnvelopeV2,
 } from './index';
 
@@ -71,4 +72,29 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
   await api.getSnapshot('unit-1');
   assert.equal(new Headers(request?.headers).get('authorization'), 'Bearer token-123');
   await assert.rejects(() => new WorkbookApiClient().getSnapshot('unit-1'), AuthenticationRequiredError);
+});
+
+test('history restore request is target-revision-only and client API posts no snapshot', async () => {
+  assert.deepEqual(validateHistoryRestoreRequest({ targetRevision: 3, reason: 'rollback' }), {
+    targetRevision: 3,
+    reason: 'rollback',
+  });
+  assert.throws(() => validateHistoryRestoreRequest({ targetRevision: 3, snapshot: {} }), /unsupported fields/);
+  assert.throws(() => validateHistoryRestoreRequest({ targetRevision: 3, actorId: 'spoofed' }), /unsupported fields/);
+  assert.throws(() => validateHistoryRestoreRequest({ targetRevision: -1 }), /non-negative/);
+
+  let postedBody = '';
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'token-restore',
+    fetchImpl: async (_input, init) => {
+      postedBody = String(init?.body ?? '');
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  await api.restoreToRevision('unit-1', 3, 'rollback');
+  assert.deepEqual(JSON.parse(postedBody), { targetRevision: 3, reason: 'rollback' });
+  assert.equal(postedBody.includes('snapshot'), false);
 });

@@ -1,4 +1,8 @@
 import type { CellAddress, FormulaAst } from './ast';
+import {
+  DEFAULT_FORMULA_CAPABILITIES,
+  type FormulaCapabilities,
+} from './capabilities';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
 import { collectFormulaDependencies } from './dependencies';
 import { evaluateFormula } from './evaluator';
@@ -52,6 +56,8 @@ export interface RecalculationReport {
 export interface FormulaEngineOptions {
   readonly defaultSheetId?: string;
   readonly recalculationMode?: RecalculationMode;
+  /** Gated formula capabilities; omitted means all gated functions fail closed. */
+  readonly capabilities?: FormulaCapabilities;
 }
 
 export type RecalculationMode = 'automatic' | 'manual';
@@ -76,12 +82,14 @@ export class FormulaEngine {
   private recalculationMode: RecalculationMode;
   private pendingRecalculationRoots = new Set<string>();
   private sheetTables = new Map<string, SheetTableRef>();
+  private readonly capabilities: FormulaCapabilities;
 
   private readonly cells = new Map<string, StoredCell>();
 
   constructor(options: FormulaEngineOptions = {}) {
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
     this.recalculationMode = options.recalculationMode ?? 'automatic';
+    this.capabilities = options.capabilities ?? DEFAULT_FORMULA_CAPABILITIES;
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -469,6 +477,7 @@ export class FormulaEngine {
     try {
       value = evaluateFormula(cell.ast, {
         currentCell: cell.address,
+        capabilities: this.capabilities,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),

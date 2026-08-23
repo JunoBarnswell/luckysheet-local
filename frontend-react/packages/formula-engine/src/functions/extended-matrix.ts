@@ -28,7 +28,7 @@ function uniqueValues(values: FormulaValue[]): FormulaValue[] {
   return result;
 }
 
-/** GROUPBY stub — 按行分组聚合 */
+/** Capability-gated GROUPBY implementation — 按行分组聚合. */
 function GROUPBY(args: FormulaValue[]): FormulaValue {
   if (args.length < 3) return createFormulaError('#VALUE!', 'GROUPBY requires at least 3 arguments');
   const rowGroups = toMatrix(args[0]!);
@@ -54,7 +54,7 @@ function GROUPBY(args: FormulaValue[]): FormulaValue {
   return result;
 }
 
-/** PIVOTBY stub — 行列双维度透视 */
+/** Capability-gated PIVOTBY implementation — 行列双维度透视. */
 function PIVOTBY(args: FormulaValue[]): FormulaValue {
   if (args.length < 4) return createFormulaError('#VALUE!', 'PIVOTBY requires at least 4 arguments');
   const rowFields = toMatrix(args[0]!);

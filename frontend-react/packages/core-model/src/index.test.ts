@@ -192,3 +192,46 @@ test('migrates legacy per-kind floating objects into canonical drawings once', (
   assert.equal(workbook.getSheet('sheet-1').drawings.length, 3);
   assert.equal('charts' in workbook.getSheet('sheet-1'), false);
 });
+
+test('persists print documents and redacted query definitions in the workbook snapshot', () => {
+  const workbook = new WorkbookModel('unit-persisted-features', 'Persisted Features');
+  const sheetId = workbook.activeSheetId;
+  workbook.setPrintDocument({
+    schema: 'PrintDocumentV1',
+    unitId: workbook.unitId,
+    sheetId,
+    pageSetup: {
+      paperSize: 'letter',
+      orientation: 'landscape',
+      margins: { top: 10, right: 11, bottom: 12, left: 13, header: 4, footer: 5 },
+      scale: 90,
+      printGridlines: true,
+      printHeadings: false,
+      centerHorizontally: true,
+      centerVertically: false,
+    },
+    printAreas: [{ sheetId, range: { sheetId, startRow: 1, endRow: 10, startColumn: 2, endColumn: 6 } }],
+    pageBreaks: [{ sheetId, row: 5 }],
+  });
+  workbook.setQueryDefinition({
+    schema: 'QueryDefinitionV1',
+    id: 'query-1',
+    name: 'Sales',
+    connectorId: 'rest',
+    connectorConfig: { url: 'https://example.test', apiKey: '[redacted]', nested: { token: '[redacted]' } },
+    steps: [{ id: 'source-1', kind: 'source', name: 'Source', config: {}, enabled: true }],
+    sourceRevision: 4,
+  });
+
+  const snapshot = workbook.snapshot();
+  assert.deepEqual(snapshot.printDocuments?.[0]?.pageBreaks, [{ sheetId, row: 5 }]);
+  assert.equal(snapshot.queryDefinitions?.[0]?.connectorConfig.apiKey, '[redacted]');
+  assert.equal((snapshot.queryDefinitions?.[0]?.connectorConfig.nested as Record<string, unknown>).token, '[redacted]');
+  const restored = WorkbookModel.fromSnapshot(snapshot);
+  assert.deepEqual(restored.getPrintDocument(sheetId), workbook.getPrintDocument(sheetId));
+  assert.deepEqual(restored.getQueryDefinition('query-1'), workbook.getQueryDefinition('query-1'));
+  assert.throws(() => restored.setQueryDefinition({
+    ...workbook.getQueryDefinition('query-1')!,
+    connectorConfig: { apiKey: 'secret' },
+  }), /redacted/);
+});

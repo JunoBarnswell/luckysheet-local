@@ -1,7 +1,7 @@
-import type { RangeRef, SheetId, WorkbookModel } from '@react-sheets/core-model';
+import { normalizePrintDocumentSnapshot, type PrintDocumentSnapshot, type RangeRef, type SheetId, type WorkbookModel } from '@react-sheets/core-model';
 
-export type PaperSize = 'letter' | 'a4' | 'a3' | 'legal' | 'custom';
-export type PageOrientation = 'portrait' | 'landscape';
+export type PaperSize = PrintDocumentSnapshot['pageSetup']['paperSize'];
+export type PageOrientation = PrintDocumentSnapshot['pageSetup']['orientation'];
 
 /** Public print input used by UI and host callers. */
 export interface PrintLayout {
@@ -21,29 +21,7 @@ export interface PrintLayout {
   footerText?: string;
 }
 
-export interface PageMargins {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-  header: number;
-  footer: number;
-}
-
-export interface PageSetup {
-  paperSize: PaperSize;
-  orientation: PageOrientation;
-  margins: PageMargins;
-  scale: number;
-  fitToWidth?: number;
-  fitToHeight?: number;
-  printGridlines: boolean;
-  printHeadings: boolean;
-  centerHorizontally: boolean;
-  centerVertically: boolean;
-  headerText?: string;
-  footerText?: string;
-}
+export type PageSetup = PrintDocumentSnapshot['pageSetup'];
 
 export const DEFAULT_PAGE_SETUP: PageSetup = {
   paperSize: 'a4',
@@ -56,28 +34,12 @@ export const DEFAULT_PAGE_SETUP: PageSetup = {
   centerVertically: false,
 };
 
-export interface PrintArea {
-  sheetId: SheetId;
-  range: RangeRef;
-}
-
-export interface PrintPageBreak {
-  sheetId: SheetId;
-  row?: number;
-  column?: number;
-}
+export type PrintArea = PrintDocumentSnapshot['printAreas'][number];
+export type PrintPageBreak = PrintDocumentSnapshot['pageBreaks'][number];
 
 /** Canonical, serializable workbook print state. */
-export interface PrintDocument {
-  schema: 'PrintDocumentV1';
-  unitId: string;
-  sheetId: SheetId;
-  pageSetup: PageSetup;
-  printAreas: PrintArea[];
-  pageBreaks: PrintPageBreak[];
-  repeatRows?: { start: number; end: number };
-  repeatColumns?: { start: number; end: number };
-}
+/** Canonical workbook-owned print state. */
+export type PrintDocument = PrintDocumentSnapshot;
 
 export interface PrintLayoutModel {
   unitId: string;
@@ -118,16 +80,6 @@ export function createDefaultPrintDocument(unitId: string, sheetId: SheetId): Pr
   };
 }
 
-const printDocuments = new WeakMap<WorkbookModel, Map<SheetId, PrintDocument>>();
-
-function documentsFor(workbook: WorkbookModel): Map<SheetId, PrintDocument> {
-  const current = printDocuments.get(workbook);
-  if (current) return current;
-  const created = new Map<SheetId, PrintDocument>();
-  printDocuments.set(workbook, created);
-  return created;
-}
-
 function assertDocumentTarget(workbook: WorkbookModel, document: PrintDocument): void {
   if (document.unitId !== workbook.unitId) {
     throw new Error(`Print document unit mismatch: expected ${workbook.unitId}, received ${document.unitId}`);
@@ -137,78 +89,29 @@ function assertDocumentTarget(workbook: WorkbookModel, document: PrintDocument):
 
 export function getPrintDocument(workbook: WorkbookModel, sheetId: SheetId): PrintDocument {
   workbook.getSheet(sheetId);
-  const documents = documentsFor(workbook);
-  const current = documents.get(sheetId);
+  const current = workbook.getPrintDocument(sheetId);
   if (current) return structuredClone(current);
-  const created = createDefaultPrintDocument(workbook.unitId, sheetId);
-  documents.set(sheetId, created);
-  return structuredClone(created);
+  return createDefaultPrintDocument(workbook.unitId, sheetId);
 }
 
 export function replacePrintDocument(workbook: WorkbookModel, document: PrintDocument): void {
   assertDocumentTarget(workbook, document);
-  documentsFor(workbook).set(document.sheetId, normalizePrintDocument(document));
+  workbook.setPrintDocument(normalizePrintDocument(document));
 }
 
 export function serializePrintDocuments(workbook: WorkbookModel): PrintDocument[] {
-  const documents = documentsFor(workbook);
   return workbook.getSheets().map((sheet) => structuredClone(
-    documents.get(sheet.id) ?? createDefaultPrintDocument(workbook.unitId, sheet.id),
+    workbook.getPrintDocument(sheet.id) ?? createDefaultPrintDocument(workbook.unitId, sheet.id),
   ));
 }
 
 export function hydratePrintDocuments(workbook: WorkbookModel, documents: readonly PrintDocument[]): void {
-  const target = documentsFor(workbook);
-  target.clear();
+  workbook.clearPrintDocuments();
   for (const document of documents) replacePrintDocument(workbook, document);
 }
 
 export function normalizePrintDocument(document: PrintDocument): PrintDocument {
-  if (document.schema !== 'PrintDocumentV1') throw new Error('Unsupported print document schema');
-  if (!document.unitId || !document.sheetId) throw new Error('Print document identity is required');
-  if (document.printAreas.some((area) => area.sheetId !== document.sheetId)) throw new Error('Print areas must target their document sheet');
-  if (document.pageBreaks.some((pageBreak) => pageBreak.sheetId !== document.sheetId)) throw new Error('Page breaks must target their document sheet');
-  return {
-    schema: 'PrintDocumentV1',
-    unitId: document.unitId,
-    sheetId: document.sheetId,
-    pageSetup: normalizePageSetup(document.pageSetup),
-    printAreas: document.printAreas.map((area) => ({ sheetId: area.sheetId, range: normalizeRange(area.range) })),
-    pageBreaks: document.pageBreaks.map(normalizePageBreak),
-    repeatRows: document.repeatRows ? normalizeIndexSpan(document.repeatRows) : undefined,
-    repeatColumns: document.repeatColumns ? normalizeIndexSpan(document.repeatColumns) : undefined,
-  };
-}
-
-function normalizeIndexSpan(span: { start: number; end: number }): { start: number; end: number } {
-  if (!Number.isInteger(span.start) || !Number.isInteger(span.end) || span.start < 0 || span.end < span.start) {
-    throw new Error('Invalid print repeat span');
-  }
-  return { start: span.start, end: span.end };
-}
-
-function normalizeRange(range: RangeRef): RangeRef {
-  if (!range || typeof range.sheetId !== 'string' || !range.sheetId || range.startRow < 0 || range.endRow < range.startRow || range.startColumn < 0 || range.endColumn < range.startColumn) {
-    throw new Error('Invalid print range');
-  }
-  return { ...range };
-}
-
-function normalizePageBreak(pageBreak: PrintPageBreak): PrintPageBreak {
-  const hasRow = pageBreak.row !== undefined;
-  const hasColumn = pageBreak.column !== undefined;
-  if (!pageBreak.sheetId || hasRow === hasColumn) throw new Error('A print page break must specify exactly one row or column');
-  if (hasRow && (!Number.isInteger(pageBreak.row) || pageBreak.row! < 0)) throw new Error('Invalid print row break');
-  if (hasColumn && (!Number.isInteger(pageBreak.column) || pageBreak.column! < 0)) throw new Error('Invalid print column break');
-  return hasRow ? { sheetId: pageBreak.sheetId, row: pageBreak.row } : { sheetId: pageBreak.sheetId, column: pageBreak.column };
-}
-
-function normalizePageSetup(setup: PageSetup): PageSetup {
-  const margins = setup.margins;
-  const values = [margins.top, margins.right, margins.bottom, margins.left, margins.header, margins.footer, setup.scale];
-  if (!values.every((value) => Number.isFinite(value) && value >= 0)) throw new Error('Invalid print page setup');
-  if (setup.scale <= 0 || setup.scale > 400) throw new Error('Print scale must be between 1 and 400');
-  return { ...structuredClone(setup), margins: { ...margins }, scale: setup.scale };
+  return normalizePrintDocumentSnapshot(document);
 }
 
 export interface PrintPageInfo {

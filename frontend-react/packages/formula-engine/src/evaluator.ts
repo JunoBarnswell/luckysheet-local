@@ -1,4 +1,10 @@
 import type { BinaryOperator, CellAddress, FormulaAst } from './ast';
+import {
+  createFormulaCapabilityError,
+  getFormulaCapability,
+  isFormulaCapabilityEnabled,
+  type FormulaCapabilities,
+} from './capabilities';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
@@ -11,6 +17,8 @@ export interface FormulaEvaluationContext {
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;
+  /** Gated formula capabilities; omitted means all gated functions fail closed. */
+  readonly capabilities?: FormulaCapabilities;
   /** 定义名称解析:返回 undefined 视为 #NAME? */
   resolveName?(name: string): FormulaValue | undefined;
   /** 结构化表引用解析 */
@@ -178,11 +186,16 @@ function evaluateFunction(
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
 ): FormulaValue | EvaluationRange {
+  const capability = getFormulaCapability(name);
+  if (capability && !isFormulaCapabilityEnabled(context.capabilities, capability)) {
+    return createFormulaCapabilityError(name, capability, context.capabilities);
+  }
+
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context);
   if (native !== undefined) return native;
 
-  const fn = getBuiltinFunction(name);
+  const fn = getBuiltinFunction(name, context.capabilities);
   const evaluatedArgs: FormulaValue[] = [];
   const rawRanges: EvaluationValue[] = [];
   for (const argument of argumentsList) {

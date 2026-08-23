@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,6 +8,8 @@ import { WorkbookModel, type PivotLayout, type TableScalar, type WorkbookTableBl
 import {
   validateOperationEnvelopeV2,
   type CommittedOperationEnvelopeV2,
+  type HistoryAuditRecord,
+  type HistoryRestoreResponse,
   type OperationEnvelopeV2,
   type SnapshotResponse,
   type WorkbookAclRecord,
@@ -38,6 +41,11 @@ export class StorageAccessError extends Error {
 export class StorageConflictError extends Error {
   readonly code = 'CONFLICT' as const;
   readonly status = 409 as const;
+}
+
+export class StorageValidationError extends Error {
+  readonly code = 'VALIDATION_ERROR' as const;
+  readonly status = 400 as const;
 }
 
 function requireSubject(subject: string): string {
@@ -151,6 +159,19 @@ export class WorkbookStorage {
       );
       CREATE INDEX IF NOT EXISTS workbook_acl_subject
         ON workbook_acl(subject, unit_id);
+      CREATE TABLE IF NOT EXISTS audit_events (
+        audit_id TEXT PRIMARY KEY,
+        unit_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        actor_subject TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_revision INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS audit_events_unit_revision
+        ON audit_events(unit_id, revision DESC);
     `);
     // Existing local databases predate snapshot_revision. This is a one-way
     // storage migration; a baseline snapshot is always revision 0 for them.
@@ -253,6 +274,7 @@ export class WorkbookStorage {
     try {
       this.database.prepare('DELETE FROM changesets WHERE unit_id = ?').run(unitId);
       this.database.prepare('DELETE FROM snapshots WHERE unit_id = ?').run(unitId);
+      this.database.prepare('DELETE FROM audit_events WHERE unit_id = ?').run(unitId);
       this.database.prepare('DELETE FROM workbook_acl WHERE unit_id = ?').run(unitId);
       const tables = this.database.prepare('SELECT table_id FROM data_tables WHERE unit_id = ?').all(unitId) as Array<{ table_id: string }>;
       for (const table of tables) this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(table.table_id);
@@ -406,6 +428,9 @@ export class WorkbookStorage {
    */
   appendOperation(operationInput: OperationEnvelopeV2, actorSubject: string): { revision: number; operation: CommittedOperationEnvelopeV2 } {
     const operation = validateOperationEnvelopeV2(operationInput);
+    if (operation.mutations.some((mutation) => mutation.id === 'workbook.restore')) {
+      throw new StorageValidationError('workbook.restore is server-generated; submit targetRevision to the restore endpoint');
+    }
     const actor = requireSubject(actorSubject);
     this.requireRole(operation.unitId, actor, 'editor');
 
@@ -679,6 +704,166 @@ export class WorkbookStorage {
       createdAt: row.created_at,
       payload,
     };
+  }
+
+  /**
+   * Resolve a historical snapshot and commit a server-authored restore
+   * operation. The request carries only targetRevision/reason; the snapshot
+   * is loaded from the authoritative revision store while the write lock is
+   * held, then recorded as one atomic changeset and audit event.
+   */
+  restoreWorkbook(
+    unitId: string,
+    targetRevision: number,
+    reason: string | undefined,
+    actorSubject: string,
+  ): HistoryRestoreResponse {
+    const actor = requireSubject(actorSubject);
+    // Restore rewrites the complete workbook aggregate. Keep the server
+    // policy aligned with the canonical history.restore capability: only the
+    // persisted workbook owner may create this operation.
+    this.requireRole(unitId, actor, 'owner');
+    if (!Number.isSafeInteger(targetRevision) || targetRevision < 0) {
+      throw new StorageValidationError('targetRevision must be a non-negative safe integer');
+    }
+    if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) {
+      throw new StorageValidationError('reason must be a string with at most 1000 characters');
+    }
+
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.getSnapshotUnchecked(unitId);
+      if (targetRevision > current.revision) {
+        throw new Error(`Revision not found: ${targetRevision}`);
+      }
+
+      // The historical read is performed by the storage layer, never from a
+      // client-provided snapshot. It is safe inside the transaction because
+      // getSnapshotAtRevision only reads the same SQLite connection.
+      const historical = this.getSnapshotAtRevision(unitId, targetRevision, actor);
+      const historicalSnapshot = structuredClone(historical.snapshot);
+      const workbook = WorkbookModel.fromSnapshot(current.snapshot);
+      const runtime = createMutationRuntime(workbook);
+      const operationId = randomUUID();
+      const committedAt = new Date().toISOString();
+      const operation: OperationEnvelopeV2 = {
+        schema: 'OperationEnvelopeV2',
+        operationId,
+        unitId,
+        // Server-authored operations still use the monotonic envelope field;
+        // client sequences remain independent and are never trusted here.
+        clientSequence: current.revision + 1,
+        baseRevision: current.revision,
+        createdAt: committedAt,
+        mutations: [{
+          id: 'workbook.restore',
+          sheetId: historicalSnapshot.activeSheetId,
+          params: {
+            serverGenerated: true,
+            targetRevision,
+            ...(reason === undefined ? {} : { reason }),
+            snapshot: historicalSnapshot,
+          },
+        }],
+      };
+      // The canonical workbook.restore registration intentionally declares an
+      // empty exact range: the mutation replaces the workbook aggregate, not
+      // one cell rectangle. Keep the envelope aligned with that registry so
+      // remote/history replay cannot accept a forged range list.
+      const affectedRanges: CommittedOperationEnvelopeV2['mutations'][number]['affectedRanges'] = [];
+      const committedMutations = operation.mutations.map((mutation) => ({
+        ...mutation,
+        affectedRanges,
+      }));
+      runtime.applyRemoteMutations(committedMutations.map((mutation) => ({
+        id: mutation.id,
+        unitId,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges: mutation.affectedRanges,
+      })));
+
+      const nextRevision = current.revision + 1;
+      const committed: CommittedOperationEnvelopeV2 = {
+        ...operation,
+        actorId: actor,
+        revision: nextRevision,
+        committedAt,
+        mutations: committedMutations,
+      };
+      const nextSnapshot = workbook.snapshot();
+      this.database
+        .prepare(
+          `INSERT INTO changesets (operation_id, unit_id, revision, payload_json, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(operationId, unitId, nextRevision, JSON.stringify(committed), committedAt);
+      this.database
+        .prepare('UPDATE workbooks SET snapshot_json = ?, snapshot_revision = ?, revision = ?, updated_at = ? WHERE unit_id = ?')
+        .run(JSON.stringify(nextSnapshot), nextRevision, nextRevision, committedAt, unitId);
+      // A restore is a full materialized state transition. Persisting its
+      // target snapshot immediately keeps future history preview/replay
+      // bounded even when the normal 50 changeset threshold is not reached.
+      this.persistRevisionSnapshot(unitId, nextRevision, nextSnapshot, committedAt);
+      this.database
+        .prepare(
+          `INSERT INTO audit_events
+             (audit_id, unit_id, operation_id, actor_subject, action, target_revision, revision, reason, created_at)
+           VALUES (?, ?, ?, ?, 'workbook.restore', ?, ?, ?, ?)`,
+        )
+        .run(randomUUID(), unitId, operationId, actor, targetRevision, nextRevision, reason ?? null, committedAt);
+      this.database.exec('COMMIT');
+      return {
+        snapshot: nextSnapshot,
+        revision: nextRevision,
+        targetRevision,
+        operation: committed,
+      };
+    } catch (error) {
+      try {
+        this.database.exec('ROLLBACK');
+      } catch {
+        // Preserve the original failure if SQLite already closed the transaction.
+      }
+      throw error;
+    }
+  }
+
+  listHistoryAudit(unitId: string, actorSubject: string): HistoryAuditRecord[] {
+    this.requireRole(unitId, actorSubject, 'viewer');
+    const rows = this.database
+      .prepare(
+        `SELECT audit_id, unit_id, operation_id, actor_subject, action,
+                target_revision, revision, reason, created_at
+           FROM audit_events
+          WHERE unit_id = ?
+          ORDER BY revision DESC, created_at DESC`,
+      )
+      .all(unitId) as Array<{
+        audit_id: string;
+        unit_id: string;
+        operation_id: string;
+        actor_subject: string;
+        action: string;
+        target_revision: number;
+        revision: number;
+        reason: string | null;
+        created_at: string;
+      }>;
+    return rows.map((row) => {
+      if (row.action !== 'workbook.restore') throw new Error(`Unsupported audit action: ${row.action}`);
+      return {
+        auditId: row.audit_id,
+        unitId: row.unit_id,
+        operationId: row.operation_id,
+        actorId: row.actor_subject,
+        action: 'workbook.restore',
+        targetRevision: row.target_revision,
+        revision: row.revision,
+        ...(row.reason === null ? {} : { reason: row.reason }),
+        createdAt: row.created_at,
+      } satisfies HistoryAuditRecord;
+    });
   }
 
   private persistRevisionSnapshot(

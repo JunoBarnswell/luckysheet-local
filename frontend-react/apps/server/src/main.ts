@@ -6,11 +6,12 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import {
   decodeClientOperationMessageV2,
   encodeOperationMessageV2,
+  validateHistoryRestoreRequest,
   type ApiError,
   type OperationMessageV2,
   type WorkbookAclRole,
 } from '@react-sheets/protocol';
-import { WorkbookStorage } from '@react-sheets/storage';
+import { StorageValidationError, WorkbookStorage } from '@react-sheets/storage';
 import { computePivotResult } from '@react-sheets/pro-features';
 import { importXlsx, exportXlsx, parseXlsxXmlToSnapshot } from '@react-sheets/exchange-xlsx';
 import { AuthenticationError, JwtAuthenticator } from './auth';
@@ -60,6 +61,19 @@ function leaveUnit(unitId: string | null, socket: import('ws').WebSocket): void 
   if (!clients) return;
   clients.delete(socket);
   if (clients.size === 0) clientsByUnit.delete(unitId);
+}
+
+function broadcastRevision(unitId: string, operation: import('@react-sheets/protocol').CommittedOperationEnvelopeV2): void {
+  const clients = clientsByUnit.get(unitId);
+  if (!clients) return;
+  const message = encodeOperationMessageV2({
+    type: 'revision.created',
+    payload: operation,
+    revision: operation.revision,
+  });
+  for (const client of clients) {
+    if (client.readyState === client.OPEN) client.send(message);
+  }
 }
 
 function createDefaultSnapshot(unitId: string) {
@@ -202,6 +216,38 @@ const server = createServer(async (request, response) => {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');
       sendJson(response, 200, { revisions: storage.listRevisions(unitId, principal.subject) });
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/v1\/workbooks\/[^/]+\/restore$/.test(url.pathname)) {
+      const unitId = decodeURIComponent(url.pathname.split('/')[4] ?? '');
+      if (!unitId) throw new StorageValidationError('Workbook id is required');
+      let rawBody: unknown;
+      try {
+        rawBody = JSON.parse(await readBody(request)) as unknown;
+      } catch {
+        throw new StorageValidationError('History restore request must be valid JSON');
+      }
+      const restoreRequest = validateHistoryRestoreRequest(rawBody);
+      const result = storage.restoreWorkbook(
+        unitId,
+        restoreRequest.targetRevision,
+        restoreRequest.reason,
+        principal.subject,
+      );
+      // REST restore and WebSocket changesets share the same committed
+      // operation broadcast. Every connected peer receives the authoritative
+      // server-generated mutation, including the requester if it also has a
+      // collaboration socket.
+      broadcastRevision(unitId, result.operation);
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === 'GET' && /^\/api\/v1\/workbooks\/[^/]+\/audit$/.test(url.pathname)) {
+      const unitId = decodeURIComponent(url.pathname.split('/')[4] ?? '');
+      if (!unitId) throw new StorageValidationError('Workbook id is required');
+      sendJson(response, 200, { events: storage.listHistoryAudit(unitId, principal.subject) });
       return;
     }
 
@@ -466,6 +512,13 @@ webSocketServer.on('connection', async (socket, request) => {
 
         if (message.type === 'snapshot.request') {
           const snapshotRes = storage.getSnapshot(message.unitId, principal.subject);
+          // A snapshot request establishes the collaboration membership for
+          // this workbook. Without joining here, a connected read-only peer
+          // would miss a REST-triggered restore broadcast until it emitted a
+          // later cursor/presence or changeset message.
+          leaveUnit(clientUnitId, socket);
+          clientUnitId = message.unitId;
+          joinUnit(clientUnitId, socket);
           socket.send(
             encodeOperationMessageV2({
               type: 'snapshot.response',

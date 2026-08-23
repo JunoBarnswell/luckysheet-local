@@ -8,7 +8,7 @@ import {
   type QueryWorkbookTableLoadPayload,
   type WorkbookTableQueryStore,
 } from './runtime';
-import type { QueryResult } from './index';
+import { serializeQueryDefinition, type QueryDefinitionPersistence, type QueryResult } from './index';
 import { type LoadTarget, type QueryDefinition } from './query-steps';
 
 export interface QueryLoadParams extends QueryLoadCommandPayload {}
@@ -18,6 +18,15 @@ export interface QueryRefreshParams {
   query: QueryDefinition;
   target: LoadTarget;
   result: QueryResult;
+}
+
+export interface QueryDefinitionReplaceParams {
+  definition: QueryDefinition;
+}
+
+interface QueryDefinitionReplaceMutationParams {
+  queryId: string;
+  definition: QueryDefinitionPersistence | null;
 }
 
 interface QueryCellRestorePayload extends QueryCellLoadPayload {
@@ -31,11 +40,34 @@ interface QueryWorkbookTableRestorePayload extends QueryWorkbookTableLoadPayload
 
 type QueryMutationPayload = QueryCellLoadPayload | QueryCellRestorePayload | QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload;
 
+function isQueryDefinitionReplacePayload(value: unknown): value is QueryDefinitionReplaceMutationParams {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Record<string, unknown>;
+  return typeof payload.queryId === 'string' && payload.queryId.trim().length > 0
+    && (payload.definition === null || (typeof payload.definition === 'object' && (payload.definition as { schema?: unknown }).schema === 'QueryDefinitionV1'));
+}
+
+function isQueryLoadPayload(value: unknown): value is QueryMutationPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Record<string, unknown>;
+  if (typeof payload.queryId !== 'string' || !payload.queryId.trim()) return false;
+  if (!(payload.queryDefinition === null || (typeof payload.queryDefinition === 'object' && (payload.queryDefinition as { schema?: unknown }).schema === 'QueryDefinitionV1'))) return false;
+  if (payload.kind === 'workbook-table') return typeof payload.tableId === 'string' && Boolean(payload.table) && Boolean(payload.result);
+  if (payload.kind !== 'cells') return false;
+  return Boolean(payload.clearRange) && Array.isArray(payload.values);
+}
+
+function queryMutationRanges(params: QueryMutationPayload): readonly import('@react-sheets/core-model').RangeRef[] {
+  return params.kind === 'cells' ? [params.clearRange] : [];
+}
+
 export interface QueryCommandOptions {
   tableStore?: WorkbookTableQueryStore;
 }
 
 function applyCells(context: CommandContext, payload: QueryCellLoadPayload): void {
+  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
+  else context.workbook.setQueryDefinition(payload.queryDefinition);
   const sheet = context.workbook.getSheet(payload.clearRange.sheetId);
   for (let row = payload.clearRange.startRow; row <= payload.clearRange.endRow; row += 1) {
     for (let column = payload.clearRange.startColumn; column <= payload.clearRange.endColumn; column += 1) sheet.cells.delete(row, column);
@@ -56,6 +88,8 @@ function applyCells(context: CommandContext, payload: QueryCellLoadPayload): voi
 }
 
 function restoreCells(context: CommandContext, payload: QueryCellRestorePayload): void {
+  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
+  else context.workbook.setQueryDefinition(payload.queryDefinition);
   const sheet = context.workbook.getSheet(payload.clearRange.sheetId);
   for (let row = payload.clearRange.startRow; row <= payload.clearRange.endRow; row += 1) {
     for (let column = payload.clearRange.startColumn; column <= payload.clearRange.endColumn; column += 1) sheet.cells.delete(row, column);
@@ -73,11 +107,15 @@ function restoreCells(context: CommandContext, payload: QueryCellRestorePayload)
 }
 
 function applyWorkbookTable(context: CommandContext, payload: QueryWorkbookTableLoadPayload, store: WorkbookTableQueryStore): void {
+  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
+  else context.workbook.setQueryDefinition(payload.queryDefinition);
   context.workbook.tables.set(payload.table.id, structuredClone(payload.table));
   store.set(payload.tableId, { result: structuredClone(payload.result), sourceRevision: payload.sourceRevision });
 }
 
 function restoreWorkbookTable(context: CommandContext, payload: QueryWorkbookTableRestorePayload, store: WorkbookTableQueryStore): void {
+  if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
+  else context.workbook.setQueryDefinition(payload.queryDefinition);
   if (payload.previousTable) context.workbook.tables.set(payload.tableId, structuredClone(payload.previousTable));
   else context.workbook.tables.delete(payload.tableId);
   if (payload.previousRecord) store.set(payload.tableId, structuredClone(payload.previousRecord));
@@ -85,17 +123,51 @@ function restoreWorkbookTable(context: CommandContext, payload: QueryWorkbookTab
 }
 
 function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQueryStore): void {
+  registry.registerMutation<QueryDefinitionReplaceMutationParams>({
+    id: 'query.definition.replace',
+    handler: (item, context) => {
+      if (!isQueryDefinitionReplacePayload(item.params)) throw new Error('Invalid query.definition.replace mutation payload');
+      if (item.params.definition === null) context.workbook.removeQueryDefinition(item.params.queryId);
+      else context.workbook.setQueryDefinition(item.params.definition);
+    },
+    metadata: {
+      schema: { name: 'QueryDefinitionReplaceMutationParams', validate: isQueryDefinitionReplacePayload },
+      permission: { capability: 'query.definition.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['query.definition.replace'],
+    },
+  });
   for (const id of ['query.load.range', 'query.load.sheet-table', 'query.load.pivot-source'] as const) {
-    registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>(id, (item, context) => {
-      const payload = item.params as QueryCellLoadPayload | QueryCellRestorePayload;
-      if ('previousCells' in payload) restoreCells(context, payload);
-      else applyCells(context, payload);
+    registry.registerMutation<QueryCellLoadPayload | QueryCellRestorePayload>({
+      id,
+      handler: (item, context) => {
+        const payload = item.params as QueryCellLoadPayload | QueryCellRestorePayload;
+        if (!isQueryLoadPayload(payload)) throw new Error(`Invalid ${id} mutation payload`);
+        if ('previousCells' in payload) restoreCells(context, payload);
+        else applyCells(context, payload);
+      },
+      metadata: {
+        schema: { name: `${id}Params`, validate: isQueryLoadPayload },
+        permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
+        affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
+        inverseIds: [id],
+      },
     });
   }
-  registry.registerMutation<QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload>('query.load.workbook-table', (item, context) => {
-    const payload = item.params as QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload;
-    if ('previousTable' in payload || 'previousRecord' in payload) restoreWorkbookTable(context, payload, store);
-    else applyWorkbookTable(context, payload, store);
+  registry.registerMutation<QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload>({
+    id: 'query.load.workbook-table',
+    handler: (item, context) => {
+      const payload = item.params as QueryWorkbookTableLoadPayload | QueryWorkbookTableRestorePayload;
+      if (!isQueryLoadPayload(payload)) throw new Error('Invalid query.load.workbook-table mutation payload');
+      if ('previousTable' in payload || 'previousRecord' in payload) restoreWorkbookTable(context, payload, store);
+      else applyWorkbookTable(context, payload, store);
+    },
+    metadata: {
+      schema: { name: 'query.load.workbook-tableParams', validate: isQueryLoadPayload },
+      permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
+      inverseIds: ['query.load.workbook-table'],
+    },
   });
 }
 
@@ -131,6 +203,30 @@ export function registerQueryCommands(registry: CommandRegistry, options: QueryC
   registry.registerCommand<QueryLoadParams>({
     id: 'query.load',
     execute: (params, context) => executeLoad(registry, params, context, store),
+  });
+
+  registry.registerCommand<QueryDefinitionReplaceParams>({
+    id: 'query.definition.replace',
+    execute: (params, context) => {
+      const next = serializeQueryDefinition(params.definition);
+      const previous = context.workbook.getQueryDefinition(next.id) ?? null;
+      context.applyMutation({
+        id: 'query.definition.replace',
+        unitId: context.workbook.unitId,
+        sheetId: context.workbook.activeSheetId,
+        params: { queryId: next.id, definition: next },
+        affectedRanges: [],
+        inverse: [{
+          id: 'query.definition.replace',
+          unitId: context.workbook.unitId,
+          sheetId: context.workbook.activeSheetId,
+          params: { queryId: next.id, definition: previous },
+          affectedRanges: [],
+        }],
+        apply: () => context.workbook.setQueryDefinition(next),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
   });
 
   registry.registerCommand<QueryRefreshParams>({

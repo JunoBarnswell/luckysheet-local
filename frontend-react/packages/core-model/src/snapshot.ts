@@ -8,6 +8,7 @@ import type {
   WorkbookTableModel,
   UnitId,
 } from './index';
+import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import type {
   DrawingObject,
   DrawingPayload,
@@ -32,6 +33,8 @@ export interface WorkbookSnapshotV2 {
   definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
   protectionRules?: import('./domain').ProtectionRule[];
+  printDocuments?: PrintDocumentSnapshot[];
+  queryDefinitions?: QueryDefinitionSnapshot[];
   sheets: SheetSnapshotV2[];
 }
 
@@ -231,6 +234,8 @@ export function migrateSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookSnapshot
       definedNameModels: snapshot.definedNameModels?.map((entry) => structuredClone(entry)),
       tables: snapshot.tables?.map((table) => structuredClone(table)),
       protectionRules: snapshot.protectionRules?.map((rule) => structuredClone(rule)),
+      printDocuments: snapshot.printDocuments?.map((document) => structuredClone(document)),
+      queryDefinitions: snapshot.queryDefinitions?.map((definition) => structuredClone(definition)),
       sheets: snapshot.sheets.map((sheet) => migrateLegacyCollections(sheet)),
     };
   }
@@ -245,6 +250,8 @@ export function migrateSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookSnapshot
     definedNames: legacy.definedNames ? { ...legacy.definedNames } : undefined,
     definedNameModels: legacy.definedNameModels?.map((entry) => structuredClone(entry)),
     tables: legacy.tables?.map((table) => structuredClone(table)),
+    printDocuments: legacy.printDocuments?.map((document) => structuredClone(document)),
+    queryDefinitions: legacy.queryDefinitions?.map((definition) => structuredClone(definition)),
     sheets: legacy.sheets.map((sheet) => migrateLegacyCollections(sheet)),
   };
 }

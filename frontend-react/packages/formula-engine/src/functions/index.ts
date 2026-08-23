@@ -8,6 +8,13 @@ import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
 import { extendedMatrixFunctions } from './extended-matrix';
 import { dynamicArrayFunctions } from './dynamic-array';
+import {
+  createFormulaCapabilityError,
+  DEFAULT_FORMULA_CAPABILITIES,
+  getFormulaCapability,
+  isFormulaCapabilityEnabled,
+  type FormulaCapabilities,
+} from '../capabilities';
 
 export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => FormulaValue> = {
   ...mathFunctions,
@@ -53,9 +60,20 @@ export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new
   }),
 );
 
-export function getBuiltinFunction(name: string): ((args: FormulaValue[]) => FormulaValue) | undefined {
+export function getBuiltinFunction(
+  name: string,
+  capabilities: FormulaCapabilities = DEFAULT_FORMULA_CAPABILITIES,
+): ((args: FormulaValue[]) => FormulaValue) | undefined {
   const normalized = name.trim().toUpperCase();
-  return BUILTIN_FUNCTIONS[FORMULA_ALIASES[name.trim()] ?? normalized];
+  const resolvedName = FORMULA_ALIASES[name.trim()] ?? normalized;
+  const fn = BUILTIN_FUNCTIONS[resolvedName];
+  if (!fn) return undefined;
+
+  const capability = getFormulaCapability(resolvedName);
+  if (capability && !isFormulaCapabilityEnabled(capabilities, capability)) {
+    return () => createFormulaCapabilityError(resolvedName, capability, capabilities);
+  }
+  return fn;
 }
 
 export function getFunctionDescriptor(name: string): FunctionDescriptor | undefined {

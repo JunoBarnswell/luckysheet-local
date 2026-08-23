@@ -20,6 +20,12 @@ import type {
 import { normalizeDefinedNameModel } from './domain';
 import { migrateSnapshot } from './snapshot';
 import type { AnyWorkbookSnapshot } from './snapshot';
+import {
+  normalizePrintDocumentSnapshot,
+  normalizeQueryDefinitionSnapshot,
+  type PrintDocumentSnapshot,
+  type QueryDefinitionSnapshot,
+} from './workbook-state';
 
 export type CellValue = string | number | boolean | null;
 
@@ -150,6 +156,13 @@ export {
   type SheetSnapshotV2,
   type AnyWorkbookSnapshot,
 } from './snapshot';
+export {
+  normalizePrintDocumentSnapshot,
+  normalizeQueryDefinitionSnapshot,
+  type PrintDocumentSnapshot,
+  type QueryDefinitionSnapshot,
+  type QueryStepSnapshot,
+} from './workbook-state';
 
 import type { PivotModel } from './pivot';
 export * from './pivot';
@@ -538,12 +551,18 @@ export interface WorkbookSnapshotV1 {
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
+  printDocuments?: PrintDocumentSnapshot[];
+  queryDefinitions?: QueryDefinitionSnapshot[];
   sheets: SheetSnapshotV1[];
 }
 
 export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
   readonly tables = new Map<string, WorkbookTableModel>();
+  /** Canonical workbook-owned print state; no host-side cache is authoritative. */
+  readonly printDocuments = new Map<SheetId, PrintDocumentSnapshot>();
+  /** Persistence-safe query definitions; connector credentials are redacted. */
+  readonly queryDefinitions = new Map<string, QueryDefinitionSnapshot>();
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
   activeSheetId: SheetId;
@@ -586,6 +605,57 @@ export class WorkbookModel {
     const table = this.tables.get(tableId);
     if (!table) throw new Error(`Unknown table: ${tableId}`);
     return table;
+  }
+
+  getPrintDocument(sheetId: SheetId): PrintDocumentSnapshot | undefined {
+    this.getSheet(sheetId);
+    const document = this.printDocuments.get(sheetId);
+    return document ? structuredClone(document) : undefined;
+  }
+
+  setPrintDocument(document: PrintDocumentSnapshot): void {
+    if (document.unitId !== this.unitId) throw new Error(`Print document unit mismatch: expected ${this.unitId}, received ${document.unitId}`);
+    this.getSheet(document.sheetId);
+    this.printDocuments.set(document.sheetId, normalizePrintDocumentSnapshot(document));
+  }
+
+  removePrintDocument(sheetId: SheetId): PrintDocumentSnapshot | undefined {
+    this.getSheet(sheetId);
+    const document = this.printDocuments.get(sheetId);
+    this.printDocuments.delete(sheetId);
+    return document ? structuredClone(document) : undefined;
+  }
+
+  clearPrintDocuments(): void {
+    this.printDocuments.clear();
+  }
+
+  listPrintDocuments(): PrintDocumentSnapshot[] {
+    return [...this.printDocuments.values()].map((document) => structuredClone(document));
+  }
+
+  getQueryDefinition(queryId: string): QueryDefinitionSnapshot | undefined {
+    const definition = this.queryDefinitions.get(queryId);
+    return definition ? structuredClone(definition) : undefined;
+  }
+
+  setQueryDefinition(definition: QueryDefinitionSnapshot): void {
+    const normalized = normalizeQueryDefinitionSnapshot(definition);
+    this.queryDefinitions.set(normalized.id, normalized);
+  }
+
+  removeQueryDefinition(queryId: string): QueryDefinitionSnapshot | undefined {
+    const definition = this.queryDefinitions.get(queryId);
+    this.queryDefinitions.delete(queryId);
+    return definition ? structuredClone(definition) : undefined;
+  }
+
+  clearQueryDefinitions(): void {
+    this.queryDefinitions.clear();
+  }
+
+  listQueryDefinitions(): QueryDefinitionSnapshot[] {
+    return [...this.queryDefinitions.values()].map((definition) => structuredClone(definition));
   }
 
   getDefinedName(name: string, sheetId?: SheetId): DefinedNameModel | undefined {
@@ -664,6 +734,17 @@ export class WorkbookModel {
       .filter((entry) => entry.scope === 'sheet' && entry.sheetId === sourceSheetId)
       .map((entry) => ({ ...entry, sheetId: newId }));
     this.definedNameModels.push(...structuredClone(scopedNames));
+    const printDocument = this.printDocuments.get(sourceSheetId);
+    if (printDocument) {
+      this.printDocuments.set(newId, structuredClone({
+        ...printDocument,
+        sheetId: newId,
+        printAreas: printDocument.printAreas.map((area) => ({ sheetId: newId, range: { ...area.range, sheetId: newId } })),
+        pageBreaks: printDocument.pageBreaks.map((pageBreak) => pageBreak.row !== undefined
+          ? { sheetId: newId, row: pageBreak.row }
+          : { sheetId: newId, column: pageBreak.column }),
+      }));
+    }
     const sourceIndex = this.sheetOrder.indexOf(sourceSheetId);
     this.sheetOrder.splice(sourceIndex + 1, 0, newId);
     return copy;
@@ -681,6 +762,7 @@ export class WorkbookModel {
     if (this.sheets.size <= 1) throw new Error('A workbook must keep at least one worksheet');
     const sheet = this.getSheet(sheetId);
     this.sheets.delete(sheetId);
+    this.printDocuments.delete(sheetId);
     for (let index = this.definedNameModels.length - 1; index >= 0; index -= 1) {
       if (this.definedNameModels[index]?.scope === 'sheet' && this.definedNameModels[index]?.sheetId === sheetId) {
         this.definedNameModels.splice(index, 1);
@@ -705,6 +787,8 @@ export class WorkbookModel {
         ? structuredClone(this.definedNameModels)
         : Object.entries(this.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const })),
       tables: [...this.tables.values()].map((table) => structuredClone(table)),
+      printDocuments: this.listPrintDocuments(),
+      queryDefinitions: this.listQueryDefinitions(),
       sheets: this.getSheets().map((sheet) => ({
         id: sheet.id,
         name: sheet.name,
@@ -790,6 +874,8 @@ export class WorkbookModel {
       sheet.tabColor = input.tabColor;
       workbook.sheets.set(sheet.id, sheet);
     }
+    for (const document of canonical.printDocuments ?? []) workbook.setPrintDocument(document);
+    for (const definition of canonical.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
     workbook.activeSheetId = canonical.activeSheetId;
     workbook.sheetOrder = canonical.sheets.map((sheet) => sheet.id);
     return workbook;

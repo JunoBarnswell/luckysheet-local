@@ -1,4 +1,4 @@
-import type { TableScalar } from '@react-sheets/core-model';
+import type { QueryDefinitionSnapshot, TableScalar } from '@react-sheets/core-model';
 import { validateQuerySteps, type QueryDefinition, type QueryRefreshPolicy, type QueryStep } from './query-steps';
 
 export type ConnectorKind = 'csv' | 'tsv' | 'json' | 'rest' | 'xlsx' | 'sqlite';
@@ -14,18 +14,8 @@ export interface QueryResult {
   rowCount: number;
 }
 
-export interface QueryDefinitionPersistence {
-  schema: 'QueryDefinitionV1';
-  id: string;
-  name: string;
-  connectorId: string;
-  /** Connector configuration is deliberately redacted before persistence. */
-  connectorConfig: Record<string, unknown>;
-  steps: QueryStep[];
-  refreshOnOpen?: boolean;
-  refreshPolicy?: QueryRefreshPolicy;
-  sourceRevision: number;
-}
+/** Canonical persistence-safe workbook state. */
+export type QueryDefinitionPersistence = QueryDefinitionSnapshot;
 
 /** DataConnector SPI. Only connectors registered by the host are executable. */
 export interface DataConnector {

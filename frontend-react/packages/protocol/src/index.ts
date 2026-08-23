@@ -215,6 +215,56 @@ export interface SnapshotResponse {
   revision: number;
 }
 
+/**
+ * The only client-authored history restore request.  The historical snapshot
+ * is deliberately absent: the server resolves targetRevision from its own
+ * immutable revision log and creates the restore operation after ACL checks.
+ */
+export interface HistoryRestoreRequest {
+  targetRevision: number;
+  reason?: string;
+}
+
+/** Server response after committing a server-generated workbook.restore op. */
+export interface HistoryRestoreResponse extends SnapshotResponse {
+  targetRevision: number;
+  operation: CommittedOperationEnvelopeV2;
+}
+
+export interface HistoryAuditRecord {
+  auditId: string;
+  unitId: string;
+  operationId: string;
+  actorId: string;
+  action: 'workbook.restore';
+  targetRevision: number;
+  revision: number;
+  reason?: string;
+  createdAt: string;
+}
+
+/** Strict validation for the REST history restore trust boundary. */
+export function validateHistoryRestoreRequest(value: unknown): HistoryRestoreRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('History restore request must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  const unknownKeys = Object.keys(input).filter((key) => key !== 'targetRevision' && key !== 'reason');
+  if (unknownKeys.length > 0) {
+    throw new Error(`History restore request contains unsupported fields: ${unknownKeys.join(', ')}`);
+  }
+  if (!Number.isSafeInteger(input.targetRevision) || Number(input.targetRevision) < 0) {
+    throw new Error('targetRevision must be a non-negative safe integer');
+  }
+  if (input.reason !== undefined && (typeof input.reason !== 'string' || input.reason.length > 1000)) {
+    throw new Error('reason must be a string with at most 1000 characters');
+  }
+  return {
+    targetRevision: Number(input.targetRevision),
+    ...(input.reason === undefined ? {} : { reason: input.reason }),
+  };
+}
+
 export interface CompatibilityReportPayload {
   schema: 'CompatibilityReportV1';
   fileName: string;
@@ -359,6 +409,25 @@ export class WorkbookApiClient {
     return this.json<SnapshotResponse>(
       `/api/v1/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
     );
+  }
+
+  async restoreToRevision(unitId: string, targetRevision: number, reason?: string): Promise<HistoryRestoreResponse> {
+    const body = validateHistoryRestoreRequest({ targetRevision, ...(reason === undefined ? {} : { reason }) });
+    return this.json<HistoryRestoreResponse>(
+      `/api/v1/workbooks/${encodeURIComponent(unitId)}/restore`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
+  async listHistoryAudit(unitId: string): Promise<HistoryAuditRecord[]> {
+    const body = await this.json<{ events: HistoryAuditRecord[] }>(
+      `/api/v1/workbooks/${encodeURIComponent(unitId)}/audit`,
+    );
+    return body.events;
   }
 
   async saveSnapshot(unitId: string, snapshot: WorkbookSnapshotV1, baseRevision: number): Promise<SnapshotResponse> {
