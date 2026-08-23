@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { createContext, useContext } from 'react';
 import {
   Box,
   Button,
@@ -15,7 +15,7 @@ import {
   Text,
 } from '@react-sheets/ui-system';
 import type { RibbonTabId, WorkspacePhase } from '../state/workspace';
-import { translate, type Locale } from '../i18n';
+import { localizeText, translate, type Locale } from '../i18n';
 import type { RibbonAction } from '../domain/ribbon-actions';
 
 export interface RibbonProps {
@@ -46,14 +46,17 @@ const ribbonTabs: Array<{ id: RibbonTabId; label: string }> = [
   { id: 'view', label: 'View' },
 ];
 
+const RibbonLocaleContext = createContext<Locale>('en-US');
+
 function RibbonGroup({ children, label }: { children: React.ReactNode; label: string }) {
+  const locale = useContext(RibbonLocaleContext);
   return (
     <Stack gap="xs" className="shrink-0">
       <Inline gap="xs" className="min-h-8 items-center">
         {children}
       </Inline>
       <Text size="xs" tone="subtle" className="text-center text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-        {label}
+        {localizeText(locale, label)}
       </Text>
     </Stack>
   );
@@ -76,10 +79,12 @@ function ToolBtn({
   onAction: (action: RibbonAction) => void;
   className?: string;
 }) {
+  const locale = useContext(RibbonLocaleContext);
+  const localizedLabel = localizeText(locale, label);
   return (
     <Button
-      aria-label={label}
-      title={label}
+      aria-label={localizedLabel}
+      title={localizedLabel}
       disabled={disabled}
       icon={icon}
       iconOnly
@@ -95,7 +100,8 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
   const disabled = phase !== 'ready';
 
   return (
-    <Tabs className="border-b border-slate-200 bg-white">
+    <RibbonLocaleContext.Provider value={locale}>
+      <Tabs className="border-b border-slate-200 bg-white">
       {/* Top Tab Bar */}
       <Inline gap="lg" className="h-10 overflow-x-auto px-4">
         <TabList label="Workbook ribbon tabs" className="h-full gap-1">
@@ -457,6 +463,7 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
           </Inline>
         ) : null}
       </Box>
-    </Tabs>
+      </Tabs>
+    </RibbonLocaleContext.Provider>
   );
 }

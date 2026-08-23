@@ -63,6 +63,28 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
   },
 };
 
+const textTranslations: Record<string, string> = {
+  'History': '历史',
+  'Clipboard': '剪贴板',
+  'Font': '字体',
+  'Alignment': '对齐',
+  'Number': '数字',
+  'Cells': '单元格',
+  'Editing': '编辑',
+  'Tables & Pivots': '表格与透视',
+  'Charts & Visuals': '图表与可视化',
+  'Illustrations': '插图',
+  'Functions': '函数',
+  'Sort & Filter': '排序与筛选',
+  'Data Tools': '数据工具',
+  'Find & Transform': '查找与转换',
+  'History & Audit': '历史与审计',
+  'Freeze Panes': '冻结窗格',
+  'Zoom': '缩放',
+  'Print Layout': '打印布局',
+  'Appearance & Files': '外观与文件',
+};
+
 export const localeLabels: Record<Locale, string> = {
   'en-US': 'EN / 中文',
   'zh-CN': '中文 / EN',
@@ -81,4 +103,8 @@ export function persistLocale(locale: Locale): void {
 
 export function translate(locale: Locale, key: MessageKey): string {
   return messages[locale][key];
+}
+
+export function localizeText(locale: Locale, text: string): string {
+  return locale === 'zh-CN' ? textTranslations[text] ?? text : text;
 }
