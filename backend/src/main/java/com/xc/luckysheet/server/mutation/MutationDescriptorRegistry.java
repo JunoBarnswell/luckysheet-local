@@ -34,6 +34,7 @@ public class MutationDescriptorRegistry {
             "cf.add", "cf.clear", "cf.remove",
             "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all",
             "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve",
+            "dataRegion.add", "dataRegion.remove", "dataSource.add", "dataSource.remove", "dataSource.update",
             "drawing.add", "drawing.anchor", "drawing.payload.update", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.zorder", "drawing.zorder.restore",
             "dv.add", "dv.remove", "filter.remove", "filter.set", "freeze.set",
             "hyperlink.remove", "hyperlink.set", "merge.remove", "merge.set",
@@ -106,6 +107,7 @@ public class MutationDescriptorRegistry {
         for (String id : SparklineMutationDescriptor.IDS) register(new SparklineMutationDescriptor(id));
         for (String id : WorkbookStateMutationDescriptor.IDS) register(new WorkbookStateMutationDescriptor(id));
         for (String id : QueryMutationDescriptor.IDS) register(new QueryMutationDescriptor(id));
+        for (String id : DataSourceMutationDescriptor.IDS) register(new DataSourceMutationDescriptor(id));
         for (String id : StructuralMutationDescriptor.IDS) register(new StructuralMutationDescriptor(id));
         registerUnavailableKnownMutations();
     }

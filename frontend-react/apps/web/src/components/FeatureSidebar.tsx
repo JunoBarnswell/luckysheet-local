@@ -48,6 +48,12 @@ import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
+import {
+  FormulaAuditPanel,
+  type FormulaAuditPanelCallbacks,
+  type FormulaAuditPanelProps,
+  type FormulaAuditSectionStates,
+} from './panels/FormulaAuditPanel';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
 export interface FeatureSidebarProps {
@@ -71,6 +77,11 @@ export interface FeatureSidebarProps {
   pivotTimelineControls?: readonly PivotTimelineControl[];
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
+  formulaAudit?: FormulaAuditPanelProps['projection'];
+  formulaAuditState?: FormulaAuditPanelProps['state'];
+  formulaAuditError?: string;
+  formulaAuditSectionStates?: FormulaAuditSectionStates;
+  formulaAuditCallbacks?: FormulaAuditPanelCallbacks;
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -140,6 +151,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
+  { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
   { id: 'sparkline', label: 'Spark', icon: 'sparkline' },
   { id: 'conditionalFormat', label: 'Format', icon: 'sparkles' },
@@ -272,6 +284,11 @@ export function FeatureSidebar({
   pivotTimelineControls,
   pivotPanelState,
   pivotCallbacks,
+  formulaAudit,
+  formulaAuditState,
+  formulaAuditError,
+  formulaAuditSectionStates,
+  formulaAuditCallbacks,
   sparklines,
   conditionalFormats,
   dataValidations,
@@ -438,6 +455,17 @@ export function FeatureSidebar({
             timelineControls={pivotTimelineControls}
             state={pivotPanelState}
             callbacks={pivotCallbacks}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'formulaAudit' ? (
+          <FormulaAuditPanel
+            activeCell={activeCell}
+            callbacks={formulaAuditCallbacks}
+            errorMessage={formulaAuditError}
+            locale={locale}
+            projection={formulaAudit}
+            sectionStates={formulaAuditSectionStates}
+            state={formulaAuditState}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'shape' ? (

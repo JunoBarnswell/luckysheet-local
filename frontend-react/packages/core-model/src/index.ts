@@ -128,6 +128,11 @@ export type {
   ShapeDrawingPayload,
   TextBoxDrawingPayload,
   ChartDrawingPayload,
+  PivotControlFilter,
+  PivotTimelinePeriod,
+  PivotControlStyle,
+  PivotSlicerDrawingPayload,
+  PivotTimelineDrawingPayload,
   SparklineGroup,
   CellNote,
   CommentThread,
@@ -143,7 +148,17 @@ export type {
   StructuralOpKind,
   StructuralTransformParams,
 } from './domain';
-export { createEmptySelection, isFormulaError, createFormulaError, normalizeDefinedNameModel } from './domain';
+export {
+  createEmptySelection,
+  isFormulaError,
+  createFormulaError,
+  normalizeDefinedNameModel,
+  isPivotControlFilter,
+  isPivotTimelinePeriod,
+  isPivotControlStyle,
+  isPivotSlicerDrawingPayload,
+  isPivotTimelineDrawingPayload,
+} from './domain';
 export { StructuralTransform, type StructuralTransformResult, ensureDrawing } from './structural-transform';
 export { applyRowPermutation, validatePermutationMetadata, type RowPermutation } from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';

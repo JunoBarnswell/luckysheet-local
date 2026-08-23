@@ -13,6 +13,7 @@ export type SidebarPanelId =
   | 'inspector'
   | 'chart'
   | 'pivot'
+  | 'formulaAudit'
   | 'shape'
   | 'sparkline'
   | 'conditionalFormat'

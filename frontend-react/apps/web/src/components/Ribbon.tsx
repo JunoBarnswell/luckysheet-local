@@ -7,7 +7,6 @@ import {
   DropdownMenu,
   Icon,
   Inline,
-  RibbonEmptyState,
   RibbonShell,
   Select,
   Stack,
@@ -52,6 +51,16 @@ export interface RibbonProps {
   onToggleShowFormulas: () => void;
   onScanFormulaErrors: () => void;
   onEvaluateFormula: () => void;
+  onOpenPrintLayout: () => void;
+  onSetPrintArea: () => void;
+  onClearPrintArea: () => void;
+  onSetPrintTitleRows: () => void;
+  onSetPrintTitleColumns: () => void;
+  onSetPrintScale: (scale: number) => void;
+  onToggleViewGridlines: () => void;
+  onTogglePrintGridlines: () => void;
+  onToggleViewHeadings: () => void;
+  onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
   onFreezeAtPrimary: () => void;
   /** Host-owned Create PivotTable dialog entry point. */
@@ -205,6 +214,16 @@ export function Ribbon({
   onToggleShowFormulas,
   onScanFormulaErrors,
   onEvaluateFormula,
+  onOpenPrintLayout,
+  onSetPrintArea,
+  onClearPrintArea,
+  onSetPrintTitleRows,
+  onSetPrintTitleColumns,
+  onSetPrintScale,
+  onToggleViewGridlines,
+  onTogglePrintGridlines,
+  onToggleViewHeadings,
+  onTogglePrintHeadings,
   onAutoSum,
   onFreezeAtPrimary,
   onCreatePivotDialog,
@@ -250,6 +269,16 @@ export function Ribbon({
     onToggleShowFormulas,
     onScanFormulaErrors,
     onEvaluateFormula,
+    onOpenPrintLayout,
+    onSetPrintArea,
+    onClearPrintArea,
+    onSetPrintTitleRows,
+    onSetPrintTitleColumns,
+    onSetPrintScale,
+    onToggleViewGridlines,
+    onTogglePrintGridlines,
+    onToggleViewHeadings,
+    onTogglePrintHeadings,
     onAutoSum,
     onFreezeAtPrimary,
     onCreatePivot,
@@ -327,7 +356,26 @@ export function Ribbon({
         ) : null}
 
         {activeTab === 'pageLayout' ? (
-          <RibbonEmptyState message={locale === 'zh-CN' ? '此选项卡的命令将在此显示。' : 'Commands for this tab will appear here.'} />
+          <Inline gap="md" className="flex-wrap items-start">
+            <RibbonGroup group="pageSetup">
+              <CatalogButton id="pageSetup" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="setPrintArea" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="clearPrintArea" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="printTitleRows" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="printTitleColumns" context={catalogContext} onExecute={executeCatalogResult} />
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+            <RibbonGroup group="scaleToFit">
+              <CatalogButton id="setScale100" context={catalogContext} onExecute={executeCatalogResult} />
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+            <RibbonGroup group="sheetOptions">
+              <CatalogButton id="viewGridlines" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="printGridlines" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="viewHeadings" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="printHeadings" context={catalogContext} onExecute={executeCatalogResult} />
+            </RibbonGroup>
+          </Inline>
         ) : null}
 
         {activeTab === 'formulas' ? (

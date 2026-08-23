@@ -1,4 +1,5 @@
 import type { CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
+import type { PivotMemberKey } from './pivot';
 
 /**
  * A defined name is scoped either to the workbook or to one worksheet.
@@ -131,7 +132,7 @@ export interface SheetTableModel {
   styleName?: string;
 }
 
-export type DrawingKind = 'image' | 'shape' | 'chart' | 'textbox';
+export type DrawingKind = 'image' | 'shape' | 'chart' | 'textbox' | 'slicer' | 'timeline';
 
 export interface DrawingTransform {
   x: number;
@@ -198,7 +199,116 @@ export interface ChartDrawingPayload {
   stacked?: 'none' | 'stacked' | 'percent';
 }
 
-export type DrawingPayload = ImageDrawingPayload | ShapeDrawingPayload | TextBoxDrawingPayload | ChartDrawingPayload;
+/** A typed member filter owned by a floating Pivot slicer. */
+export interface PivotControlFilter {
+  mode: 'all' | 'include' | 'exclude';
+  memberKeys: PivotMemberKey[];
+}
+
+/** Date bounds owned by a floating Pivot timeline. Values are ISO-like strings. */
+export interface PivotTimelinePeriod {
+  start?: string;
+  end?: string;
+}
+
+/** Persisted visual settings for both native Pivot controls. */
+export interface PivotControlStyle {
+  theme: 'light' | 'dark' | 'accent';
+  fill: string;
+  border: string;
+  textColor: string;
+  accentColor: string;
+  selectedFill?: string;
+  fontSize?: number;
+}
+
+/** Canonical floating Slicer payload. Its filter is not stored on PivotModel. */
+export interface PivotSlicerDrawingPayload {
+  kind: 'slicer';
+  pivotId: string;
+  fieldId: string;
+  filter: PivotControlFilter;
+  style: PivotControlStyle;
+  connectedPivotIds?: string[];
+}
+
+/** Canonical floating Timeline payload. Its period is not stored on PivotModel. */
+export interface PivotTimelineDrawingPayload {
+  kind: 'timeline';
+  pivotId: string;
+  fieldId: string;
+  period: PivotTimelinePeriod;
+  style: PivotControlStyle;
+  connectedPivotIds?: string[];
+}
+
+export type DrawingPayload =
+  | ImageDrawingPayload
+  | ShapeDrawingPayload
+  | TextBoxDrawingPayload
+  | ChartDrawingPayload
+  | PivotSlicerDrawingPayload
+  | PivotTimelineDrawingPayload;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isPivotMemberKey(value: unknown): value is PivotMemberKey {
+  if (!isRecord(value) || !['text', 'number', 'boolean', 'blank'].includes(String(value.type))) return false;
+  if (value.type === 'blank') return value.value === null;
+  if (value.type === 'text') return typeof value.value === 'string';
+  if (value.type === 'number') return typeof value.value === 'number' && Number.isFinite(value.value);
+  return typeof value.value === 'boolean';
+}
+
+export function isPivotControlFilter(value: unknown): value is PivotControlFilter {
+  if (!isRecord(value) || !['all', 'include', 'exclude'].includes(String(value.mode))) return false;
+  return Array.isArray(value.memberKeys) && value.memberKeys.every(isPivotMemberKey);
+}
+
+export function isPivotTimelinePeriod(value: unknown): value is PivotTimelinePeriod {
+  if (!isRecord(value)) return false;
+  return (value.start === undefined || (typeof value.start === 'string' && value.start.trim().length > 0))
+    && (value.end === undefined || (typeof value.end === 'string' && value.end.trim().length > 0));
+}
+
+export function isPivotControlStyle(value: unknown): value is PivotControlStyle {
+  if (!isRecord(value) || !['light', 'dark', 'accent'].includes(String(value.theme))) return false;
+  return typeof value.fill === 'string'
+    && typeof value.border === 'string'
+    && typeof value.textColor === 'string'
+    && typeof value.accentColor === 'string'
+    && (value.selectedFill === undefined || typeof value.selectedFill === 'string')
+    && (value.fontSize === undefined || (typeof value.fontSize === 'number' && Number.isFinite(value.fontSize) && value.fontSize > 0));
+}
+
+function isConnectedPivotIds(value: unknown): value is string[] {
+  return value === undefined || (Array.isArray(value)
+    && value.every((entry) => typeof entry === 'string' && entry.trim().length > 0));
+}
+
+export function isPivotSlicerDrawingPayload(value: unknown): value is PivotSlicerDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'slicer') return false;
+  return typeof value.pivotId === 'string'
+    && value.pivotId.trim().length > 0
+    && typeof value.fieldId === 'string'
+    && value.fieldId.trim().length > 0
+    && isPivotControlFilter(value.filter)
+    && isPivotControlStyle(value.style)
+    && isConnectedPivotIds(value.connectedPivotIds);
+}
+
+export function isPivotTimelineDrawingPayload(value: unknown): value is PivotTimelineDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'timeline') return false;
+  return typeof value.pivotId === 'string'
+    && value.pivotId.trim().length > 0
+    && typeof value.fieldId === 'string'
+    && value.fieldId.trim().length > 0
+    && isPivotTimelinePeriod(value.period)
+    && isPivotControlStyle(value.style)
+    && isConnectedPivotIds(value.connectedPivotIds);
+}
 
 /** 浮动对象唯一 bounds/z-order 入口 */
 export interface DrawingObject {

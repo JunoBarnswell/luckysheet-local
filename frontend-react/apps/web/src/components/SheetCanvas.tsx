@@ -29,7 +29,9 @@ import type {
   PivotGridProjection,
   PivotHitTest,
   PivotProjectionCell,
+  PivotSlicerDrawingPayload,
   PivotSourceRowPath,
+  PivotTimelineDrawingPayload,
   PivotResultTree,
   RangeRef,
   SparklineModel,
@@ -540,6 +542,33 @@ function drawCanonicalSparklineOnCanvas(options: {
   context.restore();
 }
 
+function drawPivotControlOnCanvas(options: {
+  context: CanvasRenderingContext2D;
+  payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
+  bounds: Rect;
+}): void {
+  const { context, payload, bounds } = options;
+  const style = payload.style;
+  context.save();
+  context.fillStyle = style.fill;
+  context.strokeStyle = style.border;
+  context.lineWidth = 1;
+  context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  context.fillStyle = style.accentColor;
+  context.fillRect(bounds.x, bounds.y, bounds.width, Math.min(26, bounds.height));
+  context.fillStyle = style.textColor;
+  context.font = `600 ${style.fontSize}px Segoe UI, sans-serif`;
+  context.textBaseline = 'middle';
+  context.fillText(payload.kind === 'slicer' ? `Slicer · ${payload.fieldId}` : `Timeline · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
+  context.font = `${style.fontSize}px Segoe UI, sans-serif`;
+  const detail = payload.kind === 'slicer'
+    ? payload.filter.mode === 'all' ? 'All items' : `${payload.filter.memberKeys.length} selected`
+    : `${payload.period.start ?? 'Start'} — ${payload.period.end ?? 'End'}`;
+  context.fillText(detail, bounds.x + 8, bounds.y + Math.min(bounds.height - 12, 44), Math.max(10, bounds.width - 16));
+  context.restore();
+}
+
 export interface SheetCanvasProps {
   sheet: CanvasSheetSnapshot;
   sheetId: string;
@@ -561,6 +590,7 @@ export interface SheetCanvasProps {
   pivotResults?: Record<string, PivotResultTree>;
   sparklines?: SparklineModel[];
   selectedFloatingId: string | null;
+  showFormulas?: boolean;
   /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
   /** Lets the host add/replace Pivot-specific right-click commands. */
@@ -809,6 +839,7 @@ export function SheetCanvas({
   pivotResults = {},
   sparklines = [],
   selectedFloatingId,
+  showFormulas = false,
   onPivotContextHit,
   getPivotContextMenuItems,
   onPivotShowDetails,
@@ -915,7 +946,7 @@ export function SheetCanvas({
     }
     const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
     return {
-      value: parseCellValue(cell),
+      value: showFormulas && cell.formula ? cell.formula : parseCellValue(cell),
       formula: cell.formula,
       displayValue: cell.value,
       style: cell.style,
@@ -938,7 +969,7 @@ export function SheetCanvas({
           }
         : undefined,
     };
-  }, [sheet]);
+  }, [sheet, showFormulas]);
 
   const pivotStatusProjections = useMemo(
     () => Object.values(sheet.pivotProjections).filter((projection) =>
@@ -981,6 +1012,15 @@ export function SheetCanvas({
           id: drawing.id,
           bounds,
           draw: (context, rect) => drawCanonicalShapeOnCanvas({ context, payload, bounds: rect, rotation: drawing.transform.rotation }),
+        });
+        continue;
+      }
+      if (payload.kind === "slicer" || payload.kind === "timeline") {
+        drawables.push({
+          kind: "shape",
+          id: drawing.id,
+          bounds,
+          draw: (context, rect) => drawPivotControlOnCanvas({ context, payload, bounds: rect }),
         });
         continue;
       }

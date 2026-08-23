@@ -4,6 +4,10 @@ import type {
   DrawingTransform,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import {
+  isPivotSlicerDrawingPayload,
+  isPivotTimelineDrawingPayload,
+} from '@react-sheets/core-model';
 import type { DrawingAddParams } from './commands';
 
 export function findDrawingByPayloadId(sheet: WorksheetModel, payloadId: string): DrawingObject | undefined {
@@ -29,6 +33,12 @@ export function buildDrawingAdd(drawing: DrawingObject, payload: DrawingPayload)
   if (drawing.kind !== payload.kind) throw new Error(`Drawing payload kind mismatch: ${drawing.id}`);
   if (payload.kind === 'chart' && payload.chartId !== drawing.payloadId) {
     throw new Error(`Drawing payload identity mismatch: ${drawing.payloadId}`);
+  }
+  if (payload.kind === 'slicer' && !isPivotSlicerDrawingPayload(payload)) {
+    throw new Error(`Invalid slicer payload: ${drawing.payloadId}`);
+  }
+  if (payload.kind === 'timeline' && !isPivotTimelineDrawingPayload(payload)) {
+    throw new Error(`Invalid timeline payload: ${drawing.payloadId}`);
   }
   return {
     sheetId: drawing.sheetId,

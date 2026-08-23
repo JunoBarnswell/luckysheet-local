@@ -269,6 +269,13 @@ function WorkspaceApp() {
   const pivotFields: PivotFieldDefinition[] = corePivotFields;
   const activePivotSheetId = activePivot?.target?.sheetId ?? state.activeSheetId;
   const activePivotSourceRange = activePivot?.source?.kind === "worksheet-range" ? activePivot.source.range : undefined;
+  const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
+  const pivotSlicerControls = pivotControlRecords.flatMap((record) => record.payload.kind === "slicer"
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, connectedPivotIds: record.payload.connectedPivotIds }]
+    : []);
+  const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, connectedPivotIds: record.payload.connectedPivotIds }]
+    : []);
 
   const cloneLayout = (layout: PivotLayout): PivotLayout => structuredClone(layout);
   const removeField = (layout: PivotLayout, fieldId: string): PivotLayout => {
@@ -374,37 +381,26 @@ function WorkspaceApp() {
     },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
-      if (!activePivotSourceRange) return;
-      const connectedPivotIds = session.getConnectedPivotIds(activePivotSourceRange);
       if (enabled) {
-        dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, slicers: [...(activePivot.slicers ?? []), { id: `slicer-${fieldId}`, pivotId: activePivot.id, fieldId, mode: "all", memberKeys: [], connectedPivotIds }] } });
+        session.createPivotSlicerControl(activePivot.id, fieldId);
         return;
       }
-      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, slicers: (activePivot.slicers ?? []).filter((slicer) => (slicer.fieldId ?? slicer.field) !== fieldId) } });
+      const control = pivotControlRecords.find((record) => record.payload.kind === "slicer" && record.payload.fieldId === fieldId);
+      if (control) session.removePivotControl(control.drawing.id);
     },
     onTimelineChange: (fieldId) => {
       if (!activePivot) return;
-      if (!activePivotSourceRange) return;
-      const connectedPivotIds = session.getConnectedPivotIds(activePivotSourceRange);
       if (!fieldId) {
-        dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, timelines: [] } });
+        for (const control of pivotControlRecords.filter((record) => record.payload.kind === "timeline")) session.removePivotControl(control.drawing.id);
         return;
       }
-      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${fieldId}`, pivotId: activePivot.id, fieldId, connectedPivotIds }] } });
+      session.createPivotTimelineControl(activePivot.id, fieldId);
     },
     onSlicerFilterChange: (slicerId, filter) => {
-      if (!activePivot) return;
-      const slicers = (activePivot.slicers ?? []).map((slicer) => slicer.id === slicerId
-        ? { ...slicer, mode: filter.mode, memberKeys: [...filter.memberKeys] }
-        : slicer);
-      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, slicers } });
+      session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys);
     },
     onTimelineRangeChange: (timelineId, start, end) => {
-      if (!activePivot) return;
-      const timelines = (activePivot.timelines ?? []).map((timeline) => timeline.id === timelineId
-        ? { ...timeline, start: start || undefined, end: end || undefined }
-        : timeline);
-      dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, timelines } });
+      session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined);
     },
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
@@ -426,7 +422,6 @@ function WorkspaceApp() {
         title: chart.title,
         sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [],
       };
-      if (payload.sourceRanges.length === 0) return;
       dispatchCommand({ commandId: "pivot.chart.create", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, drawing, payload } });
     },
   };
@@ -554,6 +549,16 @@ function WorkspaceApp() {
             onToggleShowFormulas={() => session.setShowFormulas(!state.formulaAudit.showFormulas)}
             onScanFormulaErrors={() => session.scanFormulaErrors()}
             onEvaluateFormula={() => session.evaluateFormulaStep()}
+            onOpenPrintLayout={() => session.openPrintLayout()}
+            onSetPrintArea={() => session.setCurrentPrintArea()}
+            onClearPrintArea={() => session.clearPrintArea()}
+            onSetPrintTitleRows={() => session.setPrintTitles("rows")}
+            onSetPrintTitleColumns={() => session.setPrintTitles("columns")}
+            onSetPrintScale={(scale) => session.setPrintScale(scale)}
+            onToggleViewGridlines={() => session.toggleViewGridlines()}
+            onTogglePrintGridlines={() => session.togglePrintGridlines()}
+            onToggleViewHeadings={() => session.toggleViewHeadings()}
+            onTogglePrintHeadings={() => session.togglePrintHeadings()}
             onAutoSum={() => session.autoSum()}
             onFreezeAtPrimary={() => session.freezeAtPrimary()}
             onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
@@ -633,6 +638,7 @@ function WorkspaceApp() {
               peers={state.peers}
               cellStyle={selectedCellStyle}
               selectedFloatingId={state.selectedFloatingId}
+              showFormulas={state.formulaAudit.showFormulas}
               onPivotContextHit={(hit) => {
                 const pivotId = hit?.pivot?.pivotId ?? hit?.objectId;
                 if (pivotId) {
@@ -729,14 +735,22 @@ function WorkspaceApp() {
             pivotList={state.selectedSheet.pivots.map((pivot) => ({ id: pivot.id, label: pivot.id }))}
             activePivotId={activePivot?.id}
             pivotFieldCatalog={pivotFields}
-            pivotSlicerControls={(activePivot?.slicers ?? []).flatMap((slicer) => slicer.fieldId
-              ? [{ id: slicer.id, pivotId: slicer.pivotId ?? activePivot?.id ?? "", fieldId: slicer.fieldId, mode: slicer.mode ?? "all", memberKeys: slicer.memberKeys ?? [], connectedPivotIds: slicer.connectedPivotIds }]
-              : [])}
-            pivotTimelineControls={(activePivot?.timelines ?? []).flatMap((timeline) => timeline.fieldId
-              ? [{ id: timeline.id, pivotId: timeline.pivotId ?? activePivot?.id ?? "", fieldId: timeline.fieldId, start: timeline.start, end: timeline.end, connectedPivotIds: timeline.connectedPivotIds }]
-              : [])}
+            pivotSlicerControls={pivotSlicerControls}
+            pivotTimelineControls={pivotTimelineControls}
             pivotPanelState={pivotPanelState}
             pivotCallbacks={pivotCallbacks}
+            formulaAudit={state.formulaAudit}
+            formulaAuditState={state.phase === "loading" ? "loading" : state.phase === "error" ? "error" : "ready"}
+            formulaAuditError={state.phase === "error" ? "Formula audit is unavailable while the workbook is in an error state." : undefined}
+            formulaAuditCallbacks={{
+              onShowPrecedents: () => session.showFormulaPrecedents(),
+              onShowDependents: () => session.showFormulaDependents(),
+              onRemoveArrows: () => session.removeFormulaAuditArrows(),
+              onSetShowFormulas: (enabled) => session.setShowFormulas(enabled),
+              onScanErrors: () => session.scanFormulaErrors(),
+              onEvaluateFormula: () => session.evaluateFormulaStep(),
+              onRetry: () => session.retry(),
+            }}
             sparklines={state.selectedSheet.sparklines}
             conditionalFormats={state.selectedSheet.conditionalFormats}
             dataValidations={state.selectedSheet.dataValidations}

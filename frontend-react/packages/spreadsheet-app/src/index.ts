@@ -15,6 +15,7 @@ export {
 } from './feature-registry';
 export * from './ui-command-catalog';
 export * from './features/formula-audit';
+export * from './features/pivot-controls';
 export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';

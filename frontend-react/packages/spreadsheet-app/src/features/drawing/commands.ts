@@ -5,6 +5,10 @@ import type {
   DrawingTransform,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import {
+  isPivotSlicerDrawingPayload,
+  isPivotTimelineDrawingPayload,
+} from '@react-sheets/core-model';
 import { DrawingRuntime, reorderDrawing } from './runtime';
 
 function sheetRange(sheetId: string) {
@@ -154,7 +158,9 @@ function isAnchor(value: unknown): value is DrawingObject['anchor'] {
 }
 
 function isDrawingPayload(value: unknown): value is DrawingPayload {
-  return objectParams(value) && ['image', 'shape', 'chart', 'textbox'].includes(String(value.kind));
+  if (!objectParams(value)) return false;
+  if (['image', 'shape', 'chart', 'textbox'].includes(String(value.kind))) return true;
+  return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
 }
 
 function isDrawing(value: unknown): value is DrawingObject {
@@ -247,6 +253,7 @@ function isDrawingPairValid(drawing: DrawingObject, payload: DrawingPayload): vo
   if (!drawing.id || !drawing.sheetId || !drawing.payloadId) throw new Error(`Drawing identity is required: ${drawing.id}`);
   if (!isAnchor(drawing.anchor)) throw new Error(`Invalid drawing anchor: ${drawing.id}`);
   if (!isTransform(drawing.transform)) throw new Error(`Invalid drawing transform: ${drawing.id}`);
+  if (!isDrawingPayload(payload)) throw new Error(`Invalid drawing payload: ${drawing.payloadId}`);
   if (drawing.kind !== payload.kind) throw new Error(`Drawing payload kind mismatch: ${drawing.id}`);
   if (payload.kind === 'chart' && payload.chartId !== drawing.payloadId) {
     throw new Error(`Drawing payload identity mismatch: ${drawing.payloadId}`);
@@ -460,7 +467,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
 
   runtime.registry.registerCommand<DrawingAddParams>({ id: 'drawing.add', execute: (params, context) => executeAdd(params, context) });
   commandIds.push('drawing.add');
-  for (const kind of ['image', 'shape', 'textbox'] as const) {
+  for (const kind of ['image', 'shape', 'textbox', 'slicer', 'timeline'] as const) {
     const id = `drawing.add.${kind}`;
     runtime.registry.registerCommand<DrawingAddParams>({ id, execute: (params, context) => executeAdd(params, context, kind) });
     commandIds.push(id);

@@ -6,7 +6,7 @@ spring:
   application:
     name: luckysheet-canonical
   datasource:
-    url: ${DATABASE_URL:jdbc:h2:file:./data/luckysheet_canonical;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false}
+    url: ${DATABASE_URL:jdbc:h2:file:./data/luckysheet_canonical;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
     hikari:

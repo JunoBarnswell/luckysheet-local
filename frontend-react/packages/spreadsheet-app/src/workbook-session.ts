@@ -4,21 +4,22 @@ import type {
   ChartDrawingPayload,
   ConditionalFormatRule,
   DataBlockRef,
+  DataSourceManifest,
   DataValidationRule,
   DrawingObject,
   DrawingTransform,
   ImageDrawingPayload,
   PivotFieldDefinition,
   PivotLayout,
+  PivotMemberKey,
   PivotModel,
   PivotSourceRowPath,
-  PivotSlicer,
-  PivotTimeline,
   PivotAggregateFunction,
   PivotDefinition,
   RangeRef,
   ShapeDrawingPayload,
   SheetTableModel,
+  SheetDataRegion,
   SparklineModel,
   SparklineGroup,
   WorkbookTableModel,
@@ -83,6 +84,12 @@ import {
   buildPivotModel,
   connectedPivotIdsForSource,
 } from './features/pivot';
+import {
+  buildPivotSlicerDrawing,
+  buildPivotTimelineDrawing,
+  listPivotControlsForPivot,
+  type PivotControlRecord,
+} from './features/pivot-controls';
 import {
   buildCellNote,
   buildCommentReply,
@@ -720,6 +727,33 @@ export class WorkbookSession {
   async storeDataBlock(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
     await this.runtime.dataBlocks.put(ref, bytes);
     this.notify(`Stored data block ${ref.id}`);
+  }
+
+  addDataSource(source: DataSourceManifest): void {
+    const sheetId = source.sourceSheetId ?? this.activeSheetId;
+    this.runCommand('dataSource.add', { sheetId, source });
+    this.refresh();
+  }
+
+  updateDataSource(source: DataSourceManifest): void {
+    const sheetId = source.sourceSheetId ?? this.activeSheetId;
+    this.runCommand('dataSource.update', { sheetId, source });
+    this.refresh();
+  }
+
+  removeDataSource(sourceId: string): void {
+    this.runCommand('dataSource.remove', { sheetId: this.activeSheetId, sourceId });
+    this.refresh();
+  }
+
+  addDataRegion(region: SheetDataRegion): void {
+    this.runCommand('dataRegion.add', { sheetId: region.range.sheetId, region });
+    this.refresh();
+  }
+
+  removeDataRegion(regionId: string): void {
+    this.runCommand('dataRegion.remove', { sheetId: this.activeSheetId, regionId });
+    this.refresh();
   }
 
   async loadDataBlock(ref: DataBlockRef): Promise<ArrayBuffer> {
@@ -1507,14 +1541,77 @@ export class WorkbookSession {
     this.recomputePivotResult(pivotId);
     this.refresh();
   }
-  setPivotSlicer(pivotId: string, slicer: PivotSlicer): void {
-    this.runCommand('pivot.slicer.set', { sheetId: this.activeSheetId, pivotId, slicer });
-    this.recomputePivotResult(pivotId);
+
+  listPivotControls(pivotId: string): readonly PivotControlRecord[] {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot?.target) return [];
+    return listPivotControlsForPivot(this.runtime.model.getSheet(pivot.target.sheetId), pivotId)
+      .map((record) => ({ drawing: structuredClone(record.drawing), payload: structuredClone(record.payload) }));
+  }
+
+  createPivotSlicerControl(pivotId: string, fieldId: string): void {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot?.target) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
+    const existing = listPivotControlsForPivot(sheet, pivotId).find((entry) => entry.payload.kind === 'slicer' && entry.payload.fieldId === fieldId);
+    if (existing) return;
+    const sourceRange = pivot.source?.kind === 'worksheet-range' ? pivot.source.range : undefined;
+    const connectedPivotIds = sourceRange ? connectedPivotIdsForSource(this.runtime.model, pivot.target.sheetId, sourceRange) : [pivotId];
+    const offset = listPivotControlsForPivot(sheet, pivotId).length;
+    const control = buildPivotSlicerDrawing({
+      drawingId: nextId('pivot-slicer'),
+      payloadId: nextId('pivot-slicer-payload'),
+      sheetId: sheet.id,
+      pivotId,
+      fieldId,
+      transform: { x: 96, y: 96 + offset * 144, width: 188, height: 128 },
+      zIndex: sheet.drawings.length,
+      connectedPivotIds,
+    });
+    this.runCommand('pivot.control.slicer.create', { sheetId: sheet.id, ...control });
     this.refresh();
   }
-  setPivotTimeline(pivotId: string, timeline: PivotTimeline): void {
-    this.runCommand('pivot.timeline.set', { sheetId: this.activeSheetId, pivotId, timeline });
-    this.recomputePivotResult(pivotId);
+
+  createPivotTimelineControl(pivotId: string, fieldId: string): void {
+    const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
+    if (!pivot?.target) throw new Error(`Unknown PivotTable: ${pivotId}`);
+    const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
+    const existing = listPivotControlsForPivot(sheet, pivotId).find((entry) => entry.payload.kind === 'timeline' && entry.payload.fieldId === fieldId);
+    if (existing) return;
+    const sourceRange = pivot.source?.kind === 'worksheet-range' ? pivot.source.range : undefined;
+    const connectedPivotIds = sourceRange ? connectedPivotIdsForSource(this.runtime.model, pivot.target.sheetId, sourceRange) : [pivotId];
+    const offset = listPivotControlsForPivot(sheet, pivotId).length;
+    const control = buildPivotTimelineDrawing({
+      drawingId: nextId('pivot-timeline'),
+      payloadId: nextId('pivot-timeline-payload'),
+      sheetId: sheet.id,
+      pivotId,
+      fieldId,
+      transform: { x: 312, y: 96 + offset * 96, width: 356, height: 72 },
+      zIndex: sheet.drawings.length,
+      connectedPivotIds,
+    });
+    this.runCommand('pivot.control.timeline.create', { sheetId: sheet.id, ...control });
+    this.refresh();
+  }
+
+  removePivotControl(drawingId: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
+    if (!drawing) return;
+    this.runCommand('drawing.remove', { sheetId: sheet.id, drawingId });
+    this.refresh();
+  }
+
+  setPivotSlicerFilter(drawingId: string, mode: 'all' | 'include' | 'exclude', memberKeys: readonly PivotMemberKey[]): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.slicer.filter.set', { sheetId: sheet.id, drawingId, filter: { mode, memberKeys: [...memberKeys] } });
+    this.refresh();
+  }
+
+  setPivotTimelinePeriod(drawingId: string, start?: string, end?: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.timeline.period.set', { sheetId: sheet.id, drawingId, period: { ...(start ? { start } : {}), ...(end ? { end } : {}) } });
     this.refresh();
   }
   refreshPivot(pivotId: string): void {
@@ -2213,6 +2310,22 @@ export class WorkbookSession {
     this.refresh();
   }
 
+  toggleViewGridlines(): void {
+    this.setViewGridlines(!this.runtime.model.getSheet(this.activeSheetId).showGridlines);
+  }
+
+  toggleViewHeadings(): void {
+    this.setViewHeadings(!this.runtime.model.getSheet(this.activeSheetId).showHeaders);
+  }
+
+  togglePrintGridlines(): void {
+    this.setPrintGridlines(!getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.printGridlines);
+  }
+
+  togglePrintHeadings(): void {
+    this.setPrintHeadings(!getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.printHeadings);
+  }
+
   private rebuildPrintSnapshot(layout?: PrintLayout, range?: RangeRef): PrintSnapshot {
     const uiLayout = layout ?? this.printLayout;
     const selectionRange = range ?? this.selectionService.primaryRangeOrDefault();
@@ -2511,7 +2624,10 @@ export class WorkbookSession {
         revision: this.runtime.remoteRevision,
       });
       this.compatibilityReport = imported.report as CompatibilityReport;
-      this.xlsxPackage = imported.package;
+      // Preserve only the original archive across the session. Reconstructing
+      // the package inside the export Worker avoids retaining a duplicate
+      // expanded OOXML graph on the UI thread.
+      this.xlsxPackage = undefined;
       this.xlsxSourceArtifact = imported.sourceArtifact;
       this.runtime.remoteConnected = false;
       if (typeof window !== 'undefined') {
@@ -2551,7 +2667,7 @@ export class WorkbookSession {
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
-      this.xlsxPackage = exported.package ?? this.xlsxPackage;
+      this.xlsxPackage = undefined;
       if (!exported.buffer || !exported.fileName) return null;
       return { buffer: exported.buffer, fileName: exported.fileName };
     } catch (error) {

@@ -78,6 +78,10 @@ export interface NativePivotCacheDefinition {
   source: NativePivotSource | { kind: 'unsupported'; reason: string };
   fields: NativePivotCacheField[];
   recordCount?: number;
+  refreshOnLoad?: boolean;
+  refreshOnSave?: boolean;
+  saveData?: boolean;
+  enableRefresh?: boolean;
 }
 
 export interface NativePivotTableField {
@@ -106,6 +110,12 @@ export interface NativePivotTableDefinition {
   columnFields: number[];
   pageFields: number[];
   dataFields: NativePivotDataField[];
+  showRowGrandTotals?: boolean;
+  showColumnGrandTotals?: boolean;
+  showSubtotals?: boolean;
+  repeatLabels?: boolean;
+  compactData?: boolean;
+  styleName?: string;
 }
 
 /**
@@ -117,6 +127,18 @@ export interface NativePivotGraph {
   schema: 'NativePivotGraph';
   caches: NativePivotCacheDefinition[];
   tables: NativePivotTableDefinition[];
+}
+
+/**
+ * The native package update is deliberately kept outside WorkbookSnapshot.
+ * It carries only reachable OOXML parts/relationships and derived display
+ * cells needed by Excel; calculation/result trees never cross this boundary.
+ */
+export interface NativePivotPackageUpdate {
+  graph: NativePivotGraph;
+  files: Record<string, Uint8Array>;
+  relationships: Record<string, XlsxRelationship[]>;
+  displayCellsBySheetPart: Record<string, Record<string, Record<string, import('@react-sheets/core-model').CellData>>>;
 }
 
 /**

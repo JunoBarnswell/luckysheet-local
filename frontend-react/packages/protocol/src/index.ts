@@ -1,4 +1,13 @@
-import type { PivotResultTree, RangeRef, TableScalar, WorkbookSnapshot, WorkbookTableBlock, WorkbookTableModel } from '@react-sheets/core-model';
+import type {
+  DataSourceManifest,
+  PivotResultTree,
+  RangeRef,
+  SheetDataRegion,
+  TableScalar,
+  WorkbookSnapshot,
+  WorkbookTableBlock,
+  WorkbookTableModel,
+} from '@react-sheets/core-model';
 
 export type ProtocolErrorCode =
   | 'VALIDATION_ERROR'
@@ -48,6 +57,27 @@ export interface OperationEnvelope {
   mutations: OperationMutation[];
   createdAt: string;
 }
+
+/**
+ * Canonical metadata-only mutations for block-backed workbook data. The
+ * manifest and region are JSON descriptors; block bytes are transferred only
+ * through the dedicated data-block endpoint and never through an operation.
+ */
+export const DATA_SOURCE_MUTATION_IDS = [
+  'dataSource.add',
+  'dataSource.update',
+  'dataSource.remove',
+  'dataRegion.add',
+  'dataRegion.remove',
+] as const;
+
+export type DataSourceMutationId = typeof DATA_SOURCE_MUTATION_IDS[number];
+
+export type DataSourceMutationParams =
+  | { source: DataSourceManifest }
+  | { sourceId: string }
+  | { region: SheetDataRegion }
+  | { regionId: string };
 
 /** Server-authored metadata added after authentication, validation and commit. */
 export interface CommittedOperationMutation extends OperationMutation {
@@ -140,9 +170,30 @@ function isRangeRef(value: unknown): value is RangeRef {
     && Number.isSafeInteger(range.endColumn) && Number(range.endColumn) >= Number(range.startColumn);
 }
 
-function validateDataSourceManifest(value: unknown): void {
+function assertMetadataOnly(value: unknown, path: string): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertMetadataOnly(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'bytes' || key === 'buffer' || key === 'arrayBuffer' || key === 'content') {
+      throw new Error(`${path}.${key} is not allowed in metadata-only operations`);
+    }
+    assertMetadataOnly(child, `${path}.${key}`);
+  }
+}
+
+function validateExactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) throw new Error(`${label} contains unsupported field: ${key}`);
+  }
+}
+
+export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Data source manifest must be an object');
   const source = value as Record<string, unknown>;
+  validateExactKeys(source, ['schema', 'version', 'id', 'name', 'kind', 'sourceSheetId', 'sourceRange', 'rowCount', 'fields', 'blockRowCount', 'blocks', 'revision'], 'Data source manifest');
   if (source.schema !== 'DataSourceManifest' || source.version !== 1 || !isNonEmptyString(source.id) || !isNonEmptyString(source.name)) {
     throw new Error('Invalid data source manifest identity');
   }
@@ -153,11 +204,22 @@ function validateDataSourceManifest(value: unknown): void {
     || !Array.isArray(source.fields) || !Array.isArray(source.blocks)) {
     throw new Error(`Invalid data source manifest shape: ${String(source.id)}`);
   }
+  if (source.sourceSheetId !== undefined && !isNonEmptyString(source.sourceSheetId)) {
+    throw new Error(`Invalid data source sourceSheetId: ${String(source.id)}`);
+  }
   if (source.sourceRange !== undefined && !isRangeRef(source.sourceRange)) throw new Error(`Invalid data source range: ${String(source.id)}`);
+  if (source.sourceRange !== undefined && source.sourceSheetId !== source.sourceRange.sheetId) {
+    throw new Error(`Data source sourceRange must target sourceSheetId: ${String(source.id)}`);
+  }
+  if ((source.kind === 'worksheet-range' || source.kind === 'sheet-table')
+    && (!isNonEmptyString(source.sourceSheetId) || source.sourceRange === undefined)) {
+    throw new Error(`Invalid ${String(source.kind)} data source metadata: ${String(source.id)}`);
+  }
   const fieldIds = new Set<string>();
   for (const [index, rawField] of source.fields.entries()) {
     if (!rawField || typeof rawField !== 'object') throw new Error(`Invalid data source field: ${String(source.id)}`);
     const field = rawField as Record<string, unknown>;
+    validateExactKeys(field, ['id', 'name', 'ordinal', 'type'], 'Data source field');
     if (!isNonEmptyString(field.id) || fieldIds.has(field.id) || !isNonEmptyString(field.name) || field.ordinal !== index
       || !['text', 'number', 'boolean', 'date', 'mixed'].includes(String(field.type))) {
       throw new Error(`Invalid data source field: ${String(source.id)}`);
@@ -168,17 +230,65 @@ function validateDataSourceManifest(value: unknown): void {
   for (const rawBlock of source.blocks) {
     if (!rawBlock || typeof rawBlock !== 'object') throw new Error(`Invalid data block: ${String(source.id)}`);
     const block = rawBlock as Record<string, unknown>;
+    validateExactKeys(block, ['id', 'dataSourceId', 'startRow', 'rowCount', 'storageKey', 'checksum', 'byteLength', 'encoding', 'revision'], 'Data block');
     if (!isNonEmptyString(block.id) || blockIds.has(block.id) || block.dataSourceId !== source.id
       || !isNonEmptyString(block.storageKey) || !isNonEmptyString(block.checksum)
       || block.encoding !== 'columnar-v1'
       || !Number.isSafeInteger(block.startRow) || Number(block.startRow) < 0
       || !Number.isSafeInteger(block.rowCount) || Number(block.rowCount) <= 0
-      || !Number.isSafeInteger(block.byteLength) || Number(block.byteLength) < 0
+      || !Number.isSafeInteger(block.byteLength) || Number(block.byteLength) <= 0
       || !Number.isSafeInteger(block.revision) || Number(block.revision) < 0) {
       throw new Error(`Invalid data block: ${String(source.id)}`);
     }
+    if (Number(block.startRow) + Number(block.rowCount) > Number(source.rowCount)) {
+      throw new Error(`Data block exceeds source rowCount: ${String(block.id)}`);
+    }
+    if (!/^[A-Fa-f0-9]{64}$/.test(String(block.checksum))) {
+      throw new Error(`Invalid data block checksum: ${String(block.id)}`);
+    }
     blockIds.add(block.id);
-    if ('bytes' in block || 'buffer' in block) throw new Error('Data source manifest must not contain block bytes');
+  }
+}
+
+export function isDataSourceMutationId(value: string): value is DataSourceMutationId {
+  return (DATA_SOURCE_MUTATION_IDS as readonly string[]).includes(value);
+}
+
+/** Validate the exact wire shape for data-source mutations. */
+export function validateDataSourceMutationParams(
+  id: DataSourceMutationId,
+  value: unknown,
+): asserts value is DataSourceMutationParams {
+  assertMetadataOnly(value, `Mutation ${id}.params`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Mutation ${id} params must be an object`);
+  const params = value as Record<string, unknown>;
+  switch (id) {
+    case 'dataSource.add':
+    case 'dataSource.update':
+      validateExactKeys(params, ['source'], `Mutation ${id}`);
+      validateDataSourceManifest(params.source);
+      return;
+    case 'dataSource.remove':
+      validateExactKeys(params, ['sourceId'], `Mutation ${id}`);
+      if (!isNonEmptyString(params.sourceId)) throw new Error(`Mutation ${id} sourceId is required`);
+      return;
+    case 'dataRegion.add':
+      validateExactKeys(params, ['region'], `Mutation ${id}`);
+      if (!params.region || typeof params.region !== 'object' || Array.isArray(params.region)) {
+        throw new Error(`Mutation ${id} region is required`);
+      }
+      const region = params.region as Record<string, unknown>;
+      validateExactKeys(region, ['id', 'sourceId', 'range', 'headerRow', 'revision'], 'Sheet data region');
+      if (!isNonEmptyString(region.id) || !isNonEmptyString(region.sourceId) || !isRangeRef(region.range)
+        || !Number.isSafeInteger(region.headerRow) || Number(region.headerRow) < 0
+        || !Number.isSafeInteger(region.revision) || Number(region.revision) < 0) {
+        throw new Error(`Mutation ${id} region metadata is invalid`);
+      }
+      return;
+    case 'dataRegion.remove':
+      validateExactKeys(params, ['regionId'], `Mutation ${id}`);
+      if (!isNonEmptyString(params.regionId)) throw new Error(`Mutation ${id} regionId is required`);
+      return;
   }
 }
 
@@ -304,6 +414,9 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
     if (!('params' in mutation)) throw new Error(`mutation[${index}] requires params`);
     if ('affectedRanges' in mutation || 'actorId' in mutation) {
       throw new Error(`mutation[${index}] contains server-owned fields`);
+    }
+    if (isDataSourceMutationId(mutation.id)) {
+      validateDataSourceMutationParams(mutation.id, mutation.params);
     }
     return {
       id: mutation.id,

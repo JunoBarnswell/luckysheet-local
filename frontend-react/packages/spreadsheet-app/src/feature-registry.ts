@@ -3,8 +3,10 @@ import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerPlatformFeatures } from './platform-features';
 import { registerChartFeature } from './features/chart';
 import { registerDrawingFeature, type DrawingRuntime } from './features/drawing';
+import { registerDataSourceFeature } from './features/data-source';
 import { registerEditingFeatures } from './features/editing';
 import { registerPivotFeature } from './features/pivot';
+import { registerPivotControlFeature } from './features/pivot-controls';
 import { registerReviewFeature } from './features/review/commands';
 import { registerSparklineFeature } from './features/sparkline';
 
@@ -39,6 +41,8 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
   registerEditingFeatures(runtime);
 
   const drawingManifest = registerDrawingFeature(runtime, drawingRuntime);
+  const pivotControlManifest = registerPivotControlFeature(runtime);
+  const dataSourceManifest = registerDataSourceFeature(runtime);
   const chartManifest = registerChartFeature(runtime);
   const pivotManifest = registerPivotFeature(runtime);
   const sparklineManifest = registerSparklineFeature(runtime);
@@ -49,6 +53,8 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
   registeredManifests = [
     CORE_MANIFEST,
     drawingManifest,
+    pivotControlManifest,
+    dataSourceManifest,
     chartManifest,
     pivotManifest,
     sparklineManifest,
