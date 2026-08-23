@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import java.time.Instant;
 
@@ -29,6 +30,9 @@ public class UserPreferenceEntity {
     private String language;
     @Column(name = "theme", length = 32)
     private String theme;
+    @Version
+    @Column(name = "entity_version", nullable = false)
+    private long entityVersion;
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -59,4 +63,17 @@ public class UserPreferenceEntity {
     public String getLanguage() { return language; }
     public String getTheme() { return theme; }
     public Instant getUpdatedAt() { return updatedAt; }
+
+    public void update(String defaultSpaceId, String defaultFolderId, Boolean autoSave, Boolean autoSync,
+                       Boolean offlineCache, String importCompatibility, String language, String theme, Instant updatedAt) {
+        if (defaultSpaceId != null) this.defaultSpaceId = defaultSpaceId;
+        if (defaultFolderId != null) this.defaultFolderId = defaultFolderId;
+        if (autoSave != null) this.autoSave = autoSave;
+        if (autoSync != null) this.autoSync = autoSync;
+        if (offlineCache != null) this.offlineCache = offlineCache;
+        if (importCompatibility != null) this.importCompatibility = importCompatibility;
+        if (language != null) this.language = language;
+        if (theme != null) this.theme = theme;
+        this.updatedAt = updatedAt;
+    }
 }

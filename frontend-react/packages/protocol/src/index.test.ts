@@ -9,6 +9,7 @@ import {
   WorkbookApiClient,
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
+  validateUserPreferences,
   validateWorkbookSnapshot,
 } from './index';
 
@@ -67,8 +68,10 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
+          version: 2,
           unitId: 'unit-1',
           name: 'Workbook',
+          dataSources: [],
           sheets: [{
             id: 'sheet-1',
             name: 'Sheet1',
@@ -104,8 +107,10 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
+          version: 2,
           unitId: 'unit-guest',
           name: 'Guest workbook',
+          dataSources: [],
           sheets: [{
             id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
             cells: {}, merges: [], freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
@@ -140,6 +145,41 @@ test('WorkbookApiClient accepts access roles only from the server projection', a
     }),
   });
   await assert.rejects(() => malformed.getAccess('unit-access'), /invalid role/);
+});
+
+test('WorkbookApiClient validates cursor pages and forwards cursor, limit, and abort signal', async () => {
+  let requestedUrl = '';
+  let requestedSignal: AbortSignal | undefined;
+  const api = new WorkbookApiClient({
+    authTokenProvider: () => 'server-token',
+    fetchImpl: async (input, init) => {
+      requestedUrl = String(input);
+      requestedSignal = init?.signal ?? undefined;
+      return new Response(JSON.stringify({
+        items: [{ unitId: 'unit-page', name: 'Paged', revision: 1, updatedAt: '2026-08-24T00:00:00Z', role: 'owner' }],
+        nextCursor: 'next-1',
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const controller = new AbortController();
+  const page = await api.listWorkbookPage({ view: 'all', cursor: 'cursor-1', limit: 25 }, { signal: controller.signal });
+  assert.equal(page.nextCursor, 'next-1');
+  assert.equal(page.items[0]?.unitId, 'unit-page');
+  assert.match(requestedUrl, /cursor=cursor-1/);
+  assert.match(requestedUrl, /limit=25/);
+  assert.equal(requestedSignal, controller.signal);
+  await assert.rejects(() => api.listWorkbookPage({ limit: 51 }), /between 1 and 50/);
+});
+
+test('User preferences response validation rejects lossy or malformed preference values', () => {
+  assert.deepEqual(validateUserPreferences({
+    defaultSpaceId: 'space-1', defaultFolderId: 'folder-1', autoSave: true, autoSync: false,
+    offlineCache: true, importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
+  }), {
+    defaultSpaceId: 'space-1', defaultFolderId: 'folder-1', autoSave: true, autoSync: false,
+    offlineCache: true, importCompatibility: 'C', language: 'zh-CN', theme: 'dark', updatedAt: '2026-08-24T00:00:00Z',
+  });
+  assert.throws(() => validateUserPreferences({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'strict', theme: 'system' }), /importCompatibility/);
 });
 
 test('history restore request is target-revision-only and client API posts no snapshot', async () => {

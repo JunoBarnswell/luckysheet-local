@@ -9,6 +9,7 @@ import {
   type WorkbookAclRole,
   type OperationMessage,
   type SnapshotResponse,
+  mutationCapability,
 } from '@react-sheets/protocol';
 import { CollabSocketClient } from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures } from './feature-registry';
@@ -68,6 +69,7 @@ export interface SpreadsheetRuntime {
   workspacePersistence: WorkspacePersistence;
   dataBlocks: DataBlockSynchronizer;
   dataContent: Map<string, DataSourceContentQuery>;
+  dataContentDetachers: Array<() => void>;
   workspaceRecord: WorkspaceRecord | null;
   localRevision: number;
   localOnly: boolean;
@@ -79,18 +81,15 @@ export interface SpreadsheetRuntime {
   connectors: ConnectorRegistry;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
+  /** Runtime lifecycle is explicit so late Worker/IndexedDB callbacks cannot
+   * publish into a disposed session. */
+  disposed: boolean;
 }
 
 let localActorSequence = 0;
 
-export function resolveUnitId(): string {
-  if (typeof window === 'undefined') return 'wb-server-default';
-  const routeMatch = /^\/workbooks\/([^/]+)\/?$/.exec(window.location.pathname);
-  if (routeMatch?.[1]) return decodeURIComponent(routeMatch[1]);
-  // Catalog selection is asynchronous and happens in initializePersistence;
-  // this stable sentinel never becomes a browser-storage identity.
-  return 'wb-local-default';
-}
+/** Test-only default; browser routes must provide unitId through the session factory. */
+export function resolveUnitId(): string { return 'wb-local-default'; }
 
 export function resolveActorId(): string {
   if (typeof window === 'undefined') return 'actor-server';
@@ -105,8 +104,16 @@ export function resolveShareToken(): string | null {
   return new URLSearchParams(window.location.search).get('share')?.trim() || null;
 }
 
-export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthTokenProvider; shareTokenProvider?: ShareTokenProvider; localOnly?: boolean; persistence?: IndexedDbWorkspaceStoreOptions } = {}): SpreadsheetRuntime {
-  const model = new WorkbookModel(resolveUnitId(), 'Untitled workbook');
+export function createSpreadsheetRuntime(options: {
+  unitId?: string;
+  api?: WorkbookApiClient;
+  authTokenProvider?: AuthTokenProvider;
+  shareTokenProvider?: ShareTokenProvider;
+  localOnly?: boolean;
+  persistence?: IndexedDbWorkspaceStoreOptions;
+  workspacePersistence?: WorkspacePersistence;
+} = {}): SpreadsheetRuntime {
+  const model = new WorkbookModel(options.unitId ?? resolveUnitId(), 'Untitled workbook');
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
@@ -115,11 +122,11 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
   const operationJournal = new OperationJournalStore();
-  const workspacePersistence = new WorkspacePersistence({
+  const workspacePersistence = options.workspacePersistence ?? new WorkspacePersistence({
     ...options.persistence,
     unitId: () => runtime?.model.unitId ?? model.unitId,
   }, operationJournal);
-  const api = new WorkbookApiClient({ authTokenProvider: options.authTokenProvider, shareTokenProvider: options.shareTokenProvider });
+  const api = options.api ?? new WorkbookApiClient({ authTokenProvider: options.authTokenProvider, shareTokenProvider: options.shareTokenProvider });
   let runtime!: SpreadsheetRuntime;
   const dataBlocks = new DataBlockSynchronizer(workspacePersistence.dataBlocks, api, {
     unitId: () => runtime.model.unitId,
@@ -148,6 +155,7 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     workspacePersistence,
     dataBlocks,
     dataContent: new Map(),
+    dataContentDetachers: [],
     workspaceRecord: null,
     localRevision: 0,
     localOnly: options.localOnly ?? (!options.authTokenProvider && !options.shareTokenProvider),
@@ -159,6 +167,7 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     connectors,
     authTokenProvider: options.authTokenProvider,
     shareTokenProvider: options.shareTokenProvider,
+    disposed: false,
   };
   // The offline journal records operation intent and its client sequence.
   // The same IndexedDB transaction also checkpoints the canonical local
@@ -246,7 +255,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): void
   engine.cancelCalculation();
   engine.reset();
   engine.setRecalculationMode('manual');
-  engine.setDefinedNames(workbook.definedNames);
+  engine.setDefinedNameModels(workbook.definedNameModels);
   configureWorkbookSpillEnvironments(engine, workbook);
   syncWorkbookSheetTables(engine, workbook);
   for (const sheet of workbook.getSheets()) {
@@ -280,6 +289,7 @@ function localFormulaIdleState(runtime: SpreadsheetRuntime): import('./types').S
  * mutate spills or render projections for an older workbook state.
  */
 export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force = false): Promise<void> {
+  if (runtime.disposed) return Promise.resolve();
   const state = formulaQueueStates.get(runtime) ?? {
     tail: Promise.resolve(),
     scheduled: false,
@@ -296,6 +306,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
   state.tail = state.tail
     .catch(() => undefined)
     .then(async () => {
+      if (runtime.disposed) return;
       state.scheduled = false;
       const epoch = state.epoch;
       const forceCalculation = state.force;
@@ -304,7 +315,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       const workbook = runtime.model;
       loadFormulaInputs(engine, workbook);
       if (engine.getRecalculationMode() === 'manual' && !forceCalculation) {
-        if (epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
+        if (!runtime.disposed && epoch === state.epoch && runtime.formula === engine && runtime.model === workbook) {
           runtime.handlers.onMutationsApplied?.();
         }
         return;
@@ -313,7 +324,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       runtime.handlers.onSaveState?.('calculating');
       try {
         await engine.recalculateAsync();
-        if (epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
+        if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
         syncWorkbookSpills(engine, workbook);
         void checkpointWorkspace(runtime, false).catch((error: unknown) => {
           runtime.handlers.onSaveState?.('error');
@@ -322,7 +333,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
       } catch (error) {
-        if (epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
+        if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
         runtime.handlers.onSaveState?.('error');
         runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Formula calculation failed');
       }
@@ -359,6 +370,7 @@ function assertNoSpillChildWrite(
 const checkpointChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
 
 function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true): Promise<void> {
+  if (runtime.disposed) return Promise.resolve();
   if (advanceLocalRevision) runtime.localRevision += 1;
   const snapshot = runtime.model.snapshot();
   const localRevision = runtime.localRevision;
@@ -369,13 +381,16 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
   const next = previous
     .catch(() => undefined)
     .then(async () => {
-      runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+      if (runtime.disposed) return;
+      const record = await runtime.workspacePersistence.checkpoint(
         snapshot,
         localRevision,
         serverRevision,
         syncMode,
         pendingJournal,
       );
+      if (runtime.disposed) return;
+      runtime.workspaceRecord = record;
       runtime.handlers.onWorkspacePersisted?.();
     });
   checkpointChains.set(runtime, next);
@@ -387,6 +402,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
 
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source) => {
+      if (runtime.disposed) return;
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
       // direct write into a dynamic-array child cannot leave partial model or
@@ -417,7 +433,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
 
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source) => {
+      if (runtime.disposed) return;
       if (source !== 'command') return;
+      if (mutationCapability(mutation.id)?.durability === 'transient') return;
       runtime.pendingMutations.push({
         id: mutation.id,
         unitId: mutation.unitId,
@@ -430,11 +448,12 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
 
   runtime.detachers.push(
     runtime.commands.onCommand((_commandId, _params, result) => {
+      if (runtime.disposed) return;
       if (runtime.commands.activeDepth > 0) return;
       const batch = runtime.pendingMutations;
       runtime.pendingMutations = [];
-      runtime.handlers.onMutationsApplied?.();
       if (batch.length === 0) return;
+      runtime.handlers.onMutationsApplied?.();
       const history = runtime.commands.getUndoEntries().at(-1);
       if (history) {
         runtime.collaboration?.recordLocalUndo({
@@ -450,6 +469,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
 
   runtime.detachers.push(
     runtime.commands.onHistoryReplay((source, entry) => {
+      if (runtime.disposed) return;
       if (!runtime.collaboration || entry.undo.length === 0) return;
       const operation = source === 'undo'
         ? runtime.collaboration.enqueueCompensatingMutations(
@@ -551,6 +571,7 @@ function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
 }
 
 export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotResponse): void {
+  if (runtime.disposed) return;
   const workbook = WorkbookModel.fromSnapshot(response.snapshot);
   // Legacy block overlays are normalized exactly once at the snapshot boundary.
   // All runtime reads after this point require the canonical CellPatch carrier.
@@ -573,6 +594,8 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
 }
 
 function initializeDataContent(runtime: SpreadsheetRuntime): void {
+  for (const detach of runtime.dataContentDetachers) detach();
+  runtime.dataContentDetachers = [];
   runtime.dataContent.clear();
   for (const manifest of runtime.model.dataSources.values()) {
     const query = new DataSourceContentQuery(manifest, {
@@ -583,7 +606,9 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
         return { sourceId: ref.dataSourceId, blockId: ref.id, checksum: ref.checksum, bytes };
       },
     });
-    query.subscribe(() => runtime.handlers.onMutationsApplied?.());
+    runtime.dataContentDetachers.push(query.subscribe(() => {
+      if (!runtime.disposed) runtime.handlers.onMutationsApplied?.();
+    }));
     runtime.dataContent.set(manifest.id, query);
   }
 }
@@ -636,17 +661,19 @@ export function startCollaborationSession(
   authTokenProvider: AuthTokenProvider | undefined = runtime.authTokenProvider,
   shareTokenProvider: ShareTokenProvider | undefined = runtime.shareTokenProvider,
 ): () => void {
+  runtime.disposed = false;
   if (typeof window === 'undefined') return () => undefined;
 
   let active = true;
   let disposeOpenSession: (() => void) | null = null;
   void runtime.persistenceReady.then(() => {
-    if (!active || runtime.localOnly) {
+    if (!active || runtime.disposed || runtime.localOnly) {
       runtime.handlers.onCollabStatus?.('closed');
       return;
     }
     runtime.collaboration ??= new CollaborationSession(runtime.commands);
     runtime.collaboration.attachTransport(async (operation) => {
+      if (runtime.disposed) throw new Error('Workbook runtime has been disposed');
       runtime.ownOperationIds.add(operation.operationId);
       try {
         const committed = await runtime.api.commitOperation(runtime.model.unitId, operation);
@@ -674,6 +701,7 @@ export function startCollaborationSession(
     runtime.collab = client;
 
     const applyRemote = (message: OperationMessage) => {
+      if (runtime.disposed) return;
       if (message.type === 'revision.created') {
         if (message.payload.unitId !== runtime.model.unitId) return;
         if (runtime.ownOperationIds.has(message.payload.operationId)) return;
@@ -704,6 +732,7 @@ export function startCollaborationSession(
 
     const detachMessage = client.onMessage(applyRemote);
     const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
+      if (runtime.disposed) return;
       runtime.handlers.onCollabStatus?.(status);
       runtime.remoteConnected = status !== 'closed';
       runtime.collaboration?.offlineQueue.setOnline(status === 'open');
@@ -740,19 +769,44 @@ export function startCollaborationSession(
     runtime.handlers.onCollabStatus?.('closed');
   });
 
-  return () => {
+  const dispose = () => {
     active = false;
     disposeOpenSession?.();
+    if (runtime.collabDispose === dispose) runtime.collabDispose = null;
   };
+  runtime.collabDispose = dispose;
+  return dispose;
 }
 
 export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void {
+  runtime.disposed = false;
+  // `disposeSpreadsheetRuntime` detaches command listeners. Reattach them on
+  // a real remount so StrictMode does not leave edits outside the journal.
+  attachCoreListeners(runtime);
   let active = true;
   const initialization = initializePersistence(runtime, () => active);
   runtime.persistenceReady = initialization;
-  return () => {
+  const dispose = () => {
     active = false;
+    if (runtime.bootstrapDispose === dispose) runtime.bootstrapDispose = null;
   };
+  runtime.bootstrapDispose = dispose;
+  return dispose;
+}
+
+export function disposeSpreadsheetRuntime(runtime: SpreadsheetRuntime): void {
+  if (runtime.disposed) return;
+  runtime.disposed = true;
+  runtime.collabDispose?.();
+  runtime.bootstrapDispose?.();
+  detachCoreListeners(runtime);
+  runtime.formula.disposeCalculationTasks();
+  for (const detach of runtime.dataContentDetachers) detach();
+  runtime.dataContentDetachers = [];
+  runtime.dataContent.clear();
+  runtime.collaboration?.attachTransport(undefined);
+  runtime.collaboration = null;
+  runtime.collab = null;
 }
 
 async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
@@ -761,8 +815,9 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   let localRecord: WorkspaceRecord | null = null;
   try {
     localRecord = await runtime.workspacePersistence.load(runtime.model.unitId);
-    if (!localRecord && typeof window !== 'undefined' && runtime.model.unitId === 'wb-local-default'
-      && !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname)) {
+    const canDiscoverLocalDefault = runtime.model.unitId === 'wb-local-default'
+      && (typeof window === 'undefined' || !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname));
+    if (!localRecord && canDiscoverLocalDefault) {
       const summaries = await runtime.workspacePersistence.list();
       const first = summaries[0];
       if (first) localRecord = await runtime.workspacePersistence.load(first.unitId);
@@ -771,12 +826,15 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
   }
 
+  if (!isActive()) return;
+
   if (localRecord) {
     runtime.workspaceRecord = localRecord;
     runtime.localRevision = localRecord.localRevision;
     runtime.remoteRevision = localRecord.serverRevision;
     runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
     runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
+    if (!isActive()) return;
     hydrateRuntime(runtime, {
       snapshot: localRecord.snapshot,
       revision: localRecord.serverRevision,
@@ -789,6 +847,10 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (runtime.localOnly) {
     runtime.remoteConnected = false;
     runtime.handlers.onAccessRole?.(null);
+    // A StrictMode dispose may have detached the collaboration journal even
+    // though the workbook remains local-only. Recreate the journal owner
+    // before the first post-remount command so edits remain durable.
+    if (!runtime.collaboration) replaceCollaborationSession(runtime, localRecord);
     const checkpointed = await checkpointStartupLocally(runtime);
     if (isActive()) {
       runtime.handlers.onSaveState?.(checkpointed ? (runtime.remoteSyncRequested ? 'offline' : 'saved') : 'error');
@@ -802,12 +864,14 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   try {
     const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
     const access = await runtime.api.getAccess(runtime.model.unitId);
+    if (!isActive()) return;
     hydrateRuntime(runtime, snapshotResponse);
     runtime.remoteRevision = snapshotResponse.revision;
     runtime.localOnly = false;
     runtime.remoteSyncRequested = true;
     replaceCollaborationSession(runtime, localRecord);
     await loadHistoryAndReplayPending(runtime);
+    if (!isActive()) return;
     runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
     runtime.remoteConnected = true;
     runtime.handlers.onAccessRole?.(access.role);

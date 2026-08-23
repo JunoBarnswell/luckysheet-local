@@ -79,14 +79,16 @@ describe('WorkbookCatalogService', () => {
         syncedUnitId = snapshot.unitId;
         return { snapshot: structuredClone(snapshot), revision: 1 };
       },
-      listWorkbooks: async () => remoteSnapshot ? [{ unitId: remoteSnapshot.unitId, name: remoteSnapshot.name, revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }] : [],
-      updateWorkbook: async (unitId, patch) => ({ unitId, name: patch.name ?? remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
+      listWorkbookPage: async () => ({ items: remoteSnapshot ? [{ unitId: remoteSnapshot.unitId, name: remoteSnapshot.name, revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }] : [], nextCursor: null }),
+      updateWorkbook: async (unitId) => ({ unitId, name: remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
       copyWorkbook: async (unitId) => ({ unitId: `${unitId}-copy`, name: remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
       moveToTrash: async () => undefined,
       restoreFromTrash: async (unitId) => ({ unitId, name: remoteSnapshot?.name ?? '', revision: 1, updatedAt: new Date().toISOString(), role: 'owner' }),
       purgeWorkbook: async () => undefined,
       getWorkbookUserState: async (unitId) => ({ unitId }),
       putWorkbookUserState: async (unitId) => ({ unitId }),
+      getUserPreferences: async () => ({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'B', theme: 'system' }),
+      putUserPreferences: async (input) => ({ autoSave: true, autoSync: true, offlineCache: true, importCompatibility: 'B', theme: 'system', ...input }),
       listSpaces: async () => [],
       createSpace: async (input) => ({ ...input, spaceId: 'space', createdAt: '', createdBy: '', updatedAt: '' }),
       listFolders: async () => [],
@@ -103,7 +105,7 @@ describe('WorkbookCatalogService', () => {
       }),
       putWorkbookSourceArtifact: async (unitId, artifact, fileName) => ({ unitId, fileName, byteLength: artifact.size, checksum: '', updatedAt: '' }),
       getWorkbookSourceArtifact: async () => { throw new Error('no artifact'); },
-      commitOperation: async (_unitId, operation) => ({ operation: { ...operation, actorId: 'actor', revision: 1, committedAt: new Date().toISOString(), mutations: operation.mutations.map((mutation) => ({ ...mutation, affectedRanges: [] })) } }),
+      commitOperation: async (_unitId, operation) => ({ operation: { ...operation, actorId: 'actor', origin: 'client', revision: 1, committedAt: new Date().toISOString(), mutations: operation.mutations.map((mutation) => ({ ...mutation, affectedRanges: [] })) } }),
       checkpointWorkbook: async () => ({ created: true, snapshot: { snapshot: structuredClone(remoteSnapshot!), revision: 1 } }),
     };
     const catalog = new WorkbookCatalogService({
@@ -114,6 +116,9 @@ describe('WorkbookCatalogService', () => {
     const synced = await catalog.syncToServer(local.unitId);
     assert.equal(syncedUnitId, local.unitId);
     assert.equal(synced.entry.storage, 'remote');
+    const page = await catalog.listPage({ limit: 20 });
+    assert.equal(page.nextCursor, null);
+    assert.equal(page.entries.some((entry) => entry.unitId === local.unitId), true);
   });
 });
 

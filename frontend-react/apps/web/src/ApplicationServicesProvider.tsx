@@ -1,12 +1,14 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { WorkbookApiClient } from '@react-sheets/protocol';
-import { WorkbookCatalogService, WorkspacePersistence } from '@react-sheets/spreadsheet-app';
+import { WorkbookCatalogService, WorkspacePersistence, type WorkbookSessionOptions } from '@react-sheets/spreadsheet-app';
+import type { AuthTokenProvider } from '@react-sheets/protocol';
 import { useAuthSession } from './auth/AuthProvider';
 
 export interface ApplicationServices {
   catalog: WorkbookCatalogService;
   persistence: WorkspacePersistence;
   workbookApi: WorkbookApiClient;
+  createWorkbookSessionOptions: (unitId: string, authTokenProvider: AuthTokenProvider) => WorkbookSessionOptions;
 }
 
 const ApplicationServicesContext = createContext<ApplicationServices | null>(null);
@@ -21,7 +23,13 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
       remote: workbookApi,
       remoteAvailable: () => auth.getSnapshot().phase === 'authenticated',
     });
-    return { catalog, persistence, workbookApi };
+    const createWorkbookSessionOptions = (unitId: string, authTokenProvider: AuthTokenProvider): WorkbookSessionOptions => ({
+      unitId,
+      api: workbookApi,
+      workspacePersistence: persistence,
+      authTokenProvider,
+    });
+    return { catalog, persistence, workbookApi, createWorkbookSessionOptions };
   }, [auth]);
   return <ApplicationServicesContext.Provider value={services}>{children}</ApplicationServicesContext.Provider>;
 }

@@ -231,7 +231,7 @@ export function resolveGoTo(workbook: WorkbookModel, params: GoToParams): { row:
 export function resolveGoToRange(workbook: WorkbookModel, params: GoToParams): RangeRef | null {
   let reference = params.reference.trim();
   let sheetId = params.sheetId;
-  const named = workbook.definedNames[reference];
+  const named = workbook.getDefinedName(reference, sheetId)?.formula;
   if (named) reference = named;
   const qualified = reference.match(/^(?:'([^']+)'|([^!]+))!(.+)$/);
   if (qualified) {

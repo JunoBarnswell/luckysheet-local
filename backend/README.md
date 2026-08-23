@@ -2,7 +2,9 @@
 
 This directory is the only Java backend. It is a Spring Boot 3 service targeting Java 21 with a Spring Data JPA/Hibernate persistence boundary, OIDC Resource Server JWT verification, and a WebSocket endpoint at `/ws`.
 
-The default configuration uses an H2 file database and Flyway migrations. `spring.jpa.hibernate.ddl-auto=validate` is the default; schema changes are applied by `src/main/resources/db/migration/V1__baseline.sql` and `V2__catalog.sql`. Existing pre-Flyway databases are automatically baselined at version 1 and receive the catalog migration. JSON snapshots and operation payloads are portable long text; workbook data blocks and XLSX source artifacts use JPA long-binary mappings.
+The service has one JPA domain model and supports H2, PostgreSQL, and MySQL persistence. Flyway uses database-specific but semantically equivalent migration sets for provider-sensitive types; select the matching Spring profile (`h2`, `postgres`, or `mysql`) in deployment. `spring.jpa.hibernate.ddl-auto=validate` remains enabled. SQLite is available only as a configured server-query connector.
+
+Examples: local development uses the default H2 profile; PostgreSQL deployments set `SPRING_PROFILES_ACTIVE=postgres`; MySQL deployments set `SPRING_PROFILES_ACTIVE=mysql`. Provider profiles select only the datasource/Flyway dialect boundary—the workbook, ACL, operation, and outbox semantics remain identical.
 
 Database overrides and authentication settings for a deployed environment:
 
@@ -16,7 +18,7 @@ Database overrides and authentication settings for a deployed environment:
 Single-instance mode leaves Redis disabled and uses the local WebSocket session
 registry. Set `COORDINATION_MULTI_INSTANCE=true` for multiple backend
 instances; this requires `COORDINATION_REDIS_URL` and fails startup when Redis
-coordination is not configured. PostgreSQL remains the authority for ACL,
+coordination is not configured. The configured relational database remains the authority for ACL,
 operations, revisions, snapshots, and the durable coordination outbox. Redis
 contains only published notifications and expiring presence/cursor state.
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, ColorPicker, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { SparklineModel } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
 
@@ -66,7 +66,7 @@ export function SparklinePanel({
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Sparkline Style
             </Text>
@@ -79,9 +79,9 @@ export function SparklinePanel({
               <option value="column">Column Bars</option>
               <option value="win-loss">Win / Loss Indicator</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Data Source Range
             </Text>
@@ -90,9 +90,9 @@ export function SparklinePanel({
               onChange={(e) => setSourceRange(e.target.value)}
               placeholder="e.g. B2:E2"
             />
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Target Cell
             </Text>
@@ -101,43 +101,38 @@ export function SparklinePanel({
               onChange={(e) => setTargetCell(e.target.value)}
               placeholder="e.g. F2"
             />
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Theme Color
             </Text>
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                value={color}
-                onChange={(e) => setColor(e.target.value)}
-                className="h-8 w-8 cursor-pointer rounded border border-slate-300 p-0"
-              />
+            <Stack gap="xs">
+              <ColorPicker color={color} onChange={setColor} />
               <TextInput value={color} onChange={(e) => setColor(e.target.value)} className="h-8 text-xs font-mono" />
-            </div>
-          </div>
+            </Stack>
+          </Box>
 
           <Button variant="primary" size="sm" icon="sparkline" disabled={!parsedSourceRange} onClick={handleCreate}>
             Insert In-Cell Sparkline
           </Button>
 
           {sparklines.length > 0 ? (
-            <div className="mt-4 border-t border-slate-200 pt-3">
+            <Box className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
                 Cell Sparklines ({sparklines.length})
               </Text>
               <Stack gap="xs">
                 {sparklines.map((s) => (
-                  <div
+                  <Box
                     key={s.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
-                    <div>
-                      <div className="font-medium text-slate-800">
+                    <Stack gap="none">
+                      <Text size="sm" weight="medium" className="text-slate-800">
                         {s.type.toUpperCase()} at R{s.anchor.row + 1}C{s.anchor.column + 1}
-                      </div>
-                    </div>
+                      </Text>
+                    </Stack>
                     <Button
                       variant="ghost"
                       size="xs"
@@ -146,10 +141,10 @@ export function SparklinePanel({
                       onClick={() => onRemoveSparkline(s.id)}
                       className="text-rose-600 hover:bg-rose-50"
                     />
-                  </div>
+                  </Box>
                 ))}
               </Stack>
-            </div>
+            </Box>
           ) : null}
         </Stack>
       </PanelBody>

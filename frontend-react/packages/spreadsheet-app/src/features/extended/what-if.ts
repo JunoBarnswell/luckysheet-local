@@ -125,7 +125,7 @@ function createPlanningFormulaEngine(workbook: WorkbookModel): FormulaEngine {
       else engine.setValue(address, (cell.value ?? null) as never);
     });
   }
-  engine.setDefinedNames(workbook.definedNames);
+  engine.setDefinedNameModels(workbook.definedNameModels);
   engine.recalculate();
   return engine;
 }

@@ -42,6 +42,7 @@ describe('WorkbookSession collaboration integration', () => {
       operationId: 'remote-op',
       unitId: 'wb-collab',
       actorId: 'actor-2',
+      origin: 'client',
       clientSequence: 1,
       baseRevision: 0,
       revision: 1,

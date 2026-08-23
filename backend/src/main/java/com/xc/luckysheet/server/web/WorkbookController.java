@@ -17,6 +17,7 @@ import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
 import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
 import com.xc.luckysheet.server.contract.WorkbookUserState;
+import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.persistence.WorkbookSourceArtifactEntity;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
@@ -29,6 +30,8 @@ import com.xc.luckysheet.server.service.WorkbookDataBlockService;
 import com.xc.luckysheet.server.service.WorkbookCatalogService;
 import com.xc.luckysheet.server.service.QueryExecutionService;
 import com.xc.luckysheet.server.service.GuestShareService;
+import com.xc.luckysheet.server.service.ServiceException;
+import com.xc.luckysheet.server.service.CursorPageRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpHeaders;
@@ -83,14 +86,17 @@ public class WorkbookController {
     }
 
     @GetMapping
-    public List<WorkbookSummary> list(
+    public CursorPage<WorkbookSummary> list(
             @RequestParam(required = false) String view,
             @RequestParam(required = false) String spaceId,
             @RequestParam(required = false) String folderId,
             @RequestParam(name = "query", required = false) String query,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit,
             Authentication authentication
     ) {
-        return catalog.list(ActorIdentity.subject(authentication), view, spaceId, folderId, query);
+        return catalog.list(ActorIdentity.subject(authentication), view, spaceId, folderId, query,
+                CursorPageRequest.page(cursor), CursorPageRequest.limit(limit));
     }
 
     @PatchMapping("/{unitId}")
@@ -166,8 +172,20 @@ public class WorkbookController {
     }
 
     @GetMapping("/{unitId}/revisions")
-    public List<RevisionRecord> revisions(@PathVariable String unitId, Authentication authentication) {
-        return operations.revisions(unitId, ActorIdentity.subject(authentication));
+    public CursorPage<RevisionRecord> revisions(@PathVariable String unitId,
+                                                 @RequestParam(required = false) String cursor,
+                                                 @RequestParam(required = false) Integer limit,
+                                                 Authentication authentication) {
+        long before = Long.MAX_VALUE;
+        if (cursor != null && !cursor.isBlank()) {
+            try {
+                before = Long.parseLong(cursor);
+                if (before < 1) throw new NumberFormatException();
+            } catch (NumberFormatException error) {
+                throw ServiceException.validation("revision cursor is invalid");
+            }
+        }
+        return operations.revisions(unitId, ActorIdentity.subject(authentication), before, CursorPageRequest.limit(limit), cursor);
     }
 
     @GetMapping("/{unitId}/revisions/{revision}/snapshot")

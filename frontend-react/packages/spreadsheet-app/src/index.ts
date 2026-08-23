@@ -8,7 +8,7 @@ export {
   type DefinedNameCommandInput,
   type UiSnapshot,
 } from './workbook-session';
-export { useWorkbookSession, type UseWorkbookSessionResult } from './workbook-session-react';
+export { useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,
   getFeatureRegistry,

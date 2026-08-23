@@ -50,6 +50,9 @@ class WorkbookCatalogServiceTest {
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
         WorkbookOperationService operations = mock(WorkbookOperationService.class);
         when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookAclRole.EDITOR));
+        when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
+                Instant.now(), Instant.now(), "owner", "space-1", null, WorkbookStorageLocation.REMOTE,
+                WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null)));
         when(artifacts.findById("book-1")).thenReturn(Optional.empty());
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
         WorkbookCatalogService service = new WorkbookCatalogService(workbooks, acl, states, artifacts, spaces, folders,
@@ -86,7 +89,7 @@ class WorkbookCatalogServiceTest {
                 "actor", "space-1", null, WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE,
                 WorkbookLifecycle.ACTIVE, null);
         JsonNode snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":2,"unitId":"source-1","name":"Source","dataSources":[],"printDocuments":[{"schema":"PrintDocument","unitId":"source-1","sheetId":"sheet-1"}],"sheets":[]}
+                {"schema":"WorkbookSnapshot","version":2,"unitId":"source-1","name":"Source","dataSources":[],"printDocuments":[{"schema":"PrintDocument","unitId":"source-1","sheetId":"sheet-1"}],"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{}}]}
                 """);
         when(workbooks.findById("source-1")).thenReturn(Optional.of(source));
         when(workbooks.existsById(any())).thenReturn(false);

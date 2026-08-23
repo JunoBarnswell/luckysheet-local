@@ -3,12 +3,14 @@ import type { XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import {
   ApiRequestError,
   AuthenticationRequiredError,
+  MAX_WORKBOOK_NAME_LENGTH,
   type OperationEnvelope,
   type SnapshotResponse,
   type WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery,
   type WorkbookCreateMetadata,
   type WorkbookSummary,
 } from '@react-sheets/protocol';
+import { buildOperation } from '../../collaboration/helpers';
 import {
   exchangeExportXlsx,
   exchangeImportXlsx,
@@ -29,8 +31,10 @@ import type {
   WorkbookCatalogExportResult,
   WorkbookCatalogImportInput,
   WorkbookCatalogImportResult,
+  WorkbookCatalogPage,
   WorkbookCatalogOpenResult,
   WorkbookCatalogQuery,
+  WorkbookCatalogRequestOptions,
   WorkbookCatalogRemoteClient,
   WorkbookRole,
 } from './types';
@@ -116,29 +120,15 @@ function metadataToProtocol(metadata: Partial<WorkspaceRecordMetadata> | undefin
 
 function userStateToRemote(state: WorkspaceUserState): Omit<import('@react-sheets/protocol').WorkbookUserState, 'unitId'> {
   return {
-    autoSave: state.autoSave,
-    autoSync: state.autoSync,
-    defaultCreateLocation: state.defaultLocation?.spaceId ? 'remote' : 'local',
     favorite: state.favorite,
-    importCompatibilityLevel: state.importCompatibility === 'A' ? 'strict' : 'standard',
-    language: state.language,
     lastOpenedAt: state.lastOpenedAt,
-    offlineCache: state.offlineCache,
-    theme: state.theme === 'dark' ? 'system' : state.theme,
   };
 }
 
 function userStateFromRemote(input: import('@react-sheets/protocol').WorkbookUserState): Partial<WorkspaceUserState> {
   return {
-    autoSave: input.autoSave,
-    autoSync: input.autoSync,
-    defaultLocation: input.defaultCreateLocation === 'remote' ? { spaceId: 'default' } : undefined,
     favorite: input.favorite,
-    importCompatibility: input.importCompatibilityLevel === 'strict' ? 'A' : 'B',
-    language: input.language,
     lastOpenedAt: input.lastOpenedAt,
-    offlineCache: input.offlineCache,
-    theme: input.theme,
   };
 }
 
@@ -225,7 +215,13 @@ function renameSnapshot(snapshot: WorkbookSnapshot, name: string): WorkbookSnaps
   const next = clone(snapshot);
   next.name = name.trim();
   if (!next.name) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
+  if (next.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
   return next;
+}
+
+function newOperationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `operation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function reidentifySnapshot(snapshot: WorkbookSnapshot, unitId: string): WorkbookSnapshot {
@@ -259,10 +255,11 @@ export class WorkbookCatalogService {
     return this.remote;
   }
 
-  async list(query: WorkbookCatalogQuery = {}): Promise<WorkbookCatalogEntry[]> {
+  async listPage(query: WorkbookCatalogQuery = {}, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookCatalogPage> {
     const records = await this.persistence.listRecords();
     const local = records.map((record) => localEntry(record, this.canUseRemote()));
     const byId = new Map(local.map((entry) => [entry.unitId, entry]));
+    let nextCursor: string | null = null;
     const shouldQueryRemote = this.canUseRemote() && query.view !== 'local';
     if (shouldQueryRemote) {
       try {
@@ -271,21 +268,30 @@ export class WorkbookCatalogService {
           query: query.query,
           spaceId: query.spaceId,
           folderId: query.folderId,
+          cursor: query.cursor,
+          limit: query.limit,
         };
-        const summaries = await this.requireRemote().listWorkbooks(protocolQuery);
-        for (const summary of summaries) {
+        const page = await this.requireRemote().listWorkbookPage(protocolQuery, options);
+        nextCursor = page.nextCursor;
+        for (const summary of page.items) {
           const remote = remoteEntry(summary);
           const existing = byId.get(remote.unitId);
           byId.set(remote.unitId, existing ? mergeEntries(existing, remote) : remote);
         }
       } catch (error) {
+        if (options.signal?.aborted || (isRecord(error) && error.name === 'AbortError')) throw error;
         if (!isRemoteUnavailable(error)) throw error;
         for (const entry of byId.values()) {
           if (entry.storage !== 'remote') entry.syncState = 'offline';
         }
       }
     }
-    return filterWorkbookCatalog([...byId.values()], query);
+    return { entries: filterWorkbookCatalog([...byId.values()], query), nextCursor };
+  }
+
+  async list(query: WorkbookCatalogQuery = {}, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookCatalogEntry[]> {
+    const page = await this.listPage(query, options);
+    return page.entries;
   }
 
   async create(input: WorkbookCatalogCreateInput): Promise<WorkbookCatalogEntry> {
@@ -485,12 +491,34 @@ export class WorkbookCatalogService {
   async rename(unitId: string, name: string): Promise<WorkbookCatalogEntry> {
     const trimmed = name.trim();
     if (!trimmed) throw new WorkbookCatalogError('invalid-input', 'Workbook name is required');
+    if (trimmed.length > MAX_WORKBOOK_NAME_LENGTH) throw new WorkbookCatalogError('invalid-input', 'Workbook name is too long');
     const record = await this.persistence.load(unitId);
     if (!record) throw new WorkbookCatalogError('not-found', `Workbook not found: ${unitId}`);
     assertRole(record, 'rename', ['owner', 'editor']);
-    if (this.canUseRemote()) await this.requireRemote().updateWorkbook(unitId, { name: trimmed });
     const snapshot = renameSnapshot(record.snapshot, trimmed);
-    const saved = await this.persistence.checkpoint(snapshot, record.localRevision + 1, record.serverRevision, record.syncMode, record.pending);
+    const nextClientSequence = record.pending.nextClientSequence + 1;
+    const operation = buildOperation(
+      newOperationId(),
+      unitId,
+      nextClientSequence,
+      record.serverRevision,
+      [{ id: 'workbook.renamed', sheetId: snapshot.sheets[0]!.id, params: { name: trimmed } }],
+    );
+    let serverRevision = record.serverRevision;
+    const pending = [...record.pending.operations, operation];
+    if (this.canUseRemote() && record.pending.operations.length === 0) {
+      const committed = await this.requireRemote().commitOperation(unitId, operation);
+      serverRevision = committed.operation.revision;
+      pending.length = 0;
+    }
+    this.persistence.operationJournal.write(unitId, pending, nextClientSequence);
+    const saved = await this.persistence.checkpoint(
+      snapshot,
+      record.localRevision + 1,
+      serverRevision,
+      pending.length > 0 ? 'remote' : record.syncMode,
+      undefined,
+    );
     return localEntry(saved, this.canUseRemote());
   }
 
@@ -590,12 +618,20 @@ export class WorkbookCatalogService {
     return this.requireRemote().listWorkbookAcl(unitId);
   }
 
-  async listSpaces(): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listSpaces']>>> {
-    return this.requireRemote().listSpaces();
+  async listSpaces(options: WorkbookCatalogRequestOptions = {}): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listSpaces']>>> {
+    return this.requireRemote().listSpaces(options);
   }
 
-  async listFolders(spaceId: string): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listFolders']>>> {
-    return this.requireRemote().listFolders(spaceId);
+  async getUserPreferences(options: WorkbookCatalogRequestOptions = {}): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['getUserPreferences']>>> {
+    return this.requireRemote().getUserPreferences(options);
+  }
+
+  async putUserPreferences(input: Parameters<WorkbookCatalogRemoteClient['putUserPreferences']>[0]): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['putUserPreferences']>>> {
+    return this.requireRemote().putUserPreferences(input);
+  }
+
+  async listFolders(spaceId: string, options: WorkbookCatalogRequestOptions = {}): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listFolders']>>> {
+    return this.requireRemote().listFolders(spaceId, options);
   }
 
   async createSpace(input: Parameters<WorkbookCatalogRemoteClient['createSpace']>[0]): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['createSpace']>>> {
@@ -614,8 +650,8 @@ export class WorkbookCatalogService {
     await this.requireRemote().deleteFolder(folderId);
   }
 
-  async listSpaceMembers(spaceId: string): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listSpaceMembers']>>> {
-    return this.requireRemote().listSpaceMembers(spaceId);
+  async listSpaceMembers(spaceId: string, options: WorkbookCatalogRequestOptions = {}): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['listSpaceMembers']>>> {
+    return this.requireRemote().listSpaceMembers(spaceId, options);
   }
 
   async putSpaceMember(spaceId: string, subject: string, role: WorkbookRole): Promise<Awaited<ReturnType<WorkbookCatalogRemoteClient['putSpaceMember']>>> {

@@ -8,40 +8,12 @@ import type {
 } from '@react-sheets/core-model';
 import { getCellNote } from '@react-sheets/core-model';
 
-/**
- * Hyperlinks are review metadata, not cell values.  The core model is being
- * migrated to expose this map directly on WorksheetModel; keeping the
- * storage boundary here lets the feature stop reading the deprecated
- * CellData.hyperlink/string fields immediately.  Until the core field lands,
- * the symbol-backed map is still attached to the worksheet object itself, so
- * there is one canonical source for a live workbook and no legacy fallback.
- */
-const CANONICAL_HYPERLINKS = Symbol('react-sheets.review.hyperlinks');
-type HyperlinkHost = WorksheetModel & {
-  hyperlinks?: Map<string, CellHyperlink>;
-  [CANONICAL_HYPERLINKS]?: Map<string, CellHyperlink>;
-};
-
 function hyperlinkKey(row: number, column: number): string {
   return `${row}:${column}`;
 }
 
-function canonicalHyperlinks(sheet: WorksheetModel): Map<string, CellHyperlink> {
-  const host = sheet as HyperlinkHost;
-  if (host.hyperlinks instanceof Map) return host.hyperlinks;
-  if (host[CANONICAL_HYPERLINKS]) return host[CANONICAL_HYPERLINKS];
-  const store = new Map<string, CellHyperlink>();
-  Object.defineProperty(host, CANONICAL_HYPERLINKS, {
-    configurable: false,
-    enumerable: false,
-    writable: false,
-    value: store,
-  });
-  return store;
-}
-
 export function getCellHyperlink(sheet: WorksheetModel, row: number, column: number): CellHyperlink | undefined {
-  const link = canonicalHyperlinks(sheet).get(hyperlinkKey(row, column));
+  const link = sheet.hyperlinks.get(hyperlinkKey(row, column));
   return link ? structuredClone(link) : undefined;
 }
 
@@ -51,11 +23,11 @@ export function setCellHyperlink(
   column: number,
   link: CellHyperlink,
 ): void {
-  canonicalHyperlinks(sheet).set(hyperlinkKey(row, column), structuredClone(link));
+  sheet.hyperlinks.set(hyperlinkKey(row, column), structuredClone(link));
 }
 
 export function removeCellHyperlink(sheet: WorksheetModel, row: number, column: number): CellHyperlink | undefined {
-  const links = canonicalHyperlinks(sheet);
+  const links = sheet.hyperlinks;
   const key = hyperlinkKey(row, column);
   const previous = links.get(key);
   links.delete(key);

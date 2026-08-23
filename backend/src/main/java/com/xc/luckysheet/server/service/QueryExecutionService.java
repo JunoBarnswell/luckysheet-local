@@ -40,6 +40,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -52,35 +55,40 @@ public class QueryExecutionService {
 
     private final QueryProperties properties;
     private final AccessControlService access;
+    private final WorkbookLifecycleService lifecycle;
     private final WorkbookStore store;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
     private final HttpClient http;
-    private final Map<String, Future<QueryTable>> active = new ConcurrentHashMap<>();
+    private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
 
     public QueryExecutionService(
             QueryProperties properties,
             AccessControlService access,
+            WorkbookLifecycleService lifecycle,
             WorkbookStore store,
             AuditRecorder audit,
             ObjectMapper mapper
     ) {
         this.properties = properties;
         this.access = access;
+        this.lifecycle = lifecycle;
         this.store = store;
         this.audit = audit;
         this.mapper = mapper;
-        this.workers = Executors.newFixedThreadPool(properties.workerThreads(), runnable -> {
+        this.workers = new ThreadPoolExecutor(properties.workerThreads(), properties.workerThreads(), 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(Math.max(8, properties.workerThreads() * 8)), runnable -> {
             Thread thread = new Thread(runnable, "server-query-worker");
             thread.setDaemon(true);
             return thread;
-        });
+        }, new ThreadPoolExecutor.AbortPolicy());
         this.http = HttpClient.newBuilder().connectTimeout(properties.timeout()).build();
     }
 
     public QueryExecutionResponse execute(String unitId, QueryExecutionRequest request, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        lifecycle.requireActive(unitId);
         if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
         QuerySource source;
         try {
@@ -92,9 +100,14 @@ public class QueryExecutionService {
         }
 
         Instant started = Instant.now();
-        Future<QueryTable> future = workers.submit(() -> executeInternal(request, source));
+        Future<QueryTable> future;
+        try {
+            future = workers.submit(() -> executeInternal(request, source));
+        } catch (RejectedExecutionException error) {
+            throw ServiceException.unavailable("Query execution queue is full");
+        }
         String executionKey = unitId + ":" + request.queryId();
-        Future<QueryTable> previous = active.putIfAbsent(executionKey, future);
+        ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
         if (previous != null) {
             future.cancel(true);
             throw ServiceException.conflict("A query with this id is already running");
@@ -129,15 +142,19 @@ public class QueryExecutionService {
             if (cause instanceof QueryFailure failure) throw failure.exception();
             throw ServiceException.validation(reason);
         } finally {
-            active.remove(executionKey, future);
+            active.remove(executionKey, new ActiveQuery(actor, future));
         }
     }
 
     public void cancel(String unitId, String queryId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
-        Future<QueryTable> future = active.get(unitId + ":" + queryId);
-        if (future == null) throw ServiceException.notFound("Running query not found");
-        future.cancel(true);
+        lifecycle.requireActive(unitId);
+        ActiveQuery query = active.get(unitId + ":" + queryId);
+        if (query == null) throw ServiceException.notFound("Running query not found");
+        if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+            throw ServiceException.forbidden("Only the query owner or workbook owner may cancel a query");
+        }
+        query.future().cancel(true);
         audit.accepted(queryId, unitId, actor, "QUERY_CANCEL", null, mapper.createObjectNode());
     }
 
@@ -326,6 +343,7 @@ public class QueryExecutionService {
     private QueryTable join(QueryTable input, QueryStep step) {
         JsonNode rightConfig = step.config().has("right") ? step.config().get("right") : step.config().get("rightTable");
         QueryTable right = tableFromJson(rightConfig, step.id());
+        checkSize(right);
         List<String> leftOn = stringList(first(step.config(), "leftOn", "on"), step.id());
         List<String> rightOn = step.config().has("rightOn") ? stringList(step.config().get("rightOn"), step.id()) : leftOn;
         if (leftOn.size() != rightOn.size()) throw QueryFailure.validation("Join keys must have equal lengths");
@@ -403,15 +421,19 @@ public class QueryExecutionService {
 
     private QueryTable recordsToTable(JsonNode records) {
         if (!records.isArray()) throw QueryFailure.validation("Records must be an array");
+        if (records.size() > properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
         LinkedHashMap<String, Boolean> columns = new LinkedHashMap<>();
         for (JsonNode record : records) {
             if (!record.isObject()) throw QueryFailure.validation("Record rows must be objects");
             record.fieldNames().forEachRemaining(name -> columns.put(name, true));
+            if (columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         }
         List<String> names = new ArrayList<>(columns.keySet());
         List<List<JsonNode>> rows = new ArrayList<>();
         for (JsonNode record : records) rows.add(names.stream().map(name -> scalarOrNull(record.get(name))).toList());
-        return new QueryTable(names, rows);
+        QueryTable table = new QueryTable(names, rows);
+        checkSize(table);
+        return table;
     }
 
     private List<JsonNode> iterableToList(JsonNode array) {
@@ -592,6 +614,13 @@ public class QueryExecutionService {
     private void checkSize(QueryTable table) {
         if (table.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         if (table.rows.size() > properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
+        try {
+            if (mapper.writeValueAsBytes(Map.of("columns", table.columns, "rows", table.rows)).length > properties.maxResponseBytes()) {
+                throw QueryFailure.validation("Query response exceeds the configured byte limit");
+            }
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            throw QueryFailure.validation("Query response could not be serialized");
+        }
     }
 
     private record QueryTable(List<String> columns, List<List<JsonNode>> rows) {
@@ -605,6 +634,8 @@ public class QueryExecutionService {
             return index;
         }
     }
+
+    private record ActiveQuery(String actor, Future<QueryTable> future) {}
 
     private record SortKey(String column, boolean ascending) {}
     private record Aggregate(String column, String function, String as) {}

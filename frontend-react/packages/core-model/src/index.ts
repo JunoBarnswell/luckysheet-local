@@ -24,6 +24,7 @@ import {
   normalizeQueryDefinitionSnapshot,
   type PrintDocumentSnapshot,
   type QueryDefinitionSnapshot,
+  type QueryLoadTargetSnapshot,
 } from './workbook-state';
 
 export type CellValue = string | number | boolean | null;
@@ -172,6 +173,7 @@ export {
   normalizeQueryDefinitionSnapshot,
   type PrintDocumentSnapshot,
   type QueryDefinitionSnapshot,
+  type QueryLoadTargetSnapshot,
   type QueryStepSnapshot,
 } from './workbook-state';
 
@@ -432,6 +434,8 @@ export class WorksheetModel {
   readonly sheetTables: SheetTableModel[] = [];
   readonly drawings: DrawingObject[] = [];
   readonly drawingPayloads = new Map<string, DrawingPayload>();
+  /** Canonical persisted hyperlink metadata keyed by row:column. */
+  readonly hyperlinks = new Map<string, CellHyperlink>();
   readonly notes = new Map<string, CellNote>();
   readonly commentThreads: CommentThread[] = [];
   readonly spillRanges: SpillRange[] = [];
@@ -474,6 +478,7 @@ export class WorksheetModel {
     copy.sheetTables.push(...structuredClone(this.sheetTables));
     copy.drawings.push(...structuredClone(this.drawings));
     for (const [key, payload] of this.drawingPayloads) copy.drawingPayloads.set(key, structuredClone(payload));
+    for (const [key, hyperlink] of this.hyperlinks) copy.hyperlinks.set(key, structuredClone(hyperlink));
     for (const [key, note] of this.notes) copy.notes.set(key, structuredClone(note));
     copy.commentThreads.push(...structuredClone(this.commentThreads));
     copy.spillRanges.push(...structuredClone(this.spillRanges));
@@ -539,6 +544,7 @@ export interface SheetSnapshot {
   /** Canonical floating-object collection. Legacy per-kind collections are not part of snapshots. */
   drawings: DrawingObject[];
   drawingPayloads: Record<string, DrawingPayload>;
+  hyperlinks?: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
   notes?: Array<{ row: number; column: number; note: CellNote }>;
   commentThreads?: CommentThread[];
   conditionalFormats?: ConditionalFormatRule[];
@@ -571,10 +577,22 @@ export class WorkbookModel {
   readonly queryDefinitions = new Map<string, QueryDefinitionSnapshot>();
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
-  /** Canonical scoped name definitions. `definedNames` remains the workbook-level formula view used by the formula runtime. */
+  /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
   readonly definedNameModels: DefinedNameModel[] = [];
-  /** @deprecated use definedNameModels and setDefinedName/getDefinedName. */
-  definedNames: Record<string, string> = {};
+
+  /**
+   * Formula engines still accept a workbook-scope string map. This is a
+   * read-only projection of `definedNameModels`, never an independently
+   * mutable source of truth. Sheet-scoped names are resolved through
+   * `getDefinedName(name, sheetId)` by callers that have a sheet context.
+   */
+  get definedNames(): Readonly<Record<string, string>> {
+    const result: Record<string, string> = {};
+    for (const entry of this.definedNameModels) {
+      if (entry.scope === 'workbook') result[entry.name] = entry.formula;
+    }
+    return result;
+  }
 
   constructor(readonly unitId: UnitId, public name: string) {
     const sheet = new WorksheetModel('sheet-1', 'Sheet1');
@@ -709,7 +727,6 @@ export class WorkbookModel {
       && entry.name.toLocaleLowerCase() === model.name.toLocaleLowerCase());
     if (index >= 0) this.definedNameModels[index] = structuredClone(model);
     else this.definedNameModels.push(structuredClone(model));
-    if (model.scope === 'workbook') this.definedNames[model.name] = model.formula;
     return structuredClone(model);
   }
 
@@ -720,7 +737,6 @@ export class WorkbookModel {
       && entry.name.toLocaleLowerCase() === normalized);
     const previous = index >= 0 ? this.definedNameModels[index] : undefined;
     if (index >= 0) this.definedNameModels.splice(index, 1);
-    if (scope === 'workbook' && previous) delete this.definedNames[previous.name];
     return previous ? structuredClone(previous) : undefined;
   }
 
@@ -810,16 +826,32 @@ export class WorkbookModel {
     return sheet;
   }
 
+  getSheetSnapshot(sheetId: SheetId): SheetSnapshot {
+    const sheet = this.snapshot().sheets.find((entry) => entry.id === sheetId);
+    if (!sheet) throw new Error(`Unknown sheet: ${sheetId}`);
+    return structuredClone(sheet);
+  }
+
+  restoreSheetSnapshot(snapshot: SheetSnapshot, index = this.sheetOrder.length): void {
+    if (this.sheets.has(snapshot.id)) throw new Error(`Sheet already exists: ${snapshot.id}`);
+    const current = this.snapshot();
+    const hydrated = WorkbookModel.fromSnapshot({ ...current, sheets: [structuredClone(snapshot)] });
+    const sheet = hydrated.getSheet(snapshot.id);
+    this.sheets.set(sheet.id, sheet);
+    const bounded = Math.max(0, Math.min(index, this.sheetOrder.length));
+    this.sheetOrder.splice(bounded, 0, sheet.id);
+  }
+
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
       version: 2,
       unitId: this.unitId,
       name: this.name,
+      // Keep the legacy formula-map field as a derived wire projection for
+      // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
-      definedNameModels: this.definedNameModels.length > 0
-        ? structuredClone(this.definedNameModels)
-        : Object.entries(this.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const })),
+      definedNameModels: structuredClone(this.definedNameModels),
       tables: [...this.tables.values()].map((table) => structuredClone(table)),
       dataSources: [...this.dataSources.values()].map((source) => structuredClone(source)),
       printDocuments: this.listPrintDocuments(),
@@ -848,6 +880,10 @@ export class WorkbookModel {
         sparklineGroups: structuredClone(sheet.sparklineGroups),
         drawings: structuredClone(sheet.drawings),
         drawingPayloads: Object.fromEntries([...sheet.drawingPayloads.entries()].map(([k, v]) => [k, structuredClone(v)])),
+        hyperlinks: [...sheet.hyperlinks.entries()].map(([key, hyperlink]) => {
+          const [row, column] = key.split(':').map(Number);
+          return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
+        }),
         notes: [...sheet.notes.entries()].map(([key, note]) => {
           const [row, column] = key.split(':').map(Number);
           return { row: row!, column: column!, note: structuredClone(note) };
@@ -870,17 +906,29 @@ export class WorkbookModel {
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
-    workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
-    workbook.definedNameModels.push(...structuredClone(snapshot.definedNameModels ?? Object.entries(workbook.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }))));
-    for (const entry of workbook.definedNameModels) {
-      if (entry.scope === 'workbook' && workbook.definedNames[entry.name] === undefined) workbook.definedNames[entry.name] = entry.formula;
-    }
+    // `definedNameModels` is canonical. The optional map is accepted only as
+    // a boundary projection for older snapshots and is immediately folded
+    // into the canonical scoped collection.
+    const definedNameModels = snapshot.definedNameModels
+      ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }));
+    for (const entry of definedNameModels) workbook.setDefinedName(entry);
     for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
     for (const source of snapshot.dataSources) workbook.addDataSource(source);
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);
-      matrix.forEach((cell, row, column) => sheet.cells.set(row, column, cell));
+      matrix.forEach((cell, row, column) => {
+        const normalized = structuredClone(cell);
+        const legacy = normalized.hyperlinkDetail
+          ?? (normalized.hyperlink ? {
+            id: `legacy-hyperlink-${row}-${column}`,
+            target: { kind: 'url' as const, url: normalized.hyperlink },
+          } : undefined);
+        delete normalized.hyperlink;
+        delete normalized.hyperlinkDetail;
+        sheet.cells.set(row, column, normalized);
+        if (legacy) sheet.hyperlinks.set(noteCellKey(row, column), legacy);
+      });
       if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
       sheet.freeze = { ...input.freeze };
@@ -890,6 +938,9 @@ export class WorkbookModel {
       sheet.drawings.push(...structuredClone(input.drawings));
       for (const [key, payload] of Object.entries(input.drawingPayloads)) {
         sheet.drawingPayloads.set(key, structuredClone(payload));
+      }
+      if (input.hyperlinks) {
+        for (const entry of input.hyperlinks) sheet.hyperlinks.set(noteCellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
       }
       if (input.notes) {
         for (const entry of input.notes) sheet.notes.set(noteCellKey(entry.row, entry.column), structuredClone(entry.note));

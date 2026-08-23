@@ -29,7 +29,8 @@ import type {
   DefinedNameModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
-import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
+import type { RevisionRecord } from '@react-sheets/protocol';
+import type { TableRowsResponse } from '@react-sheets/spreadsheet-app';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition } from '@react-sheets/spreadsheet-app';

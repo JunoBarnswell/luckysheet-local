@@ -10,4 +10,5 @@ public interface WorkspaceFolderEntityRepository extends JpaRepository<Workspace
     List<WorkspaceFolderEntity> findBySpaceIdInOrderByName(java.util.Collection<String> spaceIds);
     Optional<WorkspaceFolderEntity> findByFolderIdAndSpaceId(String folderId, String spaceId);
     List<WorkspaceFolderEntity> findByFolderIdIn(java.util.Collection<String> folderIds);
+    boolean existsBySpaceIdAndParentId(String spaceId, String parentId);
 }

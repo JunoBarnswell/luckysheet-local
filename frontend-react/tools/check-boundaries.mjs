@@ -34,6 +34,15 @@ const testFilePattern = /(?:^|[/.])(?:[^/]+\.)?(?:test|spec)\.[^/]+$/i;
 const uiSourcePattern = /^apps\/web\//;
 const bridgeImportPattern = /(?:from|import\s*\()\s*['"][^'"]*-bridge(?:\.[^'"]+)?['"]/;
 const directWorkbookMutationPattern = /\b(?:workbook|model)\s*\.\s*(?:[A-Za-z_$][\w$]*\s*=|(?:set|add|delete|remove|insert|update|splice|push)\s*\()/;
+const nativeUiElementPattern = /<\s*(div|span|button|input|select|textarea|table|thead|tbody|tr|td|th|label|form|ul|ol|li|a|canvas)\b/g;
+
+// Business UI must render through @react-sheets/ui-system. Exact-file
+// allowlists are reserved for infrastructure that owns a browser primitive;
+// adding a page or panel here is an architecture violation. SheetCanvas may
+// host a canvas surface when the render engine requires a direct DOM canvas.
+const nativeUiInfrastructureAllowlist = new Map([
+  ['apps/web/src/components/SheetCanvas.tsx', new Set(['canvas'])],
+]);
 
 function isTestFile(relPath) {
   return testFilePattern.test(relPath) || /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i.test(relPath);
@@ -66,6 +75,18 @@ function collectUiArchitectureViolations(relPath, source) {
   }
   if (directWorkbookMutationPattern.test(source)) {
     violations.push(`${relPath}: UI must not write Workbook/WorkbookModel directly; dispatch a command`);
+  }
+  return violations;
+}
+
+function collectNativeUiElementViolations(relPath, source) {
+  if (!uiSourcePattern.test(relPath) || isTestFile(relPath)) return [];
+  const allowlistedTags = nativeUiInfrastructureAllowlist.get(relPath) ?? new Set();
+  const violations = [];
+  for (const match of source.matchAll(nativeUiElementPattern)) {
+    const tag = match[1];
+    if (tag && allowlistedTags.has(tag)) continue;
+    violations.push(`${relPath}: native <${tag}> is not allowed in apps/web business UI; use @react-sheets/ui-system`);
   }
   return violations;
 }
@@ -168,6 +189,7 @@ for (const file of files) {
   }
 
   violations.push(...collectUiArchitectureViolations(relPath, source));
+  violations.push(...collectNativeUiElementViolations(relPath, source));
 
   const owner = packageFromFile(file);
   if (!owner || !/\.(ts|tsx|mjs|js)$/.test(file)) continue;

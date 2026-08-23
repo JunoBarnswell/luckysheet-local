@@ -24,9 +24,11 @@ class GuestShareServiceTest {
     @Test
     void tokenIsOpaqueToStorageAndResolvesOnlyToServerRole() {
         WorkbookStore store = mock(WorkbookStore.class);
-        when(store.findRole("unit-1", "owner")).thenReturn(Optional.of(WorkbookAclRole.OWNER));
+        WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
+        WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
+        when(authorization.role("unit-1", "owner")).thenReturn(Optional.of(WorkbookAclRole.OWNER));
         ShareProperties properties = new ShareProperties(Duration.ofHours(1), Duration.ofDays(7));
-        GuestShareService service = new GuestShareService(store, properties);
+        GuestShareService service = new GuestShareService(store, properties, lifecycle, authorization);
         ShareRow[] stored = new ShareRow[1];
         doAnswer(invocation -> { stored[0] = invocation.getArgument(0); return null; }).when(store).insertShare(any(ShareRow.class));
         var response = service.create("unit-1", new ShareCreateRequest("viewer", null), "owner");
@@ -42,7 +44,8 @@ class GuestShareServiceTest {
     @Test
     void expiredOrMalformedTokenIsRejected() {
         WorkbookStore store = mock(WorkbookStore.class);
-        GuestShareService service = new GuestShareService(store, new ShareProperties(Duration.ofHours(1), Duration.ofDays(7)));
+        GuestShareService service = new GuestShareService(store, new ShareProperties(Duration.ofHours(1), Duration.ofDays(7)),
+                mock(WorkbookLifecycleService.class), mock(WorkbookAuthorizationService.class));
         assertThrows(ServiceException.class, () -> service.authenticate("not-a-token"));
     }
 }

@@ -1,23 +1,30 @@
 import type {
   DataSourceManifest,
   PivotDefinition,
-  PivotResultTree,
   RangeRef,
   SheetDataRegion,
   TableScalar,
   WorkbookSnapshot,
   WorkbookTableBlock,
-  WorkbookTableModel,
 } from '@react-sheets/core-model';
+import {
+  CONTRACT_ERROR_CODES,
+  MAX_WORKBOOK_NAME_LENGTH,
+  WORKBOOK_SNAPSHOT_SCHEMA,
+  WORKBOOK_SNAPSHOT_VERSION,
+  mutationCapability,
+  type ContractErrorCode,
+} from './generated-contract';
 
-export type ProtocolErrorCode =
-  | 'VALIDATION_ERROR'
-  | 'NOT_FOUND'
-  | 'CONFLICT'
-  | 'UNAUTHENTICATED'
-  | 'FORBIDDEN'
-  | 'AUTH_CONFIGURATION_ERROR'
-  | 'INTERNAL_ERROR';
+export {
+  CONTRACT_ERROR_CODES,
+  MAX_WORKBOOK_NAME_LENGTH,
+  WORKBOOK_SNAPSHOT_SCHEMA,
+  WORKBOOK_SNAPSHOT_VERSION,
+  mutationCapability,
+} from './generated-contract';
+
+export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
 
 export interface ApiError {
   code: ProtocolErrorCode;
@@ -88,6 +95,7 @@ export interface CommittedOperationMutation extends OperationMutation {
 
 export interface CommittedOperationEnvelope extends Omit<OperationEnvelope, 'mutations'> {
   actorId: string;
+  origin: 'client' | 'system';
   revision: number;
   committedAt: string;
   mutations: CommittedOperationMutation[];
@@ -128,6 +136,28 @@ export type AuthTokenProvider = () => string | null | Promise<string | null>;
 /** Opaque, server-issued workbook sharing token for a guest session. */
 export type ShareTokenProvider = () => string | null | Promise<string | null>;
 
+/** Request controls intentionally expose cancellation but not transport details. */
+export interface ApiRequestOptions {
+  signal?: AbortSignal;
+}
+
+/** Bounded server response used by catalog and revision history endpoints. */
+export interface CursorPage<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
+export const DEFAULT_PAGE_LIMIT = 20 as const;
+export const MAX_PAGE_LIMIT = 50 as const;
+
+export function normalizePageLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_PAGE_LIMIT;
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_LIMIT) {
+    throw new Error(`limit must be an integer between 1 and ${MAX_PAGE_LIMIT}`);
+  }
+  return value;
+}
+
 export interface WorkbookApiClientOptions {
   baseUrl?: string;
   authTokenProvider?: AuthTokenProvider;
@@ -137,13 +167,13 @@ export interface WorkbookApiClientOptions {
 
 export class ApiRequestError extends Error {
   readonly status: number;
-  readonly code: ProtocolErrorCode | 'REQUEST_FAILED';
+  readonly code: ProtocolErrorCode;
   readonly details?: Record<string, unknown>;
 
   constructor(
     message: string,
     status: number,
-    code: ProtocolErrorCode | 'REQUEST_FAILED' = 'REQUEST_FAILED',
+    code: ProtocolErrorCode = 'INTERNAL_ERROR',
     details?: Record<string, unknown>,
   ) {
     super(message);
@@ -441,11 +471,12 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     throw new Error('WorkbookSnapshot must be an object');
   }
   const input = value as Record<string, unknown>;
-  if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-  if (input.version !== 2) throw new Error('Unsupported workbook snapshot version');
+  if (input.schema !== WORKBOOK_SNAPSHOT_SCHEMA) throw new Error('Unsupported workbook snapshot schema');
+  if (input.version !== WORKBOOK_SNAPSHOT_VERSION) throw new Error('Unsupported workbook snapshot version');
   if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) {
     throw new Error('WorkbookSnapshot requires unitId and name');
   }
+  if (input.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new Error('WorkbookSnapshot name is too long');
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
@@ -479,6 +510,11 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     if (!Array.isArray(sheet.drawings) || !sheet.drawingPayloads || typeof sheet.drawingPayloads !== 'object') {
       throw new Error(`WorkbookSnapshot sheet[${index}] requires canonical drawings and payloads`);
     }
+    if (sheet.hyperlinks !== undefined) {
+      if (!Array.isArray(sheet.hyperlinks) || sheet.hyperlinks.some((entry) => !entry || typeof entry !== 'object')) {
+        throw new Error(`WorkbookSnapshot sheet[${index}] hyperlinks are invalid`);
+      }
+    }
     for (const pivot of sheet.pivots) validatePivotDefinition(pivot);
     if (sheet.dataRegions !== undefined) {
       if (!Array.isArray(sheet.dataRegions)) throw new Error(`WorkbookSnapshot sheet[${index}] dataRegions must be an array`);
@@ -494,6 +530,145 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     }
   }
   return value as WorkbookSnapshot;
+}
+
+function validateSnapshotResponse(value: unknown, expectedUnitId?: string): SnapshotResponse {
+  const input = requireRecord(value, 'Snapshot response');
+  validateExactKeys(input, ['unitId', 'snapshot', 'revision', 'checksum'], 'Snapshot response');
+  const snapshot = validateWorkbookSnapshot(input.snapshot);
+  if (input.unitId !== undefined && !isNonEmptyString(input.unitId)) throw new Error('Snapshot response unitId is invalid');
+  if (expectedUnitId && snapshot.unitId !== expectedUnitId) throw new Error('Snapshot response snapshot unitId does not match request');
+  if (input.unitId !== undefined && input.unitId !== snapshot.unitId) throw new Error('Snapshot response unitId does not match snapshot');
+  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Snapshot response revision is invalid');
+  if (input.checksum !== undefined && !isNonEmptyString(input.checksum)) throw new Error('Snapshot response checksum is invalid');
+  return {
+    ...(input.unitId === undefined ? {} : { unitId: input.unitId }),
+    snapshot,
+    revision: Number(input.revision),
+    ...(input.checksum === undefined ? {} : { checksum: input.checksum }),
+  };
+}
+
+function validateIsoTimestamp(value: unknown, label: string): string {
+  if (!isNonEmptyString(value) || Number.isNaN(Date.parse(value))) throw new Error(`${label} must be an ISO timestamp`);
+  return value;
+}
+
+function validateWorkbookSummary(value: unknown): WorkbookSummary {
+  const input = requireRecord(value, 'Workbook summary');
+  validateExactKeys(input, [
+    'unitId', 'name', 'revision', 'updatedAt', 'role', 'ownerSubject', 'spaceId', 'spaceName', 'folderId',
+    'locationPath', 'storageLocation', 'syncStatus', 'lifecycle', 'source', 'sourceFileName', 'deletedAt',
+    'lastOpenedAt', 'favorite',
+  ], 'Workbook summary');
+  if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) throw new Error('Workbook summary identity is invalid');
+  if (input.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new Error('Workbook summary name is too long');
+  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Workbook summary revision is invalid');
+  validateIsoTimestamp(input.updatedAt, 'Workbook summary updatedAt');
+  if (input.role !== undefined && !['owner', 'editor', 'commenter', 'viewer'].includes(String(input.role))) throw new Error('Workbook summary role is invalid');
+  if (input.storageLocation !== undefined && !['local', 'remote', 'mirrored'].includes(String(input.storageLocation))) throw new Error('Workbook summary storageLocation is invalid');
+  if (input.syncStatus !== undefined && !['synced', 'syncing', 'pending', 'offline', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
+  if (input.lifecycle !== undefined && !['active', 'trashed'].includes(String(input.lifecycle))) throw new Error('Workbook summary lifecycle is invalid');
+  if (input.source !== undefined && !['native', 'xlsx-import'].includes(String(input.source))) throw new Error('Workbook summary source is invalid');
+  if (input.locationPath !== undefined && (!Array.isArray(input.locationPath) || input.locationPath.some((entry) => typeof entry !== 'string'))) throw new Error('Workbook summary locationPath is invalid');
+  for (const key of ['ownerSubject', 'spaceId', 'spaceName', 'folderId', 'sourceFileName', 'deletedAt', 'lastOpenedAt'] as const) {
+    if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`Workbook summary ${key} is invalid`);
+  }
+  if (input.favorite !== undefined && typeof input.favorite !== 'boolean') throw new Error('Workbook summary favorite is invalid');
+  const unitId = input.unitId as string;
+  const name = input.name as string;
+  const updatedAt = input.updatedAt as string;
+  return {
+    unitId,
+    name,
+    revision: Number(input.revision),
+    updatedAt,
+    ...(input.role === undefined ? {} : { role: input.role as WorkbookAclRole }),
+    ...(input.ownerSubject == null ? {} : { ownerSubject: input.ownerSubject as string }),
+    ...(input.spaceId == null ? {} : { spaceId: input.spaceId as string }),
+    ...(input.spaceName == null ? {} : { spaceName: input.spaceName as string }),
+    ...(input.folderId == null ? {} : { folderId: input.folderId as string }),
+    ...(input.locationPath === undefined ? {} : { locationPath: input.locationPath as string[] }),
+    ...(input.storageLocation === undefined ? {} : { storageLocation: input.storageLocation as WorkbookStorageLocation }),
+    ...(input.syncStatus === undefined ? {} : { syncStatus: input.syncStatus as WorkbookSyncStatus }),
+    ...(input.lifecycle === undefined ? {} : { lifecycle: input.lifecycle as WorkbookLifecycle }),
+    ...(input.source === undefined ? {} : { source: input.source as WorkbookSourceKind }),
+    ...(input.sourceFileName == null ? {} : { sourceFileName: input.sourceFileName as string }),
+    ...(input.deletedAt == null ? {} : { deletedAt: input.deletedAt as string }),
+    ...(input.lastOpenedAt == null ? {} : { lastOpenedAt: input.lastOpenedAt as string }),
+    ...(input.favorite === undefined ? {} : { favorite: input.favorite }),
+  };
+}
+
+function validateCursorPage<T>(value: unknown, itemValidator: (item: unknown) => T, label: string): CursorPage<T> {
+  const input = requireRecord(value, label);
+  validateExactKeys(input, ['items', 'nextCursor'], label);
+  if (!Array.isArray(input.items)) throw new Error(`${label}.items must be an array`);
+  if (input.nextCursor !== null && input.nextCursor !== undefined && !isNonEmptyString(input.nextCursor)) {
+    throw new Error(`${label}.nextCursor is invalid`);
+  }
+  return {
+    items: input.items.map(itemValidator),
+    nextCursor: input.nextCursor == null ? null : input.nextCursor,
+  };
+}
+
+function validateRevisionRecord(value: unknown): RevisionRecord {
+  const input = requireRecord(value, 'Revision record');
+  validateExactKeys(input, ['operationId', 'revision', 'createdAt', 'payload'], 'Revision record');
+  if (!isNonEmptyString(input.operationId)) throw new Error('Revision record operationId is invalid');
+  if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 1) throw new Error('Revision record revision is invalid');
+  validateIsoTimestamp(input.createdAt, 'Revision record createdAt');
+  const payload = validateCommittedOperationEnvelope(input.payload);
+  if (payload.revision !== Number(input.revision)) throw new Error('Revision record payload revision does not match record');
+  return { operationId: input.operationId, revision: Number(input.revision), createdAt: input.createdAt as string, payload };
+}
+
+export function validateUserPreferences(value: unknown): UserPreferences {
+  const input = requireRecord(value, 'User preferences');
+  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'offlineCache', 'importCompatibility', 'language', 'theme', 'updatedAt'], 'User preferences');
+  for (const key of ['autoSave', 'autoSync', 'offlineCache'] as const) {
+    if (typeof input[key] !== 'boolean') throw new Error(`User preferences ${key} is invalid`);
+  }
+  if (!['A', 'B', 'C'].includes(String(input.importCompatibility))) throw new Error('User preferences importCompatibility is invalid');
+  if (!['light', 'dark', 'system'].includes(String(input.theme))) throw new Error('User preferences theme is invalid');
+  for (const key of ['defaultSpaceId', 'defaultFolderId', 'language'] as const) {
+    if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`User preferences ${key} is invalid`);
+  }
+  if (input.updatedAt !== undefined && input.updatedAt !== null) validateIsoTimestamp(input.updatedAt, 'User preferences updatedAt');
+  const autoSave = input.autoSave as boolean;
+  const autoSync = input.autoSync as boolean;
+  const offlineCache = input.offlineCache as boolean;
+  const defaultSpaceId = input.defaultSpaceId as string | null | undefined;
+  const defaultFolderId = input.defaultFolderId as string | null | undefined;
+  const language = input.language as string | null | undefined;
+  const updatedAt = input.updatedAt as string | null | undefined;
+  return {
+    ...(defaultSpaceId == null ? {} : { defaultSpaceId }),
+    ...(defaultFolderId == null ? {} : { defaultFolderId }),
+    autoSave,
+    autoSync,
+    offlineCache,
+    importCompatibility: input.importCompatibility as UserPreferences['importCompatibility'],
+    ...(language == null ? {} : { language }),
+    theme: input.theme as UserPreferences['theme'],
+    ...(updatedAt == null ? {} : { updatedAt }),
+  };
+}
+
+export function validateUserPreferencesPatch(value: unknown): UserPreferencesPatch {
+  const input = requireRecord(value, 'User preferences patch');
+  validateExactKeys(input, ['defaultSpaceId', 'defaultFolderId', 'autoSave', 'autoSync', 'offlineCache', 'importCompatibility', 'language', 'theme'], 'User preferences patch');
+  if (Object.keys(input).length === 0) throw new Error('User preferences patch cannot be empty');
+  for (const key of ['defaultSpaceId', 'defaultFolderId', 'language'] as const) {
+    if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`User preferences patch ${key} is invalid`);
+  }
+  for (const key of ['autoSave', 'autoSync', 'offlineCache'] as const) {
+    if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error(`User preferences patch ${key} is invalid`);
+  }
+  if (input.importCompatibility !== undefined && !['A', 'B', 'C'].includes(String(input.importCompatibility))) throw new Error('User preferences patch importCompatibility is invalid');
+  if (input.theme !== undefined && !['light', 'dark', 'system'].includes(String(input.theme))) throw new Error('User preferences patch theme is invalid');
+  return value as UserPreferencesPatch;
 }
 
 function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse {
@@ -569,8 +744,11 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
 }
 
 export interface SnapshotResponse {
+  /** Present on Java responses; optional for local-only test and cache records. */
+  unitId?: string;
   snapshot: WorkbookSnapshot;
   revision: number;
+  checksum?: string;
 }
 
 /**
@@ -655,19 +833,6 @@ export interface XlsxExportResponse {
   report: CompatibilityReportPayload;
 }
 
-export interface PivotCalculationResponse {
-  unitId: string;
-  pivotId: string;
-  revision: number;
-  result: PivotResultTree;
-}
-
-export interface TableRowsResponse {
-  table: WorkbookTableModel;
-  rows: TableScalar[][];
-  nextOffset?: number;
-}
-
 /** Sanitized intent for a server-executed database or credentialed REST query. */
 export interface ServerQueryRequest {
   queryId: string;
@@ -744,6 +909,8 @@ export interface WorkbookCatalogQuery {
   query?: string;
   spaceId?: string;
   view?: WorkbookCatalogView;
+  cursor?: string;
+  limit?: number;
 }
 
 export interface WorkbookCreateMetadata {
@@ -754,7 +921,6 @@ export interface WorkbookCreateMetadata {
 
 export interface WorkbookMetadataPatch {
   folderId?: string | null;
-  name?: string;
   spaceId?: string | null;
 }
 
@@ -776,6 +942,20 @@ export interface WorkbookUserState {
   theme?: 'light' | 'system';
   unitId: string;
 }
+
+export interface UserPreferences {
+  defaultSpaceId?: string;
+  defaultFolderId?: string;
+  autoSave: boolean;
+  autoSync: boolean;
+  offlineCache: boolean;
+  importCompatibility: 'A' | 'B' | 'C';
+  language?: string;
+  theme: 'light' | 'dark' | 'system';
+  updatedAt?: string;
+}
+
+export type UserPreferencesPatch = Partial<Omit<UserPreferences, 'updatedAt'>>;
 
 export type WorkspaceSpaceKind = 'personal' | 'team';
 
@@ -879,10 +1059,14 @@ export class WorkbookApiClient {
       // The status remains authoritative when a server returns a non-JSON
       // failure body.  Do not swallow the request failure itself.
     }
+    const code = typeof payload?.code === 'string'
+      && (CONTRACT_ERROR_CODES as readonly string[]).includes(payload.code)
+      ? payload.code as ProtocolErrorCode
+      : 'INTERNAL_ERROR';
     throw new ApiRequestError(
       typeof payload?.message === 'string' ? payload.message : `Request failed: ${response.status}`,
       response.status,
-      payload?.code ?? 'REQUEST_FAILED',
+      code,
       payload?.details,
     );
   }
@@ -896,19 +1080,20 @@ export class WorkbookApiClient {
     }
   }
 
-  async getSnapshot(unitId: string): Promise<SnapshotResponse> {
-    return this.json<SnapshotResponse>(
+  async getSnapshot(unitId: string, options: ApiRequestOptions = {}): Promise<SnapshotResponse> {
+    return validateSnapshotResponse(await this.json<unknown>(
       `/api/workbooks/${encodeURIComponent(unitId)}/snapshot`,
-    );
+      options,
+    ), unitId);
   }
 
-  async getAccess(unitId: string): Promise<WorkbookAccessResponse> {
-    const result = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access`);
+  async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {
+    const result = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access`, options);
     return validateWorkbookAccessResponse(result);
   }
 
-  async listWorkbookAcl(unitId: string): Promise<WorkbookAclRecord[]> {
-    return this.json<WorkbookAclRecord[]>(`/api/workbooks/${encodeURIComponent(unitId)}/acl`);
+  async listWorkbookAcl(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAclRecord[]> {
+    return this.json<WorkbookAclRecord[]>(`/api/workbooks/${encodeURIComponent(unitId)}/acl`, options);
   }
 
   async putWorkbookAcl(unitId: string, subject: string, role: WorkbookAclRole): Promise<WorkbookAclRecord> {
@@ -924,21 +1109,48 @@ export class WorkbookApiClient {
   }
 
   async createWorkbook(snapshot: WorkbookSnapshot, metadata: WorkbookCreateMetadata = {}): Promise<SnapshotResponse> {
-    return this.json<SnapshotResponse>('/api/workbooks', {
+    validateWorkbookSnapshot(snapshot);
+    return validateSnapshotResponse(await this.json<unknown>('/api/workbooks', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ unitId: snapshot.unitId, name: snapshot.name, snapshot, ...metadata }),
-    });
+    }), snapshot.unitId);
   }
 
-  async listWorkbooks(query: WorkbookCatalogQuery = {}): Promise<WorkbookSummary[]> {
+  async listWorkbookPage(query: WorkbookCatalogQuery = {}, options: ApiRequestOptions = {}): Promise<CursorPage<WorkbookSummary>> {
     const search = new URLSearchParams();
     if (query.view) search.set('view', query.view);
     if (query.spaceId) search.set('spaceId', query.spaceId);
     if (query.folderId) search.set('folderId', query.folderId);
     if (query.query) search.set('query', query.query);
+    if (query.cursor) search.set('cursor', query.cursor);
+    search.set('limit', String(normalizePageLimit(query.limit)));
     const suffix = search.size > 0 ? `?${search.toString()}` : '';
-    return this.json<WorkbookSummary[]>(`/api/workbooks${suffix}`);
+    return validateCursorPage(
+      await this.json<unknown>(`/api/workbooks${suffix}`, options),
+      validateWorkbookSummary,
+      'Workbook catalog page',
+    );
+  }
+
+  /**
+   * Reads the complete catalog through bounded pages for existing callers.
+   * New consumers should use listWorkbookPage when they need incremental UI.
+   */
+  async listWorkbooks(query: WorkbookCatalogQuery = {}, options: ApiRequestOptions = {}): Promise<WorkbookSummary[]> {
+    const items: WorkbookSummary[] = [];
+    const seen = new Set<string>();
+    let cursor = query.cursor;
+    do {
+      const page = await this.listWorkbookPage({ ...query, cursor }, options);
+      items.push(...page.items);
+      if (!page.nextCursor) break;
+      if (seen.has(page.nextCursor)) throw new ApiRequestError('Workbook catalog pagination cursor did not advance', 200, 'INTERNAL_ERROR');
+      seen.add(page.nextCursor);
+      cursor = page.nextCursor;
+    } while (!options.signal?.aborted);
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    return items;
   }
 
   async updateWorkbook(unitId: string, patch: WorkbookMetadataPatch): Promise<WorkbookSummary> {
@@ -981,8 +1193,22 @@ export class WorkbookApiClient {
     });
   }
 
-  async listSpaces(): Promise<WorkspaceSpace[]> {
-    return this.json<WorkspaceSpace[]>('/api/spaces');
+  async listSpaces(options: ApiRequestOptions = {}): Promise<WorkspaceSpace[]> {
+    return this.json<WorkspaceSpace[]>('/api/spaces', options);
+  }
+
+  async getUserPreferences(options: ApiRequestOptions = {}): Promise<UserPreferences> {
+    return validateUserPreferences(await this.json<unknown>('/api/user-preferences', options));
+  }
+
+  async putUserPreferences(preferences: UserPreferencesPatch, options: ApiRequestOptions = {}): Promise<UserPreferences> {
+    validateUserPreferencesPatch(preferences);
+    return validateUserPreferences(await this.json<unknown>('/api/user-preferences', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(preferences),
+      ...options,
+    }));
   }
 
   async createSpace(input: Pick<WorkspaceSpace, 'kind' | 'name'>): Promise<WorkspaceSpace> {
@@ -993,8 +1219,8 @@ export class WorkbookApiClient {
     });
   }
 
-  async listFolders(spaceId: string): Promise<WorkspaceFolder[]> {
-    return this.json<WorkspaceFolder[]>(`/api/spaces/${encodeURIComponent(spaceId)}/folders`);
+  async listFolders(spaceId: string, options: ApiRequestOptions = {}): Promise<WorkspaceFolder[]> {
+    return this.json<WorkspaceFolder[]>(`/api/spaces/${encodeURIComponent(spaceId)}/folders`, options);
   }
 
   async createFolder(spaceId: string, input: Pick<WorkspaceFolder, 'name' | 'parentFolderId'>): Promise<WorkspaceFolder> {
@@ -1017,8 +1243,8 @@ export class WorkbookApiClient {
     await this.request(`/api/folders/${encodeURIComponent(folderId)}`, { method: 'DELETE' });
   }
 
-  async listSpaceMembers(spaceId: string): Promise<SpaceMember[]> {
-    return this.json<SpaceMember[]>(`/api/spaces/${encodeURIComponent(spaceId)}/members`);
+  async listSpaceMembers(spaceId: string, options: ApiRequestOptions = {}): Promise<SpaceMember[]> {
+    return this.json<SpaceMember[]>(`/api/spaces/${encodeURIComponent(spaceId)}/members`, options);
   }
 
   async putSpaceMember(spaceId: string, subject: string, role: WorkbookAclRole): Promise<SpaceMember> {
@@ -1034,13 +1260,20 @@ export class WorkbookApiClient {
   }
 
   async createWorkbookImport(input: WorkbookImportRequest): Promise<WorkbookImportResponse> {
+    validateWorkbookSnapshot(input.snapshot);
     const form = new FormData();
     form.append('file', input.artifact, input.artifactFileName);
     form.append('snapshot', JSON.stringify(input.snapshot));
     if (input.snapshot.name) form.append('name', input.snapshot.name);
     if (input.spaceId) form.append('spaceId', input.spaceId);
     if (input.folderId) form.append('folderId', input.folderId);
-    return this.json<WorkbookImportResponse>('/api/workbook-imports', { method: 'POST', body: form });
+    const response = await this.json<WorkbookImportResponse>('/api/workbook-imports', { method: 'POST', body: form });
+    validateWorkbookSnapshot(response.snapshot);
+    validateWorkbookSummary(response.summary);
+    if (response.summary.unitId !== input.snapshot.unitId || response.snapshot.unitId !== input.snapshot.unitId) {
+      throw new ApiRequestError('Workbook import returned a mismatched identity', 200, 'INTERNAL_ERROR');
+    }
+    return response;
   }
 
   async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
@@ -1090,14 +1323,39 @@ export class WorkbookApiClient {
     return this.json<CheckpointResponse>(`/api/workbooks/${encodeURIComponent(unitId)}/checkpoints`, { method: 'POST' });
   }
 
-  async listRevisions(unitId: string): Promise<RevisionRecord[]> {
-    return this.json<RevisionRecord[]>(`/api/workbooks/${encodeURIComponent(unitId)}/revisions`);
+  async listRevisionPage(unitId: string, query: { cursor?: string; limit?: number } = {}, options: ApiRequestOptions = {}): Promise<CursorPage<RevisionRecord>> {
+    const search = new URLSearchParams();
+    if (query.cursor) search.set('cursor', query.cursor);
+    search.set('limit', String(normalizePageLimit(query.limit)));
+    return validateCursorPage(
+      await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/revisions?${search.toString()}`, options),
+      validateRevisionRecord,
+      'Revision page',
+    );
   }
 
-  async getRevisionSnapshot(unitId: string, revision: number): Promise<SnapshotResponse> {
-    return this.json<SnapshotResponse>(
+  /** Reads all bounded revision pages for the existing history runtime. */
+  async listRevisions(unitId: string, options: ApiRequestOptions = {}): Promise<RevisionRecord[]> {
+    const items: RevisionRecord[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await this.listRevisionPage(unitId, { cursor }, options);
+      items.push(...page.items);
+      if (!page.nextCursor) break;
+      if (seen.has(page.nextCursor)) throw new ApiRequestError('Revision pagination cursor did not advance', 200, 'INTERNAL_ERROR');
+      seen.add(page.nextCursor);
+      cursor = page.nextCursor;
+    } while (!options.signal?.aborted);
+    if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    return items;
+  }
+
+  async getRevisionSnapshot(unitId: string, revision: number, options: ApiRequestOptions = {}): Promise<SnapshotResponse> {
+    return validateSnapshotResponse(await this.json<unknown>(
       `/api/workbooks/${encodeURIComponent(unitId)}/revisions/${revision}/snapshot`,
-    );
+      options,
+    ), unitId);
   }
 
   async restoreToRevision(unitId: string, targetRevision: number, reason?: string): Promise<HistoryRestoreResponse> {
@@ -1216,7 +1474,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
   if (input.schema !== OPERATION_ENVELOPE_SCHEMA || !isNonEmptyString(input.operationId) || !isNonEmptyString(input.unitId)) {
     throw new Error('Invalid committed operation schema');
   }
-  if (!isNonEmptyString(input.actorId) || !Number.isSafeInteger(input.revision) || Number(input.revision) < 1) {
+  if (!isNonEmptyString(input.actorId) || !['client', 'system'].includes(String(input.origin)) || !Number.isSafeInteger(input.revision) || Number(input.revision) < 1) {
     throw new Error('Invalid committed operation metadata');
   }
   if (!isNonEmptyString(input.committedAt) || Number.isNaN(Date.parse(input.committedAt))) {
@@ -1251,6 +1509,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
   return {
     ...operation,
     actorId: input.actorId,
+    origin: input.origin as CommittedOperationEnvelope['origin'],
     revision: Number(input.revision),
     committedAt: input.committedAt,
     mutations,

@@ -93,6 +93,7 @@ interface ClearRangeRestoreParams {
   range: RangeRef;
   cells: Array<{ row: number; column: number; value?: CellData }>;
   notes: Array<{ row: number; column: number; note: import('@react-sheets/core-model').CellNote }>;
+  hyperlinks: Array<{ row: number; column: number; hyperlink: import('@react-sheets/core-model').CellHyperlink }>;
   comments: import('@react-sheets/core-model').CommentThread[];
 }
 
@@ -259,8 +260,9 @@ function isSheetIdMutation(value: unknown): value is { id: string } {
   return isRecord(value) && typeof value.id === 'string' && value.id.length > 0;
 }
 
-function isSheetRestoreMutation(value: unknown): value is { sheet: WorksheetModel } {
-  return isRecord(value) && isRecord(value.sheet) && typeof value.sheet.id === 'string' && typeof value.sheet.name === 'string';
+function isSheetRestoreMutation(value: unknown): value is { sheet: import('@react-sheets/core-model').SheetSnapshot; index?: number } {
+  return isRecord(value) && isRecord(value.sheet) && typeof value.sheet.id === 'string' && typeof value.sheet.name === 'string'
+    && (value.index === undefined || (Number.isSafeInteger(value.index) && Number(value.index) >= 0));
 }
 
 function isWorkbookTableMutation(value: unknown): value is WorkbookTableModel {
@@ -311,7 +313,7 @@ function isClearRangeMutation(value: unknown): value is ClearRangeParams {
 function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestoreParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
     && Array.isArray(value.cells) && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
-    && Array.isArray(value.notes) && Array.isArray(value.comments);
+    && Array.isArray(value.notes) && Array.isArray(value.hyperlinks) && Array.isArray(value.comments);
 }
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {
@@ -513,12 +515,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['sheet.rename', 'cell.restore'],
     },
   });
-  runtime.registry.registerMutation<{ sheet: WorksheetModel }>({
+  runtime.registry.registerMutation<{ sheet: import('@react-sheets/core-model').SheetSnapshot; index?: number }>({
     id: 'sheet.restore',
     handler: (item, context) => {
       if (!isSheetRestoreMutation(item.params)) throw new Error('Invalid sheet.restore mutation payload');
-      const restored = item.params;
-      if (!context.workbook.sheets.has(restored.sheet.id)) context.workbook.sheets.set(restored.sheet.id, restored.sheet);
+      context.workbook.restoreSheetSnapshot(item.params.sheet, item.params.index);
     },
     metadata: {
       schema: { name: 'RestoreSheet', validate: isSheetRestoreMutation },
@@ -536,8 +537,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       if (workbook.getSheets().length <= 1) {
         throw new Error('A workbook must keep at least one worksheet');
       }
-      const target = workbook.getSheet(params.id);
-      const clone = target.cloneSheet();
+      const index = workbook.sheetOrder.indexOf(params.id);
+      const snapshot = workbook.getSheetSnapshot(params.id);
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({
         id: 'sheet.remove',
@@ -550,7 +551,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             id: 'sheet.restore',
             unitId: workbook.unitId,
             sheetId: params.id,
-            params: { sheet: clone },
+            params: { sheet: snapshot, index },
             affectedRanges,
           },
         ],
@@ -909,6 +910,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           continue;
         }
         if (params.mode === 'hyperlinks') {
+          sheet.hyperlinks.delete(`${row}:${column}`);
           if (current?.hyperlink !== undefined || current?.hyperlinkDetail !== undefined) {
             const next = { ...current };
             delete next.hyperlink;
@@ -917,6 +919,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           }
           continue;
         }
+        if (params.mode === undefined || params.mode === 'all') sheet.hyperlinks.delete(`${row}:${column}`);
         if (!current) continue;
         if (params.mode === 'formats') {
           const next = { ...current };
@@ -967,6 +970,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
         sheet.cells.delete(row, column);
         sheet.notes.delete(`${row}:${column}`);
+        sheet.hyperlinks.delete(`${row}:${column}`);
       }
     }
     sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) =>
@@ -978,6 +982,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       if (item.value) sheet.cells.set(item.row, item.column, structuredClone(item.value));
     }
     for (const item of params.notes) sheet.notes.set(`${item.row}:${item.column}`, structuredClone(item.note));
+    for (const item of params.hyperlinks) sheet.hyperlinks.set(`${item.row}:${item.column}`, structuredClone(item.hyperlink));
     sheet.commentThreads.push(...structuredClone(params.comments));
     },
     metadata: {
@@ -1024,6 +1029,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
       const notes: ClearRangeRestoreParams['notes'] = [];
+      const hyperlinks: ClearRangeRestoreParams['hyperlinks'] = [];
       const comments: ClearRangeRestoreParams['comments'] = [];
       const range = {
         ...params.range,
@@ -1039,6 +1045,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           previous.push({ row: r, column: c, value: structuredClone(sheet.cells.get(r, c)) });
           const note = sheet.notes.get(`${r}:${c}`);
           if (note) notes.push({ row: r, column: c, note: structuredClone(note) });
+          const hyperlink = sheet.hyperlinks.get(`${r}:${c}`);
+          if (hyperlink) hyperlinks.push({ row: r, column: c, hyperlink: structuredClone(hyperlink) });
         }
       }
       comments.push(...structuredClone(sheet.commentThreads.filter((thread) =>
@@ -1057,7 +1065,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           id: 'range.clear.restore',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, range, cells: previous, notes, comments },
+          params: { sheetId: params.sheetId, range, cells: previous, notes, hyperlinks, comments },
           affectedRanges,
         }],
         apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, range }, affectedRanges }, context),

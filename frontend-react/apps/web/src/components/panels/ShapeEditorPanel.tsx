@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, ColorPicker, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { DrawingObject, DrawingPayload, ShapeDrawingPayload } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 
@@ -69,7 +69,7 @@ export function ShapeEditorPanel({
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Shape Type
             </Text>
@@ -86,9 +86,9 @@ export function ShapeEditorPanel({
               <option value="callout">Callout / Note</option>
               <option value="star">Star Badge</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Shape Label
             </Text>
@@ -97,58 +97,48 @@ export function ShapeEditorPanel({
               onChange={(e) => setText(e.target.value)}
               placeholder="e.g. Callout text"
             />
-          </div>
+          </Box>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div>
+          <Box className="grid grid-cols-2 gap-2">
+            <Box>
               <Text size="xs" weight="medium" className="mb-1 text-slate-700">
                 Fill Color
               </Text>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={fill}
-                  onChange={(e) => setFill(e.target.value)}
-                  className="h-8 w-8 cursor-pointer rounded border border-slate-300 p-0"
-                />
+              <Stack gap="xs">
+                <ColorPicker color={fill} onChange={setFill} />
                 <TextInput value={fill} onChange={(e) => setFill(e.target.value)} className="h-8 text-xs font-mono" />
-              </div>
-            </div>
-            <div>
+              </Stack>
+            </Box>
+            <Box>
               <Text size="xs" weight="medium" className="mb-1 text-slate-700">
                 Border Stroke
               </Text>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={stroke}
-                  onChange={(e) => setStroke(e.target.value)}
-                  className="h-8 w-8 cursor-pointer rounded border border-slate-300 p-0"
-                />
+              <Stack gap="xs">
+                <ColorPicker color={stroke} onChange={setStroke} />
                 <TextInput value={stroke} onChange={(e) => setStroke(e.target.value)} className="h-8 text-xs font-mono" />
-              </div>
-            </div>
-          </div>
+              </Stack>
+            </Box>
+          </Box>
 
           <Button variant="primary" size="sm" icon="plus" onClick={handleCreate}>
             Place Shape on Canvas
           </Button>
 
           {shapeEntries.length > 0 ? (
-            <div className="mt-4 border-t border-slate-200 pt-3">
+            <Box className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
                 Floating Shapes ({shapeEntries.length})
               </Text>
               <Stack gap="xs">
                 {shapeEntries.map(({ drawing, payload }) => (
-                  <div
+                  <Box
                     key={drawing.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
-                    <div>
-                      <div className="font-medium text-slate-800">{payload.text || payload.type}</div>
-                      <div className="text-[10px] text-slate-500">{payload.type}</div>
-                    </div>
+                    <Stack gap="none">
+                      <Text size="sm" weight="medium" className="text-slate-800">{payload.text || payload.type}</Text>
+                      <Text size="xs" tone="subtle">{payload.type}</Text>
+                    </Stack>
                     <Button
                       variant="ghost"
                       size="xs"
@@ -157,10 +147,10 @@ export function ShapeEditorPanel({
                       onClick={() => onCommand({ commandId: 'drawing.remove', params: { sheetId, drawingId: drawing.id } })}
                       className="text-rose-600 hover:bg-rose-50"
                     />
-                  </div>
+                  </Box>
                 ))}
               </Stack>
-            </div>
+            </Box>
           ) : null}
         </Stack>
       </PanelBody>

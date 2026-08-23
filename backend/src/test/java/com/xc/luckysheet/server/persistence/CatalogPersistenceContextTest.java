@@ -46,12 +46,14 @@ class CatalogPersistenceContextTest {
 
     @Test
     void catalogCreatesPersonalSpaceAndReturnsOneActorEnrichedSummary() throws Exception {
-        var snapshot = mapper.readTree("{\"unitId\":\"book-context\",\"name\":\"Context\",\"sheets\":[]}");
+        var snapshot = mapper.readTree("""
+                {"schema":"WorkbookSnapshot","version":2,"unitId":"book-context","name":"Context","dataSources":[],"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{}}]}
+                """);
         catalog.create(new CreateWorkbookRequest("book-context", "Context", snapshot), "actor-context");
-        var summaries = catalog.list("actor-context", "recent", null, null, null);
-        org.junit.jupiter.api.Assertions.assertEquals(1, summaries.size());
-        org.junit.jupiter.api.Assertions.assertEquals("owner", summaries.get(0).role().wireValue());
-        org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("我的云文档"), summaries.get(0).locationPath());
+        var summaries = catalog.list("actor-context", "recent", null, null, null, 0, 50);
+        org.junit.jupiter.api.Assertions.assertEquals(1, summaries.items().size());
+        org.junit.jupiter.api.Assertions.assertEquals("owner", summaries.items().get(0).role().wireValue());
+        org.junit.jupiter.api.Assertions.assertEquals(java.util.List.of("我的云文档"), summaries.items().get(0).locationPath());
         var state = catalog.putUserState("book-context", new UserStateRequest(true, null), "actor-context");
         org.junit.jupiter.api.Assertions.assertTrue(state.favorite());
         org.junit.jupiter.api.Assertions.assertEquals(1, workspace.list("actor-context").size());

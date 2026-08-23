@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, LocationPicker, Select, Stack, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
 import {
   CreateWorkbookDialog,
@@ -21,6 +21,7 @@ import {
   type WorkbookTemplateId,
 } from '@react-sheets/spreadsheet-app';
 import type { SpaceMember, WorkspaceFolder, WorkspaceSpace } from '@react-sheets/protocol';
+import type { UserPreferences } from '@react-sheets/protocol';
 
 type ActiveDialog = 'create' | 'help' | 'import' | 'move' | 'options' | 'purge' | 'rename' | 'share' | 'trash' | null;
 
@@ -103,6 +104,10 @@ function downloadXlsx(buffer: ArrayBuffer, fileName: string): void {
   URL.revokeObjectURL(href);
 }
 
+function isAbortError(cause: unknown): boolean {
+  return Boolean(cause && typeof cause === 'object' && 'name' in cause && cause.name === 'AbortError');
+}
+
 export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerProps) {
   const { catalog } = useApplicationServices();
   const auth = useAuthSession();
@@ -113,6 +118,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const [spaces, setSpaces] = useState<readonly WorkspaceSpace[]>([]);
   const [folders, setFolders] = useState<readonly WorkspaceFolder[]>([]);
   const [spaceMembers, setSpaceMembers] = useState<readonly SpaceMember[]>([]);
+  const [preferences, setPreferences] = useState<UserPreferences>();
   const [selectedSpaceId, setSelectedSpaceId] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
   const [newSpaceName, setNewSpaceName] = useState('');
@@ -127,37 +133,59 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   });
   const [pendingTemplate, setPendingTemplate] = useState<WorkbookTemplateId>('blank');
   const [targetId, setTargetId] = useState<string>();
+  const [moveLocationId, setMoveLocationId] = useState('local');
+  const loadGeneration = useRef(0);
+  const loadAbortController = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    loadAbortController.current?.abort();
+    const controller = new AbortController();
+    loadAbortController.current = controller;
+    const generation = ++loadGeneration.current;
+    const requestOptions = { signal: controller.signal };
     setLoading(true);
     setError(undefined);
     try {
-      const [listed, remoteSpaces] = await Promise.all([
-        catalog.list({ view: activeSection === 'trash' ? 'trash' : 'all' }),
-        authSnapshot.phase === 'authenticated' ? catalog.listSpaces().catch(() => []) : Promise.resolve([]),
+      const [listed, remoteSpaces, remotePreferences] = await Promise.all([
+        catalog.list({ view: activeSection === 'trash' ? 'trash' : 'all' }, requestOptions),
+        authSnapshot.phase === 'authenticated' ? catalog.listSpaces(requestOptions) : Promise.resolve([]),
+        authSnapshot.phase === 'authenticated' ? catalog.getUserPreferences(requestOptions) : Promise.resolve(undefined),
       ]);
       const remoteFolders = remoteSpaces.length > 0
-        ? (await Promise.all(remoteSpaces.map((space) => catalog.listFolders(space.spaceId).catch(() => [])))).flat()
+        ? (await Promise.all(remoteSpaces.map((space) => catalog.listFolders(space.spaceId, requestOptions)))).flat()
         : [];
+      if (generation !== loadGeneration.current || controller.signal.aborted) return;
       setEntries(listed);
       setSpaces(remoteSpaces);
       setFolders(remoteFolders);
+      setPreferences(remotePreferences);
       setSelectedSpaceId((current) => current || remoteSpaces[0]?.spaceId || '');
     } catch (cause) {
+      if (generation !== loadGeneration.current || controller.signal.aborted || isAbortError(cause)) return;
       setError(cause instanceof Error ? cause.message : '无法加载工作簿目录');
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }, [activeSection, authSnapshot.phase, catalog]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => () => {
+    loadAbortController.current?.abort();
+    loadGeneration.current += 1;
+  }, []);
 
   useEffect(() => {
     if (authSnapshot.phase !== 'authenticated' || !selectedSpaceId) {
       setSpaceMembers([]);
       return;
     }
-    void catalog.listSpaceMembers(selectedSpaceId).then(setSpaceMembers).catch(() => setSpaceMembers([]));
+    void catalog.listSpaceMembers(selectedSpaceId)
+      .then(setSpaceMembers)
+      .catch((cause) => {
+        setSpaceMembers([]);
+        setError(cause instanceof Error ? cause.message : '无法加载空间成员');
+      });
   }, [authSnapshot.phase, catalog, selectedSpaceId]);
 
   const folderLocationOptions = useMemo(() => folderLocations(folders, spaces), [folders, spaces]);
@@ -166,7 +194,17 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     ...spaces.map((space) => ({ id: `space:${space.spaceId}`, label: `${space.kind === 'team' ? '团队空间' : '我的云端'} · ${space.name}` })),
     ...folderLocationOptions.map(({ folder, label }) => ({ id: `folder:${folder.spaceId}:${folder.folderId}`, label })),
   ], [folderLocationOptions, spaces]);
-  const defaultLocationId = authSnapshot.phase === 'authenticated' && spaces[0] ? `space:${spaces[0].spaceId}` : 'local';
+  const defaultLocationId = useMemo(() => {
+    if (authSnapshot.phase !== 'authenticated') return 'local';
+    if (preferences?.defaultFolderId) {
+      const folder = folders.find((candidate) => candidate.folderId === preferences.defaultFolderId);
+      if (folder) return `folder:${folder.spaceId}:${folder.folderId}`;
+    }
+    if (preferences?.defaultSpaceId && spaces.some((space) => space.spaceId === preferences.defaultSpaceId)) {
+      return `space:${preferences.defaultSpaceId}`;
+    }
+    return spaces[0] ? `space:${spaces[0].spaceId}` : 'local';
+  }, [authSnapshot.phase, folders, preferences?.defaultFolderId, preferences?.defaultSpaceId, spaces]);
   const items = useMemo(() => entries.map(itemFromEntry), [entries]);
   const target = useMemo(() => targetId ? items.find((item) => item.unitId === targetId) : undefined, [items, targetId]);
 
@@ -307,7 +345,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         onExportWorkbook={exportWorkbook}
         onFavoriteWorkbook={(unitId, favorite) => void execute(async () => { await catalog.setFavorite(unitId, favorite); })}
         onImportWorkbook={() => setActiveDialog('import')}
-        onMoveWorkbook={(unitId) => { setTargetId(unitId); setActiveDialog('move'); }}
+        onMoveWorkbook={(unitId) => { setTargetId(unitId); setMoveLocationId(defaultLocationId); setActiveDialog('move'); }}
         onNavigate={navigateSection}
         onOpenInNewWindow={(unitId) => { window.open(`/workbooks/${encodeURIComponent(unitId)}`, '_blank', 'noopener,noreferrer'); }}
         onOpenWorkbook={openWorkbook}
@@ -369,14 +407,13 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       <Dialog closeLabel="关闭移动工作簿" onClose={() => setActiveDialog(null)} open={activeDialog === 'move'} title="移动工作簿">
         <Stack gap="md">
           <Text size="sm">选择目标空间。跨空间移动只允许所有者，服务端会执行最终授权校验。</Text>
-          <LocationPicker aria-label="目标空间" id="move-workbook-location" options={locationOptions} defaultValue={defaultLocationId} />
+          <LocationPicker aria-label="目标空间" id="move-workbook-location" onChange={(event) => setMoveLocationId(event.target.value)} options={locationOptions} value={moveLocationId} />
           <Button disabled={!target} loading={submitting} onClick={() => {
-            const select = document.getElementById('move-workbook-location') as HTMLSelectElement | null;
-            if (!target || !select) return;
+            if (!target) return;
             void execute(async () => {
-              const destination = destinationFromLocation(select.value);
+              const destination = destinationFromLocation(moveLocationId);
               if (destination.destination === 'remote' && !await requireCloudSignIn()) return;
-              await catalog.move(target.unitId, { spaceId: destination.spaceId, folderId: null });
+              await catalog.move(target.unitId, { spaceId: destination.spaceId, folderId: destination.folderId ?? null });
             });
           }} size="sm" variant="brand">移动</Button>
         </Stack>
@@ -392,7 +429,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         <Stack gap="lg">
           <Stack gap="xs">
             <Text size="sm" weight="semibold">默认位置与云端会话</Text>
-            <Text size="sm">当前默认新建位置：{defaultLocationId === 'local' ? '本地文件' : '云端空间'}。自动保存、自动同步、离线缓存和导入兼容级别保存到当前用户的工作簿用户态。</Text>
+            <Text size="sm">当前默认新建位置：{defaultLocationId === 'local' ? '本地文件' : '云端空间'}。自动保存、自动同步、离线缓存和导入兼容级别保存到当前用户的全局偏好。</Text>
             <Button disabled={authSnapshot.phase !== 'authenticated'} onClick={() => void auth.signOut()} size="sm" variant="outline">退出云端会话</Button>
           </Stack>
           <Stack gap="xs" className="border-t border-slate-100 pt-4">

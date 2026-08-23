@@ -105,6 +105,15 @@ describe('WorkbookSession formula integration', () => {
     await app.waitForFormulaCalculation();
   });
 
+  it('resolves Go To through the active sheet scoped name before workbook scope', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.setDefinedName({ name: 'Target', formula: 'C3', scope: 'workbook' });
+    app.setDefinedName({ name: 'Target', formula: 'D4', scope: 'sheet', sheetId });
+    app.runCommand('navigation.goto', { sheetId, reference: 'Target' });
+    assert.deepEqual(app.getSelection().activeCell, { row: 3, column: 3 });
+  });
+
   it('tracks dynamic-array spill ranges and child values', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

@@ -1,5 +1,5 @@
 import type { CellData, RangeRef, Row, Column, WorksheetModel } from './index';
-import type { CellNote, DrawingObject, StructuralTransformParams, CommentThread, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup } from './domain';
+import type { CellHyperlink, CellNote, DrawingObject, StructuralTransformParams, CommentThread, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup } from './domain';
 import { WorkbookModel, noteCellKey } from './index';
 import {
   formatFormula,
@@ -112,6 +112,12 @@ function validateAxisMetadataPreservation(
     const [row, column] = key.split(':').map(Number);
     if (deleted(axis === 'row' ? row! : column!)) {
       throw new Error(`Cannot delete ${axis} ${at}: note at ${key} would be lost`);
+    }
+  }
+  for (const [key] of sheet.hyperlinks) {
+    const [row, column] = key.split(':').map(Number);
+    if (deleted(axis === 'row' ? row! : column!)) {
+      throw new Error(`Cannot delete ${axis} ${at}: hyperlink at ${key} would be lost`);
     }
   }
   for (const thread of sheet.commentThreads) {
@@ -229,6 +235,12 @@ function validateShiftPreservation(
       throw new Error(`Cannot shift ${selection.sheetId}: note at ${key} would leave the selected range`);
     }
   }
+  for (const [key] of sheet.hyperlinks) {
+    const [row, column] = key.split(':').map(Number);
+    if (row !== undefined && column !== undefined && inside(row, column) && !remainsInside(row, column)) {
+      throw new Error(`Cannot shift ${selection.sheetId}: hyperlink at ${key} would leave the selected range`);
+    }
+  }
   for (const thread of sheet.commentThreads) {
     if (inside(thread.row, thread.column) && !remainsInside(thread.row, thread.column)) {
       throw new Error(`Cannot shift ${selection.sheetId}: comment thread ${thread.id} would leave the selected range`);
@@ -298,6 +310,7 @@ function applyAxis(
   shiftSheetTables(sheet, axis, at, count, direction);
   shiftWorkbookTables(workbook, sheet.id, axis, at, count, direction);
   shiftNotes(sheet, axis, at, count, direction);
+  shiftHyperlinks(sheet, axis, at, count, direction);
   shiftComments(sheet, axis, at, count, direction);
   shiftSpills(sheet, axis, at, count, direction);
   shiftProtection(sheet, axis, at, count, direction);
@@ -493,6 +506,23 @@ function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, se
   }
   sheet.notes.clear();
   for (const [key, note] of nextNotes) sheet.notes.set(key, note);
+  const nextHyperlinks = new Map<string, CellHyperlink>();
+  for (const [key, hyperlink] of sheet.hyperlinks) {
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
+    if (row >= selection.startRow && row <= selection.endRow && column >= selection.startColumn && column <= selection.endColumn) {
+      const nextRow = row + rowDelta;
+      const nextColumn = column + columnDelta;
+      if (nextRow >= selection.startRow && nextRow <= selection.endRow && nextColumn >= selection.startColumn && nextColumn <= selection.endColumn) {
+        nextHyperlinks.set(noteCellKey(nextRow, nextColumn), hyperlink);
+      }
+    } else {
+      nextHyperlinks.set(key, hyperlink);
+    }
+  }
+  sheet.hyperlinks.clear();
+  for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
   const nextThreads: CommentThread[] = [];
   for (const thread of sheet.commentThreads) {
     if (thread.row >= selection.startRow && thread.row <= selection.endRow && thread.column >= selection.startColumn && thread.column <= selection.endColumn) {
@@ -562,9 +592,6 @@ function rewriteReferencesForMovedRegion(
       const next = transformFormula(cell.formula, (ast) => mapAstReferences(ast, mapper(owner)));
       if (next !== cell.formula) owner.cells.set(row, column, { ...cell, formula: next });
     });
-  }
-  for (const [name, formula] of Object.entries(workbook.definedNames)) {
-    workbook.definedNames[name] = transformFormula(formula, (ast) => mapAstReferences(ast, mapper(targetSheet)));
   }
   for (const entry of workbook.definedNameModels) {
     if (entry.scope === 'sheet' && entry.sheetId !== targetSheet.id) continue;
@@ -811,6 +838,23 @@ function shiftNotes(sheet: WorksheetModel, axis: 'row' | 'column', at: number, c
   for (const [key, note] of next) sheet.notes.set(key, note);
 }
 
+function shiftHyperlinks(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+  const next = new Map<string, CellHyperlink>();
+  for (const [key, hyperlink] of sheet.hyperlinks) {
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
+    const position = axis === 'row' ? row : column;
+    const shifted = shiftIndex(position, at, count, direction);
+    if (shifted == null) continue;
+    const nextRow = axis === 'row' ? shifted : row;
+    const nextColumn = axis === 'column' ? shifted : column;
+    next.set(noteCellKey(nextRow, nextColumn), hyperlink);
+  }
+  sheet.hyperlinks.clear();
+  for (const [key, hyperlink] of next) sheet.hyperlinks.set(key, hyperlink);
+}
+
 function shiftComments(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   const next: CommentThread[] = [];
   for (const thread of sheet.commentThreads) {
@@ -892,15 +936,6 @@ function rewriteFormulas(workbook: WorkbookModel, sheetId: string, axis: 'row' |
 }
 
 function rewriteDefinedNames(workbook: WorkbookModel, targetSheet: WorksheetModel, shift: StructuralShift): void {
-  for (const [name, value] of Object.entries(workbook.definedNames)) {
-    workbook.definedNames[name] = transformFormula(value, (ast) => remapAst(
-      ast,
-      shift,
-      (reference) => reference.sheetId === undefined
-        || reference.sheetId.trim().toLocaleLowerCase() === targetSheet.id.toLocaleLowerCase()
-        || reference.sheetId.trim().toLocaleLowerCase() === targetSheet.name.toLocaleLowerCase(),
-    ));
-  }
   for (const entry of workbook.definedNameModels) {
     if (entry.scope === 'sheet' && entry.sheetId !== targetSheet.id) continue;
     entry.formula = transformFormula(entry.formula, (ast) => remapAst(
@@ -1025,6 +1060,16 @@ function applyMoveRange(
   }
   sheet.notes.clear();
   for (const [key, note] of nextNotes) sheet.notes.set(key, note);
+  const nextHyperlinks = new Map<string, CellHyperlink>();
+  for (const [key, hyperlink] of sheet.hyperlinks) {
+    const [rowText, columnText] = key.split(':');
+    const row = Number(rowText);
+    const column = Number(columnText);
+    if (insideCell(normalizedSource, row, column)) nextHyperlinks.set(noteCellKey(row + rowDelta, column + colDelta), hyperlink);
+    else nextHyperlinks.set(key, hyperlink);
+  }
+  sheet.hyperlinks.clear();
+  for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
   for (const thread of sheet.commentThreads) {
     if (insideCell(normalizedSource, thread.row, thread.column)) {
       thread.row += rowDelta;

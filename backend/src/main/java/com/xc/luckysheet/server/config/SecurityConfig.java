@@ -17,6 +17,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import com.xc.luckysheet.server.security.GuestShareAuthenticationFilter;
 import com.xc.luckysheet.server.service.GuestShareService;
+import com.xc.luckysheet.server.security.ApiSecurityErrorHandlers;
 
 @Configuration
 @EnableMethodSecurity
@@ -37,7 +38,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, GuestShareService shares) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, GuestShareService shares, ApiSecurityErrorHandlers errors) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -50,6 +51,9 @@ public class SecurityConfig {
                         .requestMatchers("/ws").permitAll()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> { }));
+        http.exceptionHandling(exceptions -> exceptions
+                .authenticationEntryPoint(errors)
+                .accessDeniedHandler(errors));
         http.addFilterBefore(new GuestShareAuthenticationFilter(shares), BearerTokenAuthenticationFilter.class);
         return http.build();
     }

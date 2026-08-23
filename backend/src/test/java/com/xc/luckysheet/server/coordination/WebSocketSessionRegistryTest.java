@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
+import com.xc.luckysheet.server.contract.OperationOrigin;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.AccessControlService;
@@ -41,6 +42,7 @@ class WebSocketSessionRegistryTest {
                 "operation-1",
                 "book-1",
                 "owner-1",
+                OperationOrigin.CLIENT,
                 1,
                 0,
                 1,

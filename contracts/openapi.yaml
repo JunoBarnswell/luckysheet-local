@@ -1,0 +1,189 @@
+openapi: 3.1.0
+info:
+  title: React Sheets Workbook API
+  version: 2026-08-24
+servers:
+  - url: /
+paths:
+  /api/workbooks:
+    get:
+      operationId: listWorkbooks
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Bounded workbook catalog page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkbookPage'
+    post:
+      operationId: createWorkbook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkbookRequest'
+      responses:
+        '201':
+          description: Workbook snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+  /api/workbooks/{unitId}/operations:
+    post:
+      operationId: commitOperation
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationEnvelope'
+      responses:
+        '201':
+          description: Committed operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitResponse'
+  /api/workbooks/{unitId}/revisions:
+    get:
+      operationId: listRevisions
+      parameters:
+        - $ref: '#/components/parameters/UnitId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Bounded revision page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionPage'
+  /api/user-preferences:
+    get:
+      operationId: getUserPreferences
+      responses:
+        '200':
+          description: Actor global preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferences'
+    put:
+      operationId: putUserPreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPreferencesPatch'
+      responses:
+        '200':
+          description: Updated actor global preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferences'
+components:
+  parameters:
+    UnitId:
+      name: unitId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 200 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [UNAUTHENTICATED, FORBIDDEN, VALIDATION_ERROR, NOT_FOUND, CONFLICT, WORKBOOK_TRASHED, TIMEOUT, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+    WorkbookSnapshot:
+      type: object
+      required: [schema, version, unitId, name, sheets, dataSources]
+      properties:
+        schema: { const: WorkbookSnapshot }
+        version: { const: 2 }
+        unitId: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        sheets: { type: array, minItems: 1, items: { type: object } }
+        dataSources: { type: array, items: { type: object } }
+    CreateWorkbookRequest:
+      type: object
+      required: [unitId, name, snapshot]
+      properties:
+        unitId: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        snapshot: { $ref: '#/components/schemas/WorkbookSnapshot' }
+        spaceId: { type: [string, 'null'] }
+        folderId: { type: [string, 'null'] }
+    SnapshotResponse:
+      type: object
+      required: [unitId, snapshot, revision, checksum]
+      properties:
+        unitId: { type: string }
+        snapshot: { $ref: '#/components/schemas/WorkbookSnapshot' }
+        revision: { type: integer, minimum: 0 }
+        checksum: { type: string }
+    OperationEnvelope:
+      type: object
+      required: [schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt]
+      properties:
+        schema: { const: OperationEnvelope }
+        operationId: { type: string, minLength: 1 }
+        unitId: { type: string, minLength: 1 }
+        clientSequence: { type: integer, minimum: 1 }
+        baseRevision: { type: integer, minimum: 0 }
+        mutations: { type: array, minItems: 1, items: { type: object } }
+        createdAt: { type: string, format: date-time }
+    CommitResponse:
+      type: object
+      required: [operation]
+      properties:
+        operation: { type: object }
+    WorkbookPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { type: object } }
+        nextCursor: { type: [string, 'null'] }
+    RevisionPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { type: object } }
+        nextCursor: { type: [string, 'null'] }
+    UserPreferences:
+      type: object
+      required: [autoSave, autoSync, offlineCache, importCompatibility, theme]
+      properties:
+        defaultSpaceId: { type: [string, 'null'] }
+        defaultFolderId: { type: [string, 'null'] }
+        autoSave: { type: boolean }
+        autoSync: { type: boolean }
+        offlineCache: { type: boolean }
+        importCompatibility: { enum: [A, B, C] }
+        language: { type: [string, 'null'] }
+        theme: { enum: [light, dark, system] }
+    UserPreferencesPatch:
+      allOf:
+        - $ref: '#/components/schemas/UserPreferences'

@@ -139,6 +139,18 @@ final class SnapshotMutationSupport {
         }
     }
 
+    static void removeHyperlinks(ObjectNode sheet, RangeRef range) {
+        ArrayNode hyperlinks = array(sheet, "hyperlinks");
+        for (int index = hyperlinks.size() - 1; index >= 0; index--) {
+            JsonNode hyperlink = hyperlinks.get(index);
+            int row = hyperlink.path("row").asInt(-1);
+            int column = hyperlink.path("column").asInt(-1);
+            if (row >= range.startRow() && row <= range.endRow() && column >= range.startColumn() && column <= range.endColumn()) {
+                hyperlinks.remove(index);
+            }
+        }
+    }
+
     static CellCoordinate coordinate(ObjectNode root, String sheetId, ObjectNode params) {
         sheet(root, sheetId);
         int row = index(root, sheetId, params, "row");

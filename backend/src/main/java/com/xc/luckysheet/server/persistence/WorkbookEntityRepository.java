@@ -9,6 +9,7 @@ import jakarta.persistence.LockModeType;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Pageable;
 
 public interface WorkbookEntityRepository extends JpaRepository<WorkbookEntity, String> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
@@ -39,6 +40,9 @@ public interface WorkbookEntityRepository extends JpaRepository<WorkbookEntity, 
             @Param("ownedOnly") boolean ownedOnly,
             @Param("spaceId") String spaceId,
             @Param("folderId") String folderId,
-            @Param("query") String query
+            @Param("query") String query,
+            Pageable pageable
     );
+
+    boolean existsByFolderId(String folderId);
 }

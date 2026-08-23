@@ -18,14 +18,17 @@ public class WorkbookDataBlockService {
 
     private final WorkbookDataBlockStore store;
     private final AccessControlService access;
+    private final WorkbookLifecycleService lifecycle;
 
-    public WorkbookDataBlockService(WorkbookDataBlockStore store, AccessControlService access) {
+    public WorkbookDataBlockService(WorkbookDataBlockStore store, AccessControlService access, WorkbookLifecycleService lifecycle) {
         this.store = store;
         this.access = access;
+        this.lifecycle = lifecycle;
     }
 
     public DataBlockMetadata put(String unitId, String sourceId, String blockId, String checksum, byte[] content, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
         if (content == null || content.length == 0 || content.length > MAX_BLOCK_BYTES) {
@@ -45,6 +48,7 @@ public class WorkbookDataBlockService {
 
     public DataBlockRow get(String unitId, String sourceId, String blockId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
         return store.find(unitId, sourceId, blockId)
@@ -53,6 +57,7 @@ public class WorkbookDataBlockService {
 
     public void delete(String unitId, String sourceId, String blockId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
         store.delete(unitId, sourceId, blockId);

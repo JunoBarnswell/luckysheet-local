@@ -36,6 +36,36 @@ test('FormulaEngine recalculates formulas when a defined name changes', () => {
   assert.equal(engine.getCellValue('B1'), 15);
 });
 
+test('FormulaEngine resolves sheet-scoped names before workbook-scoped names', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setDefinedNameModels([
+    { name: 'Rate', formula: '2', scope: 'workbook' },
+    { name: 'Rate', formula: '3', scope: 'sheet', sheetId: 'Sheet2' },
+  ]);
+  engine.setFormula({ sheetId: 'Sheet1', row: 0, column: 0 }, '=Rate');
+  engine.setFormula({ sheetId: 'Sheet2', row: 0, column: 0 }, '=Rate');
+  assert.equal(engine.getCellValue({ sheetId: 'Sheet1', row: 0, column: 0 }), 2);
+  assert.equal(engine.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 3);
+});
+
+test('scoped names survive the calculation worker snapshot boundary', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
+  engine.setDefinedNameModels([
+    { name: 'Rate', formula: '2', scope: 'workbook' },
+    { name: 'Rate', formula: '4', scope: 'sheet', sheetId: 'Sheet2' },
+  ]);
+  engine.setFormula({ sheetId: 'Sheet2', row: 0, column: 0 }, '=Rate');
+  const restored = FormulaEngine.fromCalculationSnapshot(engine.exportCalculationSnapshot());
+  restored.executeCalculationTask({
+    protocol: 'react-sheets.formula-calculation',
+    version: 1,
+    taskId: 'scoped-name-snapshot',
+    kind: 'recalculate',
+    revision: 1,
+  });
+  assert.equal(restored.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 4);
+});
+
 test('FormulaEngine recalculates volatile formulas when dependencies change', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   engine.setFormula('A1', '=RAND()');

@@ -87,6 +87,12 @@ public class WorkbookStore {
         workbooks.save(entity);
     }
 
+    public void updateWorkbookRevisionAndName(String unitId, long revision, String name, Instant now) {
+        WorkbookEntity entity = workbooks.findById(unitId).orElseThrow(() -> new IllegalStateException("Workbook not found: " + unitId));
+        entity.updateRevisionAndName(revision, name, now);
+        workbooks.save(entity);
+    }
+
     public List<AclEntry> listAcl(String unitId) {
         return acl.findAllForWorkbook(unitId).stream()
                 .map(entry -> new AclEntry(entry.getId().getUnitId(), entry.getId().getSubject(), entry.getRole(), entry.getCreatedAt(), entry.getUpdatedAt()))
@@ -203,6 +209,11 @@ public class WorkbookStore {
         return operations.findByUnitIdOrderByRevisionDesc(unitId).stream().map(this::operationRow).toList();
     }
 
+    public List<OperationRow> listOperationsBefore(String unitId, long beforeRevision, int limit) {
+        return operations.findByUnitIdAndRevisionLessThanOrderByRevisionDesc(unitId, beforeRevision,
+                PageRequest.of(0, limit)).stream().map(this::operationRow).toList();
+    }
+
     @Transactional
     public void insertCheckpoint(String unitId, long revision, String snapshotJson, String checksum, Instant now) {
         CheckpointEntity entity = checkpoints.findAtRevision(unitId, revision)
@@ -233,7 +244,7 @@ public class WorkbookStore {
 
     private WorkbookRow workbookRow(WorkbookEntity entity) {
         return new WorkbookRow(entity.getUnitId(), entity.getName(), entity.getSnapshotJson(), entity.getSnapshotRevision(),
-                entity.getRevision(), entity.getCreatedAt(), entity.getUpdatedAt());
+                entity.getRevision(), entity.getLifecycle(), entity.getCreatedAt(), entity.getUpdatedAt());
     }
 
     private OperationRow operationRow(OperationEntity entity) {

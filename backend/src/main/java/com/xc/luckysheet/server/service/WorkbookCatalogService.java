@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
+import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
@@ -13,6 +15,7 @@ import com.xc.luckysheet.server.contract.WorkbookArtifactResponse;
 import com.xc.luckysheet.server.contract.WorkbookImportResponse;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.contract.WorkbookSource;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.contract.WorkbookSyncStatus;
@@ -38,6 +41,7 @@ import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntity;
 import com.xc.luckysheet.server.persistence.WorkspaceSpaceEntityRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -118,7 +122,7 @@ public class WorkbookCatalogService {
         return snapshotResponse(entity, request.snapshot());
     }
 
-    public List<WorkbookSummary> list(String actor, String view, String spaceId, String folderId, String query) {
+    public CursorPage<WorkbookSummary> list(String actor, String view, String spaceId, String folderId, String query, int page, int limit) {
         String normalizedView = view == null || view.isBlank() ? "recent" : view.trim().toLowerCase();
         boolean trashOnly = "trash".equals(normalizedView);
         boolean includeTrash = trashOnly;
@@ -126,8 +130,8 @@ public class WorkbookCatalogService {
         boolean ownedOnly = "owned".equals(normalizedView);
         String normalizedQuery = query == null || query.isBlank() ? null : query.trim();
         List<WorkbookEntity> rows = workbooks.findCatalogCandidates(actor, includeTrash, trashOnly, sharedOnly, ownedOnly,
-                blankToNull(spaceId), blankToNull(folderId), normalizedQuery);
-        if (rows.isEmpty()) return List.of();
+                blankToNull(spaceId), blankToNull(folderId), normalizedQuery, PageRequest.of(page, limit));
+        if (rows.isEmpty()) return new CursorPage<>(List.of(), null);
 
         List<String> unitIds = rows.stream().map(WorkbookEntity::getUnitId).toList();
         List<String> spaceIds = rows.stream().map(WorkbookEntity::getSpaceId).filter(this::nonBlank).distinct().toList();
@@ -145,7 +149,7 @@ public class WorkbookCatalogService {
         Map<String, String> artifactNames = new HashMap<>();
         artifacts.findByUnitIdIn(unitIds).forEach(item -> artifactNames.put(item.getUnitId(), item.getFileName()));
 
-        return rows.stream().map(row -> {
+        List<WorkbookSummary> items = rows.stream().map(row -> {
             WorkbookAclRole role = row.getOwnerSubject().equals(actor) ? WorkbookAclRole.OWNER : directRoles.get(row.getUnitId());
             role = max(role, row.getSpaceId() == null ? null : spaceRoles.get(row.getSpaceId()));
             if (role == null) role = WorkbookAclRole.VIEWER;
@@ -154,17 +158,16 @@ public class WorkbookCatalogService {
             WorkspaceFolderEntity folder = row.getFolderId() == null ? null : folderMap.get(row.getFolderId());
             return summary(row, role, state, space, folder, folderMap, artifactNames.get(row.getUnitId()));
         }).toList();
+        return new CursorPage<>(items, items.size() == limit ? CursorPageRequest.next(page + 1) : null);
     }
 
     @Transactional
     public WorkbookSummary update(String unitId, UpdateWorkbookRequest request, String actor) {
-        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        WorkbookEntity entity = lockActiveOrTrashed(unitId);
         WorkbookAclRole current = requireRole(unitId, actor, WorkbookAclRole.EDITOR);
-        if (entity.getLifecycle() == WorkbookLifecycle.TRASHED && !current.includes(WorkbookAclRole.OWNER)) {
-            throw ServiceException.forbidden("Only the workbook owner can modify a trashed workbook");
-        }
-        String targetSpaceId = request.spaceId() == null ? entity.getSpaceId() : blankToNull(request.spaceId());
-        String targetFolderId = request.folderId() == null ? entity.getFolderId() : blankToNull(request.folderId());
+        if (entity.getLifecycle() == WorkbookLifecycle.TRASHED) throw ServiceException.trashed("Workbook is in trash and cannot be moved");
+        String targetSpaceId = request.spaceIdSpecified() ? request.spaceId() : entity.getSpaceId();
+        String targetFolderId = request.folderIdSpecified() ? request.folderId() : entity.getFolderId();
         boolean crossSpace = !java.util.Objects.equals(targetSpaceId, entity.getSpaceId());
         if (crossSpace && !current.includes(WorkbookAclRole.OWNER)) {
             throw ServiceException.forbidden("Only the workbook owner can move it across spaces");
@@ -175,7 +178,7 @@ public class WorkbookCatalogService {
         workspace.requireFolder(targetSpaceId, targetFolderId, actor, WorkbookAclRole.EDITOR);
         workspace.require(targetSpaceId, actor, WorkbookAclRole.EDITOR);
         Instant now = Instant.now();
-        entity.updateMetadata(request.name() == null ? null : request.name().trim(), targetSpaceId, targetFolderId, now);
+        entity.updateLocation(targetSpaceId, targetFolderId, now);
         workbooks.save(entity);
         if (crossSpace) acl.deleteNonOwner(unitId, entity.getOwnerSubject());
         return summaryForActor(entity, actor);
@@ -184,6 +187,7 @@ public class WorkbookCatalogService {
     @Transactional
     public WorkbookSummary copy(String unitId, CopyWorkbookRequest request, String actor) {
         WorkbookEntity source = requireActiveOrTrashed(unitId);
+        if (source.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be copied");
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
         WorkbookSnapshotResponse sourceSnapshot = operations.readSnapshot(unitId, actor);
         String targetSpaceId = request == null || request.spaceId() == null ? source.getSpaceId() : blankToNull(request.spaceId());
@@ -210,7 +214,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookSummary moveToTrash(String unitId, String actor) {
-        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookAclRole.OWNER);
         if (entity.getLifecycle() == WorkbookLifecycle.TRASHED) return summaryForActor(entity, actor);
         entity.moveToTrash(Instant.now());
@@ -220,7 +224,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookSummary restoreFromTrash(String unitId, String actor) {
-        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookAclRole.OWNER);
         if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) return summaryForActor(entity, actor);
         entity.restoreFromTrash(Instant.now());
@@ -230,7 +234,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public void purge(String unitId, String actor) {
-        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookAclRole.OWNER);
         if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) throw ServiceException.conflict("Workbook must be in trash before purge");
         artifacts.deleteById(unitId);
@@ -268,6 +272,7 @@ public class WorkbookCatalogService {
     @Transactional
     public WorkbookArtifactResponse putArtifact(String unitId, String fileName, String mimeType, String checksum,
                                                 byte[] content, String actor) {
+        requireActive(unitId);
         requireRole(unitId, actor, WorkbookAclRole.EDITOR);
         validateArtifact(fileName, checksum, content);
         String actual = checksum(content);
@@ -309,6 +314,7 @@ public class WorkbookCatalogService {
         }
         String unitId = snapshot.path("unitId").asText("").trim();
         if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
+        WorkbookSnapshotValidator.requireCanonical(snapshot, unitId);
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
                 WorkbookSource.XLSX_IMPORT), actor);
         String digest = checksum(content);
@@ -323,6 +329,10 @@ public class WorkbookCatalogService {
 
     private WorkbookEntity createEntity(CreateWorkbookRequest request, String actor) {
         if (workbooks.existsById(request.unitId())) throw ServiceException.conflict("Workbook already exists");
+        WorkbookSnapshotValidator.requireCanonical(request.snapshot(), request.unitId());
+        if (!request.name().trim().equals(request.snapshot().path("name").asText().trim())) {
+            throw ServiceException.validation("Workbook name must match the canonical snapshot name");
+        }
         WorkspaceSpaceEntity space = request.spaceId() == null || request.spaceId().isBlank()
                 ? workspace.ensurePersonalSpace(actor)
                 : workspace.require(request.spaceId(), actor, WorkbookAclRole.EDITOR);
@@ -418,6 +428,16 @@ public class WorkbookCatalogService {
         return workbooks.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
     }
 
+    private WorkbookEntity lockActiveOrTrashed(String unitId) {
+        if (unitId == null || unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("unitId is invalid");
+        return workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+    }
+
+    private void requireActive(String unitId) {
+        WorkbookEntity entity = requireActiveOrTrashed(unitId);
+        if (entity.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
+    }
+
     private WorkbookAclRole requireRole(String unitId, String actor, WorkbookAclRole required) {
         WorkbookAclRole role = authorization.role(unitId, actor).orElse(null);
         if (role == null) throw ServiceException.forbidden("Workbook access denied");
@@ -438,7 +458,9 @@ public class WorkbookCatalogService {
     private void validateArtifact(String fileName, String checksum, byte[] content) {
         if (content == null || content.length == 0 || content.length > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX artifact size is invalid");
         if (checksum == null || !checksum.matches("[A-Fa-f0-9]{64}")) throw ServiceException.validation("XLSX artifact checksum is invalid");
-        if (fileName != null && fileName.length() > 500) throw ServiceException.validation("XLSX file name is too long");
+        if (fileName != null && fileName.length() > GeneratedWorkbookContract.MAX_WORKBOOK_NAME_LENGTH) {
+            throw ServiceException.validation("XLSX file name is too long");
+        }
     }
 
     private String safeFileName(String value) {

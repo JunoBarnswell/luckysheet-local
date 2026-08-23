@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.AclEntry;
 import com.xc.luckysheet.server.contract.AuditRecord;
 import com.xc.luckysheet.server.contract.CheckpointResponse;
+import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
@@ -16,6 +17,8 @@ import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
+import com.xc.luckysheet.server.contract.WorkbookLifecycle;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.config.CoordinationProperties;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.mutation.MutationPreparation;
@@ -39,6 +42,7 @@ import java.util.UUID;
 public class WorkbookOperationService {
     private static final long CHECKPOINT_OPERATION_LIMIT = 50;
     private static final long CHECKPOINT_BYTES_LIMIT = 512_000;
+    private static final String SYSTEM_RESTORE_ACTOR = "system:workbook-restore";
 
     private final WorkbookStore store;
     private final AccessControlService access;
@@ -87,6 +91,7 @@ public class WorkbookOperationService {
         if (!routeUnitId.equals(operation.unitId())) throw ServiceException.validation("Operation unitId does not match route");
         WorkbookAclRole actorRole = access.require(routeUnitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow row = store.findForUpdate(routeUnitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + routeUnitId));
+        if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot accept operations");
 
         OperationRow existing = store.findOperation(operation.operationId()).orElse(null);
         if (existing != null) {
@@ -118,7 +123,8 @@ public class WorkbookOperationService {
         String envelopeJson = writeJson(committed);
         store.insertOperation(new OperationRow(operation.operationId(), routeUnitId, nextRevision, actor, operation.clientSequence(), operation.baseRevision(), envelopeJson, committedAt));
         enqueueRevisionEvent(routeUnitId, operation.operationId(), nextRevision, envelopeJson, committedAt);
-        store.updateWorkbookRevision(routeUnitId, nextRevision, committedAt);
+        String canonicalName = next.path("name").asText(row.name()).trim();
+        store.updateWorkbookRevisionAndName(routeUnitId, nextRevision, canonicalName, committedAt);
         if (shouldCheckpoint(row, operation, envelopeJson)) {
             String nextJson = writeJson(next);
             store.updateWorkbook(routeUnitId, nextRevision, nextJson, nextRevision, committedAt);
@@ -128,9 +134,11 @@ public class WorkbookOperationService {
         return new CommitResult(committed, true);
     }
 
-    public List<RevisionRecord> revisions(String unitId, String actor) {
+    public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor) {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
-        return store.listOperations(unitId).stream().map(this::revisionRecord).toList();
+        List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream().map(this::revisionRecord).toList();
+        String next = items.size() == limit ? Long.toString(items.get(items.size() - 1).revision()) : null;
+        return new CursorPage<>(items, next);
     }
 
     public WorkbookSnapshotResponse readRevision(String unitId, long revision, String actor) {
@@ -146,6 +154,7 @@ public class WorkbookOperationService {
     public CheckpointResponse checkpoint(String unitId, String actor) {
         access.require(unitId, actor, WorkbookAclRole.EDITOR);
         WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+        if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
         if (row.snapshotRevision() == row.revision()) {
             JsonNode snapshot = readJson(row.snapshotJson());
             return new CheckpointResponse(response(unitId, snapshot, row.revision(), checksum(row.snapshotJson())), false);
@@ -164,6 +173,7 @@ public class WorkbookOperationService {
         WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
         if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
         JsonNode target = snapshotAtRevision(row, request.targetRevision());
+        WorkbookSnapshotValidator.requireCanonical(target, unitId);
         registry.require("workbook.restore", true);
         long revision = row.revision() + 1;
         Instant now = Instant.now();
@@ -178,10 +188,11 @@ public class WorkbookOperationService {
                 .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
         OperationEnvelope source = new OperationEnvelope(OperationEnvelope.SCHEMA, operationId, unitId, revision, row.revision(),
                 sourceMutations, now);
-        CommittedOperationEnvelope committed = CommittedOperationEnvelope.from(source, actor, revision, now, mutations);
+        CommittedOperationEnvelope committed = CommittedOperationEnvelope.system(source, actor, revision, now, mutations);
         String json = writeJson(target);
         String envelopeJson = writeJson(committed);
-        store.insertOperation(new OperationRow(operationId, unitId, revision, actor, revision, row.revision(), envelopeJson, now));
+        // System restores must not share an authenticated browser's client-sequence namespace.
+        store.insertOperation(new OperationRow(operationId, unitId, revision, SYSTEM_RESTORE_ACTOR, revision, row.revision(), envelopeJson, now));
         enqueueRevisionEvent(unitId, operationId, revision, envelopeJson, now);
         store.updateWorkbook(unitId, revision, json, revision, now);
         store.insertCheckpoint(unitId, revision, json, checksum(json), now);

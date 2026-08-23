@@ -67,6 +67,7 @@ export function serializeQueryDefinition(query: QueryDefinition): QueryDefinitio
     steps: structuredClone(query.steps),
     ...(query.refreshOnOpen === undefined ? {} : { refreshOnOpen: query.refreshOnOpen }),
     ...(query.refreshPolicy === undefined ? {} : { refreshPolicy: structuredClone(query.refreshPolicy) }),
+    ...(query.lastTarget === undefined ? {} : { lastTarget: structuredClone(query.lastTarget) }),
     sourceRevision: query.sourceRevision ?? 0,
   };
 }
@@ -85,6 +86,7 @@ export function deserializeQueryDefinition(
     steps: structuredClone(persisted.steps),
     ...(persisted.refreshOnOpen === undefined ? {} : { refreshOnOpen: persisted.refreshOnOpen }),
     ...(persisted.refreshPolicy === undefined ? {} : { refreshPolicy: structuredClone(persisted.refreshPolicy) }),
+    ...(persisted.lastTarget === undefined ? {} : { lastTarget: structuredClone(persisted.lastTarget) }),
     sourceRevision: persisted.sourceRevision,
   };
 }

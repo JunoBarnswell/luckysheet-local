@@ -5,6 +5,14 @@ import { evaluateFormula } from './evaluator';
 import { parseFormula } from './parser';
 import { createFormulaError, isArrayValue, type ArrayValue, type FormulaValue } from './values';
 
+/** Formula-engine representation of the workbook's canonical scoped names. */
+export interface FormulaDefinedName {
+  readonly name: string;
+  readonly formula: string;
+  readonly scope: 'workbook' | 'sheet';
+  readonly sheetId?: string;
+}
+
 export interface DefinedNameContext {
   currentCell: CellAddress;
   readCell: (address: CellAddress) => FormulaValue;
@@ -17,6 +25,38 @@ export function normalizeDefinedNames(names: Record<string, string>): Record<str
     normalized[name.trim().toUpperCase()] = value;
   }
   return normalized;
+}
+
+/**
+ * Normalize canonical scoped names into a deterministic, duplicate-free
+ * collection. FormulaEngine stores this collection directly; a workbook-level
+ * Record is only accepted as a legacy input projection.
+ */
+export function normalizeDefinedNameModels(names: readonly FormulaDefinedName[]): FormulaDefinedName[] {
+  const normalized = new Map<string, FormulaDefinedName>();
+  for (const input of names) {
+    const name = input.name.trim();
+    const formula = input.formula.trim();
+    if (!name || !formula) throw new Error('Defined name requires a name and formula');
+    if (input.scope !== 'workbook' && input.scope !== 'sheet') throw new Error(`Invalid defined name scope: ${String(input.scope)}`);
+    if (input.scope === 'sheet' && !input.sheetId?.trim()) throw new Error(`Sheet-scoped defined name ${name} requires a sheetId`);
+    if (input.scope === 'workbook' && input.sheetId !== undefined) throw new Error(`Workbook-scoped defined name ${name} cannot specify sheetId`);
+    const sheetId = input.sheetId?.trim();
+    const key = input.scope === 'sheet'
+      ? `sheet:${sheetId!.toLocaleLowerCase()}:${name.toLocaleLowerCase()}`
+      : `workbook:${name.toLocaleLowerCase()}`;
+    normalized.set(key, {
+      name,
+      formula,
+      scope: input.scope,
+      ...(sheetId ? { sheetId } : {}),
+    });
+  }
+  return [...normalized.values()].sort((left, right) => {
+    const leftKey = `${left.scope}:${left.sheetId ?? ''}:${left.name.toLocaleLowerCase()}`;
+    const rightKey = `${right.scope}:${right.sheetId ?? ''}:${right.name.toLocaleLowerCase()}`;
+    return leftKey.localeCompare(rightKey);
+  });
 }
 
 export function resolveDefinedNameSource(source: string, context: DefinedNameContext): FormulaValue {

@@ -7,12 +7,16 @@ import type {
 } from '@react-sheets/exchange-xlsx';
 import type {
   WorkbookAclRole,
+  ApiRequestOptions,
   WorkbookApiClient,
+  CursorPage,
   WorkbookCatalogQuery as ProtocolWorkbookCatalogQuery,
   WorkbookCreateMetadata,
   WorkbookCopyRequest,
   WorkbookImportRequest,
   WorkbookMetadataPatch,
+  UserPreferences,
+  UserPreferencesPatch,
   WorkbookSourceArtifactMetadata,
   WorkbookSummary,
   WorkbookUserState as ProtocolWorkbookUserState,
@@ -39,6 +43,15 @@ export interface WorkbookCatalogQuery {
   query?: string;
   spaceId?: string;
   folderId?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export type WorkbookCatalogRequestOptions = ApiRequestOptions;
+
+export interface WorkbookCatalogPage {
+  entries: WorkbookCatalogEntry[];
+  nextCursor: string | null;
 }
 
 export interface WorkbookCatalogEntry {
@@ -117,7 +130,7 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'deleteWorkbookAcl'
   | 'getAccess'
   | 'createWorkbook'
-  | 'listWorkbooks'
+  | 'listWorkbookPage'
   | 'updateWorkbook'
   | 'copyWorkbook'
   | 'moveToTrash'
@@ -131,6 +144,8 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
   | 'commitOperation'
   | 'checkpointWorkbook'
   | 'listSpaces'
+  | 'getUserPreferences'
+  | 'putUserPreferences'
   | 'listFolders'
   | 'createSpace'
   | 'createFolder'
@@ -146,6 +161,7 @@ export interface WorkbookCatalogRemoteClient extends Pick<WorkbookApiClient,
 
 export type WorkbookCatalogProtocolQuery = ProtocolWorkbookCatalogQuery;
 export type WorkbookCatalogProtocolSummary = WorkbookSummary;
+export type WorkbookCatalogProtocolPage = CursorPage<WorkbookSummary>;
 export type WorkbookCatalogProtocolUserState = ProtocolWorkbookUserState;
 export type WorkbookCatalogProtocolImport = WorkbookImportRequest;
 export type WorkbookCatalogProtocolMetadataPatch = WorkbookMetadataPatch;

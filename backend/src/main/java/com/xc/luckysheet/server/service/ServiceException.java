@@ -36,6 +36,10 @@ public class ServiceException extends RuntimeException {
         return new ServiceException("CONFLICT", 409, message);
     }
 
+    public static ServiceException trashed(String message) {
+        return new ServiceException("WORKBOOK_TRASHED", 409, message);
+    }
+
     public static ServiceException forbidden(String message) {
         return new ServiceException("FORBIDDEN", 403, message);
     }

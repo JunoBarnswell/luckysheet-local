@@ -22,17 +22,23 @@ import java.util.UUID;
 public class GuestShareService {
     private final WorkbookStore store;
     private final ShareProperties properties;
+    private final WorkbookLifecycleService lifecycle;
+    private final WorkbookAuthorizationService authorization;
     private final SecureRandom random = new SecureRandom();
 
-    public GuestShareService(WorkbookStore store, ShareProperties properties) {
+    public GuestShareService(WorkbookStore store, ShareProperties properties, WorkbookLifecycleService lifecycle,
+                             WorkbookAuthorizationService authorization) {
         this.store = store;
         this.properties = properties;
+        this.lifecycle = lifecycle;
+        this.authorization = authorization;
     }
 
     @Transactional
     public ShareResponse create(String unitId, ShareCreateRequest request, String actor) {
         // The owner check must use the persistent ACL, never a client role.
         requireOwner(unitId, actor);
+        lifecycle.requireActive(unitId);
         WorkbookAclRole role = parseRole(request.role());
         Instant now = Instant.now();
         Instant expiresAt = request.expiresAt() == null ? now.plus(properties.defaultLifetime()) : request.expiresAt();
@@ -48,12 +54,14 @@ public class GuestShareService {
 
     public List<ShareResponse> list(String unitId, String actor) {
         requireOwner(unitId, actor);
+        lifecycle.requireActive(unitId);
         return store.listShares(unitId).stream().map(ShareResponse::listed).toList();
     }
 
     @Transactional
     public void revoke(String unitId, UUID shareId, String actor) {
         requireOwner(unitId, actor);
+        lifecycle.requireActive(unitId);
         if (store.revokeShare(unitId, shareId, Instant.now()) == 0) throw ServiceException.notFound("Share link not found or already revoked");
     }
 
@@ -97,7 +105,7 @@ public class GuestShareService {
     }
 
     private void requireOwner(String unitId, String actor) {
-        if (store.findRole(unitId, actor).orElse(null) != WorkbookAclRole.OWNER) {
+        if (authorization.role(unitId, actor).orElse(null) != WorkbookAclRole.OWNER) {
             throw ServiceException.forbidden("Workbook role OWNER is required");
         }
     }

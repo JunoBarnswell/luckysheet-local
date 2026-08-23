@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Box, Button, Inline, Panel, PanelBody, PanelHeader, PanelTitle, Stack, StatePanel, Text } from '@react-sheets/ui-system';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
-import type { TableRowsResponse } from '@react-sheets/protocol';
+import type { TableRowsResponse } from '@react-sheets/spreadsheet-app';
 
 export interface DataModelPanelProps {
   tables: readonly WorkbookTableModel[];

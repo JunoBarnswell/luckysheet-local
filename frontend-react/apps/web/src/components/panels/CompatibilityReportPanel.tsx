@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Panel, PanelBody, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
 import type { CompatibilityReport } from '@react-sheets/exchange-xlsx';
 
 export interface CompatibilityReportPanelProps {
@@ -36,11 +36,11 @@ export function CompatibilityReportPanel({ report, onClear }: CompatibilityRepor
           ) : (
             <Stack gap="xs">
               {report.issues.slice(0, 12).map((issue, index) => (
-                <div key={`${issue.feature}-${index}`} className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
+                <Box key={`${issue.feature}-${index}`} className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
                   <Text size="xs" weight="semibold">{issue.feature}</Text>
                   <Text size="xs" tone="subtle">{issue.message}</Text>
                   {issue.location ? <Text size="xs" tone="subtle">{issue.location}</Text> : null}
-                </div>
+                </Box>
               ))}
             </Stack>
           )}

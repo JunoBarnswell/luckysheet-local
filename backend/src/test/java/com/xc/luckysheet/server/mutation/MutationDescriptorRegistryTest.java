@@ -40,12 +40,11 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
-    void knownMutationWithoutServerReducerFailsClosedInsteadOfBeingStoredAsOpaqueJson() {
+    void knownRemoteStructureMutationHasAnExplicitServerReducer() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.require("sheet.duplicated", false));
-        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals("sheet.duplicated", registry.require("sheet.duplicated", false).id());
         assertEquals(true, registry.ids().contains("sheet.duplicated"));
-        assertEquals(false, registry.acceptedIds().contains("sheet.duplicated"));
+        assertEquals(true, registry.acceptedIds().contains("sheet.duplicated"));
     }
 
     @Test
@@ -56,6 +55,7 @@ class MutationDescriptorRegistryTest {
                 "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
+                "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore", "hyperlink.set", "hyperlink.remove",
                 "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
@@ -78,12 +78,10 @@ class MutationDescriptorRegistryTest {
         assertEquals(Set.of(
                 "automation.recording.changed",
                 "pivot.chart.create",
-                "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore",
-                "hyperlink.set", "hyperlink.remove",
                 "query.load.workbook-table",
                 "workbook.restore"
         ), registry.unavailableReasons().keySet());
-        assertEquals("Requires a shared formula-reference AST rename transform; raw text replacement is forbidden.", registry.unavailableReasons().get("sheet.rename"));
+        assertEquals("Recorder state is transient session state and must not enter workbook history.", registry.unavailableReasons().get("automation.recording.changed"));
     }
 
     @Test

@@ -21,7 +21,9 @@ public record CreateWorkbookRequest(
         if (unitId == null || unitId.isBlank() || name == null || name.isBlank() || snapshot == null || !snapshot.isObject()) {
             throw new IllegalArgumentException("unitId, name and object snapshot are required");
         }
-        if (unitId.length() > 200 || name.length() > 500) throw new IllegalArgumentException("Workbook identity is too long");
+        if (unitId.length() > 200 || name.length() > GeneratedWorkbookContract.MAX_WORKBOOK_NAME_LENGTH) {
+            throw new IllegalArgumentException("Workbook identity is too long");
+        }
         if (source == null) source = WorkbookSource.NATIVE;
     }
 }

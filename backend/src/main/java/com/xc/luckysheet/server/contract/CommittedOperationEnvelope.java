@@ -11,6 +11,7 @@ public record CommittedOperationEnvelope(
         @JsonProperty("operationId") String operationId,
         @JsonProperty("unitId") String unitId,
         @JsonProperty("actorId") String actorId,
+        @JsonProperty("origin") OperationOrigin origin,
         @JsonProperty("clientSequence") long clientSequence,
         @JsonProperty("baseRevision") long baseRevision,
         @JsonProperty("revision") long revision,
@@ -21,7 +22,7 @@ public record CommittedOperationEnvelope(
     @JsonCreator
     public CommittedOperationEnvelope {
         if (!OperationEnvelope.SCHEMA.equals(schema)) throw new IllegalArgumentException("schema must be OperationEnvelope");
-        if (operationId == null || operationId.isBlank() || unitId == null || unitId.isBlank() || actorId == null || actorId.isBlank()) throw new IllegalArgumentException("committed operation identity is required");
+        if (operationId == null || operationId.isBlank() || unitId == null || unitId.isBlank() || actorId == null || actorId.isBlank() || origin == null) throw new IllegalArgumentException("committed operation identity is required");
         if (clientSequence < 1 || baseRevision < 0 || revision < 1) throw new IllegalArgumentException("Invalid committed operation revision");
         if (mutations == null || mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
         mutations = List.copyOf(mutations);
@@ -40,12 +41,35 @@ public record CommittedOperationEnvelope(
                 operation.operationId(),
                 operation.unitId(),
                 actorId,
+                OperationOrigin.CLIENT,
                 operation.clientSequence(),
                 operation.baseRevision(),
                 revision,
                 mutations,
                 // Client clocks are neither trusted nor replay authority.
                 // The persisted envelope has one server-issued event time.
+                committedAt,
+                committedAt
+        );
+    }
+
+    public static CommittedOperationEnvelope system(
+            OperationEnvelope operation,
+            String actorId,
+            long revision,
+            Instant committedAt,
+            List<CommittedOperationMutation> mutations
+    ) {
+        return new CommittedOperationEnvelope(
+                OperationEnvelope.SCHEMA,
+                operation.operationId(),
+                operation.unitId(),
+                actorId,
+                OperationOrigin.SYSTEM,
+                operation.clientSequence(),
+                operation.baseRevision(),
+                revision,
+                mutations,
                 committedAt,
                 committedAt
         );

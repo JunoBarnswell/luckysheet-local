@@ -1,0 +1,31 @@
+{
+  "apiVersion": "2026-08-24",
+  "workbook": {
+    "snapshotSchema": "WorkbookSnapshot",
+    "snapshotVersion": 2,
+    "maxNameLength": 255
+  },
+  "errors": [
+    "UNAUTHENTICATED",
+    "FORBIDDEN",
+    "VALIDATION_ERROR",
+    "NOT_FOUND",
+    "CONFLICT",
+    "WORKBOOK_TRASHED",
+    "TIMEOUT",
+    "SERVICE_UNAVAILABLE",
+    "INTERNAL_ERROR"
+  ],
+  "mutations": {
+    "automation.recording.changed": { "durability": "transient", "remote": false },
+    "pivot.chart.create": { "durability": "transient", "remote": false, "replacement": "drawing.add" },
+    "sheet.add": { "durability": "remote", "remote": true },
+    "sheet.remove": { "durability": "remote", "remote": true },
+    "sheet.rename": { "durability": "remote", "remote": true },
+    "sheet.duplicated": { "durability": "remote", "remote": true },
+    "sheet.restore": { "durability": "remote", "remote": true },
+    "hyperlink.set": { "durability": "remote", "remote": true },
+    "hyperlink.remove": { "durability": "remote", "remote": true },
+    "query.load.workbook-table": { "durability": "local", "remote": false }
+  }
+}

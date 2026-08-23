@@ -28,7 +28,8 @@ import type {
   WorksheetModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
-import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider, TableRowsResponse } from '@react-sheets/protocol';
+import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
+import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { XlsxPackage, XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import { computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
 import {
@@ -62,6 +63,7 @@ import {
 } from './features/permission';
 import {
   createSpreadsheetRuntime,
+  disposeSpreadsheetRuntime,
   hydrateRuntime,
   rehydrateFormulaAfterRestore,
   resolveActorId,
@@ -74,7 +76,7 @@ import {
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
 import { cellAddress, columnLabel } from './address';
-import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
+import { buildCanvasSheetSnapshot, type CanvasSheetSnapshot } from './ui-snapshot';
 import {
   buildDrawingAdd,
   findDrawingByPayloadId,
@@ -98,6 +100,7 @@ import {
   prepareDataRegionMaterialization,
   resolveCell as resolveWorkbookCell,
 } from './features/data-source';
+import type { TableRowsResponse } from './features/data-source';
 import {
   buildCellNote,
   buildCommentReply,
@@ -118,6 +121,7 @@ import {
 } from './features/history';
 import {
   buildPersistenceMeta,
+  type WorkspacePersistence,
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
@@ -136,6 +140,7 @@ import { browserPrintHook, PdfExportService, type PrintLayout } from './features
 import type { LoadTarget, QueryDefinition } from './features/query/query-steps';
 import {
   buildQueryResultSnapshot,
+  deserializeQueryDefinition,
   executeQueryDefinition,
   resolveLoadTarget,
   summarizeQueryResult,
@@ -180,6 +185,9 @@ import type {
 } from './types';
 
 export interface WorkbookSessionOptions {
+  unitId?: string;
+  api?: WorkbookApiClient;
+  workspacePersistence?: WorkspacePersistence;
   initialPhase?: AppPhase;
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
@@ -387,16 +395,25 @@ export class WorkbookSession {
   private selectionService: SelectionService;
   private collabDispose: (() => void) | null = null;
   private persistenceDispose: (() => void) | null = null;
+  private started = false;
+  private disposed = false;
+  private lifecycleGeneration = 0;
   private overrideTarget: { row: number; column: number } | null = null;
   private clipboardData: ClipboardData | null = null;
   private readonly materializingDataRegions = new Map<string, Promise<void>>();
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
+  private projectionGeneration = 0;
+  private readonly sheetProjectionCache = new Map<string, { generation: number; snapshot: CanvasSheetSnapshot }>();
+  private persistenceMetaDirty = true;
 
-  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
+  constructor({ unitId, api, workspacePersistence, initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
+      unitId,
+      api,
+      workspacePersistence,
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
     });
@@ -438,6 +455,9 @@ export class WorkbookSession {
       this.emit();
     };
     this.runtime.handlers.onMutationsApplied = () => {
+      this.projectionGeneration += 1;
+      this.persistenceMetaDirty = true;
+      this.restorePersistedQuerySessions();
       this.ensureActiveSheetSession();
       this.runtime.formulaAudit.refresh();
       this.refresh();
@@ -455,6 +475,7 @@ export class WorkbookSession {
       this.emit();
     };
     this.runtime.handlers.onWorkspacePersisted = () => {
+      this.persistenceMetaDirty = true;
       this.syncPersistenceMeta();
     };
     this.runtime.handlers.onCollabStatus = (status) => {
@@ -485,6 +506,10 @@ export class WorkbookSession {
   }
 
   start(): void {
+    if (this.started) return;
+    this.disposed = false;
+    this.started = true;
+    const generation = ++this.lifecycleGeneration;
     this.persistenceDispose = startPersistenceSession(this.runtime);
     this.collabDispose = startCollaborationSession(this.runtime, () =>
       `${this.activeSheetId}:${this.selectionService.getState().activeCell.row}:${this.selectionService.getState().activeCell.column}`,
@@ -492,18 +517,29 @@ export class WorkbookSession {
       this.runtime.shareTokenProvider,
     );
     void this.runtime.persistenceReady.then(async () => {
+      if (this.disposed || generation !== this.lifecycleGeneration) return;
       const artifact = await this.runtime.workspacePersistence.xlsxArtifacts.load(this.runtime.model.unitId);
-      if (artifact) this.xlsxSourceArtifact = artifact;
-    }).catch(() => undefined);
+      if (!this.disposed && generation === this.lifecycleGeneration && artifact) this.xlsxSourceArtifact = artifact;
+      if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
+    }).catch((error: unknown) => {
+      if (!this.disposed && generation === this.lifecycleGeneration) this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
+    });
   }
 
   dispose(): void {
+    if (!this.started && this.disposed) return;
+    this.disposed = true;
+    this.started = false;
+    this.lifecycleGeneration += 1;
     this.recorderDetach?.();
     this.recorderDetach = null;
     this.collabDispose?.();
     this.persistenceDispose?.();
     this.collabDispose = null;
     this.persistenceDispose = null;
+    disposeSpreadsheetRuntime(this.runtime);
+    this.sheetProjectionCache.clear();
+    this.cachedUiSnapshot = null;
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -512,6 +548,7 @@ export class WorkbookSession {
   };
 
   private emit(): void {
+    if (this.disposed) return;
     this.snapshotGeneration += 1;
     for (const listener of this.listeners) listener();
   }
@@ -523,6 +560,7 @@ export class WorkbookSession {
   }
 
   private syncPersistenceMeta(): void {
+    if (!this.persistenceMetaDirty) return;
     const meta = buildPersistenceMeta(
       this.runtime.model.snapshot(),
       this.runtime.remoteRevision,
@@ -531,6 +569,26 @@ export class WorkbookSession {
     );
     this.hasPendingOperations = meta.hasPendingOperations;
     this.persistenceChecksum = meta.checksum;
+    this.persistenceMetaDirty = false;
+  }
+
+  private restorePersistedQuerySessions(): void {
+    const persisted = this.runtime.model.listQueryDefinitions();
+    const current = new Set(persisted.map((definition) => definition.id));
+    for (const queryId of this.querySessions.keys()) {
+      if (!current.has(queryId)) this.querySessions.delete(queryId);
+    }
+    for (const definition of persisted) {
+      if (!this.querySessions.has(definition.id)) {
+        try {
+          this.querySessions.set(definition.id, { definition: deserializeQueryDefinition(definition) });
+        } catch (error) {
+          // Keep the canonical persisted definition in the workbook so the
+          // user can repair it; do not expose a falsely loaded query result.
+          this.notify(error instanceof Error ? `Query ${definition.id} could not be restored: ${error.message}` : `Query ${definition.id} could not be restored`);
+        }
+      }
+    }
   }
 
   /** The sole worksheet read path for session-level Home behavior. */
@@ -611,7 +669,24 @@ export class WorkbookSession {
     if (this.cachedUiSnapshot && this.cachedUiSnapshotGeneration === this.snapshotGeneration) {
       return this.cachedUiSnapshot;
     }
-    const sheets = buildAllSheetSnapshots(this.runtime.model, this.runtime.formula, this.runtime.pivotResults, this.runtime.dataContent);
+    const activeSheetIds = new Set(this.runtime.model.getSheets().map((sheet) => sheet.id));
+    for (const sheetId of this.sheetProjectionCache.keys()) {
+      if (!activeSheetIds.has(sheetId)) this.sheetProjectionCache.delete(sheetId);
+    }
+    const sheets = this.runtime.model.getSheets().map((sheet) => {
+      const cached = this.sheetProjectionCache.get(sheet.id);
+      if (cached?.generation === this.projectionGeneration) return cached.snapshot;
+      const snapshot = buildCanvasSheetSnapshot(
+        this.runtime.model,
+        sheet,
+        this.runtime.formula,
+        true,
+        this.runtime.pivotResults,
+        this.runtime.dataContent,
+      );
+      this.sheetProjectionCache.set(sheet.id, { generation: this.projectionGeneration, snapshot });
+      return snapshot;
+    });
     const selectedSheet = sheets.find((sheet) => sheet.id === this.activeSheetId) ?? sheets[0]!;
     const selection = this.selectionService.getState();
     const collaboration = this.getCollaborationSnapshot();
@@ -724,6 +799,19 @@ export class WorkbookSession {
     }
   }
 
+  /**
+   * Async command boundary for operations whose domain handler reads cells.
+   * It is the only path used by data tools that may target block-backed
+   * regions: materialization completes before the command transaction starts.
+   */
+  private async executeCommandAfterMaterialization(commandId: string, params: unknown): Promise<CommandResult> {
+    if (this.phase !== 'ready') throw new Error('Workbook is not ready');
+    const resolved = this.resolveCommandContext(commandId, params);
+    const regions = this.dataRegionsRequiredForCommand(commandId, resolved);
+    if (regions.length > 0) await this.materializeDataRegions(regions);
+    return this.runCommand(commandId, resolved);
+  }
+
   private async materializeDataRegions(regions: readonly SheetDataRegion[]): Promise<void> {
     for (const region of regions) {
       const key = `${region.range.sheetId}:${region.id}`;
@@ -808,6 +896,12 @@ export class WorkbookSession {
       || commandId === 'data.sort.rows'
       || commandId === 'sheet.sort.multi'
       || commandId === 'data.sort.reapply'
+      || commandId === 'data.splitColumn'
+      || commandId === 'data.textToColumns'
+      || commandId === 'data.subtotal'
+      || commandId === 'data.removeDuplicates'
+      || commandId === 'sheetTable.add'
+      || commandId === 'sheetTable.toggleTotalRow'
       || commandId === 'selection.gotoSpecial'
       || commandId === 'sheet.rows.insert'
       || commandId === 'sheet.rows.delete'
@@ -1326,6 +1420,7 @@ export class WorkbookSession {
       this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'error';
       this.notify(error instanceof Error ? error.message : 'Save failed');
       this.emit();
+      throw error instanceof Error ? error : new Error('Save failed');
     }
   }
 
@@ -2548,9 +2643,7 @@ export class WorkbookSession {
       scope: params.scope,
       searchIn: 'both' as const,
     };
-    const regions = this.dataRegionsRequiredForCommand('sheet.range.replace', command);
-    if (regions.length > 0) await this.materializeDataRegions(regions);
-    const result = this.runCommand('sheet.range.replace', command);
+    const result = await this.executeCommandAfterMaterialization('sheet.range.replace', command);
     this.notify(`${result.mutationCount} replacement(s) applied`);
     return result.mutationCount;
   }
@@ -2602,10 +2695,10 @@ export class WorkbookSession {
   flipSelection(axis: 'h' | 'v'): void {
     this.runCommand('matrix.flip', { sheetId: this.activeSheetId, range: this.getPrimaryRange(), direction: axis === 'h' ? 'horizontal' : 'vertical' });
   }
-  splitByDelimiter(delimiter: string): void {
+  async splitByDelimiter(delimiter: string): Promise<void> {
     const sel = this.selectionService.getState();
     const sheet = this.getSelectedSheet();
-    this.runCommand('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(sheet.columnCount - sel.activeCell.column - 1, 8) });
+    await this.executeCommandAfterMaterialization('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(sheet.columnCount - sel.activeCell.column - 1, 8) });
   }
 
   copy(): void {
@@ -3109,8 +3202,9 @@ export class WorkbookSession {
 
   async loadQuery(query: QueryDefinition, target?: LoadTarget): Promise<void> {
     if (!this.canExecute('query.load')) {
-      this.notify('You do not have permission to load queries');
-      return;
+      const error = new Error('You do not have permission to load queries');
+      this.notify(error.message);
+      throw error;
     }
     try {
       const resolvedTarget = target ?? resolveLoadTarget(
@@ -3118,9 +3212,10 @@ export class WorkbookSession {
         this.selectionService.primaryRangeOrDefault(),
       );
       const result = await this.executeQuery(query);
-      this.runCommand('query.load', { query, target: resolvedTarget, result });
-      const snapshot = buildQueryResultSnapshot(query, result, resolvedTarget);
-      this.querySessions.set(query.id, { definition: structuredClone(query), lastResult: snapshot });
+      const persistedQuery = { ...structuredClone(query), lastTarget: structuredClone(resolvedTarget) };
+      this.runCommand('query.load', { query: persistedQuery, target: resolvedTarget, result });
+      const snapshot = buildQueryResultSnapshot(persistedQuery, result, resolvedTarget);
+      this.querySessions.set(query.id, { definition: persistedQuery, lastResult: snapshot });
       this.lastQueryResult = snapshot;
       this.activePanel = 'query';
       this.notify(summarizeQueryResult(snapshot));
@@ -3128,25 +3223,29 @@ export class WorkbookSession {
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Query load failed');
       this.emit();
+      throw error;
     }
   }
 
   async refreshQuery(queryId: string): Promise<void> {
     const session = this.querySessions.get(queryId);
     if (!session) {
-      this.notify('Query not found');
-      return;
+      const error = new Error('Query not found');
+      this.notify(error.message);
+      throw error;
     }
     if (!this.canExecute('query.refresh')) {
-      this.notify('You do not have permission to refresh queries');
-      return;
+      const error = new Error('You do not have permission to refresh queries');
+      this.notify(error.message);
+      throw error;
     }
     try {
-      const target = session.lastResult?.target ?? resolveLoadTarget(
+      const target = session.lastResult?.target ?? session.definition.lastTarget ?? resolveLoadTarget(
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
       const result = await this.executeQuery(session.definition);
+      session.definition.lastTarget = structuredClone(target);
       this.runCommand('query.refresh', {
         queryId,
         query: session.definition,
@@ -3161,6 +3260,7 @@ export class WorkbookSession {
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Query refresh failed');
       this.emit();
+      throw error;
     }
   }
 
@@ -3490,7 +3590,7 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  toggleSheetTableTotalRow(tableId?: string, enabled?: boolean): void {
+  async toggleSheetTableTotalRow(tableId?: string, enabled?: boolean): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const selection = this.selectionService.getState();
     const table = tableId
@@ -3501,7 +3601,7 @@ export class WorkbookSession {
       return;
     }
     const nextEnabled = enabled ?? !table.hasTotalRow;
-    this.runCommand('sheetTable.toggleTotalRow', { sheetId: this.activeSheetId, tableId: table.id, enabled: nextEnabled });
+    await this.executeCommandAfterMaterialization('sheetTable.toggleTotalRow', { sheetId: this.activeSheetId, tableId: table.id, enabled: nextEnabled });
     this.notify(nextEnabled ? `Total row added to ${table.name}` : `Total row removed from ${table.name}`);
     this.refresh();
   }
@@ -3575,7 +3675,7 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  textToColumnsFromSelection(delimiter = ','): void {
+  async textToColumnsFromSelection(delimiter = ','): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     const selection = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -3587,7 +3687,7 @@ export class WorkbookSession {
       startColumn: column,
       endColumn: column,
     };
-    this.runCommand('data.textToColumns', {
+    await this.executeCommandAfterMaterialization('data.textToColumns', {
       sheetId: this.activeSheetId,
       range: targetRange,
       delimiter,
@@ -3597,13 +3697,13 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  applyDataSubtotal(): void {
+  async applyDataSubtotal(): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     if (range.endRow <= range.startRow || range.endColumn <= range.startColumn) {
       this.notify('Select a data range with at least two columns');
       return;
     }
-    this.runCommand('data.subtotal', {
+    await this.executeCommandAfterMaterialization('data.subtotal', {
       sheetId: this.activeSheetId,
       range,
       groupColumn: range.startColumn,
@@ -3614,7 +3714,7 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  removeDuplicatesFromSelection(): void {
+  async removeDuplicatesFromSelection(): Promise<void> {
     const range = normalizeRangeRef(this.getPrimaryRange());
     if (range.endRow <= range.startRow) {
       this.notify('Select a multi-row range before removing duplicates');
@@ -3622,7 +3722,7 @@ export class WorkbookSession {
     }
     const columns: number[] = [];
     for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
-    this.runCommand('data.removeDuplicates', {
+    await this.executeCommandAfterMaterialization('data.removeDuplicates', {
       sheetId: this.activeSheetId,
       range,
       columns,
@@ -3632,10 +3732,11 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  createDataTableFromSelection(): void {
+  async createDataTableFromSelection(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primaryRange = this.getPrimaryRange();
     const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
+    await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
     const fieldNames = new Set<string>();
     const fields: WorkbookTableModel['fields'] = [];
     for (let column = sourceRange.startColumn; column <= sourceRange.endColumn; column++) {

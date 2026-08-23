@@ -65,7 +65,7 @@ export type PivotWorksheetDataSource =
 
 export type PivotSource = PivotWorksheetDataSource
   | { kind: 'table'; tableId: string }
-  | { kind: 'named-range'; name: string }
+  | { kind: 'named-range'; name: string; sheetId?: SheetId }
   | { kind: 'data-source'; dataSourceId: string };
 
 export type PivotFieldDataType = 'text' | 'number' | 'date' | 'boolean' | 'mixed';

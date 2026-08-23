@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { parseRangeInput } from '../../domain/range-input';
 
 export interface ExtendedPanelProps {
@@ -67,7 +67,7 @@ export function ExtendedPanel({
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="semibold" className="mb-2 text-slate-700">Goal Seek</Text>
             <Stack gap="sm">
               <TextInput
@@ -112,9 +112,9 @@ export function ExtendedPanel({
                 Run Goal Seek
               </Button>
             </Stack>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="semibold" className="mb-2 text-slate-700">Data Table</Text>
             <Stack gap="sm">
               <Inline gap="xs">
@@ -168,9 +168,9 @@ export function ExtendedPanel({
                 Run Data Table
               </Button>
             </Stack>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="semibold" className="mb-2 text-slate-700">Scenario</Text>
             <Stack gap="sm">
               <TextInput
@@ -220,18 +220,18 @@ export function ExtendedPanel({
                 Run Scenario
               </Button>
             </Stack>
-          </div>
+          </Box>
 
           {lastWhatIfMessage ? (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+            <Box className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
               {lastWhatIfMessage}
-            </div>
+            </Box>
           ) : null}
 
           {analysisStatus ? (
-            <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+            <Box className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
               {analysisStatus}
-            </div>
+            </Box>
           ) : null}
         </Stack>
       </PanelBody>

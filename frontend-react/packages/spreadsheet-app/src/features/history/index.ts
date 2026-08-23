@@ -121,7 +121,8 @@ function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot
   target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
   target.name = restored.name;
   target.sheetOrder = [...restored.sheetOrder];
-  target.definedNames = { ...restored.definedNames };
+  // `definedNameModels` is the canonical store; the workbook-scoped formula
+  // map is a derived read-only projection and must never be assigned.
   for (const [id, sheet] of restored.sheets) target.sheets.set(id, sheet);
   for (const [id, table] of restored.tables) target.tables.set(id, table);
 }
@@ -167,7 +168,7 @@ function pivotCacheKey(revision: number, pivotId: string): string {
 async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEngine> {
   const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
   engine.setRecalculationMode('manual');
-  engine.setDefinedNames(workbook.definedNames);
+  engine.setDefinedNameModels(workbook.definedNameModels);
   const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({
     id: table.id,
     sheetId: table.sheetId,

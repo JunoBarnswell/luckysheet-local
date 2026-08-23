@@ -226,7 +226,8 @@ const isPivotWorksheetSource = (value: unknown): boolean => {
 };
 const isPivotSource = (value: unknown): value is PivotSource => isPivotWorksheetSource(value)
   || (isRecord(value) && value.kind === 'table' && isNonEmptyString(value.tableId))
-  || (isRecord(value) && value.kind === 'named-range' && isNonEmptyString(value.name))
+  || (isRecord(value) && value.kind === 'named-range' && isNonEmptyString(value.name)
+    && (value.sheetId === undefined || isNonEmptyString(value.sheetId)))
   || (isRecord(value) && value.kind === 'data-source' && isNonEmptyString(value.dataSourceId));
 const isPivotModel = (value: unknown): value is PivotModel => isRecord(value)
   && isNonEmptyString(value.id)

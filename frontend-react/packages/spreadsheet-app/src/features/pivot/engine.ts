@@ -197,7 +197,7 @@ function getPivotTarget(pivot: PivotModel): PivotTarget {
 
 function sourceIdentity(source: PivotSource, range: RangeRef, ordinal: number, rangeIndex = 0): string {
   if (source.kind === 'table') return `table:${source.tableId}:column:${ordinal}`;
-  if (source.kind === 'named-range') return `name:${source.name}:column:${ordinal}`;
+  if (source.kind === 'named-range') return `name:${source.sheetId ?? '*'}:${source.name}:column:${ordinal}`;
   if (source.kind === 'data-source') return `data-source:${source.dataSourceId}:column:${ordinal}`;
   return `sheet:${range.sheetId}:column:${range.startColumn + ordinal}:range:${rangeIndex}`;
 }
@@ -219,7 +219,7 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
     if (!manifest.sourceRange) throw new Error(`Pivot data source ${source.dataSourceId} has no worksheet range`);
     return [manifest.sourceRange];
   }
-  return [resolveNamedRange(workbook, source.name)];
+  return [resolveNamedRange(workbook, source.name, source.sheetId ?? pivot.target.sheetId)];
 }
 
 function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
@@ -282,8 +282,8 @@ function parseA1Range(formula: string, workbook: WorkbookModel, fallbackSheetId:
   return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
 }
 
-function resolveNamedRange(workbook: WorkbookModel, name: string): RangeRef {
-  const formula = workbook.definedNames[name] ?? workbook.definedNames[Object.keys(workbook.definedNames).find((key) => key.toLocaleLowerCase() === name.toLocaleLowerCase()) ?? ''];
+function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: string): RangeRef {
+  const formula = workbook.getDefinedName(name, sheetId)?.formula ?? '';
   if (!formula) throw new Error(`Unknown named range: ${name}`);
   return parseA1Range(formula, workbook, workbook.primarySheetId);
 }

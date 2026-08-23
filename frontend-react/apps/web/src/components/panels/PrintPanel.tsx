@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text } from '@react-sheets/ui-system';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 
 export interface PrintPanelProps {
@@ -36,7 +36,7 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Paper Size
             </Text>
@@ -49,9 +49,9 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               <option value="Letter">Letter (8.5 × 11 in)</option>
               <option value="Legal">Legal (8.5 × 14 in)</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Page Orientation
             </Text>
@@ -63,9 +63,9 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               <option value="portrait">Portrait</option>
               <option value="landscape">Landscape</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Margins
             </Text>
@@ -78,18 +78,18 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
               <option value="narrow">Narrow (0.25 in)</option>
               <option value="wide">Wide (1.0 in)</option>
             </Select>
-          </div>
+          </Box>
 
-          <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-800">
-            <div className="font-semibold">Print Output Layout</div>
-            <div className="mt-0.5 text-[11px] text-blue-600">
+          <Box className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-800">
+            <Text size="sm" weight="semibold">Print Output Layout</Text>
+            <Text size="xs" className="mt-0.5 text-blue-600">
               {pageCount > 0
                 ? `${pageCount} page(s) will be generated from the current print area.`
                 : 'Automatic grid pagination with header row repeating is active.'}
-            </div>
-          </div>
+            </Text>
+          </Box>
 
-          <div className="flex flex-col gap-2">
+          <Stack gap="sm">
             <Button
               variant="primary"
               size="sm"
@@ -106,7 +106,7 @@ export function PrintPanel({ onPrint, onExportPdf, pageCount = 0, onClose }: Pri
             >
               Print / Save as PDF
             </Button>
-          </div>
+          </Stack>
         </Stack>
       </PanelBody>
 

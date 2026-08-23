@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { ChartDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
@@ -63,7 +63,7 @@ export function ChartPanel({
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Chart Title
             </Text>
@@ -72,9 +72,9 @@ export function ChartPanel({
               onChange={(e) => setTitle(e.target.value)}
               placeholder="e.g. Monthly Revenue"
             />
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Chart Type
             </Text>
@@ -92,9 +92,9 @@ export function ChartPanel({
               <option value="scatter">Scatter Plot</option>
               <option value="combo">Combo Chart</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Stacking
             </Text>
@@ -103,9 +103,9 @@ export function ChartPanel({
               <option value="stacked">Stacked</option>
               <option value="percent">100% Stacked</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Data Source Range
             </Text>
@@ -114,27 +114,27 @@ export function ChartPanel({
               onChange={(e) => setRangeInput(e.target.value)}
               placeholder="e.g. A1:F6"
             />
-          </div>
+          </Box>
 
           <Button variant="primary" size="sm" icon="plus" disabled={!sourceRange} onClick={handleCreate}>
             Insert Chart to Canvas
           </Button>
 
           {chartEntries.length > 0 ? (
-            <div className="mt-4 border-t border-slate-200 pt-3">
+            <Box className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
                 Worksheet Charts ({chartEntries.length})
               </Text>
               <Stack gap="xs">
                 {chartEntries.map(({ drawing, payload }) => (
-                  <div
+                  <Box
                     key={drawing.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
-                    <div>
-                      <div className="font-medium text-slate-800">{payload.title || payload.chartType}</div>
-                      <div className="text-[10px] text-slate-500">{payload.chartType.toUpperCase()} Chart</div>
-                    </div>
+                    <Stack gap="none">
+                      <Text size="sm" weight="medium" className="text-slate-800">{payload.title || payload.chartType}</Text>
+                      <Text size="xs" tone="subtle">{payload.chartType.toUpperCase()} Chart</Text>
+                    </Stack>
                     <Button
                       variant="ghost"
                       size="xs"
@@ -146,10 +146,10 @@ export function ChartPanel({
                       })}
                       className="text-rose-600 hover:bg-rose-50"
                     />
-                  </div>
+                  </Box>
                 ))}
               </Stack>
-            </div>
+            </Box>
           ) : null}
         </Stack>
       </PanelBody>

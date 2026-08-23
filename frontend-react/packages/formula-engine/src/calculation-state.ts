@@ -2,6 +2,7 @@ import type { CellAddress } from './ast';
 import type { RecalculationMode } from './formula-engine';
 import type { SheetTableRef } from './sheet-table-resolver';
 import type { ScalarValue } from './values';
+import type { FormulaDefinedName } from './defined-names';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -11,7 +12,7 @@ export interface FormulaCalculationSnapshot {
   readonly defaultSheetId: string;
   readonly recalculationMode: RecalculationMode;
   readonly cells: readonly FormulaCellSnapshot[];
-  readonly definedNames: Readonly<Record<string, string>>;
+  readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
   readonly spillSpaces: readonly FormulaSpillSpaceSnapshot[];
   readonly pendingRoots: readonly CellAddress[];
@@ -48,7 +49,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
   }
-  if (!isStringRecord(value.definedNames)) throw new Error('Calculation snapshot has invalid defined names');
+  if (!Array.isArray(value.definedNameModels) || !value.definedNameModels.every(isFormulaDefinedName)) throw new Error('Calculation snapshot has invalid defined names');
   if (!Array.isArray(value.sheetTables) || !value.sheetTables.every(isSheetTableRef)) {
     throw new Error('Calculation snapshot has invalid sheet tables');
   }
@@ -115,8 +116,16 @@ function isScalarValue(value: unknown): value is ScalarValue {
     || typeof value === 'boolean';
 }
 
-function isStringRecord(value: unknown): value is Readonly<Record<string, string>> {
-  return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'string');
+function isFormulaDefinedName(value: unknown): value is FormulaDefinedName {
+  return isRecord(value)
+    && typeof value.name === 'string'
+    && value.name.trim().length > 0
+    && typeof value.formula === 'string'
+    && value.formula.trim().length > 0
+    && (value.scope === 'workbook' || value.scope === 'sheet')
+    && (value.scope === 'workbook'
+      ? value.sheetId === undefined
+      : typeof value.sheetId === 'string' && value.sheetId.trim().length > 0);
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

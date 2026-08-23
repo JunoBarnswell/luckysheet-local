@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, Textarea } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, Textarea } from '@react-sheets/ui-system';
 
 export interface QueryPanelSnapshot {
   queryId: string;
@@ -96,7 +96,7 @@ export function QueryPanel({
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">Connector</Text>
             <Select
               value={connectorId}
@@ -108,9 +108,9 @@ export function QueryPanel({
                 <option key={connector} value={connector}>{connector.toUpperCase()}</option>
               ))}
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               {connectorId === 'json' ? 'JSON Records' : 'REST URL'}
             </Text>
@@ -121,9 +121,9 @@ export function QueryPanel({
               disabled={!canQuery}
               className="font-mono text-xs"
             />
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">Optional filter (Region)</Text>
             <Select
               value={filterRegion}
@@ -135,18 +135,18 @@ export function QueryPanel({
               <option value="East">East</option>
               <option value="West">West</option>
             </Select>
-          </div>
+          </Box>
 
           {status ? (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+            <Box className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
               {status}
-            </div>
+            </Box>
           ) : null}
 
           {lastResult ? (
-            <div className="rounded-lg border border-emerald-100 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-800">
+            <Box className="rounded-lg border border-emerald-100 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-800">
               Last load: {lastResult.rowCount} rows × {lastResult.columns.length} columns
-            </div>
+            </Box>
           ) : null}
 
           <Stack gap="sm">

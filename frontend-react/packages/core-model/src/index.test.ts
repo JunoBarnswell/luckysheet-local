@@ -110,7 +110,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     type: 'line',
     color: '#10b981',
   });
-  workbook.definedNames['TaxRate'] = '0.15';
+  workbook.setDefinedName({ name: 'TaxRate', formula: '0.15', scope: 'workbook' });
 
   const snapshot = workbook.snapshot();
   assert.equal(snapshot.schema, 'WorkbookSnapshot');

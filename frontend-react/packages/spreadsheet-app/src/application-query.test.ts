@@ -42,7 +42,7 @@ describe('WorkbookSession query integration', () => {
     const app = new WorkbookSession();
     app['permission'].applyServerAccess('viewer');
     app['permission'].setOnline(true);
-    await app.loadQuery(createInlineJsonQuery('blocked', 'Blocked', [{ A: 1 }]));
+    await assert.rejects(() => app.loadQuery(createInlineJsonQuery('blocked', 'Blocked', [{ A: 1 }])));
     assert.equal(app.getUiSnapshot().lastQueryResult, null);
     assert.match(app.getUiSnapshot().notice, /permission|viewer|query/i);
   });

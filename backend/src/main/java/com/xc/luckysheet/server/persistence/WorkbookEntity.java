@@ -10,6 +10,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -26,7 +27,7 @@ public class WorkbookEntity {
     @Column(name = "unit_id", nullable = false, length = 200)
     private String unitId;
 
-    @Column(name = "name", nullable = false, length = 500)
+    @Column(name = "name", nullable = false, length = 255)
     private String name;
 
     @JdbcTypeCode(SqlTypes.LONGVARCHAR)
@@ -38,6 +39,11 @@ public class WorkbookEntity {
 
     @Column(name = "revision", nullable = false)
     private long revision;
+
+    /** Optimistic backstop for catalog/lifecycle writes outside operation replay. */
+    @Version
+    @Column(name = "entity_version", nullable = false)
+    private long entityVersion;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -139,6 +145,12 @@ public class WorkbookEntity {
         this.updatedAt = updatedAt;
     }
 
+    public void updateRevisionAndName(long revision, String name, Instant updatedAt) {
+        this.revision = revision;
+        if (name != null && !name.isBlank()) this.name = name;
+        this.updatedAt = updatedAt;
+    }
+
     public void updateSnapshot(long revision, String snapshotJson, long snapshotRevision, Instant updatedAt) {
         this.revision = revision;
         this.snapshotJson = snapshotJson;
@@ -146,10 +158,9 @@ public class WorkbookEntity {
         this.updatedAt = updatedAt;
     }
 
-    public void updateMetadata(String name, String spaceId, String folderId, Instant updatedAt) {
-        if (name != null) this.name = name;
-        if (spaceId != null) this.spaceId = spaceId;
-        if (folderId != null) this.folderId = folderId;
+    public void updateLocation(String spaceId, String folderId, Instant updatedAt) {
+        this.spaceId = spaceId;
+        this.folderId = folderId;
         this.updatedAt = updatedAt;
     }
 

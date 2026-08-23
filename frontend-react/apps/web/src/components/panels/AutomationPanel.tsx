@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { SAMPLE_AUTOMATION_SCRIPT } from '@react-sheets/spreadsheet-app';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text, Textarea } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text, Textarea } from '@react-sheets/ui-system';
 
 export interface AutomationPanelProps {
   recording: boolean;
@@ -50,17 +50,17 @@ export function AutomationPanel({
           />
 
           {recording ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <Box className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               Recording commands… perform edits in the workbook, then stop recording.
-            </div>
+            </Box>
           ) : null}
 
           {lastResult ? (
-            <div className={`rounded-lg border px-3 py-2 text-xs ${lastResult.ok ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-red-100 bg-red-50 text-red-800'}`}>
+            <Box className={`rounded-lg border px-3 py-2 text-xs ${lastResult.ok ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-red-100 bg-red-50 text-red-800'}`}>
               {lastResult.ok
                 ? `Last run completed in ${lastResult.durationMs}ms`
                 : `Last run failed: ${lastResult.error ?? 'unknown error'}`}
-            </div>
+            </Box>
           ) : null}
 
           <Stack gap="sm">

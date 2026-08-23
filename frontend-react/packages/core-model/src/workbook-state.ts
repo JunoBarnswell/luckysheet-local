@@ -57,7 +57,17 @@ export interface QueryDefinitionSnapshot {
   steps: QueryStepSnapshot[];
   refreshOnOpen?: boolean;
   refreshPolicy?: { mode: 'manual' | 'on-open' | 'interval'; intervalMs?: number };
+  /** Last materialization target; this lets a session refresh after reload. */
+  lastTarget?: QueryLoadTargetSnapshot;
   sourceRevision: number;
+}
+
+export interface QueryLoadTargetSnapshot {
+  kind: 'range' | 'sheet-table' | 'workbook-table' | 'pivot-source';
+  sheetId?: string;
+  range?: { startRow: number; startColumn: number; endRow?: number; endColumn?: number };
+  tableId?: string;
+  pivotId?: string;
 }
 
 const QUERY_STEP_KINDS = new Set<QueryStepSnapshot['kind']>([
@@ -148,6 +158,16 @@ export function normalizeQueryDefinitionSnapshot(definition: QueryDefinitionSnap
     if (!['manual', 'on-open', 'interval'].includes(definition.refreshPolicy.mode)) throw new Error('Invalid query refresh mode');
     if (definition.refreshPolicy.mode === 'interval' && (!Number.isSafeInteger(definition.refreshPolicy.intervalMs) || definition.refreshPolicy.intervalMs! <= 0)) throw new Error('Invalid query refresh interval');
   }
+  if (definition.lastTarget) {
+    if (!['range', 'sheet-table', 'workbook-table', 'pivot-source'].includes(definition.lastTarget.kind)) throw new Error('Invalid query load target kind');
+    if (definition.lastTarget.sheetId !== undefined && (typeof definition.lastTarget.sheetId !== 'string' || !definition.lastTarget.sheetId.trim())) throw new Error('Invalid query load target sheet');
+    if (definition.lastTarget.range) {
+      const range = definition.lastTarget.range;
+      if (!Number.isSafeInteger(range.startRow) || range.startRow < 0 || !Number.isSafeInteger(range.startColumn) || range.startColumn < 0
+        || (range.endRow !== undefined && (!Number.isSafeInteger(range.endRow) || range.endRow < range.startRow))
+        || (range.endColumn !== undefined && (!Number.isSafeInteger(range.endColumn) || range.endColumn < range.startColumn))) throw new Error('Invalid query load target range');
+    }
+  }
   return structuredClone({
     schema: 'QueryDefinition' as const,
     id: definition.id.trim(),
@@ -157,6 +177,7 @@ export function normalizeQueryDefinitionSnapshot(definition: QueryDefinitionSnap
     steps: definition.steps.map((step) => ({ id: step.id.trim(), kind: step.kind as QueryStepSnapshot['kind'], name: step.name.trim(), config: structuredClone(step.config), enabled: step.enabled })),
     ...(definition.refreshOnOpen === undefined ? {} : { refreshOnOpen: definition.refreshOnOpen }),
     ...(definition.refreshPolicy === undefined ? {} : { refreshPolicy: structuredClone(definition.refreshPolicy) }),
+    ...(definition.lastTarget === undefined ? {} : { lastTarget: structuredClone(definition.lastTarget) }),
     sourceRevision: definition.sourceRevision,
   });
 }

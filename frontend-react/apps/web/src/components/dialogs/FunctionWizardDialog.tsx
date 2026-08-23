@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Dialog, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, Dialog, Inline, ScrollArea, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { BUILTIN_FUNCTIONS } from '@react-sheets/formula-engine';
 
 export interface FunctionWizardDialogProps {
@@ -64,51 +64,52 @@ export function FunctionWizardDialog({ open, onClose, onInsertFormula }: Functio
       }
     >
       <Stack gap="md">
-        <div>
+        <Box>
           <TextInput
             placeholder="Search functions..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             leadingIcon="search"
           />
-        </div>
+        </Box>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div className="h-56 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50/50 p-1">
+        <Box className="grid grid-cols-2 gap-4">
+          <ScrollArea className="h-56 rounded-lg border border-slate-200 bg-slate-50/50 p-1">
             {fnList.map((fn) => (
-              <button
+              <Button
                 key={fn}
-                type="button"
                 onClick={() => setSelectedFunction(fn)}
-                className={`w-full rounded px-2.5 py-1.5 text-left text-xs font-semibold transition-colors ${
+                size="sm"
+                variant="ghost"
+                className={`w-full justify-start rounded px-2.5 py-1.5 text-left text-xs font-semibold transition-colors ${
                   selectedFunction === fn
                     ? 'bg-blue-600 text-white'
                     : 'text-slate-700 hover:bg-slate-200/70'
                 }`}
               >
                 {fn}
-              </button>
+              </Button>
             ))}
-          </div>
+          </ScrollArea>
 
-          <div className="flex flex-col justify-between rounded-lg border border-slate-200 bg-white p-3.5">
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-bold text-slate-900">{selectedFunction}</span>
-                <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+          <Stack className="justify-between rounded-lg border border-slate-200 bg-white p-3.5">
+            <Stack gap="xs">
+              <Inline className="justify-between">
+                <Text size="sm" weight="bold" className="text-slate-900">{selectedFunction}</Text>
+                <Text size="xs" weight="semibold" className="rounded bg-blue-50 px-2 py-0.5 text-blue-700">
                   {meta.category}
-                </span>
-              </div>
-              <div className="mt-2 text-xs font-mono font-medium text-blue-600 bg-slate-50 p-1.5 rounded border border-slate-100">
+                </Text>
+              </Inline>
+              <Box className="mt-2 rounded border border-slate-100 bg-slate-50 p-1.5 font-mono text-xs font-medium text-blue-600">
                 {meta.syntax}
-              </div>
-              <p className="mt-2 text-xs text-slate-600 leading-relaxed">{meta.description}</p>
-            </div>
-            <div className="text-[11px] text-slate-400">
+              </Box>
+              <Text as="p" size="xs" className="mt-2 leading-relaxed text-slate-600">{meta.description}</Text>
+            </Stack>
+            <Text size="xs" tone="subtle">
               Double-click or press Insert to insert into the formula bar.
-            </div>
-          </div>
-        </div>
+            </Text>
+          </Stack>
+        </Box>
       </Stack>
     </Dialog>
   );

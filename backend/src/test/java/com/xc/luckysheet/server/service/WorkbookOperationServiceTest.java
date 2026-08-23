@@ -5,6 +5,7 @@ import com.xc.luckysheet.server.config.CoordinationProperties;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.store.WorkbookRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
@@ -42,7 +43,7 @@ class WorkbookOperationServiceTest {
         String snapshot = "{\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}";
         when(access.require("book-1", "guest:share-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.COMMENTER);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
-                "book-1", "Book", snapshot, 0, 0, Instant.now(), Instant.now()
+                "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now()
         )));
         when(store.findOperation("op-1")).thenReturn(Optional.empty());
         when(store.findOperationBySequence("book-1", "guest:share-1", 1)).thenReturn(Optional.empty());
@@ -78,7 +79,8 @@ class WorkbookOperationServiceTest {
         );
         String snapshot = "{\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}";
         when(access.require("book-1", "editor-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
-        when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0, Instant.now(), Instant.now())));
+        when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0,
+                WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         when(store.findOperation("op-2")).thenReturn(Optional.empty());
         when(store.findOperationBySequence("book-1", "editor-1", 1)).thenReturn(Optional.empty());
         when(store.listOperations("book-1")).thenReturn(List.of());
@@ -102,6 +104,6 @@ class WorkbookOperationServiceTest {
         ArgumentCaptor<com.xc.luckysheet.server.store.OperationRow> captured = ArgumentCaptor.forClass(com.xc.luckysheet.server.store.OperationRow.class);
         verify(store).insertOperation(captured.capture());
         assertEquals("op-2", captured.getValue().operationId());
-        verify(store).updateWorkbookRevision(eq("book-1"), eq(1L), any());
+        verify(store).updateWorkbookRevisionAndName(eq("book-1"), eq(1L), eq("Book"), any());
     }
 }

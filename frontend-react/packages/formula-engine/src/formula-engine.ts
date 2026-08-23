@@ -12,7 +12,7 @@ import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './er
 import { parseFormula as parseFormulaSource } from './parser';
 import { RangeIndex, type FormulaDependency, type RangeDependency } from './range-index';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
-import { normalizeDefinedNames, resolveDefinedNameSource } from './defined-names';
+import { normalizeDefinedNameModels, normalizeDefinedNames, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import {
@@ -99,7 +99,8 @@ interface StoredCell {
 export class FormulaEngine {
   readonly defaultSheetId: string;
   readonly dependencies: RangeIndex;
-  private definedNames: Record<string, string> = {};
+  /** Canonical scoped names. Workbook-only lookup is derived on demand. */
+  private definedNameModels: FormulaDefinedName[] = [];
   private spillEnvironments = new Map<string, SpillEnvironment>();
   private spills = new Map<string, ResolvedSpill>();
   private nameIndex = new Map<string, Set<string>>();
@@ -130,7 +131,7 @@ export class FormulaEngine {
       defaultSheetId: snapshot.defaultSheetId,
       recalculationMode: 'manual',
     });
-    engine.definedNames = normalizeDefinedNames({ ...snapshot.definedNames });
+    engine.definedNameModels = normalizeDefinedNameModels(snapshot.definedNameModels);
     engine.sheetTables = normalizeSheetTables(snapshot.sheetTables);
     for (const spillSpace of snapshot.spillSpaces) {
       const occupied = new Set(spillSpace.occupied.map(cellAddressKey));
@@ -343,7 +344,7 @@ export class FormulaEngine {
       defaultSheetId: this.defaultSheetId,
       recalculationMode: this.recalculationMode,
       cells,
-      definedNames: { ...this.definedNames },
+      definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),
       spillSpaces,
       pendingRoots: this.pendingCalculationRoots(),
@@ -484,9 +485,20 @@ export class FormulaEngine {
     return this.dependencies.getDependents(this.resolveAddress(addressInput));
   }
 
-  /** 批量设置定义名称(值为公式文本或引用文本,不带 =) */
-  setDefinedNames(names: Record<string, string>): RecalculationReport {
-    this.definedNames = normalizeDefinedNames(names);
+  /**
+   * Set the canonical scoped name collection. A workbook Record remains a
+   * narrow input compatibility form; it is immediately normalized into the
+   * same scoped collection and is never stored separately.
+   */
+  setDefinedNames(names: Record<string, string> | readonly FormulaDefinedName[]): RecalculationReport {
+    if (Array.isArray(names)) return this.setDefinedNameModels(names as readonly FormulaDefinedName[]);
+    const models = Object.entries(normalizeDefinedNames(names as Record<string, string>))
+      .map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }));
+    return this.setDefinedNameModels(models);
+  }
+
+  setDefinedNameModels(names: readonly FormulaDefinedName[]): RecalculationReport {
+    this.definedNameModels = normalizeDefinedNameModels(names);
     this.markCalculationStateChanged();
     const affected = new Map<string, CellAddress>();
     for (const refs of this.nameIndex.values()) {
@@ -523,7 +535,15 @@ export class FormulaEngine {
   }
 
   getDefinedNames(): Record<string, string> {
-    return { ...this.definedNames };
+    const result: Record<string, string> = {};
+    for (const entry of this.definedNameModels) {
+      if (entry.scope === 'workbook') result[entry.name.toUpperCase()] = entry.formula;
+    }
+    return result;
+  }
+
+  getDefinedNameModels(): FormulaDefinedName[] {
+    return this.definedNameModels.map((entry) => ({ ...entry }));
   }
 
   /** 清空全部公式与缓存(结构操作后整体重建前调用) */
@@ -881,7 +901,13 @@ export class FormulaEngine {
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
   ): FormulaValue | undefined {
-    const source = this.definedNames[name.toUpperCase()] ?? this.definedNames[name];
+    const normalized = name.trim().toLocaleLowerCase();
+    const local = this.definedNameModels.find((entry) => entry.scope === 'sheet'
+      && entry.sheetId?.toLocaleLowerCase() === currentCell.sheetId.toLocaleLowerCase()
+      && entry.name.toLocaleLowerCase() === normalized);
+    const global = this.definedNameModels.find((entry) => entry.scope === 'workbook'
+      && entry.name.toLocaleLowerCase() === normalized);
+    const source = local?.formula ?? global?.formula;
     if (source === undefined) return undefined;
     return resolveDefinedNameSource(source, {
       currentCell,

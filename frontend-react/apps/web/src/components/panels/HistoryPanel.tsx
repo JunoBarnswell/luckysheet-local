@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
+import { Box, Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
 
@@ -98,36 +98,36 @@ export function HistoryPanel({
           ) : null}
 
           {entries.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">
+            <Box className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">
               No edit history in this session yet.
-            </div>
+            </Box>
           ) : (
             <Stack gap="xs">
               <Text size="xs" weight="semibold">Session undo stack ({entries.length})</Text>
               {entries.map((entry, idx) => (
-                <div
+                <Box
                   key={entry.operationId}
                   className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2.5 text-xs shadow-2xs"
                 >
-                  <div>
-                    <div className="font-semibold text-slate-800">
+                  <Stack gap="none">
+                    <Text size="sm" weight="semibold" className="text-slate-800">
                       {entry.description || 'Workbook Mutation'}
-                    </div>
-                    <div className="text-[10px] text-slate-400">
+                    </Text>
+                    <Text size="xs" tone="subtle">
                       {new Date(entry.timestamp).toLocaleTimeString()} · {entry.undo.length} inverse ops
-                    </div>
-                  </div>
+                    </Text>
+                  </Stack>
                   <Inline gap="sm" className="items-center">
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-600">
+                    <Text size="xs" weight="medium" className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600">
                       #{idx + 1}
-                    </span>
+                    </Text>
                     {onUndoTo ? (
                       <Button variant="ghost" size="sm" onClick={() => onUndoTo(idx)}>
                         Restore
                       </Button>
                     ) : null}
                   </Inline>
-                </div>
+                </Box>
               ))}
             </Stack>
           )}

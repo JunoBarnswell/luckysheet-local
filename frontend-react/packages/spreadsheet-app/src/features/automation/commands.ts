@@ -40,13 +40,6 @@ function cellRange(sheetId: string, row: number, column: number): RangeRef[] {
   return [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
 }
 
-function isRecordingMutation(value: unknown): value is { recording: boolean } {
-  return typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value)
-    && typeof (value as { recording?: unknown }).recording === 'boolean';
-}
-
 function applyPlannedCellOperation(operation: FacadeCellOperation, context: CommandContext): void {
   const sheet = context.workbook.getSheet(operation.sheetId);
   const previous = sheet.cells.get(operation.row, operation.column);
@@ -95,40 +88,9 @@ function applyPlannedCellOperation(operation: FacadeCellOperation, context: Comm
   });
 }
 
-function applyRecordingState(state: RecordingState, next: boolean, context: CommandContext): void {
-  const previous = state.recording;
-  context.applyMutation({
-    id: 'automation.recording.changed',
-    unitId: context.workbook.unitId,
-    sheetId: context.workbook.primarySheetId,
-    params: { recording: next },
-    affectedRanges: [],
-    inverse: [{
-      id: 'automation.recording.changed',
-      unitId: context.workbook.unitId,
-      sheetId: context.workbook.primarySheetId,
-      params: { recording: previous },
-      affectedRanges: [],
-    }],
-    apply: () => { state.recording = next; },
-  });
-}
-
 export function registerAutomationCommands(registry: CommandRegistry, options: AutomationCommandOptions = {}): void {
   const state: RecordingState = { recording: false };
   const sandbox = options.sandbox ?? new ScriptSandbox(DEFAULT_SANDBOX_POLICY);
-  registry.registerMutation<{ recording: boolean }>({
-    id: 'automation.recording.changed',
-    handler: (item) => {
-      state.recording = item.params.recording;
-    },
-    metadata: {
-      schema: { name: 'AutomationRecordingMutation', validate: isRecordingMutation },
-      permission: { capability: 'automation.recording.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: () => [], mode: 'exact' },
-      inversePolicy: { allowedMutationIds: ['automation.recording.changed'], minCount: 1, maxCount: 1 },
-    },
-  });
 
   registry.registerCommand<AutomationRunParams>({
     id: 'automation.run',
@@ -173,8 +135,8 @@ export function registerAutomationCommands(registry: CommandRegistry, options: A
     id: 'automation.record.start',
     execute(_params, context): CommandResult {
       if (state.recording) throw new Error('Automation recording is already active');
-      applyRecordingState(state, true, context);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+      state.recording = true;
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
     },
   });
 
@@ -182,8 +144,8 @@ export function registerAutomationCommands(registry: CommandRegistry, options: A
     id: 'automation.record.stop',
     execute(_params, context): CommandResult {
       if (!state.recording) throw new Error('Automation recording is not active');
-      applyRecordingState(state, false, context);
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+      state.recording = false;
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
     },
   });
 }

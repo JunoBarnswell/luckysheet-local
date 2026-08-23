@@ -5,6 +5,7 @@ import com.xc.luckysheet.server.config.QueryProperties;
 import com.xc.luckysheet.server.config.QuerySource;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.store.WorkbookRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.junit.jupiter.api.Test;
@@ -33,15 +34,17 @@ class QueryExecutionServiceTest {
         }
         try {
             WorkbookStore store = mock(WorkbookStore.class);
-            when(store.find("unit-1")).thenReturn(Optional.of(new WorkbookRow("unit-1", "test", "{}", 0, 4, Instant.now(), Instant.now())));
+            when(store.find("unit-1")).thenReturn(Optional.of(new WorkbookRow("unit-1", "test", "{}", 0, 4,
+                    WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
             AccessControlService access = mock(AccessControlService.class);
             when(access.require("unit-1", "editor", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+            WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(
                     true, 100, 20, 1_000_000, Duration.ofSeconds(5), 2,
                     Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
             );
-            QueryExecutionService service = new QueryExecutionService(properties, access, store, audit, new ObjectMapper());
+            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, audit, new ObjectMapper());
             var response = service.execute("unit-1", new QueryExecutionRequest(
                     "query-1", "Items", "sqlite", "local", "SELECT name, amount FROM items WHERE amount > ?",
                     null, null, List.of(new com.fasterxml.jackson.databind.node.IntNode(1)), List.of()

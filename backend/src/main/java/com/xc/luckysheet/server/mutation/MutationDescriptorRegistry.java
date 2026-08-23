@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class MutationDescriptorRegistry {
-    private static final Set<String> CLEAR_MODES = Set.of("all", "contents", "formats", "notes");
+    private static final Set<String> CLEAR_MODES = Set.of("all", "contents", "formats", "notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
             "automation.recording.changed", "banded.set",
             "cell.restore", "cell.set", "cells.shifted", "cells.shifted.restore",
@@ -58,13 +58,6 @@ public class MutationDescriptorRegistry {
             Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("rows.permuted", "Requires row permutation of formulas, objects, tables, validations and every structural participant."),
-            Map.entry("sheet.rename", "Requires a shared formula-reference AST rename transform; raw text replacement is forbidden."),
-            Map.entry("sheet.add", "Requires the server-generated canonical sheet restore contract so its compensating remove remains replayable."),
-            Map.entry("sheet.remove", "Requires the server-generated canonical sheet restore contract so its inverse remains replayable."),
-            Map.entry("sheet.duplicated", "Requires identity remapping for scoped names, object payloads, print state and source relationships."),
-            Map.entry("sheet.restore", "Client-side live worksheet instances are not a canonical persisted sheet payload."),
-            Map.entry("hyperlink.set", "The canonical workbook snapshot currently has no structured hyperlink collection."),
-            Map.entry("hyperlink.remove", "The canonical workbook snapshot currently has no structured hyperlink collection."),
             Map.entry("query.load.workbook-table", "Workbook-table query result blocks have no persisted, frontend-readable canonical data plane."),
             Map.entry("pivot.chart.create", "PivotChart is persisted through one canonical drawing.add mutation; the UI command must never cross the workbook mutation boundary."),
             Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
@@ -110,7 +103,9 @@ public class MutationDescriptorRegistry {
         for (String id : QueryMutationDescriptor.IDS) register(new QueryMutationDescriptor(id));
         for (String id : DataSourceMutationDescriptor.IDS) register(new DataSourceMutationDescriptor(id));
         for (String id : StructuralMutationDescriptor.IDS) register(new StructuralMutationDescriptor(id));
+        for (String id : WorkbookStructureMutationDescriptor.IDS) register(new WorkbookStructureMutationDescriptor(id));
         registerUnavailableKnownMutations();
+        verifyDeclaredCapabilities();
     }
 
     public void register(MutationDescriptor descriptor) {
@@ -187,6 +182,16 @@ public class MutationDescriptorRegistry {
                 throw new IllegalStateException("Known mutation requires an explicit availability classification: " + id);
             }
             if (reason != null) descriptors.putIfAbsent(id, new UnavailableDescriptor(id, reason));
+        }
+    }
+
+    private void verifyDeclaredCapabilities() {
+        for (Map.Entry<String, com.xc.luckysheet.server.contract.GeneratedWorkbookContract.MutationCapability> entry
+                : com.xc.luckysheet.server.contract.GeneratedWorkbookContract.MUTATIONS.entrySet()) {
+            MutationDescriptor descriptor = descriptors.get(entry.getKey());
+            if (entry.getValue().remote() && (descriptor == null || descriptor instanceof UnavailableDescriptor || descriptor.internalOnly())) {
+                throw new IllegalStateException("Remote contract mutation has no accepted server reducer: " + entry.getKey());
+            }
         }
     }
 
@@ -327,10 +332,13 @@ public class MutationDescriptorRegistry {
         private void clearRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
             RangeRef range = requireOwnRange(root, sheetId, params);
             String mode = params.path("mode").asText("all");
-            if ("hyperlinks".equals(mode)) throw ServiceException.unavailable("Hyperlink state is not persisted by the current workbook snapshot");
             if (!CLEAR_MODES.contains(mode)) throw ServiceException.validation("Unsupported clear mode: " + mode);
             if ("notes".equals(mode)) {
                 SnapshotMutationSupport.removeNotes(sheet, range);
+                return;
+            }
+            if ("hyperlinks".equals(mode)) {
+                SnapshotMutationSupport.removeHyperlinks(sheet, range);
                 return;
             }
             ObjectNode cells = SnapshotMutationSupport.cells(sheet);
@@ -362,6 +370,7 @@ public class MutationDescriptorRegistry {
             if ("all".equals(mode)) {
                 SnapshotMutationSupport.removeNotes(sheet, range);
                 SnapshotMutationSupport.removeThreads(sheet, range);
+                SnapshotMutationSupport.removeHyperlinks(sheet, range);
             }
         }
 
@@ -705,7 +714,9 @@ public class MutationDescriptorRegistry {
         public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
             ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
             String name = SnapshotMutationSupport.text(SnapshotMutationSupport.params(mutation), "name").trim();
-            if (name.isBlank() || name.length() > 255) throw ServiceException.validation("Workbook name is invalid");
+            if (name.isBlank() || name.length() > com.xc.luckysheet.server.contract.GeneratedWorkbookContract.MAX_WORKBOOK_NAME_LENGTH) {
+                throw ServiceException.validation("Workbook name is invalid");
+            }
             root.put("name", name);
             return root;
         }

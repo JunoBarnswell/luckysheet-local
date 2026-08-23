@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Box, Button, Inline, Stack, TextInput, Text } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, Inline, Stack, TextInput, Text } from '@react-sheets/ui-system';
 import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 
 export interface FilterPatch {
@@ -47,19 +47,17 @@ export function FilterPopover({ column, sheet, onApply, onClose }: FilterPopover
         <Box className="max-h-48 overflow-y-auto">
           <Stack gap="xs">
             {visibleValues.map((value) => (
-              <label key={value} className="flex items-center gap-2 text-xs text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={selected.has(value)}
-                  onChange={(event) => {
-                    const next = new Set(selected);
-                    if (event.target.checked) next.add(value);
-                    else next.delete(value);
-                    setSelected(next);
-                  }}
-                />
-                {value}
-              </label>
+              <CheckToggle
+                key={value}
+                checked={selected.has(value)}
+                label={value}
+                onChange={(event) => {
+                  const next = new Set(selected);
+                  if (event.target.checked) next.add(value);
+                  else next.delete(value);
+                  setSelected(next);
+                }}
+              />
             ))}
           </Stack>
         </Box>

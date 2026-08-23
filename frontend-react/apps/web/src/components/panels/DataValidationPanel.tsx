@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Box, Button, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { DataValidationRule, DataValidationType } from '@react-sheets/core-model';
 
 export interface DataValidationPanelProps {
@@ -50,7 +50,7 @@ export function DataValidationPanel({
 
       <PanelBody className="p-4">
         <Stack gap="md">
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Validation Criteria
             </Text>
@@ -65,9 +65,9 @@ export function DataValidationPanel({
               <option value="date">Date</option>
               <option value="textLength">Text Length</option>
             </Select>
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Allowed Values / Source
             </Text>
@@ -76,9 +76,9 @@ export function DataValidationPanel({
               onChange={(e) => setFormula1(e.target.value)}
               placeholder="e.g. Option A, Option B, Option C"
             />
-          </div>
+          </Box>
 
-          <div>
+          <Box>
             <Text size="xs" weight="medium" className="mb-1 text-slate-700">
               Error Message Alert
             </Text>
@@ -87,27 +87,27 @@ export function DataValidationPanel({
               onChange={(e) => setErrorMessage(e.target.value)}
               placeholder="e.g. Invalid input"
             />
-          </div>
+          </Box>
 
           <Button variant="primary" size="sm" icon="check-circle" onClick={handleCreate}>
             Add Validation Rule
           </Button>
 
           {rules.length > 0 ? (
-            <div className="mt-4 border-t border-slate-200 pt-3">
+            <Box className="mt-4 border-t border-slate-200 pt-3">
               <Text size="xs" weight="semibold" className="mb-2 text-slate-700">
                 Active Validations ({rules.length})
               </Text>
               <Stack gap="xs">
                 {rules.map((r) => (
-                  <div
+                  <Box
                     key={r.id}
                     className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2 text-xs"
                   >
-                    <div>
-                      <div className="font-medium text-slate-800">{r.type.toUpperCase()} Rule</div>
-                      <div className="text-[10px] text-slate-500">{r.formula1}</div>
-                    </div>
+                    <Stack gap="none">
+                      <Text size="sm" weight="medium" className="text-slate-800">{r.type.toUpperCase()} Rule</Text>
+                      <Text size="xs" tone="subtle">{r.formula1}</Text>
+                    </Stack>
                     <Button
                       variant="ghost"
                       size="xs"
@@ -116,10 +116,10 @@ export function DataValidationPanel({
                       onClick={() => onRemoveRule(r.id)}
                       className="text-rose-600 hover:bg-rose-50"
                     />
-                  </div>
+                  </Box>
                 ))}
               </Stack>
-            </div>
+            </Box>
           ) : null}
         </Stack>
       </PanelBody>

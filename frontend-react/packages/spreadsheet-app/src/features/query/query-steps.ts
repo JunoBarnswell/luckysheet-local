@@ -33,6 +33,8 @@ export interface QueryDefinition {
   refreshOnOpen?: boolean;
   sourceRevision?: number;
   refreshPolicy?: QueryRefreshPolicy;
+  /** Persisted so a rehydrated session can refresh into the same destination. */
+  lastTarget?: LoadTarget;
 }
 
 export type LoadTargetKind = 'range' | 'sheet-table' | 'workbook-table' | 'pivot-source';
