@@ -1,5 +1,5 @@
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import { WorkbookModel, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { RevisionRecord } from '@react-sheets/protocol';
 import { DrawingRuntime } from '../drawing';
 import { registerSpreadsheetFeatures } from '../../feature-registry';
@@ -37,10 +37,10 @@ export function buildRestoreParams(
 }
 
 export function replayRevisionsToSnapshot(
-  baseSnapshot: WorkbookSnapshotV1,
+  baseSnapshot: WorkbookSnapshot,
   revisions: readonly RevisionRecord[],
   targetRevision: number,
-): WorkbookSnapshotV1 {
+): WorkbookSnapshot {
   const workbook = WorkbookModel.fromSnapshot(structuredClone(baseSnapshot));
   const runtime = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime, new DrawingRuntime());

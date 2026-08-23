@@ -31,7 +31,7 @@ describe('SpreadsheetApplication xlsx integration', () => {
   it('clears compatibility report from ui snapshot', () => {
     const app = new SpreadsheetApplication();
     app['compatibilityReport'] = {
-      schema: 'CompatibilityReportV1',
+      schema: 'CompatibilityReport',
       fileName: 'demo.xlsx',
       importLevel: 'B',
       exportLevel: 'B',

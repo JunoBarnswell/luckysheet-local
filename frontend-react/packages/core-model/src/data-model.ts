@@ -1,4 +1,4 @@
-import type { SheetId } from './index';
+import type { RangeRef, SheetId } from './index';
 
 export type TableScalar = string | number | boolean | null;
 
@@ -17,13 +17,15 @@ export interface WorkbookTableBlock {
   startRow: number;
   rowCount: number;
   storageKey: string;
-  encoding: 'typed-column-v1';
+  encoding: 'typed-column';
 }
 
 export interface WorkbookTableModel {
   id: string;
   name: string;
   sourceSheetId?: SheetId;
+  /** The canonical source range when rows remain sheet-backed in local mode. */
+  sourceRange?: RangeRef;
   rowCount: number;
   fields: WorkbookTableField[];
   blockSize: number;

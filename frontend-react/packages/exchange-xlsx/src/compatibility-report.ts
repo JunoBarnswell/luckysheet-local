@@ -84,7 +84,7 @@ export function createCompatibilityReport(input: {
   }
 
   return {
-    schema: 'CompatibilityReportV1',
+    schema: 'CompatibilityReport',
     fileName: input.fileName,
     importLevel: input.importLevel,
     exportLevel: input.exportLevel,

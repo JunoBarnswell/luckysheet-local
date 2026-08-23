@@ -1,5 +1,5 @@
 import type { MutationInfo } from '@react-sheets/command-runtime';
-import type { CollaborationChangeSet, CollaborationMutation } from '@react-sheets/protocol';
+import type { OperationEnvelope, OperationMutation } from '@react-sheets/protocol';
 import type { CollaborationSession } from './collaboration-session';
 import type { PresenceSnapshot } from './presence';
 import type { PeerCursor } from '../types';
@@ -22,33 +22,30 @@ export interface CollaborationSnapshot {
   peerCount: number;
 }
 
-export function buildChangeSet(
+export function buildOperation(
   operationId: string,
   unitId: string,
-  actorId: string,
   clientSequence: number,
   baseRevision: number,
-  mutations: CollaborationMutation[],
-): CollaborationChangeSet {
+  mutations: OperationMutation[],
+  createdAt = new Date().toISOString(),
+): OperationEnvelope {
   return {
-    schema: 'CollaborationChangeSetV1',
+    schema: 'OperationEnvelope',
     operationId,
     unitId,
-    actorId,
     clientSequence,
     baseRevision,
     mutations,
-    createdAt: new Date().toISOString(),
+    createdAt,
   };
 }
 
-export function mutationsFromBatch(mutations: MutationInfo[], unitId: string): CollaborationMutation[] {
+export function mutationsFromBatch(mutations: MutationInfo[]): OperationMutation[] {
   return mutations.map((mutation) => ({
     id: mutation.id,
     sheetId: mutation.sheetId,
     params: mutation.params,
-    affectedRanges: mutation.affectedRanges,
-    unitId,
   }));
 }
 

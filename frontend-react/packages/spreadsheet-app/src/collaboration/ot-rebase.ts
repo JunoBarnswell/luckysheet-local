@@ -79,6 +79,9 @@ export function rebaseMutation(pending: ClassifiedMutation, committed: Classifie
   if (!delta || !STRUCTURAL_KINDS.has(committed.kind)) {
     return { rebased: pending, transformed: false };
   }
+  if (pending.kind === 'unknown') {
+    throw new Error(`Cannot rebase unknown mutation ${pending.mutationId} across ${committed.mutationId}`);
+  }
 
   const rebasedRanges = pending.affectedRanges.map((range) => {
     if (delta.kind === 'insert-rows' || delta.kind === 'delete-rows') return shiftRow(range, delta);

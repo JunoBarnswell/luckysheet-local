@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CellMatrix, WorkbookModel, migrateSnapshot } from './index';
+import { CellMatrix, WorkbookModel } from './index';
 
 test('CellMatrix keeps empty logical space sparse', () => {
   const matrix = new CellMatrix();
@@ -55,7 +55,7 @@ test('WorkbookModel manages multiple sheets and preserves activeSheetId', () => 
   assert.throws(() => workbook.removeSheet('sheet-1'), /must keep at least one worksheet/);
 });
 
-test('WorkbookSnapshotV1 round-trips complete model state including canonical drawings and metadata', () => {
+test('WorkbookSnapshot round-trips complete model state including canonical drawings and metadata', () => {
   const workbook = new WorkbookModel('unit-full', 'Full Test');
   const sheet = workbook.getSheet('sheet-1');
   sheet.cells.set(1, 2, {
@@ -113,7 +113,7 @@ test('WorkbookSnapshotV1 round-trips complete model state including canonical dr
   workbook.definedNames['TaxRate'] = '0.15';
 
   const snapshot = workbook.snapshot();
-  assert.equal(snapshot.schema, 'WorkbookSnapshotV1');
+  assert.equal(snapshot.schema, 'WorkbookSnapshot');
   assert.equal(snapshot.definedNames?.['TaxRate'], '0.15');
   assert.equal('charts' in snapshot.sheets[0]!, false);
   assert.equal('shapes' in snapshot.sheets[0]!, false);
@@ -133,71 +133,11 @@ test('WorkbookSnapshotV1 round-trips complete model state including canonical dr
   assert.equal(restored.definedNames['TaxRate'], '0.15');
 });
 
-test('migrates legacy per-kind floating objects into canonical drawings once', () => {
-  const legacy = {
-    schema: 'WorkbookSnapshotV1' as const,
-    unitId: 'legacy-drawings',
-    name: 'Legacy Drawings',
-    activeSheetId: 'sheet-1',
-    sheets: [{
-      id: 'sheet-1',
-      name: 'Sheet1',
-      rowCount: 1000,
-      columnCount: 26,
-      cells: {},
-      merges: [],
-      freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
-      charts: [{
-        id: 'legacy-chart',
-        sheetId: 'sheet-1',
-        type: 'line' as const,
-        title: 'Legacy',
-        sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
-        bounds: { x: 1, y: 2, width: 300, height: 200 },
-      }],
-      shapes: [{
-        id: 'legacy-shape',
-        sheetId: 'sheet-1',
-        type: 'rectangle' as const,
-        bounds: { x: 5, y: 6, width: 40, height: 20 },
-        fill: '#fff',
-        stroke: '#000',
-      }],
-      images: [{
-        id: 'legacy-image',
-        sheetId: 'sheet-1',
-        src: 'data:image/png;base64,AA==',
-        bounds: { x: 9, y: 10, width: 20, height: 15 },
-      }],
-      pivots: [],
-      sparklines: [],
-    }],
-  };
-
-  const migrated = migrateSnapshot(legacy);
-  assert.equal(migrated.schema, 'WorkbookSnapshotV2');
-  const migratedSheet = migrated.sheets[0]!;
-  assert.deepEqual(migratedSheet.drawings.map((drawing) => drawing.kind), ['chart', 'shape', 'image']);
-  assert.equal(migratedSheet.drawingPayloads['legacy-chart']?.kind, 'chart');
-  assert.equal(migratedSheet.drawingPayloads['legacy-shape']?.kind, 'shape');
-  assert.equal(migratedSheet.drawingPayloads['legacy-image']?.kind, 'image');
-  assert.equal('charts' in migratedSheet, false);
-  assert.equal('shapes' in migratedSheet, false);
-  assert.equal('images' in migratedSheet, false);
-  const migratedAgain = migrateSnapshot(migrated);
-  assert.deepEqual(migratedAgain.sheets[0]?.drawings, migratedSheet.drawings);
-  assert.deepEqual(migratedAgain.sheets[0]?.drawingPayloads, migratedSheet.drawingPayloads);
-
-  const workbook = WorkbookModel.fromSnapshot(legacy);
-  assert.equal(workbook.getSheet('sheet-1').drawings.length, 3);
-  assert.equal('charts' in workbook.getSheet('sheet-1'), false);
-});
-
 test('persists print documents and redacted query definitions in the workbook snapshot', () => {
   const workbook = new WorkbookModel('unit-persisted-features', 'Persisted Features');
   const sheetId = workbook.activeSheetId;
   workbook.setPrintDocument({
-    schema: 'PrintDocumentV1',
+    schema: 'PrintDocument',
     unitId: workbook.unitId,
     sheetId,
     pageSetup: {
@@ -214,7 +154,7 @@ test('persists print documents and redacted query definitions in the workbook sn
     pageBreaks: [{ sheetId, row: 5 }],
   });
   workbook.setQueryDefinition({
-    schema: 'QueryDefinitionV1',
+    schema: 'QueryDefinition',
     id: 'query-1',
     name: 'Sales',
     connectorId: 'rest',

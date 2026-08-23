@@ -7,9 +7,18 @@ import type {
   WorksheetModel,
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
-import { applyRowPermutation, columnLabel, validatePermutationMetadata } from "@react-sheets/core-model";
-import type { CommandRuntime } from "@react-sheets/command-runtime";
-import { formatFormula, mapAstReferences, parseFormula, type ParsedCellReference } from "@react-sheets/formula-engine";
+import { StructuralTransform, applyRowPermutation, columnLabel, validatePermutationMetadata } from "@react-sheets/core-model";
+import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
+import {
+  evaluateFormula,
+  formatFormula,
+  isArrayValue,
+  isFormulaError,
+  mapAstReferences,
+  parseFormula,
+  type ParsedCellReference,
+  type FormulaValue,
+} from "@react-sheets/formula-engine";
 
 // ---------- 基础 ----------
 
@@ -28,6 +37,143 @@ function inRange(range: RangeRef, row: number, column: number): boolean {
     && column >= range.startColumn && column <= range.endColumn;
 }
 
+function cellRange(sheetId: string, row: number, column: number): RangeRef {
+  return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
+}
+
+function snapshotCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous?: CellData }> {
+  const result: Array<{ row: number; column: number; previous?: CellData }> = [];
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      result.push({ row, column, previous: structuredClone(sheet.cells.get(row, column)) });
+    }
+  }
+  return result;
+}
+
+function applyRangeValues(
+  context: CommandContext,
+  params: { sheetId: string; startRow: number; startColumn: number; values: CellData[][] },
+): void {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const range: RangeRef = {
+    sheetId: params.sheetId,
+    startRow: params.startRow,
+    endRow: params.startRow + Math.max(0, params.values.length - 1),
+    startColumn: params.startColumn,
+    endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
+  };
+  const previous = snapshotCells(sheet, range);
+  const affectedRanges = [range];
+  context.applyMutation({
+    id: 'range.set',
+    unitId: context.workbook.unitId,
+    sheetId: params.sheetId,
+    params,
+    affectedRanges,
+    inverse: previous.map((entry) => ({
+      id: 'cell.restore' as const,
+      unitId: context.workbook.unitId,
+      sheetId: params.sheetId,
+      params: { row: entry.row, column: entry.column, previous: entry.previous },
+      affectedRanges: [cellRange(params.sheetId, entry.row, entry.column)],
+    })),
+    apply: () => {
+      for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < (params.values[rowOffset]?.length ?? 0); columnOffset += 1) {
+          const value = params.values[rowOffset]?.[columnOffset];
+          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
+        }
+      }
+    },
+  });
+}
+
+function clearRangeContents(context: CommandContext, range: RangeRef): void {
+  const sheet = context.workbook.getSheet(range.sheetId);
+  const previous = snapshotCells(sheet, range);
+  const affectedRanges = [structuredClone(range)];
+  context.applyMutation({
+    id: 'range.clear',
+    unitId: context.workbook.unitId,
+    sheetId: range.sheetId,
+    params: { sheetId: range.sheetId, range, mode: 'contents' as const },
+    affectedRanges,
+    inverse: previous.map((entry) => ({
+      id: 'cell.restore' as const,
+      unitId: context.workbook.unitId,
+      sheetId: range.sheetId,
+      params: { row: entry.row, column: entry.column, previous: entry.previous },
+      affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
+    })),
+    apply: () => {
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+          const current = sheet.cells.get(row, column);
+          if (!current) continue;
+          const next = { ...current, value: null };
+          delete next.formula;
+          delete next.displayValue;
+          sheet.cells.set(row, column, next);
+        }
+      }
+    },
+  });
+}
+
+function applyRowsInsert(context: CommandContext, sheetId: string, at: number, count: number): void {
+  if (count <= 0) return;
+  const sheet = context.workbook.getSheet(sheetId);
+  const affectedRanges: RangeRef[] = [{ sheetId, startRow: at, endRow: at + count - 1, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
+  context.applyMutation({
+    id: 'rows.inserted',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { sheetId, at, count },
+    affectedRanges,
+    inverse: [{ id: 'rows.deleted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges }],
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }),
+  });
+}
+
+function applyRowsDelete(context: CommandContext, sheetId: string, at: number, count: number): void {
+  if (count <= 0) return;
+  const sheet = context.workbook.getSheet(sheetId);
+  const end = at + count - 1;
+  const removed = snapshotCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
+  const affectedRanges: RangeRef[] = [{ sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
+  context.applyMutation({
+    id: 'rows.deleted',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { sheetId, at, count },
+    affectedRanges,
+    inverse: [
+      { id: 'rows.inserted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges },
+      ...removed.map((entry) => ({
+        id: 'cell.restore' as const,
+        unitId: context.workbook.unitId,
+        sheetId,
+        params: { row: entry.row, column: entry.column, previous: entry.previous },
+        affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
+      })),
+    ],
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }),
+  });
+}
+
+function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, previous: import('@react-sheets/core-model').OutlineModel, affectedRanges: RangeRef[]): void {
+  context.applyMutation({
+    id: 'outline.set',
+    unitId: context.workbook.unitId,
+    sheetId,
+    params: { sheetId, outline: structuredClone(next) },
+    affectedRanges,
+    inverse: [{ id: 'outline.set', unitId: context.workbook.unitId, sheetId, params: { sheetId, outline: structuredClone(previous) }, affectedRanges }],
+    apply: () => { context.workbook.getSheet(sheetId).outline = structuredClone(next); },
+  });
+}
+
 export function normalizeConditionalFormatRule(
   rule: ConditionalFormatRule,
   fallbackPriority = 1,
@@ -35,6 +181,15 @@ export function normalizeConditionalFormatRule(
   const ranges = rule.ranges.map(normalizeRangeRef);
   if (ranges.length === 0) throw new Error(`Conditional format ${rule.id} requires at least one range`);
   if (!rule.id.trim()) throw new Error('Conditional format id is required');
+  if (ranges.some((range) => range.sheetId !== rule.sheetId)) throw new Error('Conditional format ranges must target the rule sheet');
+  if (rule.priority !== undefined && (!Number.isInteger(rule.priority) || rule.priority <= 0)) throw new Error('Conditional format priority must be a positive integer');
+  if (rule.stopIfTrue !== undefined && typeof rule.stopIfTrue !== 'boolean') throw new Error('Conditional format stopIfTrue must be boolean');
+  if (rule.operator === 'formula') {
+    const formula = String(rule.value1 ?? '').trim();
+    if (!formula) throw new Error(`Conditional format ${rule.id} requires a formula predicate`);
+    try { parseFormula(formula.startsWith('=') ? formula : `=${formula}`); }
+    catch { throw new Error(`Conditional format ${rule.id} has an invalid formula predicate`); }
+  }
   if (rule.type === 'topBottom') {
     const topBottom: ConditionalFormatTopBottom = rule.topBottom ?? {
       direction: rule.operator === 'bottom' ? 'bottom' : 'top',
@@ -64,8 +219,22 @@ export function normalizeDataValidationRule(rule: DataValidationRule): DataValid
   if (rule.type === 'list' && !rule.formula1 && !rule.listSource) {
     throw new Error(`List validation ${rule.id} requires a list source`);
   }
+  if ((rule.type === 'whole' || rule.type === 'decimal' || rule.type === 'textLength') && rule.formula1 === undefined) {
+    throw new Error(`Data validation ${rule.id} requires a lower bound`);
+  }
   if (rule.type === 'checkbox' && rule.operator !== undefined) {
     throw new Error('Checkbox validation does not accept a comparison operator');
+  }
+  if (rule.alertStyle !== undefined && !['stop', 'warning', 'information'].includes(rule.alertStyle)) {
+    throw new Error(`Unsupported data validation alert style: ${rule.alertStyle}`);
+  }
+  if (rule.listSource?.kind === 'range' && rule.listSource.range.sheetId !== rule.sheetId) {
+    throw new Error('Validation list range must target the validation sheet');
+  }
+  const formula = rule.type === 'custom' ? rule.formula1 : rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
+  if (formula?.trim().startsWith('=')) {
+    try { parseFormula(formula.trim()); }
+    catch { throw new Error(`Data validation ${rule.id} has an invalid formula source`); }
   }
   return {
     ...structuredClone(rule),
@@ -259,71 +428,60 @@ function evaluateHighlight(
 ): boolean {
   const text = cellText(cell);
   const numeric = numericOf(cell);
-  const v1 = rule.value1;
-  const n1 = typeof v1 === "number" ? v1 : Number(v1);
+  const firstValue = rule.value1;
+  const firstNumber = typeof firstValue === "number" ? firstValue : Number(firstValue);
   switch (rule.operator) {
-    case "greaterThan": return numeric !== undefined && Number.isFinite(n1) && numeric > n1;
-    case "lessThan": return numeric !== undefined && Number.isFinite(n1) && numeric < n1;
+    case "greaterThan": return numeric !== undefined && Number.isFinite(firstNumber) && numeric > firstNumber;
+    case "lessThan": return numeric !== undefined && Number.isFinite(firstNumber) && numeric < firstNumber;
     case "equal":
-      return typeof v1 === "string" ? text.toLowerCase() === String(v1).toLowerCase() : numeric === n1;
+      return typeof firstValue === "string" ? text.toLowerCase() === String(firstValue).toLowerCase() : numeric === firstNumber;
     case "notEqual":
-      return typeof v1 === "string" ? text.toLowerCase() !== String(v1).toLowerCase() : numeric !== n1;
+      return typeof firstValue === "string" ? text.toLowerCase() !== String(firstValue).toLowerCase() : numeric !== firstNumber;
     case "between": {
       const n2 = typeof rule.value2 === "number" ? rule.value2 : Number(rule.value2);
-      return numeric !== undefined && Number.isFinite(n1) && Number.isFinite(n2) && numeric >= n1 && numeric <= n2;
+      return numeric !== undefined && Number.isFinite(firstNumber) && Number.isFinite(n2) && numeric >= firstNumber && numeric <= n2;
     }
-    case "containsText": return typeof v1 === "string" && text.toLowerCase().includes(String(v1).toLowerCase());
-    case "notContainsText": return typeof v1 === "string" && !text.toLowerCase().includes(String(v1).toLowerCase());
+    case "containsText": return typeof firstValue === "string" && text.toLowerCase().includes(String(firstValue).toLowerCase());
+    case "notContainsText": return typeof firstValue === "string" && !text.toLowerCase().includes(String(firstValue).toLowerCase());
     case "duplicate": return valueCounts.get(text) !== undefined && (valueCounts.get(text) ?? 0) > 1;
     case "unique": return text !== "" && (valueCounts.get(text) ?? 0) === 1;
-    case "formula": return evaluateCfFormula(String(v1 ?? ""), sheet, row, column, cell);
+    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell);
     default: return false;
   }
 }
 
 function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined): boolean {
-  const source = formula.trim().startsWith("=") ? formula.trim().slice(1) : formula.trim();
+  const source = formula.trim();
   if (!source) return false;
-  const replaced = source
-    .replace(/\bROW\(\)/gi, String(row + 1))
-    .replace(/\bCOLUMN\(\)/gi, String(column + 1))
-    .replace(/\bROW\b/gi, String(row + 1))
-    .replace(/\bCOLUMN\b/gi, String(column + 1));
-  const cellRef = replaced.match(/^([A-Z]+\d+)\s*(=|<>|>=|<=|>|<)\s*(.+)$/i);
-  if (cellRef) {
-    const ref = parseSimpleA1(cellRef[1]!);
-    const operator = cellRef[2]!;
-    const operand = cellRef[3]!.trim();
-    const target = ref ? sheet.cells.get(ref.row, ref.column) : cell;
-    const left = numericOf(target) ?? cellText(target);
-    const right = Number(operand);
-    if (Number.isFinite(right)) return compareValues(left, right, operator);
-    return compareValues(String(left).toLowerCase(), operand.replace(/^"|"$/g, "").toLowerCase(), operator);
-  }
-  if (/^MOD\s*\(/i.test(replaced)) {
-    const modMatch = replaced.match(/^MOD\s*\(\s*ROW\s*\(\s*\)\s*,\s*(\d+)\s*\)\s*=\s*(\d+)/i);
-    if (modMatch) return (row + 1) % Number(modMatch[1]) === Number(modMatch[2]);
-  }
-  return Boolean(cell?.value);
-}
-
-function parseSimpleA1(reference: string): { row: number; column: number } | null {
-  const match = reference.match(/^([A-Z]+)(\d+)$/i);
-  if (!match) return null;
-  let column = 0;
-  for (const char of match[1]!.toUpperCase()) column = column * 26 + char.charCodeAt(0) - 64;
-  return { row: Number(match[2]) - 1, column: column - 1 };
-}
-
-function compareValues(left: string | number, right: string | number, operator: string): boolean {
-  switch (operator) {
-    case "=": return left === right;
-    case "<>": return left !== right;
-    case ">": return Number(left) > Number(right);
-    case "<": return Number(left) < Number(right);
-    case ">=": return Number(left) >= Number(right);
-    case "<=": return Number(left) <= Number(right);
-    default: return false;
+  try {
+    const ast = parseFormula(source.startsWith('=') ? source : `=${source}`);
+    const result = evaluateFormula(ast, {
+      currentCell: { sheetId: sheet.id, row, column },
+      readCell: (address): FormulaValue => {
+        if (address.sheetId !== sheet.id) return null;
+        const target = sheet.cells.get(address.row, address.column);
+        return (target?.formulaValue ?? target?.value ?? null) as FormulaValue;
+      },
+      readRange: (range): Iterable<FormulaValue> => {
+        if (range.start.sheetId !== sheet.id || range.end.sheetId !== sheet.id) return [];
+        const values: FormulaValue[] = [];
+        for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
+          for (let targetColumn = range.start.column; targetColumn <= range.end.column; targetColumn += 1) {
+            const target = sheet.cells.get(targetRow, targetColumn);
+            values.push((target?.formulaValue ?? target?.value ?? null) as FormulaValue);
+          }
+        }
+        return values;
+      },
+    });
+    if (isFormulaError(result)) return false;
+    if (isArrayValue(result)) return Boolean(result[0]?.[0]);
+    return result === true || (typeof result === 'number' && result !== 0) || (typeof result === 'string' && result.length > 0);
+  } catch {
+    // An unsupported/invalid CF formula is not a successful match. Do not
+    // fall back to the current cell value, which would silently apply a rule
+    // whose authored predicate could not be evaluated.
+    return false;
   }
 }
 
@@ -345,20 +503,59 @@ function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[])
 
 // ---------- 筛选 ----------
 
+const FILTER_OPERATORS = new Set([
+  '>', '<', '>=', '<=', '=', '<>', 'equals', 'notequal', 'notequals',
+  'contains', 'notcontains', 'beginswith', 'endswith', 'blank', 'blanks',
+  'notblank', 'not blanks', 'between', 'datebefore', 'dateafter', 'dateequals',
+]);
+
+export function normalizeFilterModel(filter: import('@react-sheets/core-model').FilterModel): import('@react-sheets/core-model').FilterModel {
+  const range = normalizeRangeRef(filter.range);
+  if (range.sheetId !== filter.sheetId) throw new Error('Filter range must target its sheetId');
+  const criteria: Record<number, import('@react-sheets/core-model').FilterColumnCondition> = {};
+  for (const [rawColumn, input] of Object.entries(filter.criteria)) {
+    const column = Number(rawColumn);
+    if (!Number.isInteger(column) || column < range.startColumn || column > range.endColumn) throw new Error('Filter criterion is outside the filter range');
+    const conditionOperator = input.conditionOperator?.trim().toLocaleLowerCase();
+    if (conditionOperator && !FILTER_OPERATORS.has(conditionOperator)) throw new Error(`Unsupported filter condition: ${input.conditionOperator}`);
+    if (conditionOperator === 'between' && input.conditionValue2 == null) throw new Error('Between filter requires two values');
+    criteria[column] = {
+      ...structuredClone(input),
+      column,
+      ...(input.selectedValues ? { selectedValues: [...new Set(input.selectedValues.map(String))] } : {}),
+      ...(conditionOperator ? { conditionOperator } : {}),
+    };
+  }
+  return { sheetId: filter.sheetId, range, criteria };
+}
+
 export function computeFilterHiddenRows(sheet: WorksheetModel): Set<number> {
   const hidden = new Set<number>();
-  const filter = sheet.filter;
+  let filter: import('@react-sheets/core-model').FilterModel | undefined;
+  try { filter = sheet.filter ? normalizeFilterModel(sheet.filter) : undefined; }
+  catch {
+    // Malformed filter state must not expose unfiltered data accidentally.
+    for (let row = 0; row < sheet.rowCount; row += 1) hidden.add(row);
+    return hidden;
+  }
   if (!filter) return hidden;
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+    && entry.range.startRow === filter.range.startRow
+    && entry.range.endRow === filter.range.endRow
+    && entry.range.startColumn === filter.range.startColumn
+    && entry.range.endColumn === filter.range.endColumn);
+  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
   for (const rawKey of Object.keys(filter.criteria)) {
     const column = Number(rawKey);
     const criterion = filter.criteria[column];
     if (!criterion) continue;
-    for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row++) {
+    for (let row = filter.range.startRow + 1; row <= endRow; row++) {
       const cell = sheet.cells.get(row, column);
       const text = cellText(cell);
       let visible = true;
       if (criterion.selectedValues != null) {
-        visible = criterion.selectedValues.includes(text);
+        const normalized = text.toLocaleLowerCase();
+        visible = criterion.selectedValues.some((value) => value.toLocaleLowerCase() === normalized);
       }
       if (visible && criterion.excludeBlanks && text === "") {
         visible = false;
@@ -373,26 +570,52 @@ export function computeFilterHiddenRows(sheet: WorksheetModel): Set<number> {
 }
 
 function evaluateFilterCondition(text: string, operator: string, operand: string, operand2?: string): boolean {
-  const numeric = Number(text.replace(/[$,%]/g, ""));
-  const operandNumeric = Number(operand);
+  const normalizedOperator = operator.trim().toLocaleLowerCase();
+  const normalizedText = text.trim().toLocaleLowerCase();
+  const numeric = Number(text.replace(/[$,%\s,]/g, ""));
+  const operandNumeric = Number(operand.replace(/[$,%\s,]/g, ""));
   const hasNumbers = Number.isFinite(numeric) && Number.isFinite(operandNumeric);
-  switch (operator) {
+  switch (normalizedOperator) {
     case ">": return hasNumbers && numeric > operandNumeric;
     case "<": return hasNumbers && numeric < operandNumeric;
     case ">=": return hasNumbers && numeric >= operandNumeric;
     case "<=": return hasNumbers && numeric <= operandNumeric;
-    case "=": return text.toLowerCase() === operand.toLowerCase();
-    case "<>": return text.toLowerCase() !== operand.toLowerCase();
-    case "contains": return text.toLowerCase().includes(operand.toLowerCase());
-    case "notContains": return !text.toLowerCase().includes(operand.toLowerCase());
-    case "beginsWith": return text.toLowerCase().startsWith(operand.toLowerCase());
-    case "endsWith": return text.toLowerCase().endsWith(operand.toLowerCase());
+    case "=":
+    case "equals": return normalizedText === operand.trim().toLocaleLowerCase();
+    case "<>":
+    case "notequal":
+    case "notequals":
+    case "not equals": return normalizedText !== operand.trim().toLocaleLowerCase();
+    case "contains": return normalizedText.includes(operand.trim().toLocaleLowerCase());
+    case "notcontains":
+    case "not contains": return !normalizedText.includes(operand.trim().toLocaleLowerCase());
+    case "beginswith":
+    case "begins with": return normalizedText.startsWith(operand.trim().toLocaleLowerCase());
+    case "endswith":
+    case "ends with": return normalizedText.endsWith(operand.trim().toLocaleLowerCase());
+    case "blank":
+    case "blanks": return normalizedText === '';
+    case "notblank":
+    case "not blanks": return normalizedText !== '';
     case "between": {
-      const upper = Number(operand2);
+      const upper = Number((operand2 ?? '').replace(/[$,%\s,]/g, ""));
       return hasNumbers && Number.isFinite(upper) && numeric >= operandNumeric && numeric <= upper;
     }
-    default: return true;
+    case "datebefore":
+    case "date before": return compareDates(text, operand) < 0;
+    case "dateafter":
+    case "date after": return compareDates(text, operand) > 0;
+    case "dateequals":
+    case "date equals": return compareDates(text, operand) === 0;
+    default: return false;
   }
+}
+
+function compareDates(left: string, right: string): number {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) return Number.NaN;
+  return leftTime === rightTime ? 0 : leftTime < rightTime ? -1 : 1;
 }
 
 // ---------- 数据验证 ----------
@@ -427,7 +650,69 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel)
   }
   const formula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : rule.formula1;
   if (!formula) return undefined;
-  return formula.split(",").map((item) => item.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  if (sheet && formula.trim().startsWith('=')) {
+    const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined);
+    if (isArrayValue(evaluated)) {
+      return evaluated.flat().filter((value): value is string | number | boolean =>
+        value !== null && !isFormulaError(value)).map(String);
+    }
+  }
+  return splitListLiteral(formula);
+}
+
+function splitListLiteral(source: string): string[] {
+  const values: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (const character of source.replace(/^=/, '')) {
+    if (character === '"') { quoted = !quoted; continue; }
+    if (character === ',' && !quoted) {
+      if (current.trim()) values.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) values.push(current.trim());
+  return values;
+}
+
+function evaluateValidationFormula(
+  formula: string,
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  candidate: CellData['value'] | undefined,
+): FormulaValue {
+  try {
+    const ast = parseFormula(formula.trim().startsWith('=') ? formula.trim() : `=${formula.trim()}`);
+    return evaluateFormula(ast, {
+      currentCell: { sheetId: sheet.id, row, column },
+      readCell: (address): FormulaValue => {
+        if (address.sheetId !== sheet.id) return null;
+        if (address.row === row && address.column === column && candidate !== undefined) return candidate as FormulaValue;
+        const target = sheet.cells.get(address.row, address.column);
+        return (target?.formulaValue ?? target?.value ?? null) as FormulaValue;
+      },
+      readRange: (range): Iterable<FormulaValue> => {
+        if (range.start.sheetId !== sheet.id || range.end.sheetId !== sheet.id) return [];
+        const values: FormulaValue[] = [];
+        for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
+          for (let targetColumn = range.start.column; targetColumn <= range.end.column; targetColumn += 1) {
+            const target = sheet.cells.get(targetRow, targetColumn);
+            values.push((target?.formulaValue ?? target?.value ?? null) as FormulaValue);
+          }
+        }
+        return values;
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
+function validationMessage(rule: DataValidationRule, fallback: string): string | undefined {
+  return rule.showErrorMessage === false ? undefined : rule.errorMessage ?? fallback;
 }
 
 export function validateDataInput(
@@ -440,7 +725,7 @@ export function validateDataInput(
   if (!rule) return { valid: true, blocking: false };
   if (value == null || value === "") {
     const valid = Boolean(rule.allowBlank ?? true);
-    return { valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : rule.errorMessage ?? "该单元格不允许为空" };
+    return { valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") };
   }
   const list = validationList(rule, sheet);
   if (list) {
@@ -450,7 +735,7 @@ export function validateDataInput(
     return {
       valid: ok,
       blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop',
-      message: ok ? undefined : rule.errorMessage ?? "值不在允许的列表中",
+      message: ok ? undefined : validationMessage(rule, "值不在允许的列表中"),
       list,
     };
   }
@@ -458,10 +743,10 @@ export function validateDataInput(
   const isNumberType = rule.type === "whole" || rule.type === "decimal";
   if (isNumberType) {
     if (!Number.isFinite(numeric)) {
-      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: rule.errorMessage ?? "需要输入数字" };
+      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入数字") };
     }
     if (rule.type === "whole" && !Number.isInteger(numeric)) {
-      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: rule.errorMessage ?? "需要输入整数" };
+      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入整数") };
     }
     const bound1 = Number(rule.formula1);
     const bound2 = Number(rule.formula2);
@@ -487,23 +772,76 @@ export function validateDataInput(
     }
   }
   if (rule.type === "date" || rule.type === "time") {
-    const date = new Date(String(value));
-    if (Number.isNaN(date.getTime())) {
-      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: rule.errorMessage ?? "需要输入有效日期/时间" };
+    const validDate = rule.type === 'date' ? isValidDateValue(value) : isValidTimeValue(value);
+    if (!validDate) {
+      return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "需要输入有效日期/时间") };
+    }
+    if (rule.formula1 !== undefined || rule.formula2 !== undefined || rule.operator !== undefined) {
+      const actual = rule.type === 'date' ? dateComparable(value) : timeComparable(value);
+      const bound1 = rule.formula1 === undefined ? Number.NaN : rule.type === 'date' ? dateComparable(rule.formula1) : timeComparable(rule.formula1);
+      const bound2 = rule.formula2 === undefined ? Number.NaN : rule.type === 'date' ? dateComparable(rule.formula2) : timeComparable(rule.formula2);
+      const ok = Number.isFinite(actual) && (rule.operator === 'between'
+        ? Number.isFinite(bound1) && Number.isFinite(bound2) && actual >= bound1 && actual <= bound2
+        : rule.operator === 'notBetween'
+          ? Number.isFinite(bound1) && Number.isFinite(bound2) && (actual < bound1 || actual > bound2)
+          : rule.operator === 'greaterThan' ? Number.isFinite(bound1) && actual > bound1
+            : rule.operator === 'lessThan' ? Number.isFinite(bound1) && actual < bound1
+              : rule.operator === 'equal' ? Number.isFinite(bound1) && actual === bound1
+                : rule.operator === 'notEqual' ? Number.isFinite(bound1) && actual !== bound1
+                  : true);
+      return judge(ok, rule);
     }
   }
   if (rule.type === "checkbox") {
     const ok = value === true || value === false || String(value).toUpperCase() === "TRUE" || String(value).toUpperCase() === "FALSE";
-    return { valid: ok, blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop', message: ok ? undefined : rule.errorMessage ?? "需要 TRUE/FALSE" };
+    return { valid: ok, blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop', message: ok ? undefined : validationMessage(rule, "需要 TRUE/FALSE") };
+  }
+  if (rule.type === "custom") {
+    if (!rule.formula1) return { valid: false, blocking: (rule.alertStyle ?? 'stop') === 'stop', message: validationMessage(rule, "自定义验证公式缺失") };
+    const evaluated = evaluateValidationFormula(rule.formula1, sheet, row, column, value);
+    const ok = evaluated === true || (typeof evaluated === 'number' && evaluated !== 0) || (typeof evaluated === 'string' && evaluated.length > 0);
+    return judge(ok, rule);
   }
   return { valid: true, blocking: false };
+}
+
+function isValidDateValue(value: CellData['value']): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string' || !value.trim()) return false;
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime());
+}
+
+function isValidTimeValue(value: CellData['value']): boolean {
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 && value < 1;
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(text)) return true;
+  const date = new Date(`1970-01-01T${text}`);
+  return !Number.isNaN(date.getTime());
+}
+
+function dateComparable(value: CellData['value'] | string): number {
+  if (typeof value === 'number') return value;
+  const time = Date.parse(String(value));
+  return Number.isNaN(time) ? Number.NaN : time;
+}
+
+function timeComparable(value: CellData['value'] | string): number {
+  if (typeof value === 'number') return value * 86400;
+  const match = String(value).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return Number.NaN;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] ?? 0);
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 function judge(ok: boolean, rule: DataValidationRule): DataValidationResult {
   return {
     valid: ok,
     blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop',
-    message: ok ? undefined : rule.errorMessage ?? "不符合数据验证规则",
+    message: ok ? undefined : validationMessage(rule, "不符合数据验证规则"),
   };
 }
 
@@ -730,6 +1068,7 @@ function matrixClearRange(source: RangeRef, target: RangeRef): RangeRef {
 
 function executeMatrixTransform(
   runtime: CommandRuntime,
+  context: CommandContext,
   params: { sheetId: string; range: RangeRef; direction?: 'horizontal' | 'vertical' },
   transpose: boolean,
 ): ReturnType<CommandRuntime['execute']> {
@@ -737,6 +1076,7 @@ function executeMatrixTransform(
   const range = normalizeRangeRef({ ...params.range, sheetId: params.sheetId });
   assertMatrixTransformSupported(sheet, range);
   const target = matrixTargetRange(range, transpose);
+  if (target.endRow >= sheet.rowCount || target.endColumn >= sheet.columnCount) throw new Error('Matrix transform exceeds worksheet bounds');
   const clearRange = matrixClearRange(range, target);
   if (target.startRow !== range.startRow || target.startColumn !== range.startColumn
     || target.endRow !== range.endRow || target.endColumn !== range.endColumn) {
@@ -768,13 +1108,14 @@ function executeMatrixTransform(
     }
     values.push(line);
   }
-  runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range: clearRange, mode: 'all' });
-  return runtime.execute('sheet.range.set', {
+  clearRangeContents(context, clearRange);
+  applyRangeValues(context, {
     sheetId: params.sheetId,
     startRow: target.startRow,
     startColumn: target.startColumn,
     values,
   });
+  return { operationId: context.operationId, mutationCount: 2, affectedRanges: [clearRange, target] };
 }
 
 function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<{ start: number; end: number; key: string }> {
@@ -843,20 +1184,22 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerCommand<{ sheetId: string; range: RangeRef }>({
     id: 'matrix.transpose',
-    execute: (params) => executeMatrixTransform(runtime, params, true),
+    execute: (params, context) => executeMatrixTransform(runtime, context, params, true),
   });
 
   runtime.registry.registerCommand<{ sheetId: string; range: RangeRef; direction: 'horizontal' | 'vertical' }>({
     id: 'matrix.flip',
-    execute: (params) => executeMatrixTransform(runtime, params, false),
+    execute: (params, context) => executeMatrixTransform(runtime, context, params, false),
   });
 
   runtime.registry.registerCommand<TextToColumnsParams>({
     id: 'data.textToColumns',
     execute: (params, context) => {
+      if (!params.delimiter) throw new Error('Text to Columns delimiter is required');
       const sheet = context.workbook.getSheet(params.sheetId);
-      const range = params.range;
+      const range = normalizeRangeRef(params.range);
       const maxColumns = Math.max(2, params.maxColumns ?? 8);
+      if (range.startColumn + maxColumns > sheet.columnCount) throw new Error('Text to Columns exceeds worksheet bounds');
       const values: CellData[][] = [];
       for (let row = range.startRow; row <= range.endRow; row++) {
         const cell = sheet.cells.get(row, range.startColumn);
@@ -864,12 +1207,20 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         const parts = text.split(params.delimiter).slice(0, maxColumns);
         values.push(parts.map((part) => ({ value: part })));
       }
-      return runtime.execute('sheet.range.set', {
+      clearRangeContents(context, {
+        sheetId: params.sheetId,
+        startRow: range.startRow,
+        endRow: range.endRow,
+        startColumn: range.startColumn,
+        endColumn: range.startColumn + maxColumns - 1,
+      });
+      applyRangeValues(context, {
         sheetId: params.sheetId,
         startRow: range.startRow,
         startColumn: range.startColumn,
         values,
       });
+      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [range] };
     },
   });
 
@@ -878,6 +1229,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
+      if (params.columns.length === 0 || params.columns.some((column) => column < range.startColumn || column > range.endColumn)) {
+        throw new Error('Remove Duplicates columns must be inside the selected range');
+      }
       const startRow = params.hasHeader ? range.startRow + 1 : range.startRow;
       const seen = new Set<string>();
       const duplicateRows: number[] = [];
@@ -899,8 +1253,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       let mutationCount = 0;
       const affectedRanges: RangeRef[] = [];
       for (const run of [...runs].reverse()) {
-        const result = runtime.execute('sheet.rows.delete', { sheetId: params.sheetId, at: run.at, count: run.count });
-        mutationCount += result.mutationCount;
+        applyRowsDelete(context, params.sheetId, run.at, run.count);
+        mutationCount += 1;
         affectedRanges.push({ sheetId: params.sheetId, startRow: run.at, endRow: run.at + run.count - 1, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
       }
       return { operationId: context.operationId, mutationCount, affectedRanges };
@@ -910,6 +1264,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<SubtotalParams>({
     id: 'data.subtotal',
     execute: (params, context) => {
+      if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
       const groups = contiguousGroups(sheet, { ...params, range });
@@ -927,8 +1282,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         }
       }
       if (occupied) {
-        const result = runtime.execute('sheet.rows.insert', { sheetId: params.sheetId, at: targetRow, count: groups.length + 1 });
-        mutationCount += result.mutationCount;
+        applyRowsInsert(context, params.sheetId, targetRow, groups.length + 1);
+        mutationCount += 1;
       }
       const values: CellData[][] = [];
       const header: CellData[] = [];
@@ -955,19 +1310,19 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         }
         values.push(rowValues);
       }
-      const setResult = runtime.execute('sheet.range.set', {
+      applyRangeValues(context, {
         sheetId: params.sheetId,
         startRow: targetRow,
         startColumn: range.startColumn,
         values,
       });
-      mutationCount += setResult.mutationCount;
+      mutationCount += 1;
       const affectedRanges: RangeRef[] = [structuredClone(range), { sheetId: params.sheetId, startRow: targetRow, endRow: targetRow + groups.length, startColumn: range.startColumn, endColumn: range.endColumn }];
       for (const group of groups) {
-        runtime.execute('outline.group.add', {
-          sheetId: params.sheetId,
-          group: { id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false },
-        });
+        const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
+        const nextOutline = structuredClone(sheetOutline);
+        nextOutline.groups.push({ id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false });
+        applyOutline(context, params.sheetId, nextOutline, sheetOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
         mutationCount += 1;
       }
       return { operationId: context.operationId, mutationCount, affectedRanges };
@@ -976,7 +1331,20 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
 
   runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
     id: 'data.splitColumn',
-    execute: (params, context) => runtime.execute('sheet.splitColumn', params),
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const cell = sheet.cells.get(params.row, params.column);
+      const text = cell?.value == null ? '' : String(cell.value);
+      const maxColumns = Math.max(2, params.maxColumns ?? 4);
+      if (params.column + maxColumns > sheet.columnCount) throw new Error('Split Column exceeds worksheet bounds');
+      const parts = text.split(params.delimiter).slice(0, maxColumns);
+      if (parts.length <= 1 && parts[0] === text) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const values = [parts.map((part) => ({ value: coerceDataText(part, cell), style: cell?.style ? structuredClone(cell.style) : undefined }))];
+      const range: RangeRef = { sheetId: params.sheetId, startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column + maxColumns - 1 };
+      clearRangeContents(context, range);
+      applyRangeValues(context, { sheetId: params.sheetId, startRow: params.row, startColumn: params.column, values });
+      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [range] };
+    },
   });
 
   runtime.registry.registerCommand<{ name: string }>({
@@ -986,4 +1354,12 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       return { operationId: context.operationId, mutationCount: 0, affectedRanges: names.map(() => ({ sheetId: context.workbook.activeSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })) };
     },
   });
+}
+
+function coerceDataText(text: string, previousCell: CellData | undefined): CellData['value'] {
+  if (typeof previousCell?.value === 'number') {
+    const numeric = Number(text.replace(/[$,%]/g, ''));
+    if (Number.isFinite(numeric) && text.trim() !== '') return numeric;
+  }
+  return text;
 }

@@ -80,7 +80,7 @@ function commandPlanResult(
 ): CommandResult & { plan: WhatIfPlan } {
   if (!capabilities.isEnabled('what-if')) throw new Error('What-if capability is disabled');
   const metadata: WhatIfPlanMetadata = {
-    schema: 'WhatIfPlanV1',
+    schema: 'WhatIfPlan',
     kind: plan.kind,
     sourceRevision: hashValue(context.workbook.snapshot()),
     planHash: hashValue({ definition, writes: plan.writes }),

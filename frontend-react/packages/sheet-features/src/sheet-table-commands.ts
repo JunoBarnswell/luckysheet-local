@@ -4,6 +4,7 @@ import {
   findSheetTableForFilter,
   planTotalRowToggle,
   snapshotTotalRowCells,
+  validateSheetTableModel,
 } from './sheet-table-features';
 
 export interface AddSheetTableParams extends SheetTableModel {}
@@ -30,16 +31,24 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<AddSheetTableParams>({
     id: 'sheetTable.add',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = [structuredClone(params.range)];
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const table = validateSheetTableModel(params, sheet);
+      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
+        throw new Error(`Sheet Table already exists: ${table.name}`);
+      }
+      const intersects = (left: RangeRef, right: RangeRef): boolean => left.startRow <= right.endRow
+        && left.endRow >= right.startRow && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
+      if (sheet.sheetTables.some((entry) => intersects(entry.range, table.range))) throw new Error('Sheet Tables cannot overlap');
+      const affectedRanges: RangeRef[] = [structuredClone(table.range)];
       context.applyMutation({
         id: 'sheetTable.add',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: table,
         affectedRanges,
         inverse: [{ id: 'sheetTable.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, tableId: params.id }, affectedRanges }],
         apply: () => {
-          context.workbook.getSheet(params.sheetId).sheetTables.push(structuredClone(params));
+          context.workbook.getSheet(params.sheetId).sheetTables.push(structuredClone(table));
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -73,7 +82,24 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<{ sheetId: string; tableId: string }>({
     id: 'sheetTable.convertToRange',
     execute: (params, context) => {
-      return runtime.execute('sheetTable.remove', params);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const index = sheet.sheetTables.findIndex((table) => table.id === params.tableId);
+      if (index < 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const previous = structuredClone(sheet.sheetTables[index]!);
+      const affectedRanges = [structuredClone(previous.range)];
+      context.applyMutation({
+        id: 'sheetTable.remove',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [{ id: 'sheetTable.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
+        apply: () => {
+          const target = sheet.sheetTables.findIndex((table) => table.id === params.tableId);
+          if (target >= 0) sheet.sheetTables.splice(target, 1);
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
 

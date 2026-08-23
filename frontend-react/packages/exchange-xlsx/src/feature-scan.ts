@@ -1,4 +1,4 @@
-import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import { classifyFeature } from './compatibility-report';
 import type { CompatibilityIssue, CompatibilityLevel } from './types';
 
@@ -9,7 +9,7 @@ const PRESERVE_FORMULA_PATTERNS: Array<{ feature: string; pattern: RegExp }> = [
   { feature: 'cube', pattern: /\bCUBE(?:VALUE|SET|MEMBER)\s*\(/i },
 ];
 
-export function scanSnapshotFeatures(snapshot: WorkbookSnapshotV1): string[] {
+export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
   const features = new Set<string>(['cells', 'styles']);
   let hasFormula = false;
 
@@ -51,7 +51,7 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshotV1): string[] {
   return [...features];
 }
 
-export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshotV1): CompatibilityIssue[] {
+export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): CompatibilityIssue[] {
   const issues: CompatibilityIssue[] = [];
   const seen = new Set<string>();
 

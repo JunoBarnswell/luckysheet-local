@@ -2,21 +2,37 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
-import type { OperationEnvelopeV2 } from '@react-sheets/protocol';
-import { registerSpreadsheetFeatures } from '../feature-registry';
-import { DrawingRuntime } from '../features/drawing';
+import { registerSheetCommands } from '@react-sheets/sheet-features';
+import type { OperationEnvelope } from '@react-sheets/protocol';
 import { CollaborationSession } from './collaboration-session';
+import { OfflineQueue } from './offline-queue';
 import {
+  buildOperation,
   buildCollaborationSnapshot,
   mapPeerCursor,
   updatePresenceFromPeer,
 } from './helpers';
 
 describe('collaboration helpers', () => {
-  it('builds collaboration snapshot from V2 session state', () => {
+  it('builds the single client operation contract without server-owned fields', () => {
+    const operation = buildOperation('op-1', 'wb-1', 1, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z');
+    assert.deepEqual(operation, {
+      schema: 'OperationEnvelope',
+      operationId: 'op-1',
+      unitId: 'wb-1',
+      clientSequence: 1,
+      baseRevision: 0,
+      mutations: [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }],
+      createdAt: '2026-08-23T00:00:00.000Z',
+    });
+    assert.equal('actorId' in operation, false);
+    assert.equal('affectedRanges' in operation, false);
+  });
+
+  it('builds collaboration snapshot from operation session state', () => {
     const workbook = new WorkbookModel('wb-1', 'Collab');
     const runtime = new CommandRuntime(workbook);
-    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    registerSheetCommands(runtime);
     const session = new CollaborationSession(runtime);
     session.setRevision(4);
     const peer = mapPeerCursor('peer-1', { row: 2, column: 3, sheetId: 'sheet-1', name: 'Alice' }, 'sheet-1');
@@ -27,9 +43,10 @@ describe('collaboration helpers', () => {
     assert.equal(snapshot.presence.users[0]?.displayName, 'Alice');
   });
 
-  it('acknowledges V2 operations and drains the offline queue', () => {
+  it('acknowledges operations and drains the offline queue', () => {
     const workbook = new WorkbookModel('wb-1', 'Collab');
     const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
     const session = new CollaborationSession(runtime);
     session.enqueueLocalMutations([{
       id: 'cell.set',
@@ -42,13 +59,66 @@ describe('collaboration helpers', () => {
     session.acknowledge('op-ack', 5);
     assert.equal(session.getRevision(), 5);
     assert.equal(session.offlineQueue.getPendingCount(), 0);
+    assert.equal(session.offlineQueue.getStatus('op-ack'), 'acked');
+  });
+
+  it('rejects unknown mutations and unmatched acknowledgements', () => {
+    const workbook = new WorkbookModel('wb-unknown', 'Collab');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const session = new CollaborationSession(runtime);
+    assert.throws(() => session.enqueueLocalMutations([{
+      id: 'mutation.does-not-exist',
+      unitId: workbook.unitId,
+      sheetId: workbook.activeSheetId,
+      params: {},
+      affectedRanges: [],
+    }], workbook.unitId), /Unknown mutation/);
+    assert.equal(session.acknowledge('operation.does-not-exist', 1), false);
+    assert.equal(session.getRevision(), 0);
+  });
+
+  it('rejects malformed durable operation records and remote unknown mutations', () => {
+    assert.throws(() => new OfflineQueue({
+      load: () => [{
+        schema: 'WrongEnvelope',
+        operationId: 'op-invalid',
+        unitId: 'wb-1',
+        clientSequence: 1,
+        baseRevision: 0,
+        mutations: [],
+        createdAt: '2026-08-23T00:00:00.000Z',
+      } as never],
+    }), /Unsupported operation schema/);
+
+    const workbook = new WorkbookModel('wb-remote-unknown', 'Collab');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const session = new CollaborationSession(runtime);
+    assert.throws(() => session.applyRemote({
+      schema: 'OperationEnvelope',
+      operationId: 'remote-invalid',
+      unitId: workbook.unitId,
+      actorId: 'peer',
+      clientSequence: 1,
+      baseRevision: 0,
+      revision: 1,
+      committedAt: '2026-08-23T00:00:00.000Z',
+      createdAt: '2026-08-23T00:00:00.000Z',
+      mutations: [{
+        id: 'mutation.does-not-exist',
+        sheetId: workbook.activeSheetId,
+        params: {},
+        affectedRanges: [],
+      }],
+    }), /Unknown mutation/);
   });
 
   it('rewrites durable pending intent after a remote structural revision', () => {
     const workbook = new WorkbookModel('wb-1', 'Collab');
     const runtime = new CommandRuntime(workbook);
-    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
-    const persisted: OperationEnvelopeV2[] = [];
+    registerSheetCommands(runtime);
+    const persisted: OperationEnvelope[] = [];
     const session = new CollaborationSession(runtime, {
       persistPending: (operations) => {
         persisted.splice(0, persisted.length, ...operations);
@@ -71,7 +141,7 @@ describe('collaboration helpers', () => {
     // The public rebase call proves the transform itself; the queued rewrite
     // is exercised by applying the same committed operation through the wire.
     session.applyRemote({
-      schema: 'OperationEnvelopeV2',
+      schema: 'OperationEnvelope',
       operationId: 'remote-insert',
       unitId: 'wb-1',
       actorId: 'peer',

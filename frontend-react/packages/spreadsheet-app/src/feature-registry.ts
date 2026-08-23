@@ -25,6 +25,65 @@ const CORE_MANIFEST: SpreadsheetFeatureManifest = {
   commandIds: [],
 };
 
+interface ActivateSheetParams {
+  sheetId: string;
+  previousSheetId?: string;
+}
+
+/**
+ * Workbook active-sheet state is changed through the runtime as a typed
+ * mutation.  The application only projects that state into SelectionService;
+ * it never assigns WorkbookModel.activeSheetId directly.
+ */
+function registerWorkbookSessionCommands(runtime: CommandRuntime): void {
+  runtime.registry.registerMutation<ActivateSheetParams>('sheet.activated', (item, context) => {
+    const params = item.params;
+    context.workbook.getSheet(params.sheetId);
+    context.workbook.activeSheetId = params.sheetId;
+  }, {
+    schema: {
+      name: 'ActivateSheetParams',
+      validate: (value): value is ActivateSheetParams => {
+        if (!value || typeof value !== 'object') return false;
+        const params = value as Partial<ActivateSheetParams>;
+        return typeof params.sheetId === 'string'
+          && params.sheetId.length > 0
+          && (params.previousSheetId === undefined || typeof params.previousSheetId === 'string');
+      },
+    },
+    permission: { capability: 'navigate' },
+    affectedRanges: { resolve: () => [], mode: 'exact' },
+    inverseIds: ['sheet.activated'],
+  });
+  runtime.registry.registerCommand<Pick<ActivateSheetParams, 'sheetId'>>({
+    id: 'sheet.activate',
+    execute: (params, context) => {
+      context.workbook.getSheet(params.sheetId);
+      const previousSheetId = context.workbook.activeSheetId;
+      if (previousSheetId === params.sheetId) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
+      const affectedRanges = [] as import('@react-sheets/core-model').RangeRef[];
+      context.applyMutation({
+        id: 'sheet.activated',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, previousSheetId },
+        affectedRanges,
+        inverse: [{
+          id: 'sheet.activated',
+          unitId: context.workbook.unitId,
+          sheetId: previousSheetId,
+          params: { sheetId: previousSheetId, previousSheetId: params.sheetId },
+          affectedRanges,
+        }],
+        apply: () => { context.workbook.activeSheetId = params.sheetId; },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+}
+
 let registeredManifests: SpreadsheetFeatureManifest[] = [CORE_MANIFEST];
 
 /**
@@ -35,6 +94,7 @@ let registeredManifests: SpreadsheetFeatureManifest[] = [CORE_MANIFEST];
  * command forwarding layer: callers must use the canonical feature command.
  */
 export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRuntime: DrawingRuntime): SpreadsheetFeatureManifest[] {
+  registerWorkbookSessionCommands(runtime);
   registerSheetCommands(runtime);
   registerEditingFeatures(runtime);
 

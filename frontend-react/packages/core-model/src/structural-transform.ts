@@ -77,6 +77,7 @@ function intersectsAxisRange(
  * changed.  The caller can then choose an explicit object-delete operation.
  */
 function validateAxisMetadataPreservation(
+  workbook: WorkbookModel,
   sheet: WorksheetModel,
   axis: 'row' | 'column',
   at: number,
@@ -123,9 +124,15 @@ function validateAxisMetadataPreservation(
       throw new Error(`Cannot delete ${axis} ${at}: table ${table.id} requires an explicit table operation`);
     }
   }
+  for (const table of workbook.tables.values()) {
+    if (table.sourceRange?.sheetId === sheet.id && intersectsAxisRange(table.sourceRange, axis, at, count)) {
+      throw new Error(`Cannot delete ${axis} ${at}: workbook table ${table.id} requires an explicit table operation`);
+    }
+  }
 }
 
 function validateShiftPreservation(
+  workbook: WorkbookModel,
   sheet: WorksheetModel,
   selection: RangeRef,
   kind: 'shift-cells-down' | 'shift-cells-up' | 'shift-cells-right' | 'shift-cells-left',
@@ -169,6 +176,18 @@ function validateShiftPreservation(
       throw new Error(`Cannot shift ${selection.sheetId}: comment thread ${thread.id} would leave the selected range`);
     }
   }
+  for (const table of workbook.tables.values()) {
+    const range = table.sourceRange;
+    if (!range || range.sheetId !== sheet.id) continue;
+    const contained = rangeContains(selection, range);
+    const intersects = rangesIntersect(selection, range);
+    if (intersects && !contained) {
+      throw new Error(`Cannot shift ${selection.sheetId}: workbook table ${table.id} would be partially moved`);
+    }
+    if (contained && (!remainsInside(range.startRow, range.startColumn) || !remainsInside(range.endRow, range.endColumn))) {
+      throw new Error(`Cannot shift ${selection.sheetId}: workbook table ${table.id} would leave the selected range`);
+    }
+  }
 }
 
 function applyAxis(
@@ -180,7 +199,7 @@ function applyAxis(
   direction: 1 | -1,
 ): StructuralTransformResult {
   validateAxisBounds(sheet, axis, at, count, direction);
-  validateAxisMetadataPreservation(sheet, axis, at, count, direction);
+  validateAxisMetadataPreservation(workbook, sheet, axis, at, count, direction);
   if (count <= 0) return { removedCells: [] };
   const end = at + count - 1;
   let removed: Array<{ row: Row; column: Column; cell: CellData }> = [];
@@ -214,6 +233,7 @@ function applyAxis(
   shiftChartPayloads(sheet, axis, at, count, direction);
   shiftDrawings(sheet, axis, at, count, direction);
   shiftSheetTables(sheet, axis, at, count, direction);
+  shiftWorkbookTables(workbook, sheet.id, axis, at, count, direction);
   shiftNotes(sheet, axis, at, count, direction);
   shiftComments(sheet, axis, at, count, direction);
   shiftSpills(sheet, axis, at, count, direction);
@@ -247,7 +267,7 @@ function applyShiftCells(
     startColumn,
     endColumn,
   };
-  validateShiftPreservation(sheet, selection, kind);
+  validateShiftPreservation(workbook, sheet, selection, kind);
   const isVertical = kind === 'shift-cells-down' || kind === 'shift-cells-up';
   const delta = kind === 'shift-cells-down' || kind === 'shift-cells-right' ? 1 : -1;
   const rowDelta = isVertical ? delta : 0;
@@ -282,7 +302,7 @@ function applyShiftCells(
     sheet.cells.set(nextRow, nextColumn, cell);
   }
 
-  shiftBoundedMetadata(sheet, selection, rowDelta, columnDelta);
+  shiftBoundedMetadata(workbook, sheet, selection, rowDelta, columnDelta);
   rewriteReferencesForMovedRegion(workbook, sheet, selection, {
     ...selection,
     startRow: selection.startRow + rowDelta,
@@ -318,7 +338,7 @@ function shiftContainedRange(range: RangeRef, selection: RangeRef, rowDelta: num
   range.endColumn += columnDelta;
 }
 
-function shiftBoundedMetadata(sheet: WorksheetModel, selection: RangeRef, rowDelta: number, columnDelta: number): void {
+function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, selection: RangeRef, rowDelta: number, columnDelta: number): void {
   for (const merge of sheet.merges) {
     const contained = rangeContains(selection, merge.range);
     shiftContainedRange(merge.range, selection, rowDelta, columnDelta);
@@ -332,6 +352,9 @@ function shiftBoundedMetadata(sheet: WorksheetModel, selection: RangeRef, rowDel
   }
   if (sheet.filter) shiftContainedRange(sheet.filter.range, selection, rowDelta, columnDelta);
   for (const table of sheet.sheetTables) shiftContainedRange(table.range, selection, rowDelta, columnDelta);
+  for (const table of workbook.tables.values()) {
+    if (table.sourceRange?.sheetId === sheet.id) shiftContainedRange(table.sourceRange, selection, rowDelta, columnDelta);
+  }
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind !== 'chart') continue;
     for (const range of payload.sourceRanges) shiftContainedRange(range, selection, rowDelta, columnDelta);
@@ -685,6 +708,22 @@ function shiftSheetTables(sheet: WorksheetModel, axis: 'row' | 'column', at: num
   sheet.sheetTables.splice(0, sheet.sheetTables.length, ...kept);
 }
 
+function shiftWorkbookTables(
+  workbook: WorkbookModel,
+  sheetId: string,
+  axis: 'row' | 'column',
+  at: number,
+  count: number,
+  direction: 1 | -1,
+): void {
+  for (const table of workbook.tables.values()) {
+    if (table.sourceRange?.sheetId !== sheetId) continue;
+    if (!shiftRangeRef(table.sourceRange, axis, at, count, direction)) {
+      throw new Error(`Workbook table ${table.id} lost its source range`);
+    }
+  }
+}
+
 function shiftNotes(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   const next = new Map<string, CellNote>();
   for (const [key, note] of sheet.notes) {
@@ -824,7 +863,7 @@ function applyMoveRange(
   if (target.startRow < 0 || target.startColumn < 0 || target.endRow >= sheet.rowCount || target.endColumn >= sheet.columnCount) {
     throw new Error('Move range target is outside worksheet bounds');
   }
-  validateMoveMetadataPreservation(sheet, normalizedSource, target);
+  validateMoveMetadataPreservation(workbook, sheet, normalizedSource, target);
 
   const rowDelta = target.startRow - normalizedSource.startRow;
   const colDelta = target.startColumn - normalizedSource.startColumn;
@@ -865,6 +904,9 @@ function applyMoveRange(
   }
   if (sheet.filter) relocate(sheet.filter.range);
   for (const table of sheet.sheetTables) relocate(table.range);
+  for (const table of workbook.tables.values()) {
+    if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
+  }
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind !== 'chart') continue;
     for (const range of payload.sourceRanges) relocate(range);
@@ -942,7 +984,7 @@ function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
     && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
 }
 
-function validateMoveMetadataPreservation(sheet: WorksheetModel, source: RangeRef, target: RangeRef): void {
+function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: WorksheetModel, source: RangeRef, target: RangeRef): void {
   const validateRange = (range: RangeRef, label: string): void => {
     if (range.sheetId !== sheet.id) return;
     if (rangesIntersect(range, source) && !rangeContains(source, range)) {
@@ -958,6 +1000,9 @@ function validateMoveMetadataPreservation(sheet: WorksheetModel, source: RangeRe
   }
   if (sheet.filter) validateRange(sheet.filter.range, 'filter');
   for (const table of sheet.sheetTables) validateRange(table.range, `table ${table.id}`);
+  for (const table of workbook.tables.values()) {
+    if (table.sourceRange?.sheetId === sheet.id) validateRange(table.sourceRange, `workbook table ${table.id}`);
+  }
   for (const pivot of sheet.pivots) {
     validateRange(pivot.sourceRange, `pivot ${pivot.id} source`);
     if (pivot.dataSource?.kind === 'worksheet-range') validateRange(pivot.dataSource.range, `pivot ${pivot.id} source`);

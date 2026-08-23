@@ -37,7 +37,7 @@ import {
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
-import { computePivotResult } from '@react-sheets/pro-features';
+import { computePivotResult } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
 import { getCellNote } from '@react-sheets/core-model';
 import {

@@ -5,8 +5,8 @@ import type {
   DefinedNameModel,
   FreezeModel,
   MergeSpan,
-  WorkbookSnapshotV1,
-  SheetSnapshotV1,
+  WorkbookSnapshot,
+  SheetSnapshot,
   RangeRef,
 } from '@react-sheets/core-model';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
@@ -45,7 +45,7 @@ export interface LoadedXlsxPackage {
 
 export interface ParsedXlsxPackage {
   package: XlsxPackage;
-  snapshot: WorkbookSnapshotV1;
+  snapshot: WorkbookSnapshot;
   features: string[];
 }
 
@@ -142,7 +142,7 @@ export function loadXlsxPackage(input: string | ArrayBuffer, limits: Partial<Xls
   return {
     files: normalizedFiles,
     package: {
-      schema: 'XlsxPackageV1',
+      schema: 'XlsxPackage',
       parts: cloneParts(normalizedFiles),
       opaqueParts,
       relationships,
@@ -184,8 +184,8 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
-  const snapshot: WorkbookSnapshotV1 = {
-    schema: 'WorkbookSnapshotV1',
+  const snapshot: WorkbookSnapshot = {
+    schema: 'WorkbookSnapshot',
     unitId: `imported-${randomId()}`,
     name: workbook.attrs.name ?? 'Imported Workbook',
     activeSheetId: sheets[0]!.id,
@@ -197,7 +197,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage): ParsedXlsxPackage {
 }
 
 export function exportSnapshotToXlsxPackage(
-  snapshot: WorkbookSnapshotV1,
+  snapshot: WorkbookSnapshot,
   options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean },
   preserved?: XlsxPackage,
 ): string {
@@ -248,7 +248,7 @@ export function exportSnapshotToXlsxPackage(
   return bytesToBase64(zipSync(zipped, { level: 6 }));
 }
 
-export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnapshotV1): string[] {
+export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnapshot): string[] {
   const features = new Set<string>(snapshot ? ['cells', 'styles'] : []);
   for (const name of Object.keys(pkg.parts)) {
     const lower = name.toLowerCase();
@@ -287,7 +287,7 @@ function parseSheet(
   pkg: XlsxPackage,
   sharedStrings: string[],
   styles: StyleRecord[],
-): SheetSnapshotV1 {
+): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
   const root = firstElement(parseXml(xml), 'worksheet');
   const cells: Record<string, Record<string, CellData>> = {};
@@ -395,7 +395,7 @@ function parseStyles(bytes: Uint8Array | undefined): StyleRecord[] {
   });
 }
 
-function buildSharedStrings(snapshot: WorkbookSnapshotV1): string {
+function buildSharedStrings(snapshot: WorkbookSnapshot): string {
   const values: string[] = [];
   const lookup = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
@@ -412,7 +412,7 @@ function buildSharedStrings(snapshot: WorkbookSnapshotV1): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si><t>${encodeXml(value)}</t></si>`).join('')}</sst>`;
 }
 
-function buildStyles(snapshot: WorkbookSnapshotV1): string {
+function buildStyles(snapshot: WorkbookSnapshot): string {
   const records: StyleRecord[] = [{}];
   const indexes = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
@@ -470,7 +470,7 @@ function buildStyles(snapshot: WorkbookSnapshotV1): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borders.length}">${borders.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs></styleSheet>`;
 }
 
-function collectStyleIndexes(snapshot: WorkbookSnapshotV1): Map<string, number> {
+function collectStyleIndexes(snapshot: WorkbookSnapshot): Map<string, number> {
   const indexes = new Map<string, number>();
   let next = 1;
   for (const sheet of snapshot.sheets) {
@@ -486,7 +486,7 @@ function collectStyleIndexes(snapshot: WorkbookSnapshotV1): Map<string, number> 
 }
 
 function buildWorksheetXml(
-  sheet: SheetSnapshotV1,
+  sheet: SheetSnapshot,
   relationships: XlsxRelationship[],
   originalRoot: XmlNode | undefined,
   styleIndexes: Map<string, number>,
@@ -562,7 +562,7 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   return `<c r="${ref}"${styleAttr} t="inlineStr"><is><t>${encodeXml(cell.value)}</t></is></c>`;
 }
 
-function buildWorkbookXml(snapshot: WorkbookSnapshotV1, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, preserved?: XlsxPackage): string {
+function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, preserved?: XlsxPackage): string {
   const relationFor = (target: string, type: string) => relationships.find((relation) => relation.type === type && resolveTarget('xl/workbook.xml', relation.target) === target)?.id ?? '';
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
@@ -637,7 +637,7 @@ function mergeRelationships(existing: XlsxRelationship[], required: Array<Pick<X
   return result;
 }
 
-function collectHyperlinkRelationships(sheet: SheetSnapshotV1, existing: XlsxRelationship[]): Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> {
+function collectHyperlinkRelationships(sheet: SheetSnapshot, existing: XlsxRelationship[]): Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> {
   const links: Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'>> = [];
   for (const row of Object.values(sheet.cells)) {
     for (const cell of Object.values(row)) {
@@ -679,7 +679,7 @@ function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row:
   return undefined;
 }
 
-function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: XlsxPackage): SheetSnapshotV1['notes'] {
+function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: XlsxPackage): SheetSnapshot['notes'] {
   const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => candidate.type.endsWith('/comments'));
   if (!relation) return [];
   const part = resolveTarget(descriptor.part, relation.target);
@@ -872,7 +872,7 @@ function rangeToA1(range: RangeRef): string {
   return start === end ? start : `${start}:${end}`;
 }
 
-function inferDimension(sheet: SheetSnapshotV1): string {
+function inferDimension(sheet: SheetSnapshot): string {
   let maxRow = 0;
   let maxColumn = 0;
   let hasCell = false;
@@ -935,6 +935,6 @@ function normalizeVertical(value: string): CellStyle['verticalAlignment'] | unde
   return value === 'center' ? 'middle' : value as CellStyle['verticalAlignment'];
 }
 
-function descriptorsForSnapshot(snapshot: WorkbookSnapshotV1): SheetDescriptor[] {
+function descriptorsForSnapshot(snapshot: WorkbookSnapshot): SheetDescriptor[] {
   return snapshot.sheets.map((sheet, index) => ({ id: sheet.id, name: sheet.name, part: `xl/worksheets/sheet${index + 1}.xml`, hidden: Boolean(sheet.hidden) }));
 }

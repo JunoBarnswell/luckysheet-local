@@ -51,6 +51,18 @@ export interface FacadePlan {
   readonly affectedRanges: readonly RangeRef[];
 }
 
+export interface FacadeExecutionControl {
+  readonly signal?: AbortSignal;
+  readonly deadlineAt?: number;
+}
+
+export function checkFacadeExecution(control?: FacadeExecutionControl): void {
+  if (control?.signal?.aborted) throw new Error('Automation execution cancelled');
+  if (control?.deadlineAt !== undefined && Date.now() > control.deadlineAt) {
+    throw new Error('Automation execution timed out');
+  }
+}
+
 class DslParser {
   private index = 0;
   private readonly statements: FacadeStatement[] = [];
@@ -321,12 +333,14 @@ export function parseFacadeScript(
 export function buildFacadePlan(
   workbook: WorkbookModel,
   program: FacadeProgram,
+  control?: FacadeExecutionControl,
 ): FacadePlan {
   const sheet = workbook.getSheet(workbook.activeSheetId);
   const operations: FacadeCellOperation[] = [];
   const affectedRanges: RangeRef[] = [];
 
   for (const statement of program.statements) {
+    checkFacadeExecution(control);
     assertRangeWithinSheet(sheet.rowCount, sheet.columnCount, statement.range);
     affectedRanges.push({
       sheetId: sheet.id,
@@ -337,8 +351,10 @@ export function buildFacadePlan(
     });
     if (statement.kind === 'set-values') {
       for (let rowOffset = 0; rowOffset < statement.values.length; rowOffset += 1) {
+        checkFacadeExecution(control);
         const row = statement.values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < row.length; columnOffset += 1) {
+          checkFacadeExecution(control);
           const targetRow = statement.range.startRow + rowOffset;
           const targetColumn = statement.range.startColumn + columnOffset;
           if (targetRow > statement.range.endRow || targetColumn > statement.range.endColumn) {
@@ -356,7 +372,9 @@ export function buildFacadePlan(
       continue;
     }
     for (let row = statement.range.startRow; row <= statement.range.endRow; row += 1) {
+      checkFacadeExecution(control);
       for (let column = statement.range.startColumn; column <= statement.range.endColumn; column += 1) {
+        checkFacadeExecution(control);
         if (statement.kind === 'set-font-weight') {
           operations.push({
             kind: 'set-style',

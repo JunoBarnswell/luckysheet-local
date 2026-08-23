@@ -546,6 +546,11 @@ export interface SheetCanvasProps {
   phase: AppPhase;
   zoom: number;
   peers: PeerCursor[];
+  cellStyle?: {
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+  };
   drawings?: readonly DrawingObject[];
   drawingPayloads?: ReadonlyMap<string, DrawingPayload>;
   allSheets?: readonly CanvasSheetSnapshot[];
@@ -572,6 +577,12 @@ export interface SheetCanvasProps {
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onFloatingRemove: (drawingId: string) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
+  onCopy: () => void;
+  onCut: () => void;
+  onPaste: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onOpenInspector: () => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
   onToggleOutline?: (groupId: string) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
@@ -617,6 +628,7 @@ export function SheetCanvas({
   phase,
   zoom,
   peers,
+  cellStyle = {},
   drawings = sheet.drawings,
   drawingPayloads = sheet.drawingPayloads,
   allSheets = [],
@@ -643,6 +655,12 @@ export function SheetCanvas({
   onFloatingMove,
   onFloatingRemove,
   onCommand,
+  onCopy,
+  onCut,
+  onPaste,
+  onUndo,
+  onRedo,
+  onOpenInspector,
   onApplyFilter,
   onToggleOutline,
   getValidationList,
@@ -1369,14 +1387,14 @@ export function SheetCanvas({
         return;
       }
 
-      if (ctrl && (key === "z" || key === "Z")) { event.preventDefault(); onCommand({ commandId: "ui.history.undo" }); return; }
-      if (ctrl && (key === "y" || key === "Y")) { event.preventDefault(); onCommand({ commandId: "ui.history.redo" }); return; }
-      if (ctrl && (key === "c" || key === "C")) { event.preventDefault(); onCommand({ commandId: "ui.clipboard.copy" }); return; }
-      if (ctrl && (key === "x" || key === "X")) { event.preventDefault(); onCommand({ commandId: "ui.clipboard.cut" }); return; }
-      if (ctrl && (key === "v" || key === "V")) { event.preventDefault(); onCommand({ commandId: "ui.clipboard.paste" }); return; }
-      if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onCommand({ commandId: "sheet.style.toggle", params: { property: "bold" } }); return; }
-      if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onCommand({ commandId: "sheet.style.toggle", params: { property: "italic" } }); return; }
-      if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onCommand({ commandId: "sheet.style.toggle", params: { property: "underline" } }); return; }
+      if (ctrl && (key === "z" || key === "Z")) { event.preventDefault(); onUndo(); return; }
+      if (ctrl && (key === "y" || key === "Y")) { event.preventDefault(); onRedo(); return; }
+      if (ctrl && (key === "c" || key === "C")) { event.preventDefault(); onCopy(); return; }
+      if (ctrl && (key === "x" || key === "X")) { event.preventDefault(); onCut(); return; }
+      if (ctrl && (key === "v" || key === "V")) { event.preventDefault(); onPaste(); return; }
+      if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { bold: !cellStyle.bold } } }); return; }
+      if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { italic: !cellStyle.italic } } }); return; }
+      if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { underline: !cellStyle.underline } } }); return; }
       if (key === "F2") { event.preventDefault(); onBeginEdit(); return; }
       if (key === "F4") { event.preventDefault(); onToggleAbsolute(); return; }
       if (key === "Delete" || key === "Backspace") { event.preventDefault(); onCommand({ commandId: "sheet.range.clear" }); return; }
@@ -1425,16 +1443,16 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onSelectionChange, phase, selection, zoomFactor],
+    [cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onRedo, onSelectionChange, onUndo, phase, selection, zoomFactor],
   );
 
   // ---------- 右键菜单 ----------
 
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
     const items: ContextMenuItem[] = [
-      { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: () => onCommand({ commandId: "ui.clipboard.cut" }) },
-      { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: () => onCommand({ commandId: "ui.clipboard.copy" }) },
-      { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => onCommand({ commandId: "ui.clipboard.paste" }) },
+      { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: onCut },
+      { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: onCopy },
+      { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: onPaste },
       { id: "sep-1", label: "", separator: true },
       { id: "insert-row", label: "Insert row above", onSelect: () => onCommand({ commandId: "sheet.rows.insert" }) },
       { id: "insert-column", label: "Insert column left", onSelect: () => onCommand({ commandId: "sheet.columns.insert" }) },
@@ -1447,10 +1465,10 @@ export function SheetCanvas({
       { id: "sep-3", label: "", separator: true },
       { id: "clear", label: "Clear contents", onSelect: () => onCommand({ commandId: "sheet.range.clear" }) },
       { id: "clear-formats", label: "Clear formats", onSelect: () => onCommand({ commandId: "sheet.range.clear", params: { mode: "formats" } }) },
-      { id: "comment-add", label: "Add comment", onSelect: () => onCommand({ commandId: "ui.panel.open", params: { panel: "inspector", notice: "Select a cell and use Review tools for comments." } }) },
+      { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [onCommand]);
+  }, [onCommand, onCopy, onCut, onOpenInspector, onPaste]);
 
   // ---------- 编辑器定位(随滚动更新) ----------
 

@@ -205,6 +205,86 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
   };
   assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
   assert.equal(parseClipboardPayload(payload)[0]?.[1]?.formula, '=A1+1');
+  assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
+});
+
+test('sheet.cell.commitText is the single raw-text input path', () => {
+  const workbook = new WorkbookModel('unit-commit-text', 'Commit Text');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(sheetId(workbook));
+  sheet.cells.set(0, 0, {
+    value: 'old',
+    style: { bold: true, background: '#fff' },
+    styleId: 'style-1',
+    numberFormat: '@',
+    displayValue: 'old',
+  });
+
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: ' 42 ' });
+  assert.equal(sheet.cells.get(0, 0)?.value, ' 42 ');
+  assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
+  assert.equal(sheet.cells.get(0, 0)?.styleId, 'style-1');
+  assert.equal(sheet.cells.get(0, 0)?.displayValue, undefined);
+
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 + 1' });
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=A1 + 1');
+  assert.equal(sheet.cells.get(0, 0)?.value, null);
+  assert.equal(sheet.cells.get(0, 0)?.style?.background, '#fff');
+
+  assert.throws(
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 +' }),
+    /formula|expression|unexpected/i,
+  );
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=A1 + 1');
+
+  runtime.undo();
+  assert.equal(sheet.cells.get(0, 0)?.value, ' 42 ');
+  runtime.undo();
+  assert.equal(sheet.cells.get(0, 0)?.value, 'old');
+  assert.equal(sheet.cells.get(0, 0)?.formula, undefined);
+});
+
+test('sheet.cell.commitText parses scalars, validates input and protects spill children', () => {
+  const workbook = new WorkbookModel('unit-commit-text-guards', 'Commit Guards');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(sheetId(workbook));
+
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '42' });
+  assert.equal(sheet.cells.get(0, 0)?.value, 42);
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 1, text: 'TRUE' });
+  assert.equal(sheet.cells.get(0, 1)?.value, true);
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 2, text: ' true ' });
+  assert.equal(sheet.cells.get(0, 2)?.value, ' true ');
+
+  sheet.dataValidations.push({
+    id: 'list-commit',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }],
+    type: 'list',
+    listSource: { kind: 'values', values: ['Allowed'] },
+    alertStyle: 'stop',
+  });
+  assert.throws(
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 1, column: 0, text: 'Rejected' }),
+    /允许的列表|validation/i,
+  );
+  assert.equal(sheet.cells.get(1, 0), undefined);
+
+  sheet.spillRanges.push({
+    sheetId: sheet.id,
+    anchor: { row: 2, column: 0 },
+    range: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 1 },
+    values: [[1, 2]],
+    state: 'ok',
+  });
+  assert.throws(
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 1, text: 'blocked' }),
+    /spill child/i,
+  );
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 0, text: 'anchor' });
+  assert.equal(sheet.cells.get(2, 0)?.value, 'anchor');
 });
 
 test('cut paste is one cross-sheet transaction and offsets formulas from source to target', () => {

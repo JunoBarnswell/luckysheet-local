@@ -6,7 +6,7 @@ import type { RangeRef, SheetId, UnitId } from './index';
  * host-side cache.
  */
 export interface PrintDocumentSnapshot {
-  schema: 'PrintDocumentV1';
+  schema: 'PrintDocument';
   unitId: UnitId;
   sheetId: SheetId;
   pageSetup: {
@@ -49,7 +49,7 @@ export interface QueryStepSnapshot {
  * represented by this contract; secret fields must be redacted markers.
  */
 export interface QueryDefinitionSnapshot {
-  schema: 'QueryDefinitionV1';
+  schema: 'QueryDefinition';
   id: string;
   name: string;
   connectorId: string;
@@ -87,7 +87,7 @@ function assertSafeConfig(value: unknown, key?: string, path = 'connectorConfig'
 }
 
 export function normalizePrintDocumentSnapshot(document: PrintDocumentSnapshot): PrintDocumentSnapshot {
-  if (!document || document.schema !== 'PrintDocumentV1' || !document.unitId || !document.sheetId) {
+  if (!document || document.schema !== 'PrintDocument' || !document.unitId || !document.sheetId) {
     throw new Error('Invalid print document snapshot');
   }
   if (!document.pageSetup || !document.pageSetup.margins) throw new Error('Print document page setup is required');
@@ -117,7 +117,7 @@ export function normalizePrintDocumentSnapshot(document: PrintDocumentSnapshot):
     return { start: span.start, end: span.end };
   };
   return structuredClone({
-    schema: 'PrintDocumentV1' as const,
+    schema: 'PrintDocument' as const,
     unitId: document.unitId,
     sheetId: document.sheetId,
     pageSetup: { ...structuredClone(document.pageSetup), margins: { ...margins } },
@@ -129,7 +129,7 @@ export function normalizePrintDocumentSnapshot(document: PrintDocumentSnapshot):
 }
 
 export function normalizeQueryDefinitionSnapshot(definition: QueryDefinitionSnapshot): QueryDefinitionSnapshot {
-  if (!definition || typeof definition !== 'object' || definition.schema !== 'QueryDefinitionV1'
+  if (!definition || typeof definition !== 'object' || definition.schema !== 'QueryDefinition'
     || typeof definition.id !== 'string' || !definition.id.trim()
     || typeof definition.name !== 'string' || !definition.name.trim()
     || typeof definition.connectorId !== 'string' || !definition.connectorId.trim()) {
@@ -149,7 +149,7 @@ export function normalizeQueryDefinitionSnapshot(definition: QueryDefinitionSnap
     if (definition.refreshPolicy.mode === 'interval' && (!Number.isSafeInteger(definition.refreshPolicy.intervalMs) || definition.refreshPolicy.intervalMs! <= 0)) throw new Error('Invalid query refresh interval');
   }
   return structuredClone({
-    schema: 'QueryDefinitionV1' as const,
+    schema: 'QueryDefinition' as const,
     id: definition.id.trim(),
     name: definition.name.trim(),
     connectorId: definition.connectorId.trim(),

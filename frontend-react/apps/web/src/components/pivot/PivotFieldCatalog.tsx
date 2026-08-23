@@ -1,6 +1,7 @@
 import { Button, Icon, ScrollArea, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { useMemo, useState, type DragEvent } from 'react';
-import type { PivotFieldArea, PivotFieldDefinition } from './types';
+import type { PivotFieldDefinition } from '@react-sheets/core-model';
+import type { PivotFieldArea } from './pivot-contract';
 
 export interface PivotFieldCatalogProps {
   fields: readonly PivotFieldDefinition[];
@@ -13,7 +14,7 @@ export interface PivotFieldCatalogProps {
 
 export function PivotFieldCatalog({ disabled = false, fields, onDragField, onKeyboardAssign, onToggle, selectedFieldIds }: PivotFieldCatalogProps) {
   const [query, setQuery] = useState('');
-  const visibleFields = useMemo(() => fields.filter((field) => `${field.label} ${field.type}`.toLowerCase().includes(query.toLowerCase())), [fields, query]);
+  const visibleFields = useMemo(() => fields.filter((field) => `${field.name} ${field.dataType}`.toLowerCase().includes(query.toLowerCase())), [fields, query]);
   return (
     <Stack gap="sm" className="min-h-0">
       <TextInput aria-label="Search pivot fields" disabled={disabled} leadingIcon="search" placeholder="Search fields" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -39,7 +40,7 @@ export function PivotFieldCatalog({ disabled = false, fields, onDragField, onKey
               onDragStart={(event) => onDragField(event, field)}
               draggable={!disabled}
             >
-              {field.label} · {field.type}
+              {field.name} · {field.dataType}
             </Button>
           ))}
         </Stack>

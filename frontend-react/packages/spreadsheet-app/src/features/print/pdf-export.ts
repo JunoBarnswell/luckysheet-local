@@ -55,13 +55,14 @@ function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 }
 
 function pdfText(value: string): string {
-  let result = '';
-  for (const character of value) {
-    const code = character.charCodeAt(0);
-    const safe = code >= 32 && code <= 126 ? character : '?';
-    result += safe === '(' || safe === ')' || safe === '\\' ? `\\${safe}` : safe;
-  }
-  return result;
+  // Encode every text string as UTF-16BE with a BOM.  This keeps Unicode
+  // code points in the PDF byte stream instead of silently replacing them
+  // with '?' (the previous WinAnsi literal-string path was lossy).  The
+  // selected PDF font remains host-resolved, while the document payload is
+  // deterministic and Unicode-preserving for browser and Node output.
+  let hex = 'FEFF';
+  for (let index = 0; index < value.length; index += 1) hex += value.charCodeAt(index).toString(16).padStart(4, '0').toUpperCase();
+  return `<${hex}>`;
 }
 
 function pageSize(layout: PrintLayoutModel): { width: number; height: number } {
@@ -107,8 +108,11 @@ export function createPdfBytes(pages: readonly PrintPageInfo[], layout: PrintLay
   const objects: string[] = [];
   const pageObjectIds: number[] = [];
   objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
-  objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
-  let nextObjectId = 4;
+  // Use a built-in CID font with UTF-16BE text strings so CJK and other
+  // non-ASCII workbook labels survive both Node and browser PDF output.
+  objects[3] = '<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniCNS-UTF16-H /DescendantFonts [4 0 R] >>';
+  objects[4] = '<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (CNS1) /Supplement 0 >> /DW 1000 >>';
+  let nextObjectId = 5;
   for (let index = 0; index < pages.length; index += 1) {
     const pageObjectId = nextObjectId++;
     const contentObjectId = nextObjectId++;

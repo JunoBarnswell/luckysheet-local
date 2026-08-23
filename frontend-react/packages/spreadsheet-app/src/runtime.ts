@@ -4,7 +4,8 @@ import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
   WorkbookApiClient,
   type AuthTokenProvider,
-  type OperationMessageV2,
+  type ShareTokenProvider,
+  type OperationMessage,
   type SnapshotResponse,
 } from '@react-sheets/protocol';
 import { CollabSocketClient } from '@react-sheets/protocol';
@@ -21,8 +22,10 @@ import {
   syncWorkbookSpills,
 } from './formula-spill-sync';
 import {
-  LocalDraftStore,
-  LocalOperationStore,
+  OperationJournalStore,
+  WorkspacePersistence,
+  type IndexedDbWorkspaceStoreOptions,
+  type WorkspaceRecord,
 } from './features/persistence';
 
 export interface RuntimeHandlers {
@@ -34,7 +37,7 @@ export interface RuntimeHandlers {
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
   onCollabStatus?: (status: 'connecting' | 'open' | 'closed') => void;
   onPeersChange?: (peers: import('./types').PeerCursor[]) => void;
-  onDraftUpdated?: () => void;
+  onWorkspacePersisted?: () => void;
 }
 
 export interface SpreadsheetRuntime {
@@ -55,52 +58,55 @@ export interface SpreadsheetRuntime {
   collabDispose: (() => void) | null;
   collaboration: CollaborationSession | null;
   bootstrapDispose: (() => void) | null;
-  draftStore: LocalDraftStore;
-  operationStore: LocalOperationStore;
-  scheduleDraftWrite: () => void;
+  operationJournal: OperationJournalStore;
+  workspacePersistence: WorkspacePersistence;
+  workspaceRecord: WorkspaceRecord | null;
+  localRevision: number;
+  localOnly: boolean;
+  persistenceReady: Promise<void>;
+  pendingLocalOperations: Array<{ operationId: string; mutations: MutationInfo[] }>;
+  checkpointWorkspace: () => Promise<void>;
   connectors: ConnectorRegistry;
   capabilities: CapabilityRegistry;
   authTokenProvider?: AuthTokenProvider;
+  shareTokenProvider?: ShareTokenProvider;
 }
 
-const UNIT_ID_STORAGE_KEY = 'react-sheets:unitId';
-const ACTOR_ID_STORAGE_KEY = 'react-sheets:actorId';
+let localActorSequence = 0;
 
 export function resolveUnitId(): string {
   if (typeof window === 'undefined') return 'wb-server-default';
   const routeMatch = /^\/workbooks\/([^/]+)\/?$/.exec(window.location.pathname);
   if (routeMatch?.[1]) return decodeURIComponent(routeMatch[1]);
-  const existing = window.localStorage.getItem(UNIT_ID_STORAGE_KEY);
-  if (existing) return existing;
-  const generated = typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID()
-    : 'wb-' + Date.now().toString(36);
-  window.localStorage.setItem(UNIT_ID_STORAGE_KEY, generated);
-  return generated;
+  // Catalog selection is asynchronous and happens in initializePersistence;
+  // this stable sentinel avoids assigning workspace identity to localStorage.
+  return 'wb-local-default';
 }
 
 export function resolveActorId(): string {
   if (typeof window === 'undefined') return 'actor-server';
-  const existing = window.localStorage.getItem(ACTOR_ID_STORAGE_KEY);
-  if (existing) return existing;
-  const generated = typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID().slice(0, 8)
-    : 'actor-' + Date.now().toString(36);
-  window.localStorage.setItem(ACTOR_ID_STORAGE_KEY, generated);
-  return generated;
+  localActorSequence += 1;
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? `local-${crypto.randomUUID().slice(0, 8)}`
+    : `local-${Date.now().toString(36)}-${localActorSequence}`;
 }
 
-export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthTokenProvider } = {}): SpreadsheetRuntime {
+export function resolveShareToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return new URLSearchParams(window.location.search).get('share')?.trim() || null;
+}
+
+export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthTokenProvider; shareTokenProvider?: ShareTokenProvider; localOnly?: boolean; persistence?: IndexedDbWorkspaceStoreOptions } = {}): SpreadsheetRuntime {
   const model = new WorkbookModel(resolveUnitId(), 'Untitled workbook');
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
   const capabilities = createDefaultCapabilityRegistry();
   registerSpreadsheetFeatures(commands, drawing);
-  const draftStore = new LocalDraftStore();
-  const operationStore = new LocalOperationStore();
+  const operationJournal = new OperationJournalStore();
+  const workspacePersistence = new WorkspacePersistence(options.persistence, operationJournal);
   const runtime: SpreadsheetRuntime = {
-    api: new WorkbookApiClient({ authTokenProvider: options.authTokenProvider }),
+    api: new WorkbookApiClient({ authTokenProvider: options.authTokenProvider, shareTokenProvider: options.shareTokenProvider }),
     formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
     model,
     commands,
@@ -117,28 +123,35 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     collabDispose: null,
     collaboration: null,
     bootstrapDispose: null,
-    draftStore,
-    operationStore,
-    scheduleDraftWrite: () => undefined,
+    operationJournal,
+    workspacePersistence,
+    workspaceRecord: null,
+    localRevision: 0,
+    localOnly: options.localOnly ?? (!options.authTokenProvider && !options.shareTokenProvider),
+    persistenceReady: Promise.resolve(),
+    pendingLocalOperations: [],
+    checkpointWorkspace: () => Promise.resolve(),
     connectors,
     capabilities,
     authTokenProvider: options.authTokenProvider,
+    shareTokenProvider: options.shareTokenProvider,
   };
   // The offline journal stores only operation intent and a monotonic client
   // sequence. Full workbook snapshots are server-owned persistence records;
   // they are never written by this client-side runtime.
   runtime.collaboration = new CollaborationSession(runtime.commands, {
     loadPending: () => {
-      const journal = operationStore.read(runtime.model.unitId);
+      const journal = operationJournal.read(runtime.model.unitId);
       return journal
         ? { operations: journal.operations, nextClientSequence: journal.nextClientSequence }
         : null;
     },
     persistPending: (operations, nextClientSequence) => {
-      operationStore.write(runtime.model.unitId, operations, nextClientSequence);
-      runtime.handlers.onDraftUpdated?.();
+      operationJournal.write(runtime.model.unitId, operations, nextClientSequence);
+      runtime.handlers.onWorkspacePersisted?.();
     },
   });
+  runtime.checkpointWorkspace = () => checkpointWorkspace(runtime);
   attachCoreListeners(runtime);
   return runtime;
 }
@@ -246,6 +259,32 @@ function assertNoSpillChildWrite(
   }
 }
 
+const checkpointChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+
+function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true): Promise<void> {
+  if (advanceLocalRevision) runtime.localRevision += 1;
+  const snapshot = runtime.model.snapshot();
+  const localRevision = runtime.localRevision;
+  const serverRevision = runtime.remoteRevision;
+  const syncMode = runtime.localOnly ? 'local-only' as const : 'remote' as const;
+  const pendingJournal = runtime.operationJournal.read(runtime.model.unitId);
+  const previous = checkpointChains.get(runtime) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(
+        snapshot,
+        localRevision,
+        serverRevision,
+        syncMode,
+        pendingJournal,
+      );
+      runtime.handlers.onWorkspacePersisted?.();
+    });
+  checkpointChains.set(runtime, next);
+  return next;
+}
+
 export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   detachCoreListeners(runtime);
 
@@ -316,7 +355,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           undoMutations: history.undo,
         });
       }
-      submitChangeset(runtime, result.operationId, batch);
+      if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
+      else runtime.pendingLocalOperations.push({ operationId: result.operationId, mutations: batch });
+      void runtime.checkpointWorkspace();
     }),
   );
 
@@ -333,6 +374,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.undo });
       }
       scheduleOperation(runtime, operation);
+      void runtime.checkpointWorkspace();
     }),
   );
 }
@@ -341,6 +383,34 @@ function detachCoreListeners(runtime: SpreadsheetRuntime): void {
   for (const detach of runtime.detachers) detach();
   runtime.detachers = [];
   runtime.pendingMutations = [];
+}
+
+function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: WorkspaceRecord | null): void {
+  const existingPending = runtime.collaboration?.getPendingOperations() ?? [];
+  const buffered = runtime.pendingLocalOperations.splice(0);
+  const byId = new Map<string, import('@react-sheets/protocol').OperationEnvelope>();
+  for (const operation of record?.pending.operations ?? []) byId.set(operation.operationId, operation);
+  for (const operation of existingPending) byId.set(operation.operationId, operation);
+  const pending = [...byId.values()].sort((left, right) => left.clientSequence - right.clientSequence);
+  const nextClientSequence = Math.max(
+    record?.pending.nextClientSequence ?? 0,
+    ...pending.map((operation) => operation.clientSequence),
+  );
+  runtime.operationJournal.write(runtime.model.unitId, pending, nextClientSequence);
+  runtime.collaboration = new CollaborationSession(runtime.commands, {
+    loadPending: () => {
+      const journal = runtime.operationJournal.read(runtime.model.unitId);
+      return journal ? { operations: journal.operations, nextClientSequence: journal.nextClientSequence } : null;
+    },
+    persistPending: (operations, sequence) => {
+      runtime.operationJournal.write(runtime.model.unitId, operations, sequence);
+      runtime.handlers.onWorkspacePersisted?.();
+    },
+  });
+  runtime.collaboration.setRevision(runtime.remoteRevision);
+  for (const entry of buffered) {
+    runtime.collaboration.enqueueLocalMutations(entry.mutations, runtime.model.unitId, entry.operationId);
+  }
 }
 
 function submitChangeset(
@@ -358,14 +428,14 @@ function submitChangeset(
 
 function scheduleOperation(
   runtime: SpreadsheetRuntime,
-  operation: import('@react-sheets/protocol').OperationEnvelopeV2,
+  operation: import('@react-sheets/protocol').OperationEnvelope,
 ): void {
   if (!runtime.collaboration) return;
   runtime.ownOperationIds.add(operation.operationId);
   runtime.handlers.onSaveState?.('saving');
   // The operation is durable immediately. Only an open authenticated socket
   // may start a flush; disconnected edits remain in the journal.
-  if (runtime.collab && runtime.collaboration.offlineQueue.getState() !== 'offline') {
+  if (!runtime.localOnly && runtime.collab && runtime.collaboration.offlineQueue.getState() !== 'offline') {
     void runtime.collaboration.offlineQueue.flushAll().then(({ failed }) => {
       if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
     });
@@ -404,8 +474,11 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
 }
 
 /** Replay durable local intent on top of the authoritative server snapshot. */
-export function replayPendingOperations(runtime: SpreadsheetRuntime): number {
-  const pending = runtime.collaboration?.getPendingOperations() ?? [];
+export function replayPendingOperations(
+  runtime: SpreadsheetRuntime,
+  operations = runtime.collaboration?.getPendingOperations() ?? [],
+): number {
+  const pending = operations;
   let applied = 0;
   for (const operation of pending) {
     const items = operation.mutations.map((mutation) => {
@@ -445,169 +518,238 @@ async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise
 export function startCollaborationSession(
   runtime: SpreadsheetRuntime,
   getSelectionKey: () => string,
-  authTokenProvider: AuthTokenProvider = runtime.authTokenProvider ?? (() => null),
+  authTokenProvider: AuthTokenProvider | undefined = runtime.authTokenProvider,
+  shareTokenProvider: ShareTokenProvider | undefined = runtime.shareTokenProvider,
 ): () => void {
   if (typeof window === 'undefined') return () => undefined;
 
-  runtime.collaboration ??= new CollaborationSession(runtime.commands);
-  runtime.collaboration.attachTransport((operation) => {
-    return runtime.collab?.send({ type: 'changeset.submit', payload: operation }) ?? false;
-  });
-  runtime.collaboration.setRevision(runtime.remoteRevision);
-
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const client = new CollabSocketClient(protocol + '://' + window.location.host + '/api/v1/collab', {
-    authTokenProvider,
-  });
-  runtime.collab = client;
-
-  const applyRemote = (message: OperationMessageV2) => {
-      if (message.type === 'snapshot.response') {
-      const response = message.payload;
-      if (response.snapshot.unitId !== runtime.model.unitId) return;
-      hydrateRuntime(runtime, response);
-      runtime.remoteRevision = response.revision;
-      runtime.collaboration?.setRevision(response.revision);
-      void loadHistoryAndReplayPending(runtime);
-      runtime.handlers.onMutationsApplied?.();
-    } else if (message.type === 'revision.created') {
-      if (message.payload.unitId !== runtime.model.unitId) return;
-      if (runtime.ownOperationIds.has(message.payload.operationId)) return;
-      runtime.collaboration?.applyRemote(message.payload);
-      runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
-      runtime.collaboration?.setRevision(runtime.remoteRevision);
-      runtime.handlers.onMutationsApplied?.();
-      void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
-    } else if (message.type === 'changeset.ack') {
-      runtime.ownOperationIds.add(message.operationId);
-      runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
-      if (runtime.collaboration) {
-        runtime.collaboration.acknowledge(message.operationId, message.revision);
-      }
-      runtime.handlers.onSaveState?.('saved');
-      void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
-    } else if (message.type === 'changeset.reject') {
-      runtime.ownOperationIds.delete(message.operationId);
-      runtime.collaboration?.reject(message.operationId, message.error);
-      runtime.handlers.onSaveState?.('conflict');
-      runtime.handlers.onNotice?.(`Change rejected: ${message.error.message}`);
-      void runtime.api.getSnapshot(runtime.model.unitId).then((snapshot) => {
-        hydrateRuntime(runtime, snapshot);
-        runtime.collaboration?.setRevision(snapshot.revision);
-        runtime.handlers.onMutationsApplied?.();
-      }).catch(() => undefined);
-    } else if (message.type === 'cursor.broadcast' || message.type === 'presence.broadcast') {
-      if (!message.unitId || message.unitId !== runtime.model.unitId) return;
-      if (message.type === 'presence.broadcast' && (message.state as { status?: string } | null)?.status === 'offline') {
-        runtime.handlers.onPeersChange?.([]);
-        runtime.collaboration?.presence.removeUser(message.actorId);
-        return;
-      }
-      const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
-      const peer = mapPeerCursor(message.actorId, cursorState, runtime.model.activeSheetId);
-      runtime.collaboration?.presence.upsertUser({
-        actorId: peer.actorId,
-        displayName: peer.name,
-        color: peer.color,
-      });
-      updatePresenceFromPeer(runtime.collaboration!, peer);
-      runtime.handlers.onPeersChange?.([peer]);
+  let active = true;
+  let disposeOpenSession: (() => void) | null = null;
+  void runtime.persistenceReady.then(() => {
+    if (!active || runtime.localOnly) {
+      runtime.handlers.onCollabStatus?.('closed');
+      return;
     }
-  };
-
-  const detachMessage = client.onMessage(applyRemote);
-  const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
-    runtime.handlers.onCollabStatus?.(status);
-    runtime.remoteConnected = status !== 'closed';
-    runtime.collaboration?.offlineQueue.setOnline(status === 'open');
-    if (status === 'closed') runtime.collaboration?.transportClosed();
-    if (status === 'closed') runtime.handlers.onSaveState?.('offline');
-    else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
-    if (status === 'open') {
-      client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
-      void runtime.collaboration?.offlineQueue.flushAll().then(({ failed }) => {
-        if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
-      });
-    }
-  });
-  client.open();
-
-  let lastBroadcast = '';
-  const broadcastTimer = window.setInterval(() => {
-    const key = getSelectionKey();
-    if (key === lastBroadcast) return;
-    lastBroadcast = key;
-    const parts = key.split(':');
-    const state = { row: Number(parts[1]), column: Number(parts[2]), sheetId: parts[0] };
-    client.send({
-      type: 'cursor.updated',
-      unitId: runtime.model.unitId,
-      state,
+    runtime.collaboration ??= new CollaborationSession(runtime.commands);
+    runtime.collaboration.attachTransport((operation) => {
+      return runtime.collab?.send({ type: 'changeset.submit', payload: operation }) ?? false;
     });
-  }, 400);
+    runtime.collaboration.setRevision(runtime.remoteRevision);
+
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const client = new CollabSocketClient(protocol + '://' + window.location.host + '/ws', {
+      authTokenProvider,
+      shareTokenProvider,
+    });
+    runtime.collab = client;
+
+    const applyRemote = (message: OperationMessage) => {
+      if (message.type === 'snapshot.response') {
+        const response = message.payload;
+        if (response.snapshot.unitId !== runtime.model.unitId) return;
+        hydrateRuntime(runtime, response);
+        runtime.remoteRevision = response.revision;
+        runtime.collaboration?.setRevision(response.revision);
+        void loadHistoryAndReplayPending(runtime);
+        runtime.handlers.onMutationsApplied?.();
+      } else if (message.type === 'revision.created') {
+        if (message.payload.unitId !== runtime.model.unitId) return;
+        if (runtime.ownOperationIds.has(message.payload.operationId)) return;
+        runtime.collaboration?.applyRemote(message.payload);
+        runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
+        runtime.collaboration?.setRevision(runtime.remoteRevision);
+        void checkpointWorkspace(runtime, false);
+        runtime.handlers.onMutationsApplied?.();
+        void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
+      } else if (message.type === 'changeset.ack') {
+        runtime.ownOperationIds.add(message.operationId);
+        runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
+        runtime.collaboration?.acknowledge(message.operationId, message.revision);
+        void checkpointWorkspace(runtime, false);
+        runtime.handlers.onSaveState?.('saved');
+        void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
+      } else if (message.type === 'changeset.reject') {
+        runtime.ownOperationIds.delete(message.operationId);
+        runtime.collaboration?.reject(message.operationId, message.error);
+        void checkpointWorkspace(runtime, false);
+        runtime.handlers.onSaveState?.('conflict');
+        runtime.handlers.onNotice?.(`Change rejected: ${message.error.message}`);
+        void runtime.api.getSnapshot(runtime.model.unitId).then((snapshot) => {
+          hydrateRuntime(runtime, snapshot);
+          runtime.collaboration?.setRevision(snapshot.revision);
+          runtime.handlers.onMutationsApplied?.();
+        }).catch(() => undefined);
+      } else if (message.type === 'cursor.broadcast' || message.type === 'presence.broadcast') {
+        if (!message.unitId || message.unitId !== runtime.model.unitId) return;
+        if (message.type === 'presence.broadcast' && (message.state as { status?: string } | null)?.status === 'offline') {
+          runtime.handlers.onPeersChange?.([]);
+          runtime.collaboration?.presence.removeUser(message.actorId);
+          return;
+        }
+        const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
+        const peer = mapPeerCursor(message.actorId, cursorState, runtime.model.activeSheetId);
+        runtime.collaboration?.presence.upsertUser({
+          actorId: peer.actorId,
+          displayName: peer.name,
+          color: peer.color,
+        });
+        if (runtime.collaboration) updatePresenceFromPeer(runtime.collaboration, peer);
+        runtime.handlers.onPeersChange?.([peer]);
+      }
+    };
+
+    const detachMessage = client.onMessage(applyRemote);
+    const detachStatus = client.onStatus((status: 'connecting' | 'open' | 'closed') => {
+      runtime.handlers.onCollabStatus?.(status);
+      runtime.remoteConnected = status !== 'closed';
+      runtime.collaboration?.offlineQueue.setOnline(status === 'open');
+      if (status === 'closed') runtime.collaboration?.transportClosed();
+      if (status === 'closed') runtime.handlers.onSaveState?.('offline');
+      else if (status === 'connecting') runtime.handlers.onSaveState?.('syncing');
+      if (status === 'open') {
+        client.send({ type: 'snapshot.request', unitId: runtime.model.unitId });
+        void runtime.collaboration?.offlineQueue.flushAll().then(({ failed }) => {
+          if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
+        });
+      }
+    });
+    client.open();
+
+    let lastBroadcast = '';
+    const broadcastTimer = window.setInterval(() => {
+      const key = getSelectionKey();
+      if (key === lastBroadcast) return;
+      lastBroadcast = key;
+      const parts = key.split(':');
+      const state = { row: Number(parts[1]), column: Number(parts[2]), sheetId: parts[0] };
+      client.send({ type: 'cursor.updated', unitId: runtime.model.unitId, state });
+    }, 400);
+
+    disposeOpenSession = () => {
+      window.clearInterval(broadcastTimer);
+      detachMessage();
+      detachStatus();
+      client.close();
+      runtime.collaboration?.attachTransport(undefined);
+      runtime.collab = null;
+    };
+  }).catch(() => {
+    runtime.handlers.onCollabStatus?.('closed');
+  });
 
   return () => {
-    window.clearInterval(broadcastTimer);
-    detachMessage();
-    detachStatus();
-    client.close();
-    runtime.collaboration?.attachTransport(undefined);
-    runtime.collab = null;
+    active = false;
+    disposeOpenSession?.();
   };
 }
 
 export function startPersistenceSession(runtime: SpreadsheetRuntime): () => void {
   let active = true;
-  void (async () => {
-    try {
-      const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
-      hydrateRuntime(runtime, snapshotResponse);
-      await loadHistoryAndReplayPending(runtime);
-      runtime.remoteConnected = true;
-      if (!active) return;
+  const initialization = initializePersistence(runtime, () => active);
+  runtime.persistenceReady = initialization;
+  return () => {
+    active = false;
+  };
+}
+
+async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () => boolean): Promise<void> {
+  const localPendingBeforeLoad = runtime.collaboration?.getPendingOperations() ?? [];
+  if (!runtime.localOnly && !(await hasValidRemoteBinding(runtime))) runtime.localOnly = true;
+  let localRecord: WorkspaceRecord | null = null;
+  try {
+    localRecord = await runtime.workspacePersistence.load(runtime.model.unitId);
+    if (!localRecord && typeof window !== 'undefined' && runtime.model.unitId === 'wb-local-default'
+      && !/^\/workbooks\/[^/]+\/?$/.test(window.location.pathname)) {
+      const summaries = await runtime.workspacePersistence.list();
+      const first = summaries[0];
+      if (first) localRecord = await runtime.workspacePersistence.load(first.unitId);
+    }
+  } catch {
+    runtime.handlers.onNotice?.('Local IndexedDB workspace is unavailable');
+  }
+
+  if (localRecord) {
+    runtime.workspaceRecord = localRecord;
+    runtime.localRevision = localRecord.localRevision;
+    runtime.remoteRevision = localRecord.serverRevision;
+    runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
+    hydrateRuntime(runtime, {
+      snapshot: localRecord.snapshot,
+      revision: localRecord.serverRevision,
+    });
+    replaceCollaborationSession(runtime, localRecord);
+    if (localPendingBeforeLoad.length > 0) replayPendingOperations(runtime, localPendingBeforeLoad);
+    runtime.handlers.onNotice?.('Workbook restored from local IndexedDB');
+  }
+
+  if (runtime.localOnly) {
+    runtime.remoteConnected = false;
+    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
+    if (isActive()) {
+      runtime.handlers.onSaveState?.('offline');
+      runtime.handlers.onPhaseChange?.('ready');
+      runtime.handlers.onActiveSheetChange?.(runtime.model.activeSheetId);
+      runtime.handlers.onMutationsApplied?.();
+    }
+    return;
+  }
+
+  try {
+    const snapshotResponse = await runtime.api.getSnapshot(runtime.model.unitId);
+    hydrateRuntime(runtime, snapshotResponse);
+    runtime.remoteRevision = snapshotResponse.revision;
+    runtime.localOnly = false;
+    replaceCollaborationSession(runtime, localRecord);
+    await loadHistoryAndReplayPending(runtime);
+    runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
+    runtime.remoteConnected = true;
+    if (isActive()) {
       runtime.handlers.onSaveState?.('saved');
       runtime.handlers.onNotice?.('Workbook restored from server');
       runtime.handlers.onPhaseChange?.('ready');
       runtime.handlers.onActiveSheetChange?.(runtime.model.activeSheetId);
       runtime.handlers.onMutationsApplied?.();
-      runtime.handlers.onDraftUpdated?.();
-    } catch {
-      try {
-        const created = await runtime.api.createWorkbook(runtime.model.snapshot());
-        hydrateRuntime(runtime, created);
-        replayPendingOperations(runtime);
-        void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => runtime.handlers.onRemoteRevisions?.([]));
-        runtime.remoteConnected = true;
-        runtime.remoteRevision = Math.max(runtime.remoteRevision, created.revision);
-        if (!active) return;
+      runtime.handlers.onWorkspacePersisted?.();
+    }
+  } catch {
+    try {
+      const created = await runtime.api.createWorkbook(runtime.model.snapshot());
+      hydrateRuntime(runtime, created);
+      runtime.remoteRevision = created.revision;
+      runtime.localOnly = false;
+      replaceCollaborationSession(runtime, localRecord);
+      runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'remote');
+      runtime.remoteConnected = true;
+      if (isActive()) {
         runtime.handlers.onSaveState?.('saved');
         runtime.handlers.onNotice?.('SQLite sync connected');
         runtime.handlers.onPhaseChange?.('ready');
         runtime.handlers.onMutationsApplied?.();
-      } catch {
-        const localDraft = runtime.draftStore.read(runtime.model.unitId);
-        if (localDraft) {
-          hydrateRuntime(runtime, { snapshot: localDraft.snapshot, revision: localDraft.revision });
-          runtime.remoteConnected = false;
-          if (!active) return;
-          runtime.handlers.onSaveState?.('offline');
-          runtime.handlers.onNotice?.('Running from local draft');
-          runtime.handlers.onPhaseChange?.('ready');
-          runtime.handlers.onMutationsApplied?.();
-          runtime.handlers.onDraftUpdated?.();
-          return;
-        }
-        if (!active) return;
+      }
+    } catch {
+      runtime.localOnly = true;
+      runtime.remoteConnected = false;
+      runtime.workspaceRecord = await runtime.workspacePersistence.checkpoint(runtime.model.snapshot(), runtime.localRevision, runtime.remoteRevision, 'local-only');
+      if (isActive()) {
         runtime.handlers.onSaveState?.('offline');
-        runtime.handlers.onNotice?.('Running local in-memory engine');
+        runtime.handlers.onNotice?.('Running local IndexedDB workspace');
         runtime.handlers.onPhaseChange?.('ready');
         runtime.handlers.onMutationsApplied?.();
       }
     }
-  })();
-  return () => {
-    active = false;
-  };
+  }
+}
+
+async function hasValidRemoteBinding(runtime: SpreadsheetRuntime): Promise<boolean> {
+  if (!runtime.authTokenProvider && !runtime.shareTokenProvider) return false;
+  try {
+    const token = await runtime.authTokenProvider?.();
+    if (token?.trim()) return true;
+    const shareToken = await runtime.shareTokenProvider?.();
+    return Boolean(shareToken?.trim());
+  } catch {
+    return false;
+  }
 }
 
 export type { HistoryEntry };

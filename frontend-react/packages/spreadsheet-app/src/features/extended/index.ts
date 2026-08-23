@@ -61,7 +61,7 @@ export class CapabilityRegistry {
     if (DISABLED_STUB_FUNCTIONS.has(normalized)) {
       return { enabled: false, reason: 'GROUPBY/PIVOTBY require full calculation and spill semantics' };
     }
-    return { enabled: true };
+    return { enabled: false, reason: 'Formula function is not registered by the extended feature' };
   }
 }
 

@@ -19,21 +19,8 @@ export default defineConfig({
       '@react-sheets/formula-engine': path.resolve(projectRoot, 'packages/formula-engine/src'),
       '@react-sheets/ui-system': path.resolve(projectRoot, 'packages/ui-system/src'),
       '@react-sheets/sheet-features': path.resolve(projectRoot, 'packages/sheet-features/src'),
-      '@react-sheets/pro-features': path.resolve(projectRoot, 'packages/pro-features/src'),
       '@react-sheets/exchange-xlsx': path.resolve(projectRoot, 'packages/exchange-xlsx/src'),
       '@react-sheets/spreadsheet-app': path.resolve(projectRoot, 'packages/spreadsheet-app/src'),
-    },
-  },
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:4181',
-        ws: true,
-      },
-      '/ws': {
-        target: 'ws://127.0.0.1:4181',
-        ws: true,
-      },
     },
   },
   build: {
@@ -44,7 +31,6 @@ export default defineConfig({
         manualChunks(id) {
           const normalized = id.replaceAll('\\', '/');
           if (normalized.includes('/packages/formula-engine/') || normalized.includes('/packages/render-engine/')) return 'sheet-engine';
-          if (normalized.includes('/packages/pro-features/')) return 'pro-features';
           if (normalized.includes('/packages/core-model/') || normalized.includes('/packages/command-runtime/')) return 'sheet-model';
           return undefined;
         },

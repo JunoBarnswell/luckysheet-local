@@ -7,8 +7,18 @@ export interface DrawingHitTestResult {
   handle?: 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w';
 }
 
+export interface DrawingPointerTransaction {
+  id: string;
+  drawingId: string;
+  before: DrawingTransform;
+  preview: DrawingTransform;
+}
+
+let pointerTransactionSequence = 0;
+
 export class DrawingRuntime {
   private readonly selectedBySheet = new Map<string, Set<string>>();
+  private readonly pointerTransactions = new Map<string, DrawingPointerTransaction>();
 
   select(sheetId: string, drawingIds: readonly string[], mode: DrawingSelectionMode = 'replace'): string[] {
     const current = this.selectedBySheet.get(sheetId) ?? new Set<string>();
@@ -37,12 +47,50 @@ export class DrawingRuntime {
     return [...(this.selectedBySheet.get(sheetId) ?? [])];
   }
 
+  /** Begin a transient pointer gesture without changing the worksheet. */
+  beginPointerTransform(sheet: WorksheetModel, drawingId: string): DrawingPointerTransaction {
+    const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
+    if (!drawing) throw new Error(`Unknown drawing: ${drawingId}`);
+    const transaction: DrawingPointerTransaction = {
+      id: `drawing-pointer-${++pointerTransactionSequence}`,
+      drawingId,
+      before: structuredClone(drawing.transform),
+      preview: structuredClone(drawing.transform),
+    };
+    this.pointerTransactions.set(transaction.id, transaction);
+    return structuredClone(transaction);
+  }
+
+  /** Update only the transient preview; callers commit it through drawing.transform.commit. */
+  previewPointerTransform(transactionId: string, transform: DrawingTransform, grid = 1): DrawingTransform {
+    const transaction = this.pointerTransactions.get(transactionId);
+    if (!transaction) throw new Error(`Unknown drawing pointer transaction: ${transactionId}`);
+    transaction.preview = snapTransform(normalizeTransform(transform), grid);
+    return structuredClone(transaction.preview);
+  }
+
+  finishPointerTransform(transactionId: string): DrawingTransformCommit {
+    const transaction = this.pointerTransactions.get(transactionId);
+    if (!transaction) throw new Error(`Unknown drawing pointer transaction: ${transactionId}`);
+    this.pointerTransactions.delete(transactionId);
+    return {
+      drawingId: transaction.drawingId,
+      before: structuredClone(transaction.before),
+      after: structuredClone(transaction.preview),
+    };
+  }
+
+  cancelPointerTransform(transactionId: string): void {
+    this.pointerTransactions.delete(transactionId);
+  }
+
   hitTest(sheet: WorksheetModel, point: { x: number; y: number }): DrawingHitTestResult | undefined {
     const sorted = [...sheet.drawings].sort((left, right) => right.zIndex - left.zIndex);
     for (const drawing of sorted) {
+      const localPoint = inverseRotatePoint(point, drawing.transform);
       const { x, y, width, height } = drawing.transform;
-      if (point.x < x || point.y < y || point.x > x + width || point.y > y + height) continue;
-      const handle = this.resolveHandle(drawing.transform, point);
+      if (localPoint.x < x || localPoint.y < y || localPoint.x > x + width || localPoint.y > y + height) continue;
+      const handle = this.resolveHandle(drawing.transform, localPoint);
       return { drawing, handle };
     }
     return undefined;
@@ -62,6 +110,52 @@ export class DrawingRuntime {
     if (Math.abs(point.x - (x + width)) <= threshold && point.y >= y && point.y <= y + height) return 'e';
     return 'move';
   }
+}
+
+export interface DrawingTransformCommit {
+  drawingId: string;
+  before: DrawingTransform;
+  after: DrawingTransform;
+}
+
+export function normalizeTransform(transform: DrawingTransform): DrawingTransform {
+  const width = Math.max(0, transform.width);
+  const height = Math.max(0, transform.height);
+  const rotation = transform.rotation ?? 0;
+  return {
+    x: Number.isFinite(transform.x) ? transform.x : 0,
+    y: Number.isFinite(transform.y) ? transform.y : 0,
+    width,
+    height,
+    rotation: Number.isFinite(rotation) ? rotation : 0,
+  };
+}
+
+export function snapTransform(transform: DrawingTransform, gridSize = 1): DrawingTransform {
+  if (!Number.isFinite(gridSize) || gridSize <= 0) return structuredClone(transform);
+  const snap = (value: number): number => Math.round(value / gridSize) * gridSize;
+  return {
+    ...transform,
+    x: snap(transform.x),
+    y: snap(transform.y),
+    width: Math.max(gridSize, snap(transform.width)),
+    height: Math.max(gridSize, snap(transform.height)),
+  };
+}
+
+function inverseRotatePoint(point: { x: number; y: number }, transform: DrawingTransform): { x: number; y: number } {
+  const rotation = (transform.rotation ?? 0) * Math.PI / 180;
+  if (rotation === 0) return point;
+  const centerX = transform.x + transform.width / 2;
+  const centerY = transform.y + transform.height / 2;
+  const dx = point.x - centerX;
+  const dy = point.y - centerY;
+  const cos = Math.cos(-rotation);
+  const sin = Math.sin(-rotation);
+  return {
+    x: centerX + dx * cos - dy * sin,
+    y: centerY + dx * sin + dy * cos,
+  };
 }
 
 export function nextZIndex(sheet: WorksheetModel): number {

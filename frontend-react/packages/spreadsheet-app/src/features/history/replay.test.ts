@@ -9,8 +9,7 @@ import {
   replayRevisionsToSnapshot,
   revisionToHistoryMeta,
 } from './replay';
-import { HistoryPreviewSession } from './index';
-import { registerHistoryCommands } from './index';
+import { HistoryPreviewSession, registerHistoryCommands } from './index';
 
 describe('history replay', () => {
   it('maps revision records to history metadata', () => {
@@ -19,7 +18,7 @@ describe('history replay', () => {
       revision: 2,
       createdAt: '2026-01-01T00:00:00.000Z',
       payload: {
-        schema: 'OperationEnvelopeV2',
+        schema: 'OperationEnvelope',
         operationId: 'op-1',
         unitId: 'wb-1',
         actorId: 'actor-1',
@@ -53,7 +52,7 @@ describe('history replay', () => {
       revision: 1,
       createdAt: '2026-01-01T00:00:00.000Z',
       payload: {
-        schema: 'OperationEnvelopeV2',
+        schema: 'OperationEnvelope',
         operationId: 'op-1',
         unitId: 'wb-1',
         actorId: 'actor-1',

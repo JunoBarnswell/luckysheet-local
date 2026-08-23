@@ -6,6 +6,7 @@ export * from './dependencies';
 export * from './errors';
 export * from './evaluator';
 export * from './formula-engine';
+export * from './calculation-worker-entry';
 export * from './functions';
 export * from './defined-names';
 export * from './formula-analysis';

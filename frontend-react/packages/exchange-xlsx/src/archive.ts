@@ -1,4 +1,4 @@
-import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import { strFromU8, strToU8, zipSync } from 'fflate';
 import {
   bytesToBase64,
@@ -20,7 +20,7 @@ export function unzipXlsxBase64(base64: string, limits?: Partial<XlsxZipLimits>)
 }
 
 /** Parse an in-memory XML file map through the independent OOXML package reader. */
-export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookSnapshotV1 {
+export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookSnapshot {
   const parts: Record<string, Uint8Array> = Object.fromEntries(Object.entries(files).map(([name, value]) => [name, strToU8(value)]));
   if (!parts['xl/workbook.xml']) throw new Error('Not a valid XLSX package: xl/workbook.xml is missing');
   const loaded = loadXlsxPackage(bytesToBase64(zipSync(parts, { level: 0 })));
@@ -29,7 +29,7 @@ export function parseXlsxXmlToSnapshot(files: Record<string, string>): WorkbookS
 
 /** Export a snapshot as a real OOXML ZIP package. */
 export function exportSnapshotToXlsxBase64(
-  snapshot: WorkbookSnapshotV1,
+  snapshot: WorkbookSnapshot,
   preserved?: XlsxPackage,
   options: { dateSystem?: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean } = {},
 ): string {

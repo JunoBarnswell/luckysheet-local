@@ -1,5 +1,6 @@
 import type { CellData, RangeRef, WorkbookModel } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
+import { parseCellText } from './text-input';
 
 /** Stable MIME names understood by every host (browser, desktop and headless). */
 export const CLIPBOARD_INTERNAL_MIME = 'application/x-react-sheets-cells';
@@ -143,16 +144,7 @@ function escapeTsvField(value: string): string {
 }
 
 function parseClipboardScalar(value: string): CellData {
-  if (value === '') return { value: null };
-  const trimmed = value.trim();
-  if (trimmed.startsWith('=')) return { value: null, formula: trimmed };
-  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
-    const number = Number(trimmed);
-    if (Number.isFinite(number)) return { value: number };
-  }
-  if (trimmed.toUpperCase() === 'TRUE') return { value: true };
-  if (trimmed.toUpperCase() === 'FALSE') return { value: false };
-  return { value };
+  return parseCellText(value);
 }
 
 function formatHtml(values: CellData[][]): string {

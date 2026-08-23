@@ -68,7 +68,7 @@ function isPageSetup(value: unknown): value is PageSetup {
 }
 
 function isPrintDocument(value: unknown): value is PrintDocument {
-  if (!isRecord(value) || value.schema !== 'PrintDocumentV1' || typeof value.unitId !== 'string' || typeof value.sheetId !== 'string') return false;
+  if (!isRecord(value) || value.schema !== 'PrintDocument' || typeof value.unitId !== 'string' || typeof value.sheetId !== 'string') return false;
   if (!isPageSetup(value.pageSetup) || !Array.isArray(value.printAreas) || !Array.isArray(value.pageBreaks)) return false;
   return value.printAreas.every((entry) => isRecord(entry) && typeof entry.sheetId === 'string' && isRange(entry.range))
     && value.pageBreaks.every((entry) => isRecord(entry) && typeof entry.sheetId === 'string' && (Number.isInteger(entry.row) !== Number.isInteger(entry.column)));

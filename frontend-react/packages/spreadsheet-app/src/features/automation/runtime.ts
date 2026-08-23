@@ -30,7 +30,7 @@ export function runAutomationScript(
   source: string,
   sandbox = new ScriptSandbox(),
 ): ScriptRunResult {
-  if (!commands.registry.hasCommand('automation.run')) registerAutomationCommands(commands.registry);
+  if (!commands.registry.hasCommand('automation.run')) registerAutomationCommands(commands.registry, { sandbox });
   const runtime = new FacadeScriptRuntime(workbook, commands);
   return runtime.runScript(source.trim(), sandbox);
 }

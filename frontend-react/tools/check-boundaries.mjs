@@ -37,13 +37,22 @@ function collectUiArchitectureViolations(relPath, source) {
   if (/\bRibbonAction\b|ribbon-(?:actions|command-map)/.test(source)) {
     violations.push(`${relPath}: UI must dispatch CommandDescriptor directly; RibbonAction/map is removed`);
   }
+  if (/\bui\./.test(source)) {
+    violations.push(`${relPath}: UI chrome must use typed UiSessionIntent callbacks, not ui.* command descriptors`);
+  }
+  if (/PivotDefinition|pivot-layout-ops/.test(source)) {
+    violations.push(`${relPath}: UI must consume the canonical PivotModel and pivot feature commands`);
+  }
+  if (/@react-sheets\/pro-features|packages\/pro-features/.test(source)) {
+    violations.push(`${relPath}: UI must consume canonical spreadsheet-app feature modules, not pro-features`);
+  }
   if (/\bpro\./.test(source)) {
     violations.push(`${relPath}: UI must not depend on the legacy pro. command namespace`);
   }
   if (relPath.endsWith('-bridge.ts') || relPath.endsWith('-bridge.tsx') || bridgeImportPattern.test(source)) {
     violations.push(`${relPath}: UI must not define or import *-bridge compatibility paths`);
   }
-  if (/\bWorkbookModel\b/.test(source) || directWorkbookMutationPattern.test(source)) {
+  if (directWorkbookMutationPattern.test(source)) {
     violations.push(`${relPath}: UI must not write Workbook/WorkbookModel directly; dispatch a command`);
   }
   return violations;

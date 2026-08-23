@@ -27,8 +27,6 @@
       "@react-sheets/ui-system": ["packages/ui-system/src/index.ts"],
       "@react-sheets/sheet-features": ["packages/sheet-features/src/index.ts"],
       "@react-sheets/number-format": ["packages/number-format/src/index.ts"],
-      "@react-sheets/storage": ["packages/storage/src/index.ts"],
-      "@react-sheets/pro-features": ["packages/pro-features/src/index.ts"],
       "@react-sheets/spreadsheet-app": ["packages/spreadsheet-app/src/index.ts"],
       "@react-sheets/exchange-xlsx": ["packages/exchange-xlsx/src/index.ts"],
       "@react-sheets/*": ["packages/*/src/index.ts"]

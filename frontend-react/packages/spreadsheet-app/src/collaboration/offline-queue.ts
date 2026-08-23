@@ -1,10 +1,10 @@
-import type { OperationEnvelopeV2 } from '@react-sheets/protocol';
+import { validateOperationEnvelope, type OperationEnvelope } from '@react-sheets/protocol';
 
 export type OfflineQueueState = 'idle' | 'syncing' | 'offline' | 'error';
-export type QueuedOperationStatus = 'pending' | 'sent' | 'rejected';
+export type QueuedOperationStatus = 'pending' | 'sent' | 'acked' | 'rejected';
 
 export interface QueuedOperation {
-  operation: OperationEnvelopeV2;
+  operation: OperationEnvelope;
   enqueuedAt: number;
   retryCount: number;
   status: QueuedOperationStatus;
@@ -13,11 +13,15 @@ export interface QueuedOperation {
 
 export interface OfflineQueueOptions {
   maxRetries?: number;
-  flush?: (operation: OperationEnvelopeV2) => Promise<number>;
+  flush?: (operation: OperationEnvelope) => Promise<number>;
   now?: () => number;
   /** Durable journal for pending operations. */
-  load?: () => readonly OperationEnvelopeV2[];
-  persist?: (operations: readonly OperationEnvelopeV2[]) => void;
+  load?: () => readonly OperationEnvelope[];
+  persist?: (operations: readonly OperationEnvelope[]) => void;
+}
+
+function validateOperation(operation: unknown): OperationEnvelope {
+  return validateOperationEnvelope(operation);
 }
 
 /**
@@ -32,10 +36,11 @@ export class OfflineQueue {
   private readonly queue: QueuedOperation[] = [];
   private state: OfflineQueueState = 'idle';
   private readonly maxRetries: number;
-  private readonly flush?: (operation: OperationEnvelopeV2) => Promise<number>;
+  private readonly flush?: (operation: OperationEnvelope) => Promise<number>;
   private readonly now: () => number;
   private readonly persist?: OfflineQueueOptions['persist'];
   private flushPromise: Promise<{ flushed: number; failed: number }> | null = null;
+  private readonly terminalStatuses = new Map<string, QueuedOperationStatus>();
 
   constructor(options: OfflineQueueOptions = {}) {
     this.maxRetries = Math.max(1, options.maxRetries ?? 5);
@@ -44,7 +49,8 @@ export class OfflineQueue {
     this.persist = options.persist;
     const restored = options.load?.() ?? [];
     const seen = new Set<string>();
-    for (const operation of restored) {
+    for (const candidate of restored) {
+      const operation = validateOperation(candidate);
       if (seen.has(operation.operationId)) continue;
       seen.add(operation.operationId);
       // A process may have terminated after sending but before receiving ACK.
@@ -71,7 +77,14 @@ export class OfflineQueue {
     return this.queue.map((item) => ({ ...item, operation: structuredClone(item.operation) }));
   }
 
-  enqueue(operation: OperationEnvelopeV2): void {
+  getStatus(operationId: string): QueuedOperationStatus | undefined {
+    return this.queue.find((item) => item.operation.operationId === operationId)?.status
+      ?? this.terminalStatuses.get(operationId);
+  }
+
+  enqueue(operation: OperationEnvelope): void {
+    operation = validateOperation(operation);
+    if (this.terminalStatuses.has(operation.operationId)) throw new Error(`Operation id was already acknowledged: ${operation.operationId}`);
     if (this.queue.some((item) => item.operation.operationId === operation.operationId)) return;
     this.queue.push({
       operation: structuredClone(operation),
@@ -87,6 +100,8 @@ export class OfflineQueue {
   acknowledge(operationId: string): boolean {
     const index = this.queue.findIndex((item) => item.operation.operationId === operationId);
     if (index < 0) return false;
+    this.queue[index]!.status = 'acked';
+    this.terminalStatuses.set(operationId, 'acked');
     this.queue.splice(index, 1);
     this.persistQueue();
     if (this.queue.length === 0 && this.state === 'syncing') this.state = 'idle';
@@ -120,7 +135,8 @@ export class OfflineQueue {
   }
 
   /** Replace one operation after a structural OT transform. */
-  replace(operationId: string, operation: OperationEnvelopeV2): boolean {
+  replace(operationId: string, operation: OperationEnvelope): boolean {
+    operation = validateOperation(operation);
     const item = this.queue.find((entry) => entry.operation.operationId === operationId);
     if (!item) return false;
     item.operation = structuredClone(operation);
@@ -131,7 +147,8 @@ export class OfflineQueue {
   }
 
   /** Rewrite all queued operations in sequence and persist one journal image. */
-  rewrite(operations: readonly OperationEnvelopeV2[]): void {
+  rewrite(operations: readonly OperationEnvelope[]): void {
+    operations = operations.map((operation) => validateOperation(operation));
     const byId = new Map(this.queue.map((entry) => [entry.operation.operationId, entry]));
     const rewritten: QueuedOperation[] = [];
     for (const operation of operations) {

@@ -71,9 +71,12 @@ describe('extended runtime', () => {
     });
     assert.equal(result.status, 'completed');
     assert.equal(result.filledCells, 3);
-    assert.equal(formula.getCellValue({ sheetId, row: 1, column: 1 }), 10);
-    assert.equal(formula.getCellValue({ sheetId, row: 1, column: 2 }), 20);
-    assert.equal(formula.getCellValue({ sheetId, row: 1, column: 3 }), 30);
+    assert.deepEqual(result.writes, [
+      { row: 1, column: 1, value: 10 },
+      { row: 1, column: 2, value: 20 },
+      { row: 1, column: 3, value: 30 },
+    ]);
+    assert.equal(workbook.getSheet(sheetId).cells.get(1, 1), undefined);
   });
 
   it('runs scenario analysis with result cells', () => {
@@ -97,6 +100,6 @@ describe('extended runtime', () => {
     });
     assert.equal(result.status, 'completed');
     assert.equal(result.outputs[0]?.value, 50);
-    assert.equal(workbook.getSheet(sheetId).cells.get(0, 1)?.value, 25);
+    assert.equal(workbook.getSheet(sheetId).cells.get(0, 1)?.value, 10);
   });
 });

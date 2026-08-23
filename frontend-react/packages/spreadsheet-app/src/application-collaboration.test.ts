@@ -38,7 +38,7 @@ describe('SpreadsheetApplication collaboration integration', () => {
     registerSpreadsheetFeatures(runtime, new DrawingRuntime());
     const session = new CollaborationSession(runtime);
     session.applyRemote({
-      schema: 'OperationEnvelopeV2',
+      schema: 'OperationEnvelope',
       operationId: 'remote-op',
       unitId: 'wb-collab',
       actorId: 'actor-2',

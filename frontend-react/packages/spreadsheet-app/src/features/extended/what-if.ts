@@ -4,7 +4,7 @@ import { FormulaEngine } from '@react-sheets/formula-engine';
 export type WhatIfKind = 'goal-seek' | 'data-table' | 'scenario';
 
 export interface WhatIfPlanMetadata {
-  schema: 'WhatIfPlanV1';
+  schema: 'WhatIfPlan';
   kind: WhatIfKind;
   /** Hash of the authoritative workbook state used to build this plan. */
   sourceRevision: string;
@@ -134,6 +134,19 @@ function readFormulaScalar(engine: FormulaEngine, sheetId: string, row: number, 
   return scalarValue(engine.getCellValue({ sheetId, row, column }));
 }
 
+function isSpillCell(workbook: WorkbookModel, sheetId: string, row: number, column: number): boolean {
+  return workbook.getSheet(sheetId).spillRanges.some((spill) => (
+    spill.range.startRow <= row
+      && row <= spill.range.endRow
+      && spill.range.startColumn <= column
+      && column <= spill.range.endColumn
+  ));
+}
+
+function hasArrayResult(engine: FormulaEngine, sheetId: string, row: number, column: number): boolean {
+  return Array.isArray(engine.getCellValue({ sheetId, row, column }));
+}
+
 function readWorkbookScalar(workbook: WorkbookModel, sheetId: string, row: number, column: number): FormulaScalar {
   const cell = workbook.getSheet(sheetId).cells.get(row, column);
   if (!cell) return null;
@@ -172,6 +185,17 @@ export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: G
     };
   }
 
+  if (
+    isSpillCell(workbook, sheetId, params.setCell.row, params.setCell.column)
+    || isSpillCell(workbook, sheetId, params.byChangingCell.row, params.byChangingCell.column)
+  ) {
+    return {
+      kind: 'goal-seek',
+      result: { kind: 'goal-seek', status: 'failed', iterations: 0, message: 'Goal Seek cannot write to a spill range' },
+      writes: [],
+    };
+  }
+
   const engine = createPlanningFormulaEngine(workbook);
   const { setCell, byChangingCell } = params;
   let low = -1_000_000;
@@ -179,12 +203,50 @@ export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: G
   let bestGuess = 0;
   let bestDelta = Number.POSITIVE_INFINITY;
   let iterations = 0;
+  let spillDetected = false;
   const writeGuess = (guess: number): number => {
     engine.setValue({ sheetId, row: byChangingCell.row, column: byChangingCell.column }, guess);
     engine.recalculate({ sheetId, row: setCell.row, column: setCell.column });
+    if (hasArrayResult(engine, sheetId, setCell.row, setCell.column)) {
+      spillDetected = true;
+      return Number.NaN;
+    }
     const value = readFormulaScalar(engine, sheetId, setCell.row, setCell.column);
     return typeof value === 'number' ? value : Number(value);
   };
+
+  const samples: number[] = [];
+  for (let index = 0; index <= 16; index += 1) {
+    const guess = low + ((high - low) * index) / 16;
+    const value = writeGuess(guess);
+    if (!Number.isFinite(value)) {
+      return {
+        kind: 'goal-seek',
+        result: {
+          kind: 'goal-seek',
+          status: spillDetected ? 'failed' : 'not-converged',
+          iterations: 0,
+          message: spillDetected ? 'Goal cell produces a spill result; no mutation applied' : 'Goal cell does not evaluate to a numeric value',
+        },
+        writes: [],
+      };
+    }
+    samples.push(value);
+  }
+  let direction = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const delta = samples[index]! - samples[index - 1]!;
+    if (Math.abs(delta) <= tolerance) continue;
+    const nextDirection = Math.sign(delta);
+    if (direction !== 0 && nextDirection !== direction) {
+      return {
+        kind: 'goal-seek',
+        result: { kind: 'goal-seek', status: 'not-converged', iterations: 0, message: 'Goal function is non-monotonic; no mutation applied' },
+        writes: [],
+      };
+    }
+    direction = nextDirection;
+  }
 
   for (let index = 0; index < maxIterations; index += 1) {
     iterations = index + 1;
@@ -193,7 +255,12 @@ export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: G
     if (!Number.isFinite(current)) {
       return {
         kind: 'goal-seek',
-        result: { kind: 'goal-seek', status: 'not-converged', iterations, message: 'Goal cell does not evaluate to a numeric value' },
+        result: {
+          kind: 'goal-seek',
+          status: spillDetected ? 'failed' : 'not-converged',
+          iterations,
+          message: spillDetected ? 'Goal cell produces a spill result; no mutation applied' : 'Goal cell does not evaluate to a numeric value',
+        },
         writes: [],
       };
     }
@@ -242,10 +309,10 @@ export function planScenario(workbook: WorkbookModel, sheetId: string, scenario:
   const sortedChanges = [...scenario.changingCells].sort((a, b) => a.row - b.row || a.column - b.column);
   for (const cell of sortedChanges) {
     const key = `${cell.row}:${cell.column}`;
-    if (!validCell(sheetId, cell.row, cell.column, workbook) || seen.has(key)) {
+    if (!validCell(sheetId, cell.row, cell.column, workbook) || seen.has(key) || isSpillCell(workbook, sheetId, cell.row, cell.column)) {
       return {
         kind: 'scenario',
-        result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario contains an invalid or duplicate changing cell', outputs: [] },
+        result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario contains an invalid, duplicate, or spill changing cell', outputs: [] },
         writes: [],
       };
     }
@@ -270,6 +337,13 @@ export function planScenario(workbook: WorkbookModel, sheetId: string, scenario:
     column: cell.column,
     value: readFormulaScalar(engine, sheetId, cell.row, cell.column),
   }));
+  if (resultCells.some((cell) => hasArrayResult(engine, sheetId, cell.row, cell.column))) {
+    return {
+      kind: 'scenario',
+      result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario result contains a spill value', outputs: [] },
+      writes: [],
+    };
+  }
   return {
     kind: 'scenario',
     result: {
@@ -298,10 +372,10 @@ export function planDataTable(workbook: WorkbookModel, sheetId: string, params: 
     };
   }
   const input = params.rowInputCell ?? params.columnInputCell!;
-  if (!validCell(sheetId, input.row, input.column, workbook)) {
+  if (!validCell(sheetId, input.row, input.column, workbook) || isSpillCell(workbook, sheetId, input.row, input.column)) {
     return {
       kind: 'data-table',
-      result: { kind: 'data-table', status: 'failed', message: 'Invalid data table input cell', filledCells: 0, writes: [] },
+      result: { kind: 'data-table', status: 'failed', message: 'Invalid or spill data table input cell', filledCells: 0, writes: [] },
       writes: [],
     };
   }
@@ -322,19 +396,25 @@ export function planDataTable(workbook: WorkbookModel, sheetId: string, params: 
   if (params.rowInputCell) {
     const formulaAddress = { sheetId, row: range.startRow, column: range.startColumn };
     for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+      const targetRow = row;
+      const targetColumn = range.startColumn + 1;
+      if (isSpillCell(workbook, sheetId, targetRow, targetColumn)) return fail('Data table output intersects a spill range');
       const rawInput = readWorkbookScalar(workbook, sheetId, row, range.startColumn);
       if (rawInput == null || typeof rawInput === 'boolean') return fail(`Missing input value at row ${row + 1}, column ${range.startColumn + 1}`);
       engine.setValue({ sheetId, row: input.row, column: input.column }, rawInput as never);
       engine.recalculate(formulaAddress);
-      addResult(row, range.startColumn + 1, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
+      if (hasArrayResult(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column)) return fail('Data table formula produces a spill result');
+      addResult(targetRow, targetColumn, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
     }
   } else {
     const formulaAddress = { sheetId, row: range.startRow + 1, column: range.startColumn };
     for (let column = range.startColumn + 1; column <= range.endColumn; column += 1) {
+      if (isSpillCell(workbook, sheetId, formulaAddress.row, column)) return fail('Data table output intersects a spill range');
       const rawInput = readWorkbookScalar(workbook, sheetId, range.startRow, column);
       if (rawInput == null || typeof rawInput === 'boolean') return fail(`Missing input value at row ${range.startRow + 1}, column ${column + 1}`);
       engine.setValue({ sheetId, row: input.row, column: input.column }, rawInput as never);
       engine.recalculate(formulaAddress);
+      if (hasArrayResult(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column)) return fail('Data table formula produces a spill result');
       addResult(formulaAddress.row, column, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
     }
   }

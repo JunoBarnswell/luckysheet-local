@@ -1,52 +1,29 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import type { OperationEnvelopeV2 } from '@react-sheets/protocol';
+import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
-  LocalDraftStore,
-  LocalOperationStore,
-  buildLocalDraftRecord,
+  LocalWorkspaceStore,
+  OperationJournalStore,
+  WorkspacePersistence,
+  buildWorkspaceRecord,
   buildPersistenceMeta,
-  isDraftNewerThanServer,
-  verifyLocalDraft,
+  verifyWorkspaceRecord,
 } from './storage';
 
 describe('persistence storage', () => {
-  it('builds local draft records with checksum verification', () => {
-    const snapshot = new WorkbookModel('wb-draft', 'Draft').snapshot();
-    const record = buildLocalDraftRecord(snapshot, 3);
-    assert.equal(record.unitId, 'wb-draft');
-    assert.equal(record.revision, 3);
-    assert.equal(verifyLocalDraft(record), true);
-    assert.equal(isDraftNewerThanServer(record, 2), true);
-    assert.equal(isDraftNewerThanServer(record, 3), false);
-  });
-
-  it('tracks persistence metadata and local draft presence', () => {
+  it('tracks pending local operation metadata', () => {
     const snapshot = new WorkbookModel('wb-meta', 'Meta').snapshot();
-    const draft = buildLocalDraftRecord(snapshot, 1);
-    const meta = buildPersistenceMeta(snapshot, 0, draft);
-    assert.equal(meta.hasLocalDraft, true);
+    const meta = buildPersistenceMeta(snapshot, 0, 1);
+    assert.equal(meta.hasPendingOperations, true);
     assert.equal(meta.checksum.length, 64);
-    assert.equal(meta.draftUpdatedAt, draft.updatedAt);
-  });
-
-  it('persists drafts through LocalDraftStore when window is available', () => {
-    if (typeof globalThis.window === 'undefined') return;
-    const store = new LocalDraftStore();
-    const snapshot = new WorkbookModel('wb-store', 'Store').snapshot();
-    const record = buildLocalDraftRecord(snapshot, 5);
-    store.write(record);
-    const loaded = store.read('wb-store');
-    assert.equal(loaded?.revision, 5);
-    store.clear('wb-store');
-    assert.equal(store.read('wb-store'), null);
+    assert.equal(meta.pendingOperationCount, 1);
   });
 
   it('persists only a monotonic pending-operation journal with checksum validation', () => {
-    const store = new LocalOperationStore();
-    const operation: OperationEnvelopeV2 = {
-      schema: 'OperationEnvelopeV2',
+    const store = new OperationJournalStore();
+    const operation: OperationEnvelope = {
+      schema: 'OperationEnvelope',
       operationId: 'offline-op-1',
       unitId: 'wb-operation-store',
       clientSequence: 7,
@@ -56,10 +33,50 @@ describe('persistence storage', () => {
     };
     store.write(operation.unitId, [operation], operation.clientSequence);
     const loaded = store.read(operation.unitId);
-    assert.equal(loaded?.schema, 'PendingOperationJournalV1');
+    assert.equal(loaded?.schema, 'PendingOperationJournal');
     assert.equal(loaded?.nextClientSequence, 7);
     assert.deepEqual(loaded?.operations, [operation]);
     store.clear(operation.unitId);
     assert.equal(store.read(operation.unitId), null);
+  });
+
+  it('builds a canonical workspace record with a checksummed pending journal', () => {
+    const snapshot = new WorkbookModel('wb-workspace', 'Workspace').snapshot();
+    const record = buildWorkspaceRecord({
+      unitId: snapshot.unitId,
+      snapshot,
+      localRevision: 4,
+      serverRevision: 2,
+      syncMode: 'local-only',
+      operations: [],
+      nextClientSequence: 0,
+    });
+    assert.equal(record.schema, 'WorkspaceRecord');
+    assert.equal(record.snapshot.schema, 'WorkbookSnapshot');
+    assert.equal(record.localRevision, 4);
+    assert.equal(record.pending.schema, 'PendingOperationJournal');
+    assert.equal(verifyWorkspaceRecord(record), true);
+  });
+
+  it('opens, lists, checkpoints, and deletes local workspaces without browser storage', async () => {
+    const store = new LocalWorkspaceStore({ databaseName: 'persistence-test-catalog' });
+    const persistence = new WorkspacePersistence({ databaseName: 'persistence-test-catalog' });
+    const snapshot = new WorkbookModel('wb-catalog', 'Catalog').snapshot();
+    const record = await store.create({
+      unitId: snapshot.unitId,
+      snapshot,
+      localRevision: 1,
+      serverRevision: 0,
+      syncMode: 'local-only',
+      operations: [],
+      nextClientSequence: 0,
+    });
+    assert.equal((await store.open(snapshot.unitId))?.checksum, record.checksum);
+    assert.equal((await store.list()).map((entry) => entry.unitId).includes(snapshot.unitId), true);
+    persistence.operationJournal.hydrate(record);
+    const checkpoint = await persistence.checkpoint(snapshot, 2, 0, 'local-only');
+    assert.equal(checkpoint.localRevision, 2);
+    await store.delete(snapshot.unitId);
+    assert.equal(await store.open(snapshot.unitId), null);
   });
 });

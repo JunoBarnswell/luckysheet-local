@@ -71,7 +71,7 @@ describe('exchange-xlsx', () => {
       options: { compatibilityTarget: 'B' },
     });
     assert.equal(imported.snapshot.sheets.length, snapshot.sheets.length);
-    assert.equal(imported.report.schema, 'CompatibilityReportV1');
+    assert.equal(imported.report.schema, 'CompatibilityReport');
     const exported = await exportXlsx({
       snapshot: imported.snapshot,
       fileName: 'roundtrip.xlsx',

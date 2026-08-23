@@ -1,36 +1,67 @@
-import type { CommandRuntime } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import type { ChartDrawingPayload, DrawingObject, RangeRef, WorksheetModel } from '@react-sheets/core-model';
-import { applyTrackedMutation, registerMutationHandler, removeById, sheetRange } from '../../command-helpers';
+import { applyTrackedMutation, sheetRange } from '../../command-helpers';
 
 export type ChartType = ChartDrawingPayload['chartType'];
+export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
+export type ChartAxisScale = 'linear' | 'logarithmic';
+
+export interface ChartAxis {
+  id: string;
+  position: ChartAxisPosition;
+  title?: string;
+  scale?: ChartAxisScale;
+  minimum?: number;
+  maximum?: number;
+  majorUnit?: number;
+  numberFormat?: string;
+  crossesAt?: number;
+}
+
+export interface ChartSeries {
+  name: string;
+  range: RangeRef;
+  /** Scatter charts may provide explicit X/Y ranges while retaining range as the value range. */
+  xRange?: RangeRef;
+  yRange?: RangeRef;
+  color?: string;
+  chartType?: Exclude<ChartType, 'combo'>;
+  axis?: 'primary' | 'secondary';
+  smooth?: boolean;
+}
+
+/** Canonical chart payload. It remains a DrawingPayload member and is stored by payloadId. */
+export type ChartPayload = Omit<ChartDrawingPayload, 'series'> & {
+  series?: ChartSeries[];
+  categoryAxis?: ChartAxis;
+  valueAxis?: ChartAxis;
+  secondaryCategoryAxis?: ChartAxis;
+  secondaryValueAxis?: ChartAxis;
+};
 
 export interface ChartInsertParams {
   sheetId: string;
-  chartId: string;
-  drawingId: string;
-  bounds: { x: number; y: number; width: number; height: number };
-  payload: ChartDrawingPayload;
-  zIndex?: number;
-  rotation?: number;
+  drawing: DrawingObject;
+  payload: ChartPayload;
 }
 
 export interface ChartUpdateParams {
   sheetId: string;
   chartId: string;
-  payload: Partial<ChartDrawingPayload>;
+  payload: Partial<ChartPayload>;
 }
 
 export interface ChartSetTypeParams {
   sheetId: string;
   chartId: string;
   chartType: ChartType;
-  stacked?: ChartDrawingPayload['stacked'];
+  stacked?: ChartPayload['stacked'];
 }
 
 export interface ChartSetLegendParams {
   sheetId: string;
   chartId: string;
-  legendPosition: NonNullable<ChartDrawingPayload['legendPosition']>;
+  legendPosition: NonNullable<ChartPayload['legendPosition']>;
 }
 
 export interface ChartSetDataLabelsParams {
@@ -43,8 +74,24 @@ export interface ChartSetSeriesParams {
   sheetId: string;
   chartId: string;
   sourceRanges: RangeRef[];
-  series?: ChartDrawingPayload['series'];
+  series?: ChartPayload['series'];
   categoryRange?: RangeRef;
+}
+
+export interface ChartSetAxesParams {
+  sheetId: string;
+  chartId: string;
+  categoryAxis?: ChartAxis;
+  valueAxis?: ChartAxis;
+  secondaryCategoryAxis?: ChartAxis;
+  secondaryValueAxis?: ChartAxis;
+}
+
+export interface ChartSetSecondaryAxisParams {
+  sheetId: string;
+  chartId: string;
+  seriesName: string;
+  enabled: boolean;
 }
 
 interface ChartRemoveParams {
@@ -52,128 +99,167 @@ interface ChartRemoveParams {
   chartId: string;
 }
 
-function findChartDrawing(sheet: WorksheetModel, chartId: string): { drawing: DrawingObject; payload: ChartDrawingPayload } | undefined {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isRange(value: unknown): value is RangeRef {
+  if (!isRecord(value)) return false;
+  return typeof value.sheetId === 'string'
+    && Number.isInteger(value.startRow) && Number.isInteger(value.endRow)
+    && Number.isInteger(value.startColumn) && Number.isInteger(value.endColumn)
+    && (value.startRow as number) >= 0 && (value.endRow as number) >= (value.startRow as number)
+    && (value.startColumn as number) >= 0 && (value.endColumn as number) >= (value.startColumn as number);
+}
+
+function isAxis(value: unknown): value is ChartAxis {
+  if (!isRecord(value)) return false;
+  return typeof value.id === 'string'
+    && ['top', 'bottom', 'left', 'right'].includes(String(value.position))
+    && (value.scale === undefined || value.scale === 'linear' || value.scale === 'logarithmic')
+    && (value.minimum === undefined || typeof value.minimum === 'number')
+    && (value.maximum === undefined || typeof value.maximum === 'number')
+    && (value.majorUnit === undefined || typeof value.majorUnit === 'number');
+}
+
+function isSeries(value: unknown): value is ChartSeries {
+  if (!isRecord(value)) return false;
+  const series = value as Record<string, unknown>;
+  return typeof value.name === 'string'
+    && isRange(series.range)
+    && (series.xRange === undefined || isRange(series.xRange))
+    && (series.yRange === undefined || isRange(series.yRange))
+    && (series.chartType === undefined || ['column', 'bar', 'line', 'pie', 'doughnut', 'area', 'scatter'].includes(String(series.chartType)))
+    && (series.axis === undefined || series.axis === 'primary' || series.axis === 'secondary')
+    && (series.smooth === undefined || typeof series.smooth === 'boolean');
+}
+
+function isChartPayload(value: unknown): value is ChartPayload {
+  if (!isRecord(value) || value.kind !== 'chart') return false;
+  const payload = value as Record<string, unknown>;
+  const sourceRanges = payload.sourceRanges;
+  const series = payload.series;
+  return typeof payload.chartId === 'string'
+    && ['column', 'bar', 'line', 'pie', 'doughnut', 'area', 'scatter', 'combo'].includes(String(value.chartType))
+    && Array.isArray(sourceRanges)
+    && sourceRanges.every(isRange)
+    && (series === undefined || (Array.isArray(series) && series.every(isSeries)))
+    && (payload.categoryRange === undefined || isRange(payload.categoryRange))
+    && (payload.categoryAxis === undefined || isAxis(payload.categoryAxis))
+    && (payload.valueAxis === undefined || isAxis(payload.valueAxis))
+    && (payload.secondaryCategoryAxis === undefined || isAxis(payload.secondaryCategoryAxis))
+    && (payload.secondaryValueAxis === undefined || isAxis(payload.secondaryValueAxis));
+}
+
+function validateChartPair(sheet: WorksheetModel, drawing: DrawingObject, payload: ChartPayload): void {
+  if (drawing.kind !== 'chart' || payload.kind !== 'chart') throw new Error(`Chart pair kind mismatch: ${drawing.id}`);
+  if (drawing.sheetId !== sheet.id || payload.chartId !== drawing.payloadId) throw new Error(`Chart pair identity mismatch: ${drawing.id}`);
+  if (!isChartPayload(payload as unknown)) throw new Error('Invalid chart payload');
+  if (sheet.drawings.some((entry) => entry.id === drawing.id)) throw new Error(`Drawing already exists: ${drawing.id}`);
+  if (sheet.drawingPayloads.has(drawing.payloadId)) throw new Error(`Chart payload already exists: ${drawing.payloadId}`);
+}
+
+function findChartDrawing(sheet: WorksheetModel, chartId: string): { drawing: DrawingObject; payload: ChartPayload } | undefined {
   const drawing = sheet.drawings.find((entry) => entry.kind === 'chart' && entry.payloadId === chartId);
   if (!drawing) return undefined;
   const payload = sheet.drawingPayloads.get(drawing.payloadId);
   if (!payload || payload.kind !== 'chart') throw new Error(`Missing chart payload: ${chartId}`);
   if (payload.chartId !== chartId) throw new Error(`Chart payload identity mismatch: ${chartId}`);
-  return { drawing, payload };
+  return { drawing, payload: payload as ChartPayload };
 }
 
 function addChartDrawing(sheet: WorksheetModel, params: ChartInsertParams): void {
-  if (params.payload.kind !== 'chart' || params.payload.chartId !== params.chartId) {
-    throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
-  }
-  if (params.sheetId !== sheet.id) throw new Error(`Chart sheet mismatch: ${params.chartId}`);
-  if (sheet.drawings.some((entry) => entry.id === params.drawingId)) {
-    throw new Error(`Drawing already exists: ${params.drawingId}`);
-  }
-  if (sheet.drawingPayloads.has(params.chartId)) {
-    throw new Error(`Chart payload already exists: ${params.chartId}`);
-  }
-  sheet.drawings.push({
-    id: params.drawingId,
-    sheetId: params.sheetId,
-    kind: 'chart',
-    payloadId: params.chartId,
-    anchor: { kind: 'absolute' },
-    transform: { ...params.bounds, rotation: params.rotation ?? 0 },
-    zIndex: params.zIndex ?? (sheet.drawings.length + 1),
-  });
-  sheet.drawingPayloads.set(params.chartId, structuredClone(params.payload));
+  validateChartPair(sheet, params.drawing, params.payload);
+  sheet.drawings.push(structuredClone(params.drawing));
+  sheet.drawingPayloads.set(params.drawing.payloadId, structuredClone(params.payload));
 }
 
-function removeChartDrawing(sheet: WorksheetModel, chartId: string): { drawing: DrawingObject; payload: ChartDrawingPayload } {
+function removeChartDrawing(sheet: WorksheetModel, chartId: string): { drawing: DrawingObject; payload: ChartPayload } {
   const current = findChartDrawing(sheet, chartId);
   if (!current) throw new Error(`Unknown chart: ${chartId}`);
-  removeById(sheet.drawings, current.drawing.id);
-  sheet.drawingPayloads.delete(chartId);
+  sheet.drawings.splice(sheet.drawings.findIndex((entry) => entry.id === current.drawing.id), 1);
+  sheet.drawingPayloads.delete(current.drawing.payloadId);
   return { drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
 }
 
-function updateChartDrawing(sheet: WorksheetModel, params: { sheetId: string; chartId: string; payload: ChartDrawingPayload }): void {
+function updateChartPayload(sheet: WorksheetModel, params: { sheetId: string; chartId: string; payload: ChartPayload }): void {
   const current = findChartDrawing(sheet, params.chartId);
   if (!current) throw new Error(`Unknown chart: ${params.chartId}`);
-  if (params.payload.kind !== 'chart' || params.payload.chartId !== params.chartId) {
-    throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
-  }
-  sheet.drawingPayloads.set(params.chartId, structuredClone(params.payload));
+  if (params.payload.chartId !== params.chartId) throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
+  sheet.drawingPayloads.set(current.drawing.payloadId, structuredClone(params.payload));
+}
+
+interface DrawingRemoveMutationParams {
+  sheetId: string;
+  drawingId: string;
+}
+
+function executeChartInsert(params: ChartInsertParams, context: CommandContext, expectedType?: ChartType): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
+  if (expectedType && params.payload.chartType !== expectedType) throw new Error(`Chart command type mismatch: expected ${expectedType}`);
+  const sheet = context.workbook.getSheet(params.sheetId);
+  validateChartPair(sheet, params.drawing, params.payload);
+  const affectedRanges = sheetRange(params.sheetId);
+  applyTrackedMutation<ChartInsertParams, DrawingRemoveMutationParams>(context, {
+    id: 'drawing.add',
+    sheetId: params.sheetId,
+    params,
+    inverseId: 'drawing.remove',
+    inverseParams: { sheetId: params.sheetId, drawingId: params.drawing.id },
+    affectedRanges,
+    apply: () => addChartDrawing(context.workbook.getSheet(params.sheetId), params),
+  });
+  return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+}
+
+function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
+  params: P,
+  context: CommandContext,
+  patch: (payload: ChartPayload, params: P) => ChartPayload,
+): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const current = findChartDrawing(sheet, params.chartId);
+  if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+  const nextPayload = patch(structuredClone(current.payload), params);
+  if (!isChartPayload(nextPayload)) throw new Error(`Invalid chart payload: ${params.chartId}`);
+  const affectedRanges = sheetRange(params.sheetId);
+  const mutationParams = { sheetId: params.sheetId, payloadId: params.chartId, before: current.payload, after: nextPayload };
+  applyTrackedMutation(context, {
+    id: 'drawing.payload.update',
+    sheetId: params.sheetId,
+    params: mutationParams,
+    inverseParams: { sheetId: params.sheetId, payloadId: params.chartId, before: nextPayload, after: current.payload },
+    affectedRanges,
+    apply: () => updateChartPayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload }),
+  });
+  return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
 
 export function registerChartCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
-  registerMutationHandler<ChartInsertParams>(runtime, 'chart.drawing.add', (params, context) => {
-    addChartDrawing(context.workbook.getSheet(params.sheetId), params);
-  });
-  registerMutationHandler<{ sheetId: string; chartId: string; payload: ChartDrawingPayload }>(runtime, 'chart.drawing.update', (params, context) => {
-    updateChartDrawing(context.workbook.getSheet(params.sheetId), params);
-  });
-  registerMutationHandler<ChartRemoveParams>(runtime, 'chart.drawing.remove', (params, context) => {
-    removeChartDrawing(context.workbook.getSheet(params.sheetId), params.chartId);
-  });
-
-  runtime.registry.registerCommand<ChartInsertParams>({
-    id: 'chart.insert',
-    execute: (params, context) => {
-      if (params.payload.chartId !== params.chartId) throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
-      const affectedRanges = sheetRange(params.sheetId);
-      applyTrackedMutation<ChartInsertParams, ChartRemoveParams>(context, {
-        id: 'chart.drawing.add',
-        sheetId: params.sheetId,
-        params,
-        inverseId: 'chart.drawing.remove',
-        inverseParams: { sheetId: params.sheetId, chartId: params.chartId },
-        affectedRanges,
-        apply: () => addChartDrawing(context.workbook.getSheet(params.sheetId), params),
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
+  runtime.registry.registerCommand<ChartInsertParams>({ id: 'chart.insert', execute: (params, context) => executeChartInsert(params, context) });
   commandIds.push('chart.insert');
 
-  const registerPatch = <P extends { sheetId: string; chartId: string }>(
-    commandId: string,
-    patch: (payload: ChartDrawingPayload, params: P) => ChartDrawingPayload,
-  ): void => {
-    runtime.registry.registerCommand<P>({
-      id: commandId,
-      execute: (params, context) => {
-        const sheet = context.workbook.getSheet(params.sheetId);
-        const current = findChartDrawing(sheet, params.chartId);
-        if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
-        const nextPayload = patch(current.payload, params);
-        if (nextPayload.kind !== 'chart' || nextPayload.chartId !== params.chartId) {
-          throw new Error(`Chart payload identity mismatch: ${params.chartId}`);
-        }
-        const affectedRanges = sheetRange(params.sheetId);
-        const updateParams = { sheetId: params.sheetId, chartId: params.chartId, payload: nextPayload };
-        const inverseParams = { sheetId: params.sheetId, chartId: params.chartId, payload: current.payload };
-        applyTrackedMutation(context, {
-          id: 'chart.drawing.update',
-          sheetId: params.sheetId,
-          params: updateParams,
-          inverseParams,
-          affectedRanges,
-          apply: () => updateChartDrawing(context.workbook.getSheet(params.sheetId), updateParams),
-        });
-        return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-      },
-    });
-    commandIds.push(commandId);
-  };
+  for (const chartType of ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'] as const) {
+    const id = `chart.insert.${chartType}`;
+    runtime.registry.registerCommand<ChartInsertParams>({ id, execute: (params, context) => executeChartInsert(params, context, chartType) });
+    commandIds.push(id);
+  }
 
-  registerPatch<ChartUpdateParams>('chart.update', (payload, params) => ({ ...payload, ...params.payload, kind: 'chart' }));
-  registerPatch<ChartSetTypeParams>('chart.setType', (payload, params) => ({ ...payload, chartType: params.chartType, stacked: params.stacked ?? payload.stacked }));
-  registerPatch<ChartSetLegendParams>('chart.setLegend', (payload, params) => ({ ...payload, legendPosition: params.legendPosition }));
-  registerPatch<ChartSetDataLabelsParams>('chart.setDataLabels', (payload, params) => ({ ...payload, showDataLabels: params.showDataLabels }));
-  registerPatch<ChartSetSeriesParams>('chart.setSeries', (payload, params) => ({
-    ...payload,
-    sourceRanges: structuredClone(params.sourceRanges),
-    series: params.series ? structuredClone(params.series) : payload.series,
-    categoryRange: params.categoryRange ? structuredClone(params.categoryRange) : payload.categoryRange,
-  }));
+  runtime.registry.registerCommand<ChartUpdateParams>({ id: 'chart.update', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, ...input.payload, kind: 'chart', chartId: payload.chartId })) });
+  commandIds.push('chart.update');
+  runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, chartType: input.chartType, stacked: input.stacked ?? payload.stacked })) });
+  commandIds.push('chart.setType');
+  runtime.registry.registerCommand<ChartSetLegendParams>({ id: 'chart.setLegend', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, legendPosition: input.legendPosition })) });
+  commandIds.push('chart.setLegend');
+  runtime.registry.registerCommand<ChartSetDataLabelsParams>({ id: 'chart.setDataLabels', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, showDataLabels: input.showDataLabels })) });
+  commandIds.push('chart.setDataLabels');
+  runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, sourceRanges: structuredClone(input.sourceRanges), series: input.series ? structuredClone(input.series) : payload.series, categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange })) });
+  commandIds.push('chart.setSeries');
+  runtime.registry.registerCommand<ChartSetAxesParams>({ id: 'chart.setAxes', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, categoryAxis: input.categoryAxis ? structuredClone(input.categoryAxis) : payload.categoryAxis, valueAxis: input.valueAxis ? structuredClone(input.valueAxis) : payload.valueAxis, secondaryCategoryAxis: input.secondaryCategoryAxis ? structuredClone(input.secondaryCategoryAxis) : payload.secondaryCategoryAxis, secondaryValueAxis: input.secondaryValueAxis ? structuredClone(input.secondaryValueAxis) : payload.secondaryValueAxis })) });
+  commandIds.push('chart.setAxes');
+  runtime.registry.registerCommand<ChartSetSecondaryAxisParams>({ id: 'chart.setSecondaryAxis', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, series: (payload.series ?? []).map((series) => series.name === input.seriesName ? { ...series, axis: input.enabled ? 'secondary' : 'primary' } : series) })) });
+  commandIds.push('chart.setSecondaryAxis');
 
   runtime.registry.registerCommand<ChartRemoveParams>({
     id: 'chart.remove',
@@ -182,20 +268,12 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
       const current = findChartDrawing(sheet, params.chartId);
       if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
       const affectedRanges = sheetRange(params.sheetId);
-      const inverseParams: ChartInsertParams = {
+      const inverseParams: ChartInsertParams = { sheetId: params.sheetId, drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
+      applyTrackedMutation<DrawingRemoveMutationParams, ChartInsertParams>(context, {
+        id: 'drawing.remove',
         sheetId: params.sheetId,
-        chartId: params.chartId,
-        drawingId: current.drawing.id,
-        bounds: { ...current.drawing.transform },
-        payload: structuredClone(current.payload),
-        zIndex: current.drawing.zIndex,
-        rotation: current.drawing.transform.rotation,
-      };
-      applyTrackedMutation<ChartRemoveParams, ChartInsertParams>(context, {
-        id: 'chart.drawing.remove',
-        sheetId: params.sheetId,
-        params,
-        inverseId: 'chart.drawing.add',
+        params: { sheetId: params.sheetId, drawingId: current.drawing.id },
+        inverseId: 'drawing.add',
         inverseParams,
         affectedRanges,
         apply: () => removeChartDrawing(context.workbook.getSheet(params.sheetId), params.chartId),
@@ -204,65 +282,14 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
     },
   });
   commandIds.push('chart.remove');
-
-  for (const chartType of ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'] as const) {
-    runtime.registry.registerCommand<{
-      sheetId: string;
-      chartId: string;
-      drawingId: string;
-      bounds: ChartInsertParams['bounds'];
-      sourceRanges: RangeRef[];
-      title?: string;
-      stacked?: ChartDrawingPayload['stacked'];
-    }>({
-      id: `chart.insert.${chartType}`,
-      execute: (params, context) =>
-        runtime.registry.getCommand<ChartInsertParams>('chart.insert').execute(
-          {
-            sheetId: params.sheetId,
-            chartId: params.chartId,
-            drawingId: params.drawingId,
-            bounds: params.bounds,
-            payload: {
-              kind: 'chart',
-              chartId: params.chartId,
-              chartType,
-              sourceRanges: params.sourceRanges,
-              title: params.title,
-              stacked: params.stacked,
-              legendPosition: 'bottom',
-              showDataLabels: false,
-            },
-          },
-          context,
-        ),
-    });
-    commandIds.push(`chart.insert.${chartType}`);
-  }
-
   return commandIds;
 }
 
-export const CHART_MUTATION_IDS = [
-  'chart.drawing.add',
-  'chart.drawing.update',
-  'chart.drawing.remove',
-] as const;
+export const CHART_MUTATION_IDS = [] as const;
 
 export const CHART_COMMAND_IDS = [
-  'chart.insert',
-  'chart.update',
-  'chart.remove',
-  'chart.setType',
-  'chart.setLegend',
-  'chart.setDataLabels',
-  'chart.setSeries',
-  'chart.insert.column',
-  'chart.insert.bar',
-  'chart.insert.line',
-  'chart.insert.area',
-  'chart.insert.pie',
-  'chart.insert.doughnut',
-  'chart.insert.scatter',
-  'chart.insert.combo',
+  'chart.insert', 'chart.update', 'chart.remove', 'chart.setType', 'chart.setLegend',
+  'chart.setDataLabels', 'chart.setSeries', 'chart.setAxes', 'chart.setSecondaryAxis',
+  'chart.insert.column', 'chart.insert.bar', 'chart.insert.line', 'chart.insert.area',
+  'chart.insert.pie', 'chart.insert.doughnut', 'chart.insert.scatter', 'chart.insert.combo',
 ] as const;

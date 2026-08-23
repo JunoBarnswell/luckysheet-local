@@ -31,7 +31,7 @@ export interface PivotChartReference { chartId: string; role: 'source' | 'linked
 export interface PivotSourceRowPath { sheetId: SheetId; row: Row; }
 export interface PivotResultCell { kind?: 'detail' | 'grand-total'; columnPath: PivotScalar[]; values: PivotScalar[]; sourceRowPaths: PivotSourceRowPath[]; }
 export interface PivotResultNode { kind: 'leaf' | 'subtotal'; field?: string; key: PivotScalar; label: string; depth: number; children: PivotResultNode[]; values: PivotResultCell[]; subtotal: boolean; sourceRowPaths: PivotSourceRowPath[]; }
-export interface PivotResultTree { schema: 'PivotResultTreeV1'; pivotId: string; fields: PivotFieldCatalog; columnPaths: PivotScalar[][]; rows: PivotResultNode[]; grandTotal: PivotResultCell | null; sourceRowPaths: PivotSourceRowPath[]; }
+export interface PivotResultTree { schema: 'PivotResultTree'; pivotId: string; fields: PivotFieldCatalog; columnPaths: PivotScalar[][]; rows: PivotResultNode[]; grandTotal: PivotResultCell | null; sourceRowPaths: PivotSourceRowPath[]; }
 export interface PivotModel {
   id: string;
   sheetId: SheetId;

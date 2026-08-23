@@ -2,6 +2,7 @@ import type { CellData, RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import {
   buildFacadePlan,
+  checkFacadeExecution,
   parseFacadeScript,
   type FacadeCellOperation,
   type FacadeProgram,
@@ -13,11 +14,13 @@ export interface AutomationRunParams {
   label?: string;
   /** Internal parsed form; hosts must still provide source, which is parsed again. */
   program?: FacadeProgram;
+  /** Absolute deadline supplied by FacadeScriptRuntime; never a user script expression. */
+  deadlineAt?: number;
 }
 
 export interface AutomationPlanResult extends CommandResult {
   plan: {
-    schema: 'AutomationPlanV1';
+    schema: 'AutomationPlan';
     kind: 'facade-dsl';
     statements: number;
     operations: number;
@@ -141,22 +144,29 @@ export function registerAutomationCommands(registry: CommandRegistry, options: A
       if (Object.prototype.hasOwnProperty.call(params, 'program')) {
         throw new Error('Automation command accepts source only; program payload is not serializable');
       }
+      const deadlineAt = params.deadlineAt ?? Date.now() + sandbox.getTimeoutMs();
+      checkFacadeExecution({ deadlineAt });
       // Always parse the source supplied to the command. A caller cannot
       // smuggle an AST with executable JavaScript through an out-of-band hint.
       const program = sandbox.parse(params.source);
-      const plan = buildFacadePlan(context.workbook, program);
+      checkFacadeExecution({ deadlineAt });
+      const plan = buildFacadePlan(context.workbook, program, { deadlineAt });
       sandbox.assertPlanAllowed(plan);
-      const deadline = Date.now() + sandbox.getTimeoutMs();
+      checkFacadeExecution({ deadlineAt });
       for (const operation of plan.operations) {
-        if (Date.now() > deadline) throw new Error(`Automation exceeded ${sandbox.getTimeoutMs()}ms execution limit`);
+        checkFacadeExecution({ deadlineAt });
         applyPlannedCellOperation(operation, context);
       }
+      // Keep the deadline check inside the CommandRuntime transaction. If the
+      // budget expires after the last write, throwing here still triggers the
+      // runtime's inverse-mutation rollback.
+      checkFacadeExecution({ deadlineAt });
       return {
         operationId: context.operationId,
         mutationCount: plan.operations.length,
         affectedRanges: [...plan.affectedRanges],
         plan: {
-          schema: 'AutomationPlanV1',
+          schema: 'AutomationPlan',
           kind: 'facade-dsl',
           statements: plan.statements.length,
           operations: plan.operations.length,

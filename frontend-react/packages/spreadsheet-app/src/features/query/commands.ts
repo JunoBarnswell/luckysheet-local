@@ -44,14 +44,14 @@ function isQueryDefinitionReplacePayload(value: unknown): value is QueryDefiniti
   if (!value || typeof value !== 'object') return false;
   const payload = value as Record<string, unknown>;
   return typeof payload.queryId === 'string' && payload.queryId.trim().length > 0
-    && (payload.definition === null || (typeof payload.definition === 'object' && (payload.definition as { schema?: unknown }).schema === 'QueryDefinitionV1'));
+    && (payload.definition === null || (typeof payload.definition === 'object' && (payload.definition as { schema?: unknown }).schema === 'QueryDefinition'));
 }
 
 function isQueryLoadPayload(value: unknown): value is QueryMutationPayload {
   if (!value || typeof value !== 'object') return false;
   const payload = value as Record<string, unknown>;
   if (typeof payload.queryId !== 'string' || !payload.queryId.trim()) return false;
-  if (!(payload.queryDefinition === null || (typeof payload.queryDefinition === 'object' && (payload.queryDefinition as { schema?: unknown }).schema === 'QueryDefinitionV1'))) return false;
+  if (!(payload.queryDefinition === null || (typeof payload.queryDefinition === 'object' && (payload.queryDefinition as { schema?: unknown }).schema === 'QueryDefinition'))) return false;
   if (payload.kind === 'workbook-table') return typeof payload.tableId === 'string' && Boolean(payload.table) && Boolean(payload.result);
   if (payload.kind !== 'cells') return false;
   return Boolean(payload.clearRange) && Array.isArray(payload.values);

@@ -4,7 +4,9 @@ import { PIVOT_MUTATION_IDS, registerPivotCommands } from './commands';
 
 export * from './commands';
 export * from './helpers';
-export * from './helpers';
+export * from './engine';
+export * from './panel-state';
+export * from './writeback';
 
 export function registerPivotFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   return {

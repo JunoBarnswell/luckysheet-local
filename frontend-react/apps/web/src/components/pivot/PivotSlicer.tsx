@@ -1,6 +1,6 @@
 import { Button, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { useMemo, useState } from 'react';
-import type { PivotFieldDefinition } from './types';
+import type { PivotFieldDefinition } from '@react-sheets/core-model';
 
 export interface PivotSlicerProps {
   field: PivotFieldDefinition;
@@ -11,16 +11,16 @@ export interface PivotSlicerProps {
 
 export function PivotSlicer({ disabled = false, field, onChange, selectedValues }: PivotSlicerProps) {
   const [search, setSearch] = useState('');
-  const values = field.values ?? [];
+  const values = (field.values ?? []).map(String);
   const visibleValues = useMemo(() => values.filter((value) => value.toLowerCase().includes(search.toLowerCase())), [search, values]);
   const allSelected = selectedValues.length === 0 || selectedValues.length === values.length;
   return (
     <Stack gap="xs" className="rounded-lg border border-blue-100 bg-blue-50/30 p-2">
-      <Text size="xs" weight="semibold">Slicer · {field.label}</Text>
+      <Text size="xs" weight="semibold">Slicer · {field.name}</Text>
       <Button disabled={disabled} size="xs" variant="ghost" className="justify-start" onClick={() => onChange(allSelected ? [] : [...values])}>
         {allSelected ? 'Clear filter' : 'Select all'}
       </Button>
-      <TextInput aria-label={`Search ${field.label}`} placeholder="Search items" value={search} onChange={(event) => setSearch(event.target.value)} />
+      <TextInput aria-label={`Search ${field.name}`} placeholder="Search items" value={search} onChange={(event) => setSearch(event.target.value)} />
       <Stack gap="xs" className="max-h-40 overflow-auto">
         {visibleValues.map((value) => {
           const selected = allSelected || selectedValues.includes(value);

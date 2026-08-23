@@ -1,5 +1,5 @@
 import type { RangeRef } from '@react-sheets/core-model';
-import type { CommittedOperationEnvelopeV2, OperationEnvelopeV2, OperationMutationV2 } from '@react-sheets/protocol';
+import type { CommittedOperationEnvelope, OperationEnvelope, OperationMutation } from '@react-sheets/protocol';
 
 /** 协同 OT 操作分类 — 按类型做 transform/rebase */
 export type CollaborationOperationKind =
@@ -27,11 +27,8 @@ export interface ClassifiedMutation {
   params: unknown;
 }
 
-export type PendingOperation = OperationEnvelopeV2;
-export type CommittedOperation = CommittedOperationEnvelopeV2;
-
 export function operationMutationToClassified(
-  mutation: OperationMutationV2,
+  mutation: OperationMutation,
   sheetId = mutation.sheetId,
   affectedRanges: RangeRef[] = [],
 ): ClassifiedMutation {
@@ -39,7 +36,7 @@ export function operationMutationToClassified(
 }
 
 export function committedMutationToClassified(
-  mutation: CommittedOperationEnvelopeV2['mutations'][number],
+  mutation: CommittedOperationEnvelope['mutations'][number],
 ): ClassifiedMutation {
   return operationMutationToClassified(mutation, mutation.sheetId, [...mutation.affectedRanges]);
 }

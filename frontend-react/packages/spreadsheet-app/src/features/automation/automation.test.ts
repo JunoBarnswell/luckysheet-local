@@ -52,7 +52,7 @@ describe('Facade automation DSL', () => {
     registerSheetCommands(runtime);
     registerAutomationCommands(runtime.registry);
     const result = runtime.execute('automation.run', { source: "sheet.getRange('A1').setValues([[1]]);" }) as { plan?: { schema?: string; sourceHash?: string; serializable?: boolean; limits?: { maxOperations: number } } };
-    assert.equal(result.plan?.schema, 'AutomationPlanV1');
+    assert.equal(result.plan?.schema, 'AutomationPlan');
     assert.equal(result.plan?.serializable, true);
     assert.ok(result.plan?.sourceHash);
     assert.ok((result.plan?.limits?.maxOperations ?? 0) > 0);
@@ -75,6 +75,25 @@ describe('Facade automation DSL', () => {
     registerSheetCommands(runtime);
     registerAutomationCommands(runtime.registry);
     assert.throws(() => runtime.execute('automation.run', { source: "sheet.getRange('A1').clear();", program: () => undefined } as never), /source only|not serializable/i);
+    assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
+  });
+
+  it('honors cancellation and timeout before opening a transaction', () => {
+    const workbook = new WorkbookModel('automation-cancel', 'DSL');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerAutomationCommands(runtime.registry);
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = new FacadeScriptRuntime(workbook, runtime).runScript(
+      "sheet.getRange('A1').setValues([[1]]);",
+      new ScriptSandbox(),
+      { signal: controller.signal },
+    );
+    assert.equal(cancelled.ok, false);
+    assert.match(cancelled.error ?? '', /cancel/i);
+    const timedOut = runtime.execute.bind(runtime, 'automation.run', { source: "sheet.getRange('A1').setValues([[1]]);", deadlineAt: Date.now() - 1 });
+    assert.throws(timedOut, /timed out|execution/i);
     assert.equal(workbook.getSheet(workbook.activeSheetId).cells.count(), 0);
   });
 });

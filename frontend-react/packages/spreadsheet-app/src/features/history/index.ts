@@ -1,7 +1,7 @@
-import { WorkbookModel, type PivotResultTree, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import { WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
-import { FormulaEngine } from '@react-sheets/formula-engine';
-import { computePivotResult } from '@react-sheets/pro-features';
+import { FormulaEngine, type SheetTableRef } from '@react-sheets/formula-engine';
+import { computePivotResult } from '../pivot/engine';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from '../../ui-snapshot';
 
 export interface HistoryEntryMeta {
@@ -48,7 +48,7 @@ export class HistoryPreviewSession {
     this.projection = projection;
   }
 
-  static fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshotV1): HistoryPreviewSession {
+  static fromSnapshot(meta: HistoryEntryMeta, snapshot: WorkbookSnapshot): HistoryPreviewSession {
     const workbook = WorkbookModel.fromSnapshot(snapshot);
     const formula = hydratePreviewFormula(workbook);
     const derivedCache = new Map<string, PivotResultTree>();
@@ -100,7 +100,7 @@ export interface RestoreCommandParams {
 /** Server-produced mutation payload. The client command never accepts this shape. */
 export interface ServerRestoreMutationParams extends RestoreCommandParams {
   serverGenerated: true;
-  snapshot: WorkbookSnapshotV1;
+  snapshot: WorkbookSnapshot;
 }
 
 function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMutationParams {
@@ -110,10 +110,10 @@ function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMu
     && Number.isSafeInteger(input.targetRevision)
     && Number(input.targetRevision) >= 0
     && Boolean(input.snapshot)
-    && (input.snapshot as { schema?: string }).schema === 'WorkbookSnapshotV1';
+    && (input.snapshot as { schema?: string }).schema === 'WorkbookSnapshot';
 }
 
-function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshotV1): void {
+function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot): void {
   const restored = WorkbookModel.fromSnapshot(snapshot);
   target.sheets.clear();
   target.tables.clear();
@@ -168,6 +168,16 @@ function hydratePreviewFormula(workbook: WorkbookModel): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.activeSheetId });
   engine.setRecalculationMode('manual');
   engine.setDefinedNames(workbook.definedNames);
+  const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({
+    id: table.id,
+    sheetId: table.sheetId,
+    name: table.name,
+    range: table.range,
+    hasHeaderRow: table.hasHeaderRow,
+    hasTotalRow: table.hasTotalRow,
+    columns: table.columns.map((column) => ({ id: column.id, name: column.name })),
+  })));
+  engine.setSheetTables(tableRefs);
   for (const sheet of workbook.getSheets()) {
     engine.setSpillEnvironment(sheet.id, {
       rowCount: sheet.rowCount,

@@ -3,9 +3,8 @@ import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { ScriptSandbox } from './sandbox';
 import {
   buildFacadePlan,
-  parseFacadeScript,
+  checkFacadeExecution,
   type FacadePlan,
-  type FacadeProgram,
 } from './dsl';
 
 /** Facade 脚本运行时 — 脚本只允许调 Facade */
@@ -21,13 +20,16 @@ export class FacadeScriptRuntime {
    * the complete transaction; there is deliberately no statement-by-
    * statement fallback path.
    */
-  runScript(source: string, sandbox: ScriptSandbox): ScriptRunResult {
+  runScript(source: string, sandbox: ScriptSandbox, options: ScriptRunOptions = {}): ScriptRunResult {
     const started = Date.now();
+    const deadlineAt = started + sandbox.getTimeoutMs();
     try {
+      checkFacadeExecution({ signal: options.signal, deadlineAt });
       const program = sandbox.parse(source);
-      const plan = buildFacadePlan(this.workbook, program);
+      checkFacadeExecution({ signal: options.signal, deadlineAt });
+      const plan = buildFacadePlan(this.workbook, program, { signal: options.signal, deadlineAt });
       sandbox.assertPlanAllowed(plan);
-      const result = this.executePlan(source, program, plan);
+      const result = this.executePlan(source, plan, deadlineAt, options.signal);
       return {
         ok: true,
         durationMs: Date.now() - started,
@@ -46,13 +48,23 @@ export class FacadeScriptRuntime {
     return plan;
   }
 
-  private executePlan(source: string, _program: FacadeProgram, _plan: FacadePlan): { mutationCount: number } {
+  private executePlan(
+    source: string,
+    _plan: FacadePlan,
+    deadlineAt: number,
+    signal?: AbortSignal,
+  ): { mutationCount: number } {
+    checkFacadeExecution({ signal, deadlineAt });
     if (this.runtime.registry.hasCommand('automation.run')) {
-      const result = this.runtime.execute('automation.run', { source });
+      const result = this.runtime.execute('automation.run', { source, deadlineAt });
       return { mutationCount: result.mutationCount };
     }
     throw new Error('Automation command is not registered; script execution is unavailable');
   }
+}
+
+export interface ScriptRunOptions {
+  signal?: AbortSignal;
 }
 
 export interface ScriptRunResult {
@@ -76,6 +88,7 @@ export {
   type A1Range,
   type FacadeCellOperation,
   type FacadeDslLimits,
+  type FacadeExecutionControl,
   type FacadePlan,
   type FacadeProgram,
   type FacadeStatement,

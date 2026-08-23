@@ -2,6 +2,7 @@ import type { CommandContext, CommandRuntime } from '@react-sheets/command-runti
 import type {
   PivotAggregateFunction,
   PivotChartReference,
+  PivotDataSource,
   PivotGroup,
   PivotLayout,
   PivotModel,
@@ -11,12 +12,13 @@ import type {
   RangeRef,
 } from '@react-sheets/core-model';
 import { applyTrackedMutation, registerMutationHandler, removeById, sheetRange } from '../../command-helpers';
-import { createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs, upsertPivotSlicer, upsertPivotTimeline } from '@react-sheets/pro-features';
+import { assertPivotDefinition, assertPivotField, createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs, upsertPivotSlicer, upsertPivotTimeline } from './panel-state';
 
 export interface PivotUpdateParams {
   sheetId: string;
   pivotId: string;
   sourceRange?: RangeRef;
+  dataSource?: PivotDataSource;
   layout?: PivotLayout;
   slicers?: PivotSlicer[];
   timelines?: PivotTimeline[];
@@ -98,6 +100,11 @@ interface DrillDownColumn {
   label: string;
 }
 
+function sourceCellValue(cell: { value: unknown; formulaValue?: unknown } | undefined): string | number | boolean | null {
+  const value = cell?.formulaValue ?? cell?.value ?? null;
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
+}
+
 function drillDownColumns(context: CommandContext, pivot: PivotModel): DrillDownColumn[] {
   const columns: DrillDownColumn[] = [];
   const labels = new Set<string>();
@@ -122,6 +129,16 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
   const pivot = sourceSheet.pivots.find((entry) => entry.id === params.pivotId);
   if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
   if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
+  for (const range of pivotSourceRanges(pivot)) {
+    const sheet = context.workbook.getSheet(range.sheetId);
+    if (range.startRow < 0 || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn >= sheet.columnCount) {
+      throw new Error('Pivot source range exceeds worksheet bounds');
+    }
+  }
+  for (const path of params.sourceRowPaths) {
+    const sheet = context.workbook.getSheet(path.sheetId);
+    if (path.row < 0 || path.row >= sheet.rowCount) throw new Error(`Pivot drill-down source row is invalid: ${path.row}`);
+  }
 
   const columns = drillDownColumns(context, pivot);
   const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
@@ -137,7 +154,7 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
     columns.forEach((column, columnOffset) => {
       const path = paths.find((entry) => entry.sheetId === column.range.sheetId);
       const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
-      const value = source && path ? source.cells.get(path.row, column.column)?.value ?? null : null;
+      const value = source && path ? sourceCellValue(source.cells.get(path.row, column.column)) : null;
       target.cells.set(params.targetAnchor.row + rowOffset + 1, params.targetAnchor.column + columnOffset, { value });
     });
   }
@@ -145,15 +162,24 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
 
 function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): void {
   const pivot = pivotFor(context, params.sheetId, params.pivotId);
-  if (!pivot) return;
-  if (params.layout) pivot.layout = structuredClone(params.layout);
+  if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
+  const next = structuredClone(pivot);
+  if (params.layout) next.layout = structuredClone(params.layout);
   if (params.sourceRange) {
-    pivot.sourceRange = structuredClone(params.sourceRange);
-    pivot.fieldCatalog = undefined;
+    next.sourceRange = structuredClone(params.sourceRange);
+    next.fieldCatalog = undefined;
+    // A single-range source update must not leave a stale dataSource pointing
+    // at the previous worksheet/range.  Multi-range sources are replaced only
+    // when the caller supplies the explicit dataSource below.
+    if (next.dataSource?.kind === 'worksheet-range') next.dataSource = { kind: 'worksheet-range', range: structuredClone(params.sourceRange) };
+    else if (next.dataSource?.kind === 'worksheet-ranges' && !params.dataSource) next.dataSource = undefined;
   }
-  if (params.slicers) pivot.slicers = structuredClone(params.slicers);
-  if (params.timelines) pivot.timelines = structuredClone(params.timelines);
-  if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
+  if (params.dataSource) next.dataSource = structuredClone(params.dataSource);
+  if (params.slicers) next.slicers = structuredClone(params.slicers);
+  if (params.timelines) next.timelines = structuredClone(params.timelines);
+  if (params.chartReferences) next.chartReferences = structuredClone(params.chartReferences);
+  assertPivotDefinition(context.workbook, next);
+  Object.assign(pivot, next);
 }
 
 function previousPivotUpdate(pivot: PivotModel): PivotUpdateParams {
@@ -161,6 +187,7 @@ function previousPivotUpdate(pivot: PivotModel): PivotUpdateParams {
     sheetId: pivot.sheetId,
     pivotId: pivot.id,
     sourceRange: structuredClone(pivot.sourceRange),
+    dataSource: structuredClone(pivot.dataSource),
     layout: structuredClone(pivot.layout),
     slicers: structuredClone(pivot.slicers),
     timelines: structuredClone(pivot.timelines),
@@ -172,17 +199,20 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
   registerMutationHandler<PivotModel>(runtime, 'pivot.add', (params, context) => {
-    context.workbook.getSheet(params.sheetId).pivots.push(structuredClone(params));
+    const sheet = context.workbook.getSheet(params.sheetId);
+    if (context.workbook.getSheets().some((candidate) => candidate.pivots.some((entry) => entry.id === params.id))) throw new Error(`Pivot already exists: ${params.id}`);
+    assertPivotDefinition(context.workbook, params);
+    sheet.pivots.push(structuredClone(params));
   });
   runtime.registry.registerMutation<string>('pivot.remove', (item, context) => {
-    removeById(context.workbook.getSheet(item.sheetId).pivots, item.params);
+    if (!removeById(context.workbook.getSheet(item.sheetId).pivots, item.params)) throw new Error(`Unknown pivot: ${item.params}`);
   });
   registerMutationHandler<PivotUpdateParams>(runtime, 'pivot.update', (params, context) => {
     applyPivotUpdate(context, params);
   });
   registerMutationHandler<PivotRefreshParams>(runtime, 'pivot.refresh', (params, context) => {
     const pivot = pivotFor(context, params.sheetId, params.pivotId);
-    if (!pivot) return;
+    if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
     pivot.refreshRevision = params.refreshRevision;
     pivot.lastRefreshedAt = params.lastRefreshedAt;
   });
@@ -217,7 +247,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       const sheetId = typeof input === 'string' ? context.workbook.activeSheetId : input.sheetId;
       const pivotId = typeof input === 'string' ? input : input.pivotId;
       const pivot = pivotFor(context, sheetId, pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(sheetId) };
+      if (!pivot) throw new Error(`Unknown pivot: ${pivotId}`);
       const affectedRanges = sheetRange(sheetId);
       applyTrackedMutation<string, PivotModel>(context, {
         id: 'pivot.remove',
@@ -243,7 +273,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     id: 'pivot.update',
     execute: (params, context) => {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
       const previous = previousPivotUpdate(pivot);
       const affectedRanges = sheetRange(params.sheetId);
       applyTrackedMutation(context, {
@@ -269,7 +299,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     id: 'pivot.refresh',
     execute: (params, context) => {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
       const next: PivotRefreshParams = {
         pivotId: params.pivotId,
         sheetId: params.sheetId,
@@ -310,7 +340,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     context.workbook.removeSheet(item.params.targetSheetId);
   });
 
-  const registerLayoutPatch = <P extends { sheetId: string; pivotId: string }>(
+  const registerLayoutPatch = <P extends { sheetId: string; pivotId: string; field: string }>(
     commandId: string,
     buildLayout: (layout: PivotLayout, params: P) => PivotLayout,
   ): void => {
@@ -318,7 +348,8 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       id: commandId,
       execute: (params, context) => {
         const pivot = pivotFor(context, params.sheetId, params.pivotId);
-        if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+        if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
+        assertPivotField(context.workbook, pivot, params.field);
         const previousLayout = structuredClone(pivot.layout);
         const nextLayout = buildLayout(previousLayout, params);
         const affectedRanges = sheetRange(params.sheetId);
@@ -350,7 +381,8 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     id: 'pivot.slicer.set',
     execute: (params, context) => {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
+      assertPivotField(context.workbook, pivot, params.slicer.field);
       const previous = structuredClone(pivot.slicers ?? []);
       const next = upsertPivotSlicer(pivot, params.slicer);
       const affectedRanges = sheetRange(params.sheetId);
@@ -377,7 +409,8 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     id: 'pivot.timeline.set',
     execute: (params, context) => {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
+      assertPivotField(context.workbook, pivot, params.timeline.field);
       const previous = structuredClone(pivot.timelines ?? []);
       const next = upsertPivotTimeline(pivot, params.timeline);
       const affectedRanges = sheetRange(params.sheetId);
@@ -404,7 +437,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     id: 'pivot.drillDown',
     execute: (params, context) => {
       const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
+      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
       if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
       const columns = drillDownColumns(context, pivot).length;
       const sourceRangeCount = pivot.dataSource?.kind === 'worksheet-ranges' ? Math.max(pivot.dataSource.ranges.length, 1) : 1;

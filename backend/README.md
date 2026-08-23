@@ -1,252 +1,71 @@
-# Luckysheet Server
+# Canonical workbook service
 
-English| [简体中文](./README-zh.md)
+This directory is the only Java backend. It is a Spring Boot 3 service targeting Java 21 with PostgreSQL, Flyway migrations, OIDC Resource Server JWT verification, and a WebSocket endpoint at `/ws`.
 
-## Introduction
-💻[Luckysheet](https://github.com/mengshukeji/Luckysheet/) official Java version backend.
+Required environment:
 
-## Demo
-- [Cooperative editing demo](http://luckysheet.lashuju.com/demo/)(Note: Please do not operate frequently to prevent the server from crashing)
+- `DATABASE_URL`
+- `DATABASE_USERNAME`
+- `DATABASE_PASSWORD`
+- `AUTH_ISSUER`
+- `AUTH_AUDIENCE` (comma-separated values are accepted)
+- `AUTH_JWKS_URL`
 
-## Development
+Single-instance mode leaves Redis disabled and uses the local WebSocket session
+registry. Set `COORDINATION_MULTI_INSTANCE=true` for multiple backend
+instances; this requires `COORDINATION_REDIS_URL` and fails startup when Redis
+coordination is not configured. PostgreSQL remains the authority for ACL,
+operations, revisions, snapshots, and the durable coordination outbox. Redis
+contains only published notifications and expiring presence/cursor state.
 
-[Use MySQL Tutorial for Beginners](https://github.com/mengshukeji/LuckysheetServer/wiki/Use-MySQL-Tutorial-for-Beginners)
+`/health` is a liveness endpoint. Every `/api/**` route and the `/ws` handshake require a verified Bearer token. The JWT `sub` claim is the only actor identity used for ACL decisions; request actor fields are not accepted.
 
-## Deploy
-- [LuckysheetServer Starter](https://github.com/mengshukeji/LuckysheetServerStarter)
+The request contract is `OperationEnvelope`. It contains operation identity, workbook identity, revision metadata and mutation intent only. The committed response adds server-owned `actorId`, `revision`, `committedAt` and `affectedRanges`.
 
-Production only needs the **Java jar + MySQL + Redis**. Excel import/export is built into this service:
+Build and run with Java 21:
 
-- `POST /luckysheet/luckyToXlsx`
-- `POST /luckysheet/luckyexcel/upload`
-
-`luckyexcel-node` and an extra Nginx route to port 3002 are no longer required.
-
-## Requirements
-
-jdk >= 1.8
-
-postgre >= 10 (Support jsonb version)
-- [Docker deploys postgre](https://www.cnblogs.com/xuchen0117/p/13863509.html)
-- [Jsonb field processing in postgre](https://www.cnblogs.com/xuchen0117/p/13890710.html)
-
-redis >= 3
-- [Docker deploys Redis](https://www.cnblogs.com/xuchen0117/p/12183399.html)
-- [Docker deploys Redis cluster](https://www.cnblogs.com/xuchen0117/p/11678931.html)
-
-
-nginx >= 1.12
-- [Docker deploys Nginx](https://www.cnblogs.com/xuchen0117/p/11934202.html)
-
-maven >= 3.6 
-
-IntelliJ IDEA >= 12 (not necessary)
-
-## Database initialization
-
-Create database
-```
-CREATE DATABASE luckysheetdb
-```
-Create sequence
-```
-DROP SEQUENCE IF EXISTS "public"."luckysheet_id_seq";
-CREATE SEQUENCE "public"."luckysheet_id_seq"
-INCREMENT 1
-MINVALUE  1
-MAXVALUE 9999999999999
-START 1
-CACHE 10;
-```
-Create table
-```
-DROP TABLE IF EXISTS "public"."luckysheet";
-CREATE TABLE "luckysheet" (
-  "id" int8 NOT NULL,
-  "block_id" varchar(200) COLLATE "pg_catalog"."default" NOT NULL,
-  "row_col" varchar(50),
-  "index" varchar(200) COLLATE "pg_catalog"."default" NOT NULL,
-  "list_id" varchar(200) COLLATE "pg_catalog"."default" NOT NULL,
-  "status" int2 NOT NULL,
-  "json_data" jsonb,
-  "order" int2,
-  "is_delete" int2
-);
-CREATE INDEX "block_id" ON "public"."luckysheet" USING btree (
-  "block_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST,
-  "list_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST
-);
-CREATE INDEX "index" ON "public"."luckysheet" USING btree (
-  "index" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST,
-  "list_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST
-);
-CREATE INDEX "is_delete" ON "public"."luckysheet" USING btree (
-  "is_delete" "pg_catalog"."int2_ops" ASC NULLS LAST
-);
-CREATE INDEX "list_id" ON "public"."luckysheet" USING btree (
-  "list_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST
-);
-CREATE INDEX "order" ON "public"."luckysheet" USING btree (
-  "list_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST,
-  "order" "pg_catalog"."int2_ops" ASC NULLS LAST
-);
-CREATE INDEX "status" ON "public"."luckysheet" USING btree (
-  "list_id" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST,
-  "status" "pg_catalog"."int2_ops" ASC NULLS LAST
-);
-ALTER TABLE "public"."luckysheet" ADD CONSTRAINT "luckysheet_pkey" PRIMARY KEY ("id");
+```text
+mvn test
+mvn spring-boot:run
 ```
 
-Insert initialization statement
-```
-INSERT INTO "public"."luckysheet" VALUES (nextval('luckysheet_id_seq'), 'fblock', '', '1', '1079500#-8803#7c45f52b7d01486d88bc53cb17dcd2c3', 1, '{"row":84,"name":"Sheet1","chart":[],"color":"","index":"1","order":0,"column":60,"config":{},"status":0,"celldata":[],"ch_width":4748,"rowsplit":[],"rh_height":1790,"scrollTop":0,"scrollLeft":0,"visibledatarow":[],"visibledatacolumn":[],"jfgird_select_save":[],"jfgrid_selection_range":{}}', 0, 0);
-INSERT INTO "public"."luckysheet" VALUES (nextval('luckysheet_id_seq'), 'fblock', '', '2', '1079500#-8803#7c45f52b7d01486d88bc53cb17dcd2c3', 0, '{"row":84,"name":"Sheet2","chart":[],"color":"","index":"2","order":1,"column":60,"config":{},"status":0,"celldata":[],"ch_width":4748,"rowsplit":[],"rh_height":1790,"scrollTop":0,"scrollLeft":0,"visibledatarow":[],"visibledatacolumn":[],"jfgird_select_save":[],"jfgrid_selection_range":{}}', 1, 0);
-INSERT INTO "public"."luckysheet" VALUES (nextval('luckysheet_id_seq'), 'fblock', '', '3', '1079500#-8803#7c45f52b7d01486d88bc53cb17dcd2c3', 0, '{"row":84,"name":"Sheet3","chart":[],"color":"","index":"3","order":2,"column":60,"config":{},"status":0,"celldata":[],"ch_width":4748,"rowsplit":[],"rh_height":1790,"scrollTop":0,"scrollLeft":0,"visibledatarow":[],"visibledatacolumn":[],"jfgird_select_save":[],"jfgrid_selection_range":{}}', 2, 0);
+PostgreSQL schema creation is handled by the Flyway migration in `src/main/resources/db/migration`. Snapshot replacement is not exposed to ordinary editors. Checkpoints are server-generated and restore accepts only a target revision and reason; the server loads the historical snapshot and records a committed restore operation.
+
+Query execution is server-only for configured `sqlite`, `jdbc`, and `rest`
+sources. The request contains a sanitized definition, `sourceRef`, statement,
+parameters, and steps; source URLs, database passwords, and REST headers are
+deployment configuration under `luckysheet.query.sources` and never enter
+workbook snapshots or operation envelopes. Configure the query source map with
+server-side secret binding, for example:
+
+```yaml
+luckysheet:
+  query:
+    sources:
+      reporting:
+        kind: jdbc
+        url: jdbc:postgresql://db/reporting
+        username: ${REPORTING_DB_USERNAME}
+        password: ${REPORTING_DB_PASSWORD}
+      local-file:
+        kind: sqlite
+        url: jdbc:sqlite:/srv/data/reporting.sqlite
+      service:
+        kind: rest
+        base-url: https://internal.example.test/api/
+        headers:
+          Authorization: ${REPORTING_SERVICE_AUTH}
 ```
 
-## nginx configuration 
-http block configuration
-```
-#websocket configuration
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
+`POST /api/workbooks/{unitId}/queries/execute` requires editor ACL and applies
+server timeout, row/column/response limits, read-only SQL validation, and
+audit logging. `POST /api/workbooks/{unitId}/queries/{queryId}/cancel` cancels
+an active server execution. Local/offline database execution is unavailable
+through this backend endpoint and must not be represented as a successful
+server query.
 
-upstream ws_dataluckysheet {
-      server [Project ip]: [port];
-}    
-```
-server block configuration
-```
-#websocket configuration
-location /luckysheet/websocket/luckysheet {
-    proxy_pass http://ws_dataluckysheet/luckysheet/websocket/luckysheet;
-
-    proxy_set_header Host $host;
-    proxy_set_header X-real-ip $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-    #websocket
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-}       
-
-#Dynamic resource configuration
-location /luckysheet/ {
-    proxy_pass http://ws_dataluckysheet;
-}
-
-#Static resource configuration
-location /luckysheet/demo/ {
-    root /usr/share/nginx/html;
-    index  index.html index.htm;
-}
-```
-
-### Access test
-
-- Access the static homepage through `[project ip]:[port]`
-- Access the collaborative editing homepage through `[project ip]:[port]?share`
-
-## Project usage 
-application.yml Project configuration
-```
-server:
-  port: [Project port]
-  servlet:
-    context-path: /[Project path]
-redis.channel: [redis channel name]
-row_size: [The number of rows in the table, default 500]
-col_size: [Number of columns in the table, default 500]
-pgSetUp: [Whether to enable pgsql as storage data (0 for yes, 1 for no), currently can only be set to 0]
-```
-application-dev.yml Database configuration
-```
-spring:
-  redis:
-    host: [ip address]
-    port: [port]
-    password: [password]
-    
-db:
-  postgre:
-    druid:
-      url: jdbc:postgresql://[ip address]: [port]/luckysheetdb?useSSL=false
-      driverClassName: org.postgresql.Driver
-      username: [username]
-      password: [password]    
-```
-logback-spring.xml Log configuration
-```
- <property name="log.path" value="[Log output directory]"/>
-```
-## project instruction
-
-### Luckysheet module main class description
-com.xc.luckysheet.WebApplication Project startup
-
-com.xc.luckysheet.controller
-```
-JfGridFileController Table data loading class
-ExcelIoController Excel import/export (replaces luckyexcel-node)
-TestController  postgre redis Test class 
-```
-com.xc.luckysheet.entity
-```
-SheetOperationEnum Table operation type
-JfGridConfigModel Table block object
-LuckySheetGridModel Tabular database objects
-PgGridDataModel Table database object
-```
-com.xc.luckysheet.postgre
-```
-PostgresGridFileDao postgre database operation
-PostgresGridFileGetService Record operation
-PostgresJfGridUpdateService Update processing
-```
-com.xc.luckysheet.redisserver
-```
-RedisLock redis lock
-RedisMessageListener Pipeline monitoring class
-RedisMessagePublish Pipeline release class
-```
-com.xc.luckysheet.service
-```
-ConfigerService Configuration class
-ExcelIoService Excel import/export adapter (luckysheet-lib)
-ScheduleService Initialize the timing database
-```
-com.xc.luckysheet.utils
-```
-GzipHandle Information compression
-Pako_GzipUtils WebSocket information compression
-```
-com.xc.luckysheet.websocket
-```
-IpAndPortUtil Get the IP and port of the current service
-MyWebSocketHandler Socket processor (including methods for sending information, receiving information, and information errors.)
-MyWebSocketInterceptor Socket connection (handshake) and disconnection
-WebSocketConfig Register WebSocket, Set the address of WebSocket
-WSUserModel WebSocket object
-```
-
-### Main class description of common module
-```
-com.xc.common.config.datasource.DataSourceConfig Data source configuration class
-com.xc.common.config.redis.RedisConfig redis configuration class
-```
-
-## Links
-- [Luckysheet Documentation](https://mengshukeji.github.io/LuckysheetDocs/)
-- [How Luckysheet saves the data in the table to the database](https://www.cnblogs.com/DuShuSir/p/13857874.html)
-
-## Authors and acknowledgment
-
-### Team
-- [@iamxuchen800117](https://github.com/iamxuchen800117)
-- [@wpxp123456](https://github.com/wpxp123456)
-
-## License
-Please consult the attached [LICENSE](./LICENSE) file for details. All rights not explicitly granted by the Apache 2.0 License are reserved by the Original Author.
+Owners can create expiring, revocable guest share tokens with
+`POST /api/workbooks/{unitId}/shares`. Guests send the returned token in
+`X-Workbook-Share-Token` for REST or `shareToken` on the `/ws` handshake. The
+server derives an anonymous subject and re-checks the persisted share role and
+expiry on every request; a client-supplied actor or role is never accepted.

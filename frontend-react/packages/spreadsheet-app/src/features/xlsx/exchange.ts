@@ -1,4 +1,4 @@
-import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import type {
   CompatibilityReport,
   CompatibilityLevel,
@@ -23,7 +23,7 @@ export interface XlsxExportParams {
 
 export interface XlsxExchangeResult {
   report: CompatibilityReport;
-  snapshot?: WorkbookSnapshotV1;
+  snapshot?: WorkbookSnapshot;
   base64?: string;
   fileName?: string;
 }
@@ -62,7 +62,7 @@ export async function exchangeImportXlsx(params: XlsxImportParams): Promise<Xlsx
 }
 
 export async function exchangeExportXlsx(
-  snapshot: WorkbookSnapshotV1,
+  snapshot: WorkbookSnapshot,
   params: XlsxExportParams = {},
 ): Promise<XlsxExchangeResult> {
   const { exportXlsx } = await loadExchangeXlsx();

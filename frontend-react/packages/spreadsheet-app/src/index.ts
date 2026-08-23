@@ -3,6 +3,7 @@ export {
   getInitialAppPhase,
   resolveUnitId,
   resolveActorId,
+  resolveShareToken,
   type SpreadsheetApplicationOptions,
   type UiSnapshot,
 } from './application';
@@ -27,10 +28,18 @@ export {
 } from './features/xlsx';
 export {
   buildPersistenceMeta,
-  buildLocalDraftRecord,
-  LocalDraftStore,
+  LocalWorkspaceStore,
+  getLocalWorkspaceStore,
+  WorkspacePersistence,
+  buildWorkspaceRecord,
+  verifyWorkspaceRecord,
+  verifyPendingOperationJournal,
   type PersistenceSnapshotMeta,
-  type LocalDraftRecord,
+  type WorkspaceRecord,
+  type WorkspaceRecordInput,
+  type PendingOperationJournal,
+  type LocalWorkspaceSummary,
+  type IndexedDbWorkspaceStoreOptions,
 } from './features/persistence';
 export {
   buildPrintSnapshot,
@@ -86,7 +95,7 @@ export {
   type ServerRestoreMutationParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
-export { executeUiCommand, isUiCommand, type UiCommandId } from './execute-command';
+export { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './features/pivot/engine';
 export { cellAddress, columnLabel, parseAddress } from './address';
 export type { CanvasSheetSnapshot, CanvasCellSnapshot, PreviewRowSnapshot } from './ui-snapshot';
-export type { AppPhase, RibbonTabId, SidebarPanelId, SaveState, PeerCursor } from './types';
+export type { AppPhase, RibbonTabId, SidebarPanelId, SaveState, PeerCursor, UiSessionIntent } from './types';

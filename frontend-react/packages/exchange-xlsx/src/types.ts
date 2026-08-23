@@ -51,7 +51,7 @@ export interface XlsxRelationship {
  * chart/pivot/VBA/custom XML bytes are not silently discarded.
  */
 export interface XlsxPackage {
-  schema: 'XlsxPackageV1';
+  schema: 'XlsxPackage';
   parts: Record<string, Uint8Array>;
   opaqueParts: Record<string, Uint8Array>;
   relationships: Record<string, XlsxRelationship[]>;
@@ -72,7 +72,7 @@ export interface CompatibilityIssue {
 }
 
 export interface CompatibilityReport {
-  schema: 'CompatibilityReportV1';
+  schema: 'CompatibilityReport';
   fileName: string;
   importLevel: CompatibilityLevel;
   exportLevel: CompatibilityLevel;
@@ -95,7 +95,7 @@ export interface XlsxWorkbookPayload {
 export interface XlsxImportResult {
   payload: XlsxWorkbookPayload;
   report: CompatibilityReport;
-  snapshot: import('@react-sheets/core-model').WorkbookSnapshotV1;
+  snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
   /** Pass this package to exportXlsx to preserve unsupported OOXML features. */
   package: XlsxPackage;
   taskId?: string;

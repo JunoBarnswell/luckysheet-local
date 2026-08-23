@@ -1,4 +1,4 @@
-import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import { exportSnapshotToXlsxBase64 } from './archive';
 import { detectPackageFeatures } from './ooxml';
 import { createCompatibilityReport } from './compatibility-report';
@@ -6,7 +6,7 @@ import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan'
 import type { XlsxExportOptions, XlsxExportResult } from './types';
 
 export interface XlsxExportRequest {
-  snapshot: WorkbookSnapshotV1;
+  snapshot: WorkbookSnapshot;
   fileName: string;
   options: XlsxExportOptions;
   /** Original package returned by importXlsx. Unsupported parts are preserved. */

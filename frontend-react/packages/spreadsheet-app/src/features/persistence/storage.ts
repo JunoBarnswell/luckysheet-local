@@ -1,110 +1,445 @@
-import type { WorkbookSnapshotV1 } from '@react-sheets/core-model';
-import type { OperationEnvelopeV2 } from '@react-sheets/protocol';
-import { computeSnapshotChecksum, verifySnapshotChecksum } from '../../../../storage/src/checksum';
+import type { WorkbookSnapshot } from '@react-sheets/core-model';
+import type { OperationEnvelope } from '@react-sheets/protocol';
+import { computeChecksum, verifyChecksum } from './checksum';
 
-const DRAFT_KEY_PREFIX = 'react-sheets:draft:';
-const OPERATION_KEY_PREFIX = 'react-sheets:pending-operations:';
-const memoryDrafts = new Map<string, string>();
-const memoryOperationJournals = new Map<string, string>();
-
-export interface LocalDraftRecord {
+/** The only browser-persistent workbook record. */
+export interface WorkspaceRecord {
+  schema: 'WorkspaceRecord';
   unitId: string;
-  revision: number;
+  snapshot: WorkbookSnapshot;
   checksum: string;
-  snapshot: WorkbookSnapshotV1;
+  localRevision: number;
+  serverRevision: number;
+  syncMode: 'remote' | 'local-only';
+  pending: PendingOperationJournal;
   updatedAt: string;
 }
 
-/** Durable offline journal. It stores operation intent, never a workbook
- * snapshot. Sent entries are restored as pending so a lost ACK is retried by
- * operationId and cannot silently lose a local edit. */
 export interface PendingOperationJournal {
-  schema: 'PendingOperationJournalV1';
+  schema: 'PendingOperationJournal';
   unitId: string;
   nextClientSequence: number;
-  operations: OperationEnvelopeV2[];
+  operations: OperationEnvelope[];
   checksum: string;
-  updatedAt: string;
+}
+
+export interface WorkspaceRecordInput {
+  unitId: string;
+  snapshot: WorkbookSnapshot;
+  localRevision: number;
+  serverRevision: number;
+  syncMode: 'remote' | 'local-only';
+  operations: readonly OperationEnvelope[];
+  nextClientSequence: number;
+  updatedAt?: string;
+}
+
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function snapshotPayload(snapshot: WorkbookSnapshot): string {
+  return JSON.stringify(snapshot);
 }
 
 function journalPayload(
   unitId: string,
   nextClientSequence: number,
-  operations: readonly OperationEnvelopeV2[],
-): Omit<PendingOperationJournal, 'checksum' | 'updatedAt'> {
+  operations: readonly OperationEnvelope[],
+): Omit<PendingOperationJournal, 'checksum'> {
   return {
-    schema: 'PendingOperationJournalV1',
+    schema: 'PendingOperationJournal',
     unitId,
     nextClientSequence,
-    operations: operations.map((operation) => structuredClone(operation)),
+    operations: operations.map((operation) => clone(operation)),
   };
 }
 
-function journalChecksum(payload: Omit<PendingOperationJournal, 'checksum' | 'updatedAt'>): string {
-  return computeSnapshotChecksum(JSON.stringify(payload));
+function buildJournal(
+  unitId: string,
+  nextClientSequence: number,
+  operations: readonly OperationEnvelope[],
+): PendingOperationJournal {
+  const payload = journalPayload(unitId, nextClientSequence, operations);
+  return { ...payload, checksum: computeChecksum(JSON.stringify(payload)) };
 }
 
-export class LocalOperationStore {
-  write(unitId: string, operations: readonly OperationEnvelopeV2[], nextClientSequence: number): void {
-    if (!unitId.trim()) throw new Error('unitId is required');
-    if (!Number.isSafeInteger(nextClientSequence) || nextClientSequence < 0) {
-      throw new Error('nextClientSequence must be a non-negative safe integer');
-    }
-    const payload = journalPayload(unitId, nextClientSequence, operations);
-    const record: PendingOperationJournal = {
-      ...payload,
-      checksum: journalChecksum(payload),
-      updatedAt: new Date().toISOString(),
-    };
-    const encoded = JSON.stringify(record);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(`${OPERATION_KEY_PREFIX}${unitId}`, encoded);
-    } else {
-      memoryOperationJournals.set(unitId, encoded);
-    }
+function isSafeNonNegative(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+export function verifyPendingOperationJournal(journal: PendingOperationJournal): boolean {
+  if (!journal || typeof journal !== 'object' || journal.schema !== 'PendingOperationJournal' || typeof journal.unitId !== 'string' || !journal.unitId.trim()) return false;
+  if (!isSafeNonNegative(journal.nextClientSequence) || !journal.checksum) return false;
+  if (!Array.isArray(journal.operations)) return false;
+  const seen = new Set<string>();
+  let previousSequence = 0;
+  for (const operation of journal.operations) {
+    if (
+      !operation
+      || typeof operation !== 'object'
+      || operation.schema !== 'OperationEnvelope'
+      || operation.unitId !== journal.unitId
+      || !operation.operationId
+      || seen.has(operation.operationId)
+      || !Number.isSafeInteger(operation.clientSequence)
+      || operation.clientSequence <= previousSequence
+      || operation.clientSequence > journal.nextClientSequence
+    ) return false;
+    seen.add(operation.operationId);
+    previousSequence = operation.clientSequence;
+  }
+  const payload = journalPayload(journal.unitId, journal.nextClientSequence, journal.operations);
+  return computeChecksum(JSON.stringify(payload)) === journal.checksum;
+}
+
+export function verifyWorkspaceRecord(record: WorkspaceRecord): boolean {
+  if (
+    !record
+    || typeof record !== 'object'
+    || record.schema !== 'WorkspaceRecord'
+    || typeof record.unitId !== 'string'
+    || !record.unitId.trim()
+    || !record.snapshot
+    || typeof record.snapshot !== 'object'
+    || record.snapshot.schema !== 'WorkbookSnapshot'
+    || record.snapshot.unitId !== record.unitId
+    || !isSafeNonNegative(record.localRevision)
+    || !isSafeNonNegative(record.serverRevision)
+    || (record.syncMode !== 'remote' && record.syncMode !== 'local-only')
+    || !record.updatedAt
+    || !record.checksum
+  ) return false;
+  return verifyChecksum(snapshotPayload(record.snapshot), record.checksum)
+    && verifyPendingOperationJournal(record.pending);
+}
+
+export function buildWorkspaceRecord(input: WorkspaceRecordInput): WorkspaceRecord {
+  if (!input.unitId.trim()) throw new Error('unitId is required');
+  if (!isSafeNonNegative(input.localRevision) || !isSafeNonNegative(input.serverRevision)) {
+    throw new Error('Workspace revisions must be non-negative safe integers');
+  }
+  if (!isSafeNonNegative(input.nextClientSequence)) {
+    throw new Error('nextClientSequence must be a non-negative safe integer');
+  }
+  const snapshot = input.snapshot;
+  if (snapshot.unitId !== input.unitId) throw new Error('Workspace snapshot unitId does not match record');
+  const pending = buildJournal(input.unitId, input.nextClientSequence, input.operations);
+  const record: WorkspaceRecord = {
+    schema: 'WorkspaceRecord',
+    unitId: input.unitId,
+    snapshot,
+    checksum: computeChecksum(snapshotPayload(snapshot)),
+    localRevision: input.localRevision,
+    serverRevision: input.serverRevision,
+    syncMode: input.syncMode,
+    pending,
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+  };
+  if (!verifyWorkspaceRecord(record)) throw new Error('WorkspaceRecord failed validation');
+  return record;
+}
+
+/** Synchronous cache used by CollaborationSession callbacks. */
+export class OperationJournalStore {
+  private readonly journals = new Map<string, PendingOperationJournal>();
+
+  hydrate(record: WorkspaceRecord | null): void {
+    if (!record) return;
+    if (!verifyWorkspaceRecord(record)) throw new Error(`Invalid WorkspaceRecord: ${record.unitId}`);
+    this.journals.set(record.unitId, clone(record.pending));
+  }
+
+  write(unitId: string, operations: readonly OperationEnvelope[], nextClientSequence: number): void {
+    const journal = buildJournal(unitId, nextClientSequence, operations);
+    if (!verifyPendingOperationJournal(journal)) throw new Error('PendingOperationJournal failed validation');
+    this.journals.set(unitId, journal);
   }
 
   read(unitId: string): PendingOperationJournal | null {
-    const raw = typeof window !== 'undefined'
-      ? window.localStorage.getItem(`${OPERATION_KEY_PREFIX}${unitId}`)
-      : memoryOperationJournals.get(unitId);
-    if (!raw) return null;
-    try {
-      const record = JSON.parse(raw) as PendingOperationJournal;
-      if (record.schema !== 'PendingOperationJournalV1' || record.unitId !== unitId) return null;
-      if (!Number.isSafeInteger(record.nextClientSequence) || record.nextClientSequence < 0) return null;
-      if (!Array.isArray(record.operations) || !record.checksum || !record.updatedAt) return null;
-      const payload = journalPayload(record.unitId, record.nextClientSequence, record.operations);
-      if (journalChecksum(payload) !== record.checksum) return null;
-      const seen = new Set<string>();
-      let previousSequence = 0;
-      for (const operation of record.operations) {
-        if (operation.schema !== 'OperationEnvelopeV2' || operation.unitId !== unitId) return null;
-        if (!operation.operationId || seen.has(operation.operationId)) return null;
-        if (!Number.isSafeInteger(operation.clientSequence) || operation.clientSequence <= previousSequence) return null;
-        if (operation.clientSequence > record.nextClientSequence) return null;
-        seen.add(operation.operationId);
-        previousSequence = operation.clientSequence;
-      }
-      return {
-        schema: 'PendingOperationJournalV1',
-        unitId,
-        nextClientSequence: record.nextClientSequence,
-        operations: record.operations.map((operation) => structuredClone(operation)),
-        checksum: record.checksum,
-        updatedAt: record.updatedAt,
-      };
-    } catch {
-      return null;
-    }
+    const journal = this.journals.get(unitId);
+    return journal ? clone(journal) : null;
   }
 
   clear(unitId: string): void {
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(`${OPERATION_KEY_PREFIX}${unitId}`);
-    } else {
-      memoryOperationJournals.delete(unitId);
+    this.journals.delete(unitId);
+  }
+}
+
+interface IndexedDbRequest<T> {
+  result: T;
+  onsuccess: (() => void) | null;
+  onerror: (() => void) | null;
+  error?: DOMException | null;
+}
+
+interface IndexedDbTransaction {
+  objectStore(name: string): {
+    get(key: string): IndexedDbRequest<WorkspaceRecord | undefined>;
+    getAll(): IndexedDbRequest<WorkspaceRecord[]>;
+    put(value: WorkspaceRecord): IndexedDbRequest<unknown>;
+    delete(key: string): IndexedDbRequest<unknown>;
+  };
+  oncomplete: (() => void) | null;
+  onerror: (() => void) | null;
+  onabort: (() => void) | null;
+}
+
+interface IndexedDbDatabase {
+  objectStoreNames: { contains(name: string): boolean };
+  createObjectStore(name: string, options?: { keyPath?: string }): unknown;
+  transaction(name: string, mode: 'readonly' | 'readwrite'): IndexedDbTransaction;
+  close(): void;
+}
+
+interface IndexedDbOpenRequest extends IndexedDbRequest<IndexedDbDatabase> {
+  onupgradeneeded: (() => void) | null;
+}
+
+interface IndexedDbFactory {
+  open(name: string): IndexedDbOpenRequest;
+}
+
+export interface IndexedDbWorkspaceStoreOptions {
+  databaseName?: string;
+  indexedDB?: IndexedDbFactory | null;
+}
+
+const WORKSPACE_STORE_NAME = 'workspaces';
+const memoryWorkspaceDatabases = new Map<string, Map<string, WorkspaceRecord>>();
+
+function memoryWorkspaceRecords(databaseName: string): Map<string, WorkspaceRecord> {
+  let records = memoryWorkspaceDatabases.get(databaseName);
+  if (!records) {
+    records = new Map<string, WorkspaceRecord>();
+    memoryWorkspaceDatabases.set(databaseName, records);
+  }
+  return records;
+}
+
+function resolveIndexedDb(explicit: IndexedDbFactory | null | undefined): IndexedDbFactory | null {
+  if (explicit !== undefined) return explicit;
+  if (typeof globalThis !== 'undefined' && 'indexedDB' in globalThis) {
+    return (globalThis as typeof globalThis & { indexedDB?: IndexedDbFactory }).indexedDB ?? null;
+  }
+  return null;
+}
+
+function requestResult<T>(request: IndexedDbRequest<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
+  });
+}
+
+function openDatabase(factory: IndexedDbFactory, name: string): Promise<IndexedDbDatabase> {
+  return new Promise<IndexedDbDatabase>((resolve, reject) => {
+    const request = factory.open(name);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(WORKSPACE_STORE_NAME)) {
+        request.result.createObjectStore(WORKSPACE_STORE_NAME, { keyPath: 'unitId' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
+  });
+}
+
+function completeTransaction(transaction: IndexedDbTransaction): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(new Error('IndexedDB transaction failed'));
+    transaction.onabort = () => reject(new Error('IndexedDB transaction aborted'));
+  });
+}
+
+/** IndexedDB-backed WorkspaceRecord storage with a memory-only Node fallback. */
+export class IndexedDbWorkspaceStore {
+  private readonly databaseName: string;
+  private readonly factory: IndexedDbFactory | null;
+  private databasePromise: Promise<IndexedDbDatabase> | null = null;
+
+  constructor(options: IndexedDbWorkspaceStoreOptions = {}) {
+    this.databaseName = options.databaseName ?? 'react-sheets-workspaces';
+    this.factory = resolveIndexedDb(options.indexedDB);
+  }
+
+  async load(unitId: string): Promise<WorkspaceRecord | null> {
+    if (!this.factory) return clone(memoryWorkspaceRecords(this.databaseName).get(unitId) ?? null);
+    const database = await this.database();
+    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
+    const transactionComplete = completeTransaction(transaction);
+    const value = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).get(unitId));
+    await transactionComplete;
+    if (!value) return null;
+    if (!verifyWorkspaceRecord(value)) {
+      await this.clear(unitId);
+      return null;
     }
+    return clone(value);
+  }
+
+  async save(record: WorkspaceRecord): Promise<void> {
+    if (!verifyWorkspaceRecord(record)) throw new Error(`Invalid WorkspaceRecord: ${record.unitId}`);
+    if (!this.factory) {
+      memoryWorkspaceRecords(this.databaseName).set(record.unitId, clone(record));
+      return;
+    }
+    const database = await this.database();
+    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readwrite');
+    transaction.objectStore(WORKSPACE_STORE_NAME).put(clone(record));
+    await completeTransaction(transaction);
+  }
+
+  async clear(unitId: string): Promise<void> {
+    if (!this.factory) {
+      memoryWorkspaceRecords(this.databaseName).delete(unitId);
+      return;
+    }
+    const database = await this.database();
+    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readwrite');
+    transaction.objectStore(WORKSPACE_STORE_NAME).delete(unitId);
+    await completeTransaction(transaction);
+  }
+
+  async list(): Promise<WorkspaceRecord[]> {
+    if (!this.factory) {
+      return [...memoryWorkspaceRecords(this.databaseName).values()].map((record) => clone(record));
+    }
+    const database = await this.database();
+    const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
+    const transactionComplete = completeTransaction(transaction);
+    const values = await requestResult(transaction.objectStore(WORKSPACE_STORE_NAME).getAll());
+    await transactionComplete;
+    const valid: WorkspaceRecord[] = [];
+    for (const value of values) {
+      if (verifyWorkspaceRecord(value)) valid.push(clone(value));
+      else await this.clear(value.unitId);
+    }
+    return valid;
+  }
+
+  private database(): Promise<IndexedDbDatabase> {
+    if (!this.databasePromise) this.databasePromise = openDatabase(this.factory!, this.databaseName);
+    return this.databasePromise;
+  }
+}
+
+export interface LocalWorkspaceSummary {
+  unitId: string;
+  name: string;
+  localRevision: number;
+  serverRevision: number;
+  syncMode: WorkspaceRecord['syncMode'];
+  checksum: string;
+  pendingOperationCount: number;
+  updatedAt: string;
+}
+
+function summarizeWorkspace(record: WorkspaceRecord): LocalWorkspaceSummary {
+  return {
+    unitId: record.unitId,
+    name: record.snapshot.name,
+    localRevision: record.localRevision,
+    serverRevision: record.serverRevision,
+    syncMode: record.syncMode,
+    checksum: record.checksum,
+    pendingOperationCount: record.pending.operations.length,
+    updatedAt: record.updatedAt,
+  };
+}
+
+/** Public direct API for the Web catalog/PWA local workspace surface. */
+export class LocalWorkspaceStore {
+  private readonly indexedDb: IndexedDbWorkspaceStore;
+
+  constructor(options: IndexedDbWorkspaceStoreOptions = {}) {
+    this.indexedDb = new IndexedDbWorkspaceStore(options);
+  }
+
+  open(unitId: string): Promise<WorkspaceRecord | null> {
+    return this.indexedDb.load(unitId);
+  }
+
+  async create(input: WorkspaceRecordInput | WorkspaceRecord): Promise<WorkspaceRecord> {
+    const record = 'pending' in input
+      ? clone(input as WorkspaceRecord)
+      : buildWorkspaceRecord(input as WorkspaceRecordInput);
+    await this.indexedDb.save(record);
+    return clone(record);
+  }
+
+  async save(record: WorkspaceRecord): Promise<WorkspaceRecord> {
+    await this.indexedDb.save(record);
+    return clone(record);
+  }
+
+  async checkpoint(input: WorkspaceRecordInput): Promise<WorkspaceRecord> {
+    return this.create(buildWorkspaceRecord(input));
+  }
+
+  async list(): Promise<LocalWorkspaceSummary[]> {
+    const records = await this.indexedDb.list();
+    return records.map(summarizeWorkspace);
+  }
+
+  delete(unitId: string): Promise<void> {
+    return this.indexedDb.clear(unitId);
+  }
+}
+
+let defaultLocalWorkspaceStore: LocalWorkspaceStore | null = null;
+
+export function getLocalWorkspaceStore(options?: IndexedDbWorkspaceStoreOptions): LocalWorkspaceStore {
+  if (!defaultLocalWorkspaceStore || options) {
+    defaultLocalWorkspaceStore = new LocalWorkspaceStore(options);
+  }
+  return defaultLocalWorkspaceStore;
+}
+
+export class WorkspacePersistence {
+  readonly operationJournal: OperationJournalStore;
+  readonly store: LocalWorkspaceStore;
+
+  constructor(options: IndexedDbWorkspaceStoreOptions = {}, operationJournal = new OperationJournalStore()) {
+    this.store = new LocalWorkspaceStore(options);
+    this.operationJournal = operationJournal;
+  }
+
+  async load(unitId: string): Promise<WorkspaceRecord | null> {
+    const record = await this.store.open(unitId);
+    if (record) this.operationJournal.hydrate(record);
+    else this.operationJournal.clear(unitId);
+    return record;
+  }
+
+  list(): Promise<LocalWorkspaceSummary[]> {
+    return this.store.list();
+  }
+
+  async checkpoint(
+    snapshot: WorkbookSnapshot,
+    localRevision: number,
+    serverRevision: number,
+    syncMode: 'remote' | 'local-only',
+    pendingJournal = this.operationJournal.read(snapshot.unitId),
+  ): Promise<WorkspaceRecord> {
+    const record = buildWorkspaceRecord({
+      unitId: snapshot.unitId,
+      snapshot,
+      localRevision,
+      serverRevision,
+      syncMode,
+      operations: pendingJournal?.operations ?? [],
+      nextClientSequence: pendingJournal?.nextClientSequence ?? 0,
+    });
+    await this.store.save(record);
+    return record;
+  }
+
+  clear(unitId: string): Promise<void> {
+    this.operationJournal.clear(unitId);
+    return this.store.delete(unitId);
   }
 }
 
@@ -113,92 +448,26 @@ export interface PersistenceSnapshotMeta {
   revision: number;
   checksum: string;
   updatedAt: string;
-  hasLocalDraft: boolean;
-  draftUpdatedAt?: string;
+  hasPendingOperations: boolean;
   pendingOperationCount: number;
+  localRevision?: number;
+  syncMode?: 'remote' | 'local-only';
 }
 
 export function buildPersistenceMeta(
-  snapshot: WorkbookSnapshotV1,
+  snapshot: WorkbookSnapshot,
   revision: number,
-  draft?: LocalDraftRecord | null,
   pendingOperationCount = 0,
+  record?: WorkspaceRecord | null,
 ): PersistenceSnapshotMeta {
-  const snapshotJson = JSON.stringify(snapshot);
   return {
     unitId: snapshot.unitId,
     revision,
-    checksum: computeSnapshotChecksum(snapshotJson),
+    checksum: computeChecksum(snapshotPayload(snapshot)),
     updatedAt: new Date().toISOString(),
-    hasLocalDraft: Boolean(draft) || pendingOperationCount > 0,
-    draftUpdatedAt: draft?.updatedAt,
+    hasPendingOperations: pendingOperationCount > 0,
     pendingOperationCount,
+    localRevision: record?.localRevision,
+    syncMode: record?.syncMode,
   };
-}
-
-export function buildLocalDraftRecord(
-  snapshot: WorkbookSnapshotV1,
-  revision: number,
-): LocalDraftRecord {
-  const snapshotJson = JSON.stringify(snapshot);
-  return {
-    unitId: snapshot.unitId,
-    revision,
-    checksum: computeSnapshotChecksum(snapshotJson),
-    snapshot: structuredClone(snapshot),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-export function verifyLocalDraft(record: LocalDraftRecord): boolean {
-  return verifySnapshotChecksum(JSON.stringify(record.snapshot), record.checksum);
-}
-
-export function isDraftNewerThanServer(draft: LocalDraftRecord, serverRevision: number): boolean {
-  return draft.revision > serverRevision;
-}
-
-export class LocalDraftStore {
-  write(record: LocalDraftRecord): void {
-    const payload = JSON.stringify(record);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(`${DRAFT_KEY_PREFIX}${record.unitId}`, payload);
-      return;
-    }
-    memoryDrafts.set(record.unitId, payload);
-  }
-
-  read(unitId: string): LocalDraftRecord | null {
-    const raw = typeof window !== 'undefined'
-      ? window.localStorage.getItem(`${DRAFT_KEY_PREFIX}${unitId}`)
-      : memoryDrafts.get(unitId);
-    if (!raw) return null;
-    try {
-      const record = JSON.parse(raw) as LocalDraftRecord;
-      if (record.unitId !== unitId || !record.snapshot || !record.checksum) return null;
-      if (!verifyLocalDraft(record)) return null;
-      return record;
-    } catch {
-      return null;
-    }
-  }
-
-  clear(unitId: string): void {
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(`${DRAFT_KEY_PREFIX}${unitId}`);
-      return;
-    }
-    memoryDrafts.delete(unitId);
-  }
-}
-
-export function scheduleDebounced<T extends (...args: never[]) => void>(fn: T, delayMs: number): T {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  return ((...args: Parameters<T>) => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      fn(...args);
-    }, delayMs);
-  }) as T;
 }

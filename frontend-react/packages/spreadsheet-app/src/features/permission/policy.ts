@@ -91,8 +91,6 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'hyperlink.set': 'edit-cell',
   'hyperlink.remove': 'edit-cell',
   'history.restore': 'restore',
-  'persistence.save': 'edit-cell',
-  'persistence.draft.clear': 'edit-cell',
   'xlsx.import': 'edit-cell',
   'xlsx.export': 'navigate',
   'print.preview': 'navigate',

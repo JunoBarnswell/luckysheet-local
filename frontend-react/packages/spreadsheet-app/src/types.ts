@@ -25,6 +25,14 @@ export type SidebarPanelId =
   | 'data';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';
 
+/** Ephemeral chrome state; these intents never write the workbook model. */
+export type UiSessionIntent =
+  | { type: 'panel.open'; panel: SidebarPanelId; notice?: string }
+  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells'; findQuery?: string }
+  | { type: 'zoom.set'; value: number }
+  | { type: 'zoom.adjust'; delta?: number; value?: number }
+  | { type: 'notice'; message: string };
+
 export interface PeerCursor {
   actorId: string;
   name: string;

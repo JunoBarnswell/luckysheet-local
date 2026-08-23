@@ -18,8 +18,7 @@ import type {
   DefinedNameScope,
 } from './domain';
 import { normalizeDefinedNameModel } from './domain';
-import { migrateSnapshot } from './snapshot';
-import type { AnyWorkbookSnapshot } from './snapshot';
+import type { WorkbookSnapshot } from './snapshot';
 import {
   normalizePrintDocumentSnapshot,
   normalizeQueryDefinitionSnapshot,
@@ -149,12 +148,9 @@ export { StructuralTransform, type StructuralTransformResult, ensureDrawing } fr
 export { applyRowPermutation, validatePermutationMetadata, type RowPermutation } from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
 export {
-  migrateSnapshot,
   loadWorkbookFromSnapshot,
-  createWorkbookSnapshotV2,
-  type WorkbookSnapshotV2,
-  type SheetSnapshotV2,
-  type AnyWorkbookSnapshot,
+  createWorkbookSnapshot,
+  type WorkbookSnapshot,
 } from './snapshot';
 export {
   normalizePrintDocumentSnapshot,
@@ -508,7 +504,7 @@ export function getCellNote(sheet: WorksheetModel, row: Row, column: Column): Ce
   return sheet.notes.get(noteCellKey(row, column));
 }
 
-export interface SheetSnapshotV1 {
+export interface SheetSnapshot {
   id: SheetId;
   name: string;
   rowCount: number;
@@ -541,19 +537,6 @@ export interface SheetSnapshotV1 {
   zoom?: number;
   hidden?: boolean;
   outline?: OutlineModel;
-}
-
-export interface WorkbookSnapshotV1 {
-  schema: 'WorkbookSnapshotV1';
-  unitId: UnitId;
-  name: string;
-  activeSheetId: SheetId;
-  definedNames?: Record<string, string>;
-  definedNameModels?: DefinedNameModel[];
-  tables?: WorkbookTableModel[];
-  printDocuments?: PrintDocumentSnapshot[];
-  queryDefinitions?: QueryDefinitionSnapshot[];
-  sheets: SheetSnapshotV1[];
 }
 
 export class WorkbookModel {
@@ -776,9 +759,9 @@ export class WorkbookModel {
     return sheet;
   }
 
-  snapshot(): WorkbookSnapshotV1 {
+  snapshot(): WorkbookSnapshot {
     return {
-      schema: 'WorkbookSnapshotV1',
+      schema: 'WorkbookSnapshot',
       unitId: this.unitId,
       name: this.name,
       activeSheetId: this.activeSheetId,
@@ -828,17 +811,20 @@ export class WorkbookModel {
     };
   }
 
-  static fromSnapshot(snapshot: AnyWorkbookSnapshot): WorkbookModel {
-    const canonical = migrateSnapshot(snapshot);
-    const workbook = new WorkbookModel(canonical.unitId, canonical.name);
+  static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
+    if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
+    if (snapshot.sheets.length === 0 || !snapshot.sheets.some((sheet) => sheet.id === snapshot.activeSheetId)) {
+      throw new Error(`Workbook snapshot active sheet is not present: ${snapshot.activeSheetId}`);
+    }
+    const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.sheets.clear();
-    workbook.definedNames = canonical.definedNames ? { ...canonical.definedNames } : {};
-    workbook.definedNameModels.push(...structuredClone(canonical.definedNameModels ?? Object.entries(workbook.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }))));
+    workbook.definedNames = snapshot.definedNames ? { ...snapshot.definedNames } : {};
+    workbook.definedNameModels.push(...structuredClone(snapshot.definedNameModels ?? Object.entries(workbook.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }))));
     for (const entry of workbook.definedNameModels) {
       if (entry.scope === 'workbook' && workbook.definedNames[entry.name] === undefined) workbook.definedNames[entry.name] = entry.formula;
     }
-    for (const table of canonical.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
-    for (const input of canonical.sheets) {
+    for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
+    for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);
       matrix.forEach((cell, row, column) => sheet.cells.set(row, column, cell));
@@ -874,10 +860,10 @@ export class WorkbookModel {
       sheet.tabColor = input.tabColor;
       workbook.sheets.set(sheet.id, sheet);
     }
-    for (const document of canonical.printDocuments ?? []) workbook.setPrintDocument(document);
-    for (const definition of canonical.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
-    workbook.activeSheetId = canonical.activeSheetId;
-    workbook.sheetOrder = canonical.sheets.map((sheet) => sheet.id);
+    for (const document of snapshot.printDocuments ?? []) workbook.setPrintDocument(document);
+    for (const definition of snapshot.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
+    workbook.activeSheetId = snapshot.activeSheetId;
+    workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
     return workbook;
   }
 }

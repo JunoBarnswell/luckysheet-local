@@ -89,6 +89,18 @@ describe('SpreadsheetApplication core editing integration', () => {
     );
   });
 
+  it('selectSheet uses the canonical sheet.activate mutation and is undoable', () => {
+    const app = new SpreadsheetApplication();
+    const sourceId = app.getActiveSheetId();
+    app.runCommand('sheet.add', { id: 'sheet-2', name: 'Second' });
+
+    app.selectSheet('sheet-2');
+    assert.equal(app.getActiveSheetId(), 'sheet-2');
+    assert.equal(app.getWorkbook().activeSheetId, 'sheet-2');
+    assert.equal(app['runtime'].commands.undo(), true);
+    assert.equal(app.getWorkbook().activeSheetId, sourceId);
+  });
+
   it('shiftCells down moves cell contents within the selected range', () => {
     const app = new SpreadsheetApplication();
     const sheetId = app.getActiveSheetId();

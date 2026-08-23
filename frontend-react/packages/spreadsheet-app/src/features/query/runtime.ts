@@ -95,7 +95,12 @@ export async function executeQueryDefinition(
   query: QueryDefinition,
 ): Promise<QueryResult> {
   validateQueryDefinition(query);
+  const serverOnlyConnectors = new Set(['rest', 'sqlite', 'jdbc']);
+  if (serverOnlyConnectors.has(query.connectorId)) {
+    throw new Error(`Connector ${query.connectorId} is server-only and cannot execute in the local workbook`);
+  }
   const connector = connectors.get(query.connectorId);
+  if (connector.execution !== 'local') throw new Error(`Connector ${connector.id} is server-only and cannot execute in the local workbook`);
   await connector.connect(query.connectorConfig);
   try {
     const raw = await connector.executeQuery(query.id);
@@ -319,7 +324,7 @@ export function buildQueryLoadPlan(
         startRow: 0,
         rowCount: params.result.rowCount,
         storageKey: `query:${params.query.id}:${params.query.sourceRevision ?? 0}`,
-        encoding: 'typed-column-v1',
+        encoding: 'typed-column',
       }],
       revision: table.revision + 1,
     };

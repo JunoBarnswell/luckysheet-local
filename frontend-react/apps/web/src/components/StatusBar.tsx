@@ -14,7 +14,7 @@ export interface StatusBarProps {
   collabStatus?: 'connecting' | 'open' | 'closed';
   pendingChangeSetCount?: number;
   collabRevision?: number;
-  hasLocalDraft?: boolean;
+  hasPendingOperations?: boolean;
 }
 
 export function StatusBar({
@@ -29,7 +29,7 @@ export function StatusBar({
   collabStatus = 'closed',
   pendingChangeSetCount = 0,
   collabRevision = 0,
-  hasLocalDraft = false,
+  hasPendingOperations = false,
 }: StatusBarProps) {
   const disabled = phase !== 'ready';
   return (
@@ -37,7 +37,7 @@ export function StatusBar({
       <Inline gap="md" className="min-w-0">
         <Inline gap="xs" className="shrink-0">
           <Icon name={saveState === 'saved' ? 'cloud-check' : 'loader'} size="xs" className={saveState === 'saved' ? 'text-emerald-400' : 'animate-spin text-amber-300'} />
-          <Text size="xs" tone="inverse">{locale === 'zh-CN' ? (saveState === 'saved' ? (hasLocalDraft ? '本地草稿' : '已保存') : saveState === 'calculating' ? '计算中' : saveState === 'conflict' ? '存在冲突' : '保存中') : (saveState === 'saved' ? (hasLocalDraft ? 'Local draft' : 'Saved locally') : saveState === 'calculating' ? 'Calculating' : saveState === 'conflict' ? 'Conflict' : 'Saving draft')}</Text>
+          <Text size="xs" tone="inverse">{locale === 'zh-CN' ? (saveState === 'saved' ? (hasPendingOperations ? '离线待同步' : '本地已保存') : saveState === 'calculating' ? '计算中' : saveState === 'conflict' ? '存在冲突' : '保存中') : (saveState === 'saved' ? (hasPendingOperations ? 'Offline pending sync' : 'Saved locally') : saveState === 'calculating' ? 'Calculating' : saveState === 'conflict' ? 'Conflict' : 'Saving')}</Text>
         </Inline>
         <Box className="hidden h-3 w-px bg-slate-700 sm:block" />
         <Text size="xs" tone="subtle" className="hidden sm:inline">{locale === 'zh-CN' ? '单元格' : 'Cell'} {activeCell}</Text>

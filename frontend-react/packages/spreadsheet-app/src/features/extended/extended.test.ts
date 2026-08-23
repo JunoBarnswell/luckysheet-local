@@ -11,6 +11,9 @@ describe('M18 deterministic what-if commands', () => {
     const registry = new CapabilityRegistry();
     assert.equal(registry.isEnabled('groupby-pivotby'), false);
     assert.match(registry.get('groupby-pivotby')?.reason ?? '', /disabled|implemented/i);
+    assert.equal(registry.evaluateFormulaFunction('GROUPBY').enabled, false);
+    assert.equal(registry.evaluateFormulaFunction('PIVOTBY').enabled, false);
+    assert.equal(registry.evaluateFormulaFunction('unregistered').enabled, false);
   });
 
   it('applies scenario writes as one transaction and supports undo', () => {
@@ -27,7 +30,7 @@ describe('M18 deterministic what-if commands', () => {
         changingCells: [{ row: 0, column: 1, value: 25 }],
       },
     });
-    assert.equal((command as { plan?: { metadata?: { schema?: string; planHash?: string; sourceRevision?: string; deterministic?: boolean } } }).plan?.metadata?.schema, 'WhatIfPlanV1');
+    assert.equal((command as { plan?: { metadata?: { schema?: string; planHash?: string; sourceRevision?: string; deterministic?: boolean } } }).plan?.metadata?.schema, 'WhatIfPlan');
     assert.equal((command as { plan?: { metadata?: { deterministic?: boolean } } }).plan?.metadata?.deterministic, true);
     assert.ok((command as { plan?: { metadata?: { planHash?: string } } }).plan?.metadata?.planHash);
     assert.equal(runtime.getHistoryDepth().undo, 1);
@@ -52,5 +55,50 @@ describe('M18 deterministic what-if commands', () => {
     assert.equal(result.mutationCount, 0);
     assert.equal(workbook.getSheet(sheetId).cells.get(1, 1), undefined);
     assert.equal(workbook.getSheet(sheetId).cells.get(1, 2), undefined);
+  });
+
+  it('does not mutate on a non-monotonic goal function', () => {
+    const workbook = new WorkbookModel('what-if-non-monotonic', 'What-if');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerExtendedCommands(runtime.registry);
+    const sheetId = workbook.activeSheetId;
+    runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=B1*B1' } });
+    runtime.execute('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 10 } });
+    const result = runtime.execute('extended.whatIf.goalSeek', {
+      sheetId,
+      setCell: { row: 0, column: 0 },
+      toValue: 1,
+      byChangingCell: { row: 0, column: 1 },
+    });
+    assert.equal(result.mutationCount, 0);
+    assert.match((result as { plan?: { result?: { message?: string } } }).plan?.result?.message ?? '', /non-monotonic/i);
+    assert.equal(workbook.getSheet(sheetId).cells.get(0, 1)?.value, 10);
+  });
+
+  it('does not mutate a spill range during what-if planning', () => {
+    const workbook = new WorkbookModel('what-if-spill', 'What-if');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerExtendedCommands(runtime.registry);
+    const sheetId = workbook.activeSheetId;
+    workbook.getSheet(sheetId).spillRanges.push({
+      sheetId,
+      anchor: { row: 0, column: 1 },
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 1, endColumn: 2 },
+      values: [],
+      state: 'ok',
+    });
+    const result = runtime.execute('extended.whatIf.scenario', {
+      sheetId,
+      scenario: {
+        id: 'spill',
+        name: 'Spill',
+        changingCells: [{ row: 0, column: 1, value: 5 }],
+      },
+    });
+    assert.equal(result.mutationCount, 0);
+    assert.equal(workbook.getSheet(sheetId).cells.get(0, 1), undefined);
+    assert.match((result as { plan?: { result?: { message?: string } } }).plan?.result?.message ?? '', /spill/i);
   });
 });

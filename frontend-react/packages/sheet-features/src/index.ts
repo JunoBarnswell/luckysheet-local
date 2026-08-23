@@ -16,9 +16,11 @@ import type {
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
+import { isSpillChild } from '@react-sheets/formula-engine';
 import { shiftFormula } from './clipboard';
+import { buildCellFromText } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
-import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule } from './data-features';
+import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
 import { registerOutlineCommands } from './outline-commands';
 
@@ -49,6 +51,7 @@ export * from './sheet-table-features';
 export * from './sheet-table-commands';
 export * from './outline-commands';
 export * from './outline-features';
+export * from './text-input';
 
 
 export interface SetCellValueParams {
@@ -56,6 +59,16 @@ export interface SetCellValueParams {
   row: number;
   column: number;
   value: CellData;
+}
+
+/** Host/UI text commit contract. The command owns parsing, validation and
+ * content/presentation merging; callers must pass the raw text unchanged. */
+export interface CommitTextParams {
+  sheetId: string;
+  row: number;
+  column: number;
+  text: string;
+  style?: Partial<CellStyle>;
 }
 
 export interface AddTableParams extends WorkbookTableModel {}
@@ -428,6 +441,63 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           },
         ],
         apply: () => sheet.cells.set(params.row, params.column, { ...params.value }),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<CommitTextParams>({
+    id: 'sheet.cell.commitText',
+    execute: (params, context) => {
+      if (typeof params.text !== 'string') throw new Error('Cell text must be a string');
+      if (!Number.isSafeInteger(params.row) || params.row < 0 || !Number.isSafeInteger(params.column) || params.column < 0) {
+        throw new Error('Cell row and column must be non-negative integers');
+      }
+      const sheet = context.workbook.getSheet(params.sheetId);
+      for (const spill of sheet.spillRanges) {
+        if (isSpillChild(spill, params.row, params.column)) {
+          throw new Error('Cannot edit a dynamic-array spill child');
+        }
+      }
+
+      const previous = sheet.cells.get(params.row, params.column);
+      const next = buildCellFromText(params.text, previous, params.style);
+      // A formula is validated by the FormulaEngine after commit and does not
+      // have a scalar value to validate at this boundary. Scalar input must
+      // satisfy the target rule before the cell.set mutation is opened.
+      if (!next.formula) {
+        const validation = validateDataInput(sheet, params.row, params.column, next.value);
+        if (validation.blocking) throw new Error(validation.message ?? 'Cell value failed data validation');
+      }
+      const affectedRanges = cellRange({
+        sheetId: params.sheetId,
+        row: params.row,
+        column: params.column,
+        value: next,
+      });
+      context.applyMutation({
+        id: 'cell.set',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: {
+          sheetId: params.sheetId,
+          row: params.row,
+          column: params.column,
+          value: structuredClone(next),
+        },
+        affectedRanges,
+        inverse: [{
+          id: 'cell.restore',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: {
+            row: params.row,
+            column: params.column,
+            previous: previous ? structuredClone(previous) : undefined,
+          },
+          affectedRanges,
+        }],
+        apply: () => sheet.cells.set(params.row, params.column, structuredClone(next)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

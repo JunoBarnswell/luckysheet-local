@@ -7,7 +7,7 @@ import type {
   RangeRef,
   WorkbookModel,
 } from '@react-sheets/core-model';
-import { getPivotFieldCatalog } from '@react-sheets/pro-features';
+import { getPivotFieldCatalog } from './engine';
 
 export function buildDefaultPivotLayout(
   workbook: WorkbookModel,
@@ -60,20 +60,32 @@ export function buildPivotModel(
   return {
     id: pivotId,
     sheetId,
-    sourceRange: { ...sourceRange, sheetId },
+    // The pivot is displayed on `sheetId`, but its source may intentionally
+    // be another worksheet.  Keep the source reference authoritative.
+    sourceRange: structuredClone(sourceRange),
     refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     layout,
   };
 }
 
 export function connectedPivotIdsForSource(workbook: WorkbookModel, sheetId: string, sourceRange: RangeRef): string[] {
-  const sheet = workbook.getSheet(sheetId);
-  return sheet.pivots
-    .filter((pivot) =>
-      pivot.sourceRange.startRow === sourceRange.startRow
-      && pivot.sourceRange.endRow === sourceRange.endRow
-      && pivot.sourceRange.startColumn === sourceRange.startColumn
-      && pivot.sourceRange.endColumn === sourceRange.endColumn)
+  // A source mutation can originate on a worksheet different from the pivot
+  // display sheet.  Search the workbook and compare sheet identity as well as
+  // coordinates; checking only `sheetId` made linked pivots stale silently.
+  workbook.getSheet(sheetId);
+  const sameRange = (left: RangeRef, right: RangeRef): boolean =>
+    left.sheetId === right.sheetId
+    && left.startRow === right.startRow
+    && left.endRow === right.endRow
+    && left.startColumn === right.startColumn
+    && left.endColumn === right.endColumn;
+  return workbook.getSheets()
+    .flatMap((sheet) => sheet.pivots)
+    .filter((pivot) => {
+      if (sameRange(pivot.sourceRange, sourceRange)) return true;
+      if (pivot.dataSource?.kind === 'worksheet-range') return sameRange(pivot.dataSource.range, sourceRange);
+      return pivot.dataSource?.ranges.some((range) => sameRange(range, sourceRange)) ?? false;
+    })
     .map((pivot) => pivot.id);
 }
 

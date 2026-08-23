@@ -17,28 +17,19 @@ import { WorkbookCatalog } from "./components/WorkbookCatalog";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { parseRangeInput } from "./domain/range-input";
 import type { CommandDescriptor } from "./domain/command-descriptor";
-import {
-  addFieldToLayout,
-  clonePivotLayout,
-  setExpandedField,
-  setFieldGrouped,
-  setFieldSort,
-  setFilterSelection,
-  setLayoutMode,
-  updateValueInLayout,
-} from "./domain/pivot-layout-ops";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getInitialAppPhase,
   useSpreadsheetApp,
   type SelectionState,
   type SidebarPanelId,
+  type UiSessionIntent,
 } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, localeLabels, persistLocale, shellLabels, type Locale } from "./i18n";
 import zhCN from "./locales/zh-CN.json";
 import enUS from "./locales/en-US.json";
-import type { ChartDrawingPayload, DrawingObject, PivotFieldDefinition as CorePivotFieldDefinition } from "@react-sheets/core-model";
-import type { PivotFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult } from "./components/pivot/types";
+import type { ChartDrawingPayload, DrawingObject, PivotAggregateFunction, PivotFieldDefinition, PivotLayout, PivotModel, ShapeDrawingPayload, SparklineModel } from "@react-sheets/core-model";
+import type { PivotPanelCallbacks, PivotPanelResult, PivotPanelState } from "./components/pivot/pivot-contract";
 
 function WorkspaceApp() {
   const { app, snapshot: state } = useSpreadsheetApp({ initialPhase: getInitialAppPhase() });
@@ -55,6 +46,10 @@ function WorkspaceApp() {
     app.execute(descriptor.commandId, descriptor.params);
   };
 
+  const dispatchSessionIntent = (intent: UiSessionIntent) => {
+    app.dispatchUiSessionIntent(intent);
+  };
+
   useEffect(() => {
     if (previousPanelRef.current !== state.activePanel) {
       setSidebarOpen(true);
@@ -62,39 +57,189 @@ function WorkspaceApp() {
     previousPanelRef.current = state.activePanel;
   }, [state.activePanel]);
 
-  const copyWorkbookLink = () => {
-    const link = `${window.location.origin}/workbooks/${encodeURIComponent(state.unitId)}`;
-    const clipboard = navigator.clipboard;
-    if (!clipboard) {
-      app.notify("Clipboard access is unavailable");
-      return;
-    }
-    void clipboard.writeText(link)
-      .then(() => app.notify("Workbook link copied"))
-      .catch(() => app.notify("Could not copy workbook link"));
+  const copyWorkbookLink = () => { void app.createGuestShareLink('editor'); };
+
+  const saveWorkbook = () => { void app.saveWorkbook("Ribbon save"); };
+
+  const exportXlsx = async () => {
+    const exported = await app.exportXlsxWorkbook();
+    if (!exported) return;
+    const binary = window.atob(exported.base64);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const href = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = exported.fileName;
+    link.click();
+    URL.revokeObjectURL(href);
+  };
+
+  const importXlsx = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      void file.arrayBuffer().then((buffer) => {
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return app.importXlsxBase64(window.btoa(binary), file.name);
+      });
+    };
+    input.click();
   };
 
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
     : state.selectedSheet.usedRange;
+  const createWebId = (prefix: string): string => {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return `${prefix}-${crypto.randomUUID()}`;
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  };
+  const buildQuickPivotCommand = (): CommandDescriptor | undefined => {
+    const fields = app.getPivotFieldCatalog(pivotSourceRange);
+    const rowField = fields.find((field) => field.dataType !== "number")?.name ?? fields[0]?.name;
+    const valueField = fields.find((field) => field.dataType === "number")?.name ?? fields[0]?.name;
+    if (!rowField || !valueField) return undefined;
+    const pivotId = createWebId("pivot");
+    setActivePivotId(pivotId);
+    const pivot: PivotModel = {
+      id: pivotId,
+      sheetId: state.activeSheetId,
+      sourceRange: { ...pivotSourceRange, sheetId: state.activeSheetId },
+      refreshPolicy: { mode: "on-change", preserveFormatting: true, refreshOnLoad: true },
+      layout: {
+        rows: [{ field: rowField }],
+        columns: [],
+        filters: [],
+        values: [{ field: valueField, summarizeBy: fields.find((field) => field.name === valueField)?.dataType === "number" ? "sum" : "count" }],
+        calculatedFields: [],
+        calculatedItems: [],
+        showSubtotals: true,
+        showGrandTotals: true,
+        compact: true,
+        repeatLabels: false,
+      },
+    };
+    return { commandId: "pivot.add", params: pivot };
+  };
+  const buildQuickChartCommand = (): CommandDescriptor => {
+    const chartId = createWebId("chart");
+    return {
+      commandId: "chart.insert.column",
+      params: {
+        sheetId: state.activeSheetId,
+        chartId,
+        drawingId: createWebId("drawing"),
+        title: "Chart",
+        sourceRanges: [{ ...pivotSourceRange, sheetId: state.activeSheetId }],
+        bounds: { x: 96, y: 96, width: 480, height: 280 },
+      },
+    };
+  };
+  const buildQuickSparklineCommand = (): CommandDescriptor => {
+    const sparklineId = createWebId("sparkline");
+    return {
+      commandId: "sparkline.insertDataLocation",
+      params: {
+        sheetId: state.activeSheetId,
+        sparklineId,
+        dataRange: { ...pivotSourceRange, sheetId: state.activeSheetId },
+        location: { row: pivotSourceRange.startRow, column: pivotSourceRange.endColumn + 1 },
+        type: "line" as SparklineModel["type"],
+        highlightMax: true,
+        highlightMin: true,
+      },
+    };
+  };
+  const buildQuickShapeCommand = (): CommandDescriptor => {
+    const payloadId = createWebId("shape");
+    const drawingId = createWebId("drawing");
+    const payload: ShapeDrawingPayload = {
+      kind: "shape",
+      type: "rectangle",
+      fill: "#dbeafe",
+      stroke: "#2563eb",
+      strokeWidth: 2,
+      textColor: "#1e3a8a",
+      fontSize: 13,
+    };
+    return {
+      commandId: "drawing.add.shape",
+      params: {
+        sheetId: state.activeSheetId,
+        drawing: { id: drawingId, sheetId: state.activeSheetId, kind: "shape", payloadId, anchor: { kind: "absolute" }, transform: { x: 96, y: 96, width: 160, height: 60, rotation: 0 }, zIndex: 0 },
+        payload,
+      },
+    };
+  };
+  const selectedDrawing = state.selectedFloatingId ? state.selectedSheet.drawings.find((drawing) => drawing.payloadId === state.selectedFloatingId) : undefined;
+  const buildDrawingCommand = (commandId: "drawing.zorder" | "drawing.remove", direction?: "forward" | "backward"): CommandDescriptor | undefined => {
+    if (!selectedDrawing) return undefined;
+    return { commandId, params: { sheetId: state.activeSheetId, drawingId: selectedDrawing.id, ...(direction ? { direction } : {}) } };
+  };
+  const buildTotalRowCommand = (): CommandDescriptor | undefined => {
+    const table = state.selectedSheet.sheetTables.find((entry) =>
+      pivotSourceRange.startRow >= entry.range.startRow
+      && pivotSourceRange.startRow <= entry.range.endRow
+      && pivotSourceRange.startColumn >= entry.range.startColumn
+      && pivotSourceRange.startColumn <= entry.range.endColumn);
+    return table ? { commandId: "sheetTable.toggleTotalRow", params: { sheetId: state.activeSheetId, tableId: table.id, enabled: !table.hasTotalRow } } : undefined;
+  };
+  const buildSubtotalCommand = (): CommandDescriptor => ({
+    commandId: "data.subtotal",
+    params: { sheetId: state.activeSheetId, range: pivotSourceRange, groupColumn: pivotSourceRange.startColumn, valueColumn: pivotSourceRange.startColumn + 1, functionName: "SUM" },
+  });
+  const buildRemoveDuplicatesCommand = (): CommandDescriptor => ({
+    commandId: "data.removeDuplicates",
+    params: { sheetId: state.activeSheetId, range: pivotSourceRange, columns: Array.from({ length: pivotSourceRange.endColumn - pivotSourceRange.startColumn + 1 }, (_, index) => pivotSourceRange.startColumn + index), hasHeader: true },
+  });
+  const buildTextToColumnsCommand = (): CommandDescriptor => ({
+    commandId: "data.textToColumns",
+    params: { sheetId: state.activeSheetId, range: { ...pivotSourceRange, endColumn: pivotSourceRange.startColumn }, delimiter: ",", maxColumns: 8 },
+  });
+  const buildOutlineCommand = (axis: "row" | "column", action: "add" | "remove"): CommandDescriptor | undefined => {
+    const start = axis === "row" ? pivotSourceRange.startRow : pivotSourceRange.startColumn;
+    const end = axis === "row" ? pivotSourceRange.endRow : pivotSourceRange.endColumn;
+    if (action === "add") {
+      if (end <= start) return undefined;
+      return {
+        commandId: "outline.group.add",
+        params: { sheetId: state.activeSheetId, group: { id: createWebId("outline"), axis, start, end, level: 1, collapsed: false } },
+      };
+    }
+    const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
+    return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
+  };
+  const buildFilterSelectionCommand = (): CommandDescriptor => ({
+    commandId: "sheet.filter.set",
+    params: { sheetId: state.activeSheetId, filter: { sheetId: state.activeSheetId, range: state.selectedSheet.usedRange, criteria: {} } },
+  });
+  const buildClearFilterCommand = (): CommandDescriptor => ({ commandId: "sheet.filter.remove", params: { sheetId: state.activeSheetId } });
   const [activePivotId, setActivePivotId] = useState<string>();
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
   const corePivotFields = pivotTree?.fields.fields ?? app.getPivotFieldCatalog(pivotSourceRange);
-  const pivotFields: PivotFieldDefinition[] = corePivotFields.map((field: CorePivotFieldDefinition) => ({
-    id: field.id,
-    label: field.name,
-    type: field.dataType === "mixed" ? "text" : field.dataType,
-    values: field.values?.map((value) => String(value)),
-  }));
-  const pivotResult: PivotResult | undefined = pivotTree
+  const pivotFields: PivotFieldDefinition[] = corePivotFields;
+  const pivotResult: PivotPanelResult | undefined = pivotTree
     ? { rowCount: pivotTree.rows.length, columnCount: pivotTree.columnPaths.length, tree: pivotTree, summary: `${pivotTree.rows.length} row groups × ${pivotTree.columnPaths.length || 1} column groups` }
     : undefined;
 
-  const updatePivotLayout = (nextLayout: ReturnType<typeof clonePivotLayout>) => {
+  const cloneLayout = (layout: PivotLayout): PivotLayout => structuredClone(layout);
+  const removeField = (layout: PivotLayout, fieldId: string): PivotLayout => {
+    const next = cloneLayout(layout);
+    next.filters = next.filters.filter((filter) => filter.field !== fieldId);
+    next.rows = next.rows.filter((field) => field.field !== fieldId);
+    next.columns = next.columns.filter((field) => field.field !== fieldId);
+    next.values = next.values.filter((value) => value.field !== fieldId);
+    return next;
+  };
+  const updatePivotLayout = (nextLayout: PivotLayout) => {
     if (!activePivot) return;
-    app.updatePivotLayout(activePivot.id, nextLayout);
+    executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, layout: nextLayout } });
     app.notify("Pivot layout updated");
   };
 
@@ -108,11 +253,21 @@ function WorkspaceApp() {
     onPivotSelect: setActivePivotId,
     onFieldAreaChange: (fieldId, area, index) => {
       if (!activePivot) return;
-      updatePivotLayout(addFieldToLayout(activePivot.layout, fieldId, area, index, pivotFields));
+      const next = removeField(activePivot.layout, fieldId);
+      if (area === "values") {
+        const field = pivotFields.find((entry) => entry.id === fieldId);
+        const summarizeBy: PivotAggregateFunction = field?.dataType === "number" ? "sum" : "count";
+        next.values.splice(Math.max(0, index), 0, { field: fieldId, summarizeBy });
+      } else if (area === "filters") {
+        next.filters.splice(Math.max(0, index), 0, { kind: "manual", field: fieldId, selected: [] });
+      } else {
+        next[area].splice(Math.max(0, index), 0, { field: fieldId });
+      }
+      updatePivotLayout(next);
     },
     onRemoveField: (fieldId, area) => {
       if (!activePivot) return;
-      const next = clonePivotLayout(activePivot.layout);
+      const next = cloneLayout(activePivot.layout);
       if (area === "values") next.values = next.values.filter((value) => value.field !== fieldId);
       else if (area === "filters") next.filters = next.filters.filter((filter) => filter.field !== fieldId);
       else next[area] = next[area].filter((field) => field.field !== fieldId);
@@ -120,33 +275,56 @@ function WorkspaceApp() {
     },
     onValueChange: (value) => {
       if (!activePivot) return;
-      updatePivotLayout(updateValueInLayout(activePivot.layout, value));
+      const next = cloneLayout(activePivot.layout);
+      const index = next.values.findIndex((entry) => entry.field === value.field);
+      if (index < 0) return;
+      next.values[index] = structuredClone(value);
+      updatePivotLayout(next);
     },
     onCalculatedFieldsChange: (fields) => {
       if (!activePivot) return;
-      updatePivotLayout({ ...clonePivotLayout(activePivot.layout), calculatedFields: fields.map((field) => ({ ...field })) });
+      updatePivotLayout({ ...cloneLayout(activePivot.layout), calculatedFields: fields.map((field) => ({ ...field })) });
     },
     onCalculatedItemsChange: (items) => {
       if (!activePivot) return;
       updatePivotLayout({
-        ...clonePivotLayout(activePivot.layout),
-        calculatedItems: items.map((item) => ({ field: item.fieldId, name: item.name, formula: item.formula })),
+        ...cloneLayout(activePivot.layout),
+        calculatedItems: items.map((item) => ({ ...item })),
       });
     },
     onFilterChange: (fieldId, selectedValues) => {
       if (!activePivot) return;
-      updatePivotLayout(setFilterSelection(activePivot.layout, fieldId, selectedValues));
+      const next = cloneLayout(activePivot.layout);
+      const existing = next.filters.find((filter) => filter.field === fieldId);
+      if (existing?.kind === "manual") existing.selected = [...selectedValues];
+      else next.filters.push({ kind: "manual", field: fieldId, selected: [...selectedValues] });
+      updatePivotLayout(next);
       app.notify("Pivot filter updated");
     },
     onSortChange: (fieldId, direction) => {
       if (!activePivot) return;
-      updatePivotLayout(setFieldSort(activePivot.layout, fieldId, direction));
+      const next = cloneLayout(activePivot.layout);
+      next.rows = next.rows.map((field) => field.field === fieldId ? { ...field, sort: direction === "none" ? undefined : { direction } } : field);
+      next.columns = next.columns.map((field) => field.field === fieldId ? { ...field, sort: direction === "none" ? undefined : { direction } } : field);
+      updatePivotLayout(next);
     },
     onGroupChange: (fieldId, grouped) => {
       if (!activePivot) return;
-      updatePivotLayout(setFieldGrouped(activePivot.layout, fieldId, grouped, pivotFields));
+      const field = pivotFields.find((entry) => entry.id === fieldId);
+      const group = !grouped ? undefined : field?.dataType === "date"
+        ? { kind: "date" as const, unit: "month" as const }
+        : field?.dataType === "number"
+          ? { kind: "number" as const, interval: 10 }
+          : undefined;
+      const next = cloneLayout(activePivot.layout);
+      next.rows = next.rows.map((entry) => entry.field === fieldId ? { ...entry, group } : entry);
+      next.columns = next.columns.map((entry) => entry.field === fieldId ? { ...entry, group } : entry);
+      updatePivotLayout(next);
     },
-    onRefresh: () => { if (activePivot) app.refreshPivot(activePivot.id); },
+    onRefresh: () => {
+      if (!activePivot) return;
+      executeCommand({ commandId: "pivot.refresh", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, refreshRevision: (activePivot.refreshRevision ?? 0) + 1, lastRefreshedAt: new Date().toISOString() } });
+    },
     onSourceRangeChange: (sourceRange) => {
       if (!activePivot) return;
       const parsed = parseRangeInput(sourceRange, activePivot.sheetId);
@@ -154,48 +332,48 @@ function WorkspaceApp() {
         app.notify("Invalid pivot source range");
         return;
       }
-      app.updatePivotConfiguration(activePivot.id, { sourceRange: { sheetId: activePivot.sheetId, ...parsed } });
+      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, sourceRange: { sheetId: activePivot.sheetId, ...parsed } } });
     },
     onLayoutChange: (layout) => {
       if (!activePivot) return;
-      updatePivotLayout(setLayoutMode(activePivot.layout, layout));
+      const next = cloneLayout(activePivot.layout);
+      next.compact = layout === "compact";
+      next.repeatLabels = layout === "tabular";
+      updatePivotLayout(next);
     },
     onExpandedChange: (fieldId, expanded) => {
       if (!activePivot) return;
-      updatePivotLayout(setExpandedField(activePivot.layout, fieldId, expanded));
+      const next = cloneLayout(activePivot.layout);
+      const expandedFieldIds = new Set(next.expandedFieldIds ?? next.rows.map((field) => field.field));
+      if (expanded) expandedFieldIds.add(fieldId);
+      else expandedFieldIds.delete(fieldId);
+      next.expandedFieldIds = [...expandedFieldIds];
+      updatePivotLayout(next);
     },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
       const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
       if (enabled) {
-        app.setPivotSlicer(
-          activePivot.id,
-          { id: `slicer-${fieldId}`, field: fieldId, selected: [], connectedPivotIds },
-        );
+        executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, slicers: [...(activePivot.slicers ?? []), { id: `slicer-${fieldId}`, field: fieldId, selected: [], connectedPivotIds }] } });
         return;
       }
-      app.updatePivotConfiguration(activePivot.id, {
-        slicers: (activePivot.slicers ?? []).filter((slicer) => slicer.field !== fieldId),
-      });
+      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, slicers: (activePivot.slicers ?? []).filter((slicer) => slicer.field !== fieldId) } });
     },
     onTimelineChange: (fieldId) => {
       if (!activePivot) return;
       const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
       if (!fieldId) {
-        app.updatePivotConfiguration(activePivot.id, { timelines: [] });
+        executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [] } });
         return;
       }
-      app.setPivotTimeline(activePivot.id, { id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds });
+      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds }] } });
     },
     onTimelineRangeChange: (start, end) => {
       if (!activePivot) return;
       const timelineFieldId = activePivot.timelines?.[0]?.field;
       if (!timelineFieldId) return;
       const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
-      app.setPivotTimeline(
-        activePivot.id,
-        { id: `timeline-${timelineFieldId}`, field: timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds },
-      );
+      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, timelines: [{ id: `timeline-${timelineFieldId}`, field: timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds }] } });
     },
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
@@ -217,10 +395,8 @@ function WorkspaceApp() {
         title: chart.title,
         sourceRanges: [activePivot.sourceRange],
       };
-      app.addChart(drawing, payload);
-      app.updatePivotConfiguration(activePivot.id, {
-        chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }],
-      });
+      executeCommand({ commandId: "chart.insert", params: { sheetId: activePivot.sheetId, chartId, drawingId: drawing.id, bounds: drawing.transform, payload } });
+      executeCommand({ commandId: "pivot.update", params: { sheetId: activePivot.sheetId, pivotId: activePivot.id, chartReferences: [...(activePivot.chartReferences ?? []), { chartId, role: "linked" }] } });
     },
   };
   const pivotPanelState: PivotPanelState = {
@@ -231,21 +407,24 @@ function WorkspaceApp() {
   };
   const selectPanel = (panel: SidebarPanelId) => {
     setSidebarOpen(true);
-    const commandByPanel: Partial<Record<SidebarPanelId, CommandDescriptor>> = {
-      inspector: { commandId: "ui.panel.open", params: { panel: "inspector", notice: "Select a cell and use Review tools for comments." } },
-      chart: { commandId: "ui.panel.open", params: { panel: "chart" } },
-      pivot: { commandId: "ui.panel.open", params: { panel: "pivot" } },
-      shape: { commandId: "ui.panel.open", params: { panel: "shape" } },
-      sparkline: { commandId: "ui.panel.open", params: { panel: "sparkline" } },
-      conditionalFormat: { commandId: "ui.panel.open", params: { panel: "conditionalFormat" } },
-      dataValidation: { commandId: "ui.panel.open", params: { panel: "dataValidation" } },
-      print: { commandId: "ui.dialog.open", params: { dialog: "print-preview" } },
-      history: { commandId: "ui.panel.open", params: { panel: "history" } },
-      data: { commandId: "ui.panel.open", params: { panel: "data" } },
-    };
-    const command = commandByPanel[panel];
-    if (command) executeCommand(command);
-    else app.setActivePanel(panel);
+    const panelNotice = panel === "inspector" ? "Select a cell and use Review tools for comments." : undefined;
+    if (panel === "print") {
+      dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" });
+      return;
+    }
+    if (panelNotice) {
+      dispatchSessionIntent({ type: "panel.open", panel, notice: panelNotice });
+      return;
+    }
+    if (panel === "inspector" || panel === "chart" || panel === "pivot" || panel === "shape" || panel === "sparkline" || panel === "conditionalFormat" || panel === "dataValidation" || panel === "history" || panel === "data") {
+      dispatchSessionIntent({ type: "panel.open", panel });
+      return;
+    }
+    if (panel === "query" || panel === "automate" || panel === "extended") {
+      dispatchSessionIntent({ type: "panel.open", panel });
+      return;
+    }
+    dispatchSessionIntent({ type: "panel.open", panel });
   };
 
   const applySelection = (selection: SelectionState) => {
@@ -265,6 +444,7 @@ function WorkspaceApp() {
       style: { ...style },
     };
   }, [state.showFormatCells, state.selection.primaryRowIndex, state.selection.primaryColumnIndex, state.selectedSheet, state.version]);
+  const selectedCellStyle = state.selectedSheet.getCell(state.selection.primaryRowIndex, state.selection.primaryColumnIndex)?.style ?? {};
 
   return (
     <>
@@ -282,7 +462,7 @@ function WorkspaceApp() {
               else app.commitFormula();
             }}
             onNameBoxCommit={(value) => app.selectAddress(value)}
-            onOpenWizard={() => executeCommand({ commandId: "ui.dialog.open", params: { dialog: "function-wizard" } })}
+            onOpenWizard={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
             phase={state.phase}
           />
         }
@@ -291,7 +471,7 @@ function WorkspaceApp() {
         localeMenuLabel={localeLabels[locale]}
         notice={state.notice}
         onLocaleChange={setLocale}
-        onSearch={(query) => executeCommand({ commandId: "ui.dialog.open", params: { dialog: "find-replace", findQuery: query } })}
+        onSearch={(query) => dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findQuery: query })}
         onShare={copyWorkbookLink}
         peers={state.peers}
         workbookMenu={
@@ -314,13 +494,13 @@ function WorkspaceApp() {
                 <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); copyWorkbookLink(); }}>
                   Copy workbook link
                 </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeCommand({ commandId: "ui.file.export-xlsx" }); }}>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); void exportXlsx(); }}>
                   Export .xlsx
                 </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeCommand({ commandId: "ui.file.import-xlsx" }); }}>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); importXlsx(); }}>
                   Import .xlsx
                 </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeCommand({ commandId: "ui.dialog.open", params: { dialog: "print-preview" } }); }}>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" }); }}>
                   Print / Save as PDF
                 </Button>
               </Stack>
@@ -331,12 +511,41 @@ function WorkspaceApp() {
           <Ribbon
             activeTab={state.ribbonTab}
             locale={locale}
-            onExecute={app.execute.bind(app)}
-            onTabChange={app.setRibbonTab}
+            onCommand={executeCommand}
+            onSessionIntent={dispatchSessionIntent}
+            onCopy={() => app.copy()}
+            onCut={() => app.cut()}
+            onPaste={() => app.paste()}
+            onUndo={() => app.undo()}
+            onRedo={() => app.redo()}
+            onSave={saveWorkbook}
+            onExportXlsx={() => void exportXlsx()}
+            onImportXlsx={importXlsx}
+            onRecalculate={() => app.recalculateFormulas()}
+            onAutoSum={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
+            onFreezeAtPrimary={() => app.freezeAtPrimary()}
+            onCreatePivot={buildQuickPivotCommand}
+            onCreateChart={buildQuickChartCommand}
+            onCreateSparkline={buildQuickSparklineCommand}
+            onCreateShape={buildQuickShapeCommand}
+            onBringDrawingForward={() => buildDrawingCommand("drawing.zorder", "forward")}
+            onSendDrawingBackward={() => buildDrawingCommand("drawing.zorder", "backward")}
+            onRemoveDrawing={() => buildDrawingCommand("drawing.remove")}
+            onCreateSheetTable={() => app.createSheetTableFromSelection()}
+            onCreateDataTable={() => app.createDataTableFromSelection()}
+            onToggleSheetTableTotalRow={buildTotalRowCommand}
+            onApplyFilterSelection={buildFilterSelectionCommand}
+            onClearFilter={buildClearFilterCommand}
+            onGroupRows={() => buildOutlineCommand("row", "add")}
+            onUngroupRows={() => buildOutlineCommand("row", "remove")}
+            onGroupColumns={() => buildOutlineCommand("column", "add")}
+            onUngroupColumns={() => buildOutlineCommand("column", "remove")}
+            onSubtotal={buildSubtotalCommand}
+            onRemoveDuplicates={buildRemoveDuplicatesCommand}
+            onTextToColumns={buildTextToColumnsCommand}
+            onTabChange={(tab) => app.setRibbonTab(tab)}
             phase={state.phase}
             canExecute={app.canExecute.bind(app)}
-            shareRole={state.shareRole}
-            onRoleChange={(role) => app.execute('permission.role.set', { role })}
           />
         }
         saveState={state.saveState}
@@ -369,7 +578,7 @@ function WorkspaceApp() {
             collabStatus={state.collabStatus}
             pendingChangeSetCount={state.pendingChangeSetCount}
             collabRevision={state.collabRevision}
-            hasLocalDraft={state.hasLocalDraft}
+            hasPendingOperations={state.hasPendingOperations}
           />
         }
         title={state.workbookName}
@@ -387,6 +596,7 @@ function WorkspaceApp() {
               phase={state.phase}
               zoom={state.zoom}
               peers={state.peers}
+              cellStyle={selectedCellStyle}
               selectedFloatingId={state.selectedFloatingId}
               drawings={state.selectedSheet.drawings}
               drawingPayloads={state.selectedSheet.drawingPayloads}
@@ -419,6 +629,12 @@ function WorkspaceApp() {
                 params: { sheetId: state.activeSheetId, drawingId },
               })}
               onCommand={executeCommand}
+              onCopy={() => app.copy()}
+              onCut={() => app.cut()}
+              onPaste={() => app.paste()}
+              onUndo={() => app.undo()}
+              onRedo={() => app.redo()}
+              onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
               onApplyFilter={(column, patch) => app.applyFilter(column, patch)}
               onToggleOutline={(groupId) => app.toggleOutlineGroup(groupId)}
               getValidationList={app.getValidationAt}

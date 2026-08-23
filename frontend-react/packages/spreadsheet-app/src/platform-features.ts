@@ -1,6 +1,5 @@
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerHistoryCommands } from './features/history';
-import { registerPersistenceCommands } from './features/persistence';
 import { registerPrintCommands } from './features/print';
 import { registerXlsxCommands } from './features/xlsx';
 import { registerPermissionFeature } from './features/permission/commands';
@@ -11,7 +10,6 @@ import { registerExtendedCommands } from './features/extended';
 /** 注册 M10–M18 平台特性命令 */
 export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
   registerHistoryCommands(runtime.registry);
-  registerPersistenceCommands(runtime.registry);
   registerPrintCommands(runtime.registry);
   registerXlsxCommands(runtime.registry);
   registerQueryCommands(runtime.registry);
@@ -20,8 +18,6 @@ export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
   registerPermissionFeature(runtime);
   return [
     'history.restore',
-    'persistence.save',
-    'persistence.draft.clear',
     'print.preview',
     'print.export',
     'print.area.set',

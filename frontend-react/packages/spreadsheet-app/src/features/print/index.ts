@@ -68,7 +68,7 @@ export function createDefaultPrintLayout(unitId: string, sheetId: SheetId): Prin
 
 export function createDefaultPrintDocument(unitId: string, sheetId: SheetId): PrintDocument {
   return {
-    schema: 'PrintDocumentV1',
+    schema: 'PrintDocument',
     unitId,
     sheetId,
     pageSetup: structuredClone(DEFAULT_PAGE_SETUP),

@@ -11,6 +11,9 @@ export interface SparklineInsertLocationParams {
   negativeColor?: string;
   highlightMax?: boolean;
   highlightMin?: boolean;
+  highlightFirst?: boolean;
+  highlightLast?: boolean;
+  highlightNegative?: boolean;
 }
 
 export function buildSparklineInsertParams(sparkline: SparklineModel): { sheetId: string; sparkline: SparklineModel } {
@@ -26,7 +29,7 @@ export function buildSparklineDataLocationParams(
   dataRange: RangeRef,
   location: { row: number; column: number },
   type: SparklineModel['type'] = 'line',
-  options?: Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'groupId'>>,
+  options?: Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId'>>,
 ): SparklineInsertLocationParams {
   return {
     sheetId,
@@ -41,6 +44,9 @@ export function buildSparklineDataLocationParams(
     negativeColor: options?.negativeColor,
     highlightMax: options?.highlightMax,
     highlightMin: options?.highlightMin,
+    highlightFirst: options?.highlightFirst,
+    highlightLast: options?.highlightLast,
+    highlightNegative: options?.highlightNegative,
     groupId: options?.groupId,
   };
 }
@@ -71,12 +77,14 @@ export function extractSparklineValues(workbookOrSheet: WorkbookModel | Workshee
     : workbookOrSheet.id === source.sheetId
       ? workbookOrSheet
       : undefined;
-  if (!sheet) return values;
+  if (!sheet) throw new Error(`Unknown sparkline source sheet: ${source.sheetId}`);
   for (let row = source.startRow; row <= source.endRow; row++) {
     for (let column = source.startColumn; column <= source.endColumn; column++) {
       const cell = sheet.cells.get(row, column);
-      if (!cell || cell.value == null) continue;
-      const numeric = Number(String(cell.value).replace(/[$,%]/g, ''));
+      if (!cell) continue;
+      const raw = cell.formulaValue ?? cell.value;
+      if (raw == null) continue;
+      const numeric = Number(String(raw).replace(/[$,%]/g, ''));
       if (Number.isFinite(numeric)) values.push(numeric);
     }
   }

@@ -1,41 +1,32 @@
 # React Sheets
 
-独立的 React + Canvas + Node 全栈 Sheets 重实现目录。该目录不引用现有 Luckysheet、Univer OSS 或 Univer Pro 运行时包，也不包含 License 模块。
+独立的 React + Canvas 电子表格。前端是 local-first PWA：未连接服务端时可打开本地工作簿、编辑单元格、计算公式、导入/导出 XLSX、打印 PDF、执行本地文件型查询和 What-if；协同、匿名共享、可信 ACL、审计与数据库查询只在唯一 Java `backend/` 连接后启用。
 
-## 当前链路
+## 唯一链路
 
 ```text
-React UI
-  -> CommandRuntime
-  -> Mutation / Operation
-  -> WorkbookModel / Sparse CellMatrix
-  -> FormulaEngine / RenderPlan
-  -> Canvas Scene / Layer / Viewport
-  -> Node HTTP / WebSocket / SQLite
+UI intent
+→ CommandDescriptor
+→ CommandRuntime transaction
+→ typed mutation + inverse
+→ WorkbookModel / FormulaEngine
+→ IndexedDB workspace checkpoint + operation journal
+→ optional Java operation commit and WebSocket broadcast
 ```
+
+没有 Node 服务、旧 Luckysheet 协议、`pro-features`、双模型或兼容桥。
 
 ## 开发
 
 ```powershell
 npm install
-npm run dev:server
-npm run dev:web
+npm run dev
 ```
 
-Web: `http://127.0.0.1:4180/`
+Web：`http://127.0.0.1:4180/`
 
-Server health: `http://127.0.0.1:4181/health`
+连接 Java 服务时，由部署环境提供 OIDC token、PostgreSQL 连接与可选 Redis。浏览器不保存数据库凭证；JSON、CSV、TSV、XLSX 文件型查询可在本地执行，数据库查询由后端执行。
 
-## 已完成的垂直切片
+## 验收
 
-- `WorkbookSnapshotV1` 与稀疏 `CellMatrix`。
-- Command、Mutation、Operation、Undo/Redo 注册运行时。
-- 无动态执行的 Lexer/AST/FormulaEngine、RangeIndex、循环错误。
-- Canvas Scene、Layer、Viewport、SheetSkeleton、RenderPlan、dirty range 和滚动计划。
-- React Ribbon、FormulaBar、Canvas Sheet、Sheet Tabs、Status Bar、Feature Sidebar。
-- 独立 SQLite Snapshot/Revision/Changeset 存储和 WebSocket presence/changeset ACK。
-- 前端真实创建 Workbook 并提交 cell/sheet Mutation。
-
-## 尚未关闭的范围
-
-图表、透视表、形状、Sparkline、打印、XLSX 交换、编辑历史、完整协同冲突变换、数据验证、条件格式和完整键盘/剪贴板语义仍需按 `packages` 分层继续实现。当前 UI 的未注册功能会显示明确 disabled 状态，不使用 Mock 冒充完成。
+离线和在线验收步骤见 [acceptance.md](docs/acceptance.md)。构建或单测不能替代真实浏览器、重启恢复与双客户端协同验证。

@@ -23,6 +23,8 @@ import type {
   DataValidationRule,
   DrawingObject,
   DrawingPayload,
+  PivotFieldDefinition,
+  PivotModel,
   SparklineModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
@@ -31,9 +33,8 @@ import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition, CapabilityDescriptor, PlatformCapability } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
-import type { PivotModel } from '@react-sheets/core-model';
 import { localizeText, type Locale } from '../i18n';
-import type { PivotDefinition as PivotUiDefinition, PivotFieldDefinition as PivotUiFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult as PivotUiResult } from './pivot/types';
+import type { PivotPanelCallbacks, PivotPanelResult, PivotPanelState } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
@@ -65,8 +66,8 @@ export interface FeatureSidebarProps {
   pivot?: PivotModel;
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
-  pivotFieldCatalog?: readonly PivotUiFieldDefinition[];
-  pivotResult?: PivotUiResult;
+  pivotFieldCatalog?: readonly PivotFieldDefinition[];
+  pivotResult?: PivotPanelResult;
   onShowPivotDetails?: (paths: import('@react-sheets/core-model').PivotSourceRowPath[]) => void;
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
@@ -712,4 +713,3 @@ function CommentHyperlinkForms({
     </Stack>
   );
 }
-

@@ -2,50 +2,51 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   decodeMessage,
-  decodeOperationMessageV2,
+  decodeOperationMessage,
   encodeMessage,
-  encodeOperationMessageV2,
+  encodeOperationMessage,
   AuthenticationRequiredError,
   WorkbookApiClient,
   validateHistoryRestoreRequest,
-  validateOperationEnvelopeV2,
+  validateOperationEnvelope,
+  validateWorkbookSnapshot,
 } from './index';
 
-test('collaboration messages round-trip through the V2 wire contract', () => {
+test('collaboration messages round-trip through the operation wire contract', () => {
   const message = { type: 'changeset.ack' as const, operationId: 'op-1', revision: 2 };
   assert.deepEqual(decodeMessage(encodeMessage(message)), message);
 });
 
-test('OperationEnvelopeV2 excludes client actor and affected ranges', () => {
+test('OperationEnvelope excludes client actor and affected ranges', () => {
   const envelope = {
-    schema: 'OperationEnvelopeV2' as const,
-    operationId: 'op-v2',
+    schema: 'OperationEnvelope' as const,
+    operationId: 'op-1',
     unitId: 'unit-1',
     clientSequence: 1,
     baseRevision: 0,
     mutations: [{ id: 'cell.write', sheetId: 'sheet-1', params: { row: 0, column: 0, value: 'ok' } }],
     createdAt: new Date().toISOString(),
   };
-  assert.deepEqual(validateOperationEnvelopeV2(envelope), envelope);
-  assert.throws(() => validateOperationEnvelopeV2({ ...envelope, actorId: 'spoofed' }), /server-owned/);
-  assert.throws(() => validateOperationEnvelopeV2({
+  assert.deepEqual(validateOperationEnvelope(envelope), envelope);
+  assert.throws(() => validateOperationEnvelope({ ...envelope, actorId: 'spoofed' }), /server-owned/);
+  assert.throws(() => validateOperationEnvelope({
     ...envelope,
     mutations: [{ ...envelope.mutations[0], affectedRanges: [] }],
   }), /server-owned/);
 });
 
-test('V2 collaboration messages reject legacy actor-bearing presence and changesets', () => {
+test('collaboration messages reject actor-bearing presence and legacy changesets', () => {
   const message = {
     type: 'presence.updated' as const,
     unitId: 'unit-1',
     state: { row: 1, column: 1 },
   };
-  assert.deepEqual(decodeOperationMessageV2(encodeOperationMessageV2(message)), message);
-  assert.throws(() => decodeOperationMessageV2(JSON.stringify({ ...message, actorId: 'spoofed' })), /server-owned/);
-  assert.throws(() => decodeOperationMessageV2(JSON.stringify({
+  assert.deepEqual(decodeOperationMessage(encodeOperationMessage(message)), message);
+  assert.throws(() => decodeOperationMessage(JSON.stringify({ ...message, actorId: 'spoofed' })), /server-owned/);
+  assert.throws(() => decodeOperationMessage(JSON.stringify({
     type: 'changeset.submit',
     payload: {
-      schema: 'CollaborationChangeSetV1',
+      schema: 'CollaborationChangeSet',
       operationId: 'old',
       unitId: 'unit-1',
       actorId: 'spoofed',
@@ -63,7 +64,28 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
     authTokenProvider: () => 'token-123',
     fetchImpl: async (_input, init) => {
       request = init;
-      return new Response(JSON.stringify({ snapshot: { unitId: 'unit-1' }, revision: 0 }), {
+      return new Response(JSON.stringify({
+        snapshot: {
+          schema: 'WorkbookSnapshot',
+          unitId: 'unit-1',
+          name: 'Workbook',
+          activeSheetId: 'sheet-1',
+          sheets: [{
+            id: 'sheet-1',
+            name: 'Sheet1',
+            rowCount: 100,
+            columnCount: 26,
+            cells: {},
+            merges: [],
+            freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
+            pivots: [],
+            sparklines: [],
+            drawings: [],
+            drawingPayloads: {},
+          }],
+        },
+        revision: 0,
+      }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -97,4 +119,28 @@ test('history restore request is target-revision-only and client API posts no sn
   await api.restoreToRevision('unit-1', 3, 'rollback');
   assert.deepEqual(JSON.parse(postedBody), { targetRevision: 3, reason: 'rollback' });
   assert.equal(postedBody.includes('snapshot'), false);
+  assert.equal('saveSnapshot' in api, false);
+});
+
+test('snapshot trust boundary rejects versioned or legacy drawing payloads', () => {
+  assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
+  assert.throws(() => validateWorkbookSnapshot({
+    schema: 'WorkbookSnapshot',
+    unitId: 'unit-1',
+    name: 'Workbook',
+    activeSheetId: 'sheet-1',
+    sheets: [{
+      id: 'sheet-1',
+      name: 'Sheet1',
+      rowCount: 10,
+      columnCount: 10,
+      cells: {},
+      merges: [],
+      pivots: [],
+      sparklines: [],
+      charts: [],
+      drawings: [],
+      drawingPayloads: {},
+    }],
+  }), /legacy drawing collections/);
 });

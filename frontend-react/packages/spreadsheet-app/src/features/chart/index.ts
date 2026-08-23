@@ -3,6 +3,7 @@ import type { SpreadsheetFeatureManifest } from '../../feature-registry';
 import { CHART_MUTATION_IDS, registerChartCommands } from './commands';
 
 export * from './commands';
+export * from './data';
 
 export function registerChartFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   return {

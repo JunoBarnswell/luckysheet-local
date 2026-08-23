@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Stack } from '@react-sheets/ui-system';
+import { Stack, Textarea } from '@react-sheets/ui-system';
 
 export interface CellEditorProps {
   initialText: string;
@@ -16,6 +16,11 @@ export interface CellEditorProps {
  */
 export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEditorProps): React.ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composingRef = useRef(false);
+
+  useEffect(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -26,17 +31,23 @@ export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEd
 
   return (
     <Stack gap="none" className="w-full">
-      <textarea
+      <Textarea
         ref={textareaRef}
         aria-label="Cell editor"
         className="w-full resize-none border-0 bg-transparent px-1 py-0.5 text-[13px] leading-5 text-slate-800 outline-none"
         value={initialText}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => { composingRef.current = false; }}
         onChange={(event) => {
           onChange(event.target.value);
           event.currentTarget.style.height = '0px';
           event.currentTarget.style.height = Math.max(28, event.currentTarget.scrollHeight + 2) + 'px';
         }}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || composingRef.current) {
+            event.stopPropagation();
+            return;
+          }
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();
             onCommit('down');

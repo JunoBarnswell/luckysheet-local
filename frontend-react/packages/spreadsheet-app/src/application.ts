@@ -22,8 +22,8 @@ import type {
   WorkbookTableModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, CommandResult } from '@react-sheets/command-runtime';
-import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
-import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from '@react-sheets/pro-features';
+import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider, TableRowsResponse } from '@react-sheets/protocol';
+import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from './features/pivot/engine';
 import {
   collectFindReplacements,
   copyRangeToClipboardData,
@@ -37,7 +37,6 @@ import {
   buildColumnOutlineGroup,
   normalizeRangeRef,
   parseTsv,
-  validateDataInput,
   validationList,
   type ClipboardData,
   type GoToSpecialKind,
@@ -45,7 +44,6 @@ import {
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
-import { executeUiCommand, isUiCommand } from './execute-command';
 import {
   buildCollaborationSnapshot,
   type CollaborationSnapshot,
@@ -60,6 +58,7 @@ import {
   hydrateRuntime,
   rehydrateFormulaAfterRestore,
   resolveActorId,
+  resolveShareToken,
   resolveUnitId,
   startCollaborationSession,
   startPersistenceSession,
@@ -104,6 +103,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import {
+  exchangeImportXlsx,
   exchangeExportXlsx,
   summarizeCompatibilityReport,
 } from './features/xlsx';
@@ -147,12 +147,12 @@ import {
   type HistoryEntryMeta,
 } from './features/history';
 import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
-import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId } from './types';
-
-const UNIT_ID_STORAGE_KEY = 'react-sheets:unitId';
+import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId, UiSessionIntent } from './types';
 
 export interface SpreadsheetApplicationOptions {
   initialPhase?: AppPhase;
+  authTokenProvider?: AuthTokenProvider;
+  shareTokenProvider?: ShareTokenProvider;
 }
 
 export interface UiSnapshot {
@@ -183,7 +183,7 @@ export interface UiSnapshot {
   historyEntries: readonly HistoryEntry[];
   remoteRevisions: readonly RevisionRecord[];
   historyPreviewRevision: number | null;
-  hasLocalDraft: boolean;
+  hasPendingOperations: boolean;
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
   tables: readonly WorkbookTableModel[];
@@ -243,7 +243,7 @@ export class SpreadsheetApplication {
   private collabStatus: 'connecting' | 'open' | 'closed' = 'closed';
   private remoteRevisions: RevisionRecord[] = [];
   private historyPreview: HistoryPreviewSession | null = null;
-  private hasLocalDraft = false;
+  private hasPendingOperations = false;
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
   private showFunctionWizard = false;
@@ -279,8 +279,12 @@ export class SpreadsheetApplication {
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
 
-  constructor({ initialPhase = 'ready' }: SpreadsheetApplicationOptions = {}) {
-    this.runtime = createSpreadsheetRuntime();
+  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider }: SpreadsheetApplicationOptions = {}) {
+    const routeShareToken = shareTokenProvider ? null : resolveShareToken();
+    this.runtime = createSpreadsheetRuntime({
+      authTokenProvider,
+      shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
+    });
     this.actorId = resolveActorId();
     this.phase = initialPhase;
     this.activeSheetId = this.runtime.model.activeSheetId;
@@ -297,6 +301,15 @@ export class SpreadsheetApplication {
     this.syncPersistenceMeta();
   }
 
+  private syncActiveSheetProjection(): void {
+    const activeSheetId = this.runtime.model.activeSheetId;
+    if (this.activeSheetId === activeSheetId) return;
+    this.activeSheetId = activeSheetId;
+    this.selectionService.resetForSheet(activeSheetId);
+    this.editSession.cancel();
+    this.formulaDraft = '';
+  }
+
   private wireRuntimeHandlers(): void {
     this.runtime.handlers.onSaveState = (state) => {
       this.saveState = state;
@@ -306,7 +319,12 @@ export class SpreadsheetApplication {
       this.notice = message;
       this.emit();
     };
-    this.runtime.handlers.onMutationsApplied = () => this.refresh();
+    this.runtime.handlers.onMutationsApplied = () => {
+      // Remote/replayed sheet activation is still a runtime mutation. Keep
+      // the session projection synchronized without writing the model here.
+      this.syncActiveSheetProjection();
+      this.refresh();
+    };
     this.runtime.handlers.onPhaseChange = (phase) => {
       this.phase = phase;
       this.emit();
@@ -319,7 +337,7 @@ export class SpreadsheetApplication {
       this.remoteRevisions = revisions;
       this.emit();
     };
-    this.runtime.handlers.onDraftUpdated = () => {
+    this.runtime.handlers.onWorkspacePersisted = () => {
       this.syncPersistenceMeta();
     };
     this.runtime.handlers.onCollabStatus = (status) => {
@@ -342,6 +360,7 @@ export class SpreadsheetApplication {
     this.collabDispose = startCollaborationSession(this.runtime, () =>
       `${this.activeSheetId}:${this.selectionService.getState().primaryRowIndex}:${this.selectionService.getState().primaryColumnIndex}`,
       this.runtime.authTokenProvider,
+      this.runtime.shareTokenProvider,
     );
   }
 
@@ -371,14 +390,13 @@ export class SpreadsheetApplication {
   }
 
   private syncPersistenceMeta(): void {
-    const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
     const meta = buildPersistenceMeta(
       this.runtime.model.snapshot(),
       this.runtime.remoteRevision,
-      draft,
       this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
+      this.runtime.workspaceRecord,
     );
-    this.hasLocalDraft = meta.hasLocalDraft;
+    this.hasPendingOperations = meta.hasPendingOperations;
     this.persistenceChecksum = meta.checksum;
   }
 
@@ -418,7 +436,7 @@ export class SpreadsheetApplication {
       historyEntries: this.runtime.commands.getUndoEntries(),
       remoteRevisions: this.remoteRevisions,
       historyPreviewRevision: this.historyPreview?.revision ?? null,
-      hasLocalDraft: this.hasLocalDraft,
+      hasPendingOperations: this.hasPendingOperations,
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
@@ -453,18 +471,60 @@ export class SpreadsheetApplication {
   };
 
   execute(commandId: string, params?: unknown): void {
-    if (this.phase !== 'ready' && !commandId.startsWith('ui.')) return;
     try {
-      this.assertPermission(commandId, params);
-      if (isUiCommand(commandId)) {
-        if (executeUiCommand(this, commandId, params)) {
-          this.refresh();
-        }
+      // Chrome state is intentionally kept outside the command runtime.  The
+      // only string descriptors accepted here are the four transient intents;
+      // every other descriptor is a canonical registered domain command.
+      if (commandId === 'ui.panel.open') {
+        const value = params as { panel?: SidebarPanelId; notice?: string } | undefined;
+        if (value?.panel) this.dispatchUiSessionIntent({ type: 'panel.open', panel: value.panel, notice: value.notice });
         return;
       }
+      if (commandId === 'ui.dialog.open') {
+        const value = params as { dialog?: Extract<UiSessionIntent, { type: 'dialog.open' }>['dialog']; findQuery?: string } | undefined;
+        if (value?.dialog) this.dispatchUiSessionIntent({ type: 'dialog.open', dialog: value.dialog, findQuery: value.findQuery });
+        return;
+      }
+      if (commandId === 'ui.zoom.set') {
+        const value = params as { value?: number } | undefined;
+        this.dispatchUiSessionIntent({ type: 'zoom.set', value: value?.value ?? 100 });
+        return;
+      }
+      if (commandId === 'ui.zoom.adjust') {
+        const value = params as { delta?: number; value?: number } | undefined;
+        this.dispatchUiSessionIntent({ type: 'zoom.adjust', delta: value?.delta, value: value?.value });
+        return;
+      }
+      if (commandId === 'ui.notice') {
+        this.dispatchUiSessionIntent({ type: 'notice', message: String(params ?? '') });
+        return;
+      }
+      if (this.phase !== 'ready') return;
       this.runCommand(commandId, params);
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'Permission denied');
+    }
+  }
+
+  /** Dispatches transient chrome state without touching WorkbookModel. */
+  dispatchUiSessionIntent(intent: UiSessionIntent): void {
+    switch (intent.type) {
+      case 'panel.open':
+        this.setActivePanel(intent.panel);
+        if (intent.notice) this.notify(intent.notice);
+        return;
+      case 'dialog.open':
+        this.openDialog(intent.dialog, intent.findQuery);
+        return;
+      case 'zoom.set':
+        this.setZoom(intent.value);
+        return;
+      case 'zoom.adjust':
+        this.setZoom(intent.value ?? this.getZoom() + (intent.delta ?? 0));
+        return;
+      case 'notice':
+        this.notify(intent.message);
+        return;
     }
   }
 
@@ -653,6 +713,24 @@ export class SpreadsheetApplication {
     return buildCollaborationSnapshot(this.runtime.collaboration, this.peers);
   }
 
+  async createGuestShareLink(role: GuestShareRole = 'editor'): Promise<string | null> {
+    if (this.runtime.localOnly || typeof window === 'undefined') {
+      this.notify('Connect to the Java backend before creating a guest share link');
+      return null;
+    }
+    try {
+      const share = await this.runtime.api.createGuestShare(this.runtime.model.unitId, { role });
+      if (!share.token) throw new Error('Java backend did not return a guest share token');
+      const link = `${window.location.origin}/workbooks/${encodeURIComponent(share.unitId)}?share=${encodeURIComponent(share.token)}`;
+      await navigator.clipboard?.writeText(link);
+      this.notify('Guest editor link copied');
+      return link;
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Unable to create a guest share link');
+      return null;
+    }
+  }
+
   async flushPendingCollaborations(): Promise<void> {
     if (!this.runtime.collaboration) {
       this.notify('Collaboration is offline');
@@ -686,7 +764,7 @@ export class SpreadsheetApplication {
     this.refresh();
   }
 
-  restoreFromSnapshot(snapshot: import('@react-sheets/core-model').WorkbookSnapshotV1, targetRevision: number, reason?: string): void {
+  restoreFromSnapshot(snapshot: import('@react-sheets/core-model').WorkbookSnapshot, targetRevision: number, reason?: string): void {
     try {
       void snapshot;
       this.runCommand('history.restore', { targetRevision, reason });
@@ -702,7 +780,7 @@ export class SpreadsheetApplication {
       revision,
       `Restore to revision ${revision}`,
     );
-    hydrateRuntime(this.runtime, response);
+    hydrateRuntime(this.runtime, response.snapshot);
     this.activeSheetId = this.runtime.model.activeSheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
     this.clearHistoryPreview();
@@ -746,67 +824,28 @@ export class SpreadsheetApplication {
   }
 
   getPersistenceSnapshot(): PersistenceSnapshotMeta {
-    const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
     return buildPersistenceMeta(
       this.runtime.model.snapshot(),
       this.runtime.remoteRevision,
-      draft,
       this.runtime.collaboration?.offlineQueue.getPendingCount() ?? 0,
+      this.runtime.workspaceRecord,
     );
   }
 
   async saveWorkbook(reason = 'Manual save'): Promise<void> {
-    if (!this.canExecute('persistence.save')) {
-      this.notify('You do not have permission to save this workbook');
-      return;
-    }
     this.saveState = 'saving';
     this.emit();
     try {
-      this.runCommand('persistence.save', { reason, baseRevision: this.runtime.remoteRevision });
-      const response = await this.runtime.api.saveSnapshot(
-        this.runtime.model.unitId,
-        this.runtime.model.snapshot(),
-        this.runtime.remoteRevision,
-      );
-      this.runtime.remoteRevision = response.revision;
-      this.runtime.collaboration?.setRevision(response.revision);
-      this.runtime.draftStore.clear(this.runtime.model.unitId);
-      this.runCommand('persistence.draft.clear');
+      void reason;
+      await this.runtime.checkpointWorkspace();
       this.saveState = 'saved';
       this.syncPersistenceMeta();
-      this.notify('Workbook saved');
-      await this.refreshRevisionLog();
+      this.notify('Local workbook checkpoint saved');
     } catch (error) {
       this.saveState = error instanceof Error && error.message.includes('conflict') ? 'conflict' : 'offline';
       this.notify(error instanceof Error ? error.message : 'Save failed');
       this.emit();
     }
-  }
-
-  recoverLocalDraft(): boolean {
-    const draft = this.runtime.draftStore.read(this.runtime.model.unitId);
-    if (!draft) {
-      this.notify('No local draft available');
-      return false;
-    }
-    hydrateRuntime(this.runtime, { snapshot: draft.snapshot, revision: draft.revision });
-    this.activeSheetId = this.runtime.model.activeSheetId;
-    this.selectionService.resetForSheet(this.activeSheetId);
-    this.saveState = 'offline';
-    this.syncPersistenceMeta();
-    this.notify('Local draft recovered');
-    this.refresh();
-    return true;
-  }
-
-  clearLocalDraft(): void {
-    this.runtime.draftStore.clear(this.runtime.model.unitId);
-    this.runtime.collaboration?.clearPending();
-    this.runCommand('persistence.draft.clear');
-    this.syncPersistenceMeta();
-    this.notify('Local draft cleared');
-    this.refresh();
   }
 
   notify(message: string): void {
@@ -816,6 +855,7 @@ export class SpreadsheetApplication {
 
   undo(): void {
     if (this.runtime.commands.undo()) {
+      this.syncActiveSheetProjection();
       this.syncDraftFromPrimary();
       this.notify('Undo applied');
       this.refresh();
@@ -824,6 +864,7 @@ export class SpreadsheetApplication {
 
   redo(): void {
     if (this.runtime.commands.redo()) {
+      this.syncActiveSheetProjection();
       this.syncDraftFromPrimary();
       this.notify('Redo applied');
       this.refresh();
@@ -900,7 +941,7 @@ export class SpreadsheetApplication {
     this.emit();
   };
   pasteSpecial(mode: PasteMode): void {
-    this.execute('ui.clipboard.paste', { mode });
+    this.paste(mode);
     this.closePasteSpecial();
   };
   setShowPrintPreview = (open: boolean): void => {
@@ -1036,14 +1077,6 @@ export class SpreadsheetApplication {
     });
     this.formulaDraft = this.editSession.active?.currentDraft ?? '';
     this.emit();
-    if (typeof document !== 'undefined' && initialText === undefined) {
-      queueMicrotask(() => {
-        const input = document.querySelector<HTMLInputElement>('[data-testid="formula-input"]');
-        input?.focus();
-        const length = input?.value.length ?? 0;
-        input?.setSelectionRange(length, length);
-      });
-    }
   }
 
   cancelEdit(): void {
@@ -1056,29 +1089,28 @@ export class SpreadsheetApplication {
     const sel = this.selectionService.getState();
     const row = this.overrideTarget?.row ?? sel.primaryRowIndex;
     const column = this.overrideTarget?.column ?? sel.primaryColumnIndex;
-    const raw = (overrideValue !== undefined ? overrideValue : this.formulaDraft).trim();
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const existingStyle = sheet.cells.get(row, column)?.style;
-    const isFormula = raw.startsWith('=');
-    const value = isFormula ? null : raw === '' ? null : Number.isFinite(Number(raw)) ? Number(raw) : raw;
-    const validation = validateDataInput(sheet, row, column, value);
-    if (!validation.valid) {
-      if (validation.blocking) {
-        this.notify(validation.message ?? '输入不符合数据验证规则');
-        return false;
-      }
-      this.notify(`警告: ${validation.message ?? '数据验证未通过'}`);
+    const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
+    const style = this.runtime.model.getSheet(this.activeSheetId).cells.get(row, column)?.style;
+    try {
+      this.runCommand('sheet.cell.commitText', {
+        sheetId: this.activeSheetId,
+        row,
+        column,
+        text,
+        style,
+      });
+      return true;
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Cell input was rejected');
+      return false;
     }
-    const cellData: CellData = isFormula ? { value: null, formula: raw, style: existingStyle } : { value, formula: undefined, style: existingStyle };
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row, column, value: cellData });
-    return true;
   }
 
   commitEdit(moveAfter: 'down' | 'up' | 'left' | 'right' | 'none' = 'down'): void {
     if (!this.editSession.editingCell) return;
     const editing = this.editSession.editingCell;
     this.overrideTarget = editing;
-    const committed = this.commitFormula(this.formulaDraft.trim());
+    const committed = this.commitFormula(this.formulaDraft);
     this.overrideTarget = null;
     this.editSession.apply();
     if (!committed) {
@@ -1110,7 +1142,7 @@ export class SpreadsheetApplication {
   }
 
   selectSheet(sheetId: string): void {
-    this.runtime.model.activeSheetId = sheetId;
+    this.runCommand('sheet.activate', { sheetId });
     this.activeSheetId = sheetId;
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
@@ -1272,7 +1304,7 @@ export class SpreadsheetApplication {
       targetSheetId,
       targetAnchor: { row: 0, column: 0 },
     });
-    this.activeSheetId = targetSheetId;
+    this.selectSheet(targetSheetId);
     this.notify(`Drill-down sheet created for ${label}`);
     this.refresh();
   }
@@ -1616,7 +1648,7 @@ export class SpreadsheetApplication {
   splitByDelimiter(delimiter: string): void {
     const sel = this.selectionService.getState();
     const sheet = this.getSelectedSheet();
-    this.runCommand('sheet.splitColumn', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, delimiter, maxColumns: Math.min(sheet.columnCount - sel.primaryColumnIndex - 1, 8) });
+    this.runCommand('data.splitColumn', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, delimiter, maxColumns: Math.min(sheet.columnCount - sel.primaryColumnIndex - 1, 8) });
   }
 
   copy(): void {
@@ -1633,7 +1665,7 @@ export class SpreadsheetApplication {
     void navigator.clipboard.writeText(formatTsv(data.values));
     this.notify('Cut to clipboard');
   }
-  paste(): void {
+  paste(mode: PasteMode = 'all'): void {
     const sel = this.selectionService.getState();
     const internal = this.clipboardData;
     if (internal) {
@@ -1641,7 +1673,7 @@ export class SpreadsheetApplication {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.primaryRowIndex, column: sel.primaryColumnIndex },
         clipboard: internal,
-        mode: 'all',
+        mode,
       });
       if (internal.isCut) this.clearClipboard();
       this.syncDraftFromPrimary();
@@ -1658,7 +1690,7 @@ export class SpreadsheetApplication {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.primaryRowIndex, column: sel.primaryColumnIndex },
         clipboard,
-        mode: 'all',
+        mode,
       });
       this.syncDraftFromPrimary();
       this.notify('Pasted from clipboard');
@@ -1685,7 +1717,7 @@ export class SpreadsheetApplication {
   addSheet(): void {
     const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
     this.runCommand('sheet.add', { id, name: 'Sheet' + (this.runtime.model.getSheets().length + 1) });
-    this.activeSheetId = id;
+    this.selectSheet(id);
     this.refresh();
   }
   renameSheet(sheetId: string, name: string): void {
@@ -1701,8 +1733,7 @@ export class SpreadsheetApplication {
     const newId = 'sheet-' + Math.random().toString(36).slice(2, 8);
     const newName = `${source.name} (2)`;
     this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
-    this.activeSheetId = newId;
-    this.selectionService.resetForSheet(newId);
+    this.selectSheet(newId);
     this.syncDraftFromPrimary();
     this.refresh();
   }
@@ -1730,7 +1761,7 @@ export class SpreadsheetApplication {
       this.runCommand('sheet.remove', { id: sheetId });
       if (this.activeSheetId === sheetId) {
         const remaining = this.runtime.model.getSheets()[0];
-        if (remaining) this.activeSheetId = remaining.id;
+        if (remaining) this.selectSheet(remaining.id);
       }
       this.refresh();
     } catch {
@@ -1788,14 +1819,29 @@ export class SpreadsheetApplication {
   }
 
   readDataTable(tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> {
-    return this.runtime.api.readDataRows(this.runtime.model.unitId, tableId, offset, limit);
+    const table = this.runtime.model.tables.get(tableId);
+    if (!table || !table.sourceSheetId || !table.sourceRange) return Promise.reject(new Error('Data table not found'));
+    const sheet = this.runtime.model.getSheet(table.sourceSheetId);
+    const start = Math.max(0, offset);
+    const end = Math.min(table.rowCount, start + Math.max(1, limit));
+    const rows: import('@react-sheets/core-model').TableScalar[][] = [];
+    for (let rowOffset = start; rowOffset < end; rowOffset += 1) {
+      rows.push(table.fields.map((field) => sheet.cells.get(
+        table.sourceRange!.startRow + 1 + rowOffset,
+        table.sourceRange!.startColumn + field.ordinal,
+      )?.value ?? null));
+    }
+    return Promise.resolve({
+      table: structuredClone(table),
+      rows,
+      ...(end < table.rowCount ? { nextOffset: end } : {}),
+    });
   }
   removeDataTable(tableId: string): Promise<void> {
     const table = this.runtime.model.tables.get(tableId);
     if (!table) return Promise.reject(new Error('Data table not found'));
-    return this.runtime.api.deleteDataTable(this.runtime.model.unitId, tableId).then(() => {
-      this.runCommand('table.remove', { tableId, sheetId: table.sourceSheetId ?? this.activeSheetId });
-    });
+    this.runCommand('table.remove', { tableId, sheetId: table.sourceSheetId ?? this.activeSheetId });
+    return Promise.resolve();
   }
 
   showPivotDetails(pivotId: string, paths: PivotSourceRowPath[], label = 'Details'): void {
@@ -1913,7 +1959,7 @@ export class SpreadsheetApplication {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const result = await executeQueryDefinition(this.runtime.connectors, query);
+      const result = await this.executeQuery(query);
       this.runCommand('query.load', { query, target: resolvedTarget, result });
       const snapshot = buildQueryResultSnapshot(query, result, resolvedTarget);
       this.querySessions.set(query.id, { definition: structuredClone(query), lastResult: snapshot });
@@ -1942,7 +1988,7 @@ export class SpreadsheetApplication {
         this.activeSheetId,
         this.selectionService.primaryRangeOrDefault(),
       );
-      const result = await executeQueryDefinition(this.runtime.connectors, session.definition);
+      const result = await this.executeQuery(session.definition);
       this.runCommand('query.refresh', {
         queryId,
         query: session.definition,
@@ -1966,6 +2012,48 @@ export class SpreadsheetApplication {
   ): Promise<{ ok: boolean; message?: string }> {
     const connector = this.runtime.connectors.get(connectorId);
     return connector.testConnection(config);
+  }
+
+  private async executeQuery(query: QueryDefinition): Promise<import('./features/query').QueryResult> {
+    if (query.connectorId !== 'sqlite' && query.connectorId !== 'jdbc' && query.connectorId !== 'rest') {
+      return executeQueryDefinition(this.runtime.connectors, query);
+    }
+    if (this.runtime.localOnly) {
+      throw new Error(`Connector ${query.connectorId} requires the Java backend`);
+    }
+    const config = query.connectorConfig;
+    const sourceRef = typeof config.sourceRef === 'string' ? config.sourceRef.trim() : '';
+    const statement = typeof config.statement === 'string'
+      ? config.statement
+      : typeof config.query === 'string'
+        ? config.query
+        : '';
+    if (!sourceRef || !statement) {
+      throw new Error(`Connector ${query.connectorId} requires server sourceRef and statement`);
+    }
+    const method = typeof config.method === 'string' && (config.method === 'GET' || config.method === 'POST')
+      ? config.method
+      : undefined;
+    const request: ServerQueryRequest = {
+      queryId: query.id,
+      name: query.name,
+      connectorId: query.connectorId,
+      sourceRef,
+      statement,
+      ...(method === undefined ? {} : { method }),
+      ...(Array.isArray(config.parameters) ? { parameters: structuredClone(config.parameters) } : {}),
+      ...(config.body === undefined ? {} : { body: structuredClone(config.body) }),
+      steps: query.steps.map((step) => ({
+        id: step.id,
+        kind: step.kind,
+        name: step.name,
+        config: structuredClone(step.config),
+        enabled: step.enabled,
+      })),
+    };
+    const response = await this.runtime.api.executeServerQuery(this.runtime.model.unitId, request);
+    if (response.rowCount !== response.rows.length) throw new Error('Java backend returned an invalid query row count');
+    return { columns: response.columns, rows: response.rows, rowCount: response.rowCount };
   }
 
   getQuerySnapshot(): {
@@ -2149,18 +2237,20 @@ export class SpreadsheetApplication {
     this.phase = 'loading';
     this.emit();
     try {
-      this.runCommand('xlsx.import', { fileName, base64 });
-      const response = await this.runtime.api.importXlsxBase64(base64, fileName);
-      hydrateRuntime(this.runtime, response);
-      this.compatibilityReport = response.report as CompatibilityReport;
-      this.runtime.remoteConnected = true;
+      const imported = await exchangeImportXlsx({ fileName, base64 });
+      if (!imported.snapshot) throw new Error('XLSX import did not produce a workbook snapshot');
+      hydrateRuntime(this.runtime, {
+        snapshot: imported.snapshot,
+        revision: this.runtime.remoteRevision,
+      });
+      this.compatibilityReport = imported.report as CompatibilityReport;
+      this.runtime.remoteConnected = false;
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(UNIT_ID_STORAGE_KEY, response.snapshot.unitId);
-        window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(response.snapshot.unitId)}`);
+        window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(imported.snapshot.unitId)}`);
       }
       this.activeSheetId = this.runtime.model.activeSheetId;
       this.selectionService.resetForSheet(this.activeSheetId);
-      this.runtime.draftStore.clear(this.runtime.model.unitId);
+      await this.runtime.checkpointWorkspace();
       this.phase = 'ready';
       this.notify(summarizeCompatibilityReport(this.compatibilityReport));
       this.refresh();
@@ -2177,7 +2267,6 @@ export class SpreadsheetApplication {
       return null;
     }
     try {
-      this.runCommand('xlsx.export', { fileName });
       const exported = await exchangeExportXlsx(this.runtime.model.snapshot(), {
         fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
       });
@@ -2421,26 +2510,10 @@ export class SpreadsheetApplication {
       for (let row = sourceRange.startRow + 1; row <= Math.min(sourceRange.endRow, sourceRange.startRow + 1000); row++) sample.push(sheet.cells.get(row, column)?.value ?? null);
       fields.push({ id: name, name, ordinal: fields.length, type: inferTableFieldType(sample) });
     }
-    const table: WorkbookTableModel = { id: nextId('table'), name: `${sheet.name} table`, sourceSheetId: this.activeSheetId, rowCount: Math.max(0, sourceRange.endRow - sourceRange.startRow), fields, blockSize: 4096, blocks: [], revision: 0 };
-    void (async () => {
-      this.saveState = 'saving';
-      this.emit();
-      await this.runtime.api.createDataTable(this.runtime.model.unitId, table);
-      for (let startRow = sourceRange.startRow + 1; startRow <= sourceRange.endRow; startRow += table.blockSize) {
-        const rows: import('@react-sheets/core-model').TableScalar[][] = [];
-        const endRow = Math.min(sourceRange.endRow, startRow + table.blockSize - 1);
-        for (let row = startRow; row <= endRow; row++) rows.push(fields.map((_f, offset) => sheet.cells.get(row, sourceRange.startColumn + offset)?.value ?? null));
-        if (rows.length > 0) table.blocks.push(await this.runtime.api.appendDataBlock(this.runtime.model.unitId, table.id, startRow - sourceRange.startRow - 1, rows));
-      }
-      table.revision = table.blocks.length;
-      this.runCommand('table.add', table);
-      this.saveState = 'saved';
-      this.notify(`Data table ${table.name} created`);
-    })().catch((error: unknown) => {
-      this.saveState = 'offline';
-      this.notify(error instanceof Error ? error.message : 'Data table creation failed');
-      this.emit();
-    });
+    const table: WorkbookTableModel = { id: nextId('table'), name: `${sheet.name} table`, sourceSheetId: this.activeSheetId, sourceRange: { ...sourceRange }, rowCount: Math.max(0, sourceRange.endRow - sourceRange.startRow), fields, blockSize: 4096, blocks: [], revision: 0 };
+    this.runCommand('table.add', table);
+    this.notify(`Data table ${table.name} created`);
+    this.refresh();
   }
 
   replyComment(text: string): void {
@@ -2537,4 +2610,4 @@ export class SpreadsheetApplication {
   }
 }
 
-export { resolveUnitId, resolveActorId };
+export { resolveUnitId, resolveActorId, resolveShareToken };
