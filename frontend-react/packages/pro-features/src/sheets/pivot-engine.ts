@@ -162,22 +162,44 @@ function matchesFilter(row: SourceRow, filter: PivotFilter): boolean {
 }
 
 function aggregate(rows: SourceRow[], field: string, operation: PivotAggregateFunction): number | null {
-  const raw = rows.map((row) => row.values[field] ?? null); const numbers = raw.map(toNumber).filter((value): value is number => value != null);
+  let count = 0;
+  let sum = 0;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  let product = 1;
+  let mean = 0;
+  let squaredDelta = 0;
+  const distinct = new Set<string>();
+  for (const row of rows) {
+    const raw = row.values[field] ?? null;
+    if (operation === 'count' && raw != null && raw !== '') count += 1;
+    if (operation === 'distinct-count' && raw != null) distinct.add(JSON.stringify(raw));
+    const number = toNumber(raw);
+    if (number == null) continue;
+    count += operation === 'count' ? 0 : 1;
+    sum += number;
+    min = Math.min(min, number);
+    max = Math.max(max, number);
+    product *= number;
+    const delta = number - mean;
+    mean += delta / count;
+    squaredDelta += delta * (number - mean);
+  }
   switch (operation) {
-    case 'count': return raw.filter((value) => value != null && value !== '').length;
-    case 'count-numbers': return numbers.length;
-    case 'sum': return numbers.reduce((sum, value) => sum + value, 0);
-    case 'average': return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
-    case 'min': return numbers.length ? Math.min(...numbers) : null;
-    case 'max': return numbers.length ? Math.max(...numbers) : null;
-    case 'product': return numbers.length ? numbers.reduce((product, value) => product * value, 1) : null;
-    case 'distinct-count': return new Set(raw.filter((value) => value != null).map((value) => JSON.stringify(value))).size;
-    case 'stdev': case 'var': return sampleVariance(numbers, operation === 'stdev');
-    case 'stdevp': case 'varp': return populationVariance(numbers, operation === 'stdevp');
+    case 'count': return count;
+    case 'count-numbers': return count;
+    case 'sum': return count ? sum : 0;
+    case 'average': return count ? sum / count : null;
+    case 'min': return count ? min : null;
+    case 'max': return count ? max : null;
+    case 'product': return count ? product : null;
+    case 'distinct-count': return distinct.size;
+    case 'stdev': return count < 2 ? null : Math.sqrt(squaredDelta / (count - 1));
+    case 'stdevp': return count ? Math.sqrt(squaredDelta / count) : null;
+    case 'var': return count < 2 ? null : squaredDelta / (count - 1);
+    case 'varp': return count ? squaredDelta / count : null;
   }
 }
-function sampleVariance(numbers: number[], squareRoot: boolean): number | null { if (numbers.length < 2) return null; const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length; const variance = numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (numbers.length - 1); return squareRoot ? Math.sqrt(variance) : variance; }
-function populationVariance(numbers: number[], squareRoot: boolean): number | null { if (!numbers.length) return null; const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length; const variance = numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / numbers.length; return squareRoot ? Math.sqrt(variance) : variance; }
 
 function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
   if (!group || value == null) return value;

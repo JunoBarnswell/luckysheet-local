@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
+import { cpus } from 'node:os';
 import { WebSocketServer } from 'ws';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { decodeMessage, encodeMessage } from '@react-sheets/protocol';
@@ -36,6 +37,33 @@ function unzipXlsxBase64(base64: string): Record<string, string> {
 const storage = new WorkbookStorage();
 const port = Number(process.env.REACT_SHEETS_SERVER_PORT ?? 4181);
 const clientsByUnit = new Map<string, Set<import('ws').WebSocket>>();
+
+class CalculationQueue {
+  private active = 0;
+  private readonly pending: Array<{ task: () => Promise<unknown>; resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = [];
+
+  constructor(private readonly concurrency: number) {}
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.pending.push({ task, resolve: resolve as (value: unknown) => void, reject });
+      this.drain();
+    });
+  }
+
+  private drain(): void {
+    while (this.active < this.concurrency && this.pending.length > 0) {
+      const item = this.pending.shift()!;
+      this.active += 1;
+      void item.task().then(item.resolve, item.reject).finally(() => {
+        this.active -= 1;
+        this.drain();
+      });
+    }
+  }
+}
+
+const calculationQueue = new CalculationQueue(Math.max(1, cpus().length - 1));
 
 function joinUnit(unitId: string, socket: import('ws').WebSocket): Set<import('ws').WebSocket> {
   const clients = clientsByUnit.get(unitId) ?? new Set<import('ws').WebSocket>();
@@ -121,11 +149,12 @@ const server = createServer(async (request, response) => {
         sendJson(response, 404, { code: 'NOT_FOUND', message: 'Pivot not found' });
         return;
       }
+      const result = await calculationQueue.run(async () => computePivotResult(workbook, pivot));
       sendJson(response, 200, {
         unitId,
         pivotId: body.pivotId,
         revision: snapshot.revision,
-        result: computePivotResult(workbook, pivot),
+        result,
       });
       return;
     }
@@ -168,6 +197,16 @@ const server = createServer(async (request, response) => {
       const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
       const limit = Math.max(1, Math.min(4096, Number(url.searchParams.get('limit') ?? 500) || 500));
       sendJson(response, 200, storage.readDataRows(unitId, tableId, offset, limit));
+      return;
+    }
+
+    if (request.method === 'DELETE' && /^\/api\/v1\/workbooks\/[^/]+\/tables\/[^/]+$/.test(url.pathname)) {
+      const parts = url.pathname.split('/');
+      const unitId = parts[4];
+      const tableId = parts[6];
+      if (!unitId || !tableId) throw new Error('Workbook and table ids are required');
+      storage.removeDataTable(unitId, tableId);
+      sendJson(response, 200, {});
       return;
     }
 
@@ -224,15 +263,17 @@ const server = createServer(async (request, response) => {
 const webSocketServer = new WebSocketServer({ server });
 webSocketServer.on('connection', (socket) => {
   let clientUnitId: string | null = null;
-  socket.once('close', () => leaveUnit(clientUnitId, socket));
-  socket.send(
-    encodeMessage({
-      type: 'presence.updated',
-      unitId: '',
-      actorId: 'server',
-      state: { status: 'connected' },
-    }),
-  );
+  let clientActorId: string | null = null;
+  socket.once('close', () => {
+    const unitId = clientUnitId;
+    const actorId = clientActorId;
+    leaveUnit(unitId, socket);
+    if (!unitId || !actorId) return;
+    const clients = clientsByUnit.get(unitId);
+    if (!clients) return;
+    const message = encodeMessage({ type: 'presence.updated' as const, unitId, actorId, state: { status: 'offline' } });
+    for (const client of clients) if (client.readyState === client.OPEN) client.send(message);
+  });
 
   socket.on('message', (raw) => {
     try {
@@ -242,6 +283,7 @@ webSocketServer.on('connection', (socket) => {
         try {
           leaveUnit(clientUnitId, socket);
           clientUnitId = message.payload.unitId;
+          clientActorId = message.payload.actorId;
           const unitClients = joinUnit(clientUnitId, socket);
           const revision = storage.appendChangeSet(message.payload);
           socket.send(
@@ -276,6 +318,7 @@ webSocketServer.on('connection', (socket) => {
       } else if (message.type === 'presence.updated' || message.type === 'cursor.updated') {
         leaveUnit(clientUnitId, socket);
         clientUnitId = message.unitId;
+        clientActorId = message.actorId;
         const unitClients = joinUnit(clientUnitId, socket);
         // Broadcast presence/cursor to other clients
         const broadcast = encodeMessage(message as never);

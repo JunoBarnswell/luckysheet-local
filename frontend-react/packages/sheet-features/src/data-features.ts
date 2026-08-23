@@ -74,16 +74,20 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
   for (const rule of rules) {
     for (const range of rule.ranges) {
       if (range.sheetId !== sheet.id) continue;
-      const numbers: number[] = [];
+      let min = Number.POSITIVE_INFINITY;
+      let max = Number.NEGATIVE_INFINITY;
       for (let r = range.startRow; r <= range.endRow; r++) {
         for (let c = range.startColumn; c <= range.endColumn; c++) {
           const numeric = numericOf(sheet.cells.get(r, c));
-          if (numeric !== undefined) numbers.push(numeric);
+          if (numeric !== undefined) {
+            min = Math.min(min, numeric);
+            max = Math.max(max, numeric);
+          }
         }
       }
-      const min = numbers.length > 0 ? Math.min(...numbers) : 0;
-      const max = numbers.length > 0 ? Math.max(...numbers) : 1;
-      const span = max - min || 1;
+      const boundedMin = Number.isFinite(min) ? min : 0;
+      const boundedMax = Number.isFinite(max) ? max : 1;
+      const span = boundedMax - boundedMin || 1;
 
       for (let r = range.startRow; r <= range.endRow; r++) {
         for (let c = range.startColumn; c <= range.endColumn; c++) {
@@ -102,7 +106,7 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
             if (numeric !== undefined) {
               overlay = {
                 ...overlay,
-                dataBar: { color: rule.barColor ?? "#60a5fa", ratio: (numeric - min) / span },
+                dataBar: { color: rule.barColor ?? "#60a5fa", ratio: (numeric - boundedMin) / span },
               };
             }
             break;
@@ -110,7 +114,7 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
             case "colorScale": {
             const numeric = numericOf(cell);
             if (numeric !== undefined) {
-              const ratio = (numeric - min) / span;
+              const ratio = (numeric - boundedMin) / span;
               const minColor = rule.minColor ?? "#fca5a5";
               const midColor = rule.midColor;
               const maxColor = rule.maxColor ?? "#86efac";
@@ -126,7 +130,7 @@ export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, C
             case "iconSet": {
             const numeric = numericOf(cell);
             if (numeric !== undefined) {
-              const ratio = (numeric - min) / span;
+              const ratio = (numeric - boundedMin) / span;
               overlay = {
                 ...overlay,
                 icon: ratio >= 0.67 ? "up" : ratio >= 0.34 ? "flat" : "down",

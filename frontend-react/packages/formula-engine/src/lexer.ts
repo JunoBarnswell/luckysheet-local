@@ -233,11 +233,11 @@ function isDigit(character: string): boolean {
 }
 
 function isWordStart(character: string): boolean {
-  return /[A-Za-z_$]/.test(character);
+  return /^[\p{L}_$]$/u.test(character);
 }
 
 function isWordCharacter(character: string): boolean {
-  return /[A-Za-z0-9_$.]/.test(character);
+  return /^[\p{L}\p{N}_$.]$/u.test(character);
 }
 
 function skipWhitespace(source: string, start: number): number {

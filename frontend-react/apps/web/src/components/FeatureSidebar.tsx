@@ -30,6 +30,7 @@ import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/pro-features';
 import { parseAddress, type SheetView, type SidebarPanelId, type WorkspacePhase } from '../state/workspace';
+import { localizeText, type Locale } from '../i18n';
 import type { PivotDefinition as PivotUiDefinition, PivotFieldDefinition as PivotUiFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult as PivotUiResult } from './pivot/types';
 import { ChartPanel } from './panels/ChartPanel';
 import { PivotPanel } from './panels/PivotPanel';
@@ -43,11 +44,10 @@ import { DataModelPanel } from './panels/DataModelPanel';
 
 export interface FeatureSidebarProps {
   activePanel: SidebarPanelId;
+  locale: Locale;
   activeCell: string;
   /** 主选区(供面板默认范围) */
   selectedRange?: { startRow: number; endRow: number; startColumn: number; endColumn: number };
-  getRangeMatrix?: unknown;
-  getRangeNumbers?: unknown;
   onPanelChange: (panel: SidebarPanelId) => void;
   onRetry: () => void;
   phase: WorkspacePhase;
@@ -70,6 +70,7 @@ export interface FeatureSidebarProps {
   remoteRevisions: readonly RevisionRecord[];
   tables: readonly WorkbookTableModel[];
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
+  onRemoveDataTable: (tableId: string) => Promise<void>;
   onAddChart: (chart: ChartModel) => void;
   onRemoveChart: (id: string) => void;
   onAddShape: (shape: ShapeModel) => void;
@@ -183,7 +184,7 @@ function InspectorPanel({
           <InsightRow label="Numeric average" value={average} tone="accent" />
           <InsightRow label="Occupied cells" value={String(sheet.occupiedCellCount)} />
           <InsightRow label="Worksheet name" value={sheet.name} />
-          <InsightRow label="Columns count" value={String(sheet.columns.length)} />
+          <InsightRow label="Columns count" value={String(sheet.columnCount)} />
         </PanelBody>
       </Panel>
     </Stack>
@@ -192,6 +193,7 @@ function InspectorPanel({
 
 export function FeatureSidebar({
   activePanel,
+  locale,
   activeCell,
   selectedRange,
   onPanelChange,
@@ -216,6 +218,7 @@ export function FeatureSidebar({
   remoteRevisions,
   tables,
   onReadDataRows,
+  onRemoveDataTable,
   onAddChart,
   onRemoveChart,
   onAddShape,
@@ -236,7 +239,7 @@ export function FeatureSidebar({
   onRemoveHyperlink,
 }: FeatureSidebarProps) {
   const disabled = phase !== 'ready';
-  const activePanelLabel = panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect';
+  const activePanelLabel = localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
 
   const columnLabelOf = (column: number): string => {
     let label = '';
@@ -274,7 +277,7 @@ export function FeatureSidebar({
               className="flex-col gap-0.5 px-0.5 py-1.5"
             >
               <Icon name={panel.icon} size="xs" />
-              <span className="text-[10px] font-medium leading-none">{panel.label}</span>
+              <Text as="span" size="xs" className="font-medium leading-none">{localizeText(locale, panel.label)}</Text>
             </Button>
           ))}
         </TabList>
@@ -291,7 +294,7 @@ export function FeatureSidebar({
               className="flex-col gap-0.5 px-0.5 py-1"
             >
               <Icon name={panel.icon} size="xs" />
-              <span className="text-[10px] font-medium leading-none">{panel.label}</span>
+              <Text as="span" size="xs" className="font-medium leading-none">{localizeText(locale, panel.label)}</Text>
             </Button>
           ))}
         </TabList>
@@ -384,7 +387,7 @@ export function FeatureSidebar({
           <HistoryPanel entries={historyEntries} remoteRevisions={remoteRevisions} />
         ) : null}
         {phase === 'ready' && activePanel === 'data' ? (
-          <DataModelPanel tables={tables} onReadRows={onReadDataRows} />
+          <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
         ) : null}
       </Box>
     </Box>

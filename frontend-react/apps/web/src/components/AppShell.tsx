@@ -35,7 +35,7 @@ export function AppShell({ children, formulaBar, isBusy, locale, notice, onLocal
   const [search, setSearch] = useState('');
   const saveCopy = {
     label: translate(locale, saveState),
-    tone: saveState === 'saved' ? 'text-emerald-300' : saveState === 'saving' ? 'text-amber-300' : saveState === 'offline' ? 'text-rose-300' : 'text-sky-300',
+    tone: saveState === 'saved' ? 'text-emerald-300' : saveState === 'saving' || saveState === 'calculating' ? 'text-amber-300' : saveState === 'offline' || saveState === 'conflict' || saveState === 'error' ? 'text-rose-300' : 'text-sky-300',
   };
   return (
     <Box

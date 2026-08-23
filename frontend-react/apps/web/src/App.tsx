@@ -11,6 +11,7 @@ import { SortDialog } from "./components/dialogs/SortDialog";
 import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
 import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
 import { WorkbookCatalog } from "./components/WorkbookCatalog";
+import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { parseRangeInput } from "./domain/range-input";
 import type { RibbonAction } from "./domain/ribbon-actions";
 import { useState } from "react";
@@ -292,6 +293,7 @@ function WorkspaceApp() {
             cellName={state.activeCell}
             disabled={isBusy}
             formula={state.formulaDraft}
+            locale={locale}
             onCancel={() => actions.notify("Formula edit cancelled")}
             onChange={actions.setFormulaDraft}
             onCommit={() => actions.commitFormula()}
@@ -345,6 +347,7 @@ function WorkspaceApp() {
         sheetTabs={
           <SheetTabs
             activeSheetId={state.activeSheetId}
+            locale={locale}
             disabled={isBusy}
             onAdd={actions.addSheet}
             onSelect={actions.selectSheet}
@@ -356,6 +359,7 @@ function WorkspaceApp() {
         statusBar={
           <StatusBar
             activeCell={state.activeCell}
+            locale={locale}
             onOpenShortcuts={() => actions.notify("Shortcuts: Arrows / Tab / Enter / F2 / F4 / Ctrl+C/X/V/Z/Y/B/I/U")}
             onZoomChange={actions.setZoom}
             phase={state.phase}
@@ -419,9 +423,8 @@ function WorkspaceApp() {
           <FeatureSidebar
             activeCell={state.activeCell}
             activePanel={state.activePanel}
+            locale={locale}
             selectedRange={selectedRange}
-            getRangeMatrix={actions.getRangeMatrix}
-            getRangeNumbers={actions.getRangeNumbers}
             onPanelChange={selectPanel}
             onRetry={actions.retry}
             phase={state.phase}
@@ -444,6 +447,7 @@ function WorkspaceApp() {
             remoteRevisions={state.remoteRevisions}
             tables={state.tables}
             onReadDataRows={actions.readDataTable}
+            onRemoveDataTable={actions.removeDataTable}
             onAddChart={actions.addChart}
             onRemoveChart={actions.removeChart}
             onAddShape={actions.addShape}
@@ -495,13 +499,13 @@ function WorkspaceApp() {
         onClose={() => actions.setShowPrintPreview(false)}
         sheetId={state.activeSheetId}
         rowCount={state.selectedSheet.rowCount}
-        columnCount={state.selectedSheet.columns.length}
+        columnCount={state.selectedSheet.columnCount}
         columns={state.selectedSheet.columns}
         rows={state.selectedSheet.rows}
         layout={state.printLayout}
         getRow={(row) => ({
           rowNumber: row + 1,
-          cells: Array.from({ length: state.selectedSheet.columns.length }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? '' })),
+          cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? '' })),
         })}
       />
     </>
@@ -510,5 +514,5 @@ function WorkspaceApp() {
 
 export default function App() {
   if (typeof window !== "undefined" && window.location.pathname === "/workbooks") return <WorkbookCatalog />;
-  return <WorkspaceApp />;
+  return <WorkspaceErrorBoundary><WorkspaceApp /></WorkspaceErrorBoundary>;
 }

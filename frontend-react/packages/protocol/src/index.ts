@@ -132,6 +132,11 @@ export class WorkbookApiClient {
     return response.json() as Promise<WorkbookTableBlock>;
   }
 
+  async deleteDataTable(unitId: string, tableId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(`Data table deletion failed: ${response.status}`);
+  }
+
   async readDataRows(unitId: string, tableId: string, offset = 0, limit = 500): Promise<TableRowsResponse> {
     const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(unitId)}/tables/${encodeURIComponent(tableId)}/rows?offset=${offset}&limit=${limit}`);
     if (!response.ok) throw new Error(`Data table query failed: ${response.status}`);
@@ -225,6 +230,7 @@ export class CollabSocketClient {
       this.socket.send(encoded);
       return true;
     }
+    if (message.type !== 'changeset.submit') return false;
     this.pendingOutbound.push(encoded);
     return false;
   }

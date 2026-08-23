@@ -8,6 +8,9 @@ export type MessageKey =
   | 'saving'
   | 'offline'
   | 'syncing'
+  | 'conflict'
+  | 'calculating'
+  | 'error'
   | 'share'
   | 'language'
   | 'english'
@@ -29,6 +32,9 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     saving: 'Saving',
     offline: 'Offline',
     syncing: 'Syncing',
+    conflict: 'Conflict',
+    calculating: 'Calculating',
+    error: 'Error',
     share: 'Share',
     language: 'Language',
     english: 'English',
@@ -49,6 +55,9 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     saving: '保存中',
     offline: '离线',
     syncing: '同步中',
+    conflict: '存在冲突',
+    calculating: '计算中',
+    error: '错误',
     share: '共享',
     language: '语言',
     english: 'English',
@@ -64,6 +73,15 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
 };
 
 const textTranslations: Record<string, string> = {
+  'Inspect': '检查',
+  'Chart': '图表',
+  'Pivot': '透视',
+  'Shape': '形状',
+  'Spark': '迷你图',
+  'Format': '格式',
+  'Validate': '验证',
+  'Print': '打印',
+  'Tables': '数据表',
   'History': '历史',
   'Clipboard': '剪贴板',
   'Font': '字体',

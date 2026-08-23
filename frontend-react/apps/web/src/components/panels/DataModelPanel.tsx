@@ -6,9 +6,10 @@ import type { TableRowsResponse } from '@react-sheets/protocol';
 export interface DataModelPanelProps {
   tables: readonly WorkbookTableModel[];
   onReadRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
+  onRemove: (tableId: string) => Promise<void>;
 }
 
-export function DataModelPanel({ onReadRows, tables }: DataModelPanelProps) {
+export function DataModelPanel({ onReadRows, onRemove, tables }: DataModelPanelProps) {
   const [preview, setPreview] = useState<Record<string, TableRowsResponse>>({});
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,11 +31,14 @@ export function DataModelPanel({ onReadRows, tables }: DataModelPanelProps) {
                   <PanelTitle size="sm" className="truncate">{table.name}</PanelTitle>
                   <Text size="xs" tone="subtle">{table.rowCount.toLocaleString()} rows · revision {table.revision}</Text>
                 </Stack>
+                <Inline gap="xs">
                 <Button size="xs" variant="outline" loading={loading === table.id} onClick={() => {
                   setLoading(table.id);
                   setError(null);
                   void onReadRows(table.id, 0, 20).then((response) => setPreview((current) => ({ ...current, [table.id]: response }))).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table query failed')).finally(() => setLoading(null));
                 }}>Preview rows</Button>
+                <Button size="xs" variant="danger" icon="trash" onClick={() => { void onRemove(table.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table deletion failed')); }}>Delete</Button>
+                </Inline>
               </Inline>
             </PanelHeader>
             <PanelBody className="p-3">

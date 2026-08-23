@@ -125,7 +125,7 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
       </Inline>
 
       {/* Main Ribbon Toolbar Area */}
-      <Box className="overflow-x-auto border-t border-slate-100 bg-slate-50/80 px-4 py-2">
+      <Box className="min-h-[104px] overflow-x-auto border-t border-slate-100 bg-slate-50/80 px-4 py-2">
         {activeTab === 'home' ? (
           <Inline gap="md" className="min-w-max items-start">
             {/* Undo / Redo */}

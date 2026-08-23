@@ -80,7 +80,7 @@ interface DragState {
   additive: boolean;
   resizeStartSize: number;
   resizeIndex: number;
-  floating?: { id: string; handle?: string; startBounds: Rect; startLocal: { x: number; y: number } };
+  floating?: { id: string; kind: 'chart' | 'shape' | 'image'; handle?: string; startBounds: Rect; startLocal: { x: number; y: number } };
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState['selection'] {
@@ -150,7 +150,7 @@ export function SheetCanvas({
     () =>
       new SheetSkeleton({
         rowCount: Math.max(sheet.rowCount, 200),
-        columnCount: Math.max(sheet.columns.length, 26),
+        columnCount: Math.max(sheet.columnCount, 26),
         defaultRowHeight: 28,
         defaultColumnWidth: 110,
         rowHeights: new Map(Object.entries(sheet.rowHeights).map(([key, value]) => [Number(key), value])),
@@ -159,7 +159,7 @@ export function SheetCanvas({
         zoom: zoomFactor,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sheet.rowCount, sheet.columns.length, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, zoomFactor],
+    [sheet.rowCount, sheet.columnCount, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, zoomFactor],
   );
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
@@ -427,6 +427,7 @@ export function SheetCanvas({
             resizeIndex: 0,
             floating: {
               id: floatingHit.id,
+              kind: floatingHit.kind,
               handle: floatingHit.handle,
               startBounds: { ...drawableBounds },
               startLocal: local,
@@ -479,7 +480,7 @@ export function SheetCanvas({
           additive,
           resizeStartSize: 0,
           resizeIndex: 0,
-          floating: { id: headerHit.kind, handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
+          floating: { id: headerHit.kind, kind: 'shape', handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
         };
         (event.target as Element).setPointerCapture?.(event.pointerId);
         return;
@@ -584,7 +585,7 @@ export function SheetCanvas({
         const content = engine.localToContent(local);
         void content;
         onFloatingMove(
-          drag.kind === "floating-move" ? "shape" : "shape",
+          drag.floating.kind,
           drag.floating.id,
           {
             x: drag.floating.startBounds.x + deltaX,
@@ -609,7 +610,7 @@ export function SheetCanvas({
         if (handle.includes("s")) height = Math.max(30, start.height + deltaY);
         if (handle.includes("w")) { width = Math.max(40, start.width - deltaX); x = start.x + (start.width - width); }
         if (handle.includes("n")) { height = Math.max(30, start.height - deltaY); y = start.y + (start.height - height); }
-        onFloatingMove("shape", drag.floating.id, { x, y, width, height });
+        onFloatingMove(drag.floating.kind, drag.floating.id, { x, y, width, height });
         return;
       }
 
@@ -727,7 +728,7 @@ export function SheetCanvas({
         let maxWidth = 60;
         const context = engine.getCanvas("content")?.getContext("2d");
         if (context) {
-          context.font = "13px Inter, sans-serif";
+          context.font = "13px Segoe UI, sans-serif";
           for (let row = 0; row < Math.min(sheet.rowCount, 200); row += 1) {
             const cell = sheet.getCell(row, column);
             if (cell?.value) maxWidth = Math.max(maxWidth, context.measureText(cell.value).width + 16);
@@ -923,6 +924,10 @@ export function SheetCanvas({
             ref={containerRef}
             role="grid"
             aria-label="Spreadsheet canvas"
+            aria-rowcount={sheet.rowCount}
+            aria-colcount={sheet.columnCount}
+            aria-rowindex={selection.primaryRowIndex + 1}
+            aria-colindex={selection.primaryColumnIndex + 1}
             tabIndex={0}
             className="absolute inset-0 outline-none"
             onPointerDown={handlePointerDown}

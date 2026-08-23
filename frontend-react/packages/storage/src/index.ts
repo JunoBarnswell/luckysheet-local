@@ -218,6 +218,13 @@ export class WorkbookStorage {
     return structuredClone(table);
   }
 
+  removeDataTable(unitId: string, tableId: string): void {
+    const table = this.database.prepare('SELECT table_id FROM data_tables WHERE table_id = ? AND unit_id = ?').get(tableId, unitId) as { table_id?: string } | undefined;
+    if (!table?.table_id) throw new Error('Data table not found');
+    this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(tableId);
+    this.database.prepare('DELETE FROM data_tables WHERE table_id = ? AND unit_id = ?').run(tableId, unitId);
+  }
+
   appendDataBlock(unitId: string, tableId: string, startRow: number, rows: TableScalar[][]): WorkbookTableBlock {
     const table = this.database.prepare('SELECT * FROM data_tables WHERE table_id = ? AND unit_id = ?').get(tableId, unitId) as { fields_json?: string; block_size?: number; revision?: number } | undefined;
     if (!table?.fields_json || table.block_size == null || table.revision == null) throw new Error('Data table not found');

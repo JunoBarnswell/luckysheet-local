@@ -273,6 +273,11 @@ export class CommandRuntime {
       if (item.unitId !== this.workbook.unitId) {
         throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${item.unitId}`);
       }
+      if (!this.registry.hasMutation(item.id)) {
+        throw new Error(`Unknown mutation: ${item.id}`);
+      }
+    }
+    for (const item of items) {
       const handler = this.registry.getMutation(item.id);
       handler(item, {
         workbook: this.workbook,
