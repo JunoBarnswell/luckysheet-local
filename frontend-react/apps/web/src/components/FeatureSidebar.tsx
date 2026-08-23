@@ -26,7 +26,7 @@ import type {
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { PrintLayout } from '@react-sheets/pro-features';
-import type { SheetView, SidebarPanelId, WorkspacePhase } from '../state/workspace';
+import { parseAddress, type SheetView, type SidebarPanelId, type WorkspacePhase } from '../state/workspace';
 import type { PivotDefinition as PivotUiDefinition, PivotFieldDefinition as PivotUiFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult as PivotUiResult } from './pivot/types';
 import { ChartPanel } from './panels/ChartPanel';
 import { PivotPanel } from './panels/PivotPanel';
@@ -118,8 +118,9 @@ function InspectorPanel({
   onRemoveHyperlink?: () => void;
 }) {
   const cells = sheet.rows.flatMap((row) => row.cells).filter((cell) => cell.value !== '');
-  const selected = cells.find((cell) => cell.address === activeCell);
-  const selectedCell = sheet.rows.flatMap((row) => row.cells).find((cell) => cell.address === activeCell);
+  const selectedAddress = parseAddress(activeCell);
+  const selected = selectedAddress ? sheet.getCell(selectedAddress.row, selectedAddress.column) : undefined;
+  const selectedCell = selected;
   const numericValues = cells
     .map((cell) => Number(cell.value.replace(/[$,%]/g, '')))
     .filter((value) => Number.isFinite(value));

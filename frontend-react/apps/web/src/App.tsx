@@ -130,7 +130,7 @@ function WorkspaceApp() {
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
-    : { sheetId: state.activeSheetId, startRow: 0, endRow: Math.max(1, state.selectedSheet.rows.length - 1), startColumn: 0, endColumn: Math.max(1, state.selectedSheet.columns.length - 1) };
+    : { sheetId: state.activeSheetId, startRow: 0, endRow: Math.max(1, state.selectedSheet.rowCount - 1), startColumn: 0, endColumn: Math.max(1, state.selectedSheet.columns.length - 1) };
   const [activePivotId, setActivePivotId] = useState<string>();
   const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
@@ -358,8 +358,6 @@ function WorkspaceApp() {
               onToggleAbsolute={actions.toggleAbsoluteReference}
               onJumpEdge={(direction, extend) => actions.jumpEdge(direction, extend)}
               onSelectAll={actions.selectAll}
-              onSelectRows={(startRow, endRow, additive) => actions.selectRowHeader(startRow, endRow, additive ? "add" : "replace")}
-              onSelectColumns={(startColumn, endColumn, additive) => actions.selectColumnHeader(startColumn, endColumn, additive ? "add" : "replace")}
               onResizeRow={actions.resizeRow}
               onResizeColumn={actions.resizeColumn}
               onFillRange={actions.fillRange}

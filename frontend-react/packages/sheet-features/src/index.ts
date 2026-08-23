@@ -802,19 +802,117 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     const params = item.params as { sheetId: string; at: number; count: number };
     context.workbook.getSheet(params.sheetId).deleteColumns(params.at, params.count);
   });
-  runtime.registry.registerMutation('rows.hidden', (item, context) => {
+  runtime.registry.registerMutation('row.hidden', (item, context) => {
     const params = item.params as { sheetId: string; index: number };
     context.workbook.getSheet(params.sheetId).hiddenRows.add(params.index);
+  });
+  runtime.registry.registerMutation('row.unhidden', (item, context) => {
+    const params = item.params as { sheetId: string; index: number };
+    context.workbook.getSheet(params.sheetId).hiddenRows.delete(params.index);
   });
   runtime.registry.registerMutation('rows.unhidden.all', (item, context) => {
     context.workbook.getSheet(item.sheetId).hiddenRows.clear();
   });
-  runtime.registry.registerMutation('columns.hidden', (item, context) => {
+  runtime.registry.registerMutation('rows.hidden.restore', (item, context) => {
+    const params = item.params as { sheetId: string; indices: number[] };
+    const hiddenRows = context.workbook.getSheet(params.sheetId).hiddenRows;
+    hiddenRows.clear();
+    for (const index of params.indices) hiddenRows.add(index);
+  });
+  runtime.registry.registerMutation('column.hidden', (item, context) => {
     const params = item.params as { sheetId: string; index: number };
     context.workbook.getSheet(params.sheetId).hiddenColumns.add(params.index);
   });
+  runtime.registry.registerMutation('column.unhidden', (item, context) => {
+    const params = item.params as { sheetId: string; index: number };
+    context.workbook.getSheet(params.sheetId).hiddenColumns.delete(params.index);
+  });
   runtime.registry.registerMutation('columns.unhidden.all', (item, context) => {
     context.workbook.getSheet(item.sheetId).hiddenColumns.clear();
+  });
+  runtime.registry.registerMutation('columns.hidden.restore', (item, context) => {
+    const params = item.params as { sheetId: string; indices: number[] };
+    const hiddenColumns = context.workbook.getSheet(params.sheetId).hiddenColumns;
+    hiddenColumns.clear();
+    for (const index of params.indices) hiddenColumns.add(index);
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; index: number }>({
+    id: 'sheet.row.hide',
+    execute: (params, context) => {
+      const hiddenRows = context.workbook.getSheet(params.sheetId).hiddenRows;
+      if (hiddenRows.has(params.index)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges: RangeRef[] = [{ sheetId: params.sheetId, startRow: params.index, endRow: params.index, startColumn: 0, endColumn: Math.max(0, context.workbook.getSheet(params.sheetId).columnCount - 1) }];
+      context.applyMutation({
+        id: 'row.hidden',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [{ id: 'row.unhidden', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
+        apply: () => hiddenRows.add(params.index),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string; index: number }>({
+    id: 'sheet.column.hide',
+    execute: (params, context) => {
+      const hiddenColumns = context.workbook.getSheet(params.sheetId).hiddenColumns;
+      if (hiddenColumns.has(params.index)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges: RangeRef[] = [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, context.workbook.getSheet(params.sheetId).rowCount - 1), startColumn: params.index, endColumn: params.index }];
+      context.applyMutation({
+        id: 'column.hidden',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [{ id: 'column.unhidden', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges }],
+        apply: () => hiddenColumns.add(params.index),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string }>({
+    id: 'sheet.rows.unhide.all',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = [...sheet.hiddenRows].sort((left, right) => left - right);
+      if (previous.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges: RangeRef[] = [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
+      context.applyMutation({
+        id: 'rows.unhidden.all',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [{ id: 'rows.hidden.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, indices: previous }, affectedRanges }],
+        apply: () => sheet.hiddenRows.clear(),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<{ sheetId: string }>({
+    id: 'sheet.columns.unhide.all',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = [...sheet.hiddenColumns].sort((left, right) => left - right);
+      if (previous.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges: RangeRef[] = [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
+      context.applyMutation({
+        id: 'columns.unhidden.all',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges,
+        inverse: [{ id: 'columns.hidden.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, indices: previous }, affectedRanges }],
+        apply: () => sheet.hiddenColumns.clear(),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
   });
 
   runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({

@@ -4,7 +4,6 @@ import { inflateRawSync } from 'node:zlib';
 import { WebSocketServer } from 'ws';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { decodeMessage, encodeMessage } from '@react-sheets/protocol';
-import type { CollaborationChangeSet } from '@react-sheets/protocol';
 import { WorkbookStorage } from '@react-sheets/storage';
 import { exportSnapshotToXlsxXml, parseXlsxXmlToSnapshot } from '@react-sheets/pro-features';
 
@@ -121,13 +120,6 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (request.method === 'POST' && url.pathname.startsWith('/api/v1/workbooks/') && url.pathname.endsWith('/changesets')) {
-      const body = JSON.parse(await readBody(request)) as CollaborationChangeSet;
-      const revision = storage.appendChangeSet(body);
-      sendJson(response, 200, { operationId: body.operationId, revision });
-      return;
-    }
-
     if (request.method === 'POST' && url.pathname === '/api/v1/files/import-xlsx') {
       const body = JSON.parse(await readBody(request)) as { base64?: string };
       if (!body.base64) throw new Error('base64 payload is required');
@@ -185,26 +177,39 @@ webSocketServer.on('connection', (socket) => {
       const message = decodeMessage(raw.toString());
 
       if (message.type === 'changeset.submit') {
-        leaveUnit(clientUnitId, socket);
-        clientUnitId = message.payload.unitId;
-        const unitClients = joinUnit(clientUnitId, socket);
-        const revision = storage.appendChangeSet(message.payload);
-        socket.send(
-          encodeMessage({
-            type: 'changeset.ack',
-            operationId: message.payload.operationId,
+        try {
+          leaveUnit(clientUnitId, socket);
+          clientUnitId = message.payload.unitId;
+          const unitClients = joinUnit(clientUnitId, socket);
+          const revision = storage.appendChangeSet(message.payload);
+          socket.send(
+            encodeMessage({
+              type: 'changeset.ack',
+              operationId: message.payload.operationId,
+              revision,
+            }),
+          );
+          const revisionMessage = encodeMessage({
+            type: 'revision.created',
+            payload: message.payload,
             revision,
-          }),
-        );
-        const revisionMessage = encodeMessage({
-          type: 'revision.created',
-          payload: message.payload,
-          revision,
-        });
-        for (const client of unitClients) {
-          if (client !== socket && client.readyState === client.OPEN) {
-            client.send(revisionMessage);
+          });
+          for (const client of unitClients) {
+            if (client !== socket && client.readyState === client.OPEN) {
+              client.send(revisionMessage);
+            }
           }
+        } catch (error) {
+          socket.send(
+            encodeMessage({
+              type: 'changeset.reject',
+              operationId: message.payload.operationId,
+              error: {
+                code: 'CONFLICT',
+                message: error instanceof Error ? error.message : 'Changeset rejected',
+              },
+            }),
+          );
         }
       } else if (message.type === 'presence.updated' || message.type === 'cursor.updated') {
         leaveUnit(clientUnitId, socket);

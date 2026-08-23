@@ -74,15 +74,6 @@ export class WorkbookApiClient {
     return response.json() as Promise<WorkbookSummary[]>;
   }
 
-  async submitChangeSet(changeSet: CollaborationChangeSet): Promise<{ operationId: string; revision: number }> {
-    const response = await fetch(`${this.baseUrl}/api/v1/workbooks/${encodeURIComponent(changeSet.unitId)}/changesets`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(changeSet),
-    });
-    if (!response.ok) throw new Error(`Changeset rejected: ${response.status}`);
-    return response.json() as Promise<{ operationId: string; revision: number }>;
-  }
 }
 
 export type CollaborationMessage =

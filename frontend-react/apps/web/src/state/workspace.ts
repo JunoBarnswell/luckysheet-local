@@ -108,6 +108,7 @@ export interface SheetView {
   columns: string[];
   id: string;
   isEmpty?: boolean;
+  getCell: (row: number, column: number) => SheetCell | undefined;
   name: string;
   rows: SheetRow[];
   charts: ChartModel[];
@@ -490,7 +491,10 @@ function submitChangeset(
   operationId: string,
   mutations: CollaborationMutation[],
 ): void {
-  if (!runtime.remoteConnected) return;
+  if (!runtime.remoteConnected || !runtime.collab) {
+    runtime.handlers.onSaveState?.('offline');
+    return;
+  }
   runtime.ownOperationIds.add(operationId);
   const changeSet = {
     schema: 'CollaborationChangeSetV1' as const,
@@ -502,15 +506,9 @@ function submitChangeset(
     createdAt: new Date().toISOString(),
   };
   runtime.handlers.onSaveState?.('saving');
-  void runtime.api
-    .submitChangeSet(changeSet)
-    .then((result) => {
-      runtime.remoteRevision = Math.max(runtime.remoteRevision, result.revision);
-      runtime.handlers.onSaveState?.('saved');
-    })
-    .catch(() => {
-      runtime.handlers.onSaveState?.('offline');
-    });
+  if (!runtime.collab.send({ type: 'changeset.submit', payload: changeSet })) {
+    runtime.handlers.onSaveState?.('syncing');
+  }
 }
 
 // ---------- 启动恢复 ----------
@@ -581,34 +579,42 @@ function toSheetView(
   const filterHidden = computeFilterHiddenRows(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden]);
   const filterColumns = sheet.filter ? Object.keys(sheet.filter.criteria).map(Number) : [];
+  const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
+
+  const getCell = (row: number, column: number): SheetCell | undefined => {
+    if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
+    const modelCell = sheet.cells.get(row, column);
+    const value = formatDisplayValue(modelCell, formula, sheet.id, row, column);
+    const key = `${row}:${column}`;
+    const overlay = overlays.get(key);
+    const style = overlay?.style
+      ? { ...(modelCell?.style ?? {}), ...overlay.style }
+      : modelCell?.style;
+    const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
+    return {
+      address: cellAddress(row, column),
+      formula: modelCell?.formula,
+      style,
+      value,
+      displayValue: value,
+      hasComment: Boolean(modelCell?.comment),
+      commentText: modelCell?.comment?.text,
+      invalid: showInvalid && modelCell?.value != null && !validation.valid,
+      hyperlink: modelCell?.hyperlink,
+      overlay,
+    };
+  };
+
   const rows: SheetRow[] = [];
 
-  const totalRows = Math.max(60, sheet.rowCount);
-  for (let row = 0; row < totalRows; row += 1) {
+  // Rows are a bounded preview for panels and print UI. Canvas reads other cells through getCell.
+  const previewRows = Math.min(Math.max(60, sheet.rowCount), 200);
+  for (let row = 0; row < previewRows; row += 1) {
     if (hiddenRows.has(row)) continue;
     const cells: SheetCell[] = [];
-    for (let column = 0; column < columns.length; column += 1) {
-      const modelCell = sheet.cells.get(row, column);
-      const value = formatDisplayValue(modelCell, formula, sheet.id, row, column);
-      const key = `${row}:${column}`;
-      const overlay = overlays.get(key);
-      const style = overlay?.style
-        ? { ...(modelCell?.style ?? {}), ...overlay.style }
-        : modelCell?.style;
-
-      const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
-
-      cells.push({
-        address: cellAddress(row, column),
-        formula: modelCell?.formula,
-        style,
-        value,
-        hasComment: Boolean(modelCell?.comment),
-        commentText: modelCell?.comment?.text,
-        invalid: showInvalid && modelCell?.value != null && !validation.valid,
-        hyperlink: modelCell?.hyperlink,
-        overlay,
-      });
+    for (let column = 0; column < viewColumns.length; column += 1) {
+      const cell = getCell(row, column);
+      if (cell) cells.push(cell);
     }
     rows.push({ rowNumber: row + 1, cells, height: sheet.rowHeights[row] ?? 28 });
   }
@@ -627,8 +633,9 @@ function toSheetView(
   return {
     id: sheet.id,
     name: sheet.name,
-    columns,
+    columns: viewColumns,
     rows,
+    getCell,
     isEmpty,
     charts: [...sheet.charts],
     pivots: [...sheet.pivots],
@@ -643,7 +650,7 @@ function toSheetView(
     columnWidths: { ...sheet.columnWidths },
     hiddenRows: [...hiddenRows].sort((a, b) => a - b),
     filterColumns,
-    rowCount: totalRows,
+    rowCount: sheet.rowCount,
   };
 }
 
@@ -703,8 +710,6 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   // P7 协同:?collab=1 时建立 WebSocket,接收远端变更(幂等)与光标
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!new URLSearchParams(window.location.search).has('collab')) return;
-
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const client = new CollabSocketClient(protocol + '://' + window.location.host + '/api/v1/collab');
     runtime.collab = client;
@@ -723,6 +728,14 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
         runtime.ownOperationIds.add(message.operationId);
         runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
         runtime.handlers.onSaveState?.('saved');
+      } else if (message.type === 'changeset.reject') {
+        runtime.ownOperationIds.delete(message.operationId);
+        runtime.handlers.onSaveState?.('offline');
+        runtime.handlers.onNotice?.(`Change rejected: ${message.error.message}`);
+        void runtime.api.getSnapshot(runtime.model.unitId).then((snapshot) => {
+          hydrateRuntime(runtime, snapshot);
+          runtime.handlers.onMutationsApplied?.();
+        }).catch(() => undefined);
       } else if (message.type === 'cursor.updated' || message.type === 'presence.updated') {
         if (message.unitId && message.unitId !== runtime.model.unitId) return;
         const cursorState = message.state as { row?: number; column?: number; name?: string; sheetId?: string } | null;
@@ -1298,7 +1311,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           refresh();
           break;
         case 'clear-formats':
-          runtime.commands.execute('sheet.style.clear', { sheetId: activeSheetId, range: primaryRange });
+          runtime.commands.execute('sheet.range.clear', { sheetId: activeSheetId, range: primaryRange, mode: 'formats' });
           refresh();
           break;
         case 'autosum': {
@@ -1807,7 +1820,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
 
   const clearFilter = useCallback(() => {
     if (phase !== 'ready') return;
-    runtime.commands.execute('filter.remove', { sheetId: activeSheetId });
+    runtime.commands.execute('sheet.filter.remove', { sheetId: activeSheetId });
     refresh();
   }, [activeSheetId, phase, refresh, runtime]);
 
@@ -1891,7 +1904,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     const start = range?.startRow ?? selection.primaryRowIndex;
     const end = range?.endRow ?? selection.primaryRowIndex;
     for (let row = start; row <= end; row++) {
-      runtime.commands.execute('rows.hidden', { sheetId: activeSheetId, index: row });
+      runtime.commands.execute('sheet.row.hide', { sheetId: activeSheetId, index: row });
     }
     refresh();
   }, [activeSheetId, phase, refresh, runtime, selection]);
@@ -1902,15 +1915,15 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
     const start = range?.startColumn ?? selection.primaryColumnIndex;
     const end = range?.endColumn ?? selection.primaryColumnIndex;
     for (let column = start; column <= end; column++) {
-      runtime.commands.execute('columns.hidden', { sheetId: activeSheetId, index: column });
+      runtime.commands.execute('sheet.column.hide', { sheetId: activeSheetId, index: column });
     }
     refresh();
   }, [activeSheetId, phase, refresh, runtime, selection]);
 
   const unhideAll = useCallback(() => {
     if (phase !== 'ready') return;
-    runtime.commands.execute('rows.unhidden.all', { sheetId: activeSheetId });
-    runtime.commands.execute('columns.unhidden.all', { sheetId: activeSheetId });
+    runtime.commands.execute('sheet.rows.unhide.all', { sheetId: activeSheetId });
+    runtime.commands.execute('sheet.columns.unhide.all', { sheetId: activeSheetId });
     refresh();
   }, [activeSheetId, phase, refresh, runtime]);
 

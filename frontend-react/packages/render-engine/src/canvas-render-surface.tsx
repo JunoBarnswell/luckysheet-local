@@ -20,13 +20,15 @@ export const CanvasRenderSurface = forwardRef<CanvasRenderEngine, CanvasRenderSu
     }
     const engine = engineRef.current;
     const hostRef = useRef<HTMLDivElement | null>(null);
+    const onReadyRef = useRef(props.onReady);
+    onReadyRef.current = props.onReady;
 
     useImperativeHandle(ref, () => engine, [engine]);
     useLayoutEffect(() => {
       const host = hostRef.current;
       if (!host) return undefined;
       engine.mount(host);
-      props.onReady?.(engine);
+      onReadyRef.current?.(engine);
       const resize = () => {
         engine.resizeFromHost();
         engine.requestRender();
@@ -41,7 +43,7 @@ export const CanvasRenderSurface = forwardRef<CanvasRenderEngine, CanvasRenderSu
         engine.unmount();
         if (ownsEngineRef.current) engine.dispose();
       };
-    }, [engine, props.onReady]);
+    }, [engine]);
 
     return createElement('div', {
       ref: hostRef,

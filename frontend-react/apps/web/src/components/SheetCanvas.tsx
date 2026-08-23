@@ -23,7 +23,7 @@ import {
   createEmptyChromeState,
 } from "@react-sheets/render-engine";
 import { drawChartOnCanvas, drawShapeOnCanvas, drawSparklineOnCanvas } from "@react-sheets/pro-features";
-import type { ChartModel, PivotResultTree, ShapeModel, SparklineModel } from "@react-sheets/core-model";
+import type { ChartModel, PivotResultTree, RangeRef, ShapeModel, SparklineModel } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
 import type { PeerCursor, SelectionState, SheetCell, SheetView, WorkspacePhase } from "../state/workspace";
@@ -55,8 +55,6 @@ export interface SheetCanvasProps {
   onToggleAbsolute: () => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
-  onSelectRows: (startRow: number, endRow: number, additive: boolean) => void;
-  onSelectColumns: (startColumn: number, endColumn: number, additive: boolean) => void;
   onResizeRow: (row: number, heightPx: number) => void;
   onResizeColumn: (column: number, widthPx: number) => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
@@ -84,6 +82,19 @@ interface DragState {
   floating?: { id: string; handle?: string; startBounds: Rect; startLocal: { x: number; y: number } };
 }
 
+function toChromeSelection(selection: SelectionState): ChromeState['selection'] {
+  return {
+    ranges: selection.ranges.map((range) => ({
+      startRow: range.startRow,
+      endRow: range.endRow,
+      startColumn: range.startColumn,
+      endColumn: range.endColumn,
+    })),
+    primary: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex },
+    primaryIndex: selection.primaryRangeIndex,
+  };
+}
+
 export function SheetCanvas({
   sheet,
   sheetId,
@@ -109,8 +120,6 @@ export function SheetCanvas({
   onToggleAbsolute,
   onJumpEdge,
   onSelectAll,
-  onSelectRows,
-  onSelectColumns,
   onResizeRow,
   onResizeColumn,
   onFillRange,
@@ -131,6 +140,8 @@ export function SheetCanvas({
   const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
+  const transientSelectionRef = useRef<SelectionState | null>(null);
+  const transientSelectionFrameRef = useRef<number | null>(null);
 
   const zoomFactor = zoom / 100;
 
@@ -150,47 +161,37 @@ export function SheetCanvas({
     [sheet.rowCount, sheet.columns.length, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, zoomFactor],
   );
 
-  const cellsMap = useMemo(() => {
-    const map = new Map<string, CellRenderData>();
-    for (const row of sheet.rows) {
-      for (const cell of row.cells) {
-        const match = /^([A-Z]+)(\d+)$/.exec(cell.address);
-        if (!match?.[1] || !match[2]) continue;
-        let columnIndex = 0;
-        for (const character of match[1]) columnIndex = columnIndex * 26 + character.charCodeAt(0) - 64;
-        const rowIndex = Number(match[2]) - 1;
-        const columnIndex0 = columnIndex - 1;
-        const merge = sheet.merges.find((span) =>
-          rowIndex >= span.range.startRow && rowIndex <= span.range.endRow
-          && columnIndex0 >= span.range.startColumn && columnIndex0 <= span.range.endColumn);
-        const isAnchor = merge ? merge.anchor.row === rowIndex && merge.anchor.column === columnIndex0 : true;
-        map.set(rowIndex + ":" + columnIndex0, {
-          value: parseCellValue(cell),
-          formula: cell.formula,
-          displayValue: cell.value,
-          style: cell.style,
-          overlay: cell.overlay
-            ? {
-                dataBar: cell.overlay.dataBar,
-                colorScale: cell.overlay.colorScale,
-                icon: cell.overlay.icon,
-              }
-            : undefined,
-          hasComment: cell.hasComment,
-          invalid: cell.invalid,
-          merge: merge
-            ? {
-                startRow: merge.range.startRow,
-                endRow: merge.range.endRow,
-                startColumn: merge.range.startColumn,
-                endColumn: merge.range.endColumn,
-                isAnchor,
-              }
-            : undefined,
-        });
-      }
-    }
-    return map;
+  const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
+    const cell = sheet.getCell(row, column);
+    if (!cell) return undefined;
+    const merge = sheet.merges.find((span) =>
+      row >= span.range.startRow && row <= span.range.endRow
+      && column >= span.range.startColumn && column <= span.range.endColumn);
+    const isAnchor = merge ? merge.anchor.row === row && merge.anchor.column === column : true;
+    return {
+      value: parseCellValue(cell),
+      formula: cell.formula,
+      displayValue: cell.value,
+      style: cell.style,
+      overlay: cell.overlay
+        ? {
+            dataBar: cell.overlay.dataBar,
+            colorScale: cell.overlay.colorScale,
+            icon: cell.overlay.icon,
+          }
+        : undefined,
+      hasComment: cell.hasComment,
+      invalid: cell.invalid,
+      merge: merge
+        ? {
+            startRow: merge.range.startRow,
+            endRow: merge.range.endRow,
+            startColumn: merge.range.startColumn,
+            endColumn: merge.range.endColumn,
+            isAnchor,
+          }
+        : undefined,
+    };
   }, [sheet]);
 
   // ---------- 浮动对象绘制器 ----------
@@ -259,7 +260,7 @@ export function SheetCanvas({
     const values: number[] = [];
     for (let row = source.startRow; row <= source.endRow; row++) {
       for (let column = source.startColumn; column <= source.endColumn; column++) {
-        const cell = sheet.rows[row]?.cells[column];
+        const cell = sheet.getCell(row, column);
         if (!cell) continue;
         const numeric = Number(cell.value.replace(/[$,%]/g, ""));
         if (Number.isFinite(numeric) && cell.value !== "") {
@@ -278,7 +279,7 @@ export function SheetCanvas({
     const source = sparkline.sourceRange;
     for (let row = source.startRow; row <= source.endRow; row++) {
       for (let column = source.startColumn; column <= source.endColumn; column++) {
-        const cell = sheet.rows[row]?.cells[column];
+        const cell = sheet.getCell(row, column);
         if (!cell) continue;
         const numeric = Number(cell.value.replace(/[$,%]/g, ""));
         if (Number.isFinite(numeric) && cell.value !== "") values.push(numeric);
@@ -291,16 +292,7 @@ export function SheetCanvas({
 
   const chromeState = useMemo<ChromeState>(() => {
     const state = createEmptyChromeState();
-    state.selection = {
-      ranges: selection.ranges.map((range) => ({
-        startRow: range.startRow,
-        endRow: range.endRow,
-        startColumn: range.startColumn,
-        endColumn: range.endColumn,
-      })),
-      primary: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex },
-      primaryIndex: selection.primaryRangeIndex,
-    };
+    state.selection = toChromeSelection(selection);
     state.editing = editingCell ? { row: editingCell.row, column: editingCell.column } : null;
     state.filterColumns = sheet.filterColumns;
     state.remoteCursors = peers.map((peer) => ({
@@ -317,8 +309,8 @@ export function SheetCanvas({
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    engine.setCells(cellsMap);
-  }, [cellsMap]);
+    engine.setCellProvider(cellProvider);
+  }, [cellProvider]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -347,6 +339,39 @@ export function SheetCanvas({
     if (!engine) return;
     engine.setChrome(chromeState);
   }, [chromeState]);
+
+  const clearTransientSelection = useCallback(() => {
+    transientSelectionRef.current = null;
+    if (transientSelectionFrameRef.current !== null) {
+      if (typeof window !== 'undefined') window.cancelAnimationFrame(transientSelectionFrameRef.current);
+      transientSelectionFrameRef.current = null;
+    }
+    const engine = engineRef.current;
+    if (engine) engine.setChrome(chromeState);
+  }, [chromeState]);
+
+  const queueTransientSelection = useCallback((nextSelection: SelectionState) => {
+    transientSelectionRef.current = nextSelection;
+    if (transientSelectionFrameRef.current !== null) return;
+    const draw = () => {
+      transientSelectionFrameRef.current = null;
+      const preview = transientSelectionRef.current;
+      const engine = engineRef.current;
+      if (!preview || !engine) return;
+      engine.setChrome({ ...chromeState, selection: toChromeSelection(preview) });
+    };
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      transientSelectionFrameRef.current = window.requestAnimationFrame(draw);
+    } else {
+      transientSelectionFrameRef.current = setTimeout(draw, 0) as unknown as number;
+    }
+  }, [chromeState]);
+
+  useEffect(() => () => {
+    if (transientSelectionFrameRef.current === null) return;
+    if (typeof window !== 'undefined') window.cancelAnimationFrame(transientSelectionFrameRef.current);
+    transientSelectionFrameRef.current = null;
+  }, []);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -438,12 +463,9 @@ export function SheetCanvas({
         }
         const additive = event.ctrlKey || event.metaKey;
         if (headerHit.kind === "col") {
-          onSelectColumns(headerHit.index, headerHit.index, additive);
           if (sheet.filterColumns.includes(headerHit.index)) {
             setFilterPopover({ column: headerHit.index, x: event.clientX, y: event.clientY });
           }
-        } else {
-          onSelectRows(headerHit.index, headerHit.index, additive);
         }
         dragRef.current = {
           kind: "select",
@@ -510,16 +532,18 @@ export function SheetCanvas({
         resizeIndex: 0,
         floating: undefined,
       };
-      onSelectionChange({
-        ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }],
-        primaryRowIndex: cell.row,
-        primaryColumnIndex: cell.column,
-        primaryRangeIndex: 0,
-      });
+      if (!additive) {
+        onSelectionChange({
+          ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }],
+          primaryRowIndex: cell.row,
+          primaryColumnIndex: cell.column,
+          primaryRangeIndex: 0,
+        });
+      }
       (event.target as Element).setPointerCapture?.(event.pointerId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [floatables, localPointOf, onFloatingSelect, onSelectAll, onSelectColumns, onSelectRows, onSelectionChange, phase, selection, sheet.filterColumns, sheetId, skeleton],
+    [floatables, localPointOf, onFloatingSelect, onSelectAll, onSelectionChange, phase, selection, sheet.filterColumns, sheetId, skeleton],
   );
 
   const handlePointerMove = useCallback(
@@ -611,7 +635,7 @@ export function SheetCanvas({
       const endColumn = Math.max(drag.anchorColumn, cell.column);
       const isRowDrag = drag.floating?.id === "row";
       const isColDrag = drag.floating?.id === "col";
-      onSelectionChange({
+      const nextSelection: SelectionState = {
         ranges: [{
           sheetId,
           startRow: isRowDrag || isColDrag ? drag.startRow : startRow,
@@ -622,10 +646,14 @@ export function SheetCanvas({
         primaryRowIndex: isRowDrag || isColDrag ? drag.anchorRow : drag.anchorRow,
         primaryColumnIndex: drag.anchorColumn,
         primaryRangeIndex: 0,
-      });
+      };
+      const previewSelection = drag.additive
+        ? { ...selection, ranges: [...selection.ranges, ...nextSelection.ranges], primaryRangeIndex: selection.ranges.length, primaryRowIndex: nextSelection.primaryRowIndex, primaryColumnIndex: nextSelection.primaryColumnIndex }
+        : nextSelection;
+      queueTransientSelection(previewSelection);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chromeState, localPointOf, onFloatingMove, onSelectionChange, sheetId, skeleton],
+    [localPointOf, onFloatingMove, queueTransientSelection, selection, sheetId, skeleton],
   );
 
   const handlePointerUp = useCallback(
@@ -661,9 +689,29 @@ export function SheetCanvas({
         }
         return;
       }
+      if (drag.kind === "select") {
+        const startRow = Math.min(drag.anchorRow, drag.currentRow);
+        const endRow = Math.max(drag.anchorRow, drag.currentRow);
+        const startColumn = Math.min(drag.anchorColumn, drag.currentColumn);
+        const endColumn = Math.max(drag.anchorColumn, drag.currentColumn);
+        const isRowDrag = drag.floating?.id === "row";
+        const isColDrag = drag.floating?.id === "col";
+        const range: RangeRef = {
+          sheetId,
+          startRow: isRowDrag || isColDrag ? drag.startRow : startRow,
+          endRow: isRowDrag ? drag.currentRow : isColDrag ? Math.max(0, skeleton.rowCount - 1) : endRow,
+          startColumn: isColDrag ? drag.startColumn : startColumn,
+          endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : endColumn,
+        };
+        const nextSelection: SelectionState = drag.additive
+          ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, primaryRowIndex: drag.anchorRow, primaryColumnIndex: drag.anchorColumn }
+          : { ranges: [range], primaryRowIndex: drag.anchorRow, primaryColumnIndex: drag.anchorColumn, primaryRangeIndex: 0 };
+        clearTransientSelection();
+        onSelectionChange(nextSelection);
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [localPointOf, onFillRange, onResizeColumn, onResizeRow, skeleton, zoom],
+    [clearTransientSelection, localPointOf, onFillRange, onResizeColumn, onResizeRow, onSelectionChange, selection, sheetId, skeleton, zoom],
   );
 
   const handleDoubleClick = useCallback(
@@ -679,8 +727,8 @@ export function SheetCanvas({
         const context = engine.getCanvas("content")?.getContext("2d");
         if (context) {
           context.font = "13px Inter, sans-serif";
-          for (const row of sheet.rows) {
-            const cell = row.cells[column];
+          for (let row = 0; row < Math.min(sheet.rowCount, 200); row += 1) {
+            const cell = sheet.getCell(row, column);
             if (cell?.value) maxWidth = Math.max(maxWidth, context.measureText(cell.value).width + 16);
           }
         }
@@ -697,7 +745,7 @@ export function SheetCanvas({
       onBeginEdit();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [getValidationList, localPointOf, onBeginEdit, onResizeColumn, sheet.rows, zoom],
+    [getValidationList, localPointOf, onBeginEdit, onResizeColumn, sheet, zoom],
   );
 
   const handleWheel = useCallback(
@@ -890,7 +938,7 @@ export function SheetCanvas({
             <CanvasRenderSurface
               onReady={(engine) => {
                 engineRef.current = engine;
-                engine.setCells(cellsMap);
+                engine.setCellProvider(cellProvider);
                 engine.setSkeleton(skeleton);
                 engine.setFloating(floatables, selectedFloatingId);
                 engine.setChrome(chromeState);

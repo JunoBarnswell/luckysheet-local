@@ -17,13 +17,14 @@ export interface FilterPopoverProps {
 export function FilterPopover({ column, sheet, onApply, onClose }: FilterPopoverProps): React.ReactElement {
   const values = useMemo(() => {
     const set = new Set<string>();
-    for (let row = 1; row < sheet.rows.length; row++) {
-      const cell = sheet.rows[row]?.cells[column];
+    const scanEnd = Math.min(sheet.rowCount, 2000);
+    for (let row = 1; row < scanEnd; row++) {
+      const cell = sheet.getCell(row, column);
       if (cell && cell.value !== '') set.add(cell.value);
       if (set.size > 200) break;
     }
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [column, sheet.rows]);
+  }, [column, sheet]);
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set(values));
   const [search, setSearch] = useState('');

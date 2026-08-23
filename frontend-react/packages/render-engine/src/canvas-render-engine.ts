@@ -145,6 +145,7 @@ export class CanvasRenderEngine {
     this.viewport.setSize(width, height, devicePixelRatio);
     if (this.scene.mounted) this.scene.resize({ width, height }, devicePixelRatio);
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   resizeFromHost(): void {
@@ -163,16 +164,19 @@ export class CanvasRenderEngine {
       this.scene.resize({ width: after.width, height: after.height }, after.devicePixelRatio);
       this.forceFullRedraw = true;
     }
+    this.requestRender();
   }
 
   scrollTo(x: number, y: number): void {
     this.assertActive();
     this.viewport.scrollTo(x, y, this.skeletonModel.contentSize);
+    this.requestRender();
   }
 
   scrollBy(deltaX: number, deltaY: number): void {
     this.assertActive();
     this.viewport.scrollBy(deltaX, deltaY, this.skeletonModel.contentSize);
+    this.requestRender();
   }
 
   setSkeleton(skeleton: SheetSkeleton): void {
@@ -180,12 +184,14 @@ export class CanvasRenderEngine {
     this.skeletonModel = skeleton;
     this.viewport.clampTo(skeleton.contentSize);
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   setCellProvider(cellProvider: CellProvider): void {
     this.assertActive();
     this.cellProvider = cellProvider;
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   setCells(cells: ReadonlyMap<string, CellRenderData>): void {
@@ -196,15 +202,18 @@ export class CanvasRenderEngine {
     this.assertActive();
     this.theme = mergeTheme(theme);
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   invalidate(ranges?: readonly CellRange[]): void {
     this.assertActive();
     if (ranges === undefined) {
       this.forceFullRedraw = true;
+      this.requestRender();
       return;
     }
     this.dirtyRanges.addMany(ranges);
+    this.requestRender();
   }
 
   markDirty(ranges?: readonly CellRange[]): void {
@@ -217,12 +226,14 @@ export class CanvasRenderEngine {
     this.assertActive();
     this.freezeSplits = freeze && (freeze.xSplit > 0 || freeze.ySplit > 0) ? freeze : null;
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   setChrome(state: ChromeState): void {
     this.assertActive();
     this.chrome = state;
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   setFloating(objects: readonly FloatingDrawable[], selectedId: string | null = null): void {
@@ -230,6 +241,7 @@ export class CanvasRenderEngine {
     this.floatables = objects;
     this.chrome.selectedFloatingId = selectedId;
     this.forceFullRedraw = true;
+    this.requestRender();
   }
 
   onViewportChanged(listener: () => void): () => void {

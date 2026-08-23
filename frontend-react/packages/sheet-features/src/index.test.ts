@@ -154,3 +154,34 @@ test('clipboard: TSV format, parse, and formula shifting', () => {
 
   assert.equal(shiftFormula('=A1+$B$1+C$1+$D1', 2, 3), '=D3+$B$1+F$1+$D3');
 });
+
+test('sheet commands: hide and unhide rows and columns are undoable commands', () => {
+  const workbook = new WorkbookModel('unit-hidden', 'Hidden');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+
+  runtime.execute('sheet.row.hide', { sheetId: sheet.id, index: 2 });
+  runtime.execute('sheet.column.hide', { sheetId: sheet.id, index: 3 });
+  assert.equal(sheet.hiddenRows.has(2), true);
+  assert.equal(sheet.hiddenColumns.has(3), true);
+
+  runtime.undo();
+  assert.equal(sheet.hiddenColumns.has(3), false);
+  runtime.undo();
+  assert.equal(sheet.hiddenRows.has(2), false);
+
+  runtime.redo();
+  runtime.redo();
+  assert.equal(sheet.hiddenRows.has(2), true);
+  assert.equal(sheet.hiddenColumns.has(3), true);
+
+  runtime.execute('sheet.rows.unhide.all', { sheetId: sheet.id });
+  runtime.execute('sheet.columns.unhide.all', { sheetId: sheet.id });
+  assert.equal(sheet.hiddenRows.size, 0);
+  assert.equal(sheet.hiddenColumns.size, 0);
+  runtime.undo();
+  assert.equal(sheet.hiddenColumns.has(3), true);
+  runtime.undo();
+  assert.equal(sheet.hiddenRows.has(2), true);
+});

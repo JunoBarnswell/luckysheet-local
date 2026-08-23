@@ -94,6 +94,14 @@ export class CommandRegistry {
   hasMutation(id: string): boolean {
     return this.mutations.has(id);
   }
+
+  listCommandIds(): string[] {
+    return [...this.commands.keys()].sort();
+  }
+
+  listMutationIds(): string[] {
+    return [...this.mutations.keys()].sort();
+  }
 }
 
 export interface HistoryEntry {
@@ -259,6 +267,9 @@ export class CommandRuntime {
 
   private applyHistory(items: readonly MutationInfo[], source: MutationSource): void {
     for (const item of items) {
+      if (item.unitId !== this.workbook.unitId) {
+        throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${item.unitId}`);
+      }
       const handler = this.registry.getMutation(item.id);
       handler(item, {
         workbook: this.workbook,

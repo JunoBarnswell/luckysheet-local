@@ -95,3 +95,20 @@ test('CommandRegistry guards against duplicate IDs and unknown lookups', () => {
   assert.throws(() => runtime.registry.registerCommand({ id: 'cmd.1', execute: () => ({ operationId: '1', mutationCount: 0, affectedRanges: [] }) }), /Duplicate command/);
   assert.throws(() => runtime.execute('non.existent', {}), /Unknown command/);
 });
+
+test('remote mutations reject a different workbook unit', () => {
+  const workbook = new WorkbookModel('unit-remote', 'Remote');
+  const runtime = new CommandRuntime(workbook);
+  runtime.registry.registerMutation('cell.set', (item, context) => {
+    const params = item.params as { row: number; column: number; value: string };
+    context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+  });
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cell.set',
+    unitId: 'other-unit',
+    sheetId: 'sheet-1',
+    params: { row: 0, column: 0, value: 'invalid' },
+    affectedRanges: [],
+  }]), /Mutation unit mismatch/);
+});
