@@ -55,6 +55,21 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('hello-e2e');
   });
 
+  test('clicking another cell commits the old editor before accepting the new value', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    await page.keyboard.type('old-cell-value');
+    await expect(page.getByLabel('Cell editor')).toBeVisible();
+    await canvas.click({ position: { x: 210, y: 38 } });
+    await expect(page.getByTestId('name-box')).toHaveValue('B1');
+    await expect(page.getByLabel('Cell editor')).toHaveCount(0);
+    await page.keyboard.type('new-cell-value');
+    await page.keyboard.press('Enter');
+    await canvas.press('ArrowUp');
+    await expect(page.getByTestId('name-box')).toHaveValue('B1');
+    await expect(page.getByTestId('formula-input')).toHaveValue('new-cell-value');
+  });
+
   test('clipboard copy and paste round-trip', async ({ page, context }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await waitForWorkspace(page);

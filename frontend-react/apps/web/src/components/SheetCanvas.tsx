@@ -1125,11 +1125,16 @@ export function SheetCanvas({
     (event: React.PointerEvent) => {
       if (phase !== "ready") return;
       if (event.button === 2) return; // 右键交给 contextmenu
+      if ((event.target as Element).closest('[aria-label="Cell editor"]')) return;
       stopAutoScroll();
       const engine = engineRef.current;
       const host = containerRef.current;
       if (!engine || !host) return;
       host.focus();
+      if (editingCell || editingActiveRef.current) {
+        editingActiveRef.current = false;
+        onCommitEdit("none");
+      }
       setFilterPopover(null);
       setValidationDropdown(null);
       const local = localPointOf(event);
@@ -1310,7 +1315,7 @@ export function SheetCanvas({
       (event.target as Element).setPointerCapture?.(event.pointerId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [floatables, localPointOf, onFloatingSelect, onSelectAll, onSelectionChange, phase, selection, sheet.filterButtons, sheet.filterColumns, sheetId, skeleton, stopAutoScroll],
+    [editingCell, floatables, localPointOf, onCommitEdit, onFloatingSelect, onSelectAll, onSelectionChange, phase, selection, sheet.filterButtons, sheet.filterColumns, sheetId, skeleton, stopAutoScroll],
   );
 
   const handlePointerMove = useCallback(
