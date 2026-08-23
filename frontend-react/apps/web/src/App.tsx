@@ -16,7 +16,7 @@ import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
 import { WorkbookCatalog } from "./components/WorkbookCatalog";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { parseRangeInput } from "./domain/range-input";
-import { mapRibbonAction } from "./domain/ribbon-command-map";
+import type { CommandDescriptor } from "./domain/command-descriptor";
 import {
   addFieldToLayout,
   clonePivotLayout,
@@ -27,7 +27,6 @@ import {
   setLayoutMode,
   updateValueInLayout,
 } from "./domain/pivot-layout-ops";
-import type { RibbonAction } from "./domain/ribbon-actions";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getInitialAppPhase,
@@ -52,9 +51,8 @@ function WorkspaceApp() {
     persistLocale(nextLocale);
   };
 
-  const executeRibbonAction = (action: RibbonAction, payload?: unknown) => {
-    const { commandId, params } = mapRibbonAction(action, payload);
-    app.execute(commandId, params);
+  const executeCommand = (descriptor: CommandDescriptor) => {
+    app.execute(descriptor.commandId, descriptor.params);
   };
 
   useEffect(() => {
@@ -224,20 +222,20 @@ function WorkspaceApp() {
   };
   const selectPanel = (panel: SidebarPanelId) => {
     setSidebarOpen(true);
-    const actionByPanel: Partial<Record<SidebarPanelId, RibbonAction>> = {
-      inspector: "open-comments",
-      chart: "open-chart",
-      pivot: "open-pivot",
-      shape: "open-shape",
-      sparkline: "open-sparkline",
-      conditionalFormat: "open-conditional-format",
-      dataValidation: "open-data-validation",
-      print: "open-print",
-      history: "open-history",
-      data: "open-data-table",
+    const commandByPanel: Partial<Record<SidebarPanelId, CommandDescriptor>> = {
+      inspector: { commandId: "ui.panel.open", params: { panel: "inspector", notice: "Select a cell and use Review tools for comments." } },
+      chart: { commandId: "ui.panel.open", params: { panel: "chart" } },
+      pivot: { commandId: "ui.panel.open", params: { panel: "pivot" } },
+      shape: { commandId: "ui.panel.open", params: { panel: "shape" } },
+      sparkline: { commandId: "ui.panel.open", params: { panel: "sparkline" } },
+      conditionalFormat: { commandId: "ui.panel.open", params: { panel: "conditionalFormat" } },
+      dataValidation: { commandId: "ui.panel.open", params: { panel: "dataValidation" } },
+      print: { commandId: "ui.dialog.open", params: { dialog: "print-preview" } },
+      history: { commandId: "ui.panel.open", params: { panel: "history" } },
+      data: { commandId: "ui.panel.open", params: { panel: "data" } },
     };
-    const action = actionByPanel[panel];
-    if (action) executeRibbonAction(action);
+    const command = commandByPanel[panel];
+    if (command) executeCommand(command);
     else app.setActivePanel(panel);
   };
 
@@ -275,7 +273,7 @@ function WorkspaceApp() {
               else app.commitFormula();
             }}
             onNameBoxCommit={(value) => app.selectAddress(value)}
-            onOpenWizard={() => executeRibbonAction("function-wizard")}
+            onOpenWizard={() => executeCommand({ commandId: "ui.dialog.open", params: { dialog: "function-wizard" } })}
             phase={state.phase}
           />
         }
@@ -284,7 +282,7 @@ function WorkspaceApp() {
         localeMenuLabel={localeLabels[locale]}
         notice={state.notice}
         onLocaleChange={setLocale}
-        onSearch={(query) => executeRibbonAction("find-replace", query)}
+        onSearch={(query) => executeCommand({ commandId: "ui.dialog.open", params: { dialog: "find-replace", findQuery: query } })}
         onShare={copyWorkbookLink}
         peers={state.peers}
         workbookMenu={
@@ -307,13 +305,13 @@ function WorkspaceApp() {
                 <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); copyWorkbookLink(); }}>
                   Copy workbook link
                 </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeRibbonAction("export-xlsx"); }}>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeCommand({ commandId: "ui.file.export-xlsx" }); }}>
                   Export .xlsx
                 </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeRibbonAction("import-xlsx"); }}>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeCommand({ commandId: "ui.file.import-xlsx" }); }}>
                   Import .xlsx
                 </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeRibbonAction("open-print"); }}>
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); executeCommand({ commandId: "ui.dialog.open", params: { dialog: "print-preview" } }); }}>
                   Print / Save as PDF
                 </Button>
               </Stack>
@@ -409,7 +407,7 @@ function WorkspaceApp() {
                 else app.updateShapeBounds(id, bounds);
               }}
               onFloatingRemove={(kind, id) => app.removeFloatingObject(kind, id)}
-              onAction={executeRibbonAction}
+              onCommand={executeCommand}
               onApplyFilter={(column, patch) => app.applyFilter(column, patch)}
               onToggleOutline={(groupId) => app.toggleOutlineGroup(groupId)}
               getValidationList={app.getValidationAt}

@@ -19,7 +19,11 @@ export class CapabilityRegistry {
 
   constructor() {
     this.register({ id: 'what-if', enabled: true });
-    this.register({ id: 'groupby-pivotby', enabled: true });
+    this.register({
+      id: 'groupby-pivotby',
+      enabled: false,
+      reason: 'GROUPBY/PIVOTBY are disabled until their full calculation and spill semantics are implemented',
+    });
     this.register({ id: 'solver', enabled: false, reason: 'Requires external Solver engine' });
     this.register({ id: 'dax', enabled: false, reason: 'Requires Data Model runtime' });
     this.register({ id: 'python-runtime', enabled: false, reason: 'Requires Python sandbox service' });

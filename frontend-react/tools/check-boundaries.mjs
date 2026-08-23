@@ -18,6 +18,37 @@ const forbiddenTokens = [
   'handleRibbonAction',
 ];
 
+const testFilePattern = /(?:^|[/.])(?:[^/]+\.)?(?:test|spec)\.[^/]+$/i;
+const uiSourcePattern = /^apps\/web\//;
+const bridgeImportPattern = /(?:from|import\s*\()\s*['"][^'"]*-bridge(?:\.[^'"]+)?['"]/;
+const directWorkbookMutationPattern = /\b(?:workbook|model)\s*\.\s*(?:[A-Za-z_$][\w$]*\s*=|(?:set|add|delete|remove|insert|update|splice|push)\s*\()/;
+
+function isTestFile(relPath) {
+  return testFilePattern.test(relPath) || /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i.test(relPath);
+}
+
+function collectUiArchitectureViolations(relPath, source) {
+  // The first gate is intentionally scoped to the browser application. The
+  // remaining feature packages still own legacy implementations during the
+  // destructive migration, while new UI consumers must not add another path.
+  if (!uiSourcePattern.test(relPath) || isTestFile(relPath)) return [];
+
+  const violations = [];
+  if (/\bRibbonAction\b|ribbon-(?:actions|command-map)/.test(source)) {
+    violations.push(`${relPath}: UI must dispatch CommandDescriptor directly; RibbonAction/map is removed`);
+  }
+  if (/\bpro\./.test(source)) {
+    violations.push(`${relPath}: UI must not depend on the legacy pro. command namespace`);
+  }
+  if (relPath.endsWith('-bridge.ts') || relPath.endsWith('-bridge.tsx') || bridgeImportPattern.test(source)) {
+    violations.push(`${relPath}: UI must not define or import *-bridge compatibility paths`);
+  }
+  if (/\bWorkbookModel\b/.test(source) || directWorkbookMutationPattern.test(source)) {
+    violations.push(`${relPath}: UI must not write Workbook/WorkbookModel directly; dispatch a command`);
+  }
+  return violations;
+}
+
 const packageImportPattern = /(?:from|import)\s+['"]@react-sheets\/([^'"]+)['"]/g;
 const appsImportPattern = /(?:from|import)\s+['"](?:\.\.?\/)+apps\//g;
 
@@ -86,13 +117,15 @@ const packageGraph = new Map();
 for (const file of files) {
   const source = await readFile(file, 'utf8');
   const relPath = relative(root, file).replaceAll('\\', '/');
-  const skipForbiddenTokens = relPath.includes('features/automation/');
+  const skipForbiddenTokens = relPath.includes('features/automation/') || isTestFile(relPath);
 
   if (!skipForbiddenTokens) {
     for (const token of forbiddenTokens) {
       if (source.includes(token)) violations.push(`${relPath}: forbidden token "${token}"`);
     }
   }
+
+  violations.push(...collectUiArchitectureViolations(relPath, source));
 
   const owner = packageFromFile(file);
   if (!owner || !/\.(ts|tsx|mjs|js)$/.test(file)) continue;

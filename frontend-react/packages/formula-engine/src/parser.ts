@@ -215,7 +215,9 @@ class Parser {
     if (this.match('left-paren')) {
       const expression = this.parseComparison();
       this.expect('right-paren', 'Expected closing parenthesis');
-      return expression;
+      // Keep explicit grouping in the AST.  A formatter cannot otherwise
+      // distinguish `=(A1+B1)*C1` from `=A1+B1*C1` after parsing.
+      return { ...expression, parenthesized: true };
     }
 
     throw new FormulaSyntaxError(`Expected expression, found ${token.lexeme || token.kind}`, token.span.start);

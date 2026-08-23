@@ -1,12 +1,26 @@
 import type { CellData, RangeRef, WorkbookModel } from '@react-sheets/core-model';
+import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 
-export interface ClipboardData {
+/**
+ * Host-neutral clipboard contract. Browser integrations may add MIME/HTML
+ * representations, while the command layer always consumes the normalized
+ * cell matrix. `source` identifies provenance for policy/audit decisions; it
+ * is intentionally open-ended so native hosts do not need an adapter type.
+ */
+export interface ClipboardPayload {
   range: RangeRef;
   values: CellData[][];
   isCut?: boolean;
+  mime?: string;
+  html?: string;
+  text?: string;
+  source?: string;
 }
 
-export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRef): ClipboardData {
+/** @deprecated Use ClipboardPayload. Kept as a source-compatible type alias while hosts migrate. */
+export type ClipboardData = ClipboardPayload;
+
+export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRef): ClipboardPayload {
   const sheet = workbook.getSheet(range.sheetId);
   const values: CellData[][] = [];
 
@@ -19,7 +33,12 @@ export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRe
     values.push(rowList);
   }
 
-  return { range: structuredClone(range), values };
+  return {
+    range: structuredClone(range),
+    values,
+    mime: 'application/x-react-sheets-cells',
+    source: 'internal',
+  };
 }
 
 export function formatTsv(values: CellData[][]): string {
@@ -53,34 +72,16 @@ export function parseTsv(text: string): CellData[][] {
   );
 }
 
+/**
+ * Shift relative references for copy/fill/paste using the formula AST. A
+ * formula that is not understood by the parser is preserved verbatim; it is
+ * never rewritten by a lossy regular expression.
+ */
 export function shiftFormula(formula: string, rowOffset: number, colOffset: number): string {
-  if (!formula.startsWith('=')) return formula;
-
-  // Regex to match cell references like A1, $A$1, A$1, $A1, Sheet1!A1
-  return formula.replace(/(\$?[A-Z]+)(\$?\d+)/g, (match, colPart: string, rowPart: string) => {
-    const isAbsCol = colPart.startsWith('$');
-    const isAbsRow = rowPart.startsWith('$');
-
-    let colStr = isAbsCol ? colPart.slice(1) : colPart;
-    let rowNum = parseInt(isAbsRow ? rowPart.slice(1) : rowPart, 10);
-
-    if (!isAbsCol && colOffset !== 0) {
-      let colIdx = 0;
-      for (const char of colStr) colIdx = colIdx * 26 + char.charCodeAt(0) - 64;
-      colIdx = Math.max(1, colIdx + colOffset);
-      let newColStr = '';
-      while (colIdx > 0) {
-        const rem = (colIdx - 1) % 26;
-        newColStr = String.fromCharCode(65 + rem) + newColStr;
-        colIdx = Math.floor((colIdx - 1) / 26);
-      }
-      colStr = newColStr;
-    }
-
-    if (!isAbsRow && rowOffset !== 0) {
-      rowNum = Math.max(1, rowNum + rowOffset);
-    }
-
-    return `${isAbsCol ? '$' : ''}${colStr}${isAbsRow ? '$' : ''}${rowNum}`;
-  });
+  if (!formula.trim().startsWith('=')) return formula;
+  try {
+    return formatFormula(offsetAst(parseFormula(formula), rowOffset, colOffset));
+  } catch {
+    return formula;
+  }
 }

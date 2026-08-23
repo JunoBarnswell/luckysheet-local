@@ -28,7 +28,7 @@ import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
 import type { PeerCursor, SelectionState, CanvasSheetSnapshot, AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
-import type { RibbonAction } from "../domain/ribbon-actions";
+import type { CommandDescriptor } from "../domain/command-descriptor";
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
@@ -67,7 +67,7 @@ export interface SheetCanvasProps {
   onFloatingSelect: (hit: FloatingHit | null) => void;
   onFloatingMove: (kind: "chart" | "shape" | "image", id: string, bounds: Rect) => void;
   onFloatingRemove: (kind: "chart" | "shape" | "image", id: string) => void;
-  onAction: (action: RibbonAction, payload?: unknown) => void;
+  onCommand: (descriptor: CommandDescriptor) => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
   onToggleOutline?: (groupId: string) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
@@ -138,7 +138,7 @@ export function SheetCanvas({
   onFloatingSelect,
   onFloatingMove,
   onFloatingRemove,
-  onAction,
+  onCommand,
   onApplyFilter,
   onToggleOutline,
   getValidationList,
@@ -892,17 +892,17 @@ export function SheetCanvas({
         return;
       }
 
-      if (ctrl && (key === "z" || key === "Z")) { event.preventDefault(); onAction("undo"); return; }
-      if (ctrl && (key === "y" || key === "Y")) { event.preventDefault(); onAction("redo"); return; }
-      if (ctrl && (key === "c" || key === "C")) { event.preventDefault(); onAction("copy"); return; }
-      if (ctrl && (key === "x" || key === "X")) { event.preventDefault(); onAction("cut"); return; }
-      if (ctrl && (key === "v" || key === "V")) { event.preventDefault(); onAction("paste"); return; }
-      if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onAction("bold"); return; }
-      if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onAction("italic"); return; }
-      if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onAction("underline"); return; }
+      if (ctrl && (key === "z" || key === "Z")) { event.preventDefault(); onCommand({ commandId: "ui.history.undo" }); return; }
+      if (ctrl && (key === "y" || key === "Y")) { event.preventDefault(); onCommand({ commandId: "ui.history.redo" }); return; }
+      if (ctrl && (key === "c" || key === "C")) { event.preventDefault(); onCommand({ commandId: "ui.clipboard.copy" }); return; }
+      if (ctrl && (key === "x" || key === "X")) { event.preventDefault(); onCommand({ commandId: "ui.clipboard.cut" }); return; }
+      if (ctrl && (key === "v" || key === "V")) { event.preventDefault(); onCommand({ commandId: "ui.clipboard.paste" }); return; }
+      if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onCommand({ commandId: "sheet.style.toggle", params: { property: "bold" } }); return; }
+      if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onCommand({ commandId: "sheet.style.toggle", params: { property: "italic" } }); return; }
+      if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onCommand({ commandId: "sheet.style.toggle", params: { property: "underline" } }); return; }
       if (key === "F2") { event.preventDefault(); onBeginEdit(); return; }
       if (key === "F4") { event.preventDefault(); onToggleAbsolute(); return; }
-      if (key === "Delete" || key === "Backspace") { event.preventDefault(); onAction("clear-range"); return; }
+      if (key === "Delete" || key === "Backspace") { event.preventDefault(); onCommand({ commandId: "sheet.range.clear" }); return; }
       if (key === "Enter") { event.preventDefault(); onBeginEdit(); return; }
 
       const moves: Record<string, [number, number]> = {
@@ -948,32 +948,32 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onAction, onSelectionChange, phase, selection, zoomFactor],
+    [editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onSelectionChange, phase, selection, zoomFactor],
   );
 
   // ---------- 右键菜单 ----------
 
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
     const items: ContextMenuItem[] = [
-      { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: () => onAction("cut") },
-      { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: () => onAction("copy") },
-      { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => onAction("paste") },
+      { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: () => onCommand({ commandId: "ui.clipboard.cut" }) },
+      { id: "copy", label: "Copy", shortcut: "Ctrl+C", onSelect: () => onCommand({ commandId: "ui.clipboard.copy" }) },
+      { id: "paste", label: "Paste", shortcut: "Ctrl+V", onSelect: () => onCommand({ commandId: "ui.clipboard.paste" }) },
       { id: "sep-1", label: "", separator: true },
-      { id: "insert-row", label: "Insert row above", onSelect: () => onAction("insert-row") },
-      { id: "insert-column", label: "Insert column left", onSelect: () => onAction("insert-column") },
-      { id: "delete-row", label: "Delete row", danger: true, onSelect: () => onAction("delete-row") },
-      { id: "delete-column", label: "Delete column", danger: true, onSelect: () => onAction("delete-column") },
+      { id: "insert-row", label: "Insert row above", onSelect: () => onCommand({ commandId: "sheet.rows.insert" }) },
+      { id: "insert-column", label: "Insert column left", onSelect: () => onCommand({ commandId: "sheet.columns.insert" }) },
+      { id: "delete-row", label: "Delete row", danger: true, onSelect: () => onCommand({ commandId: "sheet.rows.delete" }) },
+      { id: "delete-column", label: "Delete column", danger: true, onSelect: () => onCommand({ commandId: "sheet.columns.delete" }) },
       { id: "sep-2", label: "", separator: true },
-      { id: "hide-row", label: "Hide rows", onSelect: () => onAction("hide-row") },
-      { id: "hide-col", label: "Hide columns", onSelect: () => onAction("hide-column") },
-      { id: "unhide-all", label: "Unhide all", onSelect: () => onAction("unhide-all") },
+      { id: "hide-row", label: "Hide rows", onSelect: () => onCommand({ commandId: "sheet.row.hide" }) },
+      { id: "hide-col", label: "Hide columns", onSelect: () => onCommand({ commandId: "sheet.column.hide" }) },
+      { id: "unhide-all", label: "Unhide all", onSelect: () => onCommand({ commandId: "sheet.rows.unhide.all" }) },
       { id: "sep-3", label: "", separator: true },
-      { id: "clear", label: "Clear contents", onSelect: () => onAction("clear-range") },
-      { id: "clear-formats", label: "Clear formats", onSelect: () => onAction("clear-formats") },
-      { id: "comment-add", label: "Add comment", onSelect: () => onAction("open-comments") },
+      { id: "clear", label: "Clear contents", onSelect: () => onCommand({ commandId: "sheet.range.clear" }) },
+      { id: "clear-formats", label: "Clear formats", onSelect: () => onCommand({ commandId: "sheet.range.clear", params: { mode: "formats" } }) },
+      { id: "comment-add", label: "Add comment", onSelect: () => onCommand({ commandId: "ui.panel.open", params: { panel: "inspector", notice: "Select a cell and use Review tools for comments." } }) },
     ];
     return items;
-  }, [onAction]);
+  }, [onCommand]);
 
   // ---------- 编辑器定位(随滚动更新) ----------
 

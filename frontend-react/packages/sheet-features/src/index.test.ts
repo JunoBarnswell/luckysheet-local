@@ -155,6 +155,49 @@ test('clipboard: TSV format, parse, and formula shifting', () => {
   assert.equal(shiftFormula('=A1+$B$1+C$1+$D1', 2, 3), '=D3+$B$1+F$1+$D3');
 });
 
+test('clipboard payload carries provenance and paste modes preserve their contracts', () => {
+  const workbook = new WorkbookModel('unit-paste-modes', 'Paste Modes');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(sheetId(workbook));
+  sheet.cells.set(0, 0, { value: 12, formula: '=A2', style: { bold: true }, numberFormat: '0.00' });
+  sheet.cells.set(0, 1, { value: 'keep', style: { italic: true }, numberFormat: '@' });
+
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+  assert.equal(payload.source, 'internal');
+  assert.equal(payload.mime, 'application/x-react-sheets-cells');
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 0, column: 1 },
+    clipboard: payload,
+    mode: 'values',
+  });
+  assert.deepEqual(sheet.cells.get(0, 1), { value: 12 });
+
+  sheet.cells.set(0, 1, { value: 'keep', formula: '=A1', style: { italic: true }, numberFormat: '@' });
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 0, column: 1 },
+    clipboard: payload,
+    mode: 'formats',
+  });
+  assert.equal(sheet.cells.get(0, 1)?.value, 'keep');
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
+  assert.equal(sheet.cells.get(0, 1)?.style?.bold, true);
+  assert.equal(sheet.cells.get(0, 1)?.numberFormat, '0.00');
+});
+
+function sheetId(workbook: WorkbookModel): string {
+  return workbook.activeSheetId;
+}
+
 test('sheet commands: hide and unhide rows and columns are undoable commands', () => {
   const workbook = new WorkbookModel('unit-hidden', 'Hidden');
   const runtime = new CommandRuntime(workbook);
@@ -215,4 +258,21 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
 
   runtime.undo();
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
+});
+
+test('sheet.cells.shift undo clears the shifted edge before restoring the bounded region', () => {
+  const workbook = new WorkbookModel('unit-shift-undo', 'Shift Undo');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(sheetId(workbook));
+  sheet.cells.set(0, 0, { value: 'top' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 };
+
+  runtime.execute('sheet.cells.shift', { sheetId: sheet.id, range, direction: 'down' });
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  assert.equal(sheet.cells.get(1, 0)?.value, 'top');
+  runtime.undo();
+  assert.equal(sheet.cells.get(0, 0)?.value, 'top');
+  assert.equal(sheet.cells.get(1, 0)?.value, 'bottom');
 });

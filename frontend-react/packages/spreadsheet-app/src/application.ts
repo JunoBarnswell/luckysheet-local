@@ -127,7 +127,6 @@ import {
 } from './query-bridge';
 import {
   createCommandRecorder,
-  runAutomationScript,
   SAMPLE_AUTOMATION_SCRIPT,
   summarizeScriptResult,
   type AutomationSnapshot,
@@ -143,16 +142,7 @@ import type {
   ScenarioDefinition,
   ScenarioResult,
 } from './features/extended/what-if';
-import {
-  evaluateCapability,
-  runDataTable,
-  runGoalSeek,
-  runScenario,
-  summarizeGoalSeekResult,
-  summarizeScenarioResult,
-  summarizeDataTableResult,
-  type ExtendedSnapshot,
-} from './extended-bridge';
+import type { WhatIfPlan } from './features/extended';
 import type { CompatibilityReport } from './xlsx-bridge';
 import {
   HistoryPreviewSession,
@@ -221,6 +211,11 @@ export interface UiSnapshot {
   platformCapabilities: readonly CapabilityDescriptor[];
   lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
   version: number;
+}
+
+export interface ExtendedSnapshot {
+  capabilities: readonly CapabilityDescriptor[];
+  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
 }
 
 export function getInitialAppPhase(): AppPhase {
@@ -1952,12 +1947,20 @@ export class SpreadsheetApplication {
       this.notify('You do not have permission to run scripts');
       return;
     }
-    this.runCommand('automation.run', { source });
-    const result = runAutomationScript(this.runtime.model, this.runtime.commands, source);
-    this.lastScriptResult = result;
+    const started = Date.now();
+    try {
+      const result = this.runCommand('automation.run', { source });
+      this.lastScriptResult = { ok: true, durationMs: Date.now() - started, mutationCount: result.mutationCount };
+    } catch (error) {
+      this.lastScriptResult = {
+        ok: false,
+        durationMs: Date.now() - started,
+        error: error instanceof Error ? error.message : 'Automation failed',
+      };
+    }
     this.activePanel = 'automate';
     this.ribbonTab = 'automate';
-    this.notify(summarizeScriptResult(result));
+    this.notify(summarizeScriptResult(this.lastScriptResult));
     this.refresh();
   }
 
@@ -2026,19 +2029,12 @@ export class SpreadsheetApplication {
         message: 'What-if capability disabled',
       };
     }
-    this.runCommand('extended.whatIf.goalSeek', { ...params, sheetId: this.activeSheetId });
-    const result = runGoalSeek(this.runtime.model, this.runtime.formula, this.activeSheetId, params);
-    if (result.status === 'converged' && result.changingCellValue != null) {
-      this.runCommand('sheet.cell.set', {
-        sheetId: this.activeSheetId,
-        row: params.byChangingCell.row,
-        column: params.byChangingCell.column,
-        value: { value: result.changingCellValue },
-      });
-    }
+    const command = this.runCommand('extended.whatIf.goalSeek', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
+    const result = command.plan?.result as GoalSeekResult | undefined;
+    if (!result) throw new Error('Goal Seek command did not return a plan');
     this.lastWhatIfResult = result;
     this.activePanel = 'extended';
-    this.notify(summarizeGoalSeekResult(result));
+    this.notify(result.message ?? `Goal Seek ${result.status}`);
     this.refresh();
     return result;
   }
@@ -2064,22 +2060,12 @@ export class SpreadsheetApplication {
         outputs: [],
       };
     }
-    this.runCommand('extended.whatIf.scenario', { sheetId: this.activeSheetId, scenario });
-    const result = runScenario(this.runtime.model, this.runtime.formula, this.activeSheetId, scenario);
-    if (result.status === 'completed') {
-      for (const cell of scenario.changingCells) {
-        this.runCommand('sheet.cell.set', {
-          sheetId: this.activeSheetId,
-          row: cell.row,
-          column: cell.column,
-          value: { value: cell.value },
-        });
-      }
-      this.recalculateFormulas();
-    }
+    const command = this.runCommand('extended.whatIf.scenario', { sheetId: this.activeSheetId, scenario }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
+    const result = command.plan?.result as ScenarioResult | undefined;
+    if (!result) throw new Error('Scenario command did not return a plan');
     this.lastWhatIfResult = result;
     this.activePanel = 'extended';
-    this.notify(summarizeScenarioResult(result));
+    this.notify(result.message);
     this.refresh();
     return result;
   }
@@ -2093,29 +2079,19 @@ export class SpreadsheetApplication {
       this.notify('What-if analysis is disabled for this workbook');
       return { kind: 'data-table', status: 'failed', message: 'What-if capability disabled', filledCells: 0, writes: [] };
     }
-    this.runCommand('extended.whatIf.dataTable', { ...params, sheetId: this.activeSheetId });
-    const result = runDataTable(this.runtime.model, this.runtime.formula, this.activeSheetId, params);
-    if (result.status === 'completed') {
-      for (const write of result.writes) {
-        this.runCommand('sheet.cell.set', {
-          sheetId: this.activeSheetId,
-          row: write.row,
-          column: write.column,
-          value: { value: write.value },
-        });
-      }
-      this.recalculateFormulas();
-    }
+    const command = this.runCommand('extended.whatIf.dataTable', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
+    const result = command.plan?.result as DataTableResult | undefined;
+    if (!result) throw new Error('Data Table command did not return a plan');
     this.lastWhatIfResult = result;
     this.activePanel = 'extended';
-    this.notify(summarizeDataTableResult(result));
+    this.notify(result.message);
     this.refresh();
     return result;
   }
 
   evaluatePlatformCapability(capability: PlatformCapability): { canEnable: boolean; reason?: string } {
     this.runCommand('extended.capability.evaluate', { capability });
-    return evaluateCapability(this.runtime.capabilities, capability);
+    return this.runtime.capabilities.evaluate(capability);
   }
 
   getExtendedSnapshot(): ExtendedSnapshot {

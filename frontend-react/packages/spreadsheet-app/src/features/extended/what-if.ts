@@ -1,3 +1,6 @@
+import type { CellData, CellValue, WorkbookModel } from '@react-sheets/core-model';
+import { FormulaEngine } from '@react-sheets/formula-engine';
+
 export type WhatIfKind = 'goal-seek' | 'data-table' | 'scenario';
 
 export interface GoalSeekParams {
@@ -56,4 +59,273 @@ export interface ScenarioResult {
   scenarioId: string;
   message: string;
   outputs: ScenarioCellOutput[];
+}
+
+/** A deterministic write plan; applying it is the only side effect of a command. */
+export interface WhatIfCellWrite {
+  sheetId: string;
+  row: number;
+  column: number;
+  value: CellData;
+}
+
+export interface GoalSeekPlan {
+  kind: 'goal-seek';
+  result: GoalSeekResult;
+  writes: WhatIfCellWrite[];
+}
+
+export interface ScenarioPlan {
+  kind: 'scenario';
+  result: ScenarioResult;
+  writes: WhatIfCellWrite[];
+}
+
+export interface DataTablePlan {
+  kind: 'data-table';
+  result: DataTableResult;
+  writes: WhatIfCellWrite[];
+}
+
+export type WhatIfPlan = GoalSeekPlan | ScenarioPlan | DataTablePlan;
+
+type FormulaScalar = CellValue | string;
+
+function scalarValue(value: unknown): FormulaScalar {
+  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const first = Array.isArray(value[0]) ? value[0]?.[0] : value[0];
+    return scalarValue(first ?? null);
+  }
+  return String(value);
+}
+
+function createPlanningFormulaEngine(workbook: WorkbookModel): FormulaEngine {
+  const firstSheet = workbook.getSheets()[0];
+  const engine = new FormulaEngine({ defaultSheetId: firstSheet?.id ?? workbook.activeSheetId });
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula) engine.setFormula(address, cell.formula);
+      else engine.setValue(address, (cell.value ?? null) as never);
+    });
+  }
+  engine.setDefinedNames(workbook.definedNames);
+  engine.recalculate();
+  return engine;
+}
+
+function readFormulaScalar(engine: FormulaEngine, sheetId: string, row: number, column: number): FormulaScalar {
+  return scalarValue(engine.getCellValue({ sheetId, row, column }));
+}
+
+function readWorkbookScalar(workbook: WorkbookModel, sheetId: string, row: number, column: number): FormulaScalar {
+  const cell = workbook.getSheet(sheetId).cells.get(row, column);
+  if (!cell) return null;
+  if (cell.value != null) return cell.value;
+  return cell.formula ?? null;
+}
+
+function cellWrite(sheetId: string, row: number, column: number, value: FormulaScalar): WhatIfCellWrite {
+  return { sheetId, row, column, value: { value } };
+}
+
+function validCell(sheetId: string, row: number, column: number, workbook: WorkbookModel): boolean {
+  const sheet = workbook.getSheet(sheetId);
+  return Number.isInteger(row) && Number.isInteger(column) && row >= 0 && row < sheet.rowCount && column >= 0 && column < sheet.columnCount;
+}
+
+function normalizeGoalSeekValue(value: number, tolerance: number): number {
+  if (!Number.isFinite(value)) return value;
+  const nearestInt = Math.round(value);
+  if (Math.abs(value - nearestInt) <= tolerance * 100) return nearestInt;
+  const decimals = Math.max(0, Math.ceil(-Math.log10(tolerance)));
+  const factor = 10 ** Math.min(decimals, 10);
+  return Math.round(value * factor) / factor;
+}
+
+export function planGoalSeek(workbook: WorkbookModel, sheetId: string, params: GoalSeekParams): GoalSeekPlan {
+  const invalid = !validCell(sheetId, params.setCell.row, params.setCell.column, workbook)
+    || !validCell(sheetId, params.byChangingCell.row, params.byChangingCell.column, workbook);
+  const maxIterations = Number.isFinite(params.maxIterations ?? 64) ? Math.floor(params.maxIterations ?? 64) : 0;
+  const tolerance = params.tolerance ?? 1e-6;
+  if (invalid || !Number.isFinite(params.toValue) || maxIterations <= 0 || !Number.isFinite(tolerance) || tolerance <= 0) {
+    return {
+      kind: 'goal-seek',
+      result: { kind: 'goal-seek', status: 'failed', iterations: 0, message: 'Invalid Goal Seek parameters' },
+      writes: [],
+    };
+  }
+
+  const engine = createPlanningFormulaEngine(workbook);
+  const { setCell, byChangingCell } = params;
+  let low = -1_000_000;
+  let high = 1_000_000;
+  let bestGuess = 0;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  let iterations = 0;
+  const writeGuess = (guess: number): number => {
+    engine.setValue({ sheetId, row: byChangingCell.row, column: byChangingCell.column }, guess);
+    engine.recalculate({ sheetId, row: setCell.row, column: setCell.column });
+    const value = readFormulaScalar(engine, sheetId, setCell.row, setCell.column);
+    return typeof value === 'number' ? value : Number(value);
+  };
+
+  for (let index = 0; index < maxIterations; index += 1) {
+    iterations = index + 1;
+    const guess = (low + high) / 2;
+    const current = writeGuess(guess);
+    if (!Number.isFinite(current)) {
+      return {
+        kind: 'goal-seek',
+        result: { kind: 'goal-seek', status: 'not-converged', iterations, message: 'Goal cell does not evaluate to a numeric value' },
+        writes: [],
+      };
+    }
+    const delta = current - params.toValue;
+    if (Math.abs(delta) < tolerance) {
+      const changingCellValue = normalizeGoalSeekValue(guess, tolerance);
+      writeGuess(changingCellValue);
+      return {
+        kind: 'goal-seek',
+        result: { kind: 'goal-seek', status: 'converged', finalValue: params.toValue, changingCellValue, iterations },
+        writes: [cellWrite(sheetId, byChangingCell.row, byChangingCell.column, changingCellValue)],
+      };
+    }
+    if (Math.abs(delta) < bestDelta) {
+      bestDelta = Math.abs(delta);
+      bestGuess = guess;
+    }
+    if (delta < 0) low = guess;
+    else high = guess;
+  }
+
+  const finalValue = writeGuess(bestGuess);
+  return {
+    kind: 'goal-seek',
+    result: {
+      kind: 'goal-seek',
+      status: 'not-converged',
+      finalValue: Number.isFinite(finalValue) ? finalValue : undefined,
+      changingCellValue: bestGuess,
+      iterations,
+      message: `Reached iteration limit with delta ${bestDelta.toFixed(6)}`,
+    },
+    writes: [],
+  };
+}
+
+export function planScenario(workbook: WorkbookModel, sheetId: string, scenario: ScenarioDefinition): ScenarioPlan {
+  if (scenario.changingCells.length === 0) {
+    return {
+      kind: 'scenario',
+      result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario has no changing cells', outputs: [] },
+      writes: [],
+    };
+  }
+  const seen = new Set<string>();
+  const sortedChanges = [...scenario.changingCells].sort((a, b) => a.row - b.row || a.column - b.column);
+  for (const cell of sortedChanges) {
+    const key = `${cell.row}:${cell.column}`;
+    if (!validCell(sheetId, cell.row, cell.column, workbook) || seen.has(key)) {
+      return {
+        kind: 'scenario',
+        result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario contains an invalid or duplicate changing cell', outputs: [] },
+        writes: [],
+      };
+    }
+    seen.add(key);
+  }
+
+  const engine = createPlanningFormulaEngine(workbook);
+  for (const cell of sortedChanges) engine.setValue({ sheetId, row: cell.row, column: cell.column }, cell.value);
+  engine.recalculate();
+  const resultCells = scenario.resultCells?.length
+    ? scenario.resultCells
+    : scenario.changingCells.map((cell) => ({ row: cell.row, column: cell.column }));
+  if (resultCells.some((cell) => !validCell(sheetId, cell.row, cell.column, workbook))) {
+    return {
+      kind: 'scenario',
+      result: { kind: 'scenario', status: 'failed', scenarioId: scenario.id, message: 'Scenario contains an invalid result cell', outputs: [] },
+      writes: [],
+    };
+  }
+  const outputs = resultCells.map((cell) => ({
+    row: cell.row,
+    column: cell.column,
+    value: readFormulaScalar(engine, sheetId, cell.row, cell.column),
+  }));
+  return {
+    kind: 'scenario',
+    result: {
+      kind: 'scenario',
+      status: 'completed',
+      scenarioId: scenario.id,
+      message: `Scenario "${scenario.name}" applied with ${scenario.changingCells.length} changing cell(s)`,
+      outputs,
+    },
+    writes: sortedChanges.map((cell) => cellWrite(sheetId, cell.row, cell.column, cell.value)),
+  };
+}
+
+export function planDataTable(workbook: WorkbookModel, sheetId: string, params: DataTableParams): DataTablePlan {
+  const hasRowInput = Boolean(params.rowInputCell);
+  const hasColumnInput = Boolean(params.columnInputCell);
+  const range = params.tableRange;
+  const validRange = validCell(sheetId, range.startRow, range.startColumn, workbook)
+    && validCell(sheetId, range.endRow, range.endColumn, workbook)
+    && range.endRow >= range.startRow && range.endColumn >= range.startColumn;
+  if (hasRowInput === hasColumnInput || !validRange) {
+    return {
+      kind: 'data-table',
+      result: { kind: 'data-table', status: 'failed', message: 'Invalid data table parameters', filledCells: 0, writes: [] },
+      writes: [],
+    };
+  }
+  const input = params.rowInputCell ?? params.columnInputCell!;
+  if (!validCell(sheetId, input.row, input.column, workbook)) {
+    return {
+      kind: 'data-table',
+      result: { kind: 'data-table', status: 'failed', message: 'Invalid data table input cell', filledCells: 0, writes: [] },
+      writes: [],
+    };
+  }
+
+  const engine = createPlanningFormulaEngine(workbook);
+  const writes: DataTableCellWrite[] = [];
+  const writePlan: WhatIfCellWrite[] = [];
+  const addResult = (row: number, column: number, value: FormulaScalar): void => {
+    writes.push({ row, column, value });
+    writePlan.push(cellWrite(sheetId, row, column, value));
+  };
+  const fail = (message: string): DataTablePlan => ({
+    kind: 'data-table',
+    result: { kind: 'data-table', status: 'failed', message, filledCells: 0, writes: [] },
+    writes: [],
+  });
+
+  if (params.rowInputCell) {
+    const formulaAddress = { sheetId, row: range.startRow, column: range.startColumn };
+    for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+      const rawInput = readWorkbookScalar(workbook, sheetId, row, range.startColumn);
+      if (rawInput == null || typeof rawInput === 'boolean') return fail(`Missing input value at row ${row + 1}, column ${range.startColumn + 1}`);
+      engine.setValue({ sheetId, row: input.row, column: input.column }, rawInput as never);
+      engine.recalculate(formulaAddress);
+      addResult(row, range.startColumn + 1, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
+    }
+  } else {
+    const formulaAddress = { sheetId, row: range.startRow + 1, column: range.startColumn };
+    for (let column = range.startColumn + 1; column <= range.endColumn; column += 1) {
+      const rawInput = readWorkbookScalar(workbook, sheetId, range.startRow, column);
+      if (rawInput == null || typeof rawInput === 'boolean') return fail(`Missing input value at row ${range.startRow + 1}, column ${column + 1}`);
+      engine.setValue({ sheetId, row: input.row, column: input.column }, rawInput as never);
+      engine.recalculate(formulaAddress);
+      addResult(formulaAddress.row, column, readFormulaScalar(engine, formulaAddress.sheetId, formulaAddress.row, formulaAddress.column));
+    }
+  }
+  return {
+    kind: 'data-table',
+    result: { kind: 'data-table', status: 'completed', message: `Data table filled ${writes.length} result cell(s)`, filledCells: writes.length, writes },
+    writes: writePlan,
+  };
 }

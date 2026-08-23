@@ -1,6 +1,13 @@
 import type { WorkbookModel, CellData } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { ScriptSandbox } from './sandbox';
+import {
+  buildFacadePlan,
+  parseA1Range,
+  parseFacadeScript,
+  type FacadePlan,
+  type FacadeProgram,
+} from './dsl';
 
 function normalizeFacadeCellValue(value: unknown): CellData {
   if (value != null && typeof value === 'object' && 'value' in (value as object)) {
@@ -32,56 +39,43 @@ export class FacadeScriptRuntime {
     const runtime = this.runtime;
     const activeSheetId = () => workbook.activeSheetId;
 
-    const parseA1 = (a1: string): { row: number; column: number; endRow?: number; endColumn?: number } => {
-      const match = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(a1.toUpperCase());
-      if (!match) throw new Error(`Invalid A1 reference: ${a1}`);
-      const colToNum = (col: string) => col.split('').reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-      const startCol = colToNum(match[1]!);
-      const startRow = parseInt(match[2]!, 10) - 1;
-      if (match[3] && match[4]) {
-        return { row: startRow, column: startCol, endRow: parseInt(match[4], 10) - 1, endColumn: colToNum(match[3]) };
-      }
-      return { row: startRow, column: startCol };
-    };
-
     const createRange = (a1: string): FacadeRange => ({
       setValues(values: unknown[][]) {
-        const ref = parseA1(a1);
-        for (let r = 0; r < values.length; r += 1) {
-          const row = values[r] ?? [];
-          for (let c = 0; c < row.length; c += 1) {
-            runtime.execute('sheet.cell.set', {
-              sheetId: activeSheetId(),
-              row: ref.row + r,
-              column: ref.column + c,
-              value: normalizeFacadeCellValue(row[c]),
-            });
-          }
-        }
+        const ref = parseA1Range(a1);
+        runtime.execute('sheet.range.set', {
+          sheetId: activeSheetId(),
+          startRow: ref.startRow,
+          startColumn: ref.startColumn,
+          values: values.map((row) => row.map(normalizeFacadeCellValue)),
+        });
       },
       setFontWeight(weight: 'normal' | 'bold') {
-        const ref = parseA1(a1);
+        const ref = parseA1Range(a1);
         const sheetId = activeSheetId();
         runtime.execute('sheet.style.set', {
           sheetId,
           range: {
             sheetId,
-            startRow: ref.row,
-            endRow: ref.endRow ?? ref.row,
-            startColumn: ref.column,
-            endColumn: ref.endColumn ?? ref.column,
+            startRow: ref.startRow,
+            endRow: ref.endRow,
+            startColumn: ref.startColumn,
+            endColumn: ref.endColumn,
           },
           style: { bold: weight === 'bold' },
         });
       },
       clear() {
-        const ref = parseA1(a1);
+        const ref = parseA1Range(a1);
+        const sheetId = activeSheetId();
         runtime.execute('sheet.range.clear', {
-          sheetId: activeSheetId(),
-          startRow: ref.row,
-          endRow: ref.endRow ?? ref.row,
-          startColumn: ref.column,
-          endColumn: ref.endColumn ?? ref.column,
+          sheetId,
+          range: {
+            sheetId,
+            startRow: ref.startRow,
+            endRow: ref.endRow,
+            startColumn: ref.startColumn,
+            endColumn: ref.endColumn,
+          },
         });
       },
     });
@@ -100,27 +94,112 @@ export class FacadeScriptRuntime {
     };
   }
 
-  /** 执行 Facade 脚本字符串 — 禁止 eval，使用 Function 沙箱 */
+  /**
+   * Parse, validate, and execute a Facade DSL program.  Parsing and range
+   * validation are completed before the first mutation.  When the feature
+   * command is registered, CommandRuntime owns the entire transaction;
+   * otherwise the already validated plan is applied through existing sheet
+   * commands for the standalone kernel use case.
+   */
   runScript(source: string, sandbox: ScriptSandbox): ScriptRunResult {
-    const facade = this.createFacade();
     const started = Date.now();
     try {
-      sandbox.assertAllowed(source);
-      const fn = new Function('sheet', 'workbook', `"use strict";\n${source}`);
-      fn(facade.getActiveSheet(), facade.getWorkbook());
-      return { ok: true, durationMs: Date.now() - started };
+      const program = sandbox.parse(source);
+      const plan = buildFacadePlan(this.workbook, program);
+      const result = this.executePlan(source, program, plan);
+      return {
+        ok: true,
+        durationMs: Date.now() - started,
+        mutationCount: result.mutationCount,
+        plan,
+      };
     } catch (error) {
       return { ok: false, durationMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** Public deterministic plan API for hosts that own transaction execution. */
+  planScript(source: string, sandbox = new ScriptSandbox()): FacadePlan {
+    return buildFacadePlan(this.workbook, sandbox.parse(source));
+  }
+
+  private executePlan(source: string, program: FacadeProgram, plan: FacadePlan): { mutationCount: number } {
+    if (this.runtime.registry.hasCommand('automation.run')) {
+      const result = this.runtime.execute('automation.run', { source, program });
+      return { mutationCount: result.mutationCount };
+    }
+
+    const commandIds = new Set<string>();
+    for (const operation of plan.operations) {
+      commandIds.add(operation.kind === 'set-cell' ? 'sheet.cell.set' : operation.kind === 'set-style' ? 'sheet.style.set' : 'sheet.range.clear');
+    }
+    for (const commandId of commandIds) {
+      if (!this.runtime.registry.hasCommand(commandId)) throw new Error(`Automation requires registered command: ${commandId}`);
+    }
+
+    let mutationCount = 0;
+    for (const statement of plan.statements) {
+      const sheetId = this.workbook.activeSheetId;
+      if (statement.kind === 'set-values') {
+        const result = this.runtime.execute('sheet.range.set', {
+          sheetId,
+          startRow: statement.range.startRow,
+          startColumn: statement.range.startColumn,
+          values: statement.values.map((row) => row.map(normalizeFacadeCellValue)),
+        });
+        mutationCount += result.mutationCount;
+      } else if (statement.kind === 'set-font-weight') {
+        const result = this.runtime.execute('sheet.style.set', {
+          sheetId,
+          range: {
+            sheetId,
+            startRow: statement.range.startRow,
+            endRow: statement.range.endRow,
+            startColumn: statement.range.startColumn,
+            endColumn: statement.range.endColumn,
+          },
+          style: { bold: statement.weight === 'bold' },
+        });
+        mutationCount += result.mutationCount;
+      } else {
+        const result = this.runtime.execute('sheet.range.clear', {
+          sheetId,
+          range: {
+            sheetId,
+            startRow: statement.range.startRow,
+            endRow: statement.range.endRow,
+            startColumn: statement.range.startColumn,
+            endColumn: statement.range.endColumn,
+          },
+        });
+        mutationCount += result.mutationCount;
+      }
+    }
+    return { mutationCount };
   }
 }
 
 export interface ScriptRunResult {
   ok: boolean;
   durationMs: number;
+  mutationCount?: number;
+  plan?: FacadePlan;
   error?: string;
 }
 
 export { CommandRecorder, type RecordedStatement } from './command-recorder';
 export { ScriptSandbox, DEFAULT_SANDBOX_POLICY, type SandboxPolicy } from './sandbox';
 export { registerAutomationCommands } from './commands';
+export {
+  buildFacadePlan,
+  parseA1Range,
+  parseAndBuildFacadePlan,
+  parseFacadeScript,
+  DEFAULT_FACADE_DSL_LIMITS,
+  type A1Range,
+  type FacadeCellOperation,
+  type FacadeDslLimits,
+  type FacadePlan,
+  type FacadeProgram,
+  type FacadeStatement,
+} from './dsl';

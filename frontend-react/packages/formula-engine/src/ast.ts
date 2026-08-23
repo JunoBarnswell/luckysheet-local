@@ -21,24 +21,29 @@ export interface NumberLiteralNode {
   readonly type: 'number-literal';
   readonly value: number;
   readonly span: SourceSpan;
+  /** True when the source contained explicit grouping parentheses. */
+  readonly parenthesized?: boolean;
 }
 
 export interface StringLiteralNode {
   readonly type: 'string-literal';
   readonly value: string;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export interface BooleanLiteralNode {
   readonly type: 'boolean-literal';
   readonly value: boolean;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export interface CellReferenceNode {
   readonly type: 'cell-reference';
   readonly reference: ParsedCellReference;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export interface RangeReferenceNode {
@@ -46,6 +51,7 @@ export interface RangeReferenceNode {
   readonly start: CellReferenceNode;
   readonly end: CellReferenceNode;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export interface UnaryExpressionNode {
@@ -53,6 +59,7 @@ export interface UnaryExpressionNode {
   readonly operator: '+' | '-' | '%';
   readonly operand: FormulaAst;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export type BinaryOperator =
@@ -75,6 +82,7 @@ export interface BinaryExpressionNode {
   readonly left: FormulaAst;
   readonly right: FormulaAst;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export interface FunctionCallNode {
@@ -82,12 +90,14 @@ export interface FunctionCallNode {
   readonly name: string;
   readonly arguments: readonly FormulaAst[];
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export interface NameReferenceNode {
   readonly type: 'name-reference';
   readonly name: string;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export type TableReferenceSpecifier = 'all' | 'headers' | 'data' | 'totals';
@@ -99,6 +109,7 @@ export interface TableReferenceNode {
   readonly columnName?: string;
   readonly thisRow: boolean;
   readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
 }
 
 export type FormulaAst =

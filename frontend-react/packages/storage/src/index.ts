@@ -5,18 +5,14 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel, type PivotLayout, type TableScalar, type WorkbookTableBlock, type WorkbookTableModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
 import type { CollaborationChangeSet, CollaborationMutation, SnapshotResponse, WorkbookSummary } from '@react-sheets/protocol';
-import { registerSheetCommands } from '@react-sheets/sheet-features';
-import { registerProSheetCommands } from '@react-sheets/pro-features';
 import { registerSpreadsheetFeatures, DrawingRuntime } from '@react-sheets/spreadsheet-app';
-import { PersistenceSession, computeSnapshotChecksum } from './persistence-session';
+import { computeSnapshotChecksum } from './persistence-session';
 
 const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
 mkdirSync(dirname(databasePath), { recursive: true });
 
 function createMutationRuntime(workbook: WorkbookModel): CommandRuntime {
   const runtime = new CommandRuntime(workbook);
-  registerSheetCommands(runtime);
-  registerProSheetCommands(runtime);
   registerSpreadsheetFeatures(runtime, new DrawingRuntime());
   return runtime;
 }
@@ -72,33 +68,15 @@ interface EncodedTableBlock {
 
 export class WorkbookStorage {
   private readonly database = new DatabaseSync(databasePath);
-  readonly persistence: PersistenceSession;
 
   constructor() {
-    this.persistence = new PersistenceSession({
-      changesetThreshold: 50,
-      byteThreshold: 512_000,
-      timeThresholdMs: 60_000,
-      appendChangeSet: async (changeSet) => {
-        // changeset 已在 appendChangeSet 方法写入 DB
-        void changeSet;
-      },
-      persistSnapshot: async (record) => {
-        const json = JSON.stringify(record.snapshot);
-        const payload = deflateRawSync(Buffer.from(json, 'utf8'));
-        this.database.prepare(`
-          INSERT INTO snapshots (unit_id, revision, checksum, payload, created_at)
-          VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(unit_id, revision) DO UPDATE SET checksum = excluded.checksum, payload = excluded.payload, created_at = excluded.created_at
-        `).run(record.snapshot.unitId, record.revision, record.checksum, payload, record.createdAt);
-      },
-    });
     this.database.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS workbooks (
         unit_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         snapshot_json TEXT NOT NULL,
+        snapshot_revision INTEGER NOT NULL DEFAULT 0,
         revision INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
@@ -137,6 +115,13 @@ export class WorkbookStorage {
         PRIMARY KEY (unit_id, revision)
       );
     `);
+    // Existing local databases predate snapshot_revision. This is a one-way
+    // storage migration; a baseline snapshot is always revision 0 for them.
+    try {
+      this.database.exec('ALTER TABLE workbooks ADD COLUMN snapshot_revision INTEGER NOT NULL DEFAULT 0');
+    } catch {
+      // The column already exists.
+    }
   }
 
   listWorkbooks(): WorkbookSummary[] {
@@ -153,6 +138,7 @@ export class WorkbookStorage {
 
   deleteWorkbook(unitId: string): void {
     this.database.prepare('DELETE FROM changesets WHERE unit_id = ?').run(unitId);
+    this.database.prepare('DELETE FROM snapshots WHERE unit_id = ?').run(unitId);
     const tables = this.database.prepare('SELECT table_id FROM data_tables WHERE unit_id = ?').all(unitId) as Array<{ table_id: string }>;
     for (const table of tables) this.database.prepare('DELETE FROM data_blocks WHERE table_id = ?').run(table.table_id);
     this.database.prepare('DELETE FROM data_tables WHERE unit_id = ?').run(unitId);
@@ -176,18 +162,34 @@ export class WorkbookStorage {
 
   getSnapshot(unitId: string): SnapshotResponse {
     const row = this.database
-      .prepare('SELECT snapshot_json, revision FROM workbooks WHERE unit_id = ?')
-      .get(unitId) as { snapshot_json?: string; revision?: number } | undefined;
+      .prepare('SELECT snapshot_json, snapshot_revision, revision FROM workbooks WHERE unit_id = ?')
+      .get(unitId) as { snapshot_json?: string; snapshot_revision?: number; revision?: number } | undefined;
     if (!row?.snapshot_json || row.revision == null) {
       throw new Error(`Workbook not found: ${unitId}`);
     }
+    const baseRevision = row.snapshot_revision ?? 0;
     const snapshot = migrateSnapshot(JSON.parse(row.snapshot_json) as WorkbookSnapshotV1);
     const migratedJson = JSON.stringify(snapshot);
     if (migratedJson !== row.snapshot_json) {
       this.database.prepare('UPDATE workbooks SET snapshot_json = ? WHERE unit_id = ?').run(migratedJson, unitId);
     }
+    if (baseRevision === row.revision) {
+      return { snapshot, revision: row.revision };
+    }
+    const workbook = WorkbookModel.fromSnapshot(snapshot);
+    const runtime = createMutationRuntime(workbook);
+    const changesets = this.database
+      .prepare('SELECT payload_json FROM changesets WHERE unit_id = ? AND revision > ? AND revision <= ? ORDER BY revision ASC')
+      .all(unitId, baseRevision, row.revision) as Array<{ payload_json: string }>;
+    for (const entry of changesets) {
+      const changeSet = JSON.parse(entry.payload_json) as CollaborationChangeSet;
+      runtime.applyRemoteMutations(changeSet.mutations.map((mutation) => ({
+        ...mutation,
+        unitId: changeSet.unitId,
+      })));
+    }
     return {
-      snapshot,
+      snapshot: workbook.snapshot(),
       revision: row.revision,
     };
   }
@@ -203,11 +205,10 @@ export class WorkbookStorage {
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.database
-        .prepare('UPDATE workbooks SET snapshot_json = ?, revision = ?, updated_at = ? WHERE unit_id = ?')
-        .run(JSON.stringify(migrated), nextRevision, now, unitId);
+        .prepare('UPDATE workbooks SET snapshot_json = ?, snapshot_revision = ?, revision = ?, updated_at = ? WHERE unit_id = ?')
+        .run(JSON.stringify(migrated), nextRevision, nextRevision, now, unitId);
       this.persistRevisionSnapshot(unitId, nextRevision, migrated, now);
       this.database.exec('COMMIT');
-      void this.persistence.writeSnapshot(migrated, nextRevision);
       return { snapshot: migrated, revision: nextRevision };
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -260,24 +261,16 @@ export class WorkbookStorage {
           changeSet.createdAt,
         );
       this.database
-        .prepare(
-          'UPDATE workbooks SET snapshot_json = ?, revision = ?, updated_at = ? WHERE unit_id = ?',
-        )
-        .run(JSON.stringify(nextSnapshot), nextRevision, new Date().toISOString(), changeSet.unitId);
+        .prepare('UPDATE workbooks SET revision = ?, updated_at = ? WHERE unit_id = ?')
+        .run(nextRevision, new Date().toISOString(), changeSet.unitId);
+      if (this.shouldPersistSnapshot(changeSet.unitId, nextRevision)) {
+        const now = new Date().toISOString();
+        this.database
+          .prepare('UPDATE workbooks SET snapshot_json = ?, snapshot_revision = ? WHERE unit_id = ?')
+          .run(JSON.stringify(nextSnapshot), nextRevision, changeSet.unitId);
+        this.persistRevisionSnapshot(changeSet.unitId, nextRevision, nextSnapshot, now);
+      }
       this.database.exec('COMMIT');
-      void this.persistence.recordChangeSet(changeSet);
-      const snapshotJson = JSON.stringify(nextSnapshot);
-      this.persistence.writeSnapshot(nextSnapshot, nextRevision).catch(() => {
-        if (this.persistence.shouldSnapshot()) {
-          const checksum = computeSnapshotChecksum(snapshotJson);
-          const payload = deflateRawSync(Buffer.from(snapshotJson, 'utf8'));
-          this.database.prepare(`
-            INSERT INTO snapshots (unit_id, revision, checksum, payload, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(unit_id, revision) DO UPDATE SET checksum = excluded.checksum, payload = excluded.payload
-          `).run(changeSet.unitId, nextRevision, checksum, payload, new Date().toISOString());
-        }
-      });
       return nextRevision;
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -471,6 +464,21 @@ export class WorkbookStorage {
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(unit_id, revision) DO UPDATE SET checksum = excluded.checksum, payload = excluded.payload, created_at = excluded.created_at
     `).run(unitId, revision, checksum, payload, createdAt);
+  }
+
+  private shouldPersistSnapshot(unitId: string, revision: number): boolean {
+    const baseline = this.database
+      .prepare('SELECT snapshot_revision FROM workbooks WHERE unit_id = ?')
+      .get(unitId) as { snapshot_revision?: number } | undefined;
+    const snapshotRevision = baseline?.snapshot_revision ?? 0;
+    const pending = this.database
+      .prepare('SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(payload_json)), 0) AS bytes FROM changesets WHERE unit_id = ? AND revision > ?')
+      .get(unitId, snapshotRevision) as { count?: number; bytes?: number };
+    if ((pending.count ?? 0) >= 50 || (pending.bytes ?? 0) >= 512_000) return true;
+    const lastSnapshot = this.database
+      .prepare('SELECT created_at FROM snapshots WHERE unit_id = ? AND revision <= ? ORDER BY revision DESC LIMIT 1')
+      .get(unitId, revision) as { created_at?: string } | undefined;
+    return !lastSnapshot?.created_at || Date.now() - Date.parse(lastSnapshot.created_at) >= 60_000;
   }
 
   private readStoredSnapshot(unitId: string, revision: number): WorkbookSnapshotV1 | undefined {

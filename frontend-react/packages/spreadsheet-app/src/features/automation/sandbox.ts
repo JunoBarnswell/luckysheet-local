@@ -1,36 +1,44 @@
-export interface SandboxPolicy {
+import {
+  DEFAULT_FACADE_DSL_LIMITS,
+  parseFacadeScript,
+  type FacadeDslLimits,
+  type FacadeProgram,
+} from './dsl';
+
+/**
+ * Limits for the data-only Facade DSL.  The old implementation attempted to
+ * secure JavaScript by scanning source text for forbidden regular expressions;
+ * that is not a security boundary.  The parser is now the boundary and only
+ * these finite resource limits remain here.
+ */
+export interface SandboxPolicy extends FacadeDslLimits {
   maxDurationMs: number;
-  allowNetwork: boolean;
-  allowFileSystem: boolean;
-  blockedPatterns: RegExp[];
 }
 
 export const DEFAULT_SANDBOX_POLICY: SandboxPolicy = {
+  ...DEFAULT_FACADE_DSL_LIMITS,
   maxDurationMs: 5000,
-  allowNetwork: false,
-  allowFileSystem: false,
-  blockedPatterns: [
-    /\bfetch\s*\(/,
-    /\bXMLHttpRequest\b/,
-    /\brequire\s*\(/,
-    /\bimport\s*\(/,
-    /\bprocess\b/,
-    /\bfs\b/,
-    /\beval\s*\(/,
-    /\bFunction\s*\(/,
-  ],
 };
 
-/** 脚本沙箱 — 无任意 FS/DB、网络许可、超时、审计 */
 export class ScriptSandbox {
   constructor(private readonly policy: SandboxPolicy = DEFAULT_SANDBOX_POLICY) {}
 
-  assertAllowed(source: string): void {
-    for (const pattern of this.policy.blockedPatterns) {
-      if (pattern.test(source)) {
-        throw new Error(`Script blocked by sandbox policy: ${pattern.source}`);
-      }
+  parse(source: string): FacadeProgram {
+    try {
+      return parseFacadeScript(source, this.policy);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Automation script blocked by the Facade DSL: ${message}`);
     }
+  }
+
+  /** Validate the complete program before any mutation is submitted. */
+  assertAllowed(source: string): void {
+    this.parse(source);
+  }
+
+  getLimits(): FacadeDslLimits {
+    return this.policy;
   }
 
   getTimeoutMs(): number {

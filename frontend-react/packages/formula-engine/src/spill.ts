@@ -1,28 +1,44 @@
-import type { FormulaValue as CoreFormulaValue, FormulaErrorCode as CoreFormulaErrorCode, SpillRange, SpillState } from '@react-sheets/core-model';
+export type SpillState = 'ok' | 'blocked' | 'spill-error';
 
-export type { SpillRange, SpillState };
+export interface SpillRange {
+  sheetId: string;
+  anchor: { row: number; column: number };
+  range: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number };
+  values: SpillValue[][];
+  state: SpillState;
+}
 
-/** 与 core-model FormulaErrorCode 对齐的引擎错误码 */
+/** Formula error codes are kept local so formula-engine remains dependency-free. */
 export type FormulaErrorCode =
-  | CoreFormulaErrorCode
+  | '#NULL!'
+  | '#DIV/0!'
+  | '#VALUE!'
+  | '#REF!'
+  | '#NAME?'
+  | '#NUM!'
+  | '#N/A'
+  | '#CALC!'
+  | '#BLOCKED!'
+  | '#SPILL!'
   | '#PARSE!'
   | '#CYCLE!';
 
 export interface FormulaError {
   readonly kind: 'error';
   readonly code: FormulaErrorCode;
-  readonly message: string;
+  readonly message?: string;
   readonly position?: number;
 }
 
 export type ScalarValue = number | string | boolean | null;
 export type ArrayValue = FormulaValue[][];
 export type FormulaValue = ScalarValue | FormulaError | ArrayValue;
+export type SpillValue = ScalarValue | FormulaError;
 
 export interface SpillModel {
   anchor: { row: number; column: number };
   range: SpillRange['range'];
-  values: CoreFormulaValue[][];
+  values: SpillValue[][];
   state: SpillState;
   blocker?: { row: number; column: number };
 }

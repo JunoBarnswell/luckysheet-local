@@ -3,11 +3,13 @@ import test from 'node:test';
 import {
   FormulaEngine,
   RangeIndex,
+  formatFormula,
   formatCellAddress,
   isFormulaError,
   lexFormula,
   parseCellAddress,
   parseFormula,
+  offsetAst,
   type CellAddress,
   type FormulaValue,
 } from './index';
@@ -31,6 +33,12 @@ test('lexer and parser produce a precedence-aware AST without executable code', 
   assert.equal(ast.operator, '+');
   assert.equal(ast.right.type, 'binary-expression');
   assert.equal(parseFormula('"line\\nvalue"').type, 'string-literal');
+});
+
+test('AST formatter preserves explicit grouping and qualified sheet names', () => {
+  const ast = parseFormula("=('Annual Plan'!$A$1+A1)*B1");
+  assert.equal(formatFormula(ast), "=('Annual Plan'!$A$1+A1)*B1");
+  assert.equal(formatFormula(offsetAst(parseFormula('=A1+$B$1'), 2, 3)), '=D3+$B$1');
 });
 
 test('A1 addresses support zero-based engine coordinates and qualified sheets', () => {

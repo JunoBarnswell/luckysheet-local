@@ -10,10 +10,11 @@ import { noteCellKey } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
+import { formatFormula, parseFormula, renameAstSheetReferences } from '@react-sheets/formula-engine';
 import {
   copyRangeToClipboardData,
   shiftFormula,
-  type ClipboardData,
+  type ClipboardPayload,
 } from '../clipboard';
 
 export type PasteMode = 'all' | 'values' | 'formats' | 'formulas' | 'transpose';
@@ -35,7 +36,7 @@ export interface MultiRangeStyleParams {
 export interface PasteRangeParams {
   sheetId: string;
   targetOrigin: { row: number; column: number };
-  clipboard: ClipboardData;
+  clipboard: ClipboardPayload;
   mode?: PasteMode;
 }
 
@@ -115,15 +116,18 @@ export function rewriteFormulasForSheetRename(
   newName: string,
 ): Array<{ sheetId: string; row: number; column: number; previous?: CellData }> {
   const changes: Array<{ sheetId: string; row: number; column: number; previous?: CellData }> = [];
-  const pattern = new RegExp(`'?${oldName.replace(/'/g, "''")}'?!`, 'gi');
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       if (!cell.formula) return;
-      if (!pattern.test(cell.formula)) return;
-      pattern.lastIndex = 0;
-      changes.push({ sheetId: sheet.id, row, column, previous: structuredClone(cell) });
-      const nextFormula = cell.formula.replace(pattern, `'${newName.replace(/'/g, "''")}'!`);
-      sheet.cells.set(row, column, { ...cell, formula: nextFormula });
+      try {
+        const nextFormula = formatFormula(renameAstSheetReferences(parseFormula(cell.formula), oldName, newName));
+        if (nextFormula === cell.formula) return;
+        changes.push({ sheetId: sheet.id, row, column, previous: structuredClone(cell) });
+        sheet.cells.set(row, column, { ...cell, formula: nextFormula });
+      } catch {
+        // Unsupported formula syntax is left untouched. A lossy regex rewrite
+        // could mutate string literals or structured references.
+      }
     });
   }
   return changes;
@@ -179,30 +183,39 @@ export function resolveGoToSpecial(
   return hits;
 }
 
-function applyPasteCell(mode: PasteMode, source: CellData, rowOffset: number, colOffset: number, transposed: boolean): CellData {
-  if (mode === 'transpose') {
-    return structuredClone(source);
-  }
+function applyPasteCell(
+  mode: PasteMode,
+  source: CellData,
+  target: CellData | undefined,
+  rowOffset: number,
+  colOffset: number,
+  transposed: boolean,
+): CellData {
+  const destination = target ? structuredClone(target) : { value: null };
+  const sourceFormula = source.formula
+    ? shiftFormula(source.formula, transposed ? colOffset : rowOffset, transposed ? rowOffset : colOffset)
+    : undefined;
+
   if (mode === 'values') {
-    return { value: source.value ?? null, numberFormat: source.numberFormat, displayValue: source.displayValue };
+    // Values means values only: no formula, style, number format or cached
+    // display metadata may leak into the destination.
+    return { value: source.value ?? null };
   }
   if (mode === 'formats') {
     return {
-      value: null,
+      ...destination,
       style: source.style ? structuredClone(source.style) : undefined,
       numberFormat: source.numberFormat,
     };
   }
   if (mode === 'formulas') {
-    const formula = source.formula
-      ? shiftFormula(source.formula, transposed ? colOffset : rowOffset, transposed ? rowOffset : colOffset)
-      : undefined;
-    return { value: null, formula, numberFormat: source.numberFormat };
+    if (!sourceFormula) {
+      return { ...destination, value: source.value ?? null, formula: undefined };
+    }
+    return { ...destination, value: null, formula: sourceFormula };
   }
   const next = structuredClone(source);
-  if (next.formula) {
-    next.formula = shiftFormula(next.formula, transposed ? colOffset : rowOffset, transposed ? rowOffset : colOffset);
-  }
+  if (sourceFormula) next.formula = sourceFormula;
   return next;
 }
 
@@ -243,7 +256,16 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
           const column = params.targetOrigin.column + columnOffset;
           previous.push({ row, column, value: sheet.cells.get(row, column) });
           affectedRanges.push({ sheetId: params.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column });
-          outRow.push(applyPasteCell(mode, rowValues[columnOffset] ?? { value: null }, rowOffset, columnOffset, mode === 'transpose'));
+              outRow.push(
+                applyPasteCell(
+                  mode === 'transpose' ? 'all' : mode,
+                  rowValues[columnOffset] ?? { value: null },
+                  sheet.cells.get(row, column),
+                  rowOffset,
+                  columnOffset,
+                  mode === 'transpose',
+                ),
+              );
         }
         values.push(outRow);
       }
@@ -451,14 +473,24 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       sourceRange: params.range,
     });
   });
+  runtime.registry.registerMutation('cells.shifted.restore', (item, context) => {
+    const params = item.params as {
+      sheetId: string;
+      range: RangeRef;
+      cells: Array<{ row: number; column: number; cell: CellData }>;
+    };
+    const sheet = context.workbook.getSheet(params.sheetId);
+    forEachCell(sheet, params.range, (row, column) => sheet.cells.delete(row, column));
+    for (const entry of params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
+  });
 
   runtime.registry.registerCommand<ShiftCellsParams>({
     id: 'sheet.cells.shift',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const snapshot: Array<{ row: number; column: number; cell: CellData }> = [];
-      sheet.cells.forEach((cell, row, column) => {
-        snapshot.push({ row, column, cell: structuredClone(cell) });
+      forEachCell(sheet, params.range, (row, column, cell) => {
+        if (cell) snapshot.push({ row, column, cell: structuredClone(cell) });
       });
       const affectedRanges: RangeRef[] = [params.range];
       context.applyMutation({
@@ -467,13 +499,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: snapshot.map((item) => ({
-          id: 'cell.restore' as const,
+        inverse: [{
+          id: 'cells.shifted.restore' as const,
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { row: item.row, column: item.column, previous: item.cell },
-          affectedRanges: [] as RangeRef[],
-        })),
+          params: { sheetId: params.sheetId, range: params.range, cells: snapshot },
+          affectedRanges,
+        }],
         apply: () => {
           StructuralTransform.apply(context.workbook, {
             kind: shiftKind(params.direction),
@@ -632,7 +664,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
 
 }
 
-export function buildClipboardFromRange(workbook: WorkbookModel, range: RangeRef): ClipboardData {
+export function buildClipboardFromRange(workbook: WorkbookModel, range: RangeRef): ClipboardPayload {
   return copyRangeToClipboardData(workbook, range);
 }
 

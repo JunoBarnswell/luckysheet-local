@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { CellMatrix, WorkbookModel } from './index';
+import { CellMatrix, StructuralTransform, WorkbookModel } from './index';
 
 function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   const workbook = new WorkbookModel('unit-test', 'Structural');
@@ -23,12 +23,12 @@ describe('structural operations', () => {
     assert.equal(matrix.get(5, 1)?.value, 'bottom');
   });
 
-  it('worksheet insertRows keeps merges and freeze consistent', () => {
+  it('StructuralTransform insertRows keeps merges and freeze consistent', () => {
     const { workbook } = seedWorkbook();
     const sheet = workbook.getSheet('s1');
     sheet.merges.push({ range: { sheetId: 's1', startRow: 2, endRow: 3, startColumn: 1, endColumn: 1 }, anchor: { row: 2, column: 1 } });
     sheet.freeze = { xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0 };
-    sheet.insertRows(2, 3);
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 3 });
     assert.equal(sheet.cells.get(2, 0)?.value ?? null, null);
     assert.equal(sheet.cells.get(5, 0)?.value, 'A2');
     assert.equal(sheet.merges[0]!.range.startRow, 5);
@@ -36,15 +36,15 @@ describe('structural operations', () => {
     assert.equal(sheet.rowCount, 1003);
   });
 
-  it('deleteRows removes region and returns extracted cells for undo', () => {
+  it('StructuralTransform deleteRows removes region and returns extracted cells for undo', () => {
     const { workbook } = seedWorkbook();
     const sheet = workbook.getSheet('s1');
     sheet.cells.set(1, 0, { value: 'gone' });
-    const removed = sheet.deleteRows(1, 1);
+    const removed = StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 1, count: 1 }).removedCells;
     assert.ok(removed.some((entry) => entry.cell.value === 'gone'));
     assert.equal(sheet.cells.get(1, 0)?.value, 'A2');
     // 恢复
-    sheet.insertRows(1, 1);
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1 });
     for (const entry of removed) sheet.cells.set(entry.row, entry.column, entry.cell);
     assert.equal(sheet.cells.get(1, 0)?.value, 'gone');
   });
@@ -54,9 +54,39 @@ describe('structural operations', () => {
     const sheet = workbook.getSheet('s1');
     sheet.columnWidths[2] = 200;
     sheet.hiddenColumns.add(3);
-    sheet.insertColumns(1, 2);
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 1, count: 2 });
     assert.equal(sheet.columnWidths[4], 200);
     assert.ok(sheet.hiddenColumns.has(5));
     assert.ok(!sheet.hiddenColumns.has(3));
+  });
+
+  it('structural formula rewrite uses AST references, including absolute and quoted refs', () => {
+    const workbook = new WorkbookModel('unit-formula-structure', 'Structural Formula');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.name = 'Input Sheet';
+    sheet.cells.set(5, 0, { value: null, formula: "=SUM($A$1,'Input Sheet'!$B$1,A1)+\"A1\"" });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+
+    assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
+  });
+
+  it('shift-cells moves formulas and metadata as one bounded transform', () => {
+    const workbook = new WorkbookModel('unit-shift-cells', 'Shift Cells');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(1, 1, { value: null, formula: '=A1+B1' });
+    sheet.notes.set('1:1', { id: 'n1', author: 'u', text: 'note', createdAt: 'now', visible: true });
+    sheet.commentThreads.push({ id: 'c1', sheetId: sheet.id, row: 1, column: 1, author: 'u', text: 'comment', createdAt: 'now', replies: [] });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'shift-cells-down',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 },
+    });
+
+    assert.equal(sheet.cells.get(2, 1)?.formula, '=A2+B2');
+    assert.equal(sheet.cells.get(1, 1), undefined);
+    assert.ok(sheet.notes.has('2:1'));
+    assert.equal(sheet.commentThreads[0]?.row, 2);
   });
 });

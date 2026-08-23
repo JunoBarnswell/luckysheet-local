@@ -1,6 +1,6 @@
-import type { SpillRange, SpillState } from '@react-sheets/core-model';
 import type { CellAddress } from './ast';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaValue } from './values';
+import type { SpillRange, SpillState } from './spill';
 
 export interface SpillResolveInput {
   sheetId: string;
