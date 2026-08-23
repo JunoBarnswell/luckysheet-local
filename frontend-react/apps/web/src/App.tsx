@@ -181,7 +181,6 @@ function WorkspaceApp() {
   const pivotCallbacks: PivotPanelCallbacks = {
     onCreate: createPivot,
     onPivotSelect: setActivePivotId,
-    onDefinitionChange: updatePivotDefinition,
     onFieldAreaChange: (fieldId, area, index) => {
       const next = clonePivotDefinition(pivotDefinition);
       next.filters = next.filters.filter((field) => field !== fieldId);

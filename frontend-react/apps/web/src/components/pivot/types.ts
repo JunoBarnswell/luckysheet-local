@@ -68,7 +68,6 @@ export interface PivotPanelState {
 export interface PivotPanelCallbacks {
   onCreate?: () => void;
   onPivotSelect?: (pivotId: string) => void;
-  onDefinitionChange: (definition: PivotDefinition) => void;
   onFieldAreaChange: (fieldId: string, area: PivotFieldArea, index: number) => void;
   onRemoveField: (fieldId: string, area: PivotFieldArea, index: number) => void;
   onValueChange: (value: PivotValueDefinition) => void;
