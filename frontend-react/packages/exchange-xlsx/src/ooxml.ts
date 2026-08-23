@@ -256,7 +256,9 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
     if (lower.includes('/timelines/') || lower.includes('timeline')) features.add('timeline');
     if (lower.includes('/theme/')) features.add('theme');
     if (lower.includes('/comments')) features.add('comments');
-    if (lower.includes('/drawings/')) features.add('images');
+    // A drawing part is also the container for charts and native
+    // Slicer/Timeline controls; it is not evidence of an image by itself.
+    if (lower.includes('/media/') || lower.includes('/images/')) features.add('images');
     if (lower.includes('/tables/')) features.add('tables');
   }
   if (snapshot) {
@@ -423,7 +425,7 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
       id: control.id,
       sheetId: sheet.id,
       kind: control.kind,
-      anchor: { kind: 'one-cell', row: 0, column: 0 },
+      anchor: { kind: 'one-cell', row: control.drawingAnchor?.row ?? 0, column: control.drawingAnchor?.column ?? 0 },
       transform: { x: 0, y: 0, width: control.kind === 'slicer' ? 220 : 420, height: control.kind === 'slicer' ? 180 : 120 },
       zIndex: 0,
       payloadId,
@@ -861,7 +863,9 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved?: XlsxPa
     overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
   }
   for (const name of files.keys()) {
-    if (name.startsWith('xl/tables/') && name.endsWith('.xml')) {
+    if (name.startsWith('xl/drawings/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.drawing+xml');
+    } else if (name.startsWith('xl/tables/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml');
     } else if (name.startsWith('xl/pivotTables/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml');
@@ -870,9 +874,9 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved?: XlsxPa
     } else if (name.startsWith('xl/pivotCache/') && name.toLowerCase().includes('records') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml');
     } else if (name.startsWith('xl/slicerCaches/') && name.endsWith('.xml')) {
-      overrides.set(`/${name}`, 'application/vnd.ms-excel.slicerCache+xml');
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.slicerCache');
     } else if (name.startsWith('xl/slicers/') && name.endsWith('.xml')) {
-      overrides.set(`/${name}`, 'application/vnd.ms-excel.slicer+xml');
+      overrides.set(`/${name}`, 'application/vnd.ms-excel.slicer');
     } else if (name.startsWith('xl/timelineCaches/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.ms-excel.TimelineCache+xml');
     } else if (name.startsWith('xl/timelines/') && name.endsWith('.xml')) {

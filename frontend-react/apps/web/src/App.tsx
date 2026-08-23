@@ -622,6 +622,8 @@ function WorkspaceApp() {
             onFlipSelection={(axis) => session.flipSelection(axis)}
             onSplitByDelimiter={() => session.splitByDelimiter(',')}
             onToggleBandedRows={() => session.toggleBandedRows()}
+            onSetRecalculationMode={(mode) => session.setRecalculationMode(mode)}
+            onOpenDefinedNames={() => dispatchSessionIntent({ type: 'panel.open', panel: 'definedNames' })}
             onTabChange={(tab) => session.setRibbonTab(tab)}
             phase={state.phase}
             canExecute={session.canExecute.bind(session)}
@@ -795,6 +797,9 @@ function WorkspaceApp() {
               onEvaluateFormula: () => session.evaluateFormulaStep(),
               onRetry: () => session.retry(),
             }}
+            definedNames={state.definedNameModels}
+            onSaveDefinedName={(input) => session.setDefinedName(input)}
+            onRemoveDefinedName={(input) => session.removeDefinedName(input.name, input.scope, input.sheetId)}
             sparklines={state.selectedSheet.sparklines}
             conditionalFormats={state.selectedSheet.conditionalFormats}
             dataValidations={state.selectedSheet.dataValidations}

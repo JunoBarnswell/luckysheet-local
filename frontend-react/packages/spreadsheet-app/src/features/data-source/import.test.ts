@@ -134,13 +134,13 @@ test('headered sheet data is split into fixed-size blocks with stable fields and
     expectedFields: result.manifest.fields,
   });
   assert.deepEqual(decoded.rows[0], ['Order 0', 0]);
-  assert.deepEqual(decoded.rows[65_535], ['Order 65_535', 655_350]);
+  assert.deepEqual(decoded.rows[65_535], ['Order 65535', 655350]);
   const tail = await decodeColumnarBlock(result.blocks[1]!.payload, {
     expectedChecksum: result.blocks[1]!.ref.checksum,
     expectedRowCount: 1,
     expectedFields: result.manifest.fields,
   });
-  assert.deepEqual(tail.rows[0], ['Order 65536', 655_360]);
+  assert.deepEqual(tail.rows[0], ['Order 65536', 655360]);
 });
 
 test('field identities and block references are deterministic for the same snapshot', async () => {

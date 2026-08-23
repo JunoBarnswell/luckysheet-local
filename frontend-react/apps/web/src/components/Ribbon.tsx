@@ -94,6 +94,8 @@ export interface RibbonProps {
   onFlipSelection: (axis: 'h' | 'v') => void;
   onSplitByDelimiter: () => void;
   onToggleBandedRows: () => void;
+  onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
+  onOpenDefinedNames: () => void;
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
@@ -264,6 +266,8 @@ export function Ribbon({
   onFlipSelection,
   onSplitByDelimiter,
   onToggleBandedRows,
+  onSetRecalculationMode,
+  onOpenDefinedNames,
   onTabChange,
   phase,
   activePivot,
@@ -326,6 +330,8 @@ export function Ribbon({
     onFlipSelection,
     onSplitByDelimiter,
     onToggleBandedRows,
+    onSetRecalculationMode,
+    onOpenDefinedNames,
   };
   const catalogContext: RibbonCommandContext = {
     phase,
@@ -410,6 +416,8 @@ export function Ribbon({
           <Inline gap="md" className="flex-wrap items-start">
             <RibbonGroup group="calculation">
               <CatalogButton id="calculateNow" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="calculationAutomatic" context={catalogContext} onExecute={executeCatalogResult} />
+              <CatalogButton id="calculationManual" context={catalogContext} onExecute={executeCatalogResult} />
               <CatalogButton id="goalSeek" context={catalogContext} onExecute={executeCatalogResult} variant="outline" />
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
@@ -420,6 +428,10 @@ export function Ribbon({
               <CatalogButton id="showFormulas" context={catalogContext} onExecute={executeCatalogResult} />
               <CatalogButton id="errorChecking" context={catalogContext} onExecute={executeCatalogResult} />
               <CatalogButton id="evaluateFormula" context={catalogContext} onExecute={executeCatalogResult} />
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+            <RibbonGroup group="definedNames">
+              <CatalogButton id="definedNames" context={catalogContext} onExecute={executeCatalogResult} />
             </RibbonGroup>
           </Inline>
         ) : null}

@@ -89,6 +89,22 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 3, 3), '20');
   });
 
+  it('exposes canonical defined-name CRUD and calculation state through Session APIs', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const created = app.setDefinedName({ name: 'LocalRate', formula: '0.25', scope: 'sheet', sheetId });
+    assert.equal(created.scope, 'sheet');
+    assert.equal(app.getDefinedName('LocalRate', sheetId)?.formula, '0.25');
+    assert.equal(app.listDefinedNames(sheetId).some((entry) => entry.name === 'LocalRate'), true);
+
+    app.setRecalculationMode('manual');
+    assert.equal(app.getRecalculationMode(), 'manual');
+    app.removeDefinedName('LocalRate', 'sheet', sheetId);
+    assert.equal(app.getDefinedName('LocalRate', sheetId), undefined);
+    assert.equal(app.hasPendingFormulaRecalculation(), false);
+    await app.waitForFormulaCalculation();
+  });
+
   it('tracks dynamic-array spill ranges and child values', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

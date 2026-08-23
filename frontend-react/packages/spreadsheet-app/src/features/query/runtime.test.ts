@@ -18,6 +18,24 @@ import { createDefaultConnectorRegistry, CsvDataConnector, deserializeQueryDefin
 import { QueryStepPipeline } from './query-steps';
 import { registerQueryCommands } from './commands';
 
+function queryTargetPivot(sheetId: string) {
+  return {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-1',
+    source: { kind: 'worksheet-range' as const, range: { sheetId, startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 } },
+    target: { sheetId, anchor: { row: 10, column: 0 } },
+    fieldCatalog: {
+      schema: 'PivotFieldCatalog' as const,
+      fields: [
+        { fieldId: 'query:field:0', name: 'A', dataType: 'number' as const, ordinal: 0 },
+        { fieldId: 'query:field:1', name: 'B', dataType: 'number' as const, ordinal: 1 },
+      ],
+    },
+    layout: { rows: [], columns: [], values: [], filters: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+  };
+}
+
 describe('query runtime', () => {
   it('executes local CSV and TSV connectors with quoted fields', async () => {
     const csv = new CsvDataConnector();
@@ -189,7 +207,7 @@ describe('query commands', () => {
       hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
       showFilterButton: true, columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
     });
-    const pivot = { id: 'pivot-1', sheetId: sheet.id, sourceRange: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 }, layout: { rows: [], columns: [], values: [], filters: [], showSubtotals: true, showGrandTotals: true } } as never;
+    const pivot = queryTargetPivot(sheet.id);
     sheet.pivots.push(pivot);
     const query = createInlineJsonQuery('q-targets', 'Targets', [{ A: 1, B: 2 }]);
     const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };
@@ -212,7 +230,7 @@ describe('query commands', () => {
       showFilterButton: true, columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
     });
     model.addTable({ id: 'workbook-table-1', name: 'Results', rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
-    const pivot = { id: 'pivot-1', sheetId: sheet.id, sourceRange: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 }, layout: { rows: [], columns: [], values: [], filters: [], showSubtotals: true, showGrandTotals: true } } as never;
+    const pivot = queryTargetPivot(sheet.id);
     sheet.pivots.push(pivot);
     const query = createInlineJsonQuery('q-replay', 'Replay', [{ A: 1, B: 2 }]);
     const result = { columns: ['A', 'B'], rows: [[1, 2]], rowCount: 1 };

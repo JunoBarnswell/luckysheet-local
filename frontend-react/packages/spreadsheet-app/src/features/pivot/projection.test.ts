@@ -5,6 +5,7 @@ import {
   aggregatePivotValues,
   buildPivotGridProjection,
   computePivotResult,
+  computePivotResultFromBlockSource,
   getPivotFieldCatalog,
   hitTestPivotProjection,
 } from './engine';
@@ -60,14 +61,78 @@ describe('native PivotGridProjection contract', () => {
     const workbook = workbookWithData();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-overlay', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
     assert.ok(pivot);
-    pivot.target = { sheetId: 'sheet-1', anchor: { row: 0, column: 0 } };
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 5, column: 0 } };
     const before = workbook.getSheet('sheet-1').cells.count();
+    const first = buildPivotGridProjection(workbook, pivot);
+    assert.equal(first.collision.status, 'clear');
+    workbook.getSheet('sheet-1').cells.set(5, 0, { value: 'ordinary cell' });
     const projection = buildPivotGridProjection(workbook, pivot);
-    assert.equal(workbook.getSheet('sheet-1').cells.count(), before);
+    assert.equal(workbook.getSheet('sheet-1').cells.count(), before + 1);
     assert.equal(projection.collision.status, 'collision');
+    assert.deepEqual(projection.cells, first.cells);
+    assert.deepEqual(projection.occupiedRange, first.occupiedRange);
     assert.equal(projection.schema, 'PivotGridProjection');
-    const hit = hitTestPivotProjection(projection, projection.target.anchor.row, projection.target.anchor.column);
+    const hit = hitTestPivotProjection(projection, 0, 0);
     assert.equal(hit.pivotId, pivot.id);
     assert.equal(hit.kind, 'cell');
+  });
+
+  it('retains a cached block Pivot result across loading and source failure states', () => {
+    const workbook = new WorkbookModel('pivot-block', 'Pivot Block');
+    workbook.addDataSource({
+      schema: 'DataSourceManifest',
+      version: 1,
+      id: 'source-block',
+      name: 'Block Source',
+      kind: 'chunked-table',
+      sourceSheetId: 'sheet-1',
+      rowCount: 2,
+      fields: [
+        { id: 'region', name: 'Region', ordinal: 0, type: 'text' },
+        { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' },
+      ],
+      blockRowCount: 65_536,
+      blocks: [],
+      revision: 1,
+    });
+    const pivot = {
+      schema: 'PivotDefinition' as const,
+      id: 'pivot-block',
+      source: { kind: 'data-source' as const, dataSourceId: 'source-block' },
+      target: { sheetId: 'sheet-1', anchor: { row: 5, column: 0 } },
+      fieldCatalog: {
+        schema: 'PivotFieldCatalog' as const,
+        fields: [
+          { fieldId: 'region', name: 'Region', dataType: 'text' as const, ordinal: 0 },
+          { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 },
+        ],
+      },
+      refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+      layout: {
+        rows: [{ fieldId: 'region' }], columns: [], filters: [],
+        values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
+        showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false,
+        expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+      },
+    };
+    const loading = buildPivotGridProjection(workbook, pivot);
+    assert.equal(loading.refresh.status, 'refreshing');
+    assert.equal(loading.cells.some((cell) => cell.kind === 'loading'), true);
+    const result = computePivotResultFromBlockSource(workbook, pivot, {
+      fields: [
+        { fieldId: 'region', name: 'Region', ordinal: 0, dataType: 'text' },
+        { fieldId: 'amount', name: 'Amount', ordinal: 1, dataType: 'number' },
+      ],
+      rows: [
+        { values: { region: 'East', amount: 10 }, paths: [{ sheetId: 'sheet-1', row: 1 }] },
+        { values: { region: 'West', amount: 20 }, paths: [{ sheetId: 'sheet-1', row: 2 }] },
+      ],
+    }, 'source-block:1');
+    const ready = buildPivotGridProjection(workbook, pivot, result, { sourceState: { availability: 'ready' } });
+    assert.equal(ready.refresh.status, 'ready');
+    assert.equal(ready.cells.some((cell) => cell.value === 30), true);
+    const failed = buildPivotGridProjection(workbook, pivot, undefined, { sourceState: { availability: 'error', error: 'offline' } });
+    assert.equal(failed.refresh.status, 'error');
+    assert.equal(failed.cells.some((cell) => cell.value === 30), true);
   });
 });

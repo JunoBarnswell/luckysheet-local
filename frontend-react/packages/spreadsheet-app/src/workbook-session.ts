@@ -126,7 +126,10 @@ import {
 import {
   buildPrintSnapshot,
   getPrintDocument,
+  pageSetupToPrintLayout,
   summarizePrintSnapshot,
+  type PageSetup,
+  type PrintPageBreak,
   type PrintPageSnapshot,
   type PrintSnapshot,
 } from './features/print';
@@ -243,6 +246,15 @@ export interface ExtendedSnapshot {
 export interface CreatePivotTableParams {
   source?: PivotDefinition['source'];
   destination: { kind: 'new-sheet' } | { kind: 'existing-sheet'; sheetId: string; anchor: { row: number; column: number } };
+}
+
+export interface DefinedNameCommandInput {
+  name: string;
+  formula: string;
+  scope?: DefinedNameModel['scope'];
+  sheetId?: string;
+  hidden?: boolean;
+  comment?: string;
 }
 
 function snapshotUsedRange(sheet: SheetSnapshot): RangeRef | undefined {
@@ -1332,6 +1344,48 @@ export class WorkbookSession {
     }
   }
 
+  listDefinedNames(sheetId = this.activeSheetId): readonly DefinedNameModel[] {
+    this.runtime.model.getSheet(sheetId);
+    return this.runtime.model.listDefinedNames(sheetId);
+  }
+
+  getDefinedName(name: string, sheetId = this.activeSheetId): DefinedNameModel | undefined {
+    this.runtime.model.getSheet(sheetId);
+    return this.runtime.model.getDefinedName(name, sheetId);
+  }
+
+  setDefinedName(input: DefinedNameCommandInput): DefinedNameModel {
+    const scope = input.scope ?? 'workbook';
+    const sheetId = scope === 'sheet' ? input.sheetId ?? this.activeSheetId : undefined;
+    this.runCommand('workbook.name.set', {
+      name: input.name,
+      formula: input.formula,
+      scope,
+      ...(sheetId === undefined ? {} : { sheetId }),
+      ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
+      ...(input.comment === undefined ? {} : { comment: input.comment }),
+    });
+    this.refresh();
+    const model = this.runtime.model.getDefinedNameExact(input.name, scope, sheetId);
+    if (!model) throw new Error(`Defined name was not persisted: ${input.name}`);
+    return model;
+  }
+
+  removeDefinedName(
+    name: string,
+    scope: DefinedNameModel['scope'] = 'workbook',
+    sheetId = scope === 'sheet' ? this.activeSheetId : undefined,
+  ): DefinedNameModel | undefined {
+    const previous = this.runtime.model.getDefinedNameExact(name, scope, sheetId);
+    this.runCommand('workbook.name.remove', {
+      name,
+      scope,
+      ...(sheetId === undefined ? {} : { sheetId }),
+    });
+    this.refresh();
+    return previous;
+  }
+
   showFormulaPrecedents(): void {
     const active = this.selectionService.getState().activeCell;
     this.runCommand('formula.audit.precedents.show', { address: { sheetId: this.activeSheetId, ...active } });
@@ -1920,6 +1974,42 @@ export class WorkbookSession {
     this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'backward' });
     this.refresh();
   }
+  bringSelectedDrawingToFront(): void {
+    const drawingId = this.resolveSelectedDrawingId();
+    if (!drawingId) {
+      this.notify('Select a drawing object first');
+      return;
+    }
+    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'front' });
+    this.refresh();
+  }
+  sendSelectedDrawingToBack(): void {
+    const drawingId = this.resolveSelectedDrawingId();
+    if (!drawingId) {
+      this.notify('Select a drawing object first');
+      return;
+    }
+    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'back' });
+    this.refresh();
+  }
+  alignSelectedDrawings(alignment: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'): void {
+    const drawingIds = this.resolveSelectedDrawingIds();
+    if (drawingIds.length < 2) {
+      this.notify('Select at least two drawing objects to align');
+      return;
+    }
+    this.runCommand('drawing.align', { sheetId: this.activeSheetId, drawingIds, alignment });
+    this.refresh();
+  }
+  distributeSelectedDrawings(axis: 'horizontal' | 'vertical'): void {
+    const drawingIds = this.resolveSelectedDrawingIds();
+    if (drawingIds.length < 3) {
+      this.notify('Select at least three drawing objects to distribute');
+      return;
+    }
+    this.runCommand('drawing.distribute', { sheetId: this.activeSheetId, drawingIds, axis });
+    this.refresh();
+  }
   removeSelectedDrawing(): void {
     if (!this.selectedFloatingId) {
       this.notify('Select a drawing object first');
@@ -1940,6 +2030,14 @@ export class WorkbookSession {
     if (!this.selectedFloatingId) return undefined;
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     return sheet.drawings.some((entry) => entry.id === this.selectedFloatingId) ? this.selectedFloatingId : undefined;
+  }
+  private resolveSelectedDrawingIds(): string[] {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selected = this.runtime.drawing.getSelection(this.activeSheetId)
+      .filter((id) => sheet.drawings.some((entry) => entry.id === id));
+    if (selected.length > 0) return selected;
+    const single = this.resolveSelectedDrawingId();
+    return single ? [single] : [];
   }
   addSparkline(sparkline: SparklineModel): void {
     this.runCommand('sparkline.insert', buildSparklineInsertParams(sparkline));
@@ -2392,6 +2490,10 @@ export class WorkbookSession {
     return this.printSnapshot;
   }
 
+  getPrintPageSetup(): PageSetup {
+    return structuredClone(getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup);
+  }
+
   setPrintArea(range: RangeRef): void {
     if (!this.canExecute('print.area.set')) {
       this.notify('You do not have permission to set print area');
@@ -2409,7 +2511,7 @@ export class WorkbookSession {
       return;
     }
     this.runCommand('print.pageSetup', { layout, sheetId: this.activeSheetId });
-    this.rebuildPrintSnapshot(layout);
+    this.rebuildStoredPrintSnapshot(layout);
     this.emit();
   }
 
@@ -2424,7 +2526,7 @@ export class WorkbookSession {
 
   clearPrintArea(): void {
     this.runCommand('print.area.clear', { sheetId: this.activeSheetId });
-    this.rebuildPrintSnapshot();
+    this.rebuildStoredPrintSnapshot();
     this.notify('Print area cleared');
     this.emit();
   }
@@ -2435,30 +2537,74 @@ export class WorkbookSession {
       ? { sheetId: this.activeSheetId, repeatRows: { start: range.startRow, end: range.endRow } }
       : { sheetId: this.activeSheetId, repeatColumns: { start: range.startColumn, end: range.endColumn } };
     this.runCommand('print.titles.set', params);
-    this.rebuildPrintSnapshot();
+    this.rebuildStoredPrintSnapshot();
     this.notify(axis === 'rows' ? 'Rows to repeat at top updated' : 'Columns to repeat at left updated');
     this.emit();
   }
 
-  setPrintScale(scale: number): void {
-    this.runCommand('print.scale.set', { sheetId: this.activeSheetId, scale });
-    const document = getPrintDocument(this.runtime.model, this.activeSheetId);
-    this.printLayout = { ...this.printLayout, scale: document.pageSetup.scale };
-    this.rebuildPrintSnapshot(this.printLayout);
+  clearPrintTitles(): void {
+    this.runCommand('print.titles.clear', { sheetId: this.activeSheetId });
+    this.rebuildStoredPrintSnapshot();
+    this.notify('Print titles cleared');
     this.emit();
+  }
+
+  setPrintPageBreak(pageBreak: { row?: number; column?: number }): void {
+    const next: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
+    this.runCommand('print.pageBreak.set', { sheetId: this.activeSheetId, pageBreak: next });
+    this.rebuildStoredPrintSnapshot();
+    this.emit();
+  }
+
+  removePrintPageBreak(pageBreak: { row?: number; column?: number }): void {
+    const target: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
+    this.runCommand('print.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
+    this.rebuildStoredPrintSnapshot();
+    this.emit();
+  }
+
+  clearPrintPageBreaks(): void {
+    this.runCommand('print.pageBreaks.clear', { sheetId: this.activeSheetId });
+    this.rebuildStoredPrintSnapshot();
+    this.notify('Manual page breaks cleared');
+    this.emit();
+  }
+
+  setPrintScale(scale: number, fitToWidth?: number | null, fitToHeight?: number | null): void {
+    this.runCommand('print.scale.set', {
+      sheetId: this.activeSheetId,
+      scale,
+      ...(fitToWidth === undefined ? {} : { fitToWidth }),
+      ...(fitToHeight === undefined ? {} : { fitToHeight }),
+    });
+    const document = getPrintDocument(this.runtime.model, this.activeSheetId);
+    this.printLayout = {
+      ...this.printLayout,
+      ...pageSetupToPrintLayout(document.pageSetup),
+      scale: document.pageSetup.scale,
+      fitToWidth: Boolean(document.pageSetup.fitToWidth),
+      fitToHeight: Boolean(document.pageSetup.fitToHeight),
+    };
+    this.rebuildStoredPrintSnapshot(this.printLayout);
+    this.emit();
+  }
+
+  setPrintScaleToFit(fitToWidth: number | null, fitToHeight: number | null): void {
+    const scale = getPrintDocument(this.runtime.model, this.activeSheetId).pageSetup.scale;
+    this.setPrintScale(scale, fitToWidth, fitToHeight);
   }
 
   setPrintGridlines(enabled: boolean): void {
     this.runCommand('print.gridlines.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printGridlines: enabled };
-    this.rebuildPrintSnapshot(this.printLayout);
+    this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
   setPrintHeadings(enabled: boolean): void {
     this.runCommand('print.headings.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printHeadings: enabled };
-    this.rebuildPrintSnapshot(this.printLayout);
+    this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
@@ -2497,6 +2643,14 @@ export class WorkbookSession {
       uiLayout,
       selectionRange,
     );
+    this.printLayout = uiLayout;
+    this.printSnapshot = snapshot;
+    return snapshot;
+  }
+
+  private rebuildStoredPrintSnapshot(layout?: PrintLayout): PrintSnapshot {
+    const uiLayout = layout ?? this.printLayout;
+    const snapshot = buildPrintSnapshot(this.runtime.model, this.activeSheetId, uiLayout);
     this.printLayout = uiLayout;
     this.printSnapshot = snapshot;
     return snapshot;
@@ -2906,8 +3060,16 @@ export class WorkbookSession {
     this.runCommand('sheet.sort.multi', { sheetId: this.activeSheetId, range, criteria: criteria.map((c) => ({ column: c.colIdx, ascending: c.ascending })), hasHeader });
   }
 
+  getRecalculationMode(): RecalculationMode {
+    return this.runtime.formula.getRecalculationMode();
+  }
+
+  hasPendingFormulaRecalculation(): boolean {
+    return this.runtime.formula.hasPendingRecalculation();
+  }
+
   setRecalculationMode(mode: RecalculationMode): void {
-    this.runtime.formula.setRecalculationMode(mode);
+    this.runCommand('formula.calculation.mode.set', { mode });
     if (mode === 'automatic') void scheduleFormulaRecalculation(this.runtime);
     this.refresh();
   }

@@ -131,6 +131,7 @@ export interface NativePivotControlDefinition {
   cacheRelationshipId: string;
   drawingPart?: string;
   drawingRelationshipId?: string;
+  drawingAnchor?: { row: number; column: number };
   pivotId?: string;
   fieldId?: string;
   fieldIndex?: number;

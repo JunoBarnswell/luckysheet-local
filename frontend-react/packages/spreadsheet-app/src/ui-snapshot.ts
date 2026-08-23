@@ -38,7 +38,12 @@ import {
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
-import { buildPivotGridProjection, computePivotResult } from './features/pivot/engine';
+import {
+  buildPivotGridProjection,
+  computePivotResult,
+  getLastValidPivotResult,
+  type PivotProjectionSourceState,
+} from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
 import { getCellNote } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from './features/data-source';
@@ -185,6 +190,26 @@ function blockBackedCell(
   return { value: '#BLOCK!', style: { textColor: '#b91c1c', bold: true } };
 }
 
+function pivotSourceState(
+  pivot: PivotModel,
+  dataContent: ReadonlyMap<string, DataSourceContentQuery>,
+): PivotProjectionSourceState | undefined {
+  if (pivot.source.kind !== 'data-source') return undefined;
+  const query = dataContent.get(pivot.source.dataSourceId);
+  if (!query) return { availability: 'missing', error: `Data source ${pivot.source.dataSourceId} is unavailable` };
+  const states = query.getLoadStates();
+  if (states.some((state) => state.availability === 'error')) {
+    const current = states.find((state) => state.availability === 'error');
+    return { availability: 'error', error: current?.error ?? `Data source ${pivot.source.dataSourceId} failed to load` };
+  }
+  if (states.some((state) => state.availability === 'missing')) {
+    const current = states.find((state) => state.availability === 'missing');
+    return { availability: 'missing', error: current?.error ?? `Data source ${pivot.source.dataSourceId} is missing a block` };
+  }
+  if (states.some((state) => state.availability === 'loading') || states.length === 0) return { availability: 'loading' };
+  return { availability: 'ready' };
+}
+
 export function buildCanvasSheetSnapshot(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
@@ -258,18 +283,24 @@ export function buildCanvasSheetSnapshot(
   const pivotResults: Record<string, PivotResultTree> = {};
   const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
-    try {
-      pivotResults[pivot.id] = cachedPivotResults[pivot.id] ?? computePivotResult(workbook, pivot);
-      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, pivotResults[pivot.id]);
-    } catch {
-      // Invalid definitions still get an explicit error projection when the
-      // target is resolvable; never replace a failed result with blank cells.
+    const sourceState = pivotSourceState(pivot, dataContent);
+    let cachedResult = cachedPivotResults[pivot.id] ?? getLastValidPivotResult(workbook, pivot.id);
+    if (!cachedResult && pivot.source.kind !== 'data-source') {
       try {
-        pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot);
+        cachedResult = computePivotResult(workbook, pivot);
       } catch {
-        // A malformed target/source is surfaced by command validation. The
-        // snapshot remains renderable for the rest of the worksheet.
+        // The projection builder emits an explicit error state for malformed
+        // synchronous definitions; it must not replace a retained result.
       }
+    }
+    if (cachedResult) pivotResults[pivot.id] = cachedResult;
+    try {
+      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState });
+      const retained = getLastValidPivotResult(workbook, pivot.id);
+      if (!pivotResults[pivot.id] && retained) pivotResults[pivot.id] = retained;
+    } catch {
+      // Invalid target/source is surfaced by command validation. The snapshot
+      // remains renderable for the rest of the worksheet.
     }
   }
 

@@ -26,6 +26,7 @@ import type {
   PivotFieldDefinition,
   PivotModel,
   SparklineModel,
+  DefinedNameModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
@@ -48,6 +49,7 @@ import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
+import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import {
   FormulaAuditPanel,
   type FormulaAuditPanelCallbacks,
@@ -82,6 +84,9 @@ export interface FeatureSidebarProps {
   formulaAuditError?: string;
   formulaAuditSectionStates?: FormulaAuditSectionStates;
   formulaAuditCallbacks?: FormulaAuditPanelCallbacks;
+  definedNames?: readonly DefinedNameModel[];
+  onSaveDefinedName?: (input: DefinedNameModel) => void;
+  onRemoveDefinedName?: (input: DefinedNameModel) => void;
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -152,6 +157,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'chart', label: 'Chart', icon: 'chart' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
+  { id: 'definedNames', label: 'Names', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
   { id: 'sparkline', label: 'Spark', icon: 'sparkline' },
   { id: 'conditionalFormat', label: 'Format', icon: 'sparkles' },
@@ -289,6 +295,9 @@ export function FeatureSidebar({
   formulaAuditError,
   formulaAuditSectionStates,
   formulaAuditCallbacks,
+  definedNames = [],
+  onSaveDefinedName,
+  onRemoveDefinedName,
   sparklines,
   conditionalFormats,
   dataValidations,
@@ -466,6 +475,14 @@ export function FeatureSidebar({
             projection={formulaAudit}
             sectionStates={formulaAuditSectionStates}
             state={formulaAuditState}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'definedNames' && onSaveDefinedName && onRemoveDefinedName ? (
+          <DefinedNamesPanel
+            sheetId={sheetId}
+            names={definedNames}
+            onSave={onSaveDefinedName}
+            onRemove={onRemoveDefinedName}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'shape' ? (

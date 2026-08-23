@@ -65,4 +65,37 @@ describe('WorkbookSession print integration', () => {
     assert.equal(app.getUiSnapshot().showPrintPreview, true);
     assert.ok(app.getUiSnapshot().printPageCount >= 1);
   });
+
+  it('exposes persisted page-layout fields without replacing the saved print area', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.setPrintArea({ sheetId, startRow: 2, endRow: 8, startColumn: 1, endColumn: 4 });
+    app.updatePrintPageSetup({
+      paper: 'Letter',
+      orientation: 'landscape',
+      margin: { top: 12, right: 12, bottom: 12, left: 12 },
+    });
+    app.setPrintTitles('rows');
+    app.setPrintPageBreak({ row: 5 });
+    app.setPrintScale(80, 1, null);
+    app.setPrintGridlines(true);
+    app.setPrintHeadings(true);
+    app.setViewGridlines(false);
+    app.setViewHeadings(false);
+
+    const snapshot = app.getPrintSnapshot();
+    assert.equal(snapshot?.printArea.startRow, 2);
+    assert.equal(snapshot?.printArea.endRow, 8);
+    assert.equal(app.getPrintPageSetup().scale, 80);
+    assert.equal(app.getPrintPageSetup().fitToWidth, 1);
+    assert.equal(app.getPrintPageSetup().printGridlines, true);
+    assert.equal(app.getPrintPageSetup().printHeadings, true);
+    assert.equal(app['runtime'].model.getSheet(sheetId).showGridlines, false);
+    assert.equal(app['runtime'].model.getSheet(sheetId).showHeaders, false);
+
+    app.clearPrintPageBreaks();
+    app.clearPrintTitles();
+    assert.equal(app.getPrintSnapshot()?.model.pageBreaks.length, 0);
+    assert.equal(app.getPrintSnapshot()?.model.repeatRows, undefined);
+  });
 });

@@ -11,6 +11,7 @@ import {
   type FormulaEvaluationTraceStep,
   type FormulaError,
   type FormulaValue,
+  type RecalculationMode,
   isFormulaError,
 } from '@react-sheets/formula-engine';
 
@@ -140,6 +141,11 @@ export class FormulaAuditController {
     return this.getProjection();
   }
 
+  setRecalculationMode(mode: RecalculationMode): RecalculationMode {
+    this.formula.setRecalculationMode(mode);
+    return this.formula.getRecalculationMode();
+  }
+
   scanErrors(options: FormulaErrorScanOptions = {}): readonly FormulaAuditError[] {
     this.errors = scanFormulaErrors(this.formula, options);
     return this.errors.map(cloneError);
@@ -233,6 +239,7 @@ export function registerFormulaAuditCommands(
     'formula.audit.formulas.show',
     'formula.audit.errors.scan',
     'formula.audit.evaluate.step',
+    'formula.calculation.mode.set',
   ] as const;
 
   registry.registerCommand<FormulaAuditAddressParams>({
@@ -287,6 +294,16 @@ export function registerFormulaAuditCommands(
       return auditResult(context, projection, params.address);
     },
   });
+  registry.registerCommand<FormulaCalculationModeParams>({
+    id: 'formula.calculation.mode.set',
+    execute: (params, context) => {
+      if (params.mode !== 'automatic' && params.mode !== 'manual') {
+        throw new Error('Formula calculation mode must be automatic or manual');
+      }
+      controller.setRecalculationMode(params.mode);
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+    },
+  });
   return commandIds;
 }
 
@@ -299,6 +316,10 @@ export interface FormulaAuditShowFormulasParams {
 }
 
 export interface FormulaAuditErrorScanParams extends FormulaErrorScanOptions {}
+
+export interface FormulaCalculationModeParams {
+  readonly mode: RecalculationMode;
+}
 
 export type FormulaAuditEmptyParams = Record<string, never>;
 

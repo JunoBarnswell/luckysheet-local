@@ -31,7 +31,7 @@ describe('WorkbookSession chart integration', () => {
     assert.equal((sheet.drawingPayloads.get('chart-test-1') as { title?: string; legendPosition?: string }).title, 'Revenue');
     assert.equal((sheet.drawingPayloads.get('chart-test-1') as { legendPosition?: string }).legendPosition, 'right');
     let snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedFloatingId, 'chart-test-1');
+    assert.equal(snapshot.selectedFloatingId, 'draw-chart-test-1');
 
     app.updateChartBounds('chart-test-1', { x: 120, y: 140, width: 320, height: 220 });
     snapshot = app.getUiSnapshot();

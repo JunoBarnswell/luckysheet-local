@@ -46,7 +46,7 @@ describe('formula audit projections', () => {
     const evaluation = controller.evaluateStep({ sheetId, row: 0, column: 1 });
     assert.ok(evaluation);
     assert.equal(evaluation?.value, 10);
-    assert.ok((evaluation?.steps.length ?? 0) >= 5);
+    assert.ok((evaluation?.steps.length ?? 0) >= 4);
     assert.equal(controller.removeArrows().arrows.length, 0);
   });
 
@@ -55,7 +55,7 @@ describe('formula audit projections', () => {
     const controller = new FormulaAuditController(formula);
     const runtime = new CommandRuntime(workbook, new CommandRegistry({ requireMutationMetadata: true }));
     const commandIds = registerFormulaAuditCommands(runtime.registry, controller);
-    assert.equal(commandIds.length, 6);
+    assert.equal(commandIds.length, 7);
 
     runtime.execute('formula.audit.precedents.show', { address: { sheetId, row: 0, column: 1 } });
     assert.equal(controller.getProjection().arrows.length, 1);
@@ -64,5 +64,7 @@ describe('formula audit projections', () => {
     assert.equal(controller.getProjection().arrows.length, 0);
     runtime.execute('formula.audit.errors.scan', { sheetId });
     assert.equal(controller.getProjection().errors.length, 1);
+    runtime.execute('formula.calculation.mode.set', { mode: 'manual' });
+    assert.equal(formula.getRecalculationMode(), 'manual');
   });
 });

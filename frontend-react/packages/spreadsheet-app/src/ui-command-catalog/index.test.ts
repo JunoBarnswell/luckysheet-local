@@ -72,6 +72,8 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onFlipSelection: () => undefined,
     onSplitByDelimiter: () => undefined,
     onToggleBandedRows: () => undefined,
+    onSetRecalculationMode: () => undefined,
+    onOpenDefinedNames: () => undefined,
   };
   return {
     phase: 'ready',

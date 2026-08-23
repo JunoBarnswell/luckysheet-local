@@ -19,6 +19,7 @@ export type RibbonGroupId =
   | 'scripts'
   | 'calculation'
   | 'formulaAudit'
+  | 'definedNames'
   | 'pageSetup'
   | 'scaleToFit'
   | 'sheetOptions'
@@ -67,6 +68,9 @@ export type RibbonCommandId =
   | 'showFormulas'
   | 'errorChecking'
   | 'evaluateFormula'
+  | 'calculationAutomatic'
+  | 'calculationManual'
+  | 'definedNames'
   | 'pageSetup'
   | 'setPrintArea'
   | 'clearPrintArea'
@@ -286,6 +290,8 @@ export interface RibbonCommandActions {
   onFlipSelection: (axis: 'h' | 'v') => void;
   onSplitByDelimiter: () => void;
   onToggleBandedRows: () => void;
+  onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
+  onOpenDefinedNames: () => void;
 }
 
 export interface RibbonCommandContext {
@@ -340,6 +346,7 @@ export const RIBBON_TEXT = {
     scripts: 'groups.scripts',
     calculation: 'groups.calculation',
     formulaAudit: 'groups.formulaAudit',
+    definedNames: 'groups.definedNames',
     pageSetup: 'groups.pageSetup',
     scaleToFit: 'groups.scaleToFit',
     sheetOptions: 'groups.sheetOptions',
@@ -388,6 +395,9 @@ export const RIBBON_TEXT = {
     showFormulas: 'commands.showFormulas',
     errorChecking: 'commands.errorChecking',
     evaluateFormula: 'commands.evaluateFormula',
+    calculationAutomatic: 'commands.calculationAutomatic',
+    calculationManual: 'commands.calculationManual',
+    definedNames: 'commands.definedNames',
     pageSetup: 'commands.pageSetup',
     setPrintArea: 'commands.setPrintArea',
     clearPrintArea: 'commands.clearPrintArea',
@@ -507,6 +517,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('scripts', 'automate', 70),
   group('calculation', 'formulas', 20),
   group('formulaAudit', 'formulas', 50),
+  group('definedNames', 'formulas', 60),
   group('pageSetup', 'pageLayout', 10),
   group('scaleToFit', 'pageLayout', 30),
   group('sheetOptions', 'pageLayout', 50),
@@ -653,6 +664,9 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   callback('showFormulas', 'formulas', 'formulaAudit', RIBBON_TEXT.commands.showFormulas, (context) => context.actions.onToggleShowFormulas(), 'function'),
   callback('errorChecking', 'formulas', 'formulaAudit', RIBBON_TEXT.commands.errorChecking, (context) => context.actions.onScanFormulaErrors(), 'check-circle'),
   callback('evaluateFormula', 'formulas', 'formulaAudit', RIBBON_TEXT.commands.evaluateFormula, (context) => context.actions.onEvaluateFormula(), 'calculator'),
+  callback('calculationAutomatic', 'formulas', 'calculation', RIBBON_TEXT.commands.calculationAutomatic, (context) => context.actions.onSetRecalculationMode('automatic'), 'calculator'),
+  callback('calculationManual', 'formulas', 'calculation', RIBBON_TEXT.commands.calculationManual, (context) => context.actions.onSetRecalculationMode('manual'), 'calculator'),
+  callback('definedNames', 'formulas', 'definedNames', RIBBON_TEXT.commands.definedNames, (context) => context.actions.onOpenDefinedNames(), 'function'),
   callback('pageSetup', 'pageLayout', 'pageSetup', RIBBON_TEXT.commands.pageSetup, (context) => context.actions.onOpenPrintLayout(), 'printer'),
   callback('setPrintArea', 'pageLayout', 'pageSetup', RIBBON_TEXT.commands.setPrintArea, (context) => context.actions.onSetPrintArea(), 'layout'),
   callback('clearPrintArea', 'pageLayout', 'pageSetup', RIBBON_TEXT.commands.clearPrintArea, (context) => context.actions.onClearPrintArea(), 'x'),

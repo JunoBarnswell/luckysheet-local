@@ -30,7 +30,7 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal(drawing?.kind, 'shape');
     assert.equal((sheet.drawingPayloads.get('shape-test-1') as { text?: string }).text, 'Box');
     let snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.selectedFloatingId, 'shape-test-1');
+    assert.equal(snapshot.selectedFloatingId, 'draw-shape-test-1');
 
     app.updateShapeBounds('shape-test-1', { x: 80, y: 90, width: 120, height: 48 });
     snapshot = app.getUiSnapshot();
@@ -51,5 +51,39 @@ describe('WorkbookSession drawing integration', () => {
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'shape');
     assert.equal((sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { type?: string }).type, 'rectangle');
+  });
+
+  it('exposes Page Layout arrange actions through the existing drawing command path', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const add = (id: string, payloadId: string, x: number, y: number) => app.addShape({
+      id,
+      sheetId,
+      kind: 'shape',
+      payloadId,
+      anchor: { kind: 'absolute' },
+      transform: { x, y, width: 80, height: 40, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
+      type: 'rectangle',
+      fill: '#ffffff',
+      stroke: '#111827',
+      strokeWidth: 1,
+      text: id,
+    });
+    add('arrange-a', 'arrange-a-payload', 20, 20);
+    add('arrange-b', 'arrange-b-payload', 180, 80);
+    add('arrange-c', 'arrange-c-payload', 340, 140);
+    app.runCommand('drawing.select', { sheetId, drawingIds: ['arrange-a', 'arrange-b', 'arrange-c'] });
+    app.alignSelectedDrawings('left');
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    assert.equal(sheet.drawings.find((entry) => entry.id === 'arrange-a')?.transform.x, 20);
+    assert.equal(sheet.drawings.find((entry) => entry.id === 'arrange-b')?.transform.x, 20);
+    assert.equal(sheet.drawings.find((entry) => entry.id === 'arrange-c')?.transform.x, 20);
+    app.distributeSelectedDrawings('vertical');
+    app.bringSelectedDrawingToFront();
+    app.sendSelectedDrawingToBack();
+    assert.ok(sheet.drawings.every((entry) => Number.isFinite(entry.zIndex)));
   });
 });

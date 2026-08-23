@@ -16,6 +16,7 @@ export type SidebarPanelId =
   | 'chart'
   | 'pivot'
   | 'formulaAudit'
+  | 'definedNames'
   | 'shape'
   | 'sparkline'
   | 'conditionalFormat'

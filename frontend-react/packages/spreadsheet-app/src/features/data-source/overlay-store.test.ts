@@ -58,11 +58,11 @@ test('multiple revisions remain independently addressable and can be deleted pre
   assert.equal(await store.get('source-1', 'block-2', 1), null);
 });
 
-test('overlay writes reject mismatched revisions, duplicate coordinates, and empty metadata cells', async () => {
+test('overlay writes reject invalid revisions, duplicate coordinates, and empty metadata cells', async () => {
   const store = new MemorySparseOverlayStore();
   await assert.rejects(
-    store.put('source-1', 'block-1', { ...overlay(1), revision: 2 }),
-    /schema or revision/,
+    store.put('source-1', 'block-1', { ...overlay(1), revision: -1 }),
+    /revision must be a non-negative safe integer/,
   );
   await assert.rejects(
     store.put('source-1', 'block-1', {

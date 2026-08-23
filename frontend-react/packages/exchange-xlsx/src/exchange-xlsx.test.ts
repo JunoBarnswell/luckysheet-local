@@ -141,6 +141,7 @@ describe('exchange-xlsx', () => {
     assert.equal(output.package.nativePivotGraph?.caches.length, 1);
     assert.equal(output.package.nativePivotGraph?.tables.length, 1);
     assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /worksheetSource name="SalesTable"/);
+    assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /<cacheSource type="worksheet">/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
@@ -176,13 +177,36 @@ describe('exchange-xlsx', () => {
     assert.ok(output.files['xl/slicers/slicer1.xml']);
     assert.ok(output.files['xl/timelineCaches/timelineCache1.xml']);
     assert.ok(output.files['xl/timelines/timeline1.xml']);
+    const contentTypes = strFromU8(output.files['[Content_Types].xml']!);
+    assert.match(contentTypes, /application\/vnd\.openxmlformats-officedocument\.drawing\+xml/);
+    assert.match(contentTypes, /application\/vnd\.ms-excel\.slicerCache"/);
+    assert.doesNotMatch(contentTypes, /application\/vnd\.ms-excel\.slicerCache\+xml/);
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /slicerCaches/);
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /timelineCacheRefs/);
+    assert.match(strFromU8(output.files['xl/_rels/workbook.xml.rels']!), /relationships\/timelineCache/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /slicerList/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /timelineRefs/);
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'slicer').length, 1);
     assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'timeline').length, 1);
+    const importedSlicerAnchor = imported.sheets[0]?.drawings.find((drawing) => drawing.kind === 'slicer')?.anchor;
+    const importedTimelineAnchor = imported.sheets[0]?.drawings.find((drawing) => drawing.kind === 'timeline')?.anchor;
+    assert.equal(importedSlicerAnchor?.kind, 'one-cell');
+    assert.equal(importedSlicerAnchor?.kind === 'one-cell' ? importedSlicerAnchor.column : undefined, 4);
+    assert.equal(importedTimelineAnchor?.kind === 'one-cell' ? importedTimelineAnchor.row : undefined, 10);
+
+    const controlExport = await exportXlsx({ snapshot: workbook.snapshot(), fileName: 'native-controls.xlsx', options: { compatibilityTarget: 'B' } });
+    assert.equal(controlExport.report.issues.some((issue) => issue.feature === 'images' && issue.status === 'unsupported'), false);
+
+    const withoutControls = structuredClone(imported);
+    const controlSheet = withoutControls.sheets[0]!;
+    const controlDrawingIds = new Set(controlSheet.drawings.filter((drawing) => drawing.kind === 'slicer' || drawing.kind === 'timeline').map((drawing) => drawing.id));
+    controlSheet.drawings = controlSheet.drawings.filter((drawing) => !controlDrawingIds.has(drawing.id));
+    for (const id of controlDrawingIds) delete controlSheet.drawingPayloads[id];
+    const removedControls = loadXlsxPackage(exportSnapshotToXlsxBuffer(withoutControls, output.package));
+    const removedDrawing = removedControls.files['xl/drawings/drawing1.xml'];
+    assert.ok(removedDrawing);
+    assert.doesNotMatch(strFromU8(removedDrawing), /category[_-]slicer|date[_-]timeline/);
   });
 
   it('reads and rewrites native Pivot cache/table relationship graphs', async () => {
@@ -191,7 +215,7 @@ describe('exchange-xlsx', () => {
     const parts = generated.package.parts;
     parts['xl/workbook.xml'] = strToU8(strFromU8(parts['xl/workbook.xml']!).replace('</workbook>', '<pivotCaches count="1"><pivotCache cacheId="1" r:id="rIdPivotCache"/></pivotCaches></workbook>'));
     parts['xl/_rels/workbook.xml.rels'] = strToU8(strFromU8(parts['xl/_rels/workbook.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotCache" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>'));
-    parts['xl/pivotCache/pivotCacheDefinition1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" cacheSource="worksheet"><cacheSource><worksheetSource ref="A1:B2" sheet="Sheet1"/></cacheSource><cacheFields count="2"><cacheField name="Category"><sharedItems containsString="1"><s v="A"/></sharedItems></cacheField><cacheField name="Amount"><sharedItems containsNumber="1"><n v="10"/></sharedItems></cacheField></cacheFields></pivotCacheDefinition>');
+    parts['xl/pivotCache/pivotCacheDefinition1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cacheSource type="worksheet"><worksheetSource ref="A1:B2" sheet="Sheet1"/></cacheSource><cacheFields count="2"><cacheField name="Category"><sharedItems containsString="1"><s v="A"/></sharedItems></cacheField><cacheField name="Amount"><sharedItems containsNumber="1"><n v="10"/></sharedItems></cacheField></cacheFields></pivotCacheDefinition>');
     parts['xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels'] = strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdRecords" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords" Target="pivotCacheRecords1.xml"/></Relationships>');
     parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));

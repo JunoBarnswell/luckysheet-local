@@ -172,8 +172,10 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
+    version: 2,
     unitId: 'unit-1',
     name: 'Workbook',
+    dataSources: [],
     sheets: [{
       id: 'sheet-1',
       name: 'Sheet1',

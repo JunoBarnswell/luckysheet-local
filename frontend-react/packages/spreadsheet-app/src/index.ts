@@ -5,6 +5,7 @@ export {
   resolveActorId,
   resolveShareToken,
   type WorkbookSessionOptions,
+  type DefinedNameCommandInput,
   type UiSnapshot,
 } from './workbook-session';
 export { useWorkbookSession, type UseWorkbookSessionResult } from './workbook-session-react';
@@ -103,6 +104,7 @@ export {
   type FormulaAuditProjection,
   type FormulaAuditAddressParams,
   type FormulaAuditShowFormulasParams,
+  type FormulaCalculationModeParams,
   type FormulaErrorScanOptions,
 } from './features/formula-audit';
 export {
