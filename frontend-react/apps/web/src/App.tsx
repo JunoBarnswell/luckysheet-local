@@ -269,6 +269,7 @@ function WorkspaceApp() {
       dataValidation: 'open-data-validation',
       print: 'open-print',
       history: 'open-history',
+      data: 'open-data-table',
     };
     const action = actionByPanel[panel];
     if (action) actions.handleRibbonAction(action);
@@ -442,6 +443,8 @@ function WorkspaceApp() {
             dataValidations={state.selectedSheet.dataValidations}
             historyEntries={state.historyEntries}
             remoteRevisions={state.remoteRevisions}
+            tables={state.tables}
+            onReadDataRows={actions.readDataTable}
             onAddChart={actions.addChart}
             onRemoveChart={actions.removeChart}
             onAddShape={actions.addShape}

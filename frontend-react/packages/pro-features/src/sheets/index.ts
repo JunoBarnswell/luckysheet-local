@@ -41,6 +41,7 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
     if (pivot) {
       if (params.layout) pivot.layout = structuredClone(params.layout);
       if (params.sourceRange) pivot.sourceRange = structuredClone(params.sourceRange);
+      if (params.sourceRange) pivot.fieldCatalog = undefined;
       if (params.slicers) pivot.slicers = structuredClone(params.slicers);
       if (params.timelines) pivot.timelines = structuredClone(params.timelines);
       if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);
@@ -93,6 +94,7 @@ export function registerProSheetCommands(runtime: CommandRuntime): void {
         apply: () => {
           if (params.layout) pivot.layout = structuredClone(params.layout);
           if (params.sourceRange) pivot.sourceRange = structuredClone(params.sourceRange);
+          if (params.sourceRange) pivot.fieldCatalog = undefined;
           if (params.slicers) pivot.slicers = structuredClone(params.slicers);
           if (params.timelines) pivot.timelines = structuredClone(params.timelines);
           if (params.chartReferences) pivot.chartReferences = structuredClone(params.chartReferences);

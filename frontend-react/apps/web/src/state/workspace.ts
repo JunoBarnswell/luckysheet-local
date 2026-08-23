@@ -429,7 +429,12 @@ function attachCoreListeners(runtime: WorkspaceRuntime): void {
   runtime.detachers.push(
     runtime.commands.onMutation((mutation) => {
       const changedSheet = runtime.model.getSheets().find((sheet) => sheet.id === mutation.sheetId);
-      for (const pivot of changedSheet?.pivots ?? []) delete runtime.pivotResults[pivot.id];
+      for (const pivot of changedSheet?.pivots ?? []) {
+        delete runtime.pivotResults[pivot.id];
+        if (mutation.id === 'cell.set' || mutation.id === 'cell.restore' || mutation.id === 'range.set' || mutation.id === 'range.clear' || mutation.id === 'rows.inserted' || mutation.id === 'rows.deleted' || mutation.id === 'columns.inserted' || mutation.id === 'columns.deleted') {
+          pivot.fieldCatalog = undefined;
+        }
+      }
       switch (mutation.id) {
         case 'cell.set': {
           const params = mutation.params as { row: number; column: number; value: CellData };
@@ -1614,6 +1619,9 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
           break;
         case 'open-chart':
           setActivePanel('chart');
+          break;
+        case 'open-data-table':
+          setActivePanel('data');
           break;
         case 'open-pivot':
           setActivePanel('pivot');

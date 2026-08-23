@@ -366,6 +366,9 @@ export function Ribbon({ activeTab, locale, onAction, onTabChange, phase, cellSt
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Data Tools">
+              <Button size="sm" variant="ghost" icon="table" onClick={() => onAction('open-data-table')}>
+                Data Model
+              </Button>
               <Button size="sm" variant="ghost" icon="table" onClick={() => onAction('create-data-table')}>
                 Create Data Table
               </Button>
