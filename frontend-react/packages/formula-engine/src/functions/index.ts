@@ -17,6 +17,17 @@ export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => Formula
   ...informationFunctions,
 };
 
+export const FORMULA_ALIASES: Readonly<Record<string, string>> = {
+  '求和': 'SUM',
+  '计数': 'COUNT',
+  '平均值': 'AVERAGE',
+  '最大值': 'MAX',
+  '最小值': 'MIN',
+  '如果': 'IF',
+  '查找': 'LOOKUP',
+  '四舍五入': 'ROUND',
+};
+
 export interface FunctionDescriptor {
   id: string;
   cost: 'scalar' | 'range' | 'sort' | 'volatile' | 'external';
@@ -38,9 +49,10 @@ export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new
 );
 
 export function getBuiltinFunction(name: string): ((args: FormulaValue[]) => FormulaValue) | undefined {
-  return BUILTIN_FUNCTIONS[name.toUpperCase()];
+  const normalized = name.trim().toUpperCase();
+  return BUILTIN_FUNCTIONS[FORMULA_ALIASES[name.trim()] ?? normalized];
 }
 
 export function getFunctionDescriptor(name: string): FunctionDescriptor | undefined {
-  return FUNCTION_DESCRIPTORS.get(name.toUpperCase());
+  return FUNCTION_DESCRIPTORS.get(FORMULA_ALIASES[name.trim()] ?? name.trim().toUpperCase());
 }
