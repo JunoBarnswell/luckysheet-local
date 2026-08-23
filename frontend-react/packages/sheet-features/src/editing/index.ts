@@ -6,6 +6,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import { noteCellKey } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -159,7 +160,9 @@ export function resolveGoToSpecial(
           match = Boolean(cell?.formula);
           break;
         case 'comments':
-          match = Boolean(cell?.comment);
+          match = Boolean(cell?.comment)
+            || sheet.commentThreads.some((thread) => thread.row === row && thread.column === column)
+            || sheet.notes.has(noteCellKey(row, column));
           break;
         case 'errors':
           match = Boolean(typeof cell?.value === 'string' && cell.value.startsWith('#'));

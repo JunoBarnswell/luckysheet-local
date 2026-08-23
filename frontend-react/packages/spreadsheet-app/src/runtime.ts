@@ -9,6 +9,7 @@ import {
 } from '@react-sheets/protocol';
 import { CollabSocketClient } from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures } from './feature-registry';
+import { DrawingRuntime } from './features/drawing';
 import {
   configureFormulaSpillEnvironment,
   configureWorkbookSpillEnvironments,
@@ -33,6 +34,7 @@ export interface SpreadsheetRuntime {
   formula: FormulaEngine;
   model: WorkbookModel;
   commands: CommandRuntime;
+  drawing: DrawingRuntime;
   remoteConnected: boolean;
   remoteRevision: number;
   pendingMutations: CollaborationMutation[];
@@ -86,12 +88,14 @@ export function resolveActorId(): string {
 export function createSpreadsheetRuntime(): SpreadsheetRuntime {
   const model = new WorkbookModel(resolveUnitId(), 'Untitled workbook');
   const commands = new CommandRuntime(model);
-  registerSpreadsheetFeatures(commands);
+  const drawing = new DrawingRuntime();
+  registerSpreadsheetFeatures(commands, drawing);
   const runtime: SpreadsheetRuntime = {
     api: new WorkbookApiClient(),
     formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
     model,
     commands,
+    drawing,
     remoteConnected: false,
     remoteRevision: 0,
     pendingMutations: [],
@@ -307,7 +311,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   detachCoreListeners(runtime);
   runtime.model = workbook;
   runtime.commands = new CommandRuntime(workbook);
-  registerSpreadsheetFeatures(runtime.commands);
+  registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
   runtime.formula = rebuildFormulaEngine(workbook);
   attachCoreListeners(runtime);
   runtime.remoteRevision = response.revision;

@@ -136,6 +136,44 @@ export function mapRibbonAction(action: RibbonAction, payload?: unknown): Ribbon
       return { commandId: 'sheetTable.create' };
     case 'toggle-sheet-table-total-row':
       return { commandId: 'sheetTable.toggleTotalRow' };
+    case 'group-rows':
+      return { commandId: 'outline.group.rows' };
+    case 'ungroup-rows':
+      return { commandId: 'outline.ungroup.rows' };
+    case 'group-columns':
+      return { commandId: 'outline.group.columns' };
+    case 'ungroup-columns':
+      return { commandId: 'outline.ungroup.columns' };
+    case 'outline-level-1':
+      return { commandId: 'outline.showLevel', params: { level: 1 } };
+    case 'outline-level-2':
+      return { commandId: 'outline.showLevel', params: { level: 2 } };
+    case 'outline-level-3':
+      return { commandId: 'outline.showLevel', params: { level: 3 } };
+    case 'text-to-columns':
+      return { commandId: 'data.textToColumns', params: { delimiter: ',' } };
+    case 'drawing-insert-rectangle':
+      return { commandId: 'drawing.insert.rectangle' };
+    case 'drawing-bring-forward':
+      return { commandId: 'drawing.zorder.forward' };
+    case 'drawing-send-backward':
+      return { commandId: 'drawing.zorder.backward' };
+    case 'drawing-remove':
+      return { commandId: 'drawing.remove.selected' };
+    case 'chart-insert-column':
+      return { commandId: 'chart.insert.column' };
+    case 'pivot-insert-quick':
+      return { commandId: 'pivot.insert.quick' };
+    case 'sparkline-insert-quick':
+      return { commandId: 'sparkline.insert.quick' };
+    case 'review-comment-resolve':
+      return { commandId: 'review.comment.resolve' };
+    case 'review-open-inspector':
+      return { commandId: 'review.panel.open', params: { notice: 'Add comments, notes, or hyperlinks in the Inspector panel.' } };
+    case 'data-subtotal':
+      return { commandId: 'data.subtotal' };
+    case 'remove-duplicates':
+      return { commandId: 'data.removeDuplicates' };
     case 'recalculate-formulas':
       return { commandId: 'ui.formula.recalculate' };
     case 'open-shape':

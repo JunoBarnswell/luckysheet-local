@@ -2,7 +2,7 @@ import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerProSheetCommands } from '@react-sheets/pro-features';
 import { registerPlatformFeatures } from './platform-features';
-import { registerDrawingFeature } from './features/drawing';
+import { registerDrawingFeature, type DrawingRuntime } from './features/drawing';
 import { registerReviewFeature } from './features/review/commands';
 import { registerEditingFeatures } from './features/editing';
 
@@ -92,11 +92,11 @@ function registerRemoveCommand(
   });
 }
 
-export function registerSpreadsheetFeatures(runtime: CommandRuntime): SpreadsheetFeatureManifest[] {
+export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRuntime: DrawingRuntime): SpreadsheetFeatureManifest[] {
   registerSheetCommands(runtime);
   registerEditingFeatures(runtime);
   registerProSheetCommands(runtime);
-  registerDrawingFeature(runtime);
+  registerDrawingFeature(runtime, drawingRuntime);
   registerReviewFeature(runtime);
 
   for (const [alias, source] of PRO_COMMAND_ALIASES) {

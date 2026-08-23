@@ -196,12 +196,21 @@ export interface ChromeTableOutline {
   endColumn: number;
 }
 
+export interface ChromeOutlineControl {
+  axis: 'row' | 'column';
+  index: number;
+  level: number;
+  collapsed: boolean;
+  groupId: string;
+}
+
 export interface ChromeState {
   selection: ChromeSelectionState;
   editing: CellAddress | null;
   filterColumns: readonly number[];
   filterButtons: readonly ChromeFilterButton[];
   tableOutlines: readonly ChromeTableOutline[];
+  outlineControls: readonly ChromeOutlineControl[];
   remoteCursors: readonly ChromeRemoteCursor[];
   resizePreview: ResizePreview | null;
   selectedFloatingId: string | null;
@@ -214,6 +223,7 @@ export function createEmptyChromeState(): ChromeState {
     filterColumns: [],
     filterButtons: [],
     tableOutlines: [],
+    outlineControls: [],
     remoteCursors: [],
     resizePreview: null,
     selectedFloatingId: null,

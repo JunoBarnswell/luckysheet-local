@@ -101,30 +101,8 @@ function WorkspaceApp() {
   };
 
   const createPivot = () => {
-    const rowField = pivotFields.find((field) => field.type !== "number")?.id ?? pivotFields[0]?.id;
-    const valueField = pivotFields.find((field) => field.type === "number")?.id ?? pivotFields[0]?.id;
-    if (!rowField || !valueField) return;
-    const id = `pivot-${Math.random().toString(36).slice(2, 8)}`;
-    const summarizeBy = pivotFields.find((field) => field.id === valueField)?.type === "number" ? "sum" : "count";
-    app.addPivot({
-      id,
-      sheetId: state.activeSheetId,
-      sourceRange: pivotSourceRange,
-      refreshPolicy: { mode: "on-change", preserveFormatting: true, refreshOnLoad: true },
-      layout: {
-        rows: [{ field: rowField }],
-        columns: [],
-        filters: [],
-        values: [{ field: valueField, summarizeBy }],
-        showSubtotals: true,
-        showGrandTotals: true,
-        compact: true,
-        repeatLabels: false,
-        calculatedFields: [],
-        calculatedItems: [],
-      },
-    });
-    setActivePivotId(id);
+    const id = app.insertQuickPivot();
+    if (id) setActivePivotId(id);
   };
 
   const pivotCallbacks: PivotPanelCallbacks = {
@@ -190,47 +168,36 @@ function WorkspaceApp() {
     },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
-      const slicers = enabled
-        ? [...new Set([...(activePivot.slicers?.map((slicer) => slicer.field) ?? []), fieldId])]
-        : (activePivot.slicers?.map((slicer) => slicer.field) ?? []).filter((field) => field !== fieldId);
-      const connectedPivotIds = state.selectedSheet.pivots
-        .filter((pivot) =>
-          pivot.sourceRange.startRow === activePivot.sourceRange.startRow
-          && pivot.sourceRange.endRow === activePivot.sourceRange.endRow
-          && pivot.sourceRange.startColumn === activePivot.sourceRange.startColumn
-          && pivot.sourceRange.endColumn === activePivot.sourceRange.endColumn)
-        .map((pivot) => pivot.id);
+      const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
+      if (enabled) {
+        app.setPivotSlicer(
+          activePivot.id,
+          { id: `slicer-${fieldId}`, field: fieldId, selected: [], connectedPivotIds },
+        );
+        return;
+      }
       app.updatePivotConfiguration(activePivot.id, {
-        slicers: slicers.map((field) => ({ id: `slicer-${field}`, field, selected: [], connectedPivotIds })),
+        slicers: (activePivot.slicers ?? []).filter((slicer) => slicer.field !== fieldId),
       });
     },
     onTimelineChange: (fieldId) => {
       if (!activePivot) return;
-      const connectedPivotIds = state.selectedSheet.pivots
-        .filter((pivot) =>
-          pivot.sourceRange.startRow === activePivot.sourceRange.startRow
-          && pivot.sourceRange.endRow === activePivot.sourceRange.endRow
-          && pivot.sourceRange.startColumn === activePivot.sourceRange.startColumn
-          && pivot.sourceRange.endColumn === activePivot.sourceRange.endColumn)
-        .map((pivot) => pivot.id);
-      app.updatePivotConfiguration(activePivot.id, {
-        timelines: fieldId ? [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds }] : [],
-      });
+      const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
+      if (!fieldId) {
+        app.updatePivotConfiguration(activePivot.id, { timelines: [] });
+        return;
+      }
+      app.setPivotTimeline(activePivot.id, { id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds });
     },
     onTimelineRangeChange: (start, end) => {
       if (!activePivot) return;
       const timelineFieldId = activePivot.timelines?.[0]?.field;
       if (!timelineFieldId) return;
-      const connectedPivotIds = state.selectedSheet.pivots
-        .filter((pivot) =>
-          pivot.sourceRange.startRow === activePivot.sourceRange.startRow
-          && pivot.sourceRange.endRow === activePivot.sourceRange.endRow
-          && pivot.sourceRange.startColumn === activePivot.sourceRange.startColumn
-          && pivot.sourceRange.endColumn === activePivot.sourceRange.endColumn)
-        .map((pivot) => pivot.id);
-      app.updatePivotConfiguration(activePivot.id, {
-        timelines: [{ id: `timeline-${timelineFieldId}`, field: timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds }],
-      });
+      const connectedPivotIds = app.getConnectedPivotIds(activePivot.sourceRange);
+      app.setPivotTimeline(
+        activePivot.id,
+        { id: `timeline-${timelineFieldId}`, field: timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds },
+      );
     },
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
@@ -410,6 +377,7 @@ function WorkspaceApp() {
               charts={state.selectedSheet.charts}
               pivotResults={state.selectedSheet.pivotResults}
               shapes={state.selectedSheet.shapes}
+              images={state.selectedSheet.images}
               sparklines={state.selectedSheet.sparklines}
               onSelectionChange={applySelection}
               onExtendSelection={(row, column) => app.extendSelectionTo(row, column)}
@@ -429,13 +397,14 @@ function WorkspaceApp() {
               onFillRange={app.fillRange}
               onFloatingSelect={(hit) => app.setSelectedFloatingId(hit ? hit.id : null)}
               onFloatingMove={(kind, id, bounds) => {
-                const chart = state.selectedSheet.charts.find((entry) => entry.id === id);
-                if (chart) app.updateChartBounds(id, bounds);
+                if (kind === "chart") app.updateChartBounds(id, bounds);
+                else if (kind === "image") app.updateImageBounds(id, bounds);
                 else app.updateShapeBounds(id, bounds);
               }}
-              onFloatingRemove={(kind, id) => app.removeFloatingObject(kind === "chart" ? "chart" : "shape", id)}
+              onFloatingRemove={(kind, id) => app.removeFloatingObject(kind, id)}
               onAction={executeRibbonAction}
               onApplyFilter={(column, patch) => app.applyFilter(column, patch)}
+              onToggleOutline={(groupId) => app.toggleOutlineGroup(groupId)}
               getValidationList={app.getValidationAt}
               onRetry={app.retry}
               onCreateSheet={app.addSheet}
@@ -462,7 +431,9 @@ function WorkspaceApp() {
             activePivotId={activePivot?.id}
             pivotFieldCatalog={pivotFields}
             pivotResult={pivotResult}
-            onShowPivotDetails={app.showPivotDetails}
+            onShowPivotDetails={(paths) => {
+              if (activePivot) app.showPivotDetails(activePivot.id, paths);
+            }}
             pivotPanelState={pivotPanelState}
             pivotCallbacks={pivotCallbacks}
             shapes={state.selectedSheet.shapes}
@@ -490,6 +461,8 @@ function WorkspaceApp() {
             onReplyComment={app.replyComment}
             onResolveComment={app.resolveComment}
             onRemoveComment={app.removeComment}
+            onAddNote={app.addNote}
+            onRemoveNote={app.removeNote}
             onSetHyperlink={app.setHyperlink}
             onRemoveHyperlink={app.removeHyperlink}
           />

@@ -7,7 +7,7 @@ import { WorkbookModel, type PivotLayout, type TableScalar, type WorkbookTableBl
 import type { CollaborationChangeSet, CollaborationMutation, SnapshotResponse, WorkbookSummary } from '@react-sheets/protocol';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerProSheetCommands } from '@react-sheets/pro-features';
-import { registerSpreadsheetFeatures } from '@react-sheets/spreadsheet-app';
+import { registerSpreadsheetFeatures, DrawingRuntime } from '@react-sheets/spreadsheet-app';
 import { PersistenceSession, computeSnapshotChecksum } from './persistence-session';
 
 const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
@@ -17,7 +17,7 @@ function createMutationRuntime(workbook: WorkbookModel): CommandRuntime {
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
   registerProSheetCommands(runtime);
-  registerSpreadsheetFeatures(runtime);
+  registerSpreadsheetFeatures(runtime, new DrawingRuntime());
   return runtime;
 }
 

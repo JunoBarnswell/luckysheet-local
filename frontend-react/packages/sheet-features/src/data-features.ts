@@ -456,13 +456,23 @@ function coerceLike(text: string, previous: CellData["value"]): CellData["value"
   return text;
 }
 
-/** 大纲折叠隐藏行 — 独立于 filter hiddenRows 语义 */
+/** 大纲折叠隐藏行 — 独立于 filter hiddenRows 语义；保留分组首行可见 */
 export function computeOutlineHiddenRows(sheet: WorksheetModel): Set<number> {
   const hidden = new Set<number>();
   const groups = sheet.outline?.groups ?? [];
   for (const group of groups) {
     if (group.axis !== 'row' || !group.collapsed) continue;
-    for (let row = group.start; row <= group.end; row++) hidden.add(row);
+    for (let row = group.start + 1; row <= group.end; row++) hidden.add(row);
+  }
+  return hidden;
+}
+
+export function computeOutlineHiddenColumns(sheet: WorksheetModel): Set<number> {
+  const hidden = new Set<number>();
+  const groups = sheet.outline?.groups ?? [];
+  for (const group of groups) {
+    if (group.axis !== 'column' || !group.collapsed) continue;
+    for (let column = group.start + 1; column <= group.end; column++) hidden.add(column);
   }
   return hidden;
 }

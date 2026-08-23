@@ -88,6 +88,8 @@ export interface FeatureSidebarProps {
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
   onRemoveComment?: () => void;
+  onAddNote?: (text: string) => void;
+  onRemoveNote?: () => void;
   onSetHyperlink?: (url: string) => void;
   onRemoveHyperlink?: () => void;
 }
@@ -121,6 +123,8 @@ function InspectorPanel({
   onReplyComment,
   onResolveComment,
   onRemoveComment,
+  onAddNote,
+  onRemoveNote,
   onSetHyperlink,
   onRemoveHyperlink,
 }: {
@@ -130,6 +134,8 @@ function InspectorPanel({
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
   onRemoveComment?: () => void;
+  onAddNote?: (text: string) => void;
+  onRemoveNote?: () => void;
   onSetHyperlink?: (url: string) => void;
   onRemoveHyperlink?: () => void;
 }) {
@@ -165,11 +171,14 @@ function InspectorPanel({
       <CommentHyperlinkForms
         comment={selectedCell?.comment}
         commentText={selectedCell?.commentText ?? ''}
+        note={selectedCell?.note}
         hyperlinkUrl={selectedCell?.hyperlink ?? ''}
         onAddComment={onAddComment}
         onReplyComment={onReplyComment}
         onResolveComment={onResolveComment}
         onRemoveComment={onRemoveComment}
+        onAddNote={onAddNote}
+        onRemoveNote={onRemoveNote}
         onSetHyperlink={onSetHyperlink}
         onRemoveHyperlink={onRemoveHyperlink}
       />
@@ -236,6 +245,8 @@ export function FeatureSidebar({
   onReplyComment,
   onResolveComment,
   onRemoveComment,
+  onAddNote,
+  onRemoveNote,
   onSetHyperlink,
   onRemoveHyperlink,
 }: FeatureSidebarProps) {
@@ -323,6 +334,8 @@ export function FeatureSidebar({
             onReplyComment={onReplyComment}
             onResolveComment={onResolveComment}
             onRemoveComment={onRemoveComment}
+            onAddNote={onAddNote}
+            onRemoveNote={onRemoveNote}
             onSetHyperlink={onSetHyperlink}
             onRemoveHyperlink={onRemoveHyperlink}
           />
@@ -399,34 +412,78 @@ export function FeatureSidebar({
 function CommentHyperlinkForms({
   comment,
   commentText: initialCommentText,
+  note,
   hyperlinkUrl: initialHyperlinkUrl,
   onAddComment,
   onReplyComment,
   onResolveComment,
   onRemoveComment,
+  onAddNote,
+  onRemoveNote,
   onSetHyperlink,
   onRemoveHyperlink,
 }: {
   comment?: CellComment;
   commentText: string;
+  note?: import('@react-sheets/core-model').CellNote;
   hyperlinkUrl: string;
   onAddComment?: (text: string) => void;
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
   onRemoveComment?: () => void;
+  onAddNote?: (text: string) => void;
+  onRemoveNote?: () => void;
   onSetHyperlink?: (url: string) => void;
   onRemoveHyperlink?: () => void;
 }) {
   const [commentText, setCommentText] = useState('');
+  const [noteText, setNoteText] = useState('');
   const [replyText, setReplyText] = useState('');
   const [hyperlinkUrl, setHyperlinkUrl] = useState('');
 
   useEffect(() => setCommentText(initialCommentText), [initialCommentText]);
+  useEffect(() => setNoteText(note?.text ?? ''), [note?.id, note?.text]);
   useEffect(() => setReplyText(''), [comment?.id]);
   useEffect(() => setHyperlinkUrl(initialHyperlinkUrl), [initialHyperlinkUrl]);
 
   return (
     <Stack gap="md">
+      <Panel className="shadow-none">
+        <PanelHeader>
+          <Inline gap="sm">
+            <Icon name="comment" size="sm" className="text-amber-600" />
+            <PanelTitle as="h3" size="sm">Note</PanelTitle>
+          </Inline>
+        </PanelHeader>
+        <PanelBody>
+          <Stack gap="sm">
+            <Textarea
+              rows={2}
+              placeholder="Add a cell note (separate from threaded comments)"
+              value={noteText}
+              onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setNoteText(event.target.value)}
+            />
+            <Inline gap="sm" className="justify-end">
+              {onRemoveNote && note ? (
+                <Button size="sm" variant="ghost" onClick={() => { onRemoveNote(); setNoteText(''); }}>
+                  Remove
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  if (!onAddNote || !noteText.trim()) return;
+                  onAddNote(noteText.trim());
+                }}
+              >
+                Save note
+              </Button>
+            </Inline>
+          </Stack>
+        </PanelBody>
+      </Panel>
+
       <Panel className="shadow-none">
         <PanelHeader>
           <Inline gap="sm">

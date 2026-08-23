@@ -1,5 +1,6 @@
 import type {
   CellComment,
+  CellNote,
   CellData,
   CellStyle,
   ChartModel,
@@ -7,10 +8,12 @@ import type {
   DataValidationRule,
   FreezeModel,
   MergeSpan,
+  OutlineGroup,
   PivotModel,
   PivotResultTree,
   RangeRef,
   ShapeModel,
+  FloatingImage,
   SheetTableModel,
   SparklineModel,
   WorkbookModel,
@@ -20,19 +23,25 @@ import {
   computeBandedCellStyle,
   computeConditionalOverlays,
   computeFilterHiddenRows,
+  computeOutlineHiddenColumns,
+  computeOutlineHiddenRows,
   computeSheetTableCellStyle,
   findSheetTableAt,
   mergePresentationStyles,
   resolveActiveFilterColumns,
   resolveFilterButtonCells,
+  resolveOutlineControls,
   validateDataInput,
   type ConditionalOverlay,
   type FilterButtonCell,
+  type OutlineControl,
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { computePivotResult } from '@react-sheets/pro-features';
 import { cellAddress, columnLabel } from './address';
+import { findCommentThreadAt, resolveHyperlinkDisplay, threadToCellComment } from './review-bridge';
+import { getCellNote } from '@react-sheets/core-model';
 
 /** Canvas-friendly cell snapshot — no row-array projection */
 export interface CanvasCellSnapshot {
@@ -44,6 +53,7 @@ export interface CanvasCellSnapshot {
   hasComment?: boolean;
   commentText?: string;
   comment?: CellComment;
+  note?: CellNote;
   invalid?: boolean;
   hyperlink?: string;
   overlay?: ConditionalOverlay;
@@ -71,6 +81,7 @@ export interface CanvasSheetSnapshot {
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
   shapes: ShapeModel[];
+  images: FloatingImage[];
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -79,6 +90,9 @@ export interface CanvasSheetSnapshot {
   rowHeights: Record<number, number>;
   columnWidths: Record<number, number>;
   hiddenRows: number[];
+  hiddenColumns: number[];
+  outlineGroups: OutlineGroup[];
+  outlineControls: OutlineControl[];
   filterColumns: number[];
   filterButtons: FilterButtonCell[];
   sheetTables: SheetTableModel[];
@@ -146,14 +160,19 @@ export function buildCanvasSheetSnapshot(
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const filterHidden = computeFilterHiddenRows(sheet);
-  const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden]);
+  const outlineHiddenRows = computeOutlineHiddenRows(sheet);
+  const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
+  const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
+  const hiddenColumns = new Set<number>([...sheet.hiddenColumns, ...outlineHiddenColumns]);
   const filterColumns = resolveActiveFilterColumns(sheet);
   const filterButtons = resolveFilterButtonCells(sheet);
+  const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = usedRangeOfSheet(sheet);
 
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
+    if (hiddenRows.has(row) || hiddenColumns.has(column)) return undefined;
     const modelCell = sheet.cells.get(row, column);
     const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
     const key = `${row}:${column}`;
@@ -169,17 +188,26 @@ export function buildCanvasSheetSnapshot(
         ? { ...(modelCell?.style ?? {}), ...presentation }
         : modelCell?.style;
     const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
+    const thread = findCommentThreadAt(sheet, row, column);
+    const note = getCellNote(sheet, row, column);
+    const comment = thread
+      ? threadToCellComment(thread)
+      : modelCell?.comment
+        ? structuredClone(modelCell.comment)
+        : undefined;
+    const hyperlink = resolveHyperlinkDisplay(modelCell?.hyperlink, modelCell?.hyperlinkDetail);
     return {
       address: cellAddress(row, column),
       formula: modelCell?.formula,
       style,
       value,
       displayValue: value,
-      hasComment: Boolean(modelCell?.comment),
-      commentText: modelCell?.comment?.text,
-      comment: modelCell?.comment ? structuredClone(modelCell.comment) : undefined,
+      hasComment: Boolean(comment || note),
+      commentText: comment?.text ?? note?.text,
+      comment,
+      note: note ? structuredClone(note) : undefined,
       invalid: showInvalid && modelCell?.value != null && !validation.valid,
-      hyperlink: modelCell?.hyperlink,
+      hyperlink,
       overlay,
     };
   };
@@ -218,6 +246,7 @@ export function buildCanvasSheetSnapshot(
     pivots: [...sheet.pivots],
     pivotResults,
     shapes: [...sheet.shapes],
+    images: [...sheet.images],
     sparklines: [...sheet.sparklines],
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
@@ -226,6 +255,9 @@ export function buildCanvasSheetSnapshot(
     rowHeights: { ...sheet.rowHeights },
     columnWidths: { ...sheet.columnWidths },
     hiddenRows: [...hiddenRows].sort((a, b) => a - b),
+    hiddenColumns: [...hiddenColumns].sort((a, b) => a - b),
+    outlineGroups: sheet.outline ? structuredClone(sheet.outline.groups) : [],
+    outlineControls,
     filterColumns,
     filterButtons,
     sheetTables: [...sheet.sheetTables],

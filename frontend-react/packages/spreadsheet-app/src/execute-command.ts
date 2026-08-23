@@ -50,6 +50,23 @@ export type UiCommandId =
   | 'table.create'
   | 'sheetTable.create'
   | 'sheetTable.toggleTotalRow'
+  | 'outline.group.rows'
+  | 'outline.ungroup.rows'
+  | 'outline.group.columns'
+  | 'outline.ungroup.columns'
+  | 'outline.showLevel'
+  | 'data.textToColumns'
+  | 'data.subtotal'
+  | 'data.removeDuplicates'
+  | 'drawing.insert.rectangle'
+  | 'drawing.zorder.forward'
+  | 'drawing.zorder.backward'
+  | 'drawing.remove.selected'
+  | 'chart.insert.column'
+  | 'pivot.insert.quick'
+  | 'sparkline.insert.quick'
+  | 'review.comment.resolve'
+  | 'review.panel.open'
   | 'ui.formula.recalculate'
   | 'ui.notice';
 
@@ -77,10 +94,15 @@ export interface ZoomAdjustParams {
   value?: number;
 }
 
-const UI_COMMAND_PREFIXES = ['ui.', 'table.create', 'sheetTable.create', 'sheetTable.toggleTotalRow'];
+const UI_COMMAND_PREFIXES = ['ui.', 'table.create', 'sheetTable.create', 'sheetTable.toggleTotalRow', 'outline.', 'data.subtotal', 'data.removeDuplicates', 'data.textToColumns', 'drawing.'];
 
 export function isUiCommand(commandId: string): boolean {
-  return UI_COMMAND_PREFIXES.some((prefix) => commandId.startsWith(prefix)) || commandId === 'sheet.formula.autosum';
+  return UI_COMMAND_PREFIXES.some((prefix) => commandId.startsWith(prefix))
+    || commandId === 'sheet.formula.autosum'
+    || commandId === 'pivot.insert.quick'
+    || commandId === 'sparkline.insert.quick'
+    || commandId === 'review.comment.resolve'
+    || commandId === 'review.panel.open';
 }
 
 export function executeUiCommand(app: SpreadsheetApplication, commandId: string, params?: unknown): boolean {
@@ -370,6 +392,64 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
     case 'sheetTable.toggleTotalRow':
       app.toggleSheetTableTotalRow();
       return true;
+    case 'outline.group.rows':
+      app.groupRowsFromSelection();
+      return true;
+    case 'outline.ungroup.rows':
+      app.ungroupRowsFromSelection();
+      return true;
+    case 'outline.group.columns':
+      app.groupColumnsFromSelection();
+      return true;
+    case 'outline.ungroup.columns':
+      app.ungroupColumnsFromSelection();
+      return true;
+    case 'outline.showLevel': {
+      const level = Number((params as { level?: number })?.level ?? 1);
+      app.showOutlineLevel((level === 2 ? 2 : level === 3 ? 3 : 1));
+      return true;
+    }
+    case 'data.subtotal':
+      app.applyDataSubtotal();
+      return true;
+    case 'data.removeDuplicates':
+      app.removeDuplicatesFromSelection();
+      return true;
+    case 'data.textToColumns': {
+      const delimiter = String((params as { delimiter?: string })?.delimiter ?? ',');
+      app.textToColumnsFromSelection(delimiter);
+      return true;
+    }
+    case 'drawing.insert.rectangle':
+      app.insertQuickShape('rectangle');
+      return true;
+    case 'drawing.zorder.forward':
+      app.bringSelectedDrawingForward();
+      return true;
+    case 'drawing.zorder.backward':
+      app.sendSelectedDrawingBackward();
+      return true;
+    case 'drawing.remove.selected':
+      app.removeSelectedDrawing();
+      return true;
+    case 'chart.insert.column':
+      app.insertQuickChart('column');
+      return true;
+    case 'pivot.insert.quick':
+      app.insertQuickPivot();
+      return true;
+    case 'sparkline.insert.quick':
+      app.insertQuickSparkline('line');
+      return true;
+    case 'review.comment.resolve':
+      app.resolveComment();
+      return true;
+    case 'review.panel.open': {
+      const notice = (params as { notice?: string })?.notice;
+      app.setActivePanel('inspector');
+      if (notice) app.notify(notice);
+      return true;
+    }
     case 'ui.formula.recalculate':
       app.recalculateFormulas();
       return true;

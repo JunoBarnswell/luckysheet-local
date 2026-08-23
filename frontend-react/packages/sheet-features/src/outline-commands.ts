@@ -111,7 +111,7 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
       const previous = structuredClone(outlineOf(sheet));
       const outline = structuredClone(outlineOf(sheet));
       for (const group of outline.groups) {
-        if (group.axis === 'row') group.collapsed = group.level > params.level;
+        group.collapsed = group.level > params.level;
       }
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({

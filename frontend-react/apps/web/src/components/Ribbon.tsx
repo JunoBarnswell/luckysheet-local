@@ -256,6 +256,9 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               <Button size="sm" variant="ghost" icon="table-pivot" onClick={() => onExecute('ui.panel.open', { panel: 'pivot' })}>
                 Pivot Table
               </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('pivot-insert-quick')}>
+                Quick Pivot
+              </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
@@ -263,8 +266,14 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               <Button size="sm" variant="ghost" icon="chart" onClick={() => onExecute('ui.panel.open', { panel: 'chart' })}>
                 Chart Builder
               </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('chart-insert-column')}>
+                Column Chart
+              </Button>
               <Button size="sm" variant="ghost" icon="sparkline" onClick={() => onExecute('ui.panel.open', { panel: 'sparkline' })}>
                 Sparkline
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('sparkline-insert-quick')}>
+                Quick Sparkline
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
@@ -272,6 +281,18 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
             <RibbonGroup label="Illustrations">
               <Button size="sm" variant="ghost" icon="shape-square" onClick={() => onExecute('ui.panel.open', { panel: 'shape' })}>
                 Shapes & Lines
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('drawing-insert-rectangle')}>
+                Rectangle
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('drawing-bring-forward')}>
+                Bring Forward
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('drawing-send-backward')}>
+                Send Backward
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('drawing-remove')}>
+                Remove Drawing
               </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
@@ -332,6 +353,40 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
+            <RibbonGroup label="Outline">
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('group-rows')}>
+                Group Rows
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('ungroup-rows')}>
+                Ungroup Rows
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('group-columns')}>
+                Group Columns
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('ungroup-columns')}>
+                Ungroup Columns
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('outline-level-1')}>
+                Show Level 1
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('outline-level-2')}>
+                Show Level 2
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('outline-level-3')}>
+                Show Level 3
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('data-subtotal')}>
+                Subtotal
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('remove-duplicates')}>
+                Remove Duplicates
+              </Button>
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('text-to-columns')}>
+                Text to Columns
+              </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+
             <RibbonGroup label="Find & Transform">
               <Button size="sm" variant="ghost" onClick={() => onExecute('ui.dialog.open', { dialog: 'find-replace' })}>
                 Find & Replace
@@ -351,6 +406,27 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
 
         {activeTab === 'review' ? (
           <Inline gap="md" className="min-w-max items-start">
+            <RibbonGroup label="Comments">
+              <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('review.panel.open', { notice: 'Add a comment in the Inspector panel.' })}>
+                New Comment
+              </Button>
+              <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('review.comment.resolve')}>
+                Resolve
+              </Button>
+              <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('ui.panel.open', { panel: 'inspector' })}>
+                Show Comments
+              </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
+            <RibbonGroup label="Notes & Links">
+              <Button size="sm" variant="ghost" icon="comment" onClick={() => onExecute('review.panel.open', { notice: 'Add a cell note in the Inspector panel.' })}>
+                New Note
+              </Button>
+              <Button size="sm" variant="ghost" icon="share" onClick={() => onExecute('review.panel.open', { notice: 'Insert a hyperlink in the Inspector panel.' })}>
+                Insert Link
+              </Button>
+            </RibbonGroup>
+            <Divider orientation="vertical" className="h-10" />
             <RibbonGroup label="History & Audit">
               <Button size="sm" variant="ghost" icon="history" onClick={() => onExecute('ui.panel.open', { panel: 'history' })}>
                 Revision Log

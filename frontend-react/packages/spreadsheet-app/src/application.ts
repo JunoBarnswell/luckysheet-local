@@ -1,5 +1,4 @@
 import type {
-  CellComment,
   CellData,
   CellStyle,
   ChartModel,
@@ -9,16 +8,21 @@ import type {
   PivotLayout,
   PivotModel,
   PivotSourceRowPath,
+  PivotSlicer,
+  PivotTimeline,
+  PivotAggregateFunction,
   RangeRef,
   ShapeModel,
+  FloatingImage,
   SheetTableModel,
   SparklineModel,
+  SparklineGroup,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
 import type { HistoryEntry, CommandResult } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { PrintLayout } from '@react-sheets/pro-features';
-import { getPivotFieldCatalog as buildPivotFieldCatalog } from '@react-sheets/pro-features';
+import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from '@react-sheets/pro-features';
 import {
   collectFindReplacements,
   copyRangeToClipboardData,
@@ -27,6 +31,9 @@ import {
   findSheetTableAt,
   findValidationRule,
   formatTsv,
+  groupsWithinRange,
+  buildRowOutlineGroup,
+  buildColumnOutlineGroup,
   normalizeRangeRef,
   parseTsv,
   validateDataInput,
@@ -49,8 +56,37 @@ import {
   type SpreadsheetRuntime,
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
+import { columnLabel } from './address';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
 import { syncWorkbookSheetTables, syncWorkbookSpills } from './formula-spill-sync';
+import {
+  buildImageDrawingAdd,
+  buildShapeDrawingAdd,
+  findDrawingByPayloadId,
+  resolveDrawingMoveTransform,
+} from './drawing-bridge';
+import {
+  buildChartInsertParams,
+  buildChartMetadataPatch,
+  resolveChartInsertCommandId,
+} from './chart-bridge';
+import {
+  buildPivotModel,
+  connectedPivotIdsForSource,
+} from './pivot-bridge';
+import {
+  buildCellNote,
+  buildCommentReply,
+  buildCommentThread,
+  findCommentThreadAt,
+  parseUrlHyperlink,
+} from './review-bridge';
+import {
+  buildSparklineDataLocationParams,
+  buildSparklineGroup,
+  buildSparklineInsertParams,
+  resolveQuickSparklinePlacement,
+} from './sparkline-bridge';
 import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId } from './types';
 
@@ -709,19 +745,106 @@ export class SpreadsheetApplication {
   // ---- Pro / data features ----
 
   addChart(chart: ChartModel): void {
-    this.runCommand('chart.add', chart);
+    const drawingId = nextId('draw');
+    const insertCommand = resolveChartInsertCommandId(chart.type);
+    if (insertCommand === 'chart.insert') {
+      this.runCommand('chart.insert', buildChartInsertParams(chart, drawingId));
+    } else {
+      this.runCommand(insertCommand, {
+        sheetId: chart.sheetId,
+        chartId: chart.id,
+        drawingId,
+        bounds: chart.bounds,
+        sourceRanges: chart.sourceRanges,
+        title: chart.title,
+      });
+    }
+    const metadataPatch = buildChartMetadataPatch(chart);
+    if (metadataPatch) {
+      this.runCommand('chart.update', { sheetId: chart.sheetId, chartId: chart.id, payload: metadataPatch });
+    }
+    this.runCommand('drawing.select', { sheetId: chart.sheetId, drawingIds: [drawingId] });
+    this.selectedFloatingId = chart.id;
+    this.notify(chart.title ? `Added chart "${chart.title}"` : `Added ${chart.type} chart`);
+    this.refresh();
+  }
+  insertQuickChart(type: ChartModel['type'] = 'column'): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    this.addChart({
+      id: nextId('chart'),
+      sheetId: this.activeSheetId,
+      type,
+      title: 'Chart',
+      sourceRanges: [{ ...range, sheetId: this.activeSheetId }],
+      bounds: { x: 96, y: 96, width: 480, height: 280 },
+    });
+  }
+  updateChartType(chartId: string, chartType: ChartModel['type']): void {
+    this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType });
+    this.refresh();
+  }
+  updateChartSeries(chartId: string, sourceRanges: RangeRef[], series?: ChartModel['series'], categoryRange?: RangeRef): void {
+    this.runCommand('chart.setSeries', {
+      sheetId: this.activeSheetId,
+      chartId,
+      sourceRanges,
+      series: series?.map((entry) => ({ name: entry.name, range: entry.range, color: entry.color })),
+      categoryRange,
+    });
+    this.refresh();
+  }
+  setChartLegend(chartId: string, legendPosition: NonNullable<ChartModel['legendPosition']>): void {
+    this.runCommand('chart.setLegend', { sheetId: this.activeSheetId, chartId, legendPosition });
+    this.refresh();
+  }
+  setChartDataLabels(chartId: string, showDataLabels: boolean): void {
+    this.runCommand('chart.setDataLabels', { sheetId: this.activeSheetId, chartId, showDataLabels });
+    this.refresh();
   }
   updateChartBounds(id: string, bounds: ChartModel['bounds']): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const move = resolveDrawingMoveTransform(sheet, id, bounds);
+    if (move) {
+      this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
+      this.refresh();
+      return;
+    }
     this.runCommand('chart.move', { id, sheetId: this.activeSheetId, bounds });
+    this.refresh();
   }
   removeChart(id: string): void {
-    this.runCommand('chart.remove', id);
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const drawing = findDrawingByPayloadId(sheet, id);
+    const result = this.runtime.commands.execute('chart.remove', { sheetId: this.activeSheetId, chartId: id });
+    if (result.mutationCount === 0) {
+      const index = sheet.charts.findIndex((entry) => entry.id === id);
+      if (index >= 0) sheet.charts.splice(index, 1);
+    }
+    if (drawing) this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
+    if (this.selectedFloatingId === id) this.selectedFloatingId = null;
+    this.refresh();
   }
   addPivot(pivot: PivotModel): void {
     this.runCommand('pivot.add', pivot);
+    this.recomputePivotResult(pivot.id);
+    this.notify(`Pivot ${pivot.id} added`);
+    this.refresh();
+  }
+  insertQuickPivot(): string | undefined {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const pivotId = nextId('pivot');
+    const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, pivotId, range);
+    if (!pivot) {
+      this.notify('Select a data range with category and value fields');
+      return undefined;
+    }
+    this.addPivot(pivot);
+    return pivotId;
   }
   updatePivotLayout(pivotId: string, layout: PivotLayout): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, layout });
+    this.recomputePivotResult(pivotId);
+    this.refresh();
   }
   updatePivotConfiguration(
     pivotId: string,
@@ -730,45 +853,257 @@ export class SpreadsheetApplication {
       : never,
   ): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });
+    if (patch.sourceRange) {
+      const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
+      if (pivot) pivot.fieldCatalog = undefined;
+    }
+    this.recomputePivotResult(pivotId);
+    this.refresh();
+  }
+  setPivotAggregate(pivotId: string, field: string, summarizeBy: PivotAggregateFunction): void {
+    this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, field, summarizeBy });
+    this.recomputePivotResult(pivotId);
+    this.refresh();
+  }
+  setPivotSlicer(pivotId: string, slicer: PivotSlicer): void {
+    this.runCommand('pivot.slicer.set', { sheetId: this.activeSheetId, pivotId, slicer });
+    this.recomputePivotResult(pivotId);
+    this.refresh();
+  }
+  setPivotTimeline(pivotId: string, timeline: PivotTimeline): void {
+    this.runCommand('pivot.timeline.set', { sheetId: this.activeSheetId, pivotId, timeline });
+    this.recomputePivotResult(pivotId);
+    this.refresh();
   }
   refreshPivot(pivotId: string): void {
     const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
     if (!pivot) return;
     this.runCommand('pivot.refresh', { sheetId: this.activeSheetId, pivotId });
-    this.saveState = 'syncing';
-    this.notify('Calculating pivot…');
-    this.emit();
-    void this.runtime.api
-      .calculatePivot(this.runtime.model.unitId, pivotId)
-      .then((response) => {
-        this.runtime.pivotResults[pivotId] = response.result;
-        this.notify('Pivot calculation complete');
-        this.saveState = 'saved';
-        this.refresh();
-      })
-      .catch((error: unknown) => {
-        this.saveState = 'offline';
-        this.notify(error instanceof Error ? error.message : 'Pivot calculation failed');
-        this.emit();
-      });
+    this.recomputePivotResult(pivotId);
+    this.notify('Pivot refreshed');
+    this.refresh();
   }
   removePivot(id: string): void {
     this.runCommand('pivot.remove', id);
+    delete this.runtime.pivotResults[id];
+    this.refresh();
+  }
+  drillDownPivot(pivotId: string, label: string, paths: PivotSourceRowPath[]): void {
+    if (paths.length === 0) return;
+    const targetSheetId = nextId('sheet');
+    this.runCommand('pivot.drillDown', {
+      sheetId: this.activeSheetId,
+      pivotId,
+      label,
+      sourceRowPaths: paths.map((path) => ({ sheetId: path.sheetId, row: path.row })),
+      targetSheetId,
+      targetAnchor: { row: 0, column: 0 },
+    });
+    this.activeSheetId = targetSheetId;
+    this.notify(`Drill-down sheet created for ${label}`);
+    this.refresh();
+  }
+  private recomputePivotResult(pivotId: string): void {
+    const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
+    if (!pivot) {
+      delete this.runtime.pivotResults[pivotId];
+      return;
+    }
+    try {
+      this.runtime.pivotResults[pivotId] = computePivotResult(this.runtime.model, pivot);
+    } catch {
+      delete this.runtime.pivotResults[pivotId];
+    }
   }
   addShape(shape: ShapeModel): void {
-    this.runCommand('shape.add', shape);
+    const drawingId = nextId('draw');
+    this.runCommand('drawing.add.shape', buildShapeDrawingAdd(this.activeSheetId, shape, drawingId));
+    this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawingId] });
+    this.selectedFloatingId = shape.id;
+    this.notify(`Added ${shape.type} shape`);
+    this.refresh();
+  }
+  insertQuickShape(type: ShapeModel['type'] = 'rounded-rectangle'): void {
+    const shape: ShapeModel = {
+      id: nextId('shape'),
+      sheetId: this.activeSheetId,
+      type,
+      text: type === 'callout' ? 'Note' : '',
+      fill: '#dbeafe',
+      stroke: '#2563eb',
+      strokeWidth: 2,
+      textColor: '#1e3a8a',
+      fontSize: 13,
+      bounds: { x: 96, y: 96, width: 160, height: 60 },
+    };
+    this.addShape(shape);
   }
   updateShapeBounds(id: string, bounds: ShapeModel['bounds']): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const move = resolveDrawingMoveTransform(sheet, id, bounds);
+    if (move) {
+      this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
+      this.refresh();
+      return;
+    }
     this.runCommand('shape.move', { id, sheetId: this.activeSheetId, bounds });
+    this.refresh();
   }
   removeShape(id: string): void {
-    this.runCommand('shape.remove', id);
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const drawing = findDrawingByPayloadId(sheet, id);
+    if (drawing) {
+      this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
+      this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
+    } else {
+      this.runCommand('shape.remove', id);
+    }
+    if (this.selectedFloatingId === id) this.selectedFloatingId = null;
+    this.refresh();
+  }
+  addImage(image: FloatingImage): void {
+    const drawingId = nextId('draw');
+    this.runCommand('drawing.add.image', buildImageDrawingAdd(this.activeSheetId, image, drawingId));
+    this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawingId] });
+    this.selectedFloatingId = image.id;
+    this.notify('Image placed on canvas');
+    this.refresh();
+  }
+  updateImageBounds(id: string, bounds: FloatingImage['bounds']): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const move = resolveDrawingMoveTransform(sheet, id, bounds);
+    if (move) {
+      this.runCommand('drawing.move', { sheetId: this.activeSheetId, drawingId: move.drawingId, transform: move.transform });
+      this.refresh();
+      return;
+    }
+    const image = sheet.images.find((entry) => entry.id === id);
+    if (!image) return;
+    image.bounds = { ...bounds };
+    this.refresh();
+  }
+  removeImage(id: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const drawing = findDrawingByPayloadId(sheet, id);
+    if (drawing) {
+      this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
+      this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
+    } else {
+      const index = sheet.images.findIndex((entry) => entry.id === id);
+      if (index >= 0) sheet.images.splice(index, 1);
+    }
+    if (this.selectedFloatingId === id) this.selectedFloatingId = null;
+    this.refresh();
+  }
+  bringSelectedDrawingForward(): void {
+    const drawingId = this.resolveSelectedDrawingId();
+    if (!drawingId) {
+      this.notify('Select a drawing object first');
+      return;
+    }
+    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'forward' });
+    this.refresh();
+  }
+  sendSelectedDrawingBackward(): void {
+    const drawingId = this.resolveSelectedDrawingId();
+    if (!drawingId) {
+      this.notify('Select a drawing object first');
+      return;
+    }
+    this.runCommand('drawing.zorder', { sheetId: this.activeSheetId, drawingId, direction: 'backward' });
+    this.refresh();
+  }
+  removeSelectedDrawing(): void {
+    if (!this.selectedFloatingId) {
+      this.notify('Select a drawing object first');
+      return;
+    }
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const chart = sheet.charts.find((entry) => entry.id === this.selectedFloatingId);
+    const image = sheet.images.find((entry) => entry.id === this.selectedFloatingId);
+    if (chart) this.removeChart(chart.id);
+    else if (image) this.removeImage(image.id);
+    else this.removeShape(this.selectedFloatingId);
+  }
+  private resolveSelectedDrawingId(): string | undefined {
+    if (!this.selectedFloatingId) return undefined;
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    return findDrawingByPayloadId(sheet, this.selectedFloatingId)?.id;
   }
   addSparkline(sparkline: SparklineModel): void {
-    this.runCommand('sparkline.add', sparkline);
+    this.runCommand('sparkline.insert', buildSparklineInsertParams(sparkline));
+    this.notify(`Sparkline inserted at row ${sparkline.anchor.row + 1}`);
+    this.refresh();
+  }
+  insertSparklineDataLocation(
+    params: {
+      sparklineId: string;
+      dataRange: RangeRef;
+      location: { row: number; column: number };
+      type?: SparklineModel['type'];
+    } & Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'groupId'>>,
+  ): string {
+    const sparklineId = params.sparklineId;
+    this.runCommand(
+      'sparkline.insertDataLocation',
+      buildSparklineDataLocationParams(
+        this.activeSheetId,
+        sparklineId,
+        params.dataRange,
+        params.location,
+        params.type ?? 'line',
+        params,
+      ),
+    );
+    const stylePatch: Partial<SparklineModel> = {};
+    if (params.color) stylePatch.color = params.color;
+    if (params.negativeColor) stylePatch.negativeColor = params.negativeColor;
+    if (params.highlightMax != null) stylePatch.highlightMax = params.highlightMax;
+    if (params.highlightMin != null) stylePatch.highlightMin = params.highlightMin;
+    if (Object.keys(stylePatch).length > 0) {
+      this.runCommand('sparkline.update', { sheetId: this.activeSheetId, sparklineId, patch: stylePatch });
+    }
+    this.notify(`Sparkline inserted at row ${params.location.row + 1}`);
+    this.refresh();
+    return sparklineId;
+  }
+  insertQuickSparkline(type: SparklineModel['type'] = 'line'): string | undefined {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    if (range.endColumn <= range.startColumn && range.endRow <= range.startRow) {
+      this.notify('Select a data range for the sparkline source');
+      return undefined;
+    }
+    const placement = resolveQuickSparklinePlacement({ ...range, sheetId: this.activeSheetId });
+    const sparklineId = nextId('spark');
+    this.insertSparklineDataLocation({
+      sparklineId,
+      dataRange: placement.dataRange,
+      location: placement.location,
+      type,
+      highlightMax: true,
+      highlightMin: true,
+    });
+    return sparklineId;
+  }
+  updateSparkline(sparklineId: string, patch: Partial<SparklineModel>): void {
+    this.runCommand('sparkline.update', { sheetId: this.activeSheetId, sparklineId, patch });
+    this.refresh();
+  }
+  createSparklineGroup(sparklineIds: string[], patch?: Partial<Pick<SparklineGroup, 'showAxis' | 'showMarkers'>>, type: SparklineModel['type'] = 'line'): string {
+    const groupId = nextId('sparkline-group');
+    const group = buildSparklineGroup(this.activeSheetId, groupId, sparklineIds, type, patch);
+    this.runCommand('sparkline.group.create', { sheetId: this.activeSheetId, group });
+    this.notify(`Sparkline group created (${sparklineIds.length})`);
+    this.refresh();
+    return groupId;
+  }
+  updateSparklineGroup(groupId: string, patch: Partial<SparklineGroup>): void {
+    this.runCommand('sparkline.group.update', { sheetId: this.activeSheetId, groupId, patch });
+    this.refresh();
   }
   removeSparkline(id: string): void {
-    this.runCommand('sparkline.remove', id);
+    this.runCommand('sparkline.remove', { sheetId: this.activeSheetId, sparklineId: id });
+    this.refresh();
   }
   addConditionalFormat(rule: ConditionalFormatRule): void {
     this.runCommand('sheet.cf.add', { rule });
@@ -786,10 +1121,22 @@ export class SpreadsheetApplication {
   addComment(text: string): void {
     if (!text.trim()) return;
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    const mentions = [...text.matchAll(/@([\w-]+)/g)].map((m) => m[1]).filter(Boolean) as string[];
-    const comment: CellComment = { id: nextId('cmt'), author: this.actorId, text: text.trim(), createdAt: new Date().toISOString(), mentions, replies: [], resolved: false };
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, value: { ...(cell ?? { value: null }), comment } });
+    const thread = buildCommentThread(
+      this.activeSheetId,
+      sel.primaryRowIndex,
+      sel.primaryColumnIndex,
+      this.actorId,
+      text,
+      nextId('thread'),
+    );
+    this.runCommand('comment.add', {
+      sheetId: this.activeSheetId,
+      row: sel.primaryRowIndex,
+      column: sel.primaryColumnIndex,
+      thread,
+    });
+    this.notify('Comment added');
+    this.refresh();
   }
 
   applyFilter(column: number, patch: { selectedValues?: string[] | null; conditionOperator?: string; conditionValue?: string }): void {
@@ -1025,14 +1372,28 @@ export class SpreadsheetApplication {
   }
   setSelectedFloatingId(id: string | null): void {
     this.selectedFloatingId = id;
+    if (id) {
+      const sheet = this.runtime.model.getSheet(this.activeSheetId);
+      const drawing = findDrawingByPayloadId(sheet, id);
+      if (drawing) {
+        this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawing.id] });
+      } else {
+        this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
+      }
+    } else {
+      this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
+    }
     this.emit();
   }
-  removeFloatingObject(kind: 'chart' | 'shape', id: string): void {
+  removeFloatingObject(kind: 'chart' | 'shape' | 'image', id: string): void {
     if (kind === 'chart') this.removeChart(id);
+    else if (kind === 'image') this.removeImage(id);
     else this.removeShape(id);
-    this.selectedFloatingId = null;
   }
 
+  getConnectedPivotIds(sourceRange: RangeRef): string[] {
+    return connectedPivotIdsForSource(this.runtime.model, this.activeSheetId, sourceRange);
+  }
   getPivotFieldCatalog(range: RangeRef): PivotFieldDefinition[] {
     const pivot: PivotModel = {
       id: 'pivot-field-catalog',
@@ -1054,21 +1415,8 @@ export class SpreadsheetApplication {
     });
   }
 
-  showPivotDetails(paths: PivotSourceRowPath[]): void {
-    if (paths.length === 0) return;
-    const first = paths[0]!;
-    const source = this.runtime.model.getSheet(first.sheetId);
-    const id = 'sheet-' + Math.random().toString(36).slice(2, 8);
-    this.runCommand('sheet.add', { id, name: 'Pivot Details' });
-    const values: CellData[][] = [];
-    values.push(Array.from({ length: source.columnCount }, (_, column) => structuredClone(source.cells.get(0, column) ?? { value: null })));
-    for (const path of paths) {
-      const rowSheet = this.runtime.model.getSheet(path.sheetId);
-      values.push(Array.from({ length: source.columnCount }, (_, column) => structuredClone(rowSheet.cells.get(path.row, column) ?? { value: null })));
-    }
-    if (values.length > 0) this.runCommand('sheet.range.set', { sheetId: id, startRow: 0, startColumn: 0, values });
-    this.activeSheetId = id;
-    this.refresh();
+  showPivotDetails(pivotId: string, paths: PivotSourceRowPath[], label = 'Details'): void {
+    this.drillDownPivot(pivotId, label, paths);
   }
 
   getValidationForPrimary(): DataValidationRule | undefined {
@@ -1192,6 +1540,132 @@ export class SpreadsheetApplication {
     this.refresh();
   }
 
+  groupRowsFromSelection(): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    if (range.endRow <= range.startRow) {
+      this.notify('Select multiple rows to group');
+      return;
+    }
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const group = buildRowOutlineGroup(this.activeSheetId, range, sheet, nextId('outline'));
+    this.runCommand('outline.group.add', { sheetId: this.activeSheetId, group });
+    this.notify(`Grouped rows ${range.startRow + 1}-${range.endRow + 1}`);
+    this.refresh();
+  }
+
+  ungroupRowsFromSelection(): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const groups = groupsWithinRange(sheet.outline, 'row', range);
+    if (groups.length === 0) {
+      this.notify('No row groups in the current selection');
+      return;
+    }
+    for (const group of groups) {
+      this.runCommand('outline.group.remove', { sheetId: this.activeSheetId, groupId: group.id });
+    }
+    this.notify(`Ungrouped ${groups.length} row group(s)`);
+    this.refresh();
+  }
+
+  toggleOutlineGroup(groupId: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const group = sheet.outline?.groups.find((entry) => entry.id === groupId);
+    if (!group) return;
+    this.runCommand('outline.group.toggle', { sheetId: this.activeSheetId, groupId, collapsed: !group.collapsed });
+    this.refresh();
+  }
+
+  showOutlineLevel(level: 1 | 2 | 3): void {
+    this.runCommand('outline.showLevel', { sheetId: this.activeSheetId, level });
+    this.refresh();
+  }
+
+  groupColumnsFromSelection(): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    if (range.endColumn <= range.startColumn) {
+      this.notify('Select multiple columns to group');
+      return;
+    }
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const group = buildColumnOutlineGroup(this.activeSheetId, range, sheet, nextId('outline'));
+    this.runCommand('outline.group.add', { sheetId: this.activeSheetId, group });
+    this.notify(`Grouped columns ${columnLabel(range.startColumn)}-${columnLabel(range.endColumn)}`);
+    this.refresh();
+  }
+
+  ungroupColumnsFromSelection(): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const groups = groupsWithinRange(sheet.outline, 'column', range);
+    if (groups.length === 0) {
+      this.notify('No column groups in the current selection');
+      return;
+    }
+    for (const group of groups) {
+      this.runCommand('outline.group.remove', { sheetId: this.activeSheetId, groupId: group.id });
+    }
+    this.notify(`Ungrouped ${groups.length} column group(s)`);
+    this.refresh();
+  }
+
+  textToColumnsFromSelection(delimiter = ','): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const selection = this.selectionService.getState();
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const column = selection.primaryColumnIndex;
+    const targetRange: RangeRef = {
+      sheetId: this.activeSheetId,
+      startRow: range.startRow,
+      endRow: range.endRow,
+      startColumn: column,
+      endColumn: column,
+    };
+    this.runCommand('data.textToColumns', {
+      sheetId: this.activeSheetId,
+      range: targetRange,
+      delimiter,
+      maxColumns: Math.min(8, Math.max(2, sheet.columnCount - column)),
+    });
+    this.notify('Text split into columns');
+    this.refresh();
+  }
+
+  applyDataSubtotal(): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    if (range.endRow <= range.startRow || range.endColumn <= range.startColumn) {
+      this.notify('Select a data range with at least two columns');
+      return;
+    }
+    this.runCommand('data.subtotal', {
+      sheetId: this.activeSheetId,
+      range,
+      groupColumn: range.startColumn,
+      valueColumn: range.startColumn + 1,
+      functionName: 'SUM',
+    });
+    this.notify('Subtotal summary created below selection');
+    this.refresh();
+  }
+
+  removeDuplicatesFromSelection(): void {
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    if (range.endRow <= range.startRow) {
+      this.notify('Select a multi-row range before removing duplicates');
+      return;
+    }
+    const columns: number[] = [];
+    for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
+    this.runCommand('data.removeDuplicates', {
+      sheetId: this.activeSheetId,
+      range,
+      columns,
+      hasHeader: true,
+    });
+    this.notify('Duplicate rows removed');
+    this.refresh();
+  }
+
   createDataTableFromSelection(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primaryRange = this.getPrimaryRange();
@@ -1230,41 +1704,92 @@ export class SpreadsheetApplication {
     });
   }
 
-  // Comment helpers omitted for brevity - add reply, resolve, remove, hyperlink
   replyComment(text: string): void {
     if (!text.trim()) return;
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    const comment = cell?.comment;
-    if (!comment) return;
-    const nextComment: CellComment = { ...structuredClone(comment), resolved: false, replies: [...(comment.replies ?? []), { id: nextId('reply'), author: this.actorId, text: text.trim(), createdAt: new Date().toISOString() }] };
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, value: { ...cell, comment: nextComment } });
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
+    if (!thread) return;
+    const reply = buildCommentReply(this.actorId, text, nextId('reply'));
+    this.runCommand('comment.reply', { sheetId: this.activeSheetId, threadId: thread.id, reply });
+    this.notify('Reply added');
+    this.refresh();
   }
   resolveComment(): void {
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    if (!cell?.comment) return;
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, value: { ...cell, comment: { ...structuredClone(cell.comment), resolved: true, resolvedAt: new Date().toISOString() } } });
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
+    if (!thread || thread.resolved) return;
+    this.runCommand('comment.resolve', { sheetId: this.activeSheetId, threadId: thread.id, resolved: true });
+    this.notify('Comment resolved');
+    this.refresh();
   }
   removeComment(): void {
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    if (!cell?.comment) return;
-    const { comment: _c, ...rest } = cell;
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, value: rest as CellData });
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const thread = findCommentThreadAt(sheet, sel.primaryRowIndex, sel.primaryColumnIndex);
+    if (!thread) return;
+    this.runCommand('comment.remove', { sheetId: this.activeSheetId, threadId: thread.id });
+    this.notify('Comment removed');
+    this.refresh();
+  }
+  addNote(text: string): void {
+    if (!text.trim()) return;
+    const sel = this.selectionService.getState();
+    const note = buildCellNote(this.actorId, text, nextId('note'));
+    this.runCommand('note.set', {
+      sheetId: this.activeSheetId,
+      row: sel.primaryRowIndex,
+      column: sel.primaryColumnIndex,
+      note,
+    });
+    this.notify('Note added');
+    this.refresh();
+  }
+  removeNote(): void {
+    const sel = this.selectionService.getState();
+    this.runCommand('note.remove', {
+      sheetId: this.activeSheetId,
+      row: sel.primaryRowIndex,
+      column: sel.primaryColumnIndex,
+    });
+    this.notify('Note removed');
+    this.refresh();
+  }
+  setNoteVisibility(visible: boolean): void {
+    const sel = this.selectionService.getState();
+    this.runCommand('note.visibility', {
+      sheetId: this.activeSheetId,
+      row: sel.primaryRowIndex,
+      column: sel.primaryColumnIndex,
+      visible,
+    });
+    this.refresh();
   }
   setHyperlink(url: string): void {
     if (!url.trim()) return;
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, value: { ...(cell ?? { value: null }), hyperlink: url.trim() } });
+    const hyperlink = parseUrlHyperlink(url, nextId('link'));
+    this.runCommand('hyperlink.set', {
+      sheetId: this.activeSheetId,
+      row: sel.primaryRowIndex,
+      column: sel.primaryColumnIndex,
+      hyperlink,
+    });
+    this.notify('Hyperlink inserted');
+    this.refresh();
   }
   removeHyperlink(): void {
     const sel = this.selectionService.getState();
     const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.primaryRowIndex, sel.primaryColumnIndex);
-    if (!cell?.hyperlink) return;
-    const { hyperlink: _h, ...rest } = cell;
-    this.runCommand('sheet.cell.set', { sheetId: this.activeSheetId, row: sel.primaryRowIndex, column: sel.primaryColumnIndex, value: rest as CellData });
+    if (!cell?.hyperlink && !cell?.hyperlinkDetail) return;
+    this.runCommand('hyperlink.remove', {
+      sheetId: this.activeSheetId,
+      row: sel.primaryRowIndex,
+      column: sel.primaryColumnIndex,
+    });
+    this.notify('Hyperlink removed');
+    this.refresh();
   }
 }
 

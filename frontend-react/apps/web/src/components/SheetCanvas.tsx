@@ -23,7 +23,7 @@ import {
   createEmptyChromeState,
 } from "@react-sheets/render-engine";
 import { drawChartOnCanvas, drawShapeOnCanvas, drawSparklineOnCanvas } from "@react-sheets/pro-features";
-import type { ChartModel, PivotResultTree, RangeRef, ShapeModel, SparklineModel } from "@react-sheets/core-model";
+import type { ChartModel, PivotResultTree, RangeRef, ShapeModel, SparklineModel, FloatingImage } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
 import type { PeerCursor, SelectionState, CanvasSheetSnapshot, AppPhase } from "@react-sheets/spreadsheet-app";
@@ -45,6 +45,7 @@ export interface SheetCanvasProps {
   charts?: ChartModel[];
   pivotResults?: Record<string, PivotResultTree>;
   shapes?: ShapeModel[];
+  images?: FloatingImage[];
   sparklines?: SparklineModel[];
   selectedFloatingId: string | null;
   onSelectionChange: (selection: SelectionState) => void;
@@ -68,6 +69,7 @@ export interface SheetCanvasProps {
   onFloatingRemove: (kind: "chart" | "shape" | "image", id: string) => void;
   onAction: (action: RibbonAction, payload?: unknown) => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
+  onToggleOutline?: (groupId: string) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
@@ -114,6 +116,7 @@ export function SheetCanvas({
   charts = [],
   pivotResults = {},
   shapes = [],
+  images = [],
   sparklines = [],
   selectedFloatingId,
   onSelectionChange,
@@ -137,11 +140,13 @@ export function SheetCanvas({
   onFloatingRemove,
   onAction,
   onApplyFilter,
+  onToggleOutline,
   getValidationList,
   onRetry,
   onCreateSheet,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
+  const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
@@ -169,10 +174,11 @@ export function SheetCanvas({
         rowHeights: new Map(Object.entries(sheet.rowHeights).map(([key, value]) => [Number(key), value])),
         columnWidths: new Map(Object.entries(sheet.columnWidths).map(([key, value]) => [Number(key), value])),
         hiddenRows: new Set(sheet.hiddenRows),
+        hiddenColumns: new Set(sheet.hiddenColumns ?? []),
         zoom: zoomFactor,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sheet.rowCount, sheet.columnCount, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, zoomFactor],
+    [sheet.rowCount, sheet.columnCount, sheet.rowHeights, sheet.columnWidths, sheet.hiddenRows, sheet.hiddenColumns, zoomFactor],
   );
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
@@ -234,6 +240,30 @@ export function SheetCanvas({
         draw: (context, rect) => drawShapeOnCanvas({ context, shape: { ...shape, bounds: rect } }),
       });
     }
+    for (const image of images) {
+      drawables.push({
+        kind: "image",
+        id: image.id,
+        bounds: image.bounds,
+        draw: (context, rect) => {
+          let img = imageCacheRef.current.get(image.src);
+          if (!img) {
+            img = new Image();
+            img.src = image.src;
+            imageCacheRef.current.set(image.src, img);
+            img.onload = () => engineRef.current?.requestRender();
+          }
+          if (img.complete && img.naturalWidth > 0) {
+            context.drawImage(img, rect.x, rect.y, rect.width, rect.height);
+            return;
+          }
+          context.fillStyle = "#f1f5f9";
+          context.fillRect(rect.x, rect.y, rect.width, rect.height);
+          context.strokeStyle = "#94a3b8";
+          context.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+        },
+      });
+    }
     for (const sparkline of sparklines) {
       const rect = skeleton.getCellRect(sparkline.anchor.row, sparkline.anchor.column);
       if (!rect) continue;
@@ -247,7 +277,7 @@ export function SheetCanvas({
     }
     return drawables;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [charts, pivotResults, shapes, sparklines, skeleton, sheet, sheetId]);
+  }, [charts, images, pivotResults, shapes, sparklines, skeleton, sheet, sheetId]);
 
   function getChartSeries(chart: ChartModel): { categories: string[]; series: Array<{ name: string; values: number[] }> } {
     const categories: string[] = [];
@@ -316,6 +346,7 @@ export function SheetCanvas({
       startColumn: table.range.startColumn,
       endColumn: table.range.endColumn,
     }));
+    state.outlineControls = sheet.outlineControls;
     state.remoteCursors = peers.map((peer) => ({
       actorId: peer.actorId,
       color: peer.color,
@@ -325,7 +356,7 @@ export function SheetCanvas({
     }));
     state.selectedFloatingId = selectedFloatingId;
     return state;
-  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterButtons, sheet.filterColumns, sheet.sheetTables]);
+  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterButtons, sheet.filterColumns, sheet.outlineControls, sheet.sheetTables]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -486,7 +517,25 @@ export function SheetCanvas({
           return;
         }
         const additive = event.ctrlKey || event.metaKey;
+        if (headerHit.kind === "row") {
+          for (const control of sheet.outlineControls) {
+            if (control.axis !== "row" || control.index !== headerHit.index) continue;
+            const buttonLeft = 4 + (control.level - 1) * 10;
+            if (local.x >= buttonLeft && local.x <= buttonLeft + 10) {
+              onToggleOutline?.(control.groupId);
+              return;
+            }
+          }
+        }
         if (headerHit.kind === "col") {
+          for (const control of sheet.outlineControls) {
+            if (control.axis !== "column" || control.index !== headerHit.index) continue;
+            const buttonTop = 2 + (control.level - 1) * 10;
+            if (local.y >= buttonTop && local.y <= buttonTop + 10 && local.x >= 2 && local.x <= 12) {
+              onToggleOutline?.(control.groupId);
+              return;
+            }
+          }
           if (sheet.filterColumns.includes(headerHit.index)) {
             setFilterPopover({ column: headerHit.index, x: event.clientX, y: event.clientY });
           }

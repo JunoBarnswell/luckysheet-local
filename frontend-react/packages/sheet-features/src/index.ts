@@ -47,6 +47,7 @@ export * from './editing';
 export * from './sheet-table-features';
 export * from './sheet-table-commands';
 export * from './outline-commands';
+export * from './outline-features';
 
 
 export interface SetCellValueParams {

@@ -29,6 +29,7 @@ export function drawChromeLayer(options: ChromeDrawOptions): void {
   drawFreezeTrapLines(context, options.skeleton, plan.viewport.width, plan.viewport.height);
   drawResizePreview(options);
   drawTableOutlines(options);
+  drawOutlineControls(options);
   drawFilterFunnels(options);
   drawRemoteCursors(options);
   void theme;
@@ -224,6 +225,58 @@ function drawTableOutlines(options: ChromeDrawOptions): void {
       context.lineWidth = 2;
       context.strokeRect(screen.x + 1, screen.y + 1, screen.width - 2, screen.height - 2);
       context.restore();
+    }
+  }
+}
+
+function drawOutlineButton(context: CanvasRenderingContext2D, buttonLeft: number, buttonTop: number, collapsed: boolean): void {
+  context.save();
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = '#64748b';
+  context.lineWidth = 1;
+  context.fillRect(buttonLeft, buttonTop, 10, 10);
+  context.strokeRect(buttonLeft + 0.5, buttonTop + 0.5, 9, 9);
+  context.strokeStyle = '#334155';
+  context.beginPath();
+  if (collapsed) {
+    context.moveTo(buttonLeft + 2.5, buttonTop + 5);
+    context.lineTo(buttonLeft + 7.5, buttonTop + 5);
+    context.moveTo(buttonLeft + 5, buttonTop + 2.5);
+    context.lineTo(buttonLeft + 5, buttonTop + 7.5);
+  } else {
+    context.moveTo(buttonLeft + 2.5, buttonTop + 5);
+    context.lineTo(buttonLeft + 7.5, buttonTop + 5);
+  }
+  context.stroke();
+  context.restore();
+}
+
+function drawOutlineControls(options: ChromeDrawOptions): void {
+  const { context, skeleton, plan, chrome } = options;
+  if (chrome.outlineControls.length === 0) return;
+  const origin = defaultHeaderOffset();
+  for (const control of chrome.outlineControls) {
+    if (control.axis === 'row') {
+      const rowTop = skeleton.getRowTop(control.index);
+      const rowHeight = skeleton.getRowHeight(control.index);
+      for (const pane of plan.panes) {
+        const visibleTop = rowTop - pane.offset.y + pane.rect.y;
+        if (visibleTop + rowHeight < origin.y || visibleTop > plan.viewport.height) continue;
+        const buttonLeft = 4 + (control.level - 1) * 10;
+        const buttonTop = visibleTop + Math.max(2, (rowHeight - 10) / 2);
+        drawOutlineButton(context, buttonLeft, buttonTop, control.collapsed);
+      }
+      continue;
+    }
+    for (const pane of plan.panes) {
+      if (pane.offset.y !== 0 || pane.id === 'bottomLeft') continue;
+      const t = paneTransform(pane);
+      const left = skeleton.getColumnLeft(control.index);
+      const width = skeleton.getColumnWidth(control.index);
+      if (left + width <= pane.offset.x || left >= pane.offset.x + pane.rect.width) continue;
+      const buttonLeft = left + t.dx + 2;
+      const buttonTop = 2 + (control.level - 1) * 10;
+      drawOutlineButton(context, buttonLeft, buttonTop, control.collapsed);
     }
   }
 }
