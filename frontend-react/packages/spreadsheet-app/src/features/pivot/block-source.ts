@@ -1,5 +1,4 @@
 import type {
-  DataSourceContentLoadState,
   DataSourceField,
   DataSourceFieldType,
   PivotDefinition,
@@ -8,7 +7,7 @@ import type {
   PivotSourceRowPath,
   SheetId,
 } from '@react-sheets/core-model';
-import type { DataSourceContentQuery } from '../data-source/content-query';
+import type { DataSourceContentLoadState, DataSourceContentQuery } from '../data-source/content-query';
 
 export interface PivotBlockSourceField {
   fieldId: string;
@@ -172,7 +171,8 @@ export async function readPivotBlockSource(
       const result = await query.getRows(startRow, rowCount);
       const state = stateFromQuery(result.state);
       if (result.value === undefined) {
-        return failure(state.status, state.sourceId, state.error ?? `Data source ${sourceId} did not return rows`, state.blockId);
+        const status = state.status === 'ready' ? 'error' : state.status;
+        return failure(status, state.sourceId, state.error ?? `Data source ${sourceId} did not return rows`, state.blockId);
       }
       if (state.status !== 'ready') {
         return failure(state.status, state.sourceId, state.error ?? `Data source ${sourceId} is ${state.status}`, state.blockId);

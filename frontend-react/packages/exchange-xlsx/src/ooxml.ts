@@ -40,6 +40,7 @@ const REL_WORKSHEET = `${NS_DOC_REL}/worksheet`;
 const REL_STYLES = `${NS_DOC_REL}/styles`;
 const REL_SHARED_STRINGS = `${NS_DOC_REL}/sharedStrings`;
 const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
+const REL_DRAWING = `${NS_DOC_REL}/drawing`;
 
 export interface LoadedXlsxPackage {
   package: XlsxPackage;
@@ -376,7 +377,10 @@ function attachNativePivots(snapshot: WorkbookSnapshot, graph: NativePivotGraph 
       if (rowIndex < location.startRow || rowIndex > location.endRow) continue;
       for (const column of Object.keys(sheet.cells[row] ?? {})) {
         const columnIndex = Number(column);
-        if (columnIndex >= location.startColumn && columnIndex <= location.endColumn) delete sheet.cells[row]![column]!;
+        if (columnIndex >= location.startColumn && columnIndex <= location.endColumn) {
+          const rowCells = sheet.cells[row];
+          if (rowCells) delete rowCells[column];
+        }
       }
       if (!Object.keys(sheet.cells[row] ?? {}).length) delete sheet.cells[row];
     }

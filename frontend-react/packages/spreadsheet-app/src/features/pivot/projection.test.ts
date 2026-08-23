@@ -7,7 +7,6 @@ import {
   computePivotResult,
   getPivotFieldCatalog,
   hitTestPivotProjection,
-  migratePivotDefinition,
 } from './engine';
 import { buildPivotModel } from './helpers';
 
@@ -19,23 +18,15 @@ function workbookWithData(): WorkbookModel {
 }
 
 describe('native PivotGridProjection contract', () => {
-  it('migrates one legacy definition into a complete canonical definition', () => {
+  it('builds a complete canonical definition with stable field IDs', () => {
     const workbook = workbookWithData();
     const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 };
-    const migrated = migratePivotDefinition(workbook, {
-      id: 'legacy-pivot',
-      sheetId: 'sheet-1',
-      sourceRange,
-      layout: {
-        rows: [{ field: 'Region' }], columns: [], filters: [], values: [{ field: 'Amount', summarizeBy: 'sum' }],
-        showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false,
-      },
-    });
-    assert.equal(migrated.schema, 'PivotDefinition');
-    assert.deepEqual(migrated.source, { kind: 'worksheet-range', range: sourceRange });
-    assert.equal(migrated.target.sheetId, 'sheet-1');
-    assert.equal(migrated.layout.rows[0]?.fieldId, migrated.fieldCatalog.fields.find((field) => field.name === 'Region')?.fieldId);
-    assert.equal(migrated.layout.values[0]?.fieldId, migrated.fieldCatalog.fields.find((field) => field.name === 'Amount')?.fieldId);
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'canonical-pivot', sourceRange);
+    assert.ok(pivot);
+    assert.equal(pivot.schema, 'PivotDefinition');
+    assert.deepEqual(pivot.source, { kind: 'worksheet-range', range: sourceRange });
+    assert.equal(pivot.target.sheetId, 'sheet-1');
+    assert.ok(pivot.fieldCatalog.fields.every((field) => field.fieldId.length > 0));
   });
 
   it('keeps typed members distinct and treats manual all as no filter', () => {

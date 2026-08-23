@@ -80,7 +80,9 @@ test('decoder rejects corruption, truncation, row mismatch, and schema mismatch'
   ];
   const bytes = await encodeColumnarBlock({ fields: sourceFields, rows: sourceRows });
   const corrupted = bytes.slice(0);
-  new Uint8Array(corrupted)[corrupted.byteLength - 33] ^= 0x01;
+  const corruptedBytes = new Uint8Array(corrupted);
+  const checksumByteIndex = corrupted.byteLength - 33;
+  corruptedBytes[checksumByteIndex] = corruptedBytes[checksumByteIndex]! ^ 0x01;
   await assert.rejects(() => decodeColumnarBlock(corrupted), /checksum/i);
   await assert.rejects(() => decodeColumnarBlock(bytes.slice(0, bytes.byteLength - 1)), /truncated|trailing|missing/i);
   await assert.rejects(() => decodeColumnarBlock(bytes, { expectedRowCount: 2 }), /row count/i);

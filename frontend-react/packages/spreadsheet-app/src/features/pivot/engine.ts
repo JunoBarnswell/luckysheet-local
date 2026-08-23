@@ -79,6 +79,28 @@ export interface PivotRevisionKey {
   filterRevision: string;
 }
 
+export interface PivotProjectionSourceState {
+  availability: 'loading' | 'ready' | 'missing' | 'error';
+  error?: string;
+  sourceRevision?: string | number;
+}
+
+export interface PivotProjectionOptions {
+  sourceState?: PivotProjectionSourceState;
+}
+
+interface LastValidPivotProjection {
+  projection: PivotGridProjection;
+  result: PivotResultTree;
+}
+
+/**
+ * Render state is ephemeral and belongs to a workbook session. It is not part
+ * of PivotDefinition, WorkbookSnapshot, or collaborative operations. A
+ * collision/load failure must never destroy the last successful projection.
+ */
+const lastValidPivotProjections = new WeakMap<WorkbookModel, Map<string, LastValidPivotProjection>>();
+
 const same = (left: PivotScalar, right: PivotScalar): boolean => {
   if ((left == null || left === '') && (right == null || right === '')) return true;
   return left === right;
@@ -144,11 +166,25 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
   };
 }
 
-/** Kept as a public no-op because result values are never an authority/cache. */
-export function clearPivotResultCache(_workbook: WorkbookModel, _pivotId?: string): void {
-  // Derived results are calculated from the current model. A host may still
-  // retain a snapshot keyed by PivotRevisionKey, but the engine does not own a
-  // mutable result cache that could become stale after a cell edit.
+export function getLastValidPivotResult(workbook: WorkbookModel, pivotId: string): PivotResultTree | undefined {
+  const entry = lastValidPivotProjections.get(workbook)?.get(pivotId);
+  return entry ? structuredClone(entry.result) : undefined;
+}
+
+export function getLastValidPivotProjection(workbook: WorkbookModel, pivotId: string): PivotGridProjection | undefined {
+  const entry = lastValidPivotProjections.get(workbook)?.get(pivotId);
+  return entry ? structuredClone(entry.projection) : undefined;
+}
+
+/** Drop the ephemeral last-valid projection for one pivot or a workbook. */
+export function clearPivotResultCache(workbook: WorkbookModel, pivotId?: string): void {
+  const cache = lastValidPivotProjections.get(workbook);
+  if (!cache) return;
+  if (!pivotId) {
+    cache.clear();
+    return;
+  }
+  cache.delete(pivotId);
 }
 
 function getPivotSource(pivot: PivotModel): PivotSource {
@@ -176,9 +212,7 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
   if (source.kind === 'worksheet-range') return [source.range];
   if (source.kind === 'worksheet-ranges') return source.ranges;
   if (source.kind === 'table') {
-    const table = workbook.getTable(source.tableId);
-    if (!table.sourceRange) throw new Error(`Pivot table source ${source.tableId} has no worksheet range`);
-    return [table.sourceRange];
+    return [resolvePivotTable(workbook, source.tableId).range];
   }
   if (source.kind === 'data-source') {
     const manifest = workbook.getDataSource(source.dataSourceId);
@@ -186,6 +220,27 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
     return [manifest.sourceRange];
   }
   return [resolveNamedRange(workbook, source.name)];
+}
+
+function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
+  range: RangeRef;
+  fields: Array<{ id: string; name: string }>;
+} {
+  const workbookTable = workbook.tables.get(tableId);
+  if (workbookTable?.sourceRange) {
+    return {
+      range: workbookTable.sourceRange,
+      fields: workbookTable.fields.map((field) => ({ id: field.id, name: field.name })),
+    };
+  }
+  const sheetTable = workbook.getSheets()
+    .flatMap((sheet) => sheet.sheetTables)
+    .find((table) => table.id === tableId || table.name === tableId);
+  if (!sheetTable) throw new Error(`Unknown Pivot table source: ${tableId}`);
+  return {
+    range: sheetTable.range,
+    fields: sheetTable.columns.map((column) => ({ id: column.id, name: column.name })),
+  };
 }
 
 function cellScalar(value: unknown): PivotScalar {
@@ -290,7 +345,7 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   // their physical identities first and remap once below.
   const table = readRange(workbook.getSheet(range.sheetId), range, source, 0, source.kind === 'table' ? undefined : catalog);
   if (source.kind === 'table') {
-    const stored = workbook.getTable(source.tableId).fields;
+    const stored = resolvePivotTable(workbook, source.tableId).fields;
     table.fields.forEach((field, index) => {
       const declared = stored[index];
       if (declared?.id) field.fieldId = declared.id;
@@ -663,7 +718,8 @@ function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: Pivo
     for (const drawing of sheet.drawings) {
       if (drawing.kind !== 'slicer' && drawing.kind !== 'timeline') continue;
       const payload = sheet.drawingPayloads.get(drawing.payloadId);
-      if (!payload || ![payload.pivotId, ...(payload.connectedPivotIds ?? [])].includes(pivot.id)) continue;
+      if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) continue;
+      if (![payload.pivotId, ...(payload.connectedPivotIds ?? [])].includes(pivot.id)) continue;
       if (payload.kind === 'slicer') slicers.push(payload);
       else if (payload.kind === 'timeline') timelines.push(payload);
     }
@@ -911,16 +967,38 @@ export function getPivotRefreshState(workbook: WorkbookModel, pivot: PivotModel,
   return refreshState(workbook, pivot, effectiveCollision, status, error);
 }
 
-/** Build the worksheet overlay. It returns cells only; no workbook cell is mutated. */
-export function buildPivotGridProjection(workbook: WorkbookModel, pivot: PivotModel, cachedResult?: PivotResultTree): PivotGridProjection {
+/** Build one candidate worksheet overlay. It returns cells only; no workbook cell is mutated. */
+function buildPivotGridProjectionCandidate(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  cachedResult?: PivotResultTree,
+  options: PivotProjectionOptions = {},
+): PivotGridProjection {
   const definition = normalizePivotDefinition(workbook, pivot);
   const target = definition.target;
   let tree: PivotResultTree | undefined = cachedResult;
   let error: string | undefined;
-  try {
-    tree ??= computePivotResult(workbook, pivot);
-  } catch (cause) {
-    error = cause instanceof Error ? cause.message : String(cause);
+  let loading = false;
+  const sourceState = options.sourceState;
+  if (!tree && definition.source.kind === 'data-source') {
+    if (sourceState?.availability === 'error' || sourceState?.availability === 'missing') {
+      error = sourceState.error ?? `PivotTable source ${sourceState.availability}`;
+    } else {
+      // Block-backed sources are asynchronous by contract. Never turn the
+      // intentional sync boundary error into a red error projection.
+      loading = true;
+    }
+  } else if (!tree) {
+    try {
+      tree = computePivotResult(workbook, pivot);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+  if (tree && (sourceState?.availability === 'error' || sourceState?.availability === 'missing')) {
+    error = sourceState.error ?? `PivotTable source ${sourceState.availability}`;
+  } else if (tree && sourceState?.availability === 'loading') {
+    loading = true;
   }
   const cells: PivotProjectionCell[] = [];
   const rowHeaderCount = Math.max(definition.layout.rows.length, 1);
@@ -984,8 +1062,82 @@ export function buildPivotGridProjection(workbook: WorkbookModel, pivot: PivotMo
     occupiedRange,
     cells,
     collision,
-    refresh: refreshState(workbook, pivot, collision, error ? 'error' : tree ? 'ready' : 'refreshing', error),
+    refresh: refreshState(workbook, pivot, collision, error ? 'error' : loading ? 'refreshing' : tree ? 'ready' : 'refreshing', error),
   };
+}
+
+function projectionWithStatus(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  entry: LastValidPivotProjection,
+  collision: import('@react-sheets/core-model').PivotCollision,
+  status: PivotRefreshState['status'],
+  error?: string,
+): PivotGridProjection {
+  const projection = structuredClone(entry.projection);
+  projection.collision = structuredClone(collision);
+  projection.refresh = refreshState(workbook, pivot, collision, status, error);
+  return projection;
+}
+
+/**
+ * Build the production projection with a last-valid guard. A collision or
+ * asynchronous source failure never replaces a successful result with an
+ * empty/error grid, and ordinary worksheet cells remain untouched.
+ */
+export function buildPivotGridProjection(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  cachedResult?: PivotResultTree,
+  options: PivotProjectionOptions = {},
+): PivotGridProjection {
+  let effectiveResult = cachedResult;
+  if (!effectiveResult && pivot.source.kind !== 'data-source') {
+    try {
+      effectiveResult = computePivotResult(workbook, pivot);
+    } catch {
+      // The candidate builder creates the explicit synchronous error state.
+    }
+  }
+  const candidate = buildPivotGridProjectionCandidate(workbook, pivot, effectiveResult, options);
+  const cache = lastValidPivotProjections.get(workbook);
+  const last = cache?.get(pivot.id);
+  const candidateTree = effectiveResult;
+
+  if (candidate.collision.status === 'clear' && candidateTree && candidate.refresh.status === 'ready') {
+    const nextCache = cache ?? new Map<string, LastValidPivotProjection>();
+    nextCache.set(pivot.id, { projection: structuredClone(candidate), result: structuredClone(candidateTree) });
+    if (!cache) lastValidPivotProjections.set(workbook, nextCache);
+    return candidate;
+  }
+
+  if (last && candidate.collision.status === 'collision') {
+    return projectionWithStatus(
+      workbook,
+      pivot,
+      last,
+      candidate.collision,
+      'collision',
+      `Pivot target collision: ${candidate.collision.reasons.join(', ')}`,
+    );
+  }
+
+  if (last && (candidate.refresh.status === 'error' || candidate.refresh.status === 'refreshing')) {
+    const retainedCollision = detectPivotCollision(workbook, pivot, last.projection.occupiedRange);
+    if (retainedCollision.status === 'collision') {
+      return projectionWithStatus(
+        workbook,
+        pivot,
+        last,
+        retainedCollision,
+        'collision',
+        `Pivot target collision: ${retainedCollision.reasons.join(', ')}`,
+      );
+    }
+    return projectionWithStatus(workbook, pivot, last, retainedCollision, candidate.refresh.status, candidate.refresh.error);
+  }
+
+  return candidate;
 }
 
 export function hitTestPivotProjection(projection: PivotGridProjection, row: number, column: number): PivotHitTest {

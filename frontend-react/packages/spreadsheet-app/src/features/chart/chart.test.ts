@@ -95,7 +95,7 @@ describe('chart feature', () => {
     const pivotTree: PivotResultTree = {
       schema: 'PivotResultTree',
       pivotId: 'pivot-1',
-      fields: { fields: [{ id: 'Month', name: 'Month', dataType: 'text', ordinal: 0 }] },
+      fields: { fields: [{ fieldId: 'Month', name: 'Month', dataType: 'text', ordinal: 0 }] },
       columnPaths: [['Revenue'], ['Margin']],
       rows: [
         { kind: 'leaf', key: 'Jan', label: 'Jan', depth: 0, children: [], values: [{ columnPath: ['Revenue'], values: [100, 0.2], sourceRowPaths: [] }], subtotal: false, sourceRowPaths: [] },

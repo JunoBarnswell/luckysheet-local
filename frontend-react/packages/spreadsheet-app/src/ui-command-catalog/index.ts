@@ -28,6 +28,7 @@ export type RibbonGroupId =
   | 'alignment'
   | 'number'
   | 'cells'
+  | 'insertCells'
   | 'editing'
   | 'tablesPivots'
   | 'chartsVisuals'
@@ -44,7 +45,7 @@ export type RibbonGroupId =
   | 'freezePanes'
   | 'zoom'
   | 'printLayout'
-  | 'appearanceFiles';
+  | 'appearanceFiles'
   | 'pivotAnalyze'
   | 'pivotDesign';
 
@@ -165,7 +166,7 @@ export type RibbonCommandId =
   | 'zoomOut'
   | 'zoomReset'
   | 'printPdf'
-  | 'bandedRows';
+  | 'bandedRows'
   | 'pivotRefresh'
   | 'pivotFieldList';
 
@@ -277,6 +278,14 @@ export interface RibbonCommandActions {
   onSubtotal: () => CommandDescriptor | undefined;
   onRemoveDuplicates: () => CommandDescriptor | undefined;
   onTextToColumns: () => CommandDescriptor | undefined;
+  onResolveComment: () => void;
+  onProtectSelection: () => void;
+  onUnprotectSelection: () => void;
+  onShowOutlineLevel: (level: 1 | 2 | 3) => void;
+  onTransposeSelection: () => void;
+  onFlipSelection: (axis: 'h' | 'v') => void;
+  onSplitByDelimiter: () => void;
+  onToggleBandedRows: () => void;
 }
 
 export interface RibbonCommandContext {
@@ -340,6 +349,7 @@ export const RIBBON_TEXT = {
     alignment: 'groups.alignment',
     number: 'groups.number',
     cells: 'groups.cells',
+    insertCells: 'groups.insertCells',
     editing: 'groups.editing',
     tablesPivots: 'groups.tablesPivots',
     chartsVisuals: 'groups.chartsVisuals',
@@ -511,6 +521,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('chartsVisuals', 'insert', 20),
   group('illustrations', 'insert', 40),
   group('functions', 'insert', 60),
+  group('insertCells', 'insert', 70),
   group('sortFilter', 'data', 10),
   group('dataTools', 'data', 20),
   group('outline', 'data', 40),
@@ -718,10 +729,10 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   dynamicCommand('sendDrawingBackward', 'insert', 'illustrations', RIBBON_TEXT.commands.sendDrawingBackward, (context) => context.actions.onSendDrawingBackward()),
   dynamicCommand('removeDrawing', 'insert', 'illustrations', RIBBON_TEXT.commands.removeDrawing, (context) => context.actions.onRemoveDrawing(), 'trash'),
   intent('insertFunction', 'insert', 'functions', RIBBON_TEXT.commands.insertFunction, () => ({ type: 'dialog.open', dialog: 'function-wizard' }), 'function'),
-  command('insertRow', 'insert', 'cells', 'sheet.rows.insert', RIBBON_TEXT.commands.insertRow, 'rows', { count: 1 }),
-  command('insertColumn', 'insert', 'cells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumn, 'columns', { count: 1 }),
-  command('deleteRow', 'insert', 'cells', 'sheet.rows.delete', RIBBON_TEXT.commands.deleteRow, 'rows'),
-  command('deleteColumn', 'insert', 'cells', 'sheet.columns.delete', RIBBON_TEXT.commands.deleteColumn, 'columns'),
+  command('insertRow', 'insert', 'insertCells', 'sheet.rows.insert', RIBBON_TEXT.commands.insertRow, 'rows', { count: 1 }),
+  command('insertColumn', 'insert', 'insertCells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumn, 'columns', { count: 1 }),
+  command('deleteRow', 'insert', 'insertCells', 'sheet.rows.delete', RIBBON_TEXT.commands.deleteRow, 'rows'),
+  command('deleteColumn', 'insert', 'insertCells', 'sheet.columns.delete', RIBBON_TEXT.commands.deleteColumn, 'columns'),
 
   {
     ...dynamicCommand('sortAscending', 'data', 'sortFilter', RIBBON_TEXT.commands.sortAscending, (context) => context.buildSortDescriptor?.(true), 'sort'),
@@ -743,26 +754,26 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   dynamicCommand('ungroupRows', 'data', 'outline', RIBBON_TEXT.commands.ungroupRows, (context) => context.actions.onUngroupRows()),
   dynamicCommand('groupColumns', 'data', 'outline', RIBBON_TEXT.commands.groupColumns, (context) => context.actions.onGroupColumns()),
   dynamicCommand('ungroupColumns', 'data', 'outline', RIBBON_TEXT.commands.ungroupColumns, (context) => context.actions.onUngroupColumns()),
-  command('showLevel1', 'data', 'outline', 'outline.showLevel', RIBBON_TEXT.commands.showLevel1, undefined, { level: 1 }),
-  command('showLevel2', 'data', 'outline', 'outline.showLevel', RIBBON_TEXT.commands.showLevel2, undefined, { level: 2 }),
-  command('showLevel3', 'data', 'outline', 'outline.showLevel', RIBBON_TEXT.commands.showLevel3, undefined, { level: 3 }),
+  callback('showLevel1', 'data', 'outline', RIBBON_TEXT.commands.showLevel1, (context) => context.actions.onShowOutlineLevel(1)),
+  callback('showLevel2', 'data', 'outline', RIBBON_TEXT.commands.showLevel2, (context) => context.actions.onShowOutlineLevel(2)),
+  callback('showLevel3', 'data', 'outline', RIBBON_TEXT.commands.showLevel3, (context) => context.actions.onShowOutlineLevel(3)),
   dynamicCommand('subtotal', 'data', 'outline', RIBBON_TEXT.commands.subtotal, (context) => context.actions.onSubtotal()),
   dynamicCommand('removeDuplicates', 'data', 'outline', RIBBON_TEXT.commands.removeDuplicates, (context) => context.actions.onRemoveDuplicates()),
   dynamicCommand('textToColumns', 'data', 'outline', RIBBON_TEXT.commands.textToColumns, (context) => context.actions.onTextToColumns()),
   intent('findReplace', 'data', 'findTransform', RIBBON_TEXT.commands.findReplace, () => ({ type: 'dialog.open', dialog: 'find-replace' }), 'search'),
   intent('goTo', 'data', 'findTransform', RIBBON_TEXT.commands.goTo, () => ({ type: 'dialog.open', dialog: 'goto' })),
-  command('transpose', 'data', 'findTransform', 'matrix.transpose', RIBBON_TEXT.commands.transpose, 'layout'),
-  command('flipHorizontal', 'data', 'findTransform', 'matrix.flip', RIBBON_TEXT.commands.flipHorizontal, undefined, { direction: 'horizontal' }),
-  command('flipVertical', 'data', 'findTransform', 'matrix.flip', RIBBON_TEXT.commands.flipVertical, undefined, { direction: 'vertical' }),
-  command('splitByDelimiter', 'data', 'findTransform', 'data.textToColumns', RIBBON_TEXT.commands.splitByDelimiter, undefined, { delimiter: ',', maxColumns: 8 }),
+  callback('transpose', 'data', 'findTransform', RIBBON_TEXT.commands.transpose, (context) => context.actions.onTransposeSelection(), 'layout'),
+  callback('flipHorizontal', 'data', 'findTransform', RIBBON_TEXT.commands.flipHorizontal, (context) => context.actions.onFlipSelection('h')),
+  callback('flipVertical', 'data', 'findTransform', RIBBON_TEXT.commands.flipVertical, (context) => context.actions.onFlipSelection('v')),
+  callback('splitByDelimiter', 'data', 'findTransform', RIBBON_TEXT.commands.splitByDelimiter, (context) => context.actions.onSplitByDelimiter()),
 
   intent('newComment', 'review', 'comments', RIBBON_TEXT.commands.newComment, () => ({ type: 'panel.open', panel: 'inspector', notice: 'Add a comment in the Inspector panel.' }), 'comment'),
-  command('resolveComment', 'review', 'comments', 'comment.resolve', RIBBON_TEXT.commands.resolveComment, 'comment'),
+  callback('resolveComment', 'review', 'comments', RIBBON_TEXT.commands.resolveComment, (context) => context.actions.onResolveComment(), 'comment'),
   intent('showComments', 'review', 'comments', RIBBON_TEXT.commands.showComments, () => ({ type: 'panel.open', panel: 'inspector' }), 'comment'),
   intent('newNote', 'review', 'notesLinks', RIBBON_TEXT.commands.newNote, () => ({ type: 'panel.open', panel: 'inspector', notice: 'Add a cell note in the Inspector panel.' }), 'comment'),
   intent('insertLink', 'review', 'notesLinks', RIBBON_TEXT.commands.insertLink, () => ({ type: 'panel.open', panel: 'inspector', notice: 'Insert a hyperlink in the Inspector panel.' }), 'share'),
-  command('protectSelection', 'review', 'protection', 'permission.protect.selection', RIBBON_TEXT.commands.protectSelection, 'lock'),
-  command('unprotect', 'review', 'protection', 'permission.unprotect.selection', RIBBON_TEXT.commands.unprotect, 'lock'),
+  callback('protectSelection', 'review', 'protection', RIBBON_TEXT.commands.protectSelection, (context) => context.actions.onProtectSelection(), 'lock'),
+  callback('unprotect', 'review', 'protection', RIBBON_TEXT.commands.unprotect, (context) => context.actions.onUnprotectSelection(), 'lock'),
   intent('revisionLog', 'review', 'historyAudit', RIBBON_TEXT.commands.revisionLog, () => ({ type: 'panel.open', panel: 'history' }), 'history'),
 
   command('freezeTopRow', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.freezeTopRow, 'freeze', { freeze: { xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0 } }),
@@ -773,7 +784,7 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   intent('zoomOut', 'view', 'zoom', RIBBON_TEXT.commands.zoomOut, () => ({ type: 'zoom.adjust', delta: -10 }), 'zoom-out'),
   intent('zoomReset', 'view', 'zoom', RIBBON_TEXT.commands.zoomReset, () => ({ type: 'zoom.set', value: 100 })),
   intent('printPdf', 'view', 'printLayout', RIBBON_TEXT.commands.printPdf, () => ({ type: 'dialog.open', dialog: 'print-preview' }), 'printer'),
-  command('bandedRows', 'view', 'appearanceFiles', 'sheet.banded.set', RIBBON_TEXT.commands.bandedRows, undefined),
+  callback('bandedRows', 'view', 'appearanceFiles', RIBBON_TEXT.commands.bandedRows, (context) => context.actions.onToggleBandedRows()),
   callback('exportXlsxView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.exportXlsxView, (context) => context.actions.onExportXlsx()),
   callback('importXlsxView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.importXlsxView, (context) => context.actions.onImportXlsx()),
 ] as const;
@@ -798,7 +809,8 @@ export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonComma
 }
 
 export function isRibbonCommandEnabled(definition: RibbonCommandDefinition, context: RibbonCommandContext): boolean {
-  return !context.disabled && (definition.enabled?.(context) ?? true);
+  if (context.disabled || !(definition.enabled?.(context) ?? true)) return false;
+  return definition.build(context) !== undefined;
 }
 
 export function buildRibbonCommand(id: RibbonCommandId, context: RibbonCommandContext): RibbonCommandResult | undefined {

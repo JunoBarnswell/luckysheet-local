@@ -9,12 +9,12 @@ import type {
 } from '@react-sheets/core-model';
 import { getPivotFieldCatalog, getPivotSourceRanges } from './engine';
 
-export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string, sourceRange: RangeRef): PivotLayout | undefined {
+export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string, sourceRegion: RangeRef): PivotLayout | undefined {
   const draft = {
     id: 'pivot-layout-draft',
     schema: 'PivotDefinition' as const,
-    source: { kind: 'worksheet-range' as const, range: structuredClone(sourceRange) },
-    target: { sheetId, anchor: { row: sourceRange.endRow + 2, column: sourceRange.startColumn } },
+    source: { kind: 'worksheet-range' as const, range: structuredClone(sourceRegion) },
+    target: { sheetId, anchor: { row: sourceRegion.endRow + 2, column: sourceRegion.startColumn } },
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
     layout: {
@@ -48,28 +48,37 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
   };
 }
 
-export function buildPivotModel(workbook: WorkbookModel, sheetId: string, pivotId: string, sourceRange: RangeRef): PivotModel | undefined {
-  const layout = buildDefaultPivotLayout(workbook, sheetId, sourceRange);
+export function buildPivotModel(workbook: WorkbookModel, sheetId: string, pivotId: string, sourceRegion: RangeRef): PivotModel | undefined {
+  const layout = buildDefaultPivotLayout(workbook, sheetId, sourceRegion);
   if (!layout) return undefined;
-  const source = { kind: 'worksheet-range' as const, range: structuredClone(sourceRange) };
+  const source = { kind: 'worksheet-range' as const, range: structuredClone(sourceRegion) };
+  const catalogDraft: PivotModel = {
+    schema: 'PivotDefinition',
+    id: pivotId,
+    source,
+    target: { sheetId, anchor: { row: 0, column: 0 } },
+    fieldCatalog: { fields: [] },
+    refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    layout,
+  };
   const draft: PivotModel = {
     schema: 'PivotDefinition',
     id: pivotId,
     source,
-    target: { sheetId, anchor: { row: sourceRange.endRow + 2, column: sourceRange.startColumn } },
-    fieldCatalog: getPivotFieldCatalog(workbook, { id: pivotId, source, target: { sheetId, anchor: { row: 0, column: 0 } }, layout, refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true } }),
+    target: { sheetId, anchor: { row: sourceRegion.endRow + 2, column: sourceRegion.startColumn } },
+    fieldCatalog: getPivotFieldCatalog(workbook, catalogDraft),
     refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     layout,
   };
   return draft;
 }
 
-export function connectedPivotIdsForSource(workbook: WorkbookModel, _sheetId: string, sourceRange: RangeRef): string[] {
+export function connectedPivotIdsForSource(workbook: WorkbookModel, _sheetId: string, sourceRegion: RangeRef): string[] {
   const sameRange = (left: RangeRef, right: RangeRef): boolean => left.sheetId === right.sheetId
     && left.startRow === right.startRow && left.endRow === right.endRow
     && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
   return workbook.getSheets()
     .flatMap((sheet) => sheet.pivots)
-    .filter((pivot) => getPivotSourceRanges(workbook, pivot).some((range) => sameRange(range, sourceRange)))
+    .filter((pivot) => getPivotSourceRanges(workbook, pivot).some((range) => sameRange(range, sourceRegion)))
     .map((pivot) => pivot.id);
 }

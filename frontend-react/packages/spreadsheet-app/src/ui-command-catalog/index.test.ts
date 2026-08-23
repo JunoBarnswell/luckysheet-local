@@ -64,6 +64,14 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onSubtotal: () => descriptor('data.subtotal'),
     onRemoveDuplicates: () => descriptor('data.removeDuplicates'),
     onTextToColumns: () => descriptor('data.textToColumns'),
+    onResolveComment: () => undefined,
+    onProtectSelection: () => undefined,
+    onUnprotectSelection: () => undefined,
+    onShowOutlineLevel: () => undefined,
+    onTransposeSelection: () => undefined,
+    onFlipSelection: () => undefined,
+    onSplitByDelimiter: () => undefined,
+    onToggleBandedRows: () => undefined,
   };
   return {
     phase: 'ready',

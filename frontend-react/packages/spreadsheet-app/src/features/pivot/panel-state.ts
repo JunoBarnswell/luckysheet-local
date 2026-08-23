@@ -48,12 +48,12 @@ export function listAvailablePivotFields(workbook: WorkbookModel, pivot: PivotMo
 }
 
 /** Validate a field reference against the live source before a command mutates the model. */
-export function assertPivotField(workbook: WorkbookModel, pivot: PivotModel, field: string): void {
+export function assertPivotField(workbook: WorkbookModel, pivot: PivotModel, fieldId: string): void {
   if (!hasPivotHeaderData(workbook, pivot)) return;
   const catalog = getPivotFieldCatalog(workbook, pivot);
   const names = new Set(catalog.fields.flatMap((entry) => [entry.fieldId, entry.name]));
   for (const calculated of pivot.layout.calculatedFields ?? []) names.add(calculated.fieldId);
-  if (!names.has(field)) throw new Error(`Unknown pivot field: ${field}`);
+  if (!names.has(fieldId)) throw new Error(`Unknown pivot field: ${fieldId}`);
 }
 
 /** Fail closed for malformed definitions instead of producing an empty pivot silently. */
@@ -82,31 +82,31 @@ export function assertPivotDefinition(workbook: WorkbookModel, pivot: PivotModel
   if (unknown) throw new Error(`Unknown pivot field: ${unknown}`);
 }
 
-export function patchPivotValueField(layout: PivotLayout, field: string, patch: Partial<PivotValueField>): PivotLayout {
-  if (!layout.values.some((entry) => entry.fieldId === field)) throw new Error(`Unknown pivot value field: ${field}`);
-  return { ...layout, values: layout.values.map((entry) => (entry.fieldId === field ? { ...entry, ...patch, fieldId: field } : entry)) };
+export function patchPivotValueField(layout: PivotLayout, fieldId: string, patch: Partial<PivotValueField>): PivotLayout {
+  if (!layout.values.some((entry) => entry.fieldId === fieldId)) throw new Error(`Unknown pivot value field: ${fieldId}`);
+  return { ...layout, values: layout.values.map((entry) => (entry.fieldId === fieldId ? { ...entry, ...patch, fieldId } : entry)) };
 }
 
-export function patchPivotRowField(layout: PivotLayout, field: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
-  if (!layout.rows.some((entry) => entry.fieldId === field)) throw new Error(`Unknown pivot row field: ${field}`);
-  return { ...layout, rows: layout.rows.map((entry) => (entry.fieldId === field ? { ...entry, ...patch, fieldId: field } : entry)) };
+export function patchPivotRowField(layout: PivotLayout, fieldId: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
+  if (!layout.rows.some((entry) => entry.fieldId === fieldId)) throw new Error(`Unknown pivot row field: ${fieldId}`);
+  return { ...layout, rows: layout.rows.map((entry) => (entry.fieldId === fieldId ? { ...entry, ...patch, fieldId } : entry)) };
 }
 
-export function patchPivotColumnField(layout: PivotLayout, field: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
-  if (!layout.columns.some((entry) => entry.fieldId === field)) throw new Error(`Unknown pivot column field: ${field}`);
-  return { ...layout, columns: layout.columns.map((entry) => (entry.fieldId === field ? { ...entry, ...patch, fieldId: field } : entry)) };
+export function patchPivotColumnField(layout: PivotLayout, fieldId: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
+  if (!layout.columns.some((entry) => entry.fieldId === fieldId)) throw new Error(`Unknown pivot column field: ${fieldId}`);
+  return { ...layout, columns: layout.columns.map((entry) => (entry.fieldId === fieldId ? { ...entry, ...patch, fieldId } : entry)) };
 }
 
-export function setPivotAggregate(layout: PivotLayout, field: string, summarizeBy: PivotAggregateFunction): PivotLayout {
-  return patchPivotValueField(layout, field, { summarizeBy });
+export function setPivotAggregate(layout: PivotLayout, fieldId: string, summarizeBy: PivotAggregateFunction): PivotLayout {
+  return patchPivotValueField(layout, fieldId, { summarizeBy });
 }
 
-export function setPivotShowAs(layout: PivotLayout, field: string, showAs: PivotShowAs): PivotLayout {
-  return patchPivotValueField(layout, field, { showAs });
+export function setPivotShowAs(layout: PivotLayout, fieldId: string, showAs: PivotShowAs): PivotLayout {
+  return patchPivotValueField(layout, fieldId, { showAs });
 }
 
-export function setPivotGroup(layout: PivotLayout, axis: 'rows' | 'columns', field: string, group: PivotGroup): PivotLayout {
-  return axis === 'rows' ? patchPivotRowField(layout, field, { group }) : patchPivotColumnField(layout, field, { group });
+export function setPivotGroup(layout: PivotLayout, axis: 'rows' | 'columns', fieldId: string, group: PivotGroup): PivotLayout {
+  return axis === 'rows' ? patchPivotRowField(layout, fieldId, { group }) : patchPivotColumnField(layout, fieldId, { group });
 }
 
 export function upsertPivotFilter(layout: PivotLayout, filter: PivotFilter): PivotLayout {

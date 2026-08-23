@@ -703,7 +703,7 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
   const pages = pivot.layout.filters.map(fieldIndex).filter((index) => index >= 0);
   const dataFields = pivot.layout.values.map((value) => ({ field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) })).filter((value) => value.field >= 0);
   return {
-    name: old?.name ?? pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable',
+    name: old?.name ?? (pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable'),
     part, sheetPart, relationshipId: old?.relationshipId ?? '', cacheId: cache.cacheId, pivotId: pivot.id,
     locationRef: old?.locationRef ?? deriveLocation(pivot, source.rows.length, rows.length, columns.length, dataFields.length),
     fields: source.fields.map((_, index) => ({ index, ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}), ...(pivot.layout.compact ? { compact: true } : {}) })),
@@ -832,6 +832,7 @@ function a1(row: number, column: number): string { return `${columnToLetter(colu
 function columnFromLetter(value: string): number { let result = 0; for (const character of value.toUpperCase()) result = result * 26 + character.charCodeAt(0) - 64; return result - 1; }
 function columnToLetter(index: number): string { let value = index + 1; let result = ''; while (value > 0) { const remainder = (value - 1) % 26; result = String.fromCharCode(65 + remainder) + result; value = Math.floor((value - 1) / 26); } return result; }
 function isScalar(value: unknown): value is PivotScalar { return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'; }
+function nativeMemberKey(value: PivotScalar): { type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null } { if (value === null || value === '') return { type: 'blank', value: null }; if (typeof value === 'number') return { type: 'number', value }; if (typeof value === 'boolean') return { type: 'boolean', value }; return { type: 'text', value }; }
 function scalarKey(value: PivotScalar): string { return `${value === null ? 'blank' : typeof value}:${JSON.stringify(value)}`; }
 function uniqueScalars(values: PivotScalar[]): PivotScalar[] { const result: PivotScalar[] = []; const seen = new Set<string>(); for (const value of values) { const key = scalarKey(value); if (!seen.has(key)) { seen.add(key); result.push(value); } } return result; }
 function uniqueTuples(rows: PivotScalar[][], indexes: number[]): PivotScalar[][] { if (!indexes.length) return [[]]; const seen = new Set<string>(); const result: PivotScalar[][] = []; for (const row of rows) { const tuple = indexes.map((index) => row[index] ?? null); const key = tuple.map(scalarKey).join('|'); if (!seen.has(key)) { seen.add(key); result.push(tuple); } } return result; }

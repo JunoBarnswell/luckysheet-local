@@ -93,5 +93,7 @@ export function createSpreadsheetShortcutRegistry(): ShortcutRegistry {
   registry.register({ id: 'history.repeat', scopes: grid, key: 'F4', when: (context) => Boolean(context.canRepeat) });
   registry.register({ id: 'formula.calculate', scopes: grid, key: 'F9' });
   registry.register({ id: 'context.open', scopes: grid, key: 'F10', shift: true });
+  registry.register({ id: 'pivot.refresh', scopes: ['pivot'], key: 'F5', alt: true });
+  registry.register({ id: 'drawing.remove', scopes: ['drawing'], key: 'Delete' });
   return registry;
 }

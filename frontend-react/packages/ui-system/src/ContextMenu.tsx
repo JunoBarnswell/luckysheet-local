@@ -3,16 +3,24 @@ import { createPortal } from 'react-dom';
 import { cn } from './cn';
 import { Icon, type IconName } from './Icon';
 
-export interface ContextMenuItem {
+export interface ContextMenuActionItem {
   id: string;
   label: string;
   icon?: IconName;
   shortcut?: string;
   disabled?: boolean;
   danger?: boolean;
-  separator?: boolean;
-  onSelect?: () => void;
+  separator?: false;
+  onSelect: () => void;
 }
+
+export interface ContextMenuSeparatorItem {
+  id: string;
+  label?: string;
+  separator: true;
+}
+
+export type ContextMenuItem = ContextMenuActionItem | ContextMenuSeparatorItem;
 
 export interface ContextMenuProps {
   x: number;
@@ -73,7 +81,7 @@ export function ContextMenu({ x, y, open, items, onClose }: ContextMenuProps) {
             role="menuitem"
             disabled={item.disabled}
             onClick={() => {
-              item.onSelect?.();
+              item.onSelect();
               onClose();
             }}
             className={cn(

@@ -5,6 +5,7 @@ import type {
   ConditionalFormatRule,
   DataBlockRef,
   DataSourceManifest,
+  DefinedNameModel,
   DataValidationRule,
   DrawingObject,
   DrawingTransform,
@@ -208,6 +209,8 @@ export interface UiSnapshot {
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
   tables: readonly WorkbookTableModel[];
+  dataSources: readonly DataSourceManifest[];
+  definedNameModels: readonly DefinedNameModel[];
   showFunctionWizard: boolean;
   showSortDialog: boolean;
   showFindReplace: boolean;
@@ -238,7 +241,7 @@ export interface ExtendedSnapshot {
 }
 
 export interface CreatePivotTableParams {
-  sourceRange?: RangeRef;
+  source?: PivotDefinition['source'];
   destination: { kind: 'new-sheet' } | { kind: 'existing-sheet'; sheetId: string; anchor: { row: number; column: number } };
 }
 
@@ -532,6 +535,8 @@ export class WorkbookSession {
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
+      dataSources: [...this.runtime.model.dataSources.values()].map((source) => structuredClone(source)),
+      definedNameModels: structuredClone(this.runtime.model.definedNameModels),
       showFunctionWizard: this.showFunctionWizard,
       showSortDialog: this.showSortDialog,
       showFindReplace: this.showFindReplace,
@@ -573,6 +578,31 @@ export class WorkbookSession {
     }
   }
 
+  /**
+   * Catalog commands deliberately express intent, not duplicated UI state.
+   * This is the single boundary that supplies the active worksheet/range for
+   * commands whose domain contract operates on the current selection.
+   */
+  private resolveCommandContext(commandId: string, params?: unknown): unknown {
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return params;
+    const input = params as Record<string, unknown>;
+    const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+    const sheetId = typeof input.sheetId === 'string' && input.sheetId.trim() ? input.sheetId : this.activeSheetId;
+    if (commandId === 'sheet.style.set' || commandId === 'sheet.merge.set' || commandId === 'sheet.range.clear') {
+      return { ...input, sheetId, range: input.range ?? range };
+    }
+    if (commandId === 'sheet.rows.insert' || commandId === 'sheet.rows.delete') {
+      return { ...input, sheetId, at: input.at ?? range.startRow, count: input.count ?? 1 };
+    }
+    if (commandId === 'sheet.columns.insert' || commandId === 'sheet.columns.delete') {
+      return { ...input, sheetId, at: input.at ?? range.startColumn, count: input.count ?? 1 };
+    }
+    if (commandId === 'sheet.freeze.set') {
+      return { ...input, sheetId };
+    }
+    return params;
+  }
+
   /** Dispatches transient chrome state without touching WorkbookModel. */
   dispatchUiSessionIntent(intent: UiSessionIntent): void {
     switch (intent.type) {
@@ -596,22 +626,23 @@ export class WorkbookSession {
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
+    const resolvedParams = this.resolveCommandContext(commandId, params);
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
-    this.assertPermission(commandId, params);
-    const result = this.runtime.commands.execute(commandId, params);
+    this.assertPermission(commandId, resolvedParams);
+    const result = this.runtime.commands.execute(commandId, resolvedParams);
     if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh') {
-      this.lastRepeatableCommand = { commandId, ...(params === undefined ? {} : { params: structuredClone(params) }) };
+      this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
     }
     if (commandId === 'history.restore') {
-      const restoreParams = params as { targetRevision?: number };
+      const restoreParams = resolvedParams as { targetRevision?: number };
       rehydrateFormulaAfterRestore(this.runtime, restoreParams.targetRevision);
       this.activeSheetId = this.runtime.model.primarySheetId;
       this.selectionService.resetForSheet(this.activeSheetId);
       this.clearHistoryPreview();
     }
-    this.applySelectionFromCommand(commandId, params, result);
+    this.applySelectionFromCommand(commandId, resolvedParams, result);
     this.refresh();
     return result;
   }
@@ -629,11 +660,12 @@ export class WorkbookSession {
 
   canExecute(commandId: string, params?: unknown): boolean {
     if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    const resolvedParams = this.resolveCommandContext(commandId, params);
     return canExecuteCommand(
       this.permission,
       this.runtime.model,
       commandId,
-      params,
+      resolvedParams,
       this.actorId,
       this.activeSheetId,
     ).allowed;
@@ -1528,18 +1560,20 @@ export class WorkbookSession {
   }
 
   createPivotTable(params: CreatePivotTableParams): string | undefined {
-    const sourceRange = normalizeRangeRef(params.sourceRange ?? this.getCurrentRegion());
-    if (sourceRange.endRow <= sourceRange.startRow || sourceRange.endColumn < sourceRange.startColumn) {
+    const selectedRegion = normalizeRangeRef(this.getCurrentRegion());
+    const sourceRegion = params.source?.kind === 'worksheet-range' ? normalizeRangeRef(params.source.range) : selectedRegion;
+    if ((!params.source || params.source.kind === 'worksheet-range')
+      && (sourceRegion.endRow <= sourceRegion.startRow || sourceRegion.endColumn < sourceRegion.startColumn)) {
       this.notify('Select a tabular source range with a header row before creating a PivotTable');
       return undefined;
     }
     const pivotId = nextId('pivot');
     let targetSheetId: string;
-    let targetAnchor: { row: number; column: number };
+    let targetPosition: { row: number; column: number };
     let createdSheetId: string | undefined;
     if (params.destination.kind === 'new-sheet') {
       targetSheetId = nextId('sheet');
-      targetAnchor = { row: 0, column: 0 };
+      targetPosition = { row: 0, column: 0 };
       const names = new Set(this.runtime.model.getSheets().map((sheet) => sheet.name.toLocaleLowerCase()));
       let suffix = 1;
       let targetName = 'PivotTable';
@@ -1553,7 +1587,7 @@ export class WorkbookSession {
       }
     } else {
       targetSheetId = params.destination.sheetId;
-      targetAnchor = { ...params.destination.anchor };
+      targetPosition = { ...params.destination.anchor };
       try {
         this.runtime.model.getSheet(targetSheetId);
       } catch {
@@ -1562,16 +1596,17 @@ export class WorkbookSession {
       }
     }
 
-    const sourceRegion = this.runtime.model.getSheet(sourceRange.sheetId).dataRegions.find((region) => region.range.startRow === sourceRange.startRow
-      && region.range.endRow === sourceRange.endRow && region.range.startColumn === sourceRange.startColumn && region.range.endColumn === sourceRange.endColumn);
-    const source = sourceRegion
-      ? { kind: 'data-source' as const, dataSourceId: sourceRegion.sourceId }
-      : { kind: 'worksheet-range' as const, range: { ...sourceRange } };
+    const blockRegion = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.find((region) => region.range.startRow === sourceRegion.startRow
+      && region.range.endRow === sourceRegion.endRow && region.range.startColumn === sourceRegion.startColumn && region.range.endColumn === sourceRegion.endColumn);
+    const source = params.source
+      ?? (blockRegion
+        ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
+        : { kind: 'worksheet-range' as const, range: { ...sourceRegion } });
     const draft = {
       schema: 'PivotDefinition' as const,
       id: pivotId,
       source,
-      target: { sheetId: targetSheetId, anchor: targetAnchor },
+      target: { sheetId: targetSheetId, anchor: targetPosition },
       fieldCatalog: { fields: [] },
       refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
       layout: {
@@ -1717,7 +1752,7 @@ export class WorkbookSession {
     delete this.runtime.pivotResults[id];
     this.refresh();
   }
-  drillDownPivot(pivotId: string, label: string, paths: PivotSourceRowPath[]): void {
+  drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): void {
     if (paths.length === 0) return;
     const targetSheetId = nextId('sheet');
     this.runCommand('pivot.drillDown', {
@@ -1740,13 +1775,14 @@ export class WorkbookSession {
       return;
     }
     if (pivot.source.kind === 'data-source') {
-      const query = this.runtime.dataContent.get(pivot.source.dataSourceId);
+      const sourceId = pivot.source.dataSourceId;
+      const query = this.runtime.dataContent.get(sourceId);
       const region = this.runtime.model.getSheets()
         .flatMap((sheet) => sheet.dataRegions.map((entry) => ({ sheet, entry })))
-        .find(({ entry }) => entry.sourceId === pivot.source.dataSourceId);
+        .find(({ entry }) => entry.sourceId === sourceId);
       if (!query || !region) {
         delete this.runtime.pivotResults[pivotId];
-        this.notify(`PivotTable source ${pivot.source.dataSourceId} is unavailable`);
+        this.notify(`PivotTable source ${sourceId} is unavailable`);
         return;
       }
       const taskRevision = (this.pivotTaskGeneration.get(pivotId) ?? 0) + 1;
@@ -2312,7 +2348,7 @@ export class WorkbookSession {
     return Promise.resolve();
   }
 
-  showPivotDetails(pivotId: string, paths: PivotSourceRowPath[], label = 'Details'): void {
+  showPivotDetails(pivotId: string, paths: readonly PivotSourceRowPath[], label = 'Details'): void {
     this.drillDownPivot(pivotId, label, paths);
   }
 
@@ -2801,12 +2837,25 @@ export class WorkbookSession {
         // places bytes in an operation envelope.
         await this.runtime.dataBlocks.put(block.ref, block.payload);
       }
-      await Promise.all([
-        this.runtime.checkpointWorkspace(),
-        imported.sourceArtifact
-          ? this.runtime.workspacePersistence.xlsxArtifacts.save(imported.snapshot.unitId, imported.sourceArtifact)
-          : Promise.resolve(),
-      ]);
+      this.runtime.localRevision += 1;
+      const checkpointSnapshot = this.runtime.model.snapshot();
+      const pendingJournal = this.runtime.operationJournal.read(checkpointSnapshot.unitId);
+      this.runtime.workspaceRecord = imported.sourceArtifact
+        ? await this.runtime.workspacePersistence.checkpointWithArtifact(
+          checkpointSnapshot,
+          this.runtime.localRevision,
+          this.runtime.remoteRevision,
+          this.runtime.localOnly ? 'local-only' : 'remote',
+          imported.sourceArtifact,
+          pendingJournal,
+        )
+        : await this.runtime.workspacePersistence.checkpoint(
+          checkpointSnapshot,
+          this.runtime.localRevision,
+          this.runtime.remoteRevision,
+          this.runtime.localOnly ? 'local-only' : 'remote',
+          pendingJournal,
+        );
       this.phase = 'ready';
       this.notify(summarizeCompatibilityReport(this.compatibilityReport));
       this.refresh();

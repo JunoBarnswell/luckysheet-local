@@ -126,11 +126,6 @@ export function registerPermissionCommands(runtime: CommandRuntime): string[] {
   return ['sheet.protect.set', 'sheet.protect.remove'];
 }
 
-export const PERMISSION_RIBBON_ENTRIES = [
-  { id: 'permission-protect', tab: 'Review', group: 'Protection', label: 'Protect Selection', commandId: 'permission.protect.selection', icon: 'lock' },
-  { id: 'permission-unprotect', tab: 'Review', group: 'Protection', label: 'Unprotect Selection', commandId: 'permission.unprotect.selection', icon: 'lock' },
-] as const;
-
 export function registerPermissionFeature(runtime: CommandRuntime): SpreadsheetFeatureManifest {
   const commandIds = registerPermissionCommands(runtime);
   return {
@@ -138,7 +133,7 @@ export function registerPermissionFeature(runtime: CommandRuntime): SpreadsheetF
     version: '1.0.0',
     commandIds,
     mutationIds: ['sheet.protect.set', 'sheet.protect.remove'],
-    ribbon: [...PERMISSION_RIBBON_ENTRIES],
+    ribbon: [],
     permissions: ['workbook.protect', 'workbook.share'],
   };
 }

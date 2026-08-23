@@ -57,6 +57,14 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(cell?.style?.numberFormat, '#,##0.00');
   });
 
+  it('supplies active sheet and selection to a catalog-style sheet.style.set descriptor', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 3, 2);
+    app.dispatch({ commandId: 'sheet.style.set', params: { style: { bold: true } } });
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(3, 2)?.style?.bold, true);
+  });
+
   it('freezeAtPrimary updates worksheet freeze panes', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

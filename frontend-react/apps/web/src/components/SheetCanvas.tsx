@@ -1833,10 +1833,37 @@ export function SheetCanvas({
         return;
       }
 
+      const activeScope = activePivotContextHit
+        ? 'pivot' as const
+        : selectedFloatingId
+          ? 'drawing' as const
+          : 'grid' as const;
       const shortcut = shortcutRegistryRef.current?.resolve(event, {
+        scope: activeScope,
+        canRepeat,
+      }) ?? (activeScope === 'grid' ? undefined : shortcutRegistryRef.current?.resolve(event, {
         scope: 'grid',
         canRepeat,
-      });
+      }));
+      if (shortcut?.id === 'context.open') {
+        event.preventDefault();
+        const activeRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? {
+          sheetId,
+          startRow: selection.activeCell.row,
+          endRow: selection.activeCell.row,
+          startColumn: selection.activeCell.column,
+          endColumn: selection.activeCell.column,
+        };
+        contextRangeRef.current = activeRange;
+        setContextHit(activePivotContextHit ?? resolveContextHit({
+          sheetId,
+          cell: { row: selection.activeCell.row, column: selection.activeCell.column, range: activeRange },
+        }));
+        if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
+        const bounds = containerRef.current?.getBoundingClientRect();
+        setContextMenu({ x: (bounds?.left ?? 0) + 24, y: (bounds?.top ?? 0) + 24, open: true });
+        return;
+      }
       if (shortcut && onShortcut?.(shortcut.id)) {
         event.preventDefault();
         return;
@@ -1856,7 +1883,6 @@ export function SheetCanvas({
         else onBeginEdit();
         return;
       }
-      if (key === "F4") { event.preventDefault(); return; }
       if (key === "Delete" || key === "Backspace") { event.preventDefault(); onCommand({ commandId: "sheet.range.clear" }); return; }
       if (key === "Enter") {
         event.preventDefault();
@@ -1911,7 +1937,7 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canRepeat, cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selection, sheet, skeleton],
+    [canRepeat, cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selectedFloatingId, selection, sheet, sheetId, skeleton],
   );
 
   // ---------- 右键菜单 ----------

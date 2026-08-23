@@ -56,6 +56,7 @@
       "alignment": "对齐",
       "number": "数字",
       "cells": "单元格",
+      "insertCells": "单元格",
       "editing": "编辑",
       "tablesPivots": "表格与透视",
       "chartsVisuals": "图表与可视化",

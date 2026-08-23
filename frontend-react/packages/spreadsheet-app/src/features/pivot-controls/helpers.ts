@@ -1,5 +1,4 @@
 import type {
-  DrawingAnchor,
   DrawingObject,
   DrawingTransform,
   PivotControlFilter,
@@ -13,6 +12,8 @@ import {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
 } from '@react-sheets/core-model';
+
+type DrawingAnchor = DrawingObject['anchor'];
 
 export type PivotControlPayload = PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
 

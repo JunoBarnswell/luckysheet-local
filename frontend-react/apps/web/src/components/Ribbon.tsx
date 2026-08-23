@@ -86,6 +86,14 @@ export interface RibbonProps {
   onSubtotal: () => CommandDescriptor | undefined;
   onRemoveDuplicates: () => CommandDescriptor | undefined;
   onTextToColumns: () => CommandDescriptor | undefined;
+  onResolveComment: () => void;
+  onProtectSelection: () => void;
+  onUnprotectSelection: () => void;
+  onShowOutlineLevel: (level: 1 | 2 | 3) => void;
+  onTransposeSelection: () => void;
+  onFlipSelection: (axis: 'h' | 'v') => void;
+  onSplitByDelimiter: () => void;
+  onToggleBandedRows: () => void;
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
@@ -248,6 +256,14 @@ export function Ribbon({
   onSubtotal,
   onRemoveDuplicates,
   onTextToColumns,
+  onResolveComment,
+  onProtectSelection,
+  onUnprotectSelection,
+  onShowOutlineLevel,
+  onTransposeSelection,
+  onFlipSelection,
+  onSplitByDelimiter,
+  onToggleBandedRows,
   onTabChange,
   phase,
   activePivot,
@@ -302,6 +318,14 @@ export function Ribbon({
     onSubtotal,
     onRemoveDuplicates,
     onTextToColumns,
+    onResolveComment,
+    onProtectSelection,
+    onUnprotectSelection,
+    onShowOutlineLevel,
+    onTransposeSelection,
+    onFlipSelection,
+    onSplitByDelimiter,
+    onToggleBandedRows,
   };
   const catalogContext: RibbonCommandContext = {
     phase,

@@ -17,7 +17,7 @@ import {
 import { getInitialLocale, localeLabels, persistLocale, shellLabels, type Locale } from "./i18n";
 import zhCN from "./locales/zh-CN.json";
 import enUS from "./locales/en-US.json";
-import type { ChartDrawingPayload, DrawingObject, PivotAggregateFunction, PivotFieldDefinition, PivotLayout, ShapeDrawingPayload, SparklineModel } from "@react-sheets/core-model";
+import type { ChartDrawingPayload, DrawingObject, PivotAggregateFunction, PivotFieldDefinition, PivotLayout, PivotSource, ShapeDrawingPayload, SparklineModel } from "@react-sheets/core-model";
 import type { PivotPanelCallbacks, PivotPanelState } from "./components/pivot/pivot-contract";
 
 const FeatureSidebar = lazy(() => import("./components/FeatureSidebar").then((module) => ({ default: module.FeatureSidebar })));
@@ -217,10 +217,34 @@ function WorkspaceApp() {
       },
     };
   };
-  const createPivotFromDialog = (request: { destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => {
-    const sourceRange = session.getCurrentRegion();
+  const pivotSourceOptions = useMemo((): Array<{ id: string; label: string; source: PivotSource }> => {
+    const options: Array<{ id: string; label: string; source: PivotSource }> = [{
+      id: 'current-region',
+      label: `Current region · ${state.selectedSheet.name}`,
+      source: { kind: 'worksheet-range', range: session.getCurrentRegion() },
+    }];
+    for (const table of state.selectedSheet.sheetTables) {
+      options.push({ id: `sheet-table:${table.id}`, label: `Table · ${table.name}`, source: { kind: 'table', tableId: table.id } });
+    }
+    for (const table of state.tables) {
+      options.push({ id: `data-table:${table.id}`, label: `Data table · ${table.name}`, source: { kind: 'table', tableId: table.id } });
+    }
+    for (const name of state.definedNameModels) {
+      options.push({ id: `name:${name.name}`, label: `Named range · ${name.name}`, source: { kind: 'named-range', name: name.name } });
+    }
+    for (const source of state.dataSources) {
+      options.push({ id: `source:${source.id}`, label: `Data source · ${source.name}`, source: { kind: 'data-source', dataSourceId: source.id } });
+    }
+    return options;
+  }, [session, state.dataSources, state.definedNameModels, state.selectedSheet.name, state.selectedSheet.sheetTables, state.tables, state.version]);
+  const createPivotFromDialog = (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => {
+    const source = pivotSourceOptions.find((option) => option.id === request.sourceId)?.source;
+    if (!source) {
+      session.notify("Select a valid PivotTable source");
+      return;
+    }
     if (request.destination === "new-sheet") {
-      const created = session.createPivotTable({ sourceRange, destination: { kind: "new-sheet" } });
+      const created = session.createPivotTable({ source, destination: { kind: "new-sheet" } });
       if (created) session.closeCreatePivotDialog();
       return;
     }
@@ -230,7 +254,7 @@ function WorkspaceApp() {
       return;
     }
     const created = session.createPivotTable({
-      sourceRange,
+      source,
       destination: { kind: "existing-sheet", sheetId: state.activeSheetId, anchor: { row: target.startRow, column: target.startColumn } },
     });
     if (created) session.closeCreatePivotDialog();
@@ -259,6 +283,13 @@ function WorkspaceApp() {
       case "formula.autoSum": session.autoSum(); return true;
       case "formula.functionWizard": dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" }); return true;
       case "formula.calculate": void session.recalculateFormulas(); return true;
+      case "pivot.refresh": {
+        const pivotId = state.activeContext.kind === 'pivot' ? state.activeContext.pivotId : undefined;
+        if (!pivotId) return false;
+        session.refreshPivot(pivotId);
+        return true;
+      }
+      case "drawing.remove": session.removeSelectedDrawing(); return true;
       default: return false;
     }
   };
@@ -583,6 +614,14 @@ function WorkspaceApp() {
             onSubtotal={buildSubtotalCommand}
             onRemoveDuplicates={buildRemoveDuplicatesCommand}
             onTextToColumns={buildTextToColumnsCommand}
+            onResolveComment={() => session.resolveComment()}
+            onProtectSelection={() => session.protectSelection()}
+            onUnprotectSelection={() => session.unprotectSelection()}
+            onShowOutlineLevel={(level) => session.showOutlineLevel(level)}
+            onTransposeSelection={() => session.transposeSelection()}
+            onFlipSelection={(axis) => session.flipSelection(axis)}
+            onSplitByDelimiter={() => session.splitByDelimiter(',')}
+            onToggleBandedRows={() => session.toggleBandedRows()}
             onTabChange={(tab) => session.setRibbonTab(tab)}
             phase={state.phase}
             canExecute={session.canExecute.bind(session)}
@@ -898,7 +937,8 @@ function WorkspaceApp() {
 
       <CreatePivotTableDialog
         open={state.showCreatePivotDialog}
-        sourceRange={session.getCurrentRegion()}
+        sourceRegion={session.getCurrentRegion()}
+        sourceOptions={pivotSourceOptions.map(({ id, label }) => ({ id, label }))}
         activeSheetName={state.selectedSheet.name}
         onClose={session.closeCreatePivotDialog.bind(session)}
         onCreate={createPivotFromDialog}

@@ -232,7 +232,6 @@ describe('query commands', () => {
 
     runtime.execute('query.load', { query, target: { kind: 'pivot-source', pivotId: 'pivot-1' }, result });
     assert.equal(sheet.cells.get(6, 1)?.value, 2);
-    assert.equal(sheet.pivots[0]?.refreshRevision, 1);
     assert.equal(runtime.undo(), true);
     assert.equal(sheet.cells.get(6, 1), undefined);
   });

@@ -257,7 +257,7 @@ function buildDictionary(values: readonly (string | null)[]): { indexes: Int32Ar
   const dictionaryIndexes = new Map<string, number>();
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
-    if (value === null) continue;
+    if (value == null) continue;
     let dictionaryIndex = dictionaryIndexes.get(value);
     if (dictionaryIndex === undefined) {
       dictionaryIndex = dictionaryValues.length;

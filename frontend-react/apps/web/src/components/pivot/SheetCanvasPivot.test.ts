@@ -42,7 +42,7 @@ function sheet(pivot: PivotGridProjection): CanvasSheetSnapshot {
     conditionalFormats: [],
     dataValidations: [],
     merges: [],
-    freeze: { xSplit: 0, ySplit: 0 },
+    freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 },
     rowHeights: {},
     columnWidths: {},
     hiddenRows: [],

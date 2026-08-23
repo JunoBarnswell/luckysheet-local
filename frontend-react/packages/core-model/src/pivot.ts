@@ -219,7 +219,7 @@ export interface PivotDefinition {
   nativeMetadata?: PivotNativeMetadata;
 }
 
-/** Compatibility export for package consumers. There is exactly one Pivot shape. */
+/** Public alias used by workbook collections; there is exactly one Pivot shape. */
 export type PivotModel = PivotDefinition;
 
 export interface PivotSourceRowPath {
@@ -228,20 +228,20 @@ export interface PivotSourceRowPath {
 }
 
 export interface PivotResultCell {
-  id: string;
-  nodePath: string[];
-  kind: 'detail' | 'subtotal' | 'grand-total';
+  id?: string;
+  nodePath?: string[];
+  kind?: 'detail' | 'subtotal' | 'grand-total';
   columnPath: PivotScalar[];
   values: PivotScalar[];
   sourceRowPaths: PivotSourceRowPath[];
 }
 
 export interface PivotResultNode {
-  nodeId: string;
-  path: string[];
+  nodeId?: string;
+  path?: string[];
   kind: 'leaf' | 'subtotal';
-  fieldId: string;
-  memberKey: PivotMemberKey;
+  fieldId?: string;
+  memberKey?: PivotMemberKey;
   key: PivotScalar;
   label: string;
   depth: number;
@@ -343,7 +343,7 @@ export interface ContextHit extends PivotHitTest {
  * source inspection and field catalog inference belong to the spreadsheet-app
  * engine where a WorkbookModel is available.
  */
-export function migratePivotDefinition(input: PivotDefinition): PivotDefinition {
+export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefinition {
   if (input.schema !== PIVOT_DEFINITION_SCHEMA) throw new Error(`Pivot ${input.id} is not a canonical definition`);
   if (!input.source || !input.target || !input.fieldCatalog || !input.refreshPolicy) throw new Error(`Pivot ${input.id} is missing canonical fields`);
   if (input.layout.rows.some((entry) => !entry.fieldId)

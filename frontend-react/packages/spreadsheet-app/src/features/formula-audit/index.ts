@@ -1,9 +1,10 @@
-import type { CellAddress, RangeRef } from '@react-sheets/core-model';
+import type { RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import {
   cellAddressKey,
   formatCellAddress,
   type FormulaCellEntry,
+  type CellAddress,
   type FormulaDependency,
   type FormulaEngine,
   type FormulaEvaluationTrace,
@@ -79,7 +80,7 @@ export class FormulaAuditController {
   private arrows: FormulaAuditArrow[] = [];
   private arrowDirection?: FormulaAuditDirection;
   private showFormulasValue: boolean;
-  private errors: FormulaAuditError[] = [];
+  private errors: readonly FormulaAuditError[] = [];
   private evaluation?: FormulaAuditEvaluationProjection;
 
   constructor(

@@ -175,7 +175,7 @@ export {
   type QueryStepSnapshot,
 } from './workbook-state';
 
-import { migratePivotDefinition, type PivotModel } from './pivot';
+import { canonicalizePivotDefinition, type PivotModel } from './pivot';
 export * from './pivot';
 import type { WorkbookTableModel } from './data-model';
 import { normalizeDataSourceManifest, type DataSourceManifest, type SheetDataRegion } from './data-source';
@@ -884,7 +884,7 @@ export class WorkbookModel {
       if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
       sheet.freeze = { ...input.freeze };
-      sheet.pivots.push(...input.pivots.map((pivot) => migratePivotDefinition(structuredClone(pivot))));
+      sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
       sheet.sparklines.push(...structuredClone(input.sparklines));
       if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
       sheet.drawings.push(...structuredClone(input.drawings));

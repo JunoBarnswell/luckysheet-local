@@ -24,9 +24,9 @@ describe('pivot feature contract', () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-1', { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
     assert.ok(pivot);
-    assert.equal(pivot.target?.sheetId, 'sheet-1');
-    assert.equal(pivot.source?.kind, 'worksheet-range');
-    const sourceRange = pivot.source?.kind === 'worksheet-range' ? pivot.source.range : undefined;
+    assert.equal(pivot.target.sheetId, 'sheet-1');
+    assert.equal(pivot.source.kind, 'worksheet-range');
+    const sourceRange = pivot.source.kind === 'worksheet-range' ? pivot.source.range : undefined;
     assert.equal(sourceRange?.sheetId, 'source-2');
     workbook.getSheet('sheet-1').pivots.push(pivot);
     assert.deepEqual(connectedPivotIdsForSource(workbook, 'sheet-1', sourceRange!), ['pivot-1']);
@@ -45,7 +45,7 @@ describe('pivot feature contract', () => {
       label: 'East',
       sourceRowPaths: [{ sheetId: 'source-2', row: 1 }],
       targetSheetId: 'drill-1',
-      targetAnchor: { row: 0, column: 0 },
+      target: { row: 0, column: 0 },
     });
     assert.equal(workbook.getSheet('drill-1').cells.get(0, 0)?.value, 'Region');
     assert.equal(workbook.getSheet('drill-1').cells.get(1, 0)?.value, 'East');
@@ -70,7 +70,7 @@ describe('pivot feature contract', () => {
     registerPivotFeature(runtime);
     const pivot = pivotDefinition();
     assert.ok(pivot);
-    pivot.layout.rows = [{ field: 'Missing' }];
+    pivot.layout.rows = [{ fieldId: 'Missing' }];
     assert.throws(() => runtime.execute('pivot.add', pivot), /Unknown pivot field: Missing/);
     assert.equal(workbook.getSheet('sheet-1').pivots.length, 0);
   });
@@ -79,7 +79,7 @@ describe('pivot feature contract', () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = pivotDefinition();
     assert.ok(pivot);
-    pivot.layout.rows = [{ field: 'Region' }];
+    pivot.layout.rows = [{ fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId }];
     const first = computePivotResult(workbook, pivot);
     assert.equal(first.schema, 'PivotResultTree');
     const firstKey = getPivotRevisionKey(workbook, pivot);
@@ -90,10 +90,10 @@ describe('pivot feature contract', () => {
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 35);
     // Source revision is supplied by the block/data-source revision counter in
     // production; the sparse legacy CellMatrix has no mutation counter.
-    pivot.layout.values[0] = { field: 'Amount', summarizeBy: 'count' };
+    pivot.layout.values[0] = { fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId, summarizeBy: 'count' };
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notEqual(getPivotRevisionKey(workbook, pivot).layoutRevision, firstKey.layoutRevision);
-    pivot.layout.filters = [{ kind: 'manual', field: 'Region', selected: ['East'] }];
+    pivot.layout.filters = [{ kind: 'manual', fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 1);
     assert.notEqual(getPivotRevisionKey(workbook, pivot).filterRevision, firstKey.filterRevision);
   });

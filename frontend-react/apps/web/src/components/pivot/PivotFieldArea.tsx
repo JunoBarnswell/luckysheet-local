@@ -14,6 +14,7 @@ import {
 import type { PivotFieldArea as Area, PivotManualFilterState } from './pivot-contract';
 
 interface AreaItem extends PivotFieldDefinition {
+  id: string;
   fieldId: string;
   index: number;
   placement?: PivotFieldPlacement;
@@ -105,6 +106,7 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     return {
       ...(field ?? { name: fieldId, dataType: 'text' as const, ordinal: index }),
+      id: fieldId,
       fieldId,
       index,
       placement: placements?.get(fieldId),
@@ -117,7 +119,7 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
         <Text size="xs" weight="semibold" tone="muted">{labels[area]}</Text>
         <Text size="xs" tone="subtle">{items.length}</Text>
       </Inline>
-      <FieldDropZone
+      <FieldDropZone<AreaItem>
         disabled={disabled}
         emptyLabel={`Drop fields here for ${labels[area].toLowerCase()}`}
         items={items}
