@@ -329,7 +329,7 @@ function WorkspaceApp() {
         workspacePhase={state.phase}
       >
         <Inline gap="none" className="h-full min-h-0 w-full flex-nowrap">
-          <Box className="min-w-0 flex-1">
+          <Box className="h-full min-h-0 min-w-0 flex-1">
             <SheetCanvas
               sheet={state.selectedSheet}
               sheetId={state.activeSheetId}

@@ -857,7 +857,7 @@ export function SheetCanvas({
   }
 
   return (
-    <Panel className="flex-1 overflow-hidden">
+    <Panel className="h-full min-h-0 flex-1 overflow-hidden">
       <Stack gap="none" className="h-full">
         <Inline gap="xs" className="items-center justify-between border-b border-slate-100 px-3 py-1.5">
           <Inline gap="xs" className="items-center">
