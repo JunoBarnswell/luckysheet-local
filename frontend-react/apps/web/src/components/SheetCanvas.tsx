@@ -59,6 +59,7 @@ export interface SheetCanvasProps {
   onToggleAbsolute: () => void;
   onJumpEdge: (direction: "up" | "down" | "left" | "right", extend?: boolean) => void;
   onSelectAll: () => void;
+  onExtendSelection?: (row: number, column: number) => void;
   onResizeRow: (row: number, heightPx: number) => void;
   onResizeColumn: (column: number, widthPx: number) => void;
   onFillRange: (target: { startRow: number; endRow: number; startColumn: number; endColumn: number }) => void;
@@ -81,6 +82,7 @@ interface DragState {
   currentRow: number;
   currentColumn: number;
   additive: boolean;
+  extend: boolean;
   resizeStartSize: number;
   resizeIndex: number;
   floating?: { id: string; kind: 'chart' | 'shape' | 'image'; handle?: string; startBounds: Rect; startLocal: { x: number; y: number } };
@@ -126,6 +128,7 @@ export function SheetCanvas({
   onToggleAbsolute,
   onJumpEdge,
   onSelectAll,
+  onExtendSelection,
   onResizeRow,
   onResizeColumn,
   onFillRange,
@@ -433,6 +436,7 @@ export function SheetCanvas({
             currentRow: 0,
             currentColumn: 0,
             additive: false,
+            extend: false,
             resizeStartSize: 0,
             resizeIndex: 0,
             floating: {
@@ -467,6 +471,7 @@ export function SheetCanvas({
             currentRow: 0,
             currentColumn: 0,
             additive: false,
+            extend: false,
             resizeStartSize: headerHit.kind === "col" ? skeleton.getColumnWidth(headerHit.index) : skeleton.getRowHeight(headerHit.index),
             resizeIndex: headerHit.index,
           };
@@ -488,6 +493,7 @@ export function SheetCanvas({
           currentRow: headerHit.kind === "row" ? headerHit.index : 0,
           currentColumn: headerHit.kind === "col" ? headerHit.index : 0,
           additive,
+          extend: false,
           resizeStartSize: 0,
           resizeIndex: 0,
           floating: { id: headerHit.kind, kind: 'shape', handle: undefined, startBounds: { x: 0, y: 0, width: 0, height: 0 }, startLocal: { x: 0, y: 0 } },
@@ -518,6 +524,7 @@ export function SheetCanvas({
               currentRow: primaryRange.endRow,
               currentColumn: primaryRange.endColumn,
               additive: false,
+              extend: false,
               resizeStartSize: 0,
               resizeIndex: 0,
             };
@@ -531,25 +538,29 @@ export function SheetCanvas({
       const cell = engine.cellAtLocalPoint(local);
       if (!cell) return;
       const additive = event.ctrlKey || event.metaKey;
+      const extend = event.shiftKey && !additive;
       dragRef.current = {
         kind: "select",
         startRow: cell.row,
         startColumn: cell.column,
-        anchorRow: cell.row,
-        anchorColumn: cell.column,
+        anchorRow: extend ? selection.anchorRowIndex : cell.row,
+        anchorColumn: extend ? selection.anchorColumnIndex : cell.column,
         currentRow: cell.row,
         currentColumn: cell.column,
         additive,
+        extend,
         resizeStartSize: 0,
         resizeIndex: 0,
         floating: undefined,
       };
-      if (!additive) {
+      if (!additive && !extend) {
         onSelectionChange({
           ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }],
           primaryRowIndex: cell.row,
           primaryColumnIndex: cell.column,
           primaryRangeIndex: 0,
+          anchorRowIndex: cell.row,
+          anchorColumnIndex: cell.column,
         });
       }
       (event.target as Element).setPointerCapture?.(event.pointerId);
@@ -655,9 +666,11 @@ export function SheetCanvas({
           startColumn: isColDrag ? drag.startColumn : startColumn,
           endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : endColumn,
         }],
-        primaryRowIndex: isRowDrag || isColDrag ? drag.anchorRow : drag.anchorRow,
-        primaryColumnIndex: drag.anchorColumn,
+        primaryRowIndex: cell.row,
+        primaryColumnIndex: cell.column,
         primaryRangeIndex: 0,
+        anchorRowIndex: drag.anchorRow,
+        anchorColumnIndex: drag.anchorColumn,
       };
       const previewSelection = drag.additive
         ? { ...selection, ranges: [...selection.ranges, ...nextSelection.ranges], primaryRangeIndex: selection.ranges.length, primaryRowIndex: nextSelection.primaryRowIndex, primaryColumnIndex: nextSelection.primaryColumnIndex }
@@ -702,6 +715,11 @@ export function SheetCanvas({
         return;
       }
       if (drag.kind === "select") {
+        if (drag.extend) {
+          clearTransientSelection();
+          onExtendSelection?.(drag.currentRow, drag.currentColumn);
+          return;
+        }
         const startRow = Math.min(drag.anchorRow, drag.currentRow);
         const endRow = Math.max(drag.anchorRow, drag.currentRow);
         const startColumn = Math.min(drag.anchorColumn, drag.currentColumn);
@@ -716,14 +734,14 @@ export function SheetCanvas({
           endColumn: isRowDrag ? Math.max(0, skeleton.columnCount - 1) : endColumn,
         };
         const nextSelection: SelectionState = drag.additive
-          ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, primaryRowIndex: drag.anchorRow, primaryColumnIndex: drag.anchorColumn }
-          : { ranges: [range], primaryRowIndex: drag.anchorRow, primaryColumnIndex: drag.anchorColumn, primaryRangeIndex: 0 };
+          ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, primaryRowIndex: drag.anchorRow, primaryColumnIndex: drag.anchorColumn, anchorRowIndex: selection.anchorRowIndex, anchorColumnIndex: selection.anchorColumnIndex }
+          : { ranges: [range], primaryRowIndex: drag.anchorRow, primaryColumnIndex: drag.anchorColumn, primaryRangeIndex: 0, anchorRowIndex: drag.anchorRow, anchorColumnIndex: drag.anchorColumn };
         clearTransientSelection();
         onSelectionChange(nextSelection);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clearTransientSelection, localPointOf, onFillRange, onResizeColumn, onResizeRow, onSelectionChange, selection, sheetId, skeleton, zoom],
+    [clearTransientSelection, localPointOf, onExtendSelection, onFillRange, onResizeColumn, onResizeRow, onSelectionChange, selection, sheetId, skeleton, zoom],
   );
 
   const handleDoubleClick = useCallback(

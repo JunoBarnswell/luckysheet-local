@@ -14,18 +14,22 @@ import type {
   SparklineModel,
   WorkbookTableModel,
 } from '@react-sheets/core-model';
-import type { HistoryEntry } from '@react-sheets/command-runtime';
+import type { HistoryEntry, CommandResult } from '@react-sheets/command-runtime';
 import type { RevisionRecord, TableRowsResponse } from '@react-sheets/protocol';
 import type { PrintLayout } from '@react-sheets/pro-features';
 import { getPivotFieldCatalog as buildPivotFieldCatalog } from '@react-sheets/pro-features';
 import {
   collectFindReplacements,
+  copyRangeToClipboardData,
   findValidationRule,
   formatTsv,
   normalizeRangeRef,
   parseTsv,
   validateDataInput,
   validationList,
+  type ClipboardData,
+  type GoToSpecialKind,
+  type PasteMode,
 } from '@react-sheets/sheet-features';
 import { EditSession } from './edit-session';
 import { executeUiCommand, isUiCommand } from './execute-command';
@@ -39,7 +43,7 @@ import {
   startPersistenceSession,
   type SpreadsheetRuntime,
 } from './runtime';
-import { createInitialSelection, SelectionService, type SelectionState } from './selection-service';
+import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
 import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId } from './types';
@@ -76,6 +80,10 @@ export interface UiSnapshot {
   showFunctionWizard: boolean;
   showSortDialog: boolean;
   showFindReplace: boolean;
+  showGoTo: boolean;
+  showPasteSpecial: boolean;
+  showFormatCells: boolean;
+  showShiftCells: boolean;
   findQuery: string;
   showPrintPreview: boolean;
   printLayout: PrintLayout;
@@ -111,6 +119,10 @@ export class SpreadsheetApplication {
   private showFunctionWizard = false;
   private showSortDialog = false;
   private showFindReplace = false;
+  private showGoTo = false;
+  private showPasteSpecial = false;
+  private showFormatCells = false;
+  private showShiftCells = false;
   private findQuery = '';
   private showPrintPreview = false;
   private printLayout: PrintLayout = {
@@ -123,6 +135,7 @@ export class SpreadsheetApplication {
   private collabDispose: (() => void) | null = null;
   private persistenceDispose: (() => void) | null = null;
   private overrideTarget: { row: number; column: number } | null = null;
+  private clipboardData: ClipboardData | null = null;
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
@@ -243,6 +256,10 @@ export class SpreadsheetApplication {
       showFunctionWizard: this.showFunctionWizard,
       showSortDialog: this.showSortDialog,
       showFindReplace: this.showFindReplace,
+      showGoTo: this.showGoTo,
+      showPasteSpecial: this.showPasteSpecial,
+      showFormatCells: this.showFormatCells,
+      showShiftCells: this.showShiftCells,
       findQuery: this.findQuery,
       showPrintPreview: this.showPrintPreview,
       printLayout: this.printLayout,
@@ -265,10 +282,90 @@ export class SpreadsheetApplication {
     this.runCommand(commandId, params);
   }
 
-  runCommand(commandId: string, params?: unknown): void {
+  runCommand(commandId: string, params?: unknown): CommandResult {
     this.permission.assert(commandId, params, this.actorId);
-    this.runtime.commands.execute(commandId, params);
+    const result = this.runtime.commands.execute(commandId, params);
+    this.applySelectionFromCommand(commandId, params, result);
     this.refresh();
+    return result;
+  }
+
+  private static readonly SELECTION_COMMAND_IDS = new Set([
+    'navigation.goto',
+    'navigation.gotoSpecial',
+    'selection.set',
+  ]);
+
+  private applySelectionFromCommand(commandId: string, params: unknown, result: CommandResult): void {
+    if (commandId === 'selection.set') {
+      const selectionParams = params as {
+        ranges: RangeRef[];
+        primaryRangeIndex?: number;
+        primaryCell?: { row: number; column: number };
+        anchorCell?: { row: number; column: number };
+      };
+      if (selectionParams.ranges.length === 0) return;
+      this.selectionService.applyFromRanges(selectionParams.ranges);
+      const primaryIndex = selectionParams.primaryRangeIndex ?? 0;
+      const primaryRange = selectionParams.ranges[primaryIndex] ?? selectionParams.ranges[0]!;
+      const primary = selectionParams.primaryCell ?? { row: primaryRange.startRow, column: primaryRange.startColumn };
+      this.selectionService.setPrimaryCell(primary.row, primary.column);
+      if (selectionParams.anchorCell) {
+        this.selectionService.setAnchor(selectionParams.anchorCell.row, selectionParams.anchorCell.column);
+      }
+      this.syncDraftFromPrimary();
+      return;
+    }
+    if (!SpreadsheetApplication.SELECTION_COMMAND_IDS.has(commandId)) return;
+    if (result.affectedRanges.length === 0) return;
+    this.selectionService.applyFromRanges(result.affectedRanges);
+    this.syncDraftFromPrimary();
+  }
+
+  getClipboard(): ClipboardData | null {
+    return this.clipboardData;
+  }
+
+  setClipboard(data: ClipboardData | null): void {
+    this.clipboardData = data;
+  }
+
+  clearClipboard(): void {
+    this.clipboardData = null;
+  }
+
+  selectAddress(address: string): boolean {
+    const trimmed = address.trim();
+    if (!trimmed) return false;
+    if (this.editSession.editingCell) {
+      return this.selectionService.selectCell(trimmed, {
+        editing: true,
+        insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
+      });
+    }
+    const range = parseRangeReference(trimmed);
+    if (range) {
+      this.selectionService.selectRange(range, 'replace');
+      this.syncDraftFromPrimary();
+      this.emit();
+      return true;
+    }
+    try {
+      this.runCommand('navigation.goto', { sheetId: this.activeSheetId, reference: trimmed });
+      return true;
+    } catch {
+      this.notify(`Invalid reference: ${trimmed}`);
+      return false;
+    }
+  }
+
+  goTo(reference: string): void {
+    this.runCommand('navigation.goto', { sheetId: this.activeSheetId, reference: reference.trim() });
+  }
+
+  goToSpecial(kind: GoToSpecialKind): void {
+    const range = this.getPrimaryRange();
+    this.runCommand('navigation.gotoSpecial', { sheetId: this.activeSheetId, range, kind });
   }
 
   getWorkbook() {
@@ -337,13 +434,17 @@ export class SpreadsheetApplication {
     this.emit();
   }
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview', findQuery?: string): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells', findQuery?: string): void {
     if (dialog === 'function-wizard') this.showFunctionWizard = true;
     if (dialog === 'sort-dialog') this.showSortDialog = true;
     if (dialog === 'find-replace') {
       this.findQuery = findQuery ?? '';
       this.showFindReplace = true;
     }
+    if (dialog === 'goto') this.showGoTo = true;
+    if (dialog === 'paste-special') this.showPasteSpecial = true;
+    if (dialog === 'format-cells') this.showFormatCells = true;
+    if (dialog === 'shift-cells') this.showShiftCells = true;
     if (dialog === 'print-preview') {
       this.showPrintPreview = true;
       this.activePanel = 'print';
@@ -363,6 +464,26 @@ export class SpreadsheetApplication {
     this.showFindReplace = false;
     this.findQuery = '';
     this.emit();
+  };
+  closeGoTo = (): void => {
+    this.showGoTo = false;
+    this.emit();
+  };
+  closePasteSpecial = (): void => {
+    this.showPasteSpecial = false;
+    this.emit();
+  };
+  closeFormatCells = (): void => {
+    this.showFormatCells = false;
+    this.emit();
+  };
+  closeShiftCells = (): void => {
+    this.showShiftCells = false;
+    this.emit();
+  };
+  pasteSpecial(mode: PasteMode): void {
+    this.execute('ui.clipboard.paste', { mode });
+    this.closePasteSpecial();
   };
   setShowPrintPreview = (open: boolean): void => {
     this.showPrintPreview = open;
@@ -396,11 +517,46 @@ export class SpreadsheetApplication {
     this.emit();
   }
 
-  selectRange(range: { startRow: number; startColumn: number; endRow: number; endColumn: number }, mode: 'replace' | 'add' = 'replace'): void {
+  selectRange(range: { startRow: number; startColumn: number; endRow: number; endColumn: number }, mode: 'replace' | 'add' | 'extend' = 'replace'): void {
     this.selectionService.selectRange(range, mode);
-    const sel = this.selectionService.getState();
     this.syncDraftFromPrimary();
     this.emit();
+  }
+
+  extendSelectionTo(row: number, column: number): void {
+    this.selectRange({ startRow: row, startColumn: column, endRow: row, endColumn: column }, 'extend');
+  }
+
+  formatCells(params: { numberFormat?: string; style?: Partial<import('@react-sheets/core-model').CellStyle> }): void {
+    const ranges = this.selectionService.getState().ranges;
+    if (ranges.length === 0) return;
+    this.runCommand('sheet.format.set', {
+      sheetId: this.activeSheetId,
+      ranges,
+      numberFormat: params.numberFormat,
+      style: params.style,
+    });
+    this.refresh();
+  }
+
+  shiftCells(direction: 'down' | 'up' | 'right' | 'left'): void {
+    const range = this.getPrimaryRange();
+    this.runCommand('sheet.cells.shift', { sheetId: this.activeSheetId, range, direction });
+    this.refresh();
+  }
+
+  freezeAtPrimary(): void {
+    const sel = this.selectionService.getState();
+    this.runCommand('sheet.freeze.set', {
+      sheetId: this.activeSheetId,
+      freeze: {
+        xSplit: sel.primaryColumnIndex,
+        ySplit: sel.primaryRowIndex,
+        startRow: sel.primaryRowIndex,
+        startColumn: sel.primaryColumnIndex,
+      },
+    });
+    this.refresh();
   }
 
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
@@ -718,20 +874,50 @@ export class SpreadsheetApplication {
   }
 
   copy(): void {
-    const matrix = this.getRangeMatrix(this.getPrimaryRange());
-    void navigator.clipboard.writeText(formatTsv(matrix));
+    const range = this.getPrimaryRange();
+    const data = copyRangeToClipboardData(this.runtime.model, range);
+    this.setClipboard({ ...data, isCut: false });
+    void navigator.clipboard.writeText(formatTsv(data.values));
     this.notify('Range copied');
   }
   cut(): void {
     const range = this.getPrimaryRange();
-    void navigator.clipboard.writeText(formatTsv(this.getRangeMatrix(range)));
-    this.runCommand('sheet.range.clear', { sheetId: this.activeSheetId, range, mode: 'contents' });
+    const data = copyRangeToClipboardData(this.runtime.model, range);
+    this.setClipboard({ ...data, isCut: true });
+    void navigator.clipboard.writeText(formatTsv(data.values));
+    this.notify('Cut to clipboard');
   }
   paste(): void {
     const sel = this.selectionService.getState();
+    const internal = this.clipboardData;
+    if (internal) {
+      this.runCommand('sheet.range.paste', {
+        sheetId: this.activeSheetId,
+        targetOrigin: { row: sel.primaryRowIndex, column: sel.primaryColumnIndex },
+        clipboard: internal,
+        mode: 'all',
+      });
+      if (internal.isCut) {
+        this.runCommand('sheet.range.clear', { sheetId: this.activeSheetId, range: internal.range, mode: 'contents' });
+        this.clearClipboard();
+      }
+      this.syncDraftFromPrimary();
+      this.notify('Pasted from clipboard');
+      return;
+    }
     void navigator.clipboard.readText().then((text) => {
       if (!text) return;
-      this.runCommand('sheet.range.set', { sheetId: this.activeSheetId, startRow: sel.primaryRowIndex, startColumn: sel.primaryColumnIndex, values: parseTsv(text) });
+      const clipboard: ClipboardData = {
+        range: this.getPrimaryRange(),
+        values: parseTsv(text),
+      };
+      this.runCommand('sheet.range.paste', {
+        sheetId: this.activeSheetId,
+        targetOrigin: { row: sel.primaryRowIndex, column: sel.primaryColumnIndex },
+        clipboard,
+        mode: 'all',
+      });
+      this.syncDraftFromPrimary();
       this.notify('Pasted from clipboard');
     });
   }
@@ -766,6 +952,35 @@ export class SpreadsheetApplication {
   renameWorkbook(name: string): void {
     if (!name.trim()) return;
     this.runCommand('workbook.rename', { name });
+  }
+  duplicateSheet(sheetId: string): void {
+    const source = this.runtime.model.getSheet(sheetId);
+    const newId = 'sheet-' + Math.random().toString(36).slice(2, 8);
+    const newName = `${source.name} (2)`;
+    this.runCommand('sheet.duplicate', { sourceSheetId: sheetId, newId, newName });
+    this.activeSheetId = newId;
+    this.selectionService.resetForSheet(newId);
+    this.syncDraftFromPrimary();
+    this.refresh();
+  }
+  hideSheet(sheetId: string): void {
+    try {
+      this.runCommand('sheet.hide', { sheetId });
+      if (this.activeSheetId === sheetId) {
+        const next = this.runtime.model.getVisibleSheets()[0];
+        if (next) this.selectSheet(next.id);
+      }
+      this.refresh();
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Cannot hide sheet');
+    }
+  }
+  setSheetTabColor(sheetId: string, color?: string): void {
+    this.runCommand('sheet.tabColor.set', { sheetId, color: color || undefined });
+  }
+  moveSheet(sheetId: string, toIndex: number): void {
+    this.runCommand('sheet.reorder', { sheetId, toIndex });
+    this.refresh();
   }
   deleteSheet(sheetId: string): void {
     try {

@@ -58,6 +58,14 @@ export function mapRibbonAction(action: RibbonAction, payload?: unknown): Ribbon
       return { commandId: 'sheet.range.clear' };
     case 'clear-formats':
       return { commandId: 'sheet.range.clear', params: { mode: 'formats' } };
+    case 'clear-all':
+      return { commandId: 'sheet.range.clear', params: { mode: 'all' } };
+    case 'format-cells':
+      return { commandId: 'ui.dialog.open', params: { dialog: 'format-cells' } };
+    case 'shift-cells':
+      return { commandId: 'ui.dialog.open', params: { dialog: 'shift-cells' } };
+    case 'paste-special':
+      return { commandId: 'ui.dialog.open', params: { dialog: 'paste-special' } };
     case 'autosum':
       return { commandId: 'sheet.formula.autosum' };
     case 'function-wizard':
@@ -97,7 +105,7 @@ export function mapRibbonAction(action: RibbonAction, payload?: unknown): Ribbon
     case 'freeze-first-col':
       return { commandId: 'sheet.freeze.set', params: { xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 } };
     case 'freeze-at-primary':
-      return { commandId: 'sheet.freeze.set', params: payload };
+      return { commandId: 'ui.freeze.atPrimary' };
     case 'unfreeze':
       return { commandId: 'sheet.freeze.set', params: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 } };
     case 'filter-clear':

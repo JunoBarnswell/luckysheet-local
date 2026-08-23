@@ -8,7 +8,11 @@ export interface SelectionState {
   primaryRowIndex: number;
   primaryColumnIndex: number;
   primaryRangeIndex: number;
+  anchorRowIndex: number;
+  anchorColumnIndex: number;
 }
+
+type SelectionStateCore = Omit<SelectionState, 'anchorRowIndex' | 'anchorColumnIndex'>;
 
 export interface SelectionSnapshot {
   unitId: UnitId;
@@ -20,7 +24,7 @@ export interface SelectionSnapshot {
   anchorCell: { row: number; column: number };
 }
 
-export function createInitialSelection(sheetId: SheetId): SelectionState {
+export function createInitialSelection(sheetId: SheetId): SelectionStateCore {
   return {
     ranges: [normalizeRangeRef({ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 })],
     primaryRowIndex: 0,
@@ -30,14 +34,14 @@ export function createInitialSelection(sheetId: SheetId): SelectionState {
 }
 
 export class SelectionService {
-  private state: SelectionState;
+  private state: SelectionStateCore;
   private anchorCell: { row: number; column: number };
 
   constructor(
     private readonly unitId: UnitId,
     private readonly getActiveSheetId: () => SheetId,
     private readonly getSheetBounds: () => { rowCount: number; columnCount: number },
-    initial?: SelectionState,
+    initial?: SelectionStateCore,
   ) {
     this.state = initial ?? createInitialSelection(getActiveSheetId());
     this.anchorCell = { row: this.state.primaryRowIndex, column: this.state.primaryColumnIndex };
@@ -56,7 +60,11 @@ export class SelectionService {
   }
 
   getState(): SelectionState {
-    return this.state;
+    return {
+      ...this.state,
+      anchorRowIndex: this.anchorCell.row,
+      anchorColumnIndex: this.anchorCell.column,
+    };
   }
 
   get activeCell(): string {
@@ -90,16 +98,32 @@ export class SelectionService {
 
   selectRange(
     range: { startRow: number; startColumn: number; endRow: number; endColumn: number },
-    mode: 'replace' | 'add' = 'replace',
+    mode: 'replace' | 'add' | 'extend' = 'replace',
   ): void {
     const sheetId = this.getActiveSheetId();
-    const normalized = normalizeRangeRef({
-      sheetId,
-      startRow: this.clampRow(Math.min(range.startRow, range.endRow)),
-      endRow: this.clampRow(Math.max(range.startRow, range.endRow)),
-      startColumn: this.clampColumn(Math.min(range.startColumn, range.endColumn)),
-      endColumn: this.clampColumn(Math.max(range.startColumn, range.endColumn)),
-    });
+    const startRow = this.clampRow(Math.min(range.startRow, range.endRow));
+    const endRow = this.clampRow(Math.max(range.startRow, range.endRow));
+    const startColumn = this.clampColumn(Math.min(range.startColumn, range.endColumn));
+    const endColumn = this.clampColumn(Math.max(range.startColumn, range.endColumn));
+    const normalized = normalizeRangeRef({ sheetId, startRow, endRow, startColumn, endColumn });
+    if (mode === 'extend') {
+      const anchorRow = this.anchorCell.row;
+      const anchorColumn = this.anchorCell.column;
+      const extended = normalizeRangeRef({
+        sheetId,
+        startRow: Math.min(anchorRow, startRow, endRow),
+        endRow: Math.max(anchorRow, startRow, endRow),
+        startColumn: Math.min(anchorColumn, startColumn, endColumn),
+        endColumn: Math.max(anchorColumn, startColumn, endColumn),
+      });
+      this.state = {
+        ranges: [extended],
+        primaryRowIndex: endRow,
+        primaryColumnIndex: endColumn,
+        primaryRangeIndex: 0,
+      };
+      return;
+    }
     if (mode === 'add' && this.state.ranges.length > 0) {
       this.state = {
         ...this.state,
@@ -119,14 +143,35 @@ export class SelectionService {
     }
   }
 
+  applyFromRanges(ranges: RangeRef[]): void {
+    if (ranges.length === 0) return;
+    const sheetId = this.getActiveSheetId();
+    const normalized = ranges.map((range) =>
+      normalizeRangeRef({
+        sheetId: range.sheetId ?? sheetId,
+        startRow: this.clampRow(Math.min(range.startRow, range.endRow)),
+        endRow: this.clampRow(Math.max(range.startRow, range.endRow)),
+        startColumn: this.clampColumn(Math.min(range.startColumn, range.endColumn)),
+        endColumn: this.clampColumn(Math.max(range.startColumn, range.endColumn)),
+      }),
+    );
+    const primary = normalized[0]!;
+    this.state = {
+      ranges: normalized,
+      primaryRowIndex: primary.startRow,
+      primaryColumnIndex: primary.startColumn,
+      primaryRangeIndex: 0,
+    };
+    this.anchorCell = { row: primary.startRow, column: primary.startColumn };
+  }
+
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
     const sheetId = this.getActiveSheetId();
     const targetRow = this.clampRow(this.state.primaryRowIndex + rowDelta);
     const targetColumn = this.clampColumn(this.state.primaryColumnIndex + columnDelta);
     if (opts?.extend && this.state.ranges.length > 0) {
-      const range = this.state.ranges[this.state.primaryRangeIndex] ?? this.state.ranges[0]!;
-      const anchorRow = this.state.primaryRowIndex <= (range.startRow + range.endRow) / 2 ? range.endRow : range.startRow;
-      const anchorColumn = this.state.primaryColumnIndex <= (range.startColumn + range.endColumn) / 2 ? range.endColumn : range.startColumn;
+      const anchorRow = this.anchorCell.row;
+      const anchorColumn = this.anchorCell.column;
       const next = normalizeRangeRef({
         sheetId,
         startRow: Math.min(anchorRow, targetRow),
@@ -142,7 +187,7 @@ export class SelectionService {
     this.setPrimary(targetRow, targetColumn, sheetId);
   }
 
-  setPrimary(row: number, column: number, sheetId?: SheetId): void {
+  setPrimary(row: number, column: number, sheetId?: SheetId, opts?: { preserveAnchor?: boolean }): void {
     const sid = sheetId ?? this.getActiveSheetId();
     this.state = {
       ranges: [normalizeRangeRef({ sheetId: sid, startRow: row, endRow: row, startColumn: column, endColumn: column })],
@@ -150,7 +195,21 @@ export class SelectionService {
       primaryColumnIndex: column,
       primaryRangeIndex: 0,
     };
-    this.anchorCell = { row, column };
+    if (!opts?.preserveAnchor) {
+      this.anchorCell = { row, column };
+    }
+  }
+
+  setPrimaryCell(row: number, column: number): void {
+    this.state = {
+      ...this.state,
+      primaryRowIndex: this.clampRow(row),
+      primaryColumnIndex: this.clampColumn(column),
+    };
+  }
+
+  setAnchor(row: number, column: number): void {
+    this.anchorCell = { row: this.clampRow(row), column: this.clampColumn(column) };
   }
 
   selectAll(rowCount: number, columnCount: number): void {
@@ -180,6 +239,26 @@ export class SelectionService {
     const { columnCount } = this.getSheetBounds();
     return Math.max(0, Math.min(columnCount - 1, column));
   }
+}
+
+export function parseRangeReference(input: string): { startRow: number; endRow: number; startColumn: number; endColumn: number } | undefined {
+  const parseCell = (value: string) => {
+    const match = /^([A-Z]+)(\d+)$/.exec(value.trim().toUpperCase());
+    if (!match?.[1] || !match[2]) return undefined;
+    const column = [...match[1]].reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1;
+    const row = Number(match[2]) - 1;
+    return Number.isInteger(row) && row >= 0 && column >= 0 ? { row, column } : undefined;
+  };
+  const [startText, endText = startText] = input.split(':');
+  const start = parseCell(startText ?? '');
+  const end = parseCell(endText ?? '');
+  if (!start || !end) return undefined;
+  return {
+    startRow: Math.min(start.row, end.row),
+    endRow: Math.max(start.row, end.row),
+    startColumn: Math.min(start.column, end.column),
+    endColumn: Math.max(start.column, end.column),
+  };
 }
 
 function parseAddressForSelection(address: string): { column: number; row: number } | undefined {

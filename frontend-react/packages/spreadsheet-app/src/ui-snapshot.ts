@@ -67,6 +67,8 @@ export interface CanvasSheetSnapshot {
   columnWidths: Record<number, number>;
   hiddenRows: number[];
   filterColumns: number[];
+  tabColor?: string;
+  hidden?: boolean;
   /** Print preview only — bounded slice */
   previewRows: PreviewRowSnapshot[];
 }
@@ -197,6 +199,8 @@ export function buildCanvasSheetSnapshot(
     columnWidths: { ...sheet.columnWidths },
     hiddenRows: [...hiddenRows].sort((a, b) => a - b),
     filterColumns,
+    tabColor: sheet.tabColor,
+    hidden: sheet.hidden,
     previewRows,
   };
 }

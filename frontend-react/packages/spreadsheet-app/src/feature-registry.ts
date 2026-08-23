@@ -4,6 +4,7 @@ import { registerProSheetCommands } from '@react-sheets/pro-features';
 import { registerPlatformFeatures } from './platform-features';
 import { registerDrawingFeature } from './features/drawing';
 import { registerReviewFeature } from './features/review/commands';
+import { registerEditingFeatures } from './features/editing';
 
 export interface SpreadsheetFeatureManifest {
   id: string;
@@ -93,6 +94,7 @@ function registerRemoveCommand(
 
 export function registerSpreadsheetFeatures(runtime: CommandRuntime): SpreadsheetFeatureManifest[] {
   registerSheetCommands(runtime);
+  registerEditingFeatures(runtime);
   registerProSheetCommands(runtime);
   registerDrawingFeature(runtime);
   registerReviewFeature(runtime);

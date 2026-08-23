@@ -122,6 +122,9 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               <ToolBtn commandId="ui.clipboard.cut" disabled={disabled} icon="scissors" label="Cut (Ctrl+X)" onExecute={onExecute} />
               <ToolBtn commandId="ui.clipboard.copy" disabled={disabled} icon="copy" label="Copy (Ctrl+C)" onExecute={onExecute} />
               <ToolBtn commandId="ui.clipboard.paste" disabled={disabled} icon="clipboard" label="Paste (Ctrl+V)" onExecute={onExecute} />
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('ui.dialog.open', { dialog: 'paste-special' })}>
+                Paste Special
+              </Button>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
@@ -177,6 +180,9 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
             <Divider orientation="vertical" className="h-10" />
 
             <RibbonGroup label="Number">
+              <Button size="sm" variant="ghost" disabled={disabled} data-testid="ribbon-format-cells" onClick={() => onExecute('ui.dialog.open', { dialog: 'format-cells' })}>
+                Format Cells
+              </Button>
               <div className="w-28">
                 <Select
                   sizeVariant="sm"
@@ -199,7 +205,30 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
             <RibbonGroup label="Cells">
               <ToolBtn commandId="sheet.rows.insert" params={{ count: 1 }} disabled={disabled} icon="rows" label="Insert Row" onExecute={onExecute} />
               <ToolBtn commandId="sheet.columns.insert" params={{ count: 1 }} disabled={disabled} icon="columns" label="Insert Column" onExecute={onExecute} />
-              <ToolBtn commandId="sheet.range.clear" disabled={disabled} icon="trash" label="Clear Content" onExecute={onExecute} />
+              <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExecute('ui.dialog.open', { dialog: 'shift-cells' })}>
+                Insert / Delete Cells
+              </Button>
+              <DropdownMenu
+                trigger={
+                  <Button size="sm" variant="ghost" disabled={disabled} icon="trash">
+                    Clear
+                  </Button>
+                }
+              >
+                {({ close }) => (
+                  <Stack gap="xs" className="p-1">
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onExecute('sheet.range.clear'); }}>
+                      Clear Contents
+                    </Button>
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onExecute('sheet.range.clear', { mode: 'formats' }); }}>
+                      Clear Formats
+                    </Button>
+                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onExecute('sheet.range.clear', { mode: 'all' }); }}>
+                      Clear All
+                    </Button>
+                  </Stack>
+                )}
+              </DropdownMenu>
             </RibbonGroup>
             <Divider orientation="vertical" className="h-10" />
 
@@ -291,6 +320,9 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               <Button size="sm" variant="ghost" onClick={() => onExecute('ui.dialog.open', { dialog: 'find-replace' })}>
                 Find & Replace
               </Button>
+              <Button size="sm" variant="ghost" onClick={() => onExecute('ui.dialog.open', { dialog: 'goto' })}>
+                Go To
+              </Button>
               <Button size="sm" variant="ghost" onClick={() => onExecute('matrix.transpose')}>
                 Transpose
               </Button>
@@ -319,6 +351,9 @@ export function Ribbon({ activeTab, locale, onExecute, onTabChange, phase, cellS
               </Button>
               <Button size="sm" variant="ghost" icon="freeze" onClick={() => onExecute('sheet.freeze.set', { freeze: { xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 } })}>
                 Freeze First Column
+              </Button>
+              <Button size="sm" variant="ghost" icon="freeze" onClick={() => onExecute('ui.freeze.atPrimary')}>
+                Freeze at Selection
               </Button>
               <Button size="sm" variant="ghost" icon="freeze" onClick={() => onExecute('sheet.freeze.set', { freeze: { xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0 } })}>
                 Unfreeze All

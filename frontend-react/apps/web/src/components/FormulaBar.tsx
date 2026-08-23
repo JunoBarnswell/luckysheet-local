@@ -10,6 +10,7 @@ export interface FormulaBarProps {
   onCancel: () => void;
   onChange: (value: string) => void;
   onCommit: () => void;
+  onNameBoxCommit?: (value: string) => void;
   onOpenWizard?: () => void;
   phase: AppPhase;
 }

@@ -1,4 +1,4 @@
-import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
+import { useEffect, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { Button } from './Button';
 import { Box, Inline, Kbd, Text } from './layout';
 import { TextInput } from './TextInput';
@@ -21,6 +21,7 @@ export interface FormulaBarProps {
   onCancel: () => void;
   onChange: (value: string) => void;
   onCommit: () => void;
+  onNameBoxCommit?: (value: string) => void;
   onOpenWizard?: () => void;
 }
 
@@ -32,20 +33,44 @@ export function FormulaBar({
   onCancel,
   onChange,
   onCommit,
+  onNameBoxCommit,
   onOpenWizard,
 }: FormulaBarProps) {
+  const [nameDraft, setNameDraft] = useState(cellName);
+
+  useEffect(() => {
+    setNameDraft(cellName);
+  }, [cellName]);
+
   const handleSubmit = (event: FormEvent<HTMLElement>) => {
     event.preventDefault();
     onCommit();
   };
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const commitNameBox = () => {
+    if (!onNameBoxCommit || disabled) return;
+    const next = nameDraft.trim();
+    if (next && next !== cellName) onNameBoxCommit(next);
+    else setNameDraft(cellName);
+  };
+
+  const handleFormulaKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
       onCancel();
     } else if (event.key === 'Enter') {
       event.preventDefault();
       onCommit();
+    }
+  };
+
+  const handleNameKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitNameBox();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setNameDraft(cellName);
     }
   };
 
@@ -59,11 +84,14 @@ export function FormulaBar({
     >
       <TextInput
         aria-label={labels.selectedCell}
-        className="w-20 text-center font-mono text-xs font-bold text-slate-800 bg-slate-50 border-slate-200"
+        className="w-24 text-center font-mono text-xs font-bold text-slate-800 bg-slate-50 border-slate-200"
         data-testid="name-box"
         disabled={disabled}
-        readOnly
-        value={cellName}
+        readOnly={!onNameBoxCommit}
+        value={nameDraft}
+        onBlur={commitNameBox}
+        onChange={(event: ChangeEvent<HTMLInputElement>) => setNameDraft(event.target.value)}
+        onKeyDown={handleNameKeyDown}
       />
       <Inline gap="sm" className="min-w-0 flex-1">
         <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="sm" variant="outline">fx</Button>
@@ -73,7 +101,7 @@ export function FormulaBar({
           data-testid="formula-input"
           disabled={disabled}
           onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}
-          onKeyDown={handleKeyDown}
+          onKeyDown={handleFormulaKeyDown}
           placeholder={labels.placeholder}
           value={formula}
         />

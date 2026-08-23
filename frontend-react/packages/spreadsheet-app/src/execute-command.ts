@@ -46,6 +46,7 @@ export type UiCommandId =
   | 'ui.panel.open'
   | 'ui.zoom.set'
   | 'ui.zoom.adjust'
+  | 'ui.freeze.atPrimary'
   | 'table.create'
   | 'ui.notice';
 
@@ -59,7 +60,7 @@ export interface StyleSetParams {
 }
 
 export interface DialogOpenParams {
-  dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview';
+  dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells';
   findQuery?: string;
 }
 
@@ -100,29 +101,50 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
       return true;
     case 'ui.clipboard.copy': {
       const data = copyRangeToClipboardData(app.getWorkbook(), primaryRange);
+      app.setClipboard({ ...data, isCut: false });
       void navigator.clipboard?.writeText(formatTsv(data.values));
       app.notify('Copied to clipboard');
       return true;
     }
     case 'ui.clipboard.cut': {
       const data = copyRangeToClipboardData(app.getWorkbook(), primaryRange);
+      app.setClipboard({ ...data, isCut: true });
       void navigator.clipboard?.writeText(formatTsv(data.values));
-      app.runCommand('sheet.range.clear', { sheetId: activeSheetId, range: primaryRange });
-      app.syncDraftFromPrimary();
       app.notify('Cut to clipboard');
       return true;
     }
     case 'ui.clipboard.paste': {
+      const pasteParams = params as { mode?: 'all' | 'values' | 'formats' | 'formulas' | 'transpose' } | undefined;
+      const internal = app.getClipboard();
+      if (internal) {
+        app.runCommand('sheet.range.paste', {
+          sheetId: activeSheetId,
+          targetOrigin: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex },
+          clipboard: internal,
+          mode: pasteParams?.mode ?? 'all',
+        });
+        if (internal.isCut) {
+          app.runCommand('sheet.range.clear', { sheetId: activeSheetId, range: internal.range, mode: 'contents' });
+          app.clearClipboard();
+        }
+        app.syncDraftFromPrimary();
+        app.notify('Pasted from clipboard');
+        return true;
+      }
       void navigator.clipboard
         ?.readText()
         .then((text) => {
           const parsed = parseTsv(text);
           if (parsed.length === 0) return;
-          app.runCommand('sheet.range.set', {
+          const clipboard: import('@react-sheets/sheet-features').ClipboardData = {
+            range: primaryRange,
+            values: parsed,
+          };
+          app.runCommand('sheet.range.paste', {
             sheetId: activeSheetId,
-            startRow: selection.primaryRowIndex,
-            startColumn: selection.primaryColumnIndex,
-            values: parsed.map((row) => row.map((cell) => ({ ...cell, style: undefined, comment: undefined }))),
+            targetOrigin: { row: selection.primaryRowIndex, column: selection.primaryColumnIndex },
+            clipboard,
+            mode: pasteParams?.mode ?? 'all',
           });
           app.syncDraftFromPrimary();
           app.notify('Pasted from clipboard');
@@ -260,8 +282,16 @@ export function executeUiCommand(app: SpreadsheetApplication, commandId: string,
     case 'sheet.banded.set':
       app.toggleBandedRows();
       return true;
-    case 'sheet.freeze.set':
-      app.runCommand('sheet.freeze.set', { sheetId: activeSheetId, freeze: params });
+    case 'sheet.freeze.set': {
+      const freezeParams = params as { freeze?: import('@react-sheets/core-model').FreezeModel } | import('@react-sheets/core-model').FreezeModel;
+      const freeze = freezeParams && typeof freezeParams === 'object' && 'freeze' in freezeParams
+        ? freezeParams.freeze!
+        : freezeParams as import('@react-sheets/core-model').FreezeModel;
+      app.runCommand('sheet.freeze.set', { sheetId: activeSheetId, freeze });
+      return true;
+    }
+    case 'ui.freeze.atPrimary':
+      app.freezeAtPrimary();
       return true;
     case 'sheet.filter.remove':
       app.clearFilter();

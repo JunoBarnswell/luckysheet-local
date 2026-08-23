@@ -8,6 +8,10 @@ import { StatusBar } from "./components/StatusBar";
 import { FunctionWizardDialog } from "./components/dialogs/FunctionWizardDialog";
 import { SortDialog } from "./components/dialogs/SortDialog";
 import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
+import { GoToDialog } from "./components/dialogs/GoToDialog";
+import { PasteSpecialDialog } from "./components/dialogs/PasteSpecialDialog";
+import { FormatCellsDialog } from "./components/dialogs/FormatCellsDialog";
+import { ShiftCellsDialog } from "./components/dialogs/ShiftCellsDialog";
 import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
 import { WorkbookCatalog } from "./components/WorkbookCatalog";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
@@ -24,7 +28,7 @@ import {
   updateValueInLayout,
 } from "./domain/pivot-layout-ops";
 import type { RibbonAction } from "./domain/ribbon-actions";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getInitialAppPhase,
   useSpreadsheetApp,
@@ -279,6 +283,15 @@ function WorkspaceApp() {
     );
   };
 
+  const formatCellsInitial = useMemo(() => {
+    const cell = state.selectedSheet.getCell(state.selection.primaryRowIndex, state.selection.primaryColumnIndex);
+    const style = cell?.style ?? {};
+    return {
+      numberFormat: style.numberFormat ?? "general",
+      style: { ...style },
+    };
+  }, [state.showFormatCells, state.selection.primaryRowIndex, state.selection.primaryColumnIndex, state.selectedSheet, state.version]);
+
   return (
     <>
       <AppShell
@@ -294,6 +307,7 @@ function WorkspaceApp() {
               if (state.editingCell) app.commitEdit("down");
               else app.commitFormula();
             }}
+            onNameBoxCommit={(value) => app.selectAddress(value)}
             onOpenWizard={() => executeRibbonAction("function-wizard")}
             phase={state.phase}
           />
@@ -358,6 +372,10 @@ function WorkspaceApp() {
             onSelect={app.selectSheet}
             onRenameSheet={app.renameSheet}
             onDeleteSheet={app.deleteSheet}
+            onDuplicateSheet={app.duplicateSheet}
+            onHideSheet={app.hideSheet}
+            onSetTabColor={app.setSheetTabColor}
+            onMoveSheet={app.moveSheet}
             sheets={state.sheets}
           />
         }
@@ -394,6 +412,7 @@ function WorkspaceApp() {
               shapes={state.selectedSheet.shapes}
               sparklines={state.selectedSheet.sparklines}
               onSelectionChange={applySelection}
+              onExtendSelection={(row, column) => app.extendSelectionTo(row, column)}
               onMovePrimary={(rowDelta, columnDelta, opts) => app.movePrimary(rowDelta, columnDelta, opts)}
               onCommitCell={(value) => app.commitFormula(value)}
               onBeginEdit={(initialText) => app.beginEdit(initialText)}
@@ -500,6 +519,32 @@ function WorkspaceApp() {
         initialFind={state.findQuery}
         onClose={app.closeFindReplace}
         onReplaceAll={(params) => app.findReplace(params)}
+      />
+
+      <GoToDialog
+        open={state.showGoTo}
+        onClose={app.closeGoTo}
+        onGoTo={(reference) => app.selectAddress(reference)}
+        onGoToSpecial={(kind) => app.goToSpecial(kind)}
+      />
+
+      <PasteSpecialDialog
+        open={state.showPasteSpecial}
+        onClose={app.closePasteSpecial}
+        onPaste={(mode) => app.pasteSpecial(mode)}
+      />
+
+      <FormatCellsDialog
+        open={state.showFormatCells}
+        initial={formatCellsInitial}
+        onClose={app.closeFormatCells}
+        onApply={(draft) => app.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
+      />
+
+      <ShiftCellsDialog
+        open={state.showShiftCells}
+        onClose={app.closeShiftCells}
+        onShift={(direction) => app.shiftCells(direction)}
       />
 
       <PrintPreviewDialog

@@ -11,13 +11,35 @@ import type {
   WorkbookTableModel,
   WorkbookModel,
   WorksheetModel,
+  StructuralTransformParams,
 } from '@react-sheets/core-model';
+import { StructuralTransform } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { shiftFormula } from './clipboard';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
 import { registerOutlineCommands } from './outline-commands';
+
+function snapshotCellRegion(
+  sheet: WorksheetModel,
+  startRow: number,
+  endRow: number,
+  startColumn: number,
+  endColumn: number,
+): Array<{ row: number; column: number; cell: CellData }> {
+  const extracted: Array<{ row: number; column: number; cell: CellData }> = [];
+  sheet.cells.forEach((cell, row, column) => {
+    if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
+      extracted.push({ row, column, cell: structuredClone(cell) });
+    }
+  });
+  return extracted;
+}
+
+function applyStructuralTransform(workbook: WorkbookModel, params: StructuralTransformParams): void {
+  StructuralTransform.apply(workbook, params);
+}
 
 export * from './clipboard';
 export * from './data-features';
@@ -884,22 +906,22 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
   });
 
-  // 11. 结构操作:行/列插入与删除
+  // 11. 结构操作:行/列插入与删除（统一走 StructuralTransform）
   runtime.registry.registerMutation('rows.inserted', (item, context) => {
     const params = item.params as { sheetId: string; at: number; count: number };
-    context.workbook.getSheet(params.sheetId).insertRows(params.at, params.count);
+    applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
   });
   runtime.registry.registerMutation('rows.deleted', (item, context) => {
     const params = item.params as { sheetId: string; at: number; count: number };
-    context.workbook.getSheet(params.sheetId).deleteRows(params.at, params.count);
+    applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
   });
   runtime.registry.registerMutation('columns.inserted', (item, context) => {
     const params = item.params as { sheetId: string; at: number; count: number };
-    context.workbook.getSheet(params.sheetId).insertColumns(params.at, params.count);
+    applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
   });
   runtime.registry.registerMutation('columns.deleted', (item, context) => {
     const params = item.params as { sheetId: string; at: number; count: number };
-    context.workbook.getSheet(params.sheetId).deleteColumns(params.at, params.count);
+    applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
   });
   runtime.registry.registerMutation('row.hidden', (item, context) => {
     const params = item.params as { sheetId: string; index: number };
@@ -1017,7 +1039,14 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({
     id: 'sheet.rows.insert',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = [];
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const affectedRanges: RangeRef[] = [{
+        sheetId: params.sheetId,
+        startRow: params.at,
+        endRow: params.at + params.count - 1,
+        startColumn: 0,
+        endColumn: Math.max(0, sheet.columnCount - 1),
+      }];
       context.applyMutation({
         id: 'rows.inserted',
         unitId: context.workbook.unitId,
@@ -1033,7 +1062,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => context.workbook.getSheet(params.sheetId).insertRows(params.at, params.count),
+        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1043,8 +1072,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.rows.delete',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const removed = sheet.deleteRows(params.at, params.count);
-      const affectedRanges: RangeRef[] = [];
+      const end = params.at + params.count - 1;
+      const removed = snapshotCellRegion(sheet, params.at, end, 0, Math.max(0, sheet.columnCount - 1));
+      const affectedRanges: RangeRef[] = [{
+        sheetId: params.sheetId,
+        startRow: params.at,
+        endRow: end,
+        startColumn: 0,
+        endColumn: Math.max(0, sheet.columnCount - 1),
+      }];
       context.applyMutation({
         id: 'rows.deleted',
         unitId: context.workbook.unitId,
@@ -1067,10 +1103,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: [] as RangeRef[],
           })),
         ],
-        apply: () => {
-          const target = context.workbook.getSheet(params.sheetId);
-          target.deleteRows(params.at, params.count);
-        },
+        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1079,7 +1112,14 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<{ sheetId: string; at: number; count: number }>({
     id: 'sheet.columns.insert',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = [];
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const affectedRanges: RangeRef[] = [{
+        sheetId: params.sheetId,
+        startRow: 0,
+        endRow: Math.max(0, sheet.rowCount - 1),
+        startColumn: params.at,
+        endColumn: params.at + params.count - 1,
+      }];
       context.applyMutation({
         id: 'columns.inserted',
         unitId: context.workbook.unitId,
@@ -1095,7 +1135,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => context.workbook.getSheet(params.sheetId).insertColumns(params.at, params.count),
+        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1105,8 +1145,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.columns.delete',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const removed = sheet.deleteColumns(params.at, params.count);
-      const affectedRanges: RangeRef[] = [];
+      const end = params.at + params.count - 1;
+      const removed = snapshotCellRegion(sheet, 0, Math.max(0, sheet.rowCount - 1), params.at, end);
+      const affectedRanges: RangeRef[] = [{
+        sheetId: params.sheetId,
+        startRow: 0,
+        endRow: Math.max(0, sheet.rowCount - 1),
+        startColumn: params.at,
+        endColumn: end,
+      }];
       context.applyMutation({
         id: 'columns.deleted',
         unitId: context.workbook.unitId,
@@ -1129,9 +1176,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: [] as RangeRef[],
           })),
         ],
-        apply: () => {
-          context.workbook.getSheet(params.sheetId).deleteColumns(params.at, params.count);
-        },
+        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
