@@ -65,8 +65,13 @@ export function PrintPreviewDialog({ columns, getRow, layout, open, onClose, row
           <Button variant="ghost" onClick={onClose}>Close</Button>
           <Button variant="primary" onClick={() => {
             if (layout) {
-              document.documentElement.dataset.printPaper = layout.paper;
-              document.documentElement.dataset.printOrientation = layout.orientation;
+              const styleId = 'react-sheets-print-layout';
+              document.getElementById(styleId)?.remove();
+              const style = document.createElement('style');
+              style.id = styleId;
+              style.textContent = `@page { size: ${layout.paper} ${layout.orientation}; margin: ${layout.margin.top}mm ${layout.margin.right}mm ${layout.margin.bottom}mm ${layout.margin.left}mm; }`;
+              document.head.appendChild(style);
+              window.setTimeout(() => style.remove(), 1000);
             }
             window.print();
           }}>Print</Button>
