@@ -138,6 +138,7 @@ export interface PeerCursor {
 }
 
 export interface WorkspaceState {
+  unitId: string;
   workbookName: string;
   selection: SelectionState;
   /** 主单元格地址(派生,供公式栏/状态栏使用) */
@@ -302,6 +303,8 @@ function hashCode(input: string): number {
 
 function resolveUnitId(): string {
   if (typeof window === 'undefined') return 'wb-server-default';
+  const routeMatch = /^\/workbooks\/([^/]+)\/?$/.exec(window.location.pathname);
+  if (routeMatch?.[1]) return decodeURIComponent(routeMatch[1]);
   const existing = window.localStorage.getItem(UNIT_ID_STORAGE_KEY);
   if (existing) return existing;
   const generated = typeof crypto !== 'undefined' && crypto.randomUUID
@@ -2259,6 +2262,7 @@ export function useWorkspaceState({ initialPhase = 'ready' }: UseWorkspaceStateO
   const historyEntries = useMemo(() => runtime.commands.getUndoEntries(), [modelVersion, runtime]);
 
   const state = useMemo<WorkspaceState>(() => ({
+    unitId: runtime.model.unitId,
     workbookName: runtime.model.name,
     selectedFloatingId,
     selection,

@@ -23,7 +23,7 @@ import {
   createEmptyChromeState,
 } from "@react-sheets/render-engine";
 import { drawChartOnCanvas, drawShapeOnCanvas, drawSparklineOnCanvas } from "@react-sheets/pro-features";
-import type { ChartModel, ShapeModel, SparklineModel } from "@react-sheets/core-model";
+import type { ChartModel, PivotResultTree, ShapeModel, SparklineModel } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
 import type { PeerCursor, SelectionState, SheetCell, SheetView, WorkspacePhase } from "../state/workspace";
@@ -41,6 +41,7 @@ export interface SheetCanvasProps {
   zoom: number;
   peers: PeerCursor[];
   charts?: ChartModel[];
+  pivotResults?: Record<string, PivotResultTree>;
   shapes?: ShapeModel[];
   sparklines?: SparklineModel[];
   selectedFloatingId: string | null;
@@ -94,6 +95,7 @@ export function SheetCanvas({
   zoom,
   peers,
   charts = [],
+  pivotResults = {},
   shapes = [],
   sparklines = [],
   selectedFloatingId,
@@ -230,29 +232,44 @@ export function SheetCanvas({
     }
     return drawables;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [charts, shapes, sparklines, skeleton, sheetId]);
+  }, [charts, pivotResults, shapes, sparklines, skeleton, sheetId]);
 
   function getChartSeries(chart: ChartModel): { categories: string[]; series: Array<{ name: string; values: number[] }> } {
     const categories: string[] = [];
     const series: Array<{ name: string; values: number[] }> = [];
+    const pivot = chart.pivotId ? pivotResults[chart.pivotId] : undefined;
+    if (pivot) {
+      const leaves: typeof pivot.rows = [];
+      const collect = (nodes: typeof pivot.rows) => nodes.forEach((node) => node.children.length ? collect(node.children) : leaves.push(node));
+      collect(pivot.rows);
+      const valueCount = pivot.rows[0]?.values[0]?.values.length ?? 0;
+      for (let index = 0; index < valueCount; index++) series.push({ name: chart.title ?? `Value ${index + 1}`, values: [] });
+      for (const node of leaves) {
+        categories.push(node.label);
+        const cell = node.values[0];
+        for (let index = 0; index < valueCount; index++) {
+          const numeric = Number(cell?.values[index]);
+          series[index]?.values.push(Number.isFinite(numeric) ? numeric : 0);
+        }
+      }
+      return { categories, series };
+    }
     const source = chart.sourceRanges[0];
     if (!source) return { categories, series };
+    const values: number[] = [];
     for (let row = source.startRow; row <= source.endRow; row++) {
       for (let column = source.startColumn; column <= source.endColumn; column++) {
         const cell = sheet.rows[row]?.cells[column];
         if (!cell) continue;
         const numeric = Number(cell.value.replace(/[$,%]/g, ""));
         if (Number.isFinite(numeric) && cell.value !== "") {
-          const existing = series.at(-1);
-          if (existing) existing.values.push(numeric);
+          values.push(numeric);
         } else if (cell.value !== "") {
           categories.push(cell.value);
         }
       }
     }
-    if (series.length === 0 && categories.length > 0) {
-      series.push({ name: chart.title ?? "Series 1", values: [] });
-    }
+    if (values.length > 0) series.push({ name: chart.title ?? "Series 1", values });
     return { categories, series };
   }
 

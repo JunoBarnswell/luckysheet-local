@@ -13,10 +13,12 @@ export interface PivotFieldPlacement { field: string; sort?: PivotSort; group?: 
 export type PivotFilter = { kind: 'manual'; field: string; selected: PivotScalar[]; exclude?: boolean } | { kind: 'condition'; field: string; operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal'; value: PivotScalar } | { kind: 'top-items'; field: string; count: number; valueField: string; direction: 'top' | 'bottom' };
 export type PivotShowAs = { kind: 'normal' } | { kind: 'grand-percentage' } | { kind: 'row-percentage' } | { kind: 'column-percentage' } | { kind: 'parent-percentage' } | { kind: 'difference'; base: 'grand' | 'row' | 'column' | 'parent' } | { kind: 'percentage-difference'; base: 'grand' | 'row' | 'column' | 'parent' } | { kind: 'running-total'; axis: 'row' | 'column' } | { kind: 'rank'; axis: 'row' | 'column'; direction: 'ascending' | 'descending' } | { kind: 'index' };
 export interface PivotValueField { field: string; summarizeBy: PivotAggregateFunction; displayName?: string; showAs?: PivotShowAs; }
-export interface PivotLayout { rows: PivotFieldPlacement[]; columns: PivotFieldPlacement[]; filters: PivotFilter[]; values: PivotValueField[]; showSubtotals: boolean; showGrandTotals: boolean; compact: boolean; repeatLabels: boolean; expandedFieldIds?: string[]; }
+export interface PivotCalculatedField { name: string; formula: string; }
+export interface PivotCalculatedItem { field: string; name: string; formula: string; }
+export interface PivotLayout { rows: PivotFieldPlacement[]; columns: PivotFieldPlacement[]; filters: PivotFilter[]; values: PivotValueField[]; calculatedFields?: PivotCalculatedField[]; calculatedItems?: PivotCalculatedItem[]; showSubtotals: boolean; showGrandTotals: boolean; compact: boolean; repeatLabels: boolean; expandedFieldIds?: string[]; }
 export interface PivotRefreshPolicy { mode: 'manual' | 'on-open' | 'on-change'; preserveFormatting: boolean; refreshOnLoad: boolean; }
-export interface PivotSlicer { id: string; field: string; selected: PivotScalar[]; }
-export interface PivotTimeline { id: string; field: string; start?: string; end?: string; }
+export interface PivotSlicer { id: string; field: string; selected: PivotScalar[]; connectedPivotIds?: string[]; }
+export interface PivotTimeline { id: string; field: string; start?: string; end?: string; connectedPivotIds?: string[]; }
 export interface PivotChartReference { chartId: string; role: 'source' | 'linked'; }
 export interface PivotSourceRowPath { sheetId: SheetId; row: Row; }
 export interface PivotResultCell { kind?: 'detail' | 'grand-total'; columnPath: PivotScalar[]; values: PivotScalar[]; sourceRowPaths: PivotSourceRowPath[]; }

@@ -77,6 +77,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/v1/workbooks') {
+      sendJson(response, 200, storage.listWorkbooks());
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname.startsWith('/api/v1/workbooks/') && url.pathname.endsWith('/snapshot')) {
       const unitId = url.pathname.split('/')[4];
       if (!unitId) throw new Error('Workbook id is required');

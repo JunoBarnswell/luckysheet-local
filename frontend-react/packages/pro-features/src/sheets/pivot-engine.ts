@@ -2,8 +2,10 @@ import type {
   PivotAggregateFunction, PivotDataSource, PivotFieldCatalog, PivotFieldDataType, PivotFieldPlacement,
   PivotFilter, PivotGroup, PivotModel, PivotResultCell, PivotResultNode, PivotResultTree, PivotScalar,
   PivotSourceRowPath, PivotValueField, WorkbookModel, WorksheetModel, NormalizedPivotModel,
+  PivotCalculatedField, PivotCalculatedItem,
 } from '@react-sheets/core-model';
 import { normalizePivotDefinition } from '@react-sheets/core-model';
+import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
 
 interface SourceRow { values: Record<string, PivotScalar>; paths: PivotSourceRowPath[]; }
 interface AxisGroup { values: PivotScalar[]; rows: SourceRow[]; }
@@ -61,6 +63,60 @@ function readTable(sheet: WorksheetModel, range: { sheetId: string; startRow: nu
   return rows;
 }
 
+const formulaFunctions = new Set(['SUM', 'COUNT', 'AVERAGE', 'MIN', 'MAX', 'IF', 'AND', 'OR', 'NOT', 'ROUND', 'ABS', 'CONCAT', 'LEFT', 'RIGHT', 'LEN']);
+
+function columnLabel(index: number): string {
+  let value = '';
+  let current = index + 1;
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    value = String.fromCharCode(65 + remainder) + value;
+    current = Math.floor((current - 1) / 26);
+  }
+  return value;
+}
+
+function formulaScalar(value: FormulaValue): PivotScalar | null {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
+}
+
+function rewriteCalculatedFormula(formula: string, fields: string[]): string {
+  let rewritten = formula.trim().replace(/^=/, '');
+  fields
+    .map((field, index) => ({ field, index }))
+    .sort((left, right) => right.field.length - left.field.length)
+    .forEach(({ field, index }) => {
+      const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const reference = `${columnLabel(index)}1`;
+      rewritten = rewritten.replace(new RegExp(`\\[${escaped}\\]`, 'g'), reference);
+      if (!formulaFunctions.has(field.toUpperCase())) {
+        rewritten = rewritten.replace(new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'g'), reference);
+      }
+    });
+  return '=' + rewritten;
+}
+
+function calculateRowFormula(row: SourceRow, formula: string, fields: string[]): PivotScalar | null {
+  const engine = new FormulaEngine({ defaultSheetId: 'pivot' });
+  fields.forEach((field, index) => engine.setValue({ sheetId: 'pivot', row: 0, column: index }, row.values[field] ?? null));
+  engine.setFormula({ sheetId: 'pivot', row: 1, column: 0 }, rewriteCalculatedFormula(formula, fields));
+  return formulaScalar(engine.getCellValue({ sheetId: 'pivot', row: 1, column: 0 }));
+}
+
+function applyCalculatedData(rows: SourceRow[], fields: PivotCalculatedField[] = [], items: PivotCalculatedItem[] = []): SourceRow[] {
+  if (fields.length === 0 && items.length === 0) return rows;
+  return rows.map((row) => {
+    const values = { ...row.values };
+    for (const field of fields) {
+      values[field.name] = calculateRowFormula({ ...row, values }, field.formula, Object.keys(values));
+    }
+    for (const item of items) {
+      if (same(values[item.field] ?? null, item.name)) values[item.name] = calculateRowFormula({ ...row, values }, item.formula, Object.keys(values));
+    }
+    return { ...row, values };
+  });
+}
+
 function joinTables(workbook: WorkbookModel, source: Extract<PivotDataSource, { kind: 'worksheet-ranges' }>): SourceRow[] {
   if (!source.ranges.length) return [];
   let current = readTable(workbook.getSheet(source.ranges[0]!.sheetId), source.ranges[0]!);
@@ -81,7 +137,8 @@ function joinTables(workbook: WorkbookModel, source: Extract<PivotDataSource, { 
 
 function readSource(workbook: WorkbookModel, pivot: PivotModel | NormalizedPivotModel): SourceRow[] {
   const source = sourceRange(pivot);
-  return source.kind === 'worksheet-range' ? readTable(workbook.getSheet(source.range.sheetId), source.range) : joinTables(workbook, source);
+  const rows = source.kind === 'worksheet-range' ? readTable(workbook.getSheet(source.range.sheetId), source.range) : joinTables(workbook, source);
+  return applyCalculatedData(rows, pivot.layout?.calculatedFields, pivot.layout?.calculatedItems);
 }
 
 export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel | NormalizedPivotModel): PivotFieldCatalog {
@@ -153,9 +210,10 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
   return result;
 }
 
-function matchesSlicersAndTimelines(rows: SourceRow[], pivot: NormalizedPivotModel): SourceRow[] {
-  const slicers = pivot.slicers ?? [];
-  const timelines = pivot.timelines ?? [];
+function matchesSlicersAndTimelines(workbook: WorkbookModel, rows: SourceRow[], pivot: NormalizedPivotModel): SourceRow[] {
+  const linked = workbook.getSheet(pivot.sheetId).pivots.filter((candidate) => candidate.id !== pivot.id);
+  const slicers = [...(pivot.slicers ?? []), ...linked.flatMap((candidate) => (candidate.slicers ?? []).filter((slicer) => slicer.connectedPivotIds?.includes(pivot.id)))];
+  const timelines = [...(pivot.timelines ?? []), ...linked.flatMap((candidate) => (candidate.timelines ?? []).filter((timeline) => timeline.connectedPivotIds?.includes(pivot.id)))];
   return rows.filter((row) => slicers.every((slicer) => slicer.selected.length === 0 || slicer.selected.some((value) => same(value, row.values[slicer.field] ?? null))) && timelines.every((timeline) => {
     const raw = row.values[timeline.field];
     if (raw == null) return false;
@@ -197,7 +255,7 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
 }
 
 export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
-  const definition = normalizePivotDefinition(pivot); let rows = matchesSlicersAndTimelines(readSource(workbook, definition), definition); rows = rows.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter))); rows = topItems(rows, definition.layout.filters);
+  const definition = normalizePivotDefinition(pivot); let rows = matchesSlicersAndTimelines(workbook, readSource(workbook, definition), definition); rows = rows.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter))); rows = topItems(rows, definition.layout.filters);
   const catalog = getPivotFieldCatalog(workbook, definition); const columns = definition.layout.columns.length ? axisGroups(rows, definition.layout.columns) : [{ values: [], rows }]; const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? { kind: 'grand-total', columnPath: [], values: definition.layout.values.map((field) => aggregate(rows, field.field, field.summarizeBy)), sourceRowPaths: rows.flatMap((row) => row.paths) } : null;
   const tree: PivotResultTree = { schema: 'PivotResultTreeV1', pivotId: definition.id, fields: catalog, columnPaths: columns.map((column) => column.values), rows: resultNodes(rows, definition.layout.rows, 0, columns, definition.layout.values, definition.layout.showSubtotals), grandTotal, sourceRowPaths: rows.flatMap((row) => row.paths) }; applyShowAs(tree, definition.layout.values); return tree;
 }

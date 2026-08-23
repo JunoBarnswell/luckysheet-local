@@ -25,12 +25,16 @@ export interface PivotValueDefinition {
   baseFieldId?: string;
   baseItem?: string;
 }
+export interface PivotCalculatedFieldDefinition { name: string; formula: string; }
+export interface PivotCalculatedItemDefinition { fieldId: string; name: string; formula: string; }
 
 export interface PivotDefinition {
   filters: string[];
   columns: string[];
   rows: string[];
   values: PivotValueDefinition[];
+  calculatedFields: PivotCalculatedFieldDefinition[];
+  calculatedItems: PivotCalculatedItemDefinition[];
   filterSelections: Record<string, string[]>;
   sort: Record<string, PivotSortDirection>;
   groupedFields: string[];
@@ -62,10 +66,13 @@ export interface PivotPanelState {
 
 export interface PivotPanelCallbacks {
   onCreate?: () => void;
+  onPivotSelect?: (pivotId: string) => void;
   onDefinitionChange: (definition: PivotDefinition) => void;
   onFieldAreaChange: (fieldId: string, area: PivotFieldArea, index: number) => void;
   onRemoveField: (fieldId: string, area: PivotFieldArea, index: number) => void;
   onValueChange: (value: PivotValueDefinition) => void;
+  onCalculatedFieldsChange?: (fields: PivotCalculatedFieldDefinition[]) => void;
+  onCalculatedItemsChange?: (items: PivotCalculatedItemDefinition[]) => void;
   onFilterChange: (fieldId: string, selectedValues: readonly string[]) => void;
   onSortChange: (fieldId: string, direction: PivotSortDirection) => void;
   onGroupChange: (fieldId: string, grouped: boolean) => void;

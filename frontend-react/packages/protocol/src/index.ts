@@ -30,6 +30,13 @@ export interface SnapshotResponse {
   revision: number;
 }
 
+export interface WorkbookSummary {
+  unitId: string;
+  name: string;
+  revision: number;
+  updatedAt: string;
+}
+
 export class WorkbookApiClient {
   constructor(private readonly baseUrl = '') {}
 
@@ -49,6 +56,22 @@ export class WorkbookApiClient {
     });
     if (!response.ok) throw new Error(`Workbook creation failed: ${response.status}`);
     return response.json() as Promise<SnapshotResponse>;
+  }
+
+  async createEmptyWorkbook(name = 'Untitled workbook'): Promise<SnapshotResponse> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error(`Workbook creation failed: ${response.status}`);
+    return response.json() as Promise<SnapshotResponse>;
+  }
+
+  async listWorkbooks(): Promise<WorkbookSummary[]> {
+    const response = await fetch(`${this.baseUrl}/api/v1/workbooks`);
+    if (!response.ok) throw new Error(`Workbook list fetch failed: ${response.status}`);
+    return response.json() as Promise<WorkbookSummary[]>;
   }
 
   async submitChangeSet(changeSet: CollaborationChangeSet): Promise<{ operationId: string; revision: number }> {
@@ -222,4 +245,3 @@ export class CollabSocketClient {
     for (const listener of this.statusListeners) listener(status);
   }
 }
-

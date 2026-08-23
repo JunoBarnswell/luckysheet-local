@@ -3,12 +3,18 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { CollaborationChangeSet, SnapshotResponse } from '@react-sheets/protocol';
 import { WorkbookModel, type CellData, type PivotModel, type WorkbookSnapshotV1 } from '@react-sheets/core-model';
+import type { WorkbookSummary } from '@react-sheets/protocol';
 
 const databasePath = resolve(process.cwd(), 'data/react-sheets.sqlite');
 mkdirSync(dirname(databasePath), { recursive: true });
 
 export class WorkbookStorage {
   private readonly database = new DatabaseSync(databasePath);
+
+  listWorkbooks(): WorkbookSummary[] {
+    const rows = this.database.prepare('SELECT unit_id, name, revision, updated_at FROM workbooks ORDER BY updated_at DESC').all() as Array<{ unit_id: string; name: string; revision: number; updated_at: string }>;
+    return rows.map((row) => ({ unitId: row.unit_id, name: row.name, revision: row.revision, updatedAt: row.updated_at }));
+  }
 
   constructor() {
     this.database.exec(`

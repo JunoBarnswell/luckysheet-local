@@ -51,6 +51,8 @@ export interface FeatureSidebarProps {
   sheetId: string;
   charts: ChartModel[];
   pivotDefinition?: PivotUiDefinition;
+  pivotList?: readonly { id: string; label: string }[];
+  activePivotId?: string;
   pivotFieldCatalog?: readonly PivotUiFieldDefinition[];
   pivotResult?: PivotUiResult;
   onShowPivotDetails?: (paths: import('@react-sheets/core-model').PivotSourceRowPath[]) => void;
@@ -188,6 +190,8 @@ export function FeatureSidebar({
   sheetId,
   charts,
   pivotDefinition,
+  pivotList,
+  activePivotId,
   pivotFieldCatalog,
   pivotResult,
   onShowPivotDetails,
@@ -248,6 +252,8 @@ export function FeatureSidebar({
               aria-pressed={panel.id === activePanel}
               disabled={disabled}
               onClick={() => onPanelChange(panel.id)}
+              onPointerDown={() => onPanelChange(panel.id)}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPanelChange(panel.id); } }}
               variant={panel.id === activePanel ? 'soft' : 'ghost'}
               className="flex-col gap-0.5 px-0.5 py-1.5"
             >
@@ -263,6 +269,8 @@ export function FeatureSidebar({
               aria-pressed={panel.id === activePanel}
               disabled={disabled}
               onClick={() => onPanelChange(panel.id)}
+              onPointerDown={() => onPanelChange(panel.id)}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPanelChange(panel.id); } }}
               variant={panel.id === activePanel ? 'soft' : 'ghost'}
               className="flex-col gap-0.5 px-0.5 py-1"
             >
@@ -309,6 +317,8 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'pivot' ? (
           <PivotPanel
             definition={pivotDefinition}
+            pivotList={pivotList}
+            activePivotId={activePivotId}
             fieldCatalog={pivotFieldCatalog}
             result={pivotResult}
             onShowDetails={onShowPivotDetails}

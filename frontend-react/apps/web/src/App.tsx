@@ -10,12 +10,14 @@ import { FunctionWizardDialog } from "./components/dialogs/FunctionWizardDialog"
 import { SortDialog } from "./components/dialogs/SortDialog";
 import { FindReplaceDialog } from "./components/dialogs/FindReplaceDialog";
 import { PrintPreviewDialog } from "./components/dialogs/PrintPreviewDialog";
+import { WorkbookCatalog } from "./components/WorkbookCatalog";
+import { useState } from "react";
 import { getInitialWorkspacePhase, useWorkspaceState, type SelectionState, type SidebarPanelId } from "./state/workspace";
 import type { PivotAggregateFunction, PivotFieldDefinition as CorePivotFieldDefinition, PivotFilter, PivotLayout, PivotModel, PivotShowAs as CorePivotShowAs, PivotValueField } from "@react-sheets/core-model";
-import type { PivotDefinition, PivotFieldArea, PivotFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult, PivotShowAs as UiPivotShowAs } from "./components/pivot/types";
+import type { PivotCalculatedFieldDefinition, PivotCalculatedItemDefinition, PivotDefinition, PivotFieldDefinition, PivotPanelCallbacks, PivotPanelState, PivotResult, PivotShowAs as UiPivotShowAs } from "./components/pivot/types";
 
 const emptyPivotDefinition: PivotDefinition = {
-  filters: [], columns: [], rows: [], values: [], filterSelections: {}, sort: {}, groupedFields: [], layout: "compact", showGrandTotals: true, showSubtotals: true, expandedFieldIds: [], slicers: [],
+  filters: [], columns: [], rows: [], values: [], calculatedFields: [], calculatedItems: [], filterSelections: {}, sort: {}, groupedFields: [], layout: "compact", showGrandTotals: true, showSubtotals: true, expandedFieldIds: [], slicers: [],
 };
 
 function toUiShowAs(showAs?: CorePivotShowAs): UiPivotShowAs {
@@ -64,6 +66,8 @@ function pivotToUiDefinition(pivot?: PivotModel): PivotDefinition {
     columns,
     rows,
     values,
+    calculatedFields: (layout?.calculatedFields ?? []).map((field) => ({ ...field })),
+    calculatedItems: (layout?.calculatedItems ?? []).map((item) => ({ fieldId: item.field, name: item.name, formula: item.formula })),
     filterSelections,
     sort,
     groupedFields: [...(layout?.rows ?? []), ...(layout?.columns ?? [])].filter((field) => Boolean(field.group)).map((field) => field.field),
@@ -98,6 +102,8 @@ function uiToPivotLayout(definition: PivotDefinition, fields: readonly PivotFiel
     columns: definition.columns.map(placement),
     filters,
     values,
+    calculatedFields: definition.calculatedFields.map((field) => ({ ...field })),
+    calculatedItems: definition.calculatedItems.map((item) => ({ field: item.fieldId, name: item.name, formula: item.formula })),
     showSubtotals: definition.showSubtotals,
     showGrandTotals: definition.showGrandTotals,
     compact: definition.layout === "compact",
@@ -106,11 +112,11 @@ function uiToPivotLayout(definition: PivotDefinition, fields: readonly PivotFiel
   };
 }
 
-export default function App() {
+function WorkspaceApp() {
   const { actions, state } = useWorkspaceState({ initialPhase: getInitialWorkspacePhase() });
   const isBusy = state.phase !== "ready";
   const copyWorkbookLink = () => {
-    const link = window.location.href;
+    const link = `${window.location.origin}/workbooks/${encodeURIComponent(state.unitId)}`;
     const clipboard = navigator.clipboard;
     if (!clipboard) {
       actions.notify("Clipboard access is unavailable");
@@ -125,11 +131,12 @@ export default function App() {
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
     : { sheetId: state.activeSheetId, startRow: 0, endRow: Math.max(1, state.selectedSheet.rows.length - 1), startColumn: 0, endColumn: Math.max(1, state.selectedSheet.columns.length - 1) };
-  const corePivotFields = actions.getPivotFieldCatalog(pivotSourceRange);
-  const pivotFields: PivotFieldDefinition[] = corePivotFields.map((field: CorePivotFieldDefinition) => ({ id: field.id, label: field.name, type: field.dataType === "mixed" ? "text" : field.dataType, values: field.values?.map((value) => String(value)) }));
-  const activePivot = state.selectedSheet.pivots[0];
-  const pivotDefinition = pivotToUiDefinition(activePivot);
+  const [activePivotId, setActivePivotId] = useState<string>();
+  const activePivot = state.selectedSheet.pivots.find((pivot) => pivot.id === activePivotId) ?? state.selectedSheet.pivots[0];
   const pivotTree = activePivot ? state.selectedSheet.pivotResults[activePivot.id] : undefined;
+  const corePivotFields = pivotTree?.fields.fields ?? actions.getPivotFieldCatalog(pivotSourceRange);
+  const pivotFields: PivotFieldDefinition[] = corePivotFields.map((field: CorePivotFieldDefinition) => ({ id: field.id, label: field.name, type: field.dataType === "mixed" ? "text" : field.dataType, values: field.values?.map((value) => String(value)) }));
+  const pivotDefinition = pivotToUiDefinition(activePivot);
   const pivotResult: PivotResult | undefined = pivotTree ? { rowCount: pivotTree.rows.length, columnCount: pivotTree.columnPaths.length, tree: pivotTree, summary: `${pivotTree.rows.length} row groups × ${pivotTree.columnPaths.length || 1} column groups` } : undefined;
   const updatePivotDefinition = (next: PivotDefinition) => {
     if (activePivot) {
@@ -143,14 +150,26 @@ export default function App() {
     columns: [...source.columns],
     rows: [...source.rows],
     values: source.values.map((value) => ({ ...value })),
+    calculatedFields: source.calculatedFields.map((field) => ({ ...field })),
+    calculatedItems: source.calculatedItems.map((item) => ({ ...item })),
     filterSelections: Object.fromEntries(Object.entries(source.filterSelections).map(([key, values]) => [key, [...values]])),
     sort: { ...source.sort },
     groupedFields: [...source.groupedFields],
     expandedFieldIds: [...source.expandedFieldIds],
     slicers: [...source.slicers],
   });
+  const createPivot = () => {
+    const rowField = pivotFields.find((field) => field.type !== "number")?.id ?? pivotFields[0]?.id;
+    const valueField = pivotFields.find((field) => field.type === "number")?.id ?? pivotFields[0]?.id;
+    if (!rowField || !valueField) return;
+    const id = `pivot-${Math.random().toString(36).slice(2, 8)}`;
+    const summarizeBy = pivotFields.find((field) => field.id === valueField)?.type === "number" ? "sum" : "count";
+    actions.addPivot({ id, sheetId: state.activeSheetId, sourceRange: pivotSourceRange, rowFields: [rowField], columnFields: [], valueFields: [{ field: valueField, summarizeBy }], filterFields: [], layout: { rows: [{ field: rowField }], columns: [], filters: [], values: [{ field: valueField, summarizeBy }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [] } });
+    setActivePivotId(id);
+  };
   const pivotCallbacks: PivotPanelCallbacks = {
-    onCreate: activePivot ? undefined : () => actions.handleRibbonAction("open-pivot"),
+    onCreate: createPivot,
+    onPivotSelect: setActivePivotId,
     onDefinitionChange: updatePivotDefinition,
     onFieldAreaChange: (fieldId, area, index) => {
       const next = clonePivotDefinition(pivotDefinition);
@@ -174,6 +193,8 @@ export default function App() {
       if (index >= 0) next.values[index] = value;
       updatePivotDefinition(next);
     },
+    onCalculatedFieldsChange: (fields) => updatePivotDefinition({ ...clonePivotDefinition(pivotDefinition), calculatedFields: fields }),
+    onCalculatedItemsChange: (items) => updatePivotDefinition({ ...clonePivotDefinition(pivotDefinition), calculatedItems: items }),
     onFilterChange: (fieldId, selectedValues) => {
       const next = clonePivotDefinition(pivotDefinition);
       next.filterSelections[fieldId] = [...selectedValues];
@@ -202,17 +223,17 @@ export default function App() {
       const next = clonePivotDefinition(pivotDefinition);
       next.slicers = enabled ? [...new Set([...next.slicers, fieldId])] : next.slicers.filter((field) => field !== fieldId);
       updatePivotDefinition(next);
-      actions.updatePivotConfiguration(activePivot.id, { slicers: next.slicers.map((field) => ({ id: `slicer-${field}`, field, selected: [] })) });
+      actions.updatePivotConfiguration(activePivot.id, { slicers: next.slicers.map((field) => ({ id: `slicer-${field}`, field, selected: [], connectedPivotIds: state.selectedSheet.pivots.map((pivot) => pivot.id) })) });
     },
     onTimelineChange: (fieldId) => {
-      if (activePivot) actions.updatePivotConfiguration(activePivot.id, { timelines: fieldId ? [{ id: `timeline-${fieldId}`, field: fieldId }] : [] });
+      if (activePivot) actions.updatePivotConfiguration(activePivot.id, { timelines: fieldId ? [{ id: `timeline-${fieldId}`, field: fieldId, connectedPivotIds: state.selectedSheet.pivots.map((pivot) => pivot.id) }] : [] });
     },
     onTimelineRangeChange: (start, end) => {
-      if (activePivot && pivotDefinition.timelineFieldId) actions.updatePivotConfiguration(activePivot.id, { timelines: [{ id: `timeline-${pivotDefinition.timelineFieldId}`, field: pivotDefinition.timelineFieldId, start: start || undefined, end: end || undefined }] });
+      if (activePivot && pivotDefinition.timelineFieldId) actions.updatePivotConfiguration(activePivot.id, { timelines: [{ id: `timeline-${pivotDefinition.timelineFieldId}`, field: pivotDefinition.timelineFieldId, start: start || undefined, end: end || undefined, connectedPivotIds: state.selectedSheet.pivots.map((pivot) => pivot.id) }] });
     },
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
-      actions.addChart({ id: `pivot-chart-${activePivot.id}`, sheetId: activePivot.sheetId, type: chart.type, title: chart.title, sourceRanges: [activePivot.sourceRange], bounds: { x: 80, y: 80, width: 480, height: 280 } });
+      actions.addChart({ id: `pivot-chart-${activePivot.id}`, pivotId: activePivot.id, sheetId: activePivot.sheetId, type: chart.type, title: chart.title, sourceRanges: [activePivot.sourceRange], bounds: { x: 80, y: 80, width: 480, height: 280 } });
       actions.updatePivotConfiguration(activePivot.id, { chartReferences: [{ chartId: `pivot-chart-${activePivot.id}`, role: "linked" }] });
     },
   };
@@ -254,6 +275,9 @@ export default function App() {
           >
             {({ close }) => (
               <Stack gap="xs" className="min-w-44">
+                <Button size="sm" variant="ghost" className="justify-start" onClick={() => window.location.assign("/workbooks")}>
+                  Open workbooks
+                </Button>
                 <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); copyWorkbookLink(); }}>
                   Copy workbook link
                 </Button>
@@ -318,6 +342,7 @@ export default function App() {
               peers={state.peers}
               selectedFloatingId={state.selectedFloatingId}
               charts={state.selectedSheet.charts}
+              pivotResults={state.selectedSheet.pivotResults}
               shapes={state.selectedSheet.shapes}
               sparklines={state.selectedSheet.sparklines}
               onSelectionChange={applySelection}
@@ -367,6 +392,8 @@ export default function App() {
             sheetId={state.activeSheetId}
             charts={state.selectedSheet.charts}
             pivotDefinition={pivotDefinition}
+            pivotList={state.selectedSheet.pivots.map((pivot) => ({ id: pivot.id, label: pivot.id }))}
+            activePivotId={activePivot?.id}
             pivotFieldCatalog={pivotFields}
             pivotResult={pivotResult}
             onShowPivotDetails={actions.showPivotDetails}
@@ -431,4 +458,9 @@ export default function App() {
       />
     </>
   );
+}
+
+export default function App() {
+  if (typeof window !== "undefined" && window.location.pathname === "/workbooks") return <WorkbookCatalog />;
+  return <WorkspaceApp />;
 }

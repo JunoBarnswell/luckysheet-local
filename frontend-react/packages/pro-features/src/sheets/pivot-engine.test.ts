@@ -85,4 +85,16 @@ describe('pivot domain engine', () => {
     assert.deepEqual(result.rows.map((row) => row.label), ['East']);
     assert.equal(result.grandTotal?.values[0], 3);
   });
+
+  it('evaluates calculated fields and calculated items through the safe formula engine', () => {
+    const source = workbook();
+    const pivot = model([{ field: 'Adjusted', summarizeBy: 'sum' }]);
+    pivot.layout = { rows: [{ field: 'Region' }], columns: [], filters: [], values: pivot.valueFields, calculatedFields: [{ name: 'Adjusted', formula: '=Amount*2' }], calculatedItems: [], showSubtotals: true, showGrandTotals: true, compact: false, repeatLabels: false };
+    const result = computePivotResult(source, pivot);
+    assert.equal(result.grandTotal?.values[0], 18);
+    assert.equal(result.fields.fields.some((field) => field.name === 'Adjusted'), true);
+    const itemPivot = model([{ field: 'East', summarizeBy: 'sum' }]);
+    itemPivot.layout = { rows: [{ field: 'Region' }], columns: [], filters: [], values: itemPivot.valueFields, calculatedFields: [], calculatedItems: [{ field: 'Region', name: 'East', formula: '=Amount*3' }], showSubtotals: true, showGrandTotals: true, compact: false, repeatLabels: false };
+    assert.equal(computePivotResult(source, itemPivot).grandTotal?.values[0], 9);
+  });
 });

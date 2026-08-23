@@ -92,6 +92,7 @@ export interface ChartSeries {
 export interface ChartModel {
   id: string;
   sheetId: SheetId;
+  pivotId?: string;
   type: 'column' | 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter';
   title?: string;
   sourceRanges: RangeRef[];
