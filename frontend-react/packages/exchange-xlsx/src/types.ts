@@ -44,6 +44,82 @@ export interface XlsxRelationship {
 }
 
 /**
+ * The bytes which were supplied by the user when a workbook was imported.
+ *
+ * This is deliberately not part of `WorkbookSnapshot` or an operation
+ * envelope.  It is a local exchange artifact that allows the package writer
+ * to preserve OOXML parts which the editable model does not understand yet
+ * (for example VBA, custom XML, and native Pivot parts).
+ */
+export interface XlsxSourceArtifact {
+  schema: 'XlsxSourceArtifact';
+  fileName: string;
+  buffer: ArrayBuffer;
+  checksum: string;
+  dateSystem: DateSystem;
+  detectedFeatures: string[];
+}
+
+export type NativePivotSource =
+  | { kind: 'worksheet-range'; sheetName: string; sheetPart?: string; ref: string }
+  | { kind: 'table'; tableName: string; sheetName?: string; sheetPart?: string };
+
+export interface NativePivotCacheField {
+  index: number;
+  name: string;
+  dataType?: 'string' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
+  sharedItems?: Array<string | number | boolean | null>;
+}
+
+export interface NativePivotCacheDefinition {
+  cacheId: number;
+  part: string;
+  recordsPart?: string;
+  source: NativePivotSource | { kind: 'unsupported'; reason: string };
+  fields: NativePivotCacheField[];
+  recordCount?: number;
+}
+
+export interface NativePivotTableField {
+  index: number;
+  axis?: 'row' | 'column' | 'page' | 'data';
+  compact?: boolean;
+  outline?: boolean;
+}
+
+export interface NativePivotDataField {
+  field: number;
+  name?: string;
+  subtotal?: string;
+  showDataAs?: string;
+}
+
+export interface NativePivotTableDefinition {
+  name: string;
+  part: string;
+  sheetPart: string;
+  relationshipId: string;
+  cacheId: number;
+  locationRef?: string;
+  fields: NativePivotTableField[];
+  rowFields: number[];
+  columnFields: number[];
+  pageFields: number[];
+  dataFields: NativePivotDataField[];
+}
+
+/**
+ * A constrained, validated view of the native Pivot OOXML relationship graph.
+ * Unknown XML is kept in the source package, never copied into the canonical
+ * workbook model or collaboration payloads.
+ */
+export interface NativePivotGraph {
+  schema: 'NativePivotGraph';
+  caches: NativePivotCacheDefinition[];
+  tables: NativePivotTableDefinition[];
+}
+
+/**
  * The original OOXML package accompanying an imported snapshot.
  *
  * `parts` contains every part, including binary and feature parts this package
@@ -58,6 +134,7 @@ export interface XlsxPackage {
   sheetPartById: Record<string, string>;
   contentTypesXml?: Uint8Array;
   dateSystem: DateSystem;
+  nativePivotGraph?: NativePivotGraph;
 }
 
 export type CompatibilityIssueSeverity = 'error' | 'warning' | 'info';
@@ -69,6 +146,8 @@ export interface CompatibilityIssue {
   location?: string;
   message: string;
   preserved: boolean;
+  status: 'editable' | 'preserved-only' | 'unsupported';
+  reason: string;
 }
 
 export interface CompatibilityReport {
@@ -98,12 +177,14 @@ export interface XlsxImportResult {
   snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
   /** Pass this package to exportXlsx to preserve unsupported OOXML features. */
   package: XlsxPackage;
+  sourceArtifact: XlsxSourceArtifact;
   taskId?: string;
 }
 
 export interface XlsxExportResult {
   taskId: string;
   report: CompatibilityReport;
-  base64: string;
+  buffer: ArrayBuffer;
   fileName: string;
+  package?: XlsxPackage;
 }

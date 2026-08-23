@@ -160,10 +160,12 @@ export {
   type QueryStepSnapshot,
 } from './workbook-state';
 
-import type { PivotModel } from './pivot';
+import { migratePivotDefinition, type PivotModel } from './pivot';
 export * from './pivot';
 import type { WorkbookTableModel } from './data-model';
+import { normalizeDataSourceManifest, type DataSourceManifest, type SheetDataRegion } from './data-source';
 export * from './data-model';
+export * from './data-source';
 
 export interface SparklineModel {
   id: string;
@@ -405,6 +407,8 @@ export class CellMatrix {
 
 export class WorksheetModel {
   readonly cells = new CellMatrix();
+  /** Block-backed regions are metadata only; their bytes never enter CellMatrix. */
+  readonly dataRegions: SheetDataRegion[] = [];
   readonly merges: MergeSpan[] = [];
   readonly pivots: PivotModel[] = [];
   readonly sparklines: SparklineModel[] = [];
@@ -440,6 +444,7 @@ export class WorksheetModel {
   cloneWithIdentity(id: SheetId, name: string): WorksheetModel {
     const copy = new WorksheetModel(id, name, this.rowCount, this.columnCount);
     this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
+    copy.dataRegions.push(...structuredClone(this.dataRegions));
     copy.merges.push(...structuredClone(this.merges));
     copy.pivots.push(...structuredClone(this.pivots));
     copy.sparklines.push(...structuredClone(this.sparklines));
@@ -510,6 +515,7 @@ export interface SheetSnapshot {
   rowCount: number;
   columnCount: number;
   cells: Record<string, Record<string, CellData>>;
+  dataRegions?: SheetDataRegion[];
   merges: MergeSpan[];
   freeze: FreezeModel;
   pivots: PivotModel[];
@@ -542,6 +548,8 @@ export interface SheetSnapshot {
 export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
   readonly tables = new Map<string, WorkbookTableModel>();
+  /** Canonical data-source manifests; bytes live in the local block store. */
+  readonly dataSources = new Map<string, DataSourceManifest>();
   /** Canonical workbook-owned print state; no host-side cache is authoritative. */
   readonly printDocuments = new Map<SheetId, PrintDocumentSnapshot>();
   /** Persistence-safe query definitions; connector credentials are redacted. */
@@ -593,6 +601,12 @@ export class WorkbookModel {
     const table = this.tables.get(tableId);
     if (!table) throw new Error(`Unknown table: ${tableId}`);
     return table;
+  }
+
+  getDataSource(dataSourceId: string): DataSourceManifest {
+    const source = this.dataSources.get(dataSourceId);
+    if (!source) throw new Error(`Unknown data source: ${dataSourceId}`);
+    return structuredClone(source);
   }
 
   getPrintDocument(sheetId: SheetId): PrintDocumentSnapshot | undefined {
@@ -700,6 +714,27 @@ export class WorkbookModel {
     this.tables.set(table.id, structuredClone(table));
   }
 
+  addDataSource(source: DataSourceManifest): void {
+    const normalized = normalizeDataSourceManifest(source);
+    if (this.dataSources.has(normalized.id)) throw new Error(`Data source already exists: ${normalized.id}`);
+    this.dataSources.set(normalized.id, structuredClone(normalized));
+  }
+
+  updateDataSource(source: DataSourceManifest): void {
+    const normalized = normalizeDataSourceManifest(source);
+    if (!this.dataSources.has(normalized.id)) throw new Error(`Unknown data source: ${normalized.id}`);
+    this.dataSources.set(normalized.id, structuredClone(normalized));
+  }
+
+  removeDataSource(dataSourceId: string): DataSourceManifest {
+    const source = this.getDataSource(dataSourceId);
+    if (this.getSheets().some((sheet) => sheet.dataRegions.some((region) => region.sourceId === dataSourceId))) {
+      throw new Error(`Data source is still referenced by a sheet region: ${dataSourceId}`);
+    }
+    this.dataSources.delete(dataSourceId);
+    return source;
+  }
+
   removeTable(tableId: string): WorkbookTableModel {
     const table = this.getTable(tableId);
     this.tables.delete(tableId);
@@ -763,6 +798,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
+      version: 2,
       unitId: this.unitId,
       name: this.name,
       definedNames: { ...this.definedNames },
@@ -770,6 +806,7 @@ export class WorkbookModel {
         ? structuredClone(this.definedNameModels)
         : Object.entries(this.definedNames).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const })),
       tables: [...this.tables.values()].map((table) => structuredClone(table)),
+      dataSources: [...this.dataSources.values()].map((source) => structuredClone(source)),
       printDocuments: this.listPrintDocuments(),
       queryDefinitions: this.listQueryDefinitions(),
       sheets: this.getSheets().map((sheet) => ({
@@ -778,6 +815,7 @@ export class WorkbookModel {
         rowCount: sheet.rowCount,
         columnCount: sheet.columnCount,
         cells: sheet.cells.toJSON(),
+        dataRegions: structuredClone(sheet.dataRegions),
         merges: structuredClone(sheet.merges),
         freeze: { ...sheet.freeze },
         pivots: structuredClone(sheet.pivots),
@@ -822,13 +860,15 @@ export class WorkbookModel {
       if (entry.scope === 'workbook' && workbook.definedNames[entry.name] === undefined) workbook.definedNames[entry.name] = entry.formula;
     }
     for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
+    for (const source of snapshot.dataSources ?? []) workbook.addDataSource(source);
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
       const matrix = CellMatrix.fromJSON(input.cells);
       matrix.forEach((cell, row, column) => sheet.cells.set(row, column, cell));
+      if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
       sheet.freeze = { ...input.freeze };
-      sheet.pivots.push(...structuredClone(input.pivots));
+      sheet.pivots.push(...input.pivots.map((pivot) => migratePivotDefinition(structuredClone(pivot))));
       sheet.sparklines.push(...structuredClone(input.sparklines));
       if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
       sheet.drawings.push(...structuredClone(input.drawings));

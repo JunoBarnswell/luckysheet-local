@@ -4,8 +4,8 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { exportXlsx } from './export';
 import { importXlsx } from './import';
 import { scanSnapshotFeatures } from './feature-scan';
-import { exportSnapshotToXlsxBase64 } from './archive';
-import { loadXlsxPackage, zipXlsxParts } from './archive';
+import { exportSnapshotToXlsxBuffer } from './archive';
+import { loadXlsxPackage, zipXlsxPartsBuffer } from './archive';
 import { strFromU8, strToU8 } from 'fflate';
 
 describe('exchange-xlsx', () => {
@@ -64,21 +64,78 @@ describe('exchange-xlsx', () => {
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 'hello' });
     workbook.getSheet(workbook.primarySheetId).cells.set(1, 0, { value: 42, formula: '=A1&"!"' });
     const snapshot = workbook.snapshot();
-    const base64 = exportSnapshotToXlsxBase64(snapshot);
+    const buffer = exportSnapshotToXlsxBuffer(snapshot);
     const imported = await importXlsx({
       fileName: 'roundtrip.xlsx',
-      base64,
+      buffer,
       options: { compatibilityTarget: 'B' },
     });
     assert.equal(imported.snapshot.sheets.length, snapshot.sheets.length);
     assert.equal(imported.report.schema, 'CompatibilityReport');
+    assert.equal(imported.sourceArtifact.schema, 'XlsxSourceArtifact');
+    assert.equal(imported.sourceArtifact.checksum.length, 64);
     const exported = await exportXlsx({
       snapshot: imported.snapshot,
       fileName: 'roundtrip.xlsx',
       options: { compatibilityTarget: 'B' },
     });
-    assert.ok(exported.base64.length > 0);
+    assert.ok(exported.buffer.byteLength > 0);
     assert.equal(exported.fileName, 'roundtrip.xlsx');
+  });
+
+  it('round-trips worksheet tables and emits table relationship/content-type parts', async () => {
+    const workbook = new WorkbookModel('wb-table', 'Table');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Category' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 'A' });
+    sheet.cells.set(1, 1, { value: 10 });
+    sheet.sheetTables.push({
+      id: 'table-1',
+      sheetId: sheet.id,
+      name: 'SalesTable',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+      hasHeaderRow: true,
+      hasTotalRow: false,
+      showBandedRows: true,
+      showBandedColumns: false,
+      showFilterButton: true,
+      columns: [{ id: 'category', name: 'Category' }, { id: 'amount', name: 'Amount' }],
+      styleName: 'TableStyleMedium2',
+    });
+    const imported = await importXlsx({ fileName: 'table.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    assert.equal(imported.snapshot.sheets[0]?.sheetTables?.[0]?.name, 'SalesTable');
+    assert.equal(imported.report.issues.find((issue) => issue.feature === 'tables')?.status, 'editable');
+    const exported = await exportXlsx({ snapshot: imported.snapshot, package: imported.package, fileName: 'table.xlsx', options: { compatibilityTarget: 'B' } });
+    const output = loadXlsxPackage(exported.buffer);
+    assert.ok(output.files['xl/tables/table1.xml']);
+    assert.match(strFromU8(output.files['[Content_Types].xml']!), /spreadsheetml\.table\+xml/);
+    assert.match(strFromU8(output.files['xl/worksheets/_rels/sheet1.xml.rels']!), /\/table/);
+  });
+
+  it('reads and rewrites native Pivot cache/table relationship graphs', async () => {
+    const workbook = new WorkbookModel('wb-native-pivot', 'Native Pivot');
+    const generated = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const parts = generated.package.parts;
+    parts['xl/workbook.xml'] = strToU8(strFromU8(parts['xl/workbook.xml']!).replace('</workbook>', '<pivotCaches count="1"><pivotCache cacheId="1" r:id="rIdPivotCache"/></pivotCaches></workbook>'));
+    parts['xl/_rels/workbook.xml.rels'] = strToU8(strFromU8(parts['xl/_rels/workbook.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotCache" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>'));
+    parts['xl/pivotCache/pivotCacheDefinition1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" cacheSource="worksheet"><cacheSource><worksheetSource ref="A1:B2" sheet="Sheet1"/></cacheSource><cacheFields count="2"><cacheField name="Category"><sharedItems containsString="1"><s v="A"/></sharedItems></cacheField><cacheField name="Amount"><sharedItems containsNumber="1"><n v="10"/></sharedItems></cacheField></cacheFields></pivotCacheDefinition>');
+    parts['xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels'] = strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdRecords" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords" Target="pivotCacheRecords1.xml"/></Relationships>');
+    parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
+    parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
+    parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
+    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow"/><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields></pivotTableDefinition>');
+    const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
+    assert.equal(imported.package.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
+    assert.equal(imported.package.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
+    assert.equal(imported.package.nativePivotGraph?.tables[0]?.dataFields[0]?.field, 1);
+    assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'preserved-only');
+    const exported = await exportXlsx({ snapshot: imported.snapshot, package: imported.package, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
+    const output = loadXlsxPackage(exported.buffer);
+    assert.ok(output.package.nativePivotGraph?.tables.length === 1);
+    assert.match(strFromU8(output.files['xl/workbook.xml']!), /pivotCaches/);
+    assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
+    assert.match(strFromU8(output.files['[Content_Types].xml']!), /pivotTable/);
   });
 
   it('round-trips styles, merges, scoped names, freeze and the 1904 date system', async () => {
@@ -97,8 +154,8 @@ describe('exchange-xlsx', () => {
     sheet.freeze = { xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1 };
     workbook.setDefinedName({ name: 'LocalValue', formula: `=${sheet.name}!$A$1`, scope: 'sheet', sheetId: sheet.id });
     const original = workbook.snapshot();
-    const base64 = exportSnapshotToXlsxBase64(original, undefined, { dateSystem: '1904' });
-    const imported = await importXlsx({ fileName: 'rich.xlsx', base64, options: { compatibilityTarget: 'A' } });
+    const buffer = exportSnapshotToXlsxBuffer(original, undefined, { dateSystem: '1904' });
+    const imported = await importXlsx({ fileName: 'rich.xlsx', buffer, options: { compatibilityTarget: 'A' } });
     const restored = imported.snapshot.sheets[0]!;
     assert.equal(imported.report.dateSystem, '1904');
     assert.equal(restored.merges.length, 1);
@@ -111,7 +168,7 @@ describe('exchange-xlsx', () => {
   it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
-    const generated = loadXlsxPackage(exportSnapshotToXlsxBase64(workbook.snapshot()));
+    const generated = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     generated.package.parts['xl/charts/chart1.xml'] = strToU8('<chartSpace xmlns="http://schemas.openxmlformats.org/drawingml/2006/chart"><title>Keep</title></chartSpace>');
     generated.package.parts['xl/drawings/drawing1.xml'] = strToU8('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>');
     generated.package.parts['customXml/item1.bin'] = Uint8Array.from([0, 1, 2, 255]);
@@ -124,9 +181,9 @@ describe('exchange-xlsx', () => {
     generated.package.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(generated.package.parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<drawing r:id="rIdChart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>'));
     // Rebuild through the public package writer so this test exercises the
     // same ZIP limits and relationship reader used by production imports.
-    const imported = await importXlsx({ fileName: 'opaque.xlsx', base64: zipXlsxParts(generated.package.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
+    const imported = await importXlsx({ fileName: 'opaque.xlsx', buffer: zipXlsxPartsBuffer(generated.package.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
     const exported = await exportXlsx({ snapshot: imported.snapshot, package: imported.package, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
-    const restored = loadXlsxPackage(exported.base64);
+    const restored = loadXlsxPackage(exported.buffer);
     assert.deepEqual([...restored.files['customXml/item1.bin']!], [0, 1, 2, 255]);
     assert.equal(strFromU8(restored.files['xl/charts/chart1.xml']!).includes('Keep'), true);
     assert.equal(strFromU8(restored.files['xl/worksheets/sheet1.xml']!).includes('rIdChart'), true);
@@ -136,9 +193,9 @@ describe('exchange-xlsx', () => {
 
   it('rejects oversized and unsafe ZIP entries before inflation', () => {
     const workbook = new WorkbookModel('wb-limit', 'Limit');
-    const base64 = exportSnapshotToXlsxBase64(workbook.snapshot());
-    assert.throws(() => loadXlsxPackage(base64, { maxArchiveBytes: 10 }), /archive exceeds/);
-    assert.throws(() => loadXlsxPackage(base64, { maxEntries: 1 }), /too many entries/);
-    assert.throws(() => loadXlsxPackage(base64, { maxCompressionRatio: 1 }), /compression ratio/);
+    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+    assert.throws(() => loadXlsxPackage(buffer, { maxArchiveBytes: 10 }), /archive exceeds/);
+    assert.throws(() => loadXlsxPackage(buffer, { maxEntries: 1 }), /too many entries/);
+    assert.throws(() => loadXlsxPackage(buffer, { maxCompressionRatio: 1 }), /compression ratio/);
   });
 });

@@ -86,6 +86,18 @@ export function computeChecksum(message: string): string {
   return `${hex(a0)}${hex(a1)}${hex(a2)}${hex(a3)}${hex(a4)}${hex(a5)}${hex(a6)}${hex(a7)}`;
 }
 
+/**
+ * Binary payloads must never be coerced into a JavaScript string just to be
+ * checksummed. WebCrypto keeps the byte representation intact and is used for
+ * block and OOXML artifacts that can be tens of megabytes.
+ */
+export async function computeBinaryChecksum(bytes: ArrayBuffer): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error('WebCrypto is required to checksum binary workspace artifacts');
+  const digest = await subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
+}
+
 export function verifyChecksum(message: string, expected: string): boolean {
   return computeChecksum(message) === expected;
 }

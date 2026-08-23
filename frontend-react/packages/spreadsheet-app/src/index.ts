@@ -13,10 +13,21 @@ export {
   getFeatureRegistry,
   type SpreadsheetFeatureManifest,
 } from './feature-registry';
+export * from './ui-command-catalog';
+export * from './features/formula-audit';
 export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
+export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
+export {
+  ShortcutRegistry,
+  createSpreadsheetShortcutRegistry,
+  type ShortcutBinding,
+  type ShortcutContext,
+  type ShortcutEventLike,
+  type ShortcutScope,
+} from './input/shortcut-registry';
 export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './features/permission';
 export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
@@ -30,6 +41,9 @@ export {
   LocalWorkspaceStore,
   getLocalWorkspaceStore,
   WorkspacePersistence,
+  LocalDataBlockStore,
+  DataBlockSynchronizer,
+  LocalXlsxArtifactStore,
   buildWorkspaceRecord,
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
@@ -39,6 +53,9 @@ export {
   type PendingOperationJournal,
   type LocalWorkspaceSummary,
   type IndexedDbWorkspaceStoreOptions,
+  type DataBlockRecord,
+  type DataBlockSyncOptions,
+  type XlsxArtifactRecord,
 } from './features/persistence';
 export {
   buildPrintSnapshot,
@@ -52,12 +69,40 @@ export {
   type PrintPageSnapshot,
   type PrintPreviewCommandParams,
   type PrintAreaSetCommandParams,
+  type PrintPageSetupCommandParams,
+  type PrintTitlesSetCommandParams,
+  type PrintScaleSetCommandParams,
+  type PrintToggleCommandParams,
   type PrintLayout,
   type PrintDocument,
   type PageSetup,
   type PrintArea,
   type PrintPageBreak,
+  type PrintTitleSpan,
 } from './features/print';
+export {
+  FormulaAuditController,
+  evaluateFormulaStep,
+  getFormulaDependents,
+  getFormulaPrecedents,
+  projectFormulaCells,
+  removeFormulaAuditArrows,
+  scanFormulaErrors,
+  registerFormulaAuditCommands,
+  type FormulaAuditArrow,
+  type FormulaAuditControllerOptions,
+  type FormulaAuditDirection,
+  type FormulaAuditEmptyParams,
+  type FormulaAuditError,
+  type FormulaAuditErrorScanParams,
+  type FormulaAuditEvaluationProjection,
+  type FormulaAuditEvaluationStep,
+  type FormulaAuditFormulaProjection,
+  type FormulaAuditProjection,
+  type FormulaAuditAddressParams,
+  type FormulaAuditShowFormulasParams,
+  type FormulaErrorScanOptions,
+} from './features/formula-audit';
 export {
   buildQueryResultSnapshot,
   summarizeQueryResult,

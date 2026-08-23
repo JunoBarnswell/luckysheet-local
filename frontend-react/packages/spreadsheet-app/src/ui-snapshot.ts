@@ -11,6 +11,7 @@ import type {
   MergeSpan,
   OutlineGroup,
   PivotModel,
+  PivotGridProjection,
   PivotResultTree,
   RangeRef,
   SheetTableModel,
@@ -37,7 +38,7 @@ import {
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
-import { computePivotResult } from './features/pivot/engine';
+import { buildPivotGridProjection, computePivotResult } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
 import { getCellNote } from '@react-sheets/core-model';
 import {
@@ -87,6 +88,8 @@ export interface CanvasSheetSnapshot {
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
+  /** Derived worksheet overlay; never materialized in ordinary cells. */
+  pivotProjections: Record<string, PivotGridProjection>;
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -226,11 +229,20 @@ export function buildCanvasSheetSnapshot(
   }
 
   const pivotResults: Record<string, PivotResultTree> = {};
+  const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
     try {
       pivotResults[pivot.id] = cachedPivotResults[pivot.id] ?? computePivotResult(workbook, pivot);
+      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, pivotResults[pivot.id]);
     } catch {
-      // invalid pivot must not block sheet render
+      // Invalid definitions still get an explicit error projection when the
+      // target is resolvable; never replace a failed result with blank cells.
+      try {
+        pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot);
+      } catch {
+        // A malformed target/source is surfaced by command validation. The
+        // snapshot remains renderable for the rest of the worksheet.
+      }
     }
   }
 
@@ -250,6 +262,7 @@ export function buildCanvasSheetSnapshot(
     ),
     pivots: [...sheet.pivots],
     pivotResults,
+    pivotProjections,
     sparklines: [...sheet.sparklines],
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],

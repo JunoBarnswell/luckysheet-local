@@ -192,7 +192,24 @@ export function buildPrintSnapshot(
 ): PrintSnapshot {
   const sheet = workbook.getSheet(activeSheetId);
   const document = getPrintDocument(workbook, activeSheetId);
-  const effectiveLayout = uiLayout ?? pageSetupToPrintLayout(document.pageSetup);
+  const storedLayout = pageSetupToPrintLayout(document.pageSetup);
+  const effectiveLayout = uiLayout ?? {
+    ...storedLayout,
+    repeatRows: document.repeatRows === undefined ? undefined : {
+      sheetId: activeSheetId,
+      startRow: document.repeatRows.start,
+      endRow: document.repeatRows.end,
+      startColumn: 0,
+      endColumn: Math.max(0, sheet.columnCount - 1),
+    },
+    repeatColumns: document.repeatColumns === undefined ? undefined : {
+      sheetId: activeSheetId,
+      startRow: 0,
+      endRow: Math.max(0, sheet.rowCount - 1),
+      startColumn: document.repeatColumns.start,
+      endColumn: document.repeatColumns.end,
+    },
+  };
   const storedArea = document.printAreas.find((area) => area.sheetId === activeSheetId)?.range;
   const printArea = selectionRange ? resolvePrintArea(sheet, selectionRange) : storedArea ?? resolvePrintArea(sheet);
   const model = buildPrintLayoutModel(workbook.unitId, activeSheetId, effectiveLayout, printArea, document);

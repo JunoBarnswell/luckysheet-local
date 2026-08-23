@@ -14,6 +14,7 @@ import { CollabSocketClient } from '@react-sheets/protocol';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
 import { createDefaultConnectorRegistry, type ConnectorRegistry } from './features/query';
+import { FormulaAuditController, registerFormulaAuditCommands } from './features/formula-audit';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
@@ -25,6 +26,7 @@ import {
 import {
   OperationJournalStore,
   WorkspacePersistence,
+  DataBlockSynchronizer,
   type IndexedDbWorkspaceStoreOptions,
   type WorkspaceRecord,
 } from './features/persistence';
@@ -45,6 +47,7 @@ export interface RuntimeHandlers {
 export interface SpreadsheetRuntime {
   api: WorkbookApiClient;
   formula: FormulaEngine;
+  formulaAudit: FormulaAuditController;
   model: WorkbookModel;
   commands: CommandRuntime;
   drawing: DrawingRuntime;
@@ -62,6 +65,7 @@ export interface SpreadsheetRuntime {
   bootstrapDispose: (() => void) | null;
   operationJournal: OperationJournalStore;
   workspacePersistence: WorkspacePersistence;
+  dataBlocks: DataBlockSynchronizer;
   workspaceRecord: WorkspaceRecord | null;
   localRevision: number;
   localOnly: boolean;
@@ -104,12 +108,22 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
+  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1' });
+  const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
+  registerFormulaAuditCommands(commands.registry, formulaAudit);
   const operationJournal = new OperationJournalStore();
   const workspacePersistence = new WorkspacePersistence(options.persistence, operationJournal);
-  const runtime: SpreadsheetRuntime = {
-    api: new WorkbookApiClient({ authTokenProvider: options.authTokenProvider, shareTokenProvider: options.shareTokenProvider }),
-    formula: new FormulaEngine({ defaultSheetId: 'sheet-1' }),
+  const api = new WorkbookApiClient({ authTokenProvider: options.authTokenProvider, shareTokenProvider: options.shareTokenProvider });
+  let runtime!: SpreadsheetRuntime;
+  const dataBlocks = new DataBlockSynchronizer(workspacePersistence.dataBlocks, api, {
+    unitId: () => runtime.model.unitId,
+    isRemoteAvailable: () => !runtime.localOnly && runtime.remoteConnected,
+  });
+  runtime = {
+    api,
+    formula,
+    formulaAudit,
     model,
     commands,
     drawing,
@@ -127,6 +141,7 @@ export function createSpreadsheetRuntime(options: { authTokenProvider?: AuthToke
     bootstrapDispose: null,
     operationJournal,
     workspacePersistence,
+    dataBlocks,
     workspaceRecord: null,
     localRevision: 0,
     localOnly: options.localOnly ?? (!options.authTokenProvider && !options.shareTokenProvider),
@@ -519,6 +534,8 @@ function scheduleOperation(
 export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revision?: number): void {
   runtime.formula.disposeCalculationTasks();
   runtime.formula = rebuildFormulaEngine(runtime.model);
+  runtime.formulaAudit.setFormula(runtime.formula);
+  runtime.formulaAudit.refresh();
   if (revision != null) {
     runtime.remoteRevision = revision;
     runtime.collaboration?.setRevision(revision);
@@ -541,6 +558,8 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.commands = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
   runtime.formula = rebuildFormulaEngine(workbook);
+  runtime.formulaAudit.setFormula(runtime.formula);
+  registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);
   attachCoreListeners(runtime);
   runtime.remoteRevision = response.revision;
   runtime.collaboration?.setRevision(response.revision);

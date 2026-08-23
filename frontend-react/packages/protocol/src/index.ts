@@ -140,6 +140,48 @@ function isRangeRef(value: unknown): value is RangeRef {
     && Number.isSafeInteger(range.endColumn) && Number(range.endColumn) >= Number(range.startColumn);
 }
 
+function validateDataSourceManifest(value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Data source manifest must be an object');
+  const source = value as Record<string, unknown>;
+  if (source.schema !== 'DataSourceManifest' || source.version !== 1 || !isNonEmptyString(source.id) || !isNonEmptyString(source.name)) {
+    throw new Error('Invalid data source manifest identity');
+  }
+  if (!['worksheet-range', 'sheet-table', 'chunked-table'].includes(String(source.kind))
+    || !Number.isSafeInteger(source.rowCount) || Number(source.rowCount) < 0
+    || !Number.isSafeInteger(source.blockRowCount) || Number(source.blockRowCount) <= 0
+    || !Number.isSafeInteger(source.revision) || Number(source.revision) < 0
+    || !Array.isArray(source.fields) || !Array.isArray(source.blocks)) {
+    throw new Error(`Invalid data source manifest shape: ${String(source.id)}`);
+  }
+  if (source.sourceRange !== undefined && !isRangeRef(source.sourceRange)) throw new Error(`Invalid data source range: ${String(source.id)}`);
+  const fieldIds = new Set<string>();
+  for (const [index, rawField] of source.fields.entries()) {
+    if (!rawField || typeof rawField !== 'object') throw new Error(`Invalid data source field: ${String(source.id)}`);
+    const field = rawField as Record<string, unknown>;
+    if (!isNonEmptyString(field.id) || fieldIds.has(field.id) || !isNonEmptyString(field.name) || field.ordinal !== index
+      || !['text', 'number', 'boolean', 'date', 'mixed'].includes(String(field.type))) {
+      throw new Error(`Invalid data source field: ${String(source.id)}`);
+    }
+    fieldIds.add(field.id);
+  }
+  const blockIds = new Set<string>();
+  for (const rawBlock of source.blocks) {
+    if (!rawBlock || typeof rawBlock !== 'object') throw new Error(`Invalid data block: ${String(source.id)}`);
+    const block = rawBlock as Record<string, unknown>;
+    if (!isNonEmptyString(block.id) || blockIds.has(block.id) || block.dataSourceId !== source.id
+      || !isNonEmptyString(block.storageKey) || !isNonEmptyString(block.checksum)
+      || block.encoding !== 'columnar-v1'
+      || !Number.isSafeInteger(block.startRow) || Number(block.startRow) < 0
+      || !Number.isSafeInteger(block.rowCount) || Number(block.rowCount) <= 0
+      || !Number.isSafeInteger(block.byteLength) || Number(block.byteLength) < 0
+      || !Number.isSafeInteger(block.revision) || Number(block.revision) < 0) {
+      throw new Error(`Invalid data block: ${String(source.id)}`);
+    }
+    blockIds.add(block.id);
+    if ('bytes' in block || 'buffer' in block) throw new Error('Data source manifest must not contain block bytes');
+  }
+}
+
 /** Validate the only snapshot representation accepted at the wire boundary. */
 export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -147,11 +189,22 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   }
   const input = value as Record<string, unknown>;
   if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
+  if (input.version !== undefined && input.version !== 1 && input.version !== 2) throw new Error('Unsupported workbook snapshot version');
   if (!isNonEmptyString(input.unitId) || !isNonEmptyString(input.name)) {
     throw new Error('WorkbookSnapshot requires unitId and name');
   }
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
+  }
+  if (input.dataSources !== undefined) {
+    if (!Array.isArray(input.dataSources)) throw new Error('WorkbookSnapshot dataSources must be an array');
+    const sourceIds = new Set<string>();
+    for (const source of input.dataSources) {
+      validateDataSourceManifest(source);
+      const id = (source as { id: string }).id;
+      if (sourceIds.has(id)) throw new Error(`Duplicate data source: ${id}`);
+      sourceIds.add(id);
+    }
   }
   for (const [index, rawSheet] of input.sheets.entries()) {
     if (!rawSheet || typeof rawSheet !== 'object' || Array.isArray(rawSheet)) {
@@ -174,6 +227,18 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     }
     if (!Array.isArray(sheet.drawings) || !sheet.drawingPayloads || typeof sheet.drawingPayloads !== 'object') {
       throw new Error(`WorkbookSnapshot sheet[${index}] requires canonical drawings and payloads`);
+    }
+    if (sheet.dataRegions !== undefined) {
+      if (!Array.isArray(sheet.dataRegions)) throw new Error(`WorkbookSnapshot sheet[${index}] dataRegions must be an array`);
+      for (const region of sheet.dataRegions) {
+        if (!region || typeof region !== 'object') throw new Error(`WorkbookSnapshot sheet[${index}] has invalid data region`);
+        const dataRegion = region as Record<string, unknown>;
+        if (!isNonEmptyString(dataRegion.id) || !isNonEmptyString(dataRegion.sourceId) || !isRangeRef(dataRegion.range)
+          || !Number.isSafeInteger(dataRegion.headerRow) || Number(dataRegion.headerRow) < 0
+          || !Number.isSafeInteger(dataRegion.revision) || Number(dataRegion.revision) < 0) {
+          throw new Error(`WorkbookSnapshot sheet[${index}] has invalid data region`);
+        }
+      }
     }
   }
   return value as WorkbookSnapshot;
@@ -416,6 +481,16 @@ export interface RevisionRecord {
   payload: CommittedOperationEnvelope;
 }
 
+/** Metadata-only remote representation of a content-addressed data block. */
+export interface RemoteDataBlockMetadata {
+  unitId: string;
+  sourceId: string;
+  blockId: string;
+  checksum: string;
+  byteLength: number;
+  updatedAt: string;
+}
+
 export class WorkbookApiClient {
   private readonly baseUrl: string;
   private readonly authTokenProvider?: AuthTokenProvider;
@@ -539,6 +614,42 @@ export class WorkbookApiClient {
     await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/shares/${encodeURIComponent(shareId)}`, {
       method: 'DELETE',
     });
+  }
+
+  async putDataBlock(
+    unitId: string,
+    sourceId: string,
+    blockId: string,
+    checksum: string,
+    bytes: ArrayBuffer,
+  ): Promise<RemoteDataBlockMetadata> {
+    return this.json<RemoteDataBlockMetadata>(
+      `/api/workbooks/${encodeURIComponent(unitId)}/data-sources/${encodeURIComponent(sourceId)}/blocks/${encodeURIComponent(blockId)}`,
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-content-sha256': checksum,
+        },
+        body: bytes,
+      },
+    );
+  }
+
+  async getDataBlock(unitId: string, sourceId: string, blockId: string): Promise<{ bytes: ArrayBuffer; checksum: string }> {
+    const response = await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/data-sources/${encodeURIComponent(sourceId)}/blocks/${encodeURIComponent(blockId)}`,
+    );
+    const checksum = response.headers.get('x-content-sha256');
+    if (!checksum) throw new ApiRequestError('Data block response omitted checksum', response.status, 'INTERNAL_ERROR');
+    return { bytes: await response.arrayBuffer(), checksum };
+  }
+
+  async deleteDataBlock(unitId: string, sourceId: string, blockId: string): Promise<void> {
+    await this.request(
+      `/api/workbooks/${encodeURIComponent(unitId)}/data-sources/${encodeURIComponent(sourceId)}/blocks/${encodeURIComponent(blockId)}`,
+      { method: 'DELETE' },
+    );
   }
 
 }

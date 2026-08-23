@@ -1,6 +1,7 @@
 import enUS from './locales/en-US.json';
 import zhCN from './locales/zh-CN.json';
 import type { RibbonTabId, SaveState } from '@react-sheets/ui-system';
+import type { RibbonTextKey } from '@react-sheets/spreadsheet-app';
 
 export type Locale = 'zh-CN' | 'en-US';
 
@@ -70,6 +71,9 @@ const textTranslations: Record<string, string> = {
   'Zoom': '缩放',
   'Print Layout': '打印布局',
   'Appearance & Files': '外观与文件',
+  'Text Color': '文字颜色',
+  'Fill Background': '填充背景',
+  'Clear': '清除',
 };
 
 export const localeLabels: Record<Locale, string> = {
@@ -96,6 +100,12 @@ export function translate(locale: Locale, key: MessageKey): string {
 
 export function translateRibbonTab(locale: Locale, tab: RibbonTabId): string {
   return translate(locale, tab as MessageKey);
+}
+
+export function translateRibbonText(locale: Locale, key: RibbonTextKey): string {
+  const [section, name] = key.split('.') as ['groups' | 'commands', string];
+  const bundle = localeBundles[locale].ribbon[section] as Record<string, string>;
+  return bundle[name] ?? key;
 }
 
 export function formulaBarLabels(locale: Locale, phase: 'empty' | 'error' | 'loading' | 'ready') {

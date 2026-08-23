@@ -3,6 +3,7 @@ import type {
   CellStyle,
   ChartDrawingPayload,
   ConditionalFormatRule,
+  DataBlockRef,
   DataValidationRule,
   DrawingObject,
   DrawingTransform,
@@ -14,6 +15,7 @@ import type {
   PivotSlicer,
   PivotTimeline,
   PivotAggregateFunction,
+  PivotDefinition,
   RangeRef,
   ShapeDrawingPayload,
   SheetTableModel,
@@ -23,6 +25,7 @@ import type {
 } from '@react-sheets/core-model';
 import type { HistoryEntry, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider, TableRowsResponse } from '@react-sheets/protocol';
+import type { XlsxPackage, XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
 import { getPivotFieldCatalog as buildPivotFieldCatalog, computePivotResult } from './features/pivot/engine';
 import {
   collectFindReplacements,
@@ -66,7 +69,7 @@ import {
   type SpreadsheetRuntime,
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
-import { columnLabel } from './address';
+import { cellAddress, columnLabel } from './address';
 import { buildAllSheetSnapshots, type CanvasSheetSnapshot } from './ui-snapshot';
 import {
   buildDrawingAdd,
@@ -102,6 +105,7 @@ import {
   buildPersistenceMeta,
   type PersistenceSnapshotMeta,
 } from './features/persistence';
+import type { FormulaAuditProjection } from './features/formula-audit';
 import {
   exchangeImportXlsx,
   exchangeExportXlsx,
@@ -109,6 +113,7 @@ import {
 } from './features/xlsx';
 import {
   buildPrintSnapshot,
+  getPrintDocument,
   summarizePrintSnapshot,
   type PrintPageSnapshot,
   type PrintSnapshot,
@@ -147,7 +152,7 @@ import {
   HistoryPreviewSession,
   type HistoryEntryMeta,
 } from './features/history';
-import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
+import { currentRegionOfSheet, inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import type { AppPhase, PeerCursor, RibbonTabId, SaveState, SidebarPanelId, UiSessionIntent } from './types';
 
 export interface WorkbookSessionOptions {
@@ -155,6 +160,8 @@ export interface WorkbookSessionOptions {
   authTokenProvider?: AuthTokenProvider;
   shareTokenProvider?: ShareTokenProvider;
   automationWorkerFactory?: AutomationWorkerFactory;
+  /** Only Node/unit harnesses may opt into the inline exchange implementation. */
+  xlsxExecution?: 'worker' | 'inline-test';
 }
 
 export interface UiSnapshot {
@@ -196,6 +203,7 @@ export interface UiSnapshot {
   showPasteSpecial: boolean;
   showFormatCells: boolean;
   showShiftCells: boolean;
+  showCreatePivotDialog: boolean;
   findQuery: string;
   showPrintPreview: boolean;
   printLayout: PrintLayout;
@@ -209,11 +217,17 @@ export interface UiSnapshot {
   recordedScript: string;
   lastScriptResult: ScriptRunResult | null;
   lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
+  formulaAudit: FormulaAuditProjection;
   version: number;
 }
 
 export interface ExtendedSnapshot {
   lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
+}
+
+export interface CreatePivotTableParams {
+  sourceRange?: RangeRef;
+  destination: { kind: 'new-sheet' } | { kind: 'existing-sheet'; sheetId: string; anchor: { row: number; column: number } };
 }
 
 export function getInitialSessionPhase(): AppPhase {
@@ -229,6 +243,7 @@ export class WorkbookSession {
   private readonly listeners = new Set<() => void>();
   private readonly actorId: string;
   private readonly automationWorkerFactory?: AutomationWorkerFactory;
+  private readonly xlsxExecution: 'worker' | 'inline-test';
 
   private phase: AppPhase;
   private saveState: SaveState = 'saved';
@@ -247,6 +262,9 @@ export class WorkbookSession {
   private hasPendingOperations = false;
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
+  /** Runtime package plus local-only original ZIP context for honest export. */
+  private xlsxPackage: XlsxPackage | undefined;
+  private xlsxSourceArtifact: XlsxSourceArtifact | undefined;
   private showFunctionWizard = false;
   private showSortDialog = false;
   private showFindReplace = false;
@@ -254,6 +272,7 @@ export class WorkbookSession {
   private showPasteSpecial = false;
   private showFormatCells = false;
   private showShiftCells = false;
+  private showCreatePivotDialog = false;
   private findQuery = '';
   private showPrintPreview = false;
   private printLayout: PrintLayout = {
@@ -280,7 +299,7 @@ export class WorkbookSession {
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
 
-  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory }: WorkbookSessionOptions = {}) {
+  constructor({ initialPhase = 'ready', authTokenProvider, shareTokenProvider, automationWorkerFactory, xlsxExecution = 'worker' }: WorkbookSessionOptions = {}) {
     const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
       authTokenProvider,
@@ -288,6 +307,7 @@ export class WorkbookSession {
     });
     this.permission = new PermissionService();
     this.automationWorkerFactory = automationWorkerFactory;
+    this.xlsxExecution = xlsxExecution;
     this.permission.setOnline(!this.runtime.localOnly);
     this.actorId = resolveActorId();
     this.phase = initialPhase;
@@ -324,6 +344,7 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onMutationsApplied = () => {
       this.ensureActiveSheetSession();
+      this.runtime.formulaAudit.refresh();
       this.refresh();
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
@@ -375,6 +396,10 @@ export class WorkbookSession {
       this.runtime.authTokenProvider,
       this.runtime.shareTokenProvider,
     );
+    void this.runtime.persistenceReady.then(async () => {
+      const artifact = await this.runtime.workspacePersistence.xlsxArtifacts.load(this.runtime.model.unitId);
+      if (artifact) this.xlsxSourceArtifact = artifact;
+    }).catch(() => undefined);
   }
 
   dispose(): void {
@@ -460,6 +485,7 @@ export class WorkbookSession {
       showPasteSpecial: this.showPasteSpecial,
       showFormatCells: this.showFormatCells,
       showShiftCells: this.showShiftCells,
+      showCreatePivotDialog: this.showCreatePivotDialog,
       findQuery: this.findQuery,
       showPrintPreview: this.showPrintPreview,
       printLayout: this.printLayout,
@@ -475,6 +501,7 @@ export class WorkbookSession {
       recordedScript: this.recordedScript,
       lastScriptResult: this.lastScriptResult,
       lastWhatIfResult: this.lastWhatIfResult,
+      formulaAudit: this.runtime.formulaAudit.getProjection(),
       version: this.version,
     };
     this.cachedUiSnapshotGeneration = this.snapshotGeneration;
@@ -677,6 +704,32 @@ export class WorkbookSession {
 
   getPrimaryRange(): RangeRef {
     return this.selectionService.primaryRangeOrDefault();
+  }
+
+  getCurrentRegion(): RangeRef {
+    const selection = this.selectionService.getState();
+    const primary = this.getPrimaryRange();
+    if (primary.startRow !== primary.endRow || primary.startColumn !== primary.endColumn) return primary;
+    return currentRegionOfSheet(
+      this.runtime.model.getSheet(this.activeSheetId),
+      selection.activeCell.row,
+      selection.activeCell.column,
+    );
+  }
+
+  async storeDataBlock(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
+    await this.runtime.dataBlocks.put(ref, bytes);
+    this.notify(`Stored data block ${ref.id}`);
+  }
+
+  async loadDataBlock(ref: DataBlockRef): Promise<ArrayBuffer> {
+    try {
+      return await this.runtime.dataBlocks.get(ref);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Data block could not be loaded';
+      this.notify(message);
+      throw error;
+    }
   }
 
   getSelectedSheet(): CanvasSheetSnapshot {
@@ -883,7 +936,7 @@ export class WorkbookSession {
     this.emit();
   }
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells', findQuery?: string): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot', findQuery?: string): void {
     if (dialog === 'function-wizard') this.showFunctionWizard = true;
     if (dialog === 'sort-dialog') this.showSortDialog = true;
     if (dialog === 'find-replace') {
@@ -894,6 +947,7 @@ export class WorkbookSession {
     if (dialog === 'paste-special') this.showPasteSpecial = true;
     if (dialog === 'format-cells') this.showFormatCells = true;
     if (dialog === 'shift-cells') this.showShiftCells = true;
+    if (dialog === 'create-pivot') this.showCreatePivotDialog = true;
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
       this.showPrintPreview = true;
@@ -929,6 +983,10 @@ export class WorkbookSession {
   };
   closeShiftCells = (): void => {
     this.showShiftCells = false;
+    this.emit();
+  };
+  closeCreatePivotDialog = (): void => {
+    this.showCreatePivotDialog = false;
     this.emit();
   };
   pasteSpecial(mode: PasteMode): void {
@@ -1051,6 +1109,105 @@ export class WorkbookSession {
     this.emit();
   }
 
+  selectActiveRow(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selection = this.selectionService.getState();
+    this.selectionService.selectRow(selection.activeCell.row, sheet.columnCount);
+    this.syncDraftFromPrimary();
+    this.emit();
+  }
+
+  selectActiveColumn(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selection = this.selectionService.getState();
+    this.selectionService.selectColumn(selection.activeCell.column, sheet.rowCount);
+    this.syncDraftFromPrimary();
+    this.emit();
+  }
+
+  selectAdjacentSheet(direction: 'previous' | 'next'): void {
+    const sheets = this.runtime.model.getVisibleSheets();
+    const current = sheets.findIndex((sheet) => sheet.id === this.activeSheetId);
+    if (current < 0 || sheets.length < 2) return;
+    const offset = direction === 'next' ? 1 : -1;
+    const next = sheets[(current + offset + sheets.length) % sheets.length];
+    if (next) this.selectSheet(next.id);
+  }
+
+  autoSum(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selection = this.selectionService.getState();
+    const range = this.getPrimaryRange();
+    let target = { ...selection.activeCell };
+    let source: RangeRef | undefined;
+    if (range.startRow !== range.endRow || range.startColumn !== range.endColumn) {
+      target = { row: Math.min(sheet.rowCount - 1, range.endRow + 1), column: range.startColumn };
+      source = { ...range, sheetId: this.activeSheetId };
+    } else {
+      let startRow = target.row - 1;
+      while (startRow >= 0) {
+        const value = sheet.cells.get(startRow, target.column)?.value;
+        if (value == null || value === '') break;
+        startRow -= 1;
+      }
+      if (startRow + 1 < target.row) {
+        source = {
+          sheetId: this.activeSheetId,
+          startRow: startRow + 1,
+          endRow: target.row - 1,
+          startColumn: target.column,
+          endColumn: target.column,
+        };
+      }
+    }
+    if (!source || (source.startRow === target.row && source.startColumn === target.column)) {
+      this.notify('Select values above or a range before using AutoSum');
+      return;
+    }
+    const formula = `=SUM(${cellAddress(source.startRow, source.startColumn)}:${cellAddress(source.endRow, source.endColumn)})`;
+    this.overrideTarget = target;
+    const committed = this.commitFormula(formula);
+    this.overrideTarget = null;
+    if (committed) {
+      this.selectionService.selectRange({ startRow: target.row, endRow: target.row, startColumn: target.column, endColumn: target.column }, 'replace');
+      this.syncDraftFromPrimary();
+      this.refresh();
+    }
+  }
+
+  showFormulaPrecedents(): void {
+    const active = this.selectionService.getState().activeCell;
+    this.runCommand('formula.audit.precedents.show', { address: { sheetId: this.activeSheetId, ...active } });
+    this.refresh();
+  }
+
+  showFormulaDependents(): void {
+    const active = this.selectionService.getState().activeCell;
+    this.runCommand('formula.audit.dependents.show', { address: { sheetId: this.activeSheetId, ...active } });
+    this.refresh();
+  }
+
+  removeFormulaAuditArrows(): void {
+    this.runCommand('formula.audit.arrows.remove', {});
+    this.refresh();
+  }
+
+  setShowFormulas(enabled: boolean): void {
+    this.runCommand('formula.audit.formulas.show', { enabled });
+    this.refresh();
+  }
+
+  scanFormulaErrors(): void {
+    this.runCommand('formula.audit.errors.scan', { sheetId: this.activeSheetId });
+    this.refresh();
+  }
+
+  evaluateFormulaStep(): void {
+    const active = this.selectionService.getState().activeCell;
+    this.runCommand('formula.audit.evaluate.step', { address: { sheetId: this.activeSheetId, ...active } });
+    this.refresh();
+  }
+
   beginEdit(initialText?: string): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -1152,7 +1309,7 @@ export class WorkbookSession {
     }
     this.runCommand('chart.insert', buildChartInsertParams(drawing, payload));
     this.runCommand('drawing.select', { sheetId: drawing.sheetId, drawingIds: [drawing.id] });
-    this.selectedFloatingId = drawing.payloadId;
+    this.selectedFloatingId = drawing.id;
     this.notify(payload.title ? `Added chart "${payload.title}"` : `Added ${payload.chartType} chart`);
     this.refresh();
   }
@@ -1220,7 +1377,7 @@ export class WorkbookSession {
     }
     this.runCommand('chart.remove', { sheetId: this.activeSheetId, chartId: id });
     if (drawing) this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
-    if (this.selectedFloatingId === id) this.selectedFloatingId = null;
+    if (this.selectedFloatingId === drawing.id) this.selectedFloatingId = null;
     this.refresh();
   }
   addPivot(pivot: PivotModel): void {
@@ -1230,15 +1387,101 @@ export class WorkbookSession {
     this.refresh();
   }
   insertQuickPivot(): string | undefined {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    const pivotId = nextId('pivot');
-    const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, pivotId, range);
+    const descriptor = this.buildQuickPivotDescriptor();
+    const pivot = descriptor?.params as PivotModel | undefined;
     if (!pivot) {
       this.notify('Select a data range with category and value fields');
       return undefined;
     }
     this.addPivot(pivot);
-    return pivotId;
+    return pivot.id;
+  }
+
+  buildQuickPivotDescriptor(): CommandDescriptor | undefined {
+    const range = normalizeRangeRef(this.getCurrentRegion());
+    const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, nextId('pivot'), range);
+    return pivot ? { commandId: 'pivot.add', params: pivot } : undefined;
+  }
+
+  createPivotTable(params: CreatePivotTableParams): string | undefined {
+    const sourceRange = normalizeRangeRef(params.sourceRange ?? this.getCurrentRegion());
+    if (sourceRange.endRow <= sourceRange.startRow || sourceRange.endColumn < sourceRange.startColumn) {
+      this.notify('Select a tabular source range with a header row before creating a PivotTable');
+      return undefined;
+    }
+    const pivotId = nextId('pivot');
+    let targetSheetId: string;
+    let targetAnchor: { row: number; column: number };
+    let createdSheetId: string | undefined;
+    if (params.destination.kind === 'new-sheet') {
+      targetSheetId = nextId('sheet');
+      targetAnchor = { row: 0, column: 0 };
+      const names = new Set(this.runtime.model.getSheets().map((sheet) => sheet.name.toLocaleLowerCase()));
+      let suffix = 1;
+      let targetName = 'PivotTable';
+      while (names.has(targetName.toLocaleLowerCase())) targetName = `PivotTable${suffix++}`;
+      try {
+        this.runCommand('sheet.add', { id: targetSheetId, name: targetName });
+        createdSheetId = targetSheetId;
+      } catch (error) {
+        this.notify(error instanceof Error ? error.message : 'Could not create PivotTable worksheet');
+        return undefined;
+      }
+    } else {
+      targetSheetId = params.destination.sheetId;
+      targetAnchor = { ...params.destination.anchor };
+      try {
+        this.runtime.model.getSheet(targetSheetId);
+      } catch {
+        this.notify('PivotTable destination worksheet does not exist');
+        return undefined;
+      }
+    }
+
+    const source = { kind: 'worksheet-range' as const, range: { ...sourceRange } };
+    const draft = {
+      schema: 'PivotDefinition' as const,
+      id: pivotId,
+      source,
+      target: { sheetId: targetSheetId, anchor: targetAnchor },
+      fieldCatalog: { fields: [] },
+      refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+      layout: {
+        rows: [],
+        columns: [],
+        filters: [],
+        values: [],
+        calculatedFields: [],
+        calculatedItems: [],
+        showSubtotals: true,
+        showGrandTotals: true,
+        compact: true,
+        repeatLabels: false,
+        expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+      },
+    } satisfies PivotDefinition;
+    const pivotDraft: PivotModel = draft;
+    const pivot: PivotModel = { ...pivotDraft, fieldCatalog: buildPivotFieldCatalog(this.runtime.model, pivotDraft) };
+    if (pivot.fieldCatalog.fields.length === 0) {
+      if (createdSheetId) this.runCommand('sheet.remove', { sheetId: createdSheetId });
+      this.notify('PivotTable source does not contain usable fields');
+      return undefined;
+    }
+    try {
+      this.addPivot(pivot);
+      this.activeSheetId = targetSheetId;
+      this.selectionService.resetForSheet(targetSheetId);
+      this.activePanel = 'pivot';
+      this.notify('Blank PivotTable created. Drag fields into the Field List to build the report.');
+      this.refresh();
+      return pivotId;
+    } catch (error) {
+      if (createdSheetId && this.runtime.model.sheets.has(createdSheetId)) {
+        try { this.runCommand('sheet.remove', { sheetId: createdSheetId }); } catch { /* keep original failure authoritative */ }
+      }
+      this.notify(error instanceof Error ? error.message : 'Could not create PivotTable');
+      return undefined;
+    }
   }
   updatePivotLayout(pivotId: string, layout: PivotLayout): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, layout });
@@ -1320,7 +1563,7 @@ export class WorkbookSession {
     }
     this.runCommand('drawing.add.shape', buildDrawingAdd(drawing, payload));
     this.runCommand('drawing.select', { sheetId: drawing.sheetId, drawingIds: [drawing.id] });
-    this.selectedFloatingId = drawing.payloadId;
+    this.selectedFloatingId = drawing.id;
     this.notify(`Added ${payload.type} shape`);
     this.refresh();
   }
@@ -1367,7 +1610,7 @@ export class WorkbookSession {
       this.notify('Shape is not registered as a drawing object');
       return;
     }
-    if (this.selectedFloatingId === id) this.selectedFloatingId = null;
+    if (this.selectedFloatingId === drawing.id) this.selectedFloatingId = null;
     this.refresh();
   }
   addImage(drawing: DrawingObject, payload: ImageDrawingPayload): void {
@@ -1376,7 +1619,7 @@ export class WorkbookSession {
     }
     this.runCommand('drawing.add.image', buildDrawingAdd(drawing, payload));
     this.runCommand('drawing.select', { sheetId: drawing.sheetId, drawingIds: [drawing.id] });
-    this.selectedFloatingId = drawing.payloadId;
+    this.selectedFloatingId = drawing.id;
     this.notify('Image placed on canvas');
     this.refresh();
   }
@@ -1400,7 +1643,7 @@ export class WorkbookSession {
       this.notify('Image is not registered as a drawing object');
       return;
     }
-    if (this.selectedFloatingId === id) this.selectedFloatingId = null;
+    if (this.selectedFloatingId === drawing.id) this.selectedFloatingId = null;
     this.refresh();
   }
   bringSelectedDrawingForward(): void {
@@ -1427,7 +1670,7 @@ export class WorkbookSession {
       return;
     }
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const drawing = findDrawingByPayloadId(sheet, this.selectedFloatingId);
+    const drawing = sheet.drawings.find((entry) => entry.id === this.selectedFloatingId);
     if (!drawing) {
       this.notify('Selected object is not registered as a drawing');
       return;
@@ -1440,7 +1683,7 @@ export class WorkbookSession {
   private resolveSelectedDrawingId(): string | undefined {
     if (!this.selectedFloatingId) return undefined;
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    return findDrawingByPayloadId(sheet, this.selectedFloatingId)?.id;
+    return sheet.drawings.some((entry) => entry.id === this.selectedFloatingId) ? this.selectedFloatingId : undefined;
   }
   addSparkline(sparkline: SparklineModel): void {
     this.runCommand('sparkline.insert', buildSparklineInsertParams(sparkline));
@@ -1787,7 +2030,7 @@ export class WorkbookSession {
     this.selectedFloatingId = id;
     if (id) {
       const sheet = this.runtime.model.getSheet(this.activeSheetId);
-      const drawing = findDrawingByPayloadId(sheet, id);
+      const drawing = sheet.drawings.find((entry) => entry.id === id);
       if (drawing) {
         this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: [drawing.id] });
       } else {
@@ -1810,9 +2053,12 @@ export class WorkbookSession {
   getPivotFieldCatalog(range: RangeRef): PivotFieldDefinition[] {
     const pivot: PivotModel = {
       id: 'pivot-field-catalog',
-      sheetId: range.sheetId,
-      sourceRange: range,
-      layout: { rows: [], columns: [], filters: [], values: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [] },
+      schema: 'PivotDefinition',
+      source: { kind: 'worksheet-range', range: { ...range } },
+      target: { sheetId: range.sheetId, anchor: { row: 0, column: 0 } },
+      fieldCatalog: { fields: [] },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+      layout: { rows: [], columns: [], filters: [], values: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [], expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
     };
     return buildPivotFieldCatalog(this.runtime.model, pivot).fields;
   }
@@ -1906,6 +2152,65 @@ export class WorkbookSession {
     this.runCommand('print.pageSetup', { layout, sheetId: this.activeSheetId });
     this.rebuildPrintSnapshot(layout);
     this.emit();
+  }
+
+  openPrintLayout(): void {
+    this.activePanel = 'print';
+    this.emit();
+  }
+
+  setCurrentPrintArea(): void {
+    this.setPrintArea({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+  }
+
+  clearPrintArea(): void {
+    this.runCommand('print.area.clear', { sheetId: this.activeSheetId });
+    this.rebuildPrintSnapshot();
+    this.notify('Print area cleared');
+    this.emit();
+  }
+
+  setPrintTitles(axis: 'rows' | 'columns'): void {
+    const range = this.getPrimaryRange();
+    const params = axis === 'rows'
+      ? { sheetId: this.activeSheetId, repeatRows: { start: range.startRow, end: range.endRow } }
+      : { sheetId: this.activeSheetId, repeatColumns: { start: range.startColumn, end: range.endColumn } };
+    this.runCommand('print.titles.set', params);
+    this.rebuildPrintSnapshot();
+    this.notify(axis === 'rows' ? 'Rows to repeat at top updated' : 'Columns to repeat at left updated');
+    this.emit();
+  }
+
+  setPrintScale(scale: number): void {
+    this.runCommand('print.scale.set', { sheetId: this.activeSheetId, scale });
+    const document = getPrintDocument(this.runtime.model, this.activeSheetId);
+    this.printLayout = { ...this.printLayout, scale: document.pageSetup.scale };
+    this.rebuildPrintSnapshot(this.printLayout);
+    this.emit();
+  }
+
+  setPrintGridlines(enabled: boolean): void {
+    this.runCommand('print.gridlines.set', { sheetId: this.activeSheetId, enabled });
+    this.printLayout = { ...this.printLayout, printGridlines: enabled };
+    this.rebuildPrintSnapshot(this.printLayout);
+    this.emit();
+  }
+
+  setPrintHeadings(enabled: boolean): void {
+    this.runCommand('print.headings.set', { sheetId: this.activeSheetId, enabled });
+    this.printLayout = { ...this.printLayout, printHeadings: enabled };
+    this.rebuildPrintSnapshot(this.printLayout);
+    this.emit();
+  }
+
+  setViewGridlines(enabled: boolean): void {
+    this.runCommand('pageLayout.gridlines.view.set', { sheetId: this.activeSheetId, enabled });
+    this.refresh();
+  }
+
+  setViewHeadings(enabled: boolean): void {
+    this.runCommand('pageLayout.headings.view.set', { sheetId: this.activeSheetId, enabled });
+    this.refresh();
   }
 
   private rebuildPrintSnapshot(layout?: PrintLayout, range?: RangeRef): PrintSnapshot {
@@ -2191,7 +2496,7 @@ export class WorkbookSession {
     };
   }
 
-  async importXlsxBase64(base64: string, fileName = 'import.xlsx'): Promise<void> {
+  async importXlsxBuffer(buffer: ArrayBuffer, fileName = 'import.xlsx'): Promise<void> {
     if (!this.canExecute('xlsx.import')) {
       this.notify('You do not have permission to import workbooks');
       return;
@@ -2199,20 +2504,27 @@ export class WorkbookSession {
     this.phase = 'loading';
     this.emit();
     try {
-      const imported = await exchangeImportXlsx({ fileName, base64 });
+      const imported = await exchangeImportXlsx({ fileName, buffer, execution: this.xlsxExecution, revision: this.version });
       if (!imported.snapshot) throw new Error('XLSX import did not produce a workbook snapshot');
       hydrateRuntime(this.runtime, {
         snapshot: imported.snapshot,
         revision: this.runtime.remoteRevision,
       });
       this.compatibilityReport = imported.report as CompatibilityReport;
+      this.xlsxPackage = imported.package;
+      this.xlsxSourceArtifact = imported.sourceArtifact;
       this.runtime.remoteConnected = false;
       if (typeof window !== 'undefined') {
         window.history.replaceState({}, '', `/workbooks/${encodeURIComponent(imported.snapshot.unitId)}`);
       }
       this.activeSheetId = this.runtime.model.primarySheetId;
       this.selectionService.resetForSheet(this.activeSheetId);
-      await this.runtime.checkpointWorkspace();
+      await Promise.all([
+        this.runtime.checkpointWorkspace(),
+        imported.sourceArtifact
+          ? this.runtime.workspacePersistence.xlsxArtifacts.save(imported.snapshot.unitId, imported.sourceArtifact)
+          : Promise.resolve(),
+      ]);
       this.phase = 'ready';
       this.notify(summarizeCompatibilityReport(this.compatibilityReport));
       this.refresh();
@@ -2223,7 +2535,7 @@ export class WorkbookSession {
     }
   }
 
-  async exportXlsxWorkbook(fileName?: string): Promise<{ base64: string; fileName: string } | null> {
+  async exportXlsxWorkbook(fileName?: string): Promise<{ buffer: ArrayBuffer; fileName: string } | null> {
     if (!this.canExecute('xlsx.export')) {
       this.notify('You do not have permission to export workbooks');
       return null;
@@ -2231,12 +2543,17 @@ export class WorkbookSession {
     try {
       const exported = await exchangeExportXlsx(this.runtime.model.snapshot(), {
         fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
+        package: this.xlsxPackage,
+        sourceArtifact: this.xlsxSourceArtifact,
+        execution: this.xlsxExecution,
+        revision: this.version,
       });
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
-      if (!exported.base64 || !exported.fileName) return null;
-      return { base64: exported.base64, fileName: exported.fileName };
+      this.xlsxPackage = exported.package ?? this.xlsxPackage;
+      if (!exported.buffer || !exported.fileName) return null;
+      return { buffer: exported.buffer, fileName: exported.fileName };
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'XLSX export failed');
       return null;

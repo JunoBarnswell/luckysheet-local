@@ -23,6 +23,50 @@ export function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
   };
 }
 
+/**
+ * Excel-style current region. A table/data region always wins; otherwise the
+ * region grows over adjacent nonblank rows and columns around the active cell.
+ */
+export function currentRegionOfSheet(sheet: WorksheetModel, row: number, column: number): RangeRef {
+  const table = sheet.sheetTables.find((entry) =>
+    row >= entry.range.startRow && row <= entry.range.endRow
+    && column >= entry.range.startColumn && column <= entry.range.endColumn);
+  if (table) return structuredClone(table.range);
+  const dataRegion = sheet.dataRegions.find((entry) =>
+    row >= entry.range.startRow && row <= entry.range.endRow
+    && column >= entry.range.startColumn && column <= entry.range.endColumn);
+  if (dataRegion) return structuredClone(dataRegion.range);
+  if (!sheet.cells.has(row, column)) {
+    return { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column };
+  }
+
+  let startRow = row;
+  let endRow = row;
+  let startColumn = column;
+  let endColumn = column;
+  const rowHasData = (candidate: number): boolean => {
+    for (let current = startColumn; current <= endColumn; current += 1) {
+      if (sheet.cells.has(candidate, current)) return true;
+    }
+    return false;
+  };
+  const columnHasData = (candidate: number): boolean => {
+    for (let current = startRow; current <= endRow; current += 1) {
+      if (sheet.cells.has(current, candidate)) return true;
+    }
+    return false;
+  };
+  let grew = true;
+  while (grew) {
+    grew = false;
+    while (startRow > 0 && rowHasData(startRow - 1)) { startRow -= 1; grew = true; }
+    while (endRow + 1 < sheet.rowCount && rowHasData(endRow + 1)) { endRow += 1; grew = true; }
+    while (startColumn > 0 && columnHasData(startColumn - 1)) { startColumn -= 1; grew = true; }
+    while (endColumn + 1 < sheet.columnCount && columnHasData(endColumn + 1)) { endColumn += 1; grew = true; }
+  }
+  return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
+}
+
 export function inferTableFieldType(values: CellData['value'][]): TableFieldType {
   const present = values.filter((value) => value != null && value !== '');
   if (present.length === 0) return 'mixed';

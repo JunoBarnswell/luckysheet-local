@@ -71,4 +71,53 @@ describe('print document commands', () => {
     targetRuntime.applyRemoteMutations([mutation]);
     assert.deepEqual(getPrintDocument(target, sheetId).pageBreaks, [{ sheetId, column: 4 }]);
   });
+
+  it('persists print titles, scale, gridlines and headings through explicit commands', () => {
+    const workbook = new WorkbookModel('wb-print-layout-fields', 'Print fields');
+    const commands = runtime(workbook);
+    const sheetId = workbook.primarySheetId;
+
+    commands.execute('print.titles.set', {
+      sheetId,
+      repeatRows: { start: 0, end: 1 },
+      repeatColumns: { start: 0, end: 0 },
+    });
+    commands.execute('print.scale.set', { sheetId, scale: 80, fitToWidth: 1 });
+    commands.execute('print.gridlines.set', { sheetId, enabled: true });
+    commands.execute('print.headings.set', { sheetId, enabled: true });
+
+    const document = getPrintDocument(workbook, sheetId);
+    assert.deepEqual(document.repeatRows, { start: 0, end: 1 });
+    assert.deepEqual(document.repeatColumns, { start: 0, end: 0 });
+    assert.equal(document.pageSetup.scale, 80);
+    assert.equal(document.pageSetup.fitToWidth, 1);
+    assert.equal(document.pageSetup.printGridlines, true);
+    assert.equal(document.pageSetup.printHeadings, true);
+
+    assert.equal(commands.undo(), true);
+    assert.equal(getPrintDocument(workbook, sheetId).pageSetup.printHeadings, false);
+    assert.equal(commands.redo(), true);
+    assert.equal(getPrintDocument(workbook, sheetId).pageSetup.printHeadings, true);
+    commands.execute('print.titles.clear', { sheetId });
+    assert.equal(getPrintDocument(workbook, sheetId).repeatRows, undefined);
+    assert.equal(getPrintDocument(workbook, sheetId).repeatColumns, undefined);
+  });
+
+  it('persists page-layout gridline and heading view options through undoable mutations', () => {
+    const workbook = new WorkbookModel('wb-page-layout-view', 'Page Layout view');
+    const commands = runtime(workbook);
+    const sheetId = workbook.primarySheetId;
+    const sheet = workbook.getSheet(sheetId);
+
+    commands.execute('pageLayout.gridlines.view.set', { sheetId, enabled: false });
+    commands.execute('pageLayout.headings.view.set', { sheetId, enabled: false });
+    assert.equal(sheet.showGridlines, false);
+    assert.equal(sheet.showHeaders, false);
+    assert.equal(commands.undo(), true);
+    assert.equal(sheet.showHeaders, true);
+    assert.equal(commands.undo(), true);
+    assert.equal(sheet.showGridlines, true);
+    assert.equal(commands.redo(), true);
+    assert.equal(sheet.showGridlines, false);
+  });
 });

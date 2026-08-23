@@ -1,6 +1,8 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { computeChecksum, verifyChecksum } from './checksum';
+import { LocalDataBlockStore } from './data-block-store';
+import { LocalXlsxArtifactStore } from './xlsx-artifact-store';
 
 /** The only browser-persistent workbook record. */
 export interface WorkspaceRecord {
@@ -400,9 +402,13 @@ export function getLocalWorkspaceStore(options?: IndexedDbWorkspaceStoreOptions)
 export class WorkspacePersistence {
   readonly operationJournal: OperationJournalStore;
   readonly store: LocalWorkspaceStore;
+  readonly dataBlocks: LocalDataBlockStore;
+  readonly xlsxArtifacts: LocalXlsxArtifactStore;
 
   constructor(options: IndexedDbWorkspaceStoreOptions = {}, operationJournal = new OperationJournalStore()) {
     this.store = new LocalWorkspaceStore(options);
+    this.dataBlocks = new LocalDataBlockStore();
+    this.xlsxArtifacts = new LocalXlsxArtifactStore();
     this.operationJournal = operationJournal;
   }
 
@@ -439,7 +445,7 @@ export class WorkspacePersistence {
 
   clear(unitId: string): Promise<void> {
     this.operationJournal.clear(unitId);
-    return this.store.delete(unitId);
+    return Promise.all([this.store.delete(unitId), this.xlsxArtifacts.remove(unitId)]).then(() => undefined);
   }
 }
 

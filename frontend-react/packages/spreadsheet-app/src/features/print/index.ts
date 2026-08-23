@@ -36,6 +36,10 @@ export const DEFAULT_PAGE_SETUP: PageSetup = {
 
 export type PrintArea = PrintDocumentSnapshot['printAreas'][number];
 export type PrintPageBreak = PrintDocumentSnapshot['pageBreaks'][number];
+export interface PrintTitleSpan {
+  start: number;
+  end: number;
+}
 
 /** Canonical, serializable workbook print state. */
 /** Canonical workbook-owned print state. */
@@ -240,5 +244,5 @@ export function computePrintPages(layout: PrintLayoutModel, rowHeight = 20, colW
 }
 
 export * from './pdf-export';
-export { registerPrintCommands } from './commands';
+export * from './commands';
 export * from './layout';

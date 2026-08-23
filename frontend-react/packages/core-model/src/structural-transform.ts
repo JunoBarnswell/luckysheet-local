@@ -91,8 +91,8 @@ function validateAxisMetadataPreservation(
     if (deleted(position)) throw new Error(`Cannot delete ${axis} ${position}: sparkline ${sparkline.id} would be lost`);
   }
   for (const pivot of sheet.pivots) {
-    if (pivot.targetAnchor) {
-      const position = axis === 'row' ? pivot.targetAnchor.row : pivot.targetAnchor.column;
+    if (pivot.target?.sheetId === sheet.id) {
+      const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
       if (deleted(position)) throw new Error(`Cannot delete ${axis} ${position}: pivot ${pivot.id} would be lost`);
     }
   }
@@ -362,15 +362,14 @@ function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, se
     for (const series of payload.series ?? []) shiftContainedRange(series.range, selection, rowDelta, columnDelta);
   }
   for (const pivot of sheet.pivots) {
-    shiftContainedRange(pivot.sourceRange, selection, rowDelta, columnDelta);
-    if (pivot.dataSource?.kind === 'worksheet-range') shiftContainedRange(pivot.dataSource.range, selection, rowDelta, columnDelta);
-    if (pivot.dataSource?.kind === 'worksheet-ranges') {
-      for (const range of pivot.dataSource.ranges) shiftContainedRange(range, selection, rowDelta, columnDelta);
+    if (pivot.source?.kind === 'worksheet-range') shiftContainedRange(pivot.source.range, selection, rowDelta, columnDelta);
+    if (pivot.source?.kind === 'worksheet-ranges') {
+      for (const range of pivot.source.ranges) shiftContainedRange(range, selection, rowDelta, columnDelta);
     }
-    if (pivot.targetAnchor && pivot.targetAnchor.row >= selection.startRow && pivot.targetAnchor.row <= selection.endRow
-      && pivot.targetAnchor.column >= selection.startColumn && pivot.targetAnchor.column <= selection.endColumn) {
-      pivot.targetAnchor.row += rowDelta;
-      pivot.targetAnchor.column += columnDelta;
+    if (pivot.target?.sheetId === sheet.id && pivot.target.anchor.row >= selection.startRow && pivot.target.anchor.row <= selection.endRow
+      && pivot.target.anchor.column >= selection.startColumn && pivot.target.anchor.column <= selection.endColumn) {
+      pivot.target.anchor.row += rowDelta;
+      pivot.target.anchor.column += columnDelta;
     }
   }
   for (const sparkline of sheet.sparklines) {
@@ -650,17 +649,16 @@ function shiftSparklines(sheet: WorksheetModel, axis: 'row' | 'column', at: numb
 
 function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   for (const pivot of sheet.pivots) {
-    shiftRangeRef(pivot.sourceRange, axis, at, count, direction);
-    if (pivot.dataSource?.kind === 'worksheet-range') shiftRangeRef(pivot.dataSource.range, axis, at, count, direction);
-    if (pivot.dataSource?.kind === 'worksheet-ranges') {
-      for (const range of pivot.dataSource.ranges) shiftRangeRef(range, axis, at, count, direction);
+    if (pivot.source?.kind === 'worksheet-range') shiftRangeRef(pivot.source.range, axis, at, count, direction);
+    if (pivot.source?.kind === 'worksheet-ranges') {
+      for (const range of pivot.source.ranges) shiftRangeRef(range, axis, at, count, direction);
     }
-    if (pivot.targetAnchor) {
-      const position = axis === 'row' ? pivot.targetAnchor.row : pivot.targetAnchor.column;
+    if (pivot.target?.sheetId === sheet.id) {
+      const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
       const shifted = shiftIndex(position, at, count, direction);
       if (shifted != null) {
-        if (axis === 'row') pivot.targetAnchor.row = shifted;
-        else pivot.targetAnchor.column = shifted;
+        if (axis === 'row') pivot.target.anchor.row = shifted;
+        else pivot.target.anchor.column = shifted;
       }
     }
   }
@@ -914,12 +912,11 @@ function applyMoveRange(
     for (const series of payload.series ?? []) relocate(series.range);
   }
   for (const pivot of sheet.pivots) {
-    relocate(pivot.sourceRange);
-    if (pivot.dataSource?.kind === 'worksheet-range') relocate(pivot.dataSource.range);
-    if (pivot.dataSource?.kind === 'worksheet-ranges') for (const range of pivot.dataSource.ranges) relocate(range);
-    if (pivot.targetAnchor && insideCell(normalizedSource, pivot.targetAnchor.row, pivot.targetAnchor.column)) {
-      pivot.targetAnchor.row += rowDelta;
-      pivot.targetAnchor.column += colDelta;
+    if (pivot.source?.kind === 'worksheet-range') relocate(pivot.source.range);
+    if (pivot.source?.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) relocate(range);
+    if (pivot.target?.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
+      pivot.target.anchor.row += rowDelta;
+      pivot.target.anchor.column += colDelta;
     }
   }
   for (const sparkline of sheet.sparklines) {
@@ -1004,9 +1001,8 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
     if (table.sourceRange?.sheetId === sheet.id) validateRange(table.sourceRange, `workbook table ${table.id}`);
   }
   for (const pivot of sheet.pivots) {
-    validateRange(pivot.sourceRange, `pivot ${pivot.id} source`);
-    if (pivot.dataSource?.kind === 'worksheet-range') validateRange(pivot.dataSource.range, `pivot ${pivot.id} source`);
-    if (pivot.dataSource?.kind === 'worksheet-ranges') for (const range of pivot.dataSource.ranges) validateRange(range, `pivot ${pivot.id} source`);
+    if (pivot.source?.kind === 'worksheet-range') validateRange(pivot.source.range, `pivot ${pivot.id} source`);
+    if (pivot.source?.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) validateRange(range, `pivot ${pivot.id} source`);
   }
   for (const sparkline of sheet.sparklines) validateRange(sparkline.sourceRange, `sparkline ${sparkline.id} source`);
   for (const spill of sheet.spillRanges) validateRange(spill.range, 'spill range');

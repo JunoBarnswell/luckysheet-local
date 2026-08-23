@@ -28,6 +28,7 @@ import {
   type XlsxRelationship,
   type XlsxZipLimits,
 } from './types';
+import { readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotGraph } from './native-pivot';
 
 const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const NS_REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
@@ -61,38 +62,8 @@ interface SheetDescriptor {
   hidden: boolean;
 }
 
-/** Decode a data URL or plain base64 without requiring Node's Buffer. */
-export function base64ToBytes(value: string): Uint8Array {
-  const normalized = value.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
-  if (typeof atob === 'function') {
-    const binary = atob(normalized);
-    const result = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) result[index] = binary.charCodeAt(index);
-    return result;
-  }
-  // The branch is only used by Node's test/server runtime.  Keep Buffer out of
-  // the browser bundle by resolving it through globalThis.
-  const bufferCtor = (globalThis as { Buffer?: { from(value: string, encoding: string): Uint8Array } }).Buffer;
-  if (!bufferCtor) throw new Error('Base64 decoding is unavailable in this host');
-  return new Uint8Array(bufferCtor.from(normalized, 'base64'));
-}
-
-export function bytesToBase64(bytes: Uint8Array): string {
-  if (typeof btoa === 'function') {
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let index = 0; index < bytes.length; index += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-    }
-    return btoa(binary);
-  }
-  const bufferCtor = (globalThis as { Buffer?: { from(value: Uint8Array): { toString(encoding: string): string } } }).Buffer;
-  if (!bufferCtor) throw new Error('Base64 encoding is unavailable in this host');
-  return bufferCtor.from(bytes).toString('base64');
-}
-
-export function loadXlsxPackage(input: string | ArrayBuffer, limits: Partial<XlsxZipLimits> = {}): LoadedXlsxPackage {
-  const bytes = typeof input === 'string' ? base64ToBytes(input) : new Uint8Array(input);
+export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial<XlsxZipLimits> = {}): LoadedXlsxPackage {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const effective = { ...DEFAULT_XLSX_ZIP_LIMITS, ...limits };
   if (bytes.byteLength > effective.maxArchiveBytes) {
     throw new Error(`XLSX archive exceeds ${effective.maxArchiveBytes} byte limit`);
@@ -139,6 +110,9 @@ export function loadXlsxPackage(input: string | ArrayBuffer, limits: Partial<Xls
     if (!coreParts.has(name)) opaqueParts[name] = data.slice();
   }
 
+  const nativePivotGraph = hasNativePivotMarkers(normalizedFiles)
+    ? readNativePivotGraph({ files: normalizedFiles, relationships, sheetPartById })
+    : undefined;
   return {
     files: normalizedFiles,
     package: {
@@ -149,6 +123,7 @@ export function loadXlsxPackage(input: string | ArrayBuffer, limits: Partial<Xls
       sheetPartById,
       contentTypesXml: normalizedFiles['[Content_Types].xml']?.slice(),
       dateSystem,
+      ...(nativePivotGraph ? { nativePivotGraph } : {}),
     },
   };
 }
@@ -199,7 +174,7 @@ export function exportSnapshotToXlsxPackage(
   snapshot: WorkbookSnapshot,
   options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean },
   preserved?: XlsxPackage,
-): string {
+): ArrayBuffer {
   const files = new Map<string, Uint8Array>();
   if (preserved) {
     for (const [name, data] of Object.entries(preserved.parts)) {
@@ -208,6 +183,17 @@ export function exportSnapshotToXlsxPackage(
     }
   }
   const sourceFiles = preserved?.parts ?? {};
+  const nativeFiles = preserved?.nativePivotGraph
+    ? synchronizeNativePivotGraph({
+      files: Object.fromEntries([...files.entries()]),
+      relationships: preserved.relationships,
+      graph: preserved.nativePivotGraph,
+      sheetNameByPart: Object.fromEntries(snapshot.sheets.map((sheet, index) => [preserved.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`, sheet.name])),
+    })
+    : undefined;
+  if (nativeFiles) {
+    for (const [name, data] of Object.entries(nativeFiles)) files.set(name, data);
+  }
   const styleOutput = buildStyles(snapshot);
   const styleIndexes = collectStyleIndexes(snapshot);
   const sharedOutput = buildSharedStrings(snapshot);
@@ -219,9 +205,11 @@ export function exportSnapshotToXlsxPackage(
     const original = preserved ? strFromU8(sourceFiles[part] ?? new Uint8Array()) : '';
     const originalRoot = original ? firstElement(parseXml(original), 'worksheet') : undefined;
     const requiredHyperlinks = collectHyperlinkRelationships(sheet, preserved?.relationships[part] ?? []);
-    const relationships = mergeRelationships(preserved?.relationships[part] ?? [], requiredHyperlinks);
+    const tableParts = prepareTableParts(sheet, part, preserved, files);
+    for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
+    const relationships = mergeRelationships(preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, relationships, originalRoot, styleIndexes, options.includeCachedValues ?? true)));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, options.includeCachedValues ?? true)));
   }
 
   const workbookRelations = mergeRelationships(
@@ -244,7 +232,8 @@ export function exportSnapshotToXlsxPackage(
 
   const zipped: Record<string, Uint8Array> = {};
   for (const [name, data] of files) zipped[name] = data;
-  return bytesToBase64(zipSync(zipped, { level: 6 }));
+  const zippedBytes = zipSync(zipped, { level: 6 });
+  return zippedBytes.buffer.slice(zippedBytes.byteOffset, zippedBytes.byteOffset + zippedBytes.byteLength) as ArrayBuffer;
 }
 
 export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnapshot): string[] {
@@ -252,13 +241,14 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
   for (const name of Object.keys(pkg.parts)) {
     const lower = name.toLowerCase();
     if (lower.includes('/charts/')) features.add('charts');
-    if (lower.includes('/pivot')) features.add('pivot');
+    if (lower.includes('/pivot') || lower.includes('pivottableparts')) features.add('pivot');
     if (lower.includes('vba') || lower.endsWith('.bin')) features.add('vba');
     if (lower.includes('externalconnections') || lower.includes('connections.xml')) features.add('external-connection');
     if (lower.includes('/slicers/') || lower.includes('slicer')) features.add('slicer');
     if (lower.includes('/theme/')) features.add('theme');
     if (lower.includes('/comments')) features.add('comments');
     if (lower.includes('/drawings/')) features.add('images');
+    if (lower.includes('/tables/')) features.add('tables');
   }
   if (snapshot) {
     for (const sheet of snapshot.sheets) {
@@ -330,6 +320,7 @@ function parseSheet(
   const columnWidths = parseColumnWidths(root);
   const tabColor = child(child(root, 'sheetPr'), 'tabColor')?.attrs.rgb;
   const notes = parseNotes(root, descriptor, files, pkg);
+  const sheetTables = parseSheetTables(root, descriptor, files, pkg);
   const rowCount = Math.max(1000, maxRow + 1);
   const columnCount = Math.max(26, maxColumn + 1);
   return {
@@ -352,8 +343,48 @@ function parseSheet(
     hiddenColumns,
     tabColor,
     notes,
+    ...(sheetTables.length ? { sheetTables } : {}),
     hidden: descriptor.hidden,
   };
+}
+
+function parseSheetTables(
+  root: XmlNode,
+  descriptor: SheetDescriptor,
+  files: Record<string, Uint8Array>,
+  pkg: XlsxPackage,
+): NonNullable<SheetSnapshot['sheetTables']> {
+  return children(child(root, 'tableParts'), 'tablePart').flatMap((partNode) => {
+    const relationId = partNode.attrs['r:id'] ?? partNode.attrs.id;
+    if (!relationId) throw new Error(`Worksheet ${descriptor.part} tablePart is missing r:id`);
+    const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => candidate.id === relationId && candidate.type.endsWith('/table'));
+    if (!relation) throw new Error(`Worksheet ${descriptor.part} table relation ${relationId} is missing`);
+    const part = resolveTarget(descriptor.part, relation.target);
+    const bytes = files[part];
+    if (!bytes) throw new Error(`Worksheet table relation points to missing part: ${part}`);
+    const table = firstElement(parseXml(strFromU8(bytes)), 'table');
+    const range = parseRange(table.attrs.ref);
+    if (!range) throw new Error(`Table ${part} has an invalid ref`);
+    const columns = children(child(table, 'tableColumns'), 'tableColumn').map((column, index) => ({
+      id: `column-${table.attrs.id ?? descriptor.id}-${index}`,
+      name: column.attrs.name ?? `Column${index + 1}`,
+      ...(column.attrs.totalsRowFunction ? { totalsFunction: column.attrs.totalsRowFunction as NonNullable<SheetSnapshot['sheetTables']>[number]['columns'][number]['totalsFunction'] } : {}),
+    }));
+    const tableNumber = table.attrs.id ?? (part.replace(/[^0-9]/g, '') || descriptor.id);
+    return [{
+      id: `table-${tableNumber}`,
+      sheetId: descriptor.id,
+      name: table.attrs.displayName ?? table.attrs.name ?? `Table${table.attrs.id ?? '1'}`,
+      range: { ...range, sheetId: descriptor.id },
+      hasHeaderRow: table.attrs.headerRowCount !== '0',
+      hasTotalRow: table.attrs.totalsRowCount === '1',
+      showBandedRows: child(table, 'tableStyleInfo')?.attrs.showRowStripes !== '0',
+      showBandedColumns: child(table, 'tableStyleInfo')?.attrs.showColumnStripes === '1',
+      showFilterButton: table.attrs.headerRowCount !== '0',
+      columns,
+      ...(child(table, 'tableStyleInfo')?.attrs.name ? { styleName: child(table, 'tableStyleInfo')!.attrs.name } : {}),
+    }];
+  });
 }
 
 function parseSharedStrings(bytes: Uint8Array | undefined): string[] {
@@ -469,6 +500,52 @@ function buildStyles(snapshot: WorkbookSnapshot): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borders.length}">${borders.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs></styleSheet>`;
 }
 
+function prepareTableParts(
+  sheet: SheetSnapshot,
+  sourcePart: string,
+  preserved: XlsxPackage | undefined,
+  files: Map<string, Uint8Array>,
+): { parts: Map<string, string>; required: Array<Pick<XlsxRelationship, 'type' | 'target'>> } {
+  const tables = sheet.sheetTables ?? [];
+  if (!tables.length) return { parts: new Map(), required: [] };
+  const existing = (preserved?.relationships[sourcePart] ?? []).filter((relation) => relation.type.endsWith('/table'));
+  const usedParts = new Set(files.keys());
+  let nextNumber = 1;
+  const parts = new Map<string, string>();
+  const required: Array<Pick<XlsxRelationship, 'type' | 'target'>> = [];
+  for (let index = 0; index < tables.length; index += 1) {
+    const table = tables[index]!;
+    const existingRelation = existing.find((relation) => {
+      const target = resolveTarget(sourcePart, relation.target);
+      const bytes = files.get(target);
+      if (!bytes) return false;
+      const root = firstElement(parseXml(strFromU8(bytes)), 'table');
+      return root.attrs.displayName === table.name || root.attrs.name === table.name;
+    });
+    let part = existingRelation ? resolveTarget(sourcePart, existingRelation.target) : '';
+    if (!part) {
+      do {
+        part = `xl/tables/table${nextNumber++}.xml`;
+      } while (usedParts.has(part));
+    }
+    usedParts.add(part);
+    parts.set(part, buildTableXml(table, index + 1));
+    required.push({ type: `${NS_DOC_REL}/table`, target: relativeTarget(sourcePart, part) });
+  }
+  return { parts, required };
+}
+
+function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number], fallbackId: number): string {
+  const numericId = Number(table.id.replace(/\D/g, '')) || fallbackId;
+  const ref = rangeToA1(table.range);
+  const columns = table.columns.map((column, index) => `<tableColumn id="${index + 1}" name="${encodeXml(column.name)}"${column.totalsFunction && column.totalsFunction !== 'none' ? ` totalsRowFunction="${encodeXml(column.totalsFunction)}"` : ''}/>`).join('');
+  const style = table.styleName
+    ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="0" showLastColumn="0" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
+    : '';
+  const autoFilter = table.showFilterButton && table.hasHeaderRow ? `<autoFilter ref="${encodeXml(ref)}"/>` : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="${NS_MAIN}" id="${numericId}" name="${encodeXml(table.name)}" displayName="${encodeXml(table.name)}" ref="${encodeXml(ref)}" headerRowCount="${table.hasHeaderRow ? '1' : '0'}" totalsRowCount="${table.hasTotalRow ? '1' : '0'}">${autoFilter}<tableColumns count="${table.columns.length}">${columns}</tableColumns>${style}</table>`;
+}
+
 function collectStyleIndexes(snapshot: WorkbookSnapshot): Map<string, number> {
   const indexes = new Map<string, number>();
   let next = 1;
@@ -486,8 +563,10 @@ function collectStyleIndexes(snapshot: WorkbookSnapshot): Map<string, number> {
 
 function buildWorksheetXml(
   sheet: SheetSnapshot,
+  sourcePart: string,
   relationships: XlsxRelationship[],
   originalRoot: XmlNode | undefined,
+  files: Map<string, Uint8Array>,
   styleIndexes: Map<string, number>,
   includeCachedValues: boolean,
 ): string {
@@ -530,15 +609,27 @@ function buildWorksheetXml(
     return [`<hyperlink ref="${address}"${target && relation ? ` r:id="${relation.id}"` : ''}${link.target.kind === 'sheet' ? ` location="${encodeXml(link.target.address ?? '')}"` : ''}${link.tooltip ? ` tooltip="${encodeXml(link.tooltip)}"` : ''}/>`];
   }));
   if (hyperlinks.length) xml += `<hyperlinks>${hyperlinks.join('')}</hyperlinks>`;
+  const tableRelations = relationships.filter((relation) => relation.type.endsWith('/table'));
+  if (sheet.sheetTables?.length && tableRelations.length) {
+    const tableParts = tableRelations.map((relation) => {
+      const target = resolveTarget(sourcePart, relation.target);
+      if (!files.has(target)) throw new Error(`Worksheet table relationship points to missing part: ${target}`);
+      return `<tablePart r:id="${encodeXml(relation.id)}"/>`;
+    });
+    xml += `<tableParts count="${tableParts.length}">${tableParts.join('')}</tableParts>`;
+  }
   // A drawing/chart/pivot that is not editable in this package is still emitted
   // through its original relationship node.  The binary/XML parts remain in
   // the package, so an import/export cycle does not destroy unsupported data.
   if (originalRoot) {
+    const preservedNodes = new Map<string, XmlNode>();
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'tableParts' || name === 'extLst' || name === 'picture') {
-        if (!xml.includes(serializeXml(node))) xml += serializeXml(node);
-      }
+      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'pivotTableParts' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
+    }
+    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts', 'pivotTableParts', 'extLst']) {
+      const node = preservedNodes.get(name);
+      if (node) xml += serializeXml(node);
     }
   }
   xml += '</worksheet>';
@@ -580,6 +671,12 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
     }
     xml += '</definedNames>';
   }
+  // OOXML places pivotCaches after definedNames.  Keeping the canonical
+  // child order avoids Excel repair prompts on otherwise valid preserved
+  // native Pivot packages.
+  if (preserved?.nativePivotGraph?.caches.length) {
+    xml += serializeNativePivotCaches(preserved.nativePivotGraph, relationships);
+  }
   // Preserve workbook-level extension/calculation metadata that this package
   // does not edit.  Sheet references and defined names above remain canonical.
   const originalRoot = preserved?.parts['xl/workbook.xml'] ? firstElement(parseXml(strFromU8(preserved.parts['xl/workbook.xml'])), 'workbook') : undefined;
@@ -605,6 +702,17 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved?: XlsxPa
   for (const name of files.keys()) {
     if (!name.startsWith('xl/worksheets/') || !name.endsWith('.xml')) continue;
     overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+  }
+  for (const name of files.keys()) {
+    if (name.startsWith('xl/tables/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml');
+    } else if (name.startsWith('xl/pivotTables/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml');
+    } else if (name.startsWith('xl/pivotCache/') && name.toLowerCase().includes('definition') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml');
+    } else if (name.startsWith('xl/pivotCache/') && name.toLowerCase().includes('records') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml');
+    }
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${[...defaults.entries()].map(([extension, type]) => `<Default Extension="${encodeXml(extension)}" ContentType="${encodeXml(type)}"/>`).join('')}${[...overrides.entries()].filter(([part]) => files.has(part.slice(1))).map(([part, type]) => `<Override PartName="${encodeXml(part)}" ContentType="${encodeXml(type)}"/>`).join('')}</Types>`;
 }
@@ -758,6 +866,17 @@ function parseWorkbookDateSystem(xml: string): DateSystem {
   const workbook = firstElement(parseXml(xml), 'workbook');
   const value = child(workbook, 'workbookPr')?.attrs.date1904;
   return value === '1' || value === 'true' ? '1904' : '1900';
+}
+
+function hasNativePivotMarkers(files: Record<string, Uint8Array>): boolean {
+  for (const [name, bytes] of Object.entries(files)) {
+    if (!name.endsWith('.xml')) continue;
+    const lower = name.toLowerCase();
+    if (lower.includes('/pivottable') || lower.includes('/pivotcache/')) return true;
+    const xml = strFromU8(bytes);
+    if (xml.includes('<pivotCaches') || xml.includes(':pivotCaches') || xml.includes('<pivotTableParts') || xml.includes(':pivotTableParts')) return true;
+  }
+  return false;
 }
 
 function readRelationships(files: Record<string, Uint8Array>): Record<string, XlsxRelationship[]> {

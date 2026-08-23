@@ -26,13 +26,17 @@ import type {
   ChartDrawingPayload,
   DrawingObject,
   DrawingPayload,
+  PivotGridProjection,
+  PivotHitTest,
+  PivotProjectionCell,
+  PivotSourceRowPath,
   PivotResultTree,
   RangeRef,
   SparklineModel,
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover } from "./FilterPopover";
-import type { PeerCursor, SelectionState, CanvasSheetSnapshot, AppPhase } from "@react-sheets/spreadsheet-app";
+import { createSpreadsheetShortcutRegistry, resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 
@@ -557,6 +561,12 @@ export interface SheetCanvasProps {
   pivotResults?: Record<string, PivotResultTree>;
   sparklines?: SparklineModel[];
   selectedFloatingId: string | null;
+  /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
+  onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
+  /** Lets the host add/replace Pivot-specific right-click commands. */
+  getPivotContextMenuItems?: (hit: ResolvedContextHit) => readonly ContextMenuItem[];
+  /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
+  onPivotShowDetails?: (request: PivotShowDetailsRequest) => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onCommitCell: (value: string) => void;
@@ -583,6 +593,8 @@ export interface SheetCanvasProps {
   onPaste: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  /** Host owns command/session execution after the shared registry resolves a shortcut. */
+  onShortcut?: (id: string) => boolean;
   onOpenInspector: () => void;
   onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
   onToggleOutline?: (groupId: string) => void;
@@ -688,6 +700,98 @@ function toChromeSelection(selection: SelectionState): ChromeState['selection'] 
   };
 }
 
+/**
+ * A projection stores cell coordinates relative to its target anchor. The
+ * canvas, on the other hand, always asks for worksheet coordinates. Keeping
+ * this conversion at the UI boundary prevents the derived projection from
+ * leaking into ordinary worksheet cells or selection state.
+ */
+export function findPivotProjectionCell(
+  sheet: CanvasSheetSnapshot,
+  row: number,
+  column: number,
+): { projection: PivotGridProjection; cell: PivotProjectionCell } | null {
+  for (const projection of Object.values(sheet.pivotProjections)) {
+    if (projection.sheetId !== sheet.id || projection.collision.status !== "clear") continue;
+    const relativeRow = row - projection.target.anchor.row;
+    const relativeColumn = column - projection.target.anchor.column;
+    const cell = projection.cells.find((candidate) => candidate.row === relativeRow && candidate.column === relativeColumn);
+    if (cell) return { projection, cell };
+  }
+  return null;
+}
+
+function pivotHitKind(cell: PivotProjectionCell): PivotHitTest['kind'] {
+  if (cell.kind === "expand-toggle") return "expand-toggle";
+  if (cell.kind === "filter") return "filter";
+  if (cell.kind === "title" || cell.kind === "column-header" || cell.kind === "row-header") return "header";
+  return "cell";
+}
+
+/** Resolve an absolute worksheet coordinate through the canonical context resolver. */
+export function resolvePivotProjectionHit(
+  sheet: CanvasSheetSnapshot,
+  row: number,
+  column: number,
+): ResolvedContextHit | null {
+  const target = findPivotProjectionCell(sheet, row, column);
+  if (!target) return null;
+  const hit: PivotHitTest = {
+    kind: pivotHitKind(target.cell),
+    pivotId: target.projection.pivotId,
+    cellId: target.cell.id,
+    row,
+    column,
+    nodeId: target.cell.nodeId,
+    sourceRowPaths: target.cell.sourceRowPaths,
+  };
+  return resolveContextHit({ sheetId: sheet.id, pivot: hit });
+}
+
+export function isPivotValueCell(cell: PivotProjectionCell): boolean {
+  return cell.kind === "value" || cell.kind === "subtotal" || cell.kind === "grand-total";
+}
+
+/** Convert a derived projection cell to the render-engine cell contract. */
+export function pivotProjectionCellRenderData(cell: PivotProjectionCell): CellRenderData {
+  const text = cell.kind === "expand-toggle"
+    ? `${cell.expanded ? "▾" : "▸"} ${cell.text}`
+    : cell.text;
+  const style: NonNullable<CellRenderData["style"]> = {
+    background: cell.kind === "title"
+      ? "#dbeafe"
+      : cell.kind === "column-header" || cell.kind === "filter"
+        ? "#f1f5f9"
+        : cell.kind === "grand-total"
+          ? "#eff6ff"
+          : cell.kind === "subtotal"
+            ? "#f8fafc"
+            : "#ffffff",
+    textColor: cell.kind === "error" ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : "#1e293b",
+    bold: cell.kind === "title" || cell.kind === "column-header" || cell.kind === "subtotal" || cell.kind === "grand-total",
+    italic: cell.kind === "filter",
+    horizontalAlignment: isPivotValueCell(cell) ? "right" : "left",
+    verticalAlignment: "middle",
+    wrapText: cell.kind === "loading" || cell.kind === "error",
+    borders: {
+      bottom: { color: "#cbd5e1", style: cell.kind === "grand-total" ? "double" : "thin" },
+    },
+  };
+  return {
+    value: cell.value,
+    displayValue: text,
+    style,
+    error: cell.kind === "error" ? text : undefined,
+    invalid: cell.kind === "error",
+  };
+}
+
+export interface PivotShowDetailsRequest {
+  pivotId: string;
+  sourceRowPaths: readonly PivotSourceRowPath[];
+  hit: ResolvedContextHit;
+}
+
 export function SheetCanvas({
   sheet,
   sheetId,
@@ -705,6 +809,9 @@ export function SheetCanvas({
   pivotResults = {},
   sparklines = [],
   selectedFloatingId,
+  onPivotContextHit,
+  getPivotContextMenuItems,
+  onPivotShowDetails,
   onSelectionChange,
   onMovePrimary,
   onCommitCell,
@@ -731,6 +838,7 @@ export function SheetCanvas({
   onPaste,
   onUndo,
   onRedo,
+  onShortcut,
   onOpenInspector,
   onApplyFilter,
   onToggleOutline,
@@ -739,15 +847,19 @@ export function SheetCanvas({
   onCreateSheet,
 }: SheetCanvasProps) {
   const engineRef = useRef<CanvasRenderEngine | null>(null);
+  const shortcutRegistryRef = useRef<ReturnType<typeof createSpreadsheetShortcutRegistry> | null>(null);
+  if (!shortcutRegistryRef.current) shortcutRegistryRef.current = createSpreadsheetShortcutRegistry();
   const imageCacheRef = useRef(new Map<string, HTMLImageElement>());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const contextRangeRef = useRef<RangeRef | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
+  const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
   const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
+  const [engineReady, setEngineReady] = useState(false);
   const transientSelectionRef = useRef<SelectionState | null>(null);
   const editingActiveRef = useRef(false);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -778,6 +890,9 @@ export function SheetCanvas({
   );
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
+    const pivotCell = findPivotProjectionCell(sheet, row, column);
+    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell);
+
     const cell = sheet.getCell(row, column);
     const merge = sheet.merges.find((span) =>
       row >= span.range.startRow && row <= span.range.endRow
@@ -824,6 +939,15 @@ export function SheetCanvas({
         : undefined,
     };
   }, [sheet]);
+
+  const pivotStatusProjections = useMemo(
+    () => Object.values(sheet.pivotProjections).filter((projection) =>
+      projection.collision.status === "collision"
+      || projection.refresh.status === "error"
+      || projection.refresh.status === "refreshing"
+      || projection.refresh.status === "stale"),
+    [sheet.pivotProjections],
+  );
 
   // ---------- 浮动对象绘制器 ----------
 
@@ -1136,6 +1260,7 @@ export function SheetCanvas({
       setFilterPopover(null);
       setValidationDropdown(null);
       const local = localPointOf(event);
+      onPivotContextHit?.(null);
 
       // 1) 浮动对象优先
       const floatingHit = engine.hitTestFloating(local);
@@ -1238,7 +1363,8 @@ export function SheetCanvas({
 
       // 3) 填充柄
       const primaryRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
-      if (primaryRange) {
+      const activePivotContextHit = resolvePivotProjectionHit(sheet, selection.activeCell.row, selection.activeCell.column);
+      if (primaryRange && !activePivotContextHit) {
         const rect = skeleton.getRangeRect({
           startRow: primaryRange.endRow,
           endRow: primaryRange.endRow,
@@ -1271,8 +1397,14 @@ export function SheetCanvas({
         }
       }
 
-      // 4) 普通单元格选择/拖选
+      // 4) Pivot overlay context (it still uses the normal selection model;
+      // only editing is blocked below). The hit is resolved before ordinary
+      // cell handling so the host can activate Pivot contextual UI.
       const hitCell = engine.cellAtLocalPoint(local);
+      const pivotContextHit = hitCell ? resolvePivotProjectionHit(sheet, hitCell.row, hitCell.column) : null;
+      if (pivotContextHit) onPivotContextHit?.(pivotContextHit);
+
+      // 5) 普通单元格选择/拖选
       if (!hitCell) return;
       const cell = resolveMergedCell(sheet, hitCell);
       const filterButton = sheet.filterButtons.find((button) => button.row === hitCell.row && button.column === hitCell.column);
@@ -1313,7 +1445,7 @@ export function SheetCanvas({
       (event.target as Element).setPointerCapture?.(event.pointerId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editingCell, floatables, localPointOf, onCommitEdit, onFloatingSelect, onSelectAll, onSelectionChange, phase, selection, sheet.filterButtons, sheet.filterColumns, sheetId, skeleton, stopAutoScroll],
+    [editingCell, floatables, localPointOf, onCommitEdit, onFloatingSelect, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton, stopAutoScroll],
   );
 
   const handlePointerMove = useCallback(
@@ -1460,9 +1592,11 @@ export function SheetCanvas({
 
       if (drag.kind === "select" || drag.kind === "fill") {
         const finalCell = resolveDragCell(engine, sheet, localPointOf(event), drag);
-      if (finalCell) {
+        if (finalCell) {
           drag.currentRow = finalCell.row;
           drag.currentColumn = finalCell.column;
+          const pivotContextHit = resolvePivotProjectionHit(sheet, finalCell.row, finalCell.column);
+          onPivotContextHit?.(pivotContextHit);
         }
       }
       stopAutoScroll();
@@ -1530,7 +1664,7 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clearTransientSelection, localPointOf, onExtendSelection, onFillRange, onResizeColumn, onResizeRow, onSelectionChange, selection, sheet, sheetId, skeleton, stopAutoScroll, zoom],
+    [clearTransientSelection, localPointOf, onExtendSelection, onFillRange, onPivotContextHit, onResizeColumn, onResizeRow, onSelectionChange, selection, sheet, sheetId, skeleton, stopAutoScroll, zoom],
   );
 
   const handleDoubleClick = useCallback(
@@ -1538,6 +1672,7 @@ export function SheetCanvas({
       const engine = engineRef.current;
       if (!engine) return;
       const local = localPointOf(event);
+      onPivotContextHit?.(null);
       const headerHit = engine.headerHitAtLocal(local);
       if (headerHit?.resizeBoundaryPx !== undefined) {
         // 双击边界 = 自适应内容宽(近似:取列内最长显示文本)
@@ -1556,6 +1691,21 @@ export function SheetCanvas({
       }
       const hitCell = engine.cellAtLocalPoint(local);
       if (!hitCell) return;
+      const pivotContextHit = resolvePivotProjectionHit(sheet, hitCell.row, hitCell.column);
+      if (pivotContextHit) {
+        onPivotContextHit?.(pivotContextHit);
+        const pivotTarget = findPivotProjectionCell(sheet, hitCell.row, hitCell.column);
+        if (pivotTarget && isPivotValueCell(pivotTarget.cell) && pivotTarget.cell.sourceRowPaths && pivotTarget.cell.sourceRowPaths.length > 0) {
+          onPivotShowDetails?.({
+            pivotId: pivotTarget.projection.pivotId,
+            sourceRowPaths: pivotTarget.cell.sourceRowPaths,
+            hit: pivotContextHit,
+          });
+        }
+        // A Pivot projection is derived and therefore never editable through
+        // the ordinary CellEditor, including headers and loading/error cells.
+        return;
+      }
       const cell = resolveMergedCell(sheet, hitCell);
       const validationList = getValidationList(cell.row, cell.column);
       if (validationList && validationList.length > 0) {
@@ -1565,7 +1715,7 @@ export function SheetCanvas({
       onBeginEdit();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [getValidationList, localPointOf, onBeginEdit, onResizeColumn, sheet, zoom],
+    [getValidationList, localPointOf, onBeginEdit, onPivotContextHit, onPivotShowDetails, onResizeColumn, sheet, zoom],
   );
 
   const handleWheel = useCallback(
@@ -1586,6 +1736,27 @@ export function SheetCanvas({
       const key = event.key;
       const ctrl = event.ctrlKey || event.metaKey;
       const isEditing = Boolean(editingCell) || editingActiveRef.current;
+      const activePivotContextHit = resolvePivotProjectionHit(sheet, selection.activeCell.row, selection.activeCell.column);
+      const editingPivotContextHit = editingCell
+        ? resolvePivotProjectionHit(sheet, editingCell.row, editingCell.column)
+        : null;
+
+      // A stale host editing state must not expose the ordinary editor over a
+      // derived Pivot cell. Cancel it and keep the Pivot context authoritative.
+      if (editingPivotContextHit) {
+        event.preventDefault();
+        editingActiveRef.current = false;
+        onPivotContextHit?.(editingPivotContextHit);
+        onCancelEdit();
+        return;
+      }
+      if (activePivotContextHit && isEditing) {
+        event.preventDefault();
+        editingActiveRef.current = false;
+        onPivotContextHit?.(activePivotContextHit);
+        onCancelEdit();
+        return;
+      }
 
       if (isEditing) {
         if (key === "Escape") {
@@ -1606,12 +1777,26 @@ export function SheetCanvas({
           onCommitEdit(event.shiftKey ? "left" : "right");
           return;
         }
+        if (key === "F4") {
+          event.preventDefault();
+          onToggleAbsolute();
+          return;
+        }
         if (key.length === 1 && !ctrl && !event.altKey) {
           event.preventDefault();
           if (onAppendFormulaDraft) onAppendFormulaDraft(key);
           else onFormulaDraftChange(formulaDraft + key);
           return;
         }
+        return;
+      }
+
+      const shortcut = shortcutRegistryRef.current?.resolve(event, {
+        scope: 'grid',
+        canRepeat: false,
+      });
+      if (shortcut && onShortcut?.(shortcut.id)) {
+        event.preventDefault();
         return;
       }
 
@@ -1623,10 +1808,20 @@ export function SheetCanvas({
       if (ctrl && (key === "b" || key === "B")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { bold: !cellStyle.bold } } }); return; }
       if (ctrl && (key === "i" || key === "I")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { italic: !cellStyle.italic } } }); return; }
       if (ctrl && (key === "u" || key === "U")) { event.preventDefault(); onCommand({ commandId: "sheet.style.set", params: { style: { underline: !cellStyle.underline } } }); return; }
-      if (key === "F2") { event.preventDefault(); onBeginEdit(); return; }
-      if (key === "F4") { event.preventDefault(); onToggleAbsolute(); return; }
+      if (key === "F2") {
+        event.preventDefault();
+        if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
+        else onBeginEdit();
+        return;
+      }
+      if (key === "F4") { event.preventDefault(); return; }
       if (key === "Delete" || key === "Backspace") { event.preventDefault(); onCommand({ commandId: "sheet.range.clear" }); return; }
-      if (key === "Enter") { event.preventDefault(); onBeginEdit(); return; }
+      if (key === "Enter") {
+        event.preventDefault();
+        if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
+        else onBeginEdit();
+        return;
+      }
 
       const moves: Record<string, [number, number]> = {
         ArrowUp: [-1, 0],
@@ -1663,7 +1858,9 @@ export function SheetCanvas({
       // 直接输入进入编辑
       if (key.length === 1 && !ctrl && !event.altKey) {
         event.preventDefault();
-        if (editingCell || editingActiveRef.current) {
+        if (activePivotContextHit) {
+          onPivotContextHit?.(activePivotContextHit);
+        } else if (editingCell || editingActiveRef.current) {
           onAppendFormulaDraft?.(key);
         } else {
           editingActiveRef.current = true;
@@ -1672,12 +1869,34 @@ export function SheetCanvas({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onRedo, onUndo, phase, selection, skeleton],
+    [cellStyle.bold, cellStyle.italic, cellStyle.underline, editingCell, formulaDraft, onAppendFormulaDraft, onCancelEdit, onCommitEdit, onFormulaDraftChange, onBeginEdit, onInsertRef, onJumpEdge, onMovePrimary, onCommand, onCopy, onCut, onPaste, onPivotContextHit, onRedo, onShortcut, onUndo, phase, selection, sheet, skeleton],
   );
 
   // ---------- 右键菜单 ----------
 
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (contextHit?.kind === "pivot" && contextHit.pivot) {
+      const supplied = getPivotContextMenuItems?.(contextHit);
+      if (supplied) return [...supplied];
+      const sourceRowPaths = contextHit.pivot.sourceRowPaths ?? [];
+      return [
+        {
+          id: "pivot-show-details",
+          label: "Show Details",
+          disabled: sourceRowPaths.length === 0 || !onPivotShowDetails,
+          onSelect: () => onPivotShowDetails?.({
+            pivotId: contextHit.pivot!.pivotId,
+            sourceRowPaths,
+            hit: contextHit,
+          }),
+        },
+        {
+          id: "pivot-refresh",
+          label: "Refresh PivotTable",
+          onSelect: () => onCommand({ commandId: "pivot.refresh", params: { sheetId, pivotId: contextHit.pivot!.pivotId } }),
+        },
+      ];
+    }
     const getContextRange = () => contextRangeRef.current ?? selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
     const items: ContextMenuItem[] = [
       { id: "cut", label: "Cut", shortcut: "Ctrl+X", onSelect: onCut },
@@ -1698,18 +1917,21 @@ export function SheetCanvas({
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [onClearSelection, onCommand, onCopy, onCut, onOpenInspector, onPaste, selection, sheetId]);
+  }, [contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
     setFillPreview(null);
+    onPivotContextHit?.(null);
     const engine = engineRef.current;
     if (!engine || phase !== "ready") {
+      setContextHit(null);
       setContextMenu({ x: event.clientX, y: event.clientY, open: true });
       return;
     }
     const local = localPointOf(event);
     const headerHit = engine.headerHitAtLocal(local);
+    setContextHit(null);
     contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? null;
     if (headerHit?.kind === "corner") {
       contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, skeleton.rowCount - 1), startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) };
@@ -1735,39 +1957,69 @@ export function SheetCanvas({
     } else {
       const hitCell = engine.cellAtLocalPoint(local);
       if (hitCell) {
-        const cell = resolveMergedCell(sheet, hitCell);
-        const merge = mergeAtCell(sheet, hitCell);
-        const targetRange: RangeRef = merge?.range ?? {
-          sheetId,
-          startRow: cell.row,
-          endRow: cell.row,
-          startColumn: cell.column,
-          endColumn: cell.column,
-        };
-        const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
-        if (!alreadySelected) {
-          contextRangeRef.current = expandRangeForMerges(sheet, targetRange);
-          onSelectionChange({
-            ranges: [contextRangeRef.current],
-            primaryRangeIndex: 0,
-            activeCell: cell,
-            anchorCell: cell,
-          });
+        const pivotContextHit = resolvePivotProjectionHit(sheet, hitCell.row, hitCell.column);
+        if (pivotContextHit) {
+          setContextHit(pivotContextHit);
+          onPivotContextHit?.(pivotContextHit);
+          const targetRange: RangeRef = {
+            sheetId,
+            startRow: hitCell.row,
+            endRow: hitCell.row,
+            startColumn: hitCell.column,
+            endColumn: hitCell.column,
+          };
+          const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
+          if (!alreadySelected) {
+            contextRangeRef.current = targetRange;
+            onSelectionChange({
+              ranges: [targetRange],
+              primaryRangeIndex: 0,
+              activeCell: { row: hitCell.row, column: hitCell.column },
+              anchorCell: { row: hitCell.row, column: hitCell.column },
+            });
+          } else {
+            contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
+          }
         } else {
-          contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
+          setContextHit(null);
+          const cell = resolveMergedCell(sheet, hitCell);
+          const merge = mergeAtCell(sheet, hitCell);
+          const targetRange: RangeRef = merge?.range ?? {
+            sheetId,
+            startRow: cell.row,
+            endRow: cell.row,
+            startColumn: cell.column,
+            endColumn: cell.column,
+          };
+          const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
+          if (!alreadySelected) {
+            contextRangeRef.current = expandRangeForMerges(sheet, targetRange);
+            onSelectionChange({
+              ranges: [contextRangeRef.current],
+              primaryRangeIndex: 0,
+              activeCell: cell,
+              anchorCell: cell,
+            });
+          } else {
+            contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
+          }
         }
       }
     }
     setContextMenu({ x: event.clientX, y: event.clientY, open: true });
-  }, [localPointOf, onSelectAll, onSelectionChange, phase, selection.ranges, sheet, sheetId, skeleton]);
+  }, [localPointOf, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
 
   // ---------- 编辑器定位(随滚动更新) ----------
+
+  const editingPivotContextHit = editingCell
+    ? resolvePivotProjectionHit(sheet, editingCell.row, editingCell.column)
+    : null;
 
   // 编辑器随滚动重定位:依赖 scrollTick 触发重算
   const editorRect = useMemo(() => {
     void scrollTick;
     const engine = engineRef.current;
-    if (!engine || !editingCell) return null;
+    if (!engine || !editingCell || editingPivotContextHit) return null;
     // The engine owns the render geometry. Reading the local React skeleton
     // here can race with setSkeleton during a session refresh, and the main
     // pane is not the correct origin for frozen rows/columns.
@@ -1781,7 +2033,7 @@ export function SheetCanvas({
       height: rect.height,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingCell, skeleton, scrollTick]);
+  }, [editingCell, editingPivotContextHit, skeleton, scrollTick]);
 
   if (phase === "empty") {
     return (
@@ -1848,6 +2100,7 @@ export function SheetCanvas({
             <CanvasRenderSurface
               onReady={(engine) => {
                 engineRef.current = engine;
+                setEngineReady(true);
                 engine.setCellProvider(cellProvider);
                 engine.setSkeleton(skeleton);
                 engine.setFloating(floatables, selectedFloatingId);
@@ -1855,6 +2108,14 @@ export function SheetCanvas({
               }}
               className="absolute inset-0"
             />
+            {engineReady ? pivotStatusProjections.map((projection) => (
+              <PivotProjectionStatusNotice
+                key={`${projection.pivotId}:${projection.refresh.status}:${projection.refresh.error ?? ""}`}
+                engine={engineRef.current}
+                projection={projection}
+                scrollTick={scrollTick}
+              />
+            )) : null}
           </Box>
 
           {editorRect && editingCell ? (
@@ -1918,6 +2179,48 @@ function parseCellValue(cell: CanvasCellSnapshot): string | number | boolean | n
   if (cell.value === "TRUE") return true;
   if (cell.value === "FALSE") return false;
   return cell.value;
+}
+
+function pivotProjectionStatusMessage(projection: PivotGridProjection): string | null {
+  if (projection.collision.status === "collision") {
+    const reason = projection.collision.reasons.length > 0
+      ? projection.collision.reasons.join(", ")
+      : "target range is occupied";
+    return `PivotTable ${projection.pivotId} cannot expand: ${reason}`;
+  }
+  if (projection.refresh.status === "error") {
+    return `PivotTable ${projection.pivotId} error: ${projection.refresh.error ?? "refresh failed"}`;
+  }
+  if (projection.refresh.status === "refreshing") return `PivotTable ${projection.pivotId}: Loading PivotTable…`;
+  if (projection.refresh.status === "stale") return `PivotTable ${projection.pivotId}: Refresh required`;
+  return null;
+}
+
+function PivotProjectionStatusNotice({
+  engine,
+  projection,
+  scrollTick,
+}: {
+  engine: CanvasRenderEngine | null;
+  projection: PivotGridProjection;
+  scrollTick: number;
+}): React.ReactElement | null {
+  void scrollTick;
+  const message = pivotProjectionStatusMessage(projection);
+  if (!engine || !message) return null;
+  const rect = engine.contentRangeToScreenRects(projection.occupiedRange)[0];
+  if (!rect) return null;
+  const collision = projection.collision.status === "collision";
+  return (
+    <Box
+      role="status"
+      aria-live="polite"
+      className={`pointer-events-none absolute z-10 max-w-[min(32rem,calc(100%-1rem))] rounded border px-2 py-1 text-[11px] shadow-sm ${collision ? "border-amber-300 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-700"}`}
+      style={{ left: rect.x + 2, top: rect.y + 2 }}
+    >
+      {message}
+    </Box>
+  );
 }
 
 function FillPreviewOverlay({

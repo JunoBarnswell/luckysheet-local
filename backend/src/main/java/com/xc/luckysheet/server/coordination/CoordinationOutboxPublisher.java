@@ -13,7 +13,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
-/** Reliably drains committed PostgreSQL outbox rows into Redis. */
+/** Reliably drains committed ORM outbox rows into Redis. */
 @Component
 @ConditionalOnProperty(prefix = "luckysheet.coordination", name = "redis-enabled", havingValue = "true")
 public class CoordinationOutboxPublisher {

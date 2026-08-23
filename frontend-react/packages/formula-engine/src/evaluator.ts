@@ -1,4 +1,5 @@
 import type { BinaryOperator, CellAddress, FormulaAst } from './ast';
+import { formatFormula } from './ast-format';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
@@ -21,6 +22,18 @@ export interface FormulaEvaluationContext {
   }): FormulaValue | EvaluationRange | undefined;
 }
 
+/** A data-only evaluation step used by Formula Auditing's Evaluate Formula view. */
+export interface FormulaEvaluationTraceStep {
+  readonly node: FormulaAst;
+  readonly expression: string;
+  readonly value: FormulaValue;
+}
+
+export interface FormulaEvaluationTrace {
+  readonly value: FormulaValue;
+  readonly steps: readonly FormulaEvaluationTraceStep[];
+}
+
 interface EvaluationRange {
   readonly kind: 'range';
   readonly range: RangeDependency;
@@ -30,41 +43,68 @@ type EvaluationValue = FormulaValue | EvaluationRange;
 
 export function evaluateFormula(ast: FormulaAst, context: FormulaEvaluationContext): FormulaValue {
   const result = evaluateNode(ast, context);
-  if (isEvaluationRange(result)) {
-    // If a top-level range is returned, return the top-left cell value or matrix
-    const matrix = readRangeAsMatrix(result.range, context);
-    return matrix.length === 1 && matrix[0]?.length === 1 ? matrix[0][0]! : matrix;
-  }
-  return result;
+  return materializeEvaluationValue(result, context);
 }
 
-function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext): EvaluationValue {
+/** Evaluate a formula and capture every AST node's computed value in order. */
+export function evaluateFormulaWithTrace(ast: FormulaAst, context: FormulaEvaluationContext): FormulaEvaluationTrace {
+  const steps: FormulaEvaluationTraceStep[] = [];
+  const result = evaluateNode(ast, context, (node, value) => {
+    steps.push({
+      node: structuredClone(node),
+      expression: formatFormula(node),
+      value: structuredClone(materializeEvaluationValue(value, context)),
+    });
+  });
+  return { value: structuredClone(materializeEvaluationValue(result, context)), steps };
+}
+
+type EvaluationTraceSink = (node: FormulaAst, value: EvaluationValue) => void;
+
+function materializeEvaluationValue(value: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
+  if (!isEvaluationRange(value)) return value;
+  const matrix = readRangeAsMatrix(value.range, context);
+  return matrix.length === 1 && matrix[0]?.length === 1 ? matrix[0][0]! : matrix;
+}
+
+function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace?: EvaluationTraceSink): EvaluationValue {
+  let result: EvaluationValue = createFormulaError('#VALUE!', 'Unsupported formula node');
   switch (node.type) {
     case 'number-literal':
-      return node.value;
+      result = node.value;
+      break;
     case 'string-literal':
-      return node.value;
+      result = node.value;
+      break;
     case 'boolean-literal':
-      return node.value;
+      result = node.value;
+      break;
     case 'invalid-reference':
-      return createFormulaError('#REF!', 'Reference was deleted by a structural mutation');
+      result = createFormulaError('#REF!', 'Reference was deleted by a structural mutation');
+      break;
     case 'cell-reference':
-      return context.readCell(resolveCellReference(node.reference, context.currentCell));
+      result = context.readCell(resolveCellReference(node.reference, context.currentCell));
+      break;
     case 'range-reference':
-      return { kind: 'range', range: resolveRangeReference(node, context.currentCell) };
+      result = { kind: 'range', range: resolveRangeReference(node, context.currentCell) };
+      break;
     case 'unary-expression':
-      return evaluateUnary(node.operator, evaluateNode(node.operand, context));
+      result = evaluateUnary(node.operator, evaluateNode(node.operand, context, trace));
+      break;
     case 'binary-expression':
-      return evaluateBinary(
+      result = evaluateBinary(
         node.operator,
-        evaluateNode(node.left, context),
-        evaluateNode(node.right, context),
+        evaluateNode(node.left, context, trace),
+        evaluateNode(node.right, context, trace),
       );
+      break;
     case 'function-call':
-      return evaluateFunction(node.name, node.arguments, context);
+      result = evaluateFunction(node.name, node.arguments, context, trace);
+      break;
     case 'name-reference': {
       const resolved = context.resolveName?.(node.name.toUpperCase());
-      return resolved === undefined ? createFormulaError('#NAME?', 'Unknown name: ' + node.name) : resolved;
+      result = resolved === undefined ? createFormulaError('#NAME?', 'Unknown name: ' + node.name) : resolved;
+      break;
     }
     case 'table-reference': {
       const resolved = context.resolveTableReference?.(node.tableName, {
@@ -76,13 +116,15 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext): Eval
         const label = node.specifier
           ? `#${node.specifier}`
           : node.columnName ?? '';
-        return createFormulaError('#NAME?', `Unknown table reference: ${node.tableName}[${label}]`);
+        result = createFormulaError('#NAME?', `Unknown table reference: ${node.tableName}[${label}]`);
+        break;
       }
-      if (isFormulaError(resolved)) return resolved;
-      if (isEvaluationRange(resolved)) return resolved;
-      return resolved;
+      result = resolved;
+      break;
     }
   }
+  trace?.(node, result);
+  return result;
 }
 
 function evaluateUnary(operator: '+' | '-' | '%', operand: EvaluationValue): FormulaValue {
@@ -177,9 +219,10 @@ function evaluateFunction(
   name: string,
   argumentsList: readonly FormulaAst[],
   context: FormulaEvaluationContext,
+  trace?: EvaluationTraceSink,
 ): FormulaValue | EvaluationRange {
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
-  const native = evaluateReferenceFunction(name, argumentsList, context);
+  const native = evaluateReferenceFunction(name, argumentsList, context, trace);
   if (native !== undefined) return native;
 
   const fn = getBuiltinFunction(name);
@@ -193,7 +236,7 @@ function evaluateFunction(
       rawRanges.push(aggregate);
       continue;
     }
-    const value = evaluateNode(argument, context);
+    const value = evaluateNode(argument, context, trace);
     rawRanges.push(value);
     if (isEvaluationRange(value)) {
       evaluatedArgs.push(readRangeAsMatrix(value.range, context));
@@ -244,6 +287,7 @@ function evaluateReferenceFunction(
   name: string,
   args: readonly FormulaAst[],
   context: FormulaEvaluationContext,
+  trace?: EvaluationTraceSink,
 ): FormulaValue | EvaluationRange | undefined {
   switch (name.toUpperCase()) {
     case 'ROW': {
@@ -271,7 +315,7 @@ function evaluateReferenceFunction(
     case 'ADDRESS': {
       const values: FormulaValue[] = [];
       for (const argument of args) {
-        const value = evaluateNode(argument, context);
+        const value = evaluateNode(argument, context, trace);
         values.push(isEvaluationRange(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
       }
       const row = toNumber(values[0] ?? 1);
@@ -297,7 +341,7 @@ function evaluateReferenceFunction(
       }
       const scalar = (node: FormulaAst | undefined, fallback: number): number | FormulaError => {
         if (!node) return fallback;
-        const value = evaluateNode(node, context);
+        const value = evaluateNode(node, context, trace);
         if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
         const numeric = toNumber(value);
         return numeric;
@@ -328,12 +372,12 @@ function evaluateReferenceFunction(
     case 'INDIRECT': {
       const first = args[0];
       if (!first) return createFormulaError('#REF!', 'INDIRECT expects a text reference');
-      const value = evaluateNode(first, context);
+      const value = evaluateNode(first, context, trace);
       if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
       if (typeof value !== 'string') return createFormulaError('#REF!', 'INDIRECT text required');
       try {
         const parsed = parseFormula('=' + value);
-        const resolved = evaluateNode(parsed, context);
+        const resolved = evaluateNode(parsed, context, trace);
         return resolved;
       } catch {
         return createFormulaError('#REF!', 'INDIRECT cannot parse: ' + value);

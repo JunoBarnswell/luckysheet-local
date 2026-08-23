@@ -71,6 +71,8 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
             location: `${sheet.name}!${colKey}${Number(rowKey) + 1}`,
             message: `${rule.feature} preserved on import; recalculation may differ from Excel`,
             preserved: true,
+            status: 'preserved-only',
+            reason: 'formula depends on an external or Excel-only calculation contract',
           });
         }
       }

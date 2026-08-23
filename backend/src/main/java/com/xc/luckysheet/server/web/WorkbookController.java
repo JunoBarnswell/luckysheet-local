@@ -5,6 +5,7 @@ import com.xc.luckysheet.server.contract.AclUpdateRequest;
 import com.xc.luckysheet.server.contract.AuditRecord;
 import com.xc.luckysheet.server.contract.CheckpointResponse;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
+import com.xc.luckysheet.server.contract.DataBlockMetadata;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
@@ -18,10 +19,14 @@ import com.xc.luckysheet.server.contract.ShareResponse;
 import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
 import com.xc.luckysheet.server.service.ActorIdentity;
 import com.xc.luckysheet.server.service.WorkbookOperationService;
+import com.xc.luckysheet.server.service.WorkbookDataBlockService;
 import com.xc.luckysheet.server.service.QueryExecutionService;
 import com.xc.luckysheet.server.service.GuestShareService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -43,17 +48,20 @@ public class WorkbookController {
     private final WebSocketSessionRegistry sessions;
     private final QueryExecutionService queries;
     private final GuestShareService guestShares;
+    private final WorkbookDataBlockService dataBlocks;
 
     public WorkbookController(
             WorkbookOperationService operations,
             WebSocketSessionRegistry sessions,
             QueryExecutionService queries,
-            GuestShareService guestShares
+            GuestShareService guestShares,
+            WorkbookDataBlockService dataBlocks
     ) {
         this.operations = operations;
         this.sessions = sessions;
         this.queries = queries;
         this.guestShares = guestShares;
+        this.dataBlocks = dataBlocks;
     }
 
     @PostMapping
@@ -160,6 +168,45 @@ public class WorkbookController {
     @DeleteMapping("/{unitId}/shares/{shareId}")
     public ResponseEntity<Void> revokeShare(@PathVariable String unitId, @PathVariable java.util.UUID shareId, Authentication authentication) {
         guestShares.revoke(unitId, shareId, ActorIdentity.subject(authentication));
+        return ResponseEntity.noContent().build();
+    }
+
+    @PutMapping(value = "/{unitId}/data-sources/{sourceId}/blocks/{blockId}", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public DataBlockMetadata putDataBlock(
+            @PathVariable String unitId,
+            @PathVariable String sourceId,
+            @PathVariable String blockId,
+            @RequestHeader("X-Content-SHA256") String checksum,
+            @RequestBody byte[] content,
+            Authentication authentication
+    ) {
+        return dataBlocks.put(unitId, sourceId, blockId, checksum, content, ActorIdentity.subject(authentication));
+    }
+
+    @GetMapping(value = "/{unitId}/data-sources/{sourceId}/blocks/{blockId}", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> getDataBlock(
+            @PathVariable String unitId,
+            @PathVariable String sourceId,
+            @PathVariable String blockId,
+            Authentication authentication
+    ) {
+        var block = dataBlocks.get(unitId, sourceId, blockId, ActorIdentity.subject(authentication));
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .contentLength(block.byteLength())
+                .header("X-Content-SHA256", block.checksum())
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=0")
+                .body(block.content());
+    }
+
+    @DeleteMapping("/{unitId}/data-sources/{sourceId}/blocks/{blockId}")
+    public ResponseEntity<Void> deleteDataBlock(
+            @PathVariable String unitId,
+            @PathVariable String sourceId,
+            @PathVariable String blockId,
+            Authentication authentication
+    ) {
+        dataBlocks.delete(unitId, sourceId, blockId, ActorIdentity.subject(authentication));
         return ResponseEntity.noContent().build();
     }
 }

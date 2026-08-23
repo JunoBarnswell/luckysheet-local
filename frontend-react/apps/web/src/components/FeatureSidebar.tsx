@@ -34,7 +34,7 @@ import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import { localizeText, type Locale } from '../i18n';
-import type { PivotPanelCallbacks, PivotPanelResult, PivotPanelState } from './pivot/pivot-contract';
+import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
@@ -67,8 +67,8 @@ export interface FeatureSidebarProps {
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
   pivotFieldCatalog?: readonly PivotFieldDefinition[];
-  pivotResult?: PivotPanelResult;
-  onShowPivotDetails?: (paths: import('@react-sheets/core-model').PivotSourceRowPath[]) => void;
+  pivotSlicerControls?: readonly PivotSlicerControl[];
+  pivotTimelineControls?: readonly PivotTimelineControl[];
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
   sparklines: SparklineModel[];
@@ -268,8 +268,8 @@ export function FeatureSidebar({
   pivotList,
   activePivotId,
   pivotFieldCatalog,
-  pivotResult,
-  onShowPivotDetails,
+  pivotSlicerControls,
+  pivotTimelineControls,
   pivotPanelState,
   pivotCallbacks,
   sparklines,
@@ -434,8 +434,8 @@ export function FeatureSidebar({
             pivotList={pivotList}
             activePivotId={activePivotId}
             fieldCatalog={pivotFieldCatalog}
-            result={pivotResult}
-            onShowDetails={onShowPivotDetails}
+            slicerControls={pivotSlicerControls}
+            timelineControls={pivotTimelineControls}
             state={pivotPanelState}
             callbacks={pivotCallbacks}
           />

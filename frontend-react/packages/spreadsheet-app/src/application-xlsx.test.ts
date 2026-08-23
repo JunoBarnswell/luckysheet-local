@@ -8,15 +8,15 @@ describe('xlsx exchange', () => {
   it('exports workbook snapshots with compatibility summary', async () => {
     const workbook = new WorkbookModel('wb-export', 'Export');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 99 });
-    const result = await exchangeExportXlsx(workbook.snapshot(), { fileName: 'export.xlsx' });
-    assert.ok(result.base64 && result.base64.length > 0);
+    const result = await exchangeExportXlsx(workbook.snapshot(), { fileName: 'export.xlsx', execution: 'inline-test' });
+    assert.ok(result.buffer && result.buffer.byteLength > 0);
     assert.match(summarizeCompatibilityReport(result.report), /compatibility/i);
   });
 });
 
 describe('WorkbookSession xlsx integration', () => {
   it('exports through xlsx.export command path', async () => {
-    const app = new WorkbookSession();
+    const app = new WorkbookSession({ xlsxExecution: 'inline-test' });
     app.runCommand('sheet.cell.set', {
       sheetId: app.getActiveSheetId(),
       row: 0,
@@ -24,7 +24,7 @@ describe('WorkbookSession xlsx integration', () => {
       value: { value: 'xlsx' },
     });
     const exported = await app.exportXlsxWorkbook('demo.xlsx');
-    assert.ok(exported?.base64);
+    assert.ok(exported?.buffer instanceof ArrayBuffer);
     assert.equal(app.getUiSnapshot().compatibilityReport?.fileName, 'demo.xlsx');
   });
 

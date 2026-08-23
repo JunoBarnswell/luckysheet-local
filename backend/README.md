@@ -1,8 +1,12 @@
 # Canonical workbook service
 
-This directory is the only Java backend. It is a Spring Boot 3 service targeting Java 21 with PostgreSQL, Flyway migrations, OIDC Resource Server JWT verification, and a WebSocket endpoint at `/ws`.
+This directory is the only Java backend. It is a Spring Boot 3 service targeting Java 21 with a Spring Data JPA/Hibernate persistence boundary, OIDC Resource Server JWT verification, and a WebSocket endpoint at `/ws`.
 
-Required environment:
+The default configuration uses an H2 file database and `spring.jpa.hibernate.ddl-auto=update`, so a fresh checkout starts without a database migration step. The same entity model can use PostgreSQL, MySQL, or SQLite by supplying the corresponding JDBC URL, username/password, driver on the runtime classpath, and (for SQLite) a Hibernate dialect, for example `SPRING_JPA_DATABASE_PLATFORM=org.hibernate.community.dialect.SQLiteDialect`.
+
+For a deployed database, set `JPA_DDL_AUTO=validate` after the first schema creation if schema changes are managed outside the application. JSON snapshots and operation payloads are stored as portable long text; data blocks use Hibernate's portable long-binary mapping. No PostgreSQL `jsonb`, cast syntax, upsert syntax, or Flyway migration is required by the canonical persistence path.
+
+Database overrides and authentication settings for a deployed environment:
 
 - `DATABASE_URL`
 - `DATABASE_USERNAME`
@@ -29,7 +33,7 @@ mvn test
 mvn spring-boot:run
 ```
 
-PostgreSQL schema creation is handled by the Flyway migration in `src/main/resources/db/migration`. Snapshot replacement is not exposed to ordinary editors. Checkpoints are server-generated and restore accepts only a target revision and reason; the server loads the historical snapshot and records a committed restore operation.
+Snapshot replacement is not exposed to ordinary editors. Checkpoints are server-generated and restore accepts only a target revision and reason; the server loads the historical snapshot and records a committed restore operation.
 
 Query execution is server-only for configured `sqlite`, `jdbc`, and `rest`
 sources. The request contains a sanitized definition, `sourceRef`, statement,

@@ -2,7 +2,7 @@ import type { CommandRegistry, CommandResult } from '@react-sheets/command-runti
 
 export interface XlsxImportCommandParams {
   fileName: string;
-  base64: string;
+  buffer: ArrayBuffer;
 }
 
 export interface XlsxExportCommandParams {

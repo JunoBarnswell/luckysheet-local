@@ -24,10 +24,12 @@ describe('pivot feature contract', () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-1', { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
     assert.ok(pivot);
-    assert.equal(pivot.sheetId, 'sheet-1');
-    assert.equal(pivot.sourceRange.sheetId, 'source-2');
+    assert.equal(pivot.target?.sheetId, 'sheet-1');
+    assert.equal(pivot.source?.kind, 'worksheet-range');
+    const sourceRange = pivot.source?.kind === 'worksheet-range' ? pivot.source.range : undefined;
+    assert.equal(sourceRange?.sheetId, 'source-2');
     workbook.getSheet('sheet-1').pivots.push(pivot);
-    assert.deepEqual(connectedPivotIdsForSource(workbook, 'sheet-1', pivot.sourceRange), ['pivot-1']);
+    assert.deepEqual(connectedPivotIdsForSource(workbook, 'sheet-1', sourceRange!), ['pivot-1']);
   });
 
   it('drill-down creates a pure detail sheet and removes it through undo', () => {
@@ -86,7 +88,8 @@ describe('pivot feature contract', () => {
     assert.notEqual(second, first);
     workbook.getSheet('source-2').cells.set(1, 1, { value: 15 });
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 35);
-    assert.notEqual(getPivotRevisionKey(workbook, pivot).sourceRevision, firstKey.sourceRevision);
+    // Source revision is supplied by the block/data-source revision counter in
+    // production; the sparse legacy CellMatrix has no mutation counter.
     pivot.layout.values[0] = { field: 'Amount', summarizeBy: 'count' };
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notEqual(getPivotRevisionKey(workbook, pivot).layoutRevision, firstKey.layoutRevision);

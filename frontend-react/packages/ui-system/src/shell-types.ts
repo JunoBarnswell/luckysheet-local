@@ -31,6 +31,13 @@ export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'automate',
 ] as const;
 
+export type RibbonLayoutMode = 'wide' | 'compact' | 'narrow';
+
+export interface RibbonLayoutState {
+  mode: RibbonLayoutMode;
+  width: number;
+}
+
 export interface AppShellProps {
   children: ReactNode;
   formulaBar: ReactNode;

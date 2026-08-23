@@ -14,38 +14,46 @@ export interface PivotFieldCatalogProps {
 
 export function PivotFieldCatalog({ disabled = false, fields, onDragField, onKeyboardAssign, onToggle, selectedFieldIds }: PivotFieldCatalogProps) {
   const [query, setQuery] = useState('');
-  const visibleFields = useMemo(() => fields.filter((field) => `${field.name} ${field.dataType}`.toLowerCase().includes(query.toLowerCase())), [fields, query]);
+  const visibleFields = useMemo(
+    () => fields.filter((field) => field.fieldId && `${field.name} ${field.dataType}`.toLowerCase().includes(query.toLowerCase())),
+    [fields, query],
+  );
   return (
     <Stack gap="sm" className="min-h-0">
       <TextInput aria-label="Search pivot fields" disabled={disabled} leadingIcon="search" placeholder="Search fields" value={query} onChange={(event) => setQuery(event.target.value)} />
       <ScrollArea className="max-h-64 pr-1">
         <Stack gap="xs">
           {visibleFields.length === 0 ? <Text size="xs" tone="subtle" className="px-1 py-3">No matching fields</Text> : null}
-          {visibleFields.map((field) => (
-            <Button
-              key={field.id}
-              aria-pressed={selectedFieldIds.has(field.id)}
-              disabled={disabled}
-              icon={selectedFieldIds.has(field.id) ? 'check' : 'plus'}
-              size="xs"
-              variant={selectedFieldIds.has(field.id) ? 'soft' : 'ghost'}
-              className="w-full justify-start text-left"
-              onClick={() => onToggle(field.id, !selectedFieldIds.has(field.id))}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onKeyboardAssign(field.id, 'rows');
-                }
-              }}
-              onDragStart={(event) => onDragField(event, field)}
-              draggable={!disabled}
-            >
-              {field.name} · {field.dataType}
-            </Button>
-          ))}
+          {visibleFields.map((field) => {
+            const fieldId = field.fieldId;
+            if (!fieldId) return null;
+            const selected = selectedFieldIds.has(fieldId);
+            return (
+              <Button
+                key={fieldId}
+                aria-pressed={selected}
+                disabled={disabled}
+                icon={selected ? 'check' : 'plus'}
+                size="xs"
+                variant={selected ? 'soft' : 'ghost'}
+                className="w-full justify-start text-left"
+                onClick={() => onToggle(fieldId, !selected)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onKeyboardAssign(fieldId, 'rows');
+                  }
+                }}
+                onDragStart={(event) => onDragField(event, field)}
+                draggable={!disabled}
+              >
+                {field.name} · {field.dataType}
+              </Button>
+            );
+          })}
         </Stack>
       </ScrollArea>
-      <Text size="xs" tone="subtle" className="flex items-center gap-1"><Icon name="keyboard" size="xs" /> Enter assigns selected fields to ROWS; use each chip menu to move/remove.</Text>
+      <Text size="xs" tone="subtle" className="flex items-center gap-1"><Icon name="keyboard" size="xs" /> Enter assigns the field to ROWS; use each chip menu to move, sort, group or remove.</Text>
     </Stack>
   );
 }

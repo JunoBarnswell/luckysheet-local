@@ -1,7 +1,11 @@
 import type { CellAddress, FormulaAst } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
 import { collectFormulaDependencies } from './dependencies';
-import { evaluateFormula } from './evaluator';
+import {
+  evaluateFormula,
+  evaluateFormulaWithTrace,
+  type FormulaEvaluationTrace,
+} from './evaluator';
 import { formatFormula } from './ast-format';
 import { remapAst } from './ast-rewrite';
 import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './errors';
@@ -52,6 +56,15 @@ export type CellInput = { readonly value: ScalarValue } | { readonly formula: st
 export interface FormulaResult {
   readonly value: FormulaValue;
   readonly formula?: string;
+  readonly ast?: FormulaAst;
+  readonly dependencies: readonly FormulaDependency[];
+}
+
+/** Structured formula input/result used by audit and host-side projections. */
+export interface FormulaCellEntry {
+  readonly address: CellAddress;
+  readonly formula: string;
+  readonly value: FormulaValue;
   readonly ast?: FormulaAst;
   readonly dependencies: readonly FormulaDependency[];
 }
@@ -400,6 +413,67 @@ export class FormulaEngine {
     const spillValue = this.getSpillValueAt(address.sheetId, address.row, address.column);
     if (spillValue !== undefined) return spillValue;
     return this.cells.get(cellAddressKey(address))?.result.value ?? null;
+  }
+
+  /** Return all authored formula cells in deterministic address order. */
+  listFormulaCells(): readonly CellAddress[] {
+    return [...this.cells.values()]
+      .filter((cell) => cell.formula !== undefined)
+      .map((cell) => ({ ...cell.address }))
+      .sort(compareCellAddresses);
+  }
+
+  /** Return a stable, cloned view of authored formulas and their current results. */
+  getFormulaEntries(): readonly FormulaCellEntry[] {
+    return [...this.cells.values()]
+      .filter((cell): cell is StoredCell & { formula: string } => cell.formula !== undefined)
+      .map((cell) => ({
+        address: { ...cell.address },
+        formula: cell.formula,
+        value: structuredClone(cell.result.value),
+        ...(cell.ast === undefined ? {} : { ast: structuredClone(cell.ast) }),
+        dependencies: cell.result.dependencies.map(copyDependency),
+      }))
+      .sort((left, right) => compareCellAddresses(left.address, right.address));
+  }
+
+  /** Return the parsed AST for a formula without exposing mutable engine state. */
+  getFormulaAst(addressInput: CellAddressInput): FormulaAst | undefined {
+    const cell = this.cells.get(cellAddressKey(this.resolveAddress(addressInput)));
+    return cell?.ast === undefined ? undefined : structuredClone(cell.ast);
+  }
+
+  /** Evaluate one formula and expose a data-only, ordered AST trace for auditing. */
+  evaluateFormulaWithTrace(addressInput: CellAddressInput): FormulaEvaluationTrace | undefined {
+    const address = this.resolveAddress(addressInput);
+    const cell = this.cells.get(cellAddressKey(address));
+    if (!cell?.formula || !cell.ast) {
+      return cell?.parseError ? { value: structuredClone(cell.parseError), steps: [] } : undefined;
+    }
+    const cache = new Map<string, FormulaValue>();
+    const visiting = new Set<string>();
+    let trace: FormulaEvaluationTrace;
+    try {
+      trace = evaluateFormulaWithTrace(cell.ast, {
+        currentCell: cell.address,
+        readCell: (reference) => this.evaluateCell(reference, cache, visiting),
+        readRange: (range) => this.readRange(range, cache, visiting),
+        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
+        resolveTableReference: (tableName, request) => {
+          const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
+          if (isFormulaError(resolved)) return resolved;
+          if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
+          return this.evaluateCell(resolved as CellAddress, cache, visiting);
+        },
+      });
+    } catch (error) {
+      const value = error instanceof FormulaReferenceError
+        ? createFormulaError('#REF!', error.message)
+        : createFormulaError('#VALUE!', error instanceof Error ? error.message : 'Formula evaluation failed');
+      trace = { value, steps: [] };
+    }
+    cell.result = { value: trace.value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
+    return trace;
   }
 
   getDependencies(addressInput: CellAddressInput): readonly FormulaDependency[] {

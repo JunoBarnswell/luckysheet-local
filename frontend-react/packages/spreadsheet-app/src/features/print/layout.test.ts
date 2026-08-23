@@ -121,4 +121,35 @@ describe('print layout', () => {
     assert.equal(pages[2]?.range.startRow, 5);
     assert.equal(pages[1]?.range.startColumn, 3);
   });
+
+  it('projects persisted print titles when preview uses the stored document', () => {
+    const workbook = new WorkbookModel('wb-print-stored-titles', 'Stored titles');
+    const sheetId = workbook.primarySheetId;
+    const sheet = workbook.getSheet(sheetId);
+    sheet.cells.set(0, 0, { value: 'Header' });
+    sheet.cells.set(8, 3, { value: 'Tail' });
+    workbook.setPrintDocument({
+      schema: 'PrintDocument',
+      unitId: workbook.unitId,
+      sheetId,
+      pageSetup: {
+        paperSize: 'a4',
+        orientation: 'portrait',
+        margins: { top: 72, right: 72, bottom: 72, left: 72, header: 36, footer: 36 },
+        scale: 100,
+        printGridlines: false,
+        printHeadings: false,
+        centerHorizontally: false,
+        centerVertically: false,
+      },
+      printAreas: [],
+      pageBreaks: [],
+      repeatRows: { start: 0, end: 1 },
+      repeatColumns: { start: 0, end: 0 },
+    });
+
+    const snapshot = buildPrintSnapshot(workbook, sheetId);
+    assert.deepEqual(snapshot.model.repeatRows, { start: 0, end: 1 });
+    assert.deepEqual(snapshot.model.repeatColumns, { start: 0, end: 0 });
+  });
 });
