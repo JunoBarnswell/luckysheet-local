@@ -66,9 +66,9 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 3 },
     anchor: { row: 0, column: 0 },
   });
-  sheet.freeze = { xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1 };
-  sheet.rowHeights[0] = 40;
-  sheet.columnWidths[0] = 160;
+  sheet.pane = { kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1 };
+  sheet.rowHeightsPx[0] = 40;
+  sheet.columnWidthsPx[0] = 160;
   sheet.hiddenRows.add(5);
   sheet.drawings.push({
     id: 'chart-1',
@@ -123,8 +123,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   const restoredSheet = restored.getSheet('sheet-1');
   assert.equal(restoredSheet.cells.get(1, 2)?.formula, '=40+2');
   assert.equal(restoredSheet.cells.get(1, 2)?.style?.bold, true);
-  assert.equal(restoredSheet.freeze.ySplit, 1);
-  assert.equal(restoredSheet.rowHeights[0], 40);
+  assert.equal(restoredSheet.pane.kind === 'frozen' ? restoredSheet.pane.ySplit : 0, 1);
+  assert.equal(restoredSheet.rowHeightsPx[0], 40);
   assert.equal(restoredSheet.drawings.length, 2);
   assert.equal(restoredSheet.drawingPayloads.get('chart-1')?.kind, 'chart');
   assert.equal((restoredSheet.drawingPayloads.get('chart-1') as { title?: string }).title, 'Revenue');

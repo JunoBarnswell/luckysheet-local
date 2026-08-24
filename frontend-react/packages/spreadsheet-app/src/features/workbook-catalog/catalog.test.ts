@@ -62,7 +62,7 @@ describe('WorkbookCatalogService', () => {
     assert.equal((await catalog.open(original.unitId)).snapshot.name, '会议记录模板');
     const exported = await catalog.exportXlsx(imported.entry.unitId, { execution: 'inline-test' });
     assert.ok(exported.buffer.byteLength > 0);
-    assert.equal(exported.fileName, 'Imported Workbook.xlsx');
+    assert.equal(exported.fileName, 'source.xlsx');
   });
 
   it('upgrades an explicit local workbook to the remote catalog through create plus checkpoint', async () => {

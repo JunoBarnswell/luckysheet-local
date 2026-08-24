@@ -27,12 +27,12 @@ describe('structural operations', () => {
     const { workbook } = seedWorkbook();
     const sheet = workbook.getSheet('s1');
     sheet.merges.push({ range: { sheetId: 's1', startRow: 2, endRow: 3, startColumn: 1, endColumn: 1 }, anchor: { row: 2, column: 1 } });
-    sheet.freeze = { xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0 };
+    sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0 };
     StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 3 });
     assert.equal(sheet.cells.get(2, 0)?.value ?? null, null);
     assert.equal(sheet.cells.get(5, 0)?.value, 'A2');
     assert.equal(sheet.merges[0]!.range.startRow, 5);
-    assert.equal(sheet.freeze.ySplit, 5);
+    assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.ySplit : 0, 5);
     assert.equal(sheet.rowCount, 1003);
   });
 
@@ -52,10 +52,10 @@ describe('structural operations', () => {
   it('insertColumns shifts widths and hidden columns', () => {
     const { workbook } = seedWorkbook();
     const sheet = workbook.getSheet('s1');
-    sheet.columnWidths[2] = 200;
+    sheet.columnWidthsPx[2] = 200;
     sheet.hiddenColumns.add(3);
     StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 1, count: 2 });
-    assert.equal(sheet.columnWidths[4], 200);
+    assert.equal(sheet.columnWidthsPx[4], 200);
     assert.ok(sheet.hiddenColumns.has(5));
     assert.ok(!sheet.hiddenColumns.has(3));
   });

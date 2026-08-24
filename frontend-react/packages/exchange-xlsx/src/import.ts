@@ -27,6 +27,16 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
   const snapshotFeatures = scanSnapshotFeatures(snapshot);
   const packageFeatures = detectPackageFeatures(parsed.package);
   const worksheetDetections = detectWorksheetCapabilities(loaded.files, parsed.package);
+  const mode = request.options.compatibilityMode ?? (request.options.compatibilityTarget === 'A' ? 'strict' : request.options.compatibilityTarget === 'C' ? 'best-effort' : 'balanced');
+  const capabilityDetections = worksheetDetections.map((detection) => {
+    const capability = capabilityFor(detection.feature);
+    const reason = detection.reason ?? (capability.read === 'partial' || capability.write === 'partial'
+      ? mode === 'best-effort'
+        ? capability.approximation ?? 'Imported through an explicitly bounded approximate conversion'
+        : 'The editable canonical subset is imported and the original OOXML package is retained'
+      : undefined);
+    return reason ? { ...detection, reason } : detection;
+  });
   const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...worksheetDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(snapshot, parsed.package.nativePivotGraph);
   const editableFeatures = new Set(detectedFeatures.filter((feature) => capabilityFor(feature).read !== 'none' && capabilityFor(feature).write !== 'none'));
@@ -41,13 +51,12 @@ export async function importXlsx(request: XlsxImportRequest): Promise<XlsxImport
     importLevel: request.options.compatibilityTarget,
     exportLevel: request.options.compatibilityTarget,
     dateSystem,
-    detectedFeatures: [...detectedFeatures, ...worksheetDetections],
+    detectedFeatures: [...detectedFeatures, ...capabilityDetections],
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures: detectedFeatures.filter((feature) => !editableFeatures.has(feature) && !preservedFeatures.has(feature)),
   });
   const completedReport = refreshCompatibilitySummary({ ...report, issues: [...report.issues, ...scanFormulaPreserveIssues(snapshot)] });
-  const mode = request.options.compatibilityMode ?? (request.options.compatibilityTarget === 'A' ? 'strict' : request.options.compatibilityTarget === 'C' ? 'best-effort' : 'balanced');
   if (mode === 'strict') {
     const unsafe = completedReport.issues.filter((issue) => issue.status === 'unsupported');
     if (unsafe.length) throw new Error(`Strict XLSX import rejected unsafe capabilities: ${unsafe.map((issue) => `${issue.feature}${issue.location ? ` at ${issue.location}` : ''}`).join(', ')}`);

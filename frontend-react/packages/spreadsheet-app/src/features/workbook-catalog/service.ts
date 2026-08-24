@@ -395,6 +395,9 @@ export class WorkbookCatalogService {
         artifact: new Blob([input.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
         artifactFileName: input.fileName,
         snapshot: importedSnapshot,
+        xlsxCodecVersion: imported.sourceArtifact?.xlsxCodecVersion ?? 3,
+        detectedFeatures: imported.sourceArtifact?.detectedFeatures ?? [],
+        capabilityReport: imported.report as unknown as Record<string, unknown>,
         ...metadata,
       });
       const serverSnapshot = assertSnapshotUnitId(response.snapshot, importedSnapshot.unitId);
@@ -437,7 +440,9 @@ export class WorkbookCatalogService {
           buffer: await remoteArtifact.artifact.arrayBuffer(),
           execution: 'inline-test',
         });
-        artifact = imported.sourceArtifact ?? null;
+        artifact = imported.sourceArtifact
+          ? { ...imported.sourceArtifact, xlsxCodecVersion: remoteArtifact.metadata.xlsxCodecVersion ?? 1 }
+          : null;
         if (artifact) await this.persistence.xlsxArtifacts.save(unitId, artifact);
       } catch (error) {
         if (!isRemoteUnavailable(error)) throw error;

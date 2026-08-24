@@ -167,7 +167,7 @@ export function useEditorCommandController({
       stroke: "#2563eb",
       strokeWidth: 2,
       textColor: "#1e3a8a",
-      fontSizePx: 13,
+      fontSize: 13,
     };
     return {
       commandId: "drawing.add.shape",

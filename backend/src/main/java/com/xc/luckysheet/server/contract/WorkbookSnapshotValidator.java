@@ -32,6 +32,12 @@ public final class WorkbookSnapshotValidator {
         if (name.isBlank() || name.length() > GeneratedWorkbookContract.MAX_WORKBOOK_NAME_LENGTH) {
             throw ServiceException.validation("Workbook snapshot name is invalid");
         }
+        JsonNode dimensionMetrics = snapshot.get("dimensionMetrics");
+        if (dimensionMetrics == null || !dimensionMetrics.isObject() || dimensionMetrics.path("normalFontFamily").asText().isBlank()
+                || !dimensionMetrics.path("normalFontSizePx").isNumber() || dimensionMetrics.path("normalFontSizePx").asDouble() <= 0
+                || !dimensionMetrics.path("maximumDigitWidthPx").isNumber() || dimensionMetrics.path("maximumDigitWidthPx").asDouble() <= 0) {
+            throw ServiceException.validation("Workbook snapshot dimensionMetrics is invalid");
+        }
         JsonNode sheets = snapshot.get("sheets");
         if (sheets == null || !sheets.isArray() || sheets.isEmpty()) {
             throw ServiceException.validation("Workbook snapshot requires at least one sheet");
@@ -77,6 +83,7 @@ public final class WorkbookSnapshotValidator {
             throw ServiceException.validation("Stored workbook snapshot version is invalid");
         }
         snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+        snapshot.putObject("dimensionMetrics").put("normalFontFamily", "Calibri").put("normalFontSizePx", 14.6666666667).put("maximumDigitWidthPx", 7);
         for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
             if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
             ObjectNode sheet = (ObjectNode) raw;

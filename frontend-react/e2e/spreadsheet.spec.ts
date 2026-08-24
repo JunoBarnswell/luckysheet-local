@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const DEFAULT_COLUMN_WIDTH_PX = 64;
+const DEFAULT_ROW_HEIGHT_PX = 20;
+
 async function waitForWorkspace(page: Page) {
   await page.goto('/');
   await expect(page.getByTestId('workbook-hub')).toBeVisible();
@@ -17,12 +20,12 @@ async function waitForWorkspace(page: Page) {
 async function focusCanvas(page: Page) {
   const canvas = page.getByTestId('sheet-canvas');
   // A1 单元格中心：行头 46px + 列宽一半，列头 24px + 行高一半
-  await canvas.click({ position: { x: 100, y: 38 } });
+  await canvas.click({ position: { x: 78, y: 34 } });
   return canvas;
 }
 
 function cellPoint(box: { x: number; y: number }, row: number, column: number) {
-  return { x: box.x + 46 + column * 110 + 55, y: box.y + 24 + row * 28 + 14 };
+  return { x: box.x + 46 + column * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, y: box.y + 24 + row * DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2 };
 }
 
 async function dragCells(page: Page, canvas: ReturnType<Page['getByTestId']>, from: { row: number; column: number }, to: { row: number; column: number }) {
@@ -68,13 +71,13 @@ test.describe('spreadsheet baseline', () => {
     const canvas = await focusCanvas(page);
     await page.keyboard.type('old-cell-value');
     await expect(page.getByLabel('Cell editor')).toBeVisible();
-    await canvas.click({ position: { x: 210, y: 38 } });
-    await expect(page.getByTestId('name-box')).toHaveValue('B1');
+    await canvas.click({ position: { x: 206, y: 34 } });
+    await expect(page.getByTestId('name-box')).toHaveValue('C1');
     await expect(page.getByLabel('Cell editor')).toHaveCount(0);
     await page.keyboard.type('new-cell-value');
     await page.keyboard.press('Enter');
     await canvas.press('ArrowUp');
-    await expect(page.getByTestId('name-box')).toHaveValue('B1');
+    await expect(page.getByTestId('name-box')).toHaveValue('C1');
     await expect(page.getByTestId('formula-input')).toHaveValue('new-cell-value');
   });
 
@@ -145,9 +148,9 @@ test.describe('spreadsheet baseline', () => {
     const canvas = await focusCanvas(page);
     const box = await canvas.boundingBox();
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
-    await page.mouse.move(box.x + 101, box.y + 66);
+    await page.mouse.move(...Object.values(cellPoint(box, 1, 0)) as [number, number]);
     await page.mouse.down();
-    await page.mouse.move(box.x + 321, box.y + 262);
+    await page.mouse.move(...Object.values(cellPoint(box, 8, 2)) as [number, number]);
     await page.mouse.up();
     await expect(page.getByTestId('name-box')).toHaveValue('C9');
 
@@ -156,8 +159,8 @@ test.describe('spreadsheet baseline', () => {
     await expect(editor).toBeFocused();
     const editorBox = await editor.boundingBox();
     if (!editorBox) throw new Error('Cell editor has no bounds');
-    expect(editorBox.x - box.x).toBeGreaterThan(250);
-    expect(editorBox.y - box.y).toBeGreaterThan(220);
+    expect(editorBox.x - box.x).toBeGreaterThan(160);
+    expect(editorBox.y - box.y).toBeGreaterThan(180);
     await editor.fill('4');
     await editor.press('Enter');
     await canvas.press('ArrowUp');
@@ -198,17 +201,56 @@ test.describe('spreadsheet baseline', () => {
     const box = await canvas.boundingBox();
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
 
-    await page.mouse.move(box.x + 20, box.y + 24 + 28 + 14);
+    await page.mouse.move(box.x + 20, box.y + 24 + DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2);
     await page.mouse.down();
-    await page.mouse.move(box.x + 20, box.y + 24 + 8 * 28 + 14);
+    await page.mouse.move(box.x + 20, box.y + 24 + 8 * DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2);
     await page.mouse.up();
     await expect(page.getByTestId('name-box')).toHaveValue('A9');
 
     await page.mouse.move(box.x + 46 + 55, box.y + 12);
     await page.mouse.down();
-    await page.mouse.move(box.x + 46 + 2 * 110 + 55, box.y + 12);
+    await page.mouse.move(box.x + 46 + 2 * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
     await page.mouse.up();
     await expect(page.getByTestId('name-box')).toHaveValue('C1');
+  });
+
+  test('Excel-style column width paths share one multi-column transaction surface', async ({ page }) => {
+    await waitForWorkspace(page);
+    const canvas = await focusCanvas(page);
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('Spreadsheet canvas has no bounds');
+
+    // Full-column A:C selection.
+    await page.mouse.move(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 46 + 2 * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
+    await page.mouse.up();
+
+    // Drag the C boundary; the preview exposes both character and pixel units.
+    const boundary = box.x + 46 + 3 * DEFAULT_COLUMN_WIDTH_PX;
+    await page.mouse.move(boundary, box.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(boundary + 24, box.y + 12);
+    await expect(canvas).toBeVisible();
+    await page.mouse.up();
+
+    // Right-click keeps the complete multi-column selection and opens exact width.
+    await page.mouse.click(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
+    await page.getByRole('menuitem', { name: 'Column Width…' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Column Width' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel('Excel character width').fill('12');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+
+    // Ribbon and context-menu entries route through the same controller.
+    await page.getByTestId('ribbon-tab-home').click();
+    await page.getByRole('button', { name: 'Format', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'AutoFit Column Width', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'AutoFit Column Width', exact: true }).click();
+
+    await page.mouse.click(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
+    await page.getByRole('menuitem', { name: 'Hide Columns', exact: true }).click();
+    await canvas.press('Control+Z');
   });
 
   test('right click changes the command target before the context menu opens', async ({ page }) => {
@@ -245,9 +287,9 @@ test.describe('spreadsheet baseline', () => {
     await canvas.focus();
     const box = await canvas.boundingBox();
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
-    await page.mouse.move(box.x + 46 + 110 - 4, box.y + 24 + 28 - 4);
+    await page.mouse.move(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX - 4, box.y + 24 + DEFAULT_ROW_HEIGHT_PX - 4);
     await page.mouse.down();
-    await page.mouse.move(box.x + 46 + 2 * 110 + 55, box.y + 24 + 2 * 28 + 14);
+    await page.mouse.move(...Object.values(cellPoint(box, 2, 2)) as [number, number]);
     await page.mouse.up();
     await expect(page.getByTestId('name-box')).toHaveValue('C3');
     await page.getByTestId('name-box').fill('C3');
@@ -346,7 +388,7 @@ test.describe('spreadsheet baseline', () => {
     await painter.click();
     await expect(painter).toHaveAttribute('aria-pressed', 'true');
 
-    await canvas.click({ position: { x: 210, y: 38 } });
+    await canvas.click({ position: { x: 142, y: 34 } });
     await expect(painter).toHaveAttribute('aria-pressed', 'false');
   });
 });

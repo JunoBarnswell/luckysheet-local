@@ -155,6 +155,7 @@ public class WorkbookController {
                 .contentType(MediaType.parseMediaType(artifact.getMimeType()))
                 .contentLength(artifact.getByteLength())
                 .header("X-Content-SHA256", artifact.getChecksum())
+                .header("X-XLSX-Codec-Version", Integer.toString(artifact.getXlsxCodecVersion()))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + artifact.getFileName().replace("\"", "") + "\"")
                 .body(artifact.getContent());
     }

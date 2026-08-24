@@ -71,9 +71,9 @@ describe('WorkbookSession core editing integration', () => {
     selectCell(app, 2, 1);
     app.freezeAtPrimary();
 
-    const freeze = app['runtime'].model.getSheet(sheetId).freeze;
-    assert.equal(freeze?.ySplit, 2);
-    assert.equal(freeze?.xSplit, 1);
+    const pane = app['runtime'].model.getSheet(sheetId).pane;
+    assert.equal(pane.kind === 'frozen' ? pane.ySplit : 0, 2);
+    assert.equal(pane.kind === 'frozen' ? pane.xSplit : 0, 1);
   });
 
   it('duplicateSheet creates a copy and switches to it', () => {

@@ -293,7 +293,8 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookImportResponse importXlsx(MultipartFile file, String name, String spaceId, String folderId,
-                                             String snapshotJson, String actor) {
+                                             String snapshotJson, int xlsxCodecVersion, String detectedFeaturesJson,
+                                             String capabilityReportJson, String actor) {
         if (file == null || file.isEmpty()) throw ServiceException.validation("XLSX file is required");
         if (file.getSize() > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX file exceeds 50 MiB");
         if (snapshotJson == null || snapshotJson.isBlank()) throw ServiceException.validation("Parsed workbook snapshot is required");
@@ -315,13 +316,29 @@ public class WorkbookCatalogService {
         String unitId = snapshot.path("unitId").asText("").trim();
         if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
         WorkbookSnapshotValidator.requireCanonical(snapshot, unitId);
+        if (xlsxCodecVersion < 1) throw ServiceException.validation("XLSX codec version is invalid");
+        JsonNode detectedFeatures;
+        JsonNode capabilityReport;
+        try {
+            detectedFeatures = mapper.readTree(detectedFeaturesJson);
+            capabilityReport = mapper.readTree(capabilityReportJson);
+        } catch (Exception error) {
+            throw ServiceException.validation("XLSX capability metadata is invalid");
+        }
+        if (detectedFeatures == null || !detectedFeatures.isArray() || capabilityReport == null || !capabilityReport.isObject()
+                || !"CompatibilityReport".equals(capabilityReport.path("schema").asText())) {
+            throw ServiceException.validation("XLSX capability metadata is invalid");
+        }
+        ObjectNode artifactMetadata = mapper.createObjectNode().put("xlsxCodecVersion", xlsxCodecVersion);
+        artifactMetadata.set("detectedFeatures", detectedFeatures.deepCopy());
+        artifactMetadata.set("capabilityReport", capabilityReport.deepCopy());
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
                 WorkbookSource.XLSX_IMPORT), actor);
         String digest = checksum(content);
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
                 safeFileName(file.getOriginalFilename() == null ? resolvedName + ".xlsx" : file.getOriginalFilename()),
-                safeMimeType(file.getContentType()), digest, content.length, content, "[]", now, now);
+                safeMimeType(file.getContentType()), digest, content.length, content, writeJson(artifactMetadata), now, now);
         artifacts.save(artifact);
         return new WorkbookImportResponse(entity.getUnitId(), entity.getRevision(), artifact.getChecksum(),
                 summaryForActor(entity, actor), snapshot.deepCopy(), artifactResponse(artifact));

@@ -477,6 +477,10 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     throw new Error('WorkbookSnapshot requires unitId and name');
   }
   if (input.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new Error('WorkbookSnapshot name is too long');
+  const dimensionMetrics = input.dimensionMetrics as Record<string, unknown> | undefined;
+  if (!dimensionMetrics || !isNonEmptyString(dimensionMetrics.normalFontFamily)
+    || typeof dimensionMetrics.normalFontSizePx !== 'number' || !Number.isFinite(dimensionMetrics.normalFontSizePx) || dimensionMetrics.normalFontSizePx <= 0
+    || typeof dimensionMetrics.maximumDigitWidthPx !== 'number' || !Number.isFinite(dimensionMetrics.maximumDigitWidthPx) || dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('WorkbookSnapshot dimensionMetrics is invalid');
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
@@ -1004,12 +1008,16 @@ export interface WorkbookSourceArtifactMetadata {
   mimeType?: string;
   unitId: string;
   updatedAt: string;
+  xlsxCodecVersion?: number;
 }
 
 export interface WorkbookImportRequest extends WorkbookCreateMetadata {
   artifact: Blob;
   artifactFileName: string;
   snapshot: WorkbookSnapshot;
+  xlsxCodecVersion: number;
+  detectedFeatures: string[];
+  capabilityReport: Record<string, unknown>;
 }
 
 export interface WorkbookImportResponse {
@@ -1276,6 +1284,9 @@ export class WorkbookApiClient {
     const form = new FormData();
     form.append('file', input.artifact, input.artifactFileName);
     form.append('snapshot', JSON.stringify(input.snapshot));
+    form.append('xlsxCodecVersion', String(input.xlsxCodecVersion));
+    form.append('detectedFeatures', JSON.stringify(input.detectedFeatures));
+    form.append('capabilityReport', JSON.stringify(input.capabilityReport));
     if (input.snapshot.name) form.append('name', input.snapshot.name);
     if (input.spaceId) form.append('spaceId', input.spaceId);
     if (input.folderId) form.append('folderId', input.folderId);
@@ -1308,6 +1319,7 @@ export class WorkbookApiClient {
     const fileName = fileNameMatch?.[1];
     const checksum = response.headers.get('x-content-sha256');
     const byteLength = Number(response.headers.get('content-length') ?? 0);
+    const xlsxCodecVersion = Number(response.headers.get('x-xlsx-codec-version') ?? 1);
     if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
     const artifact = await response.blob();
     return {
@@ -1319,6 +1331,7 @@ export class WorkbookApiClient {
         mimeType: response.headers.get('content-type') ?? undefined,
         unitId,
         updatedAt: response.headers.get('last-modified') ?? new Date().toISOString(),
+        xlsxCodecVersion: Number.isSafeInteger(xlsxCodecVersion) && xlsxCodecVersion > 0 ? xlsxCodecVersion : 1,
       },
     };
   }

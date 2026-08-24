@@ -7,6 +7,7 @@ import { scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
 import { loadXlsxPackage, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
 import { strFromU8, strToU8 } from 'fflate';
+import { readFile } from 'node:fs/promises';
 
 describe('exchange-xlsx', () => {
   it('scans workbook features for compatibility reporting', () => {
@@ -111,6 +112,19 @@ describe('exchange-xlsx', () => {
     assert.ok(output.files['xl/tables/table1.xml']);
     assert.match(strFromU8(output.files['[Content_Types].xml']!), /spreadsheetml\.table\+xml/);
     assert.match(strFromU8(output.files['xl/worksheets/_rels/sheet1.xml.rels']!), /\/table/);
+  });
+
+  it('writes hyperlinks from the canonical worksheet hyperlink collection', async () => {
+    const workbook = new WorkbookModel('wb-links', 'Links');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'OpenAI' });
+    sheet.hyperlinks.set('0:0', { id: 'link-1', target: { kind: 'url', url: 'https://openai.com/' }, tooltip: 'Open' });
+    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+    const emitted = loadXlsxPackage(buffer);
+    assert.match(strFromU8(emitted.files['xl/worksheets/sheet1.xml']!), /<hyperlink ref="A1"/);
+    assert.match(strFromU8(emitted.files['xl/worksheets/_rels/sheet1.xml.rels']!), /https:\/\/openai\.com\//);
+    const imported = await importXlsx({ fileName: 'links.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
   });
 
   it('writes a canonical table Pivot as a native cache and table graph', async () => {
@@ -250,7 +264,7 @@ describe('exchange-xlsx', () => {
       range: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 2 },
       anchor: { row: 1, column: 1 },
     });
-    sheet.freeze = { xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1 };
+    sheet.pane = { kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1 };
     workbook.setDefinedName({ name: 'LocalValue', formula: `=${sheet.name}!$A$1`, scope: 'sheet', sheetId: sheet.id });
     const original = workbook.snapshot();
     const buffer = exportSnapshotToXlsxBuffer(original, undefined, { dateSystem: '1904' });
@@ -258,7 +272,7 @@ describe('exchange-xlsx', () => {
     const restored = imported.snapshot.sheets[0]!;
     assert.equal(imported.report.dateSystem, '1904');
     assert.equal(restored.merges.length, 1);
-    assert.deepEqual(restored.freeze, sheet.freeze);
+    assert.deepEqual(restored.pane, original.sheets[0]!.pane);
     assert.equal(restored.cells['0']?.['0']?.numberFormat, 'm/d/yy');
     assert.equal(restored.cells['0']?.['0']?.style?.bold, true);
     assert.equal(imported.snapshot.definedNameModels?.[0]?.scope, 'sheet');
@@ -296,5 +310,46 @@ describe('exchange-xlsx', () => {
     assert.throws(() => loadXlsxPackage(buffer, { maxArchiveBytes: 10 }), /archive exceeds/);
     assert.throws(() => loadXlsxPackage(buffer, { maxEntries: 1 }), /too many entries/);
     assert.throws(() => loadXlsxPackage(buffer, { maxCompressionRatio: 1 }), /compression ratio/);
+  });
+
+  it('imports native OOXML geometry, shared formulas, split panes and worksheet capabilities', async () => {
+    const workbook = new WorkbookModel('wb-native-geometry', 'Native Geometry');
+    const generated = loadXlsxPackage(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    generated.package.parts['xl/styles.xml'] = strToU8('<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="18"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
+    generated.package.parts['xl/worksheets/sheet1.xml'] = strToU8('<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B2"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="2000" ySplit="3000" topLeftCell="B2" activePane="bottomRight" state="split"/></sheetView></sheetViews><sheetFormatPr defaultColWidth="8.7109375" defaultRowHeight="15"/><cols><col min="1" max="1" width="9.625" customWidth="1"/></cols><sheetData><row r="1" ht="15" customHeight="1"><c r="A1"><v>2</v></c><c r="B1" s="1"><f t="shared" si="0" ref="B1:B2">A1*2</f><v>4</v></c></row><row r="2"><c r="A2"><v>3</v></c><c r="B2"><f t="shared" si="0"/><v>6</v></c></row></sheetData><autoFilter ref="A1:B2"/><conditionalFormatting sqref="A1:A2"><cfRule type="cellIs" operator="greaterThan" priority="1"><formula>1</formula></cfRule></conditionalFormatting><dataValidations count="1"><dataValidation type="whole" operator="greaterThan" sqref="A1:A2"><formula1>0</formula1></dataValidation></dataValidations></worksheet>');
+    const imported = await importXlsx({ fileName: 'CAN配置.xlsx', buffer: zipXlsxPartsBuffer(generated.package.parts), options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' } });
+    const sheet = imported.snapshot.sheets[0]!;
+    assert.equal(imported.snapshot.name, 'CAN配置');
+    assert.ok((sheet.columnWidthsPx?.[0] ?? 0) >= 67);
+    assert.equal(sheet.defaultColumnWidthPx, 61);
+    assert.equal(sheet.rowHeightsPx?.[0], 20);
+    assert.equal(sheet.cells['0']?.['1']?.style?.fontSizePx, 24);
+    assert.equal(sheet.cells['1']?.['1']?.formula, '=A2*2');
+    assert.equal(sheet.pane.kind, 'split');
+    assert.equal(sheet.conditionalFormats?.length, 1);
+    assert.equal(sheet.dataValidations?.length, 1);
+    assert.equal(sheet.filter?.range.endColumn, 1);
+  });
+
+  it('resolves Strict relationship kinds and a non-standard workbook part path', () => {
+    const parts: Record<string, Uint8Array> = {
+      '[Content_Types].xml': strToU8('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'),
+      '_rels/.rels': strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument" Target="custom/book.xml"/></Relationships>'),
+      'custom/book.xml': strToU8('<?xml version="1.0"?><workbook xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main" xmlns:r="http://purl.oclc.org/ooxml/officeDocument/relationships"><sheets><sheet name="Strict" sheetId="1" r:id="rIdSheet"/></sheets></workbook>'),
+      'custom/_rels/book.xml.rels': strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSheet" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet" Target="worksheets/main.xml"/></Relationships>'),
+      'custom/worksheets/main.xml': strToU8('<?xml version="1.0"?><worksheet xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"><sheetFormatPr defaultRowHeight="15" defaultColWidth="8.7109375"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ok</t></is></c></row></sheetData></worksheet>'),
+    };
+    const loaded = loadXlsxPackage(zipXlsxPartsBuffer(parts));
+    assert.equal(loaded.package.workbookPart, 'custom/book.xml');
+    const parsed = parseLoadedXlsx(loaded, { workbookName: 'Strict' });
+    assert.equal(parsed.snapshot.sheets[0]?.cells['0']?.['0']?.value, 'ok');
+  });
+
+  it('imports the repository House cleaning sample with Excel widths converted to CSS pixels', async () => {
+    const bytes = await readFile(new URL('../../../../luckyexcel-node/House cleaning checklist.xlsx', import.meta.url));
+    const imported = await importXlsx({ fileName: 'House cleaning checklist.xlsx', buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' } });
+    const widths = imported.snapshot.sheets.flatMap((sheet) => Object.values(sheet.columnWidthsPx ?? {}));
+    assert.ok(widths.some((width) => width >= 67 && width <= 68), '9.625 Excel characters should render near 68 CSS pixels');
+    assert.equal(widths.some((width) => Math.abs(width - 9.625) < 0.001), false);
   });
 });

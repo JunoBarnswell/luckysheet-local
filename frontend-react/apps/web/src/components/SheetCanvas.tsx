@@ -476,9 +476,10 @@ export function SheetCanvas({
     onPivotContextHit,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
-    onResizeColumn={(column, widthPx) => columnDimensions.resizeBoundary(column, widthPx)}
-    onAutoFitColumn={(column) => columnDimensions.autoFit(columnDimensions.columnsForBoundary(column))}
-    onAutoFitRow={(row) => columnDimensions.autoFitRows([row])}
+    onResizeColumn: (column, widthPx) => columnDimensions.resizeBoundary(column, widthPx),
+    onAutoFitColumn: (column) => columnDimensions.autoFit(columnDimensions.columnsForBoundary(column)),
+    onAutoFitRow: (row) => columnDimensions.autoFitRows([row]),
+    formatColumnWidthPreview: (widthPx) => columnDimensions.previewPixels(widthPx),
     onResizeRow,
     onSelectAll,
     onSelectionChange,

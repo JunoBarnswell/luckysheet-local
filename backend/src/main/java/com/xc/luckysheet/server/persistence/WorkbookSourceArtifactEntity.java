@@ -65,6 +65,10 @@ public class WorkbookSourceArtifactEntity {
     public long getByteLength() { return byteLength; }
     public byte[] getContent() { return content; }
     public String getDetectedFeaturesJson() { return detectedFeaturesJson; }
+    public int getXlsxCodecVersion() {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"xlsxCodecVersion\\\"\\s*:\\s*(\\d+)").matcher(detectedFeaturesJson);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 1;
+    }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 

@@ -1,11 +1,12 @@
 import { XLSX_CODEC_VERSION, type CompatibilityReport, type DateSystem, type XlsxSourceArtifact } from './types';
+import { createCompatibilityReport } from './compatibility-report';
 
 export async function createXlsxSourceArtifact(input: {
   fileName: string;
   buffer: ArrayBuffer;
   dateSystem: DateSystem;
   detectedFeatures: Iterable<string>;
-  capabilityReport: CompatibilityReport;
+  capabilityReport?: CompatibilityReport;
 }): Promise<XlsxSourceArtifact> {
   const buffer = input.buffer.slice(0);
   return {
@@ -16,7 +17,7 @@ export async function createXlsxSourceArtifact(input: {
     dateSystem: input.dateSystem,
     detectedFeatures: [...new Set(input.detectedFeatures)],
     xlsxCodecVersion: XLSX_CODEC_VERSION,
-    capabilityReport: structuredClone(input.capabilityReport),
+    capabilityReport: structuredClone(input.capabilityReport ?? createCompatibilityReport({ fileName: input.fileName, importLevel: 'B', exportLevel: 'B', dateSystem: input.dateSystem, detectedFeatures: input.detectedFeatures })),
   };
 }
 

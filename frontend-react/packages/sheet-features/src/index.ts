@@ -148,6 +148,11 @@ export interface ResizeColumnParams {
   widthPx: number;
 }
 
+export interface ColumnsVisibilityParams {
+  sheetId: string;
+  states: Array<{ column: number; hidden: boolean }>;
+}
+
 export interface SetMergeParams {
   sheetId: string;
   range: RangeRef;
@@ -218,7 +223,7 @@ function isWorksheetPane(value: unknown): value is WorksheetPane {
     && Number.isSafeInteger(value.startColumn) && Number(value.startColumn) >= 0;
 }
 
-function isColumnVisibilityMutation(value: unknown): value is { sheetId: string; states: Array<{ column: number; hidden: boolean }> } {
+function isColumnVisibilityMutation(value: unknown): value is ColumnsVisibilityParams {
   return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.states) && value.states.length > 0
     && value.states.every((state) => isRecord(state) && Number.isSafeInteger(state.column) && Number(state.column) >= 0 && typeof state.hidden === 'boolean');
 }
@@ -1593,7 +1598,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['row.unhidden'],
     },
   });
-  runtime.registry.registerMutation<{ sheetId: string; states: Array<{ column: number; hidden: boolean }> }>({
+  runtime.registry.registerMutation<ColumnsVisibilityParams>({
     id: 'columns.visibility',
     handler: (item, context) => {
       if (!isColumnVisibilityMutation(item.params)) throw new Error('Invalid columns.visibility mutation payload');

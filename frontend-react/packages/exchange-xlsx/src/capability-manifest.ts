@@ -39,6 +39,9 @@ export const XLSX_CAPABILITY_MANIFEST = {
   timeline: capability('timeline', 'full', 'partial', 'partial', 'partial', 'full'),
   vba: capability('vba', 'full', 'none', 'none', 'none', 'full'),
   'external-connection': capability('external-connection', 'full', 'none', 'none', 'none', 'full'),
+  'unknown-extension': capability('unknown-extension', 'full', 'none', 'none', 'none', 'full'),
+  'extended-validation': capability('extended-validation', 'full', 'none', 'none', 'none', 'full'),
+  'extended-conditional-format': capability('extended-conditional-format', 'full', 'none', 'none', 'none', 'full'),
   'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'none'),
 } as const satisfies Record<string, XlsxCapabilityDeclaration>;
 
@@ -81,11 +84,28 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
       const feature = WORKSHEET_NODES.get(name);
       if (feature) detections.push({ feature, location: part });
       else if (!STRUCTURAL_NODES.has(name)) detections.push({ feature: 'unknown-worksheet-node', location: `${part}#${name}`, reason: `No validated reader/writer contract exists for worksheet node <${name}>` });
+      if (name === 'extLst') {
+        if (descendants(node, 'dataValidations').length || descendants(node, 'dataValidation').length) detections.push({ feature: 'extended-validation', location: `${part}#extLst`, reason: 'Extended data validation is preserved in the source package but is not editable' });
+        if (descendants(node, 'conditionalFormatting').length) detections.push({ feature: 'extended-conditional-format', location: `${part}#extLst`, reason: 'Extended conditional formatting is preserved in the source package but is not editable' });
+        for (const extension of children(node, 'ext')) detections.push({ feature: 'unknown-extension', location: `${part}#${extension.attrs.uri ?? 'ext'}`, reason: 'Worksheet extension is retained byte-for-byte from the source package' });
+      }
     }
   }
-  const sharedStrings = files['xl/sharedStrings.xml'];
-  if (sharedStrings && /<(?:\w+:)?r(?:\s|>)/.test(strFromU8(sharedStrings))) detections.push({ feature: 'rich-text', location: 'xl/sharedStrings.xml' });
+  const sharedStringsRelation = (pkg.relationships[pkg.workbookPart] ?? []).find((relation) => relation.type.replace(/\/+$/, '').endsWith('/sharedStrings'));
+  const sharedStringsPart = sharedStringsRelation ? resolvePart(pkg.workbookPart, sharedStringsRelation.target) : 'xl/sharedStrings.xml';
+  const sharedStrings = files[sharedStringsPart];
+  if (sharedStrings && /<(?:\w+:)?r(?:\s|>)/.test(strFromU8(sharedStrings))) detections.push({ feature: 'rich-text', location: sharedStringsPart });
   return deduplicateDetections(detections);
+}
+
+function resolvePart(source: string, target: string): string {
+  const pieces = `${source.includes('/') ? source.slice(0, source.lastIndexOf('/') + 1) : ''}${target}`.replace(/\\/g, '/').split('/');
+  const result: string[] = [];
+  for (const piece of pieces) {
+    if (!piece || piece === '.') continue;
+    if (piece === '..') result.pop(); else result.push(piece);
+  }
+  return result.join('/');
 }
 
 export function capabilityFor(feature: string): XlsxCapabilityDeclaration {

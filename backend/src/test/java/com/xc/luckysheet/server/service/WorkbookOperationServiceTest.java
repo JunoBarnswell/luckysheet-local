@@ -40,7 +40,7 @@ class WorkbookOperationServiceTest {
         WorkbookOperationService service = new WorkbookOperationService(
                 store, access, new MutationDescriptorRegistry(), mapper, audit, coordination
         );
-        String snapshot = "{\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}";
+        String snapshot = canonicalSnapshot();
         when(access.require("book-1", "guest:share-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.COMMENTER);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
                 "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now()
@@ -77,7 +77,7 @@ class WorkbookOperationServiceTest {
                 new AuditRecorder(store, mapper),
                 new CoordinationProperties(false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45))
         );
-        String snapshot = "{\"sheets\":[{\"id\":\"sheet-1\",\"cells\":{}}]}";
+        String snapshot = canonicalSnapshot();
         when(access.require("book-1", "editor-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0,
                 WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
@@ -105,5 +105,9 @@ class WorkbookOperationServiceTest {
         verify(store).insertOperation(captured.capture());
         assertEquals("op-2", captured.getValue().operationId());
         verify(store).updateWorkbookRevisionAndName(eq("book-1"), eq(1L), eq("Book"), any());
+    }
+
+    private String canonicalSnapshot() {
+        return "{\"schema\":\"WorkbookSnapshot\",\"version\":3,\"unitId\":\"book-1\",\"name\":\"Book\",\"dimensionMetrics\":{\"normalFontFamily\":\"Calibri\",\"normalFontSizePx\":14.6666666667,\"maximumDigitWidthPx\":7},\"dataSources\":[],\"sheets\":[{\"id\":\"sheet-1\",\"name\":\"Sheet1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{},\"merges\":[],\"pane\":{\"kind\":\"none\"},\"defaultRowHeightPx\":20,\"defaultColumnWidthPx\":64,\"pivots\":[],\"sparklines\":[],\"drawings\":[],\"drawingPayloads\":{}}]}";
     }
 }

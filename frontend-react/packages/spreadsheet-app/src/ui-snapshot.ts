@@ -104,6 +104,7 @@ export interface CanvasSheetSnapshot {
   pane: WorksheetPane;
   defaultRowHeightPx: number;
   defaultColumnWidthPx: number;
+  maximumDigitWidthPx: number;
   rowHeightsPx: Record<number, number>;
   columnWidthsPx: Record<number, number>;
   hiddenRows: number[];
@@ -313,6 +314,7 @@ export function buildCanvasSheetSnapshot(
     pane: { ...sheet.pane },
     defaultRowHeightPx: sheet.defaultRowHeightPx,
     defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+    maximumDigitWidthPx: workbook.dimensionMetrics.maximumDigitWidthPx,
     rowHeightsPx: { ...sheet.rowHeightsPx },
     columnWidthsPx: { ...sheet.columnWidthsPx },
     hiddenRows: [...hiddenRows].sort((a, b) => a - b),

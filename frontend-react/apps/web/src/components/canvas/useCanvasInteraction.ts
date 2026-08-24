@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef } from "react";
-import { pixelsToExcelColumnWidth } from '@react-sheets/exchange-xlsx';
 import {
   CanvasRenderEngine,
   type ChromeState,
@@ -112,6 +111,7 @@ export interface CanvasInteractionOptions {
   onResizeColumn: (column: number, widthPx: number) => void;
   onAutoFitColumn: (column: number) => void | Promise<void>;
   onAutoFitRow: (row: number) => void | Promise<void>;
+  formatColumnWidthPreview: (widthPx: number) => { widthPx: number; excelWidth: number };
   onFillRange: (target: CanvasFillPreview) => void;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: "replace" | "add" | "toggle") => void;
@@ -248,6 +248,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onResizeColumn,
     onAutoFitColumn,
     onAutoFitRow,
+    formatColumnWidthPreview,
     onResizeRow,
     onSelectAll,
     onSelectionChange,
@@ -601,8 +602,9 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       const boundary = drag.kind === "col-resize" ? skeleton.getColumnLeft(drag.resizeIndex) : skeleton.getRowTop(drag.resizeIndex);
       const size = Math.max(24, (drag.kind === "col-resize" ? content.x : content.y) - boundary);
       const modelSizePx = Math.round(size / (zoom / 100));
+      const columnPreview = drag.kind === 'col-resize' ? formatColumnWidthPreview(modelSizePx) : undefined;
       const label = drag.kind === 'col-resize'
-        ? `${pixelsToExcelColumnWidth(modelSizePx).toFixed(2)} chars (${modelSizePx}px)`
+        ? `${columnPreview!.excelWidth.toFixed(2)} chars (${columnPreview!.widthPx}px)`
         : `${modelSizePx}px`;
       engine.setChrome({ ...chromeState, resizePreview: { axis: drag.kind === "col-resize" ? "column" : "row", index: drag.resizeIndex, sizePx: size, label } });
       return;
@@ -662,7 +664,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const range = expandRangeForMerges(sheet, baseRange);
     const nextSelection: SelectionState = { ranges: [range], activeCell: { row: cell.row, column: cell.column }, primaryRangeIndex: 0, anchorCell: { row: drag.anchorRow, column: drag.anchorColumn } };
     queueTransientSelection(drag.additive ? { ...selection, ranges: [...selection.ranges, range], primaryRangeIndex: selection.ranges.length, activeCell: nextSelection.activeCell, anchorCell: nextSelection.anchorCell } : nextSelection);
-  }, [chromeState, containerRef, engineRef, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
+  }, [chromeState, containerRef, engineRef, formatColumnWidthPreview, localPointOf, onFloatingMove, queueTransientSelection, selection, setFillPreview, sheet, sheetId, skeleton, stopAutoScroll, updateAutoScroll, zoom]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent) => {
     const drag = dragRef.current;

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 const root = process.cwd();
 const contracts = JSON.parse(await readFile(resolve(root, '../contracts/workbook-contract.json'), 'utf8'));
+const snapshotSchema = JSON.parse(await readFile(resolve(root, '../contracts/workbook-snapshot.schema.json'), 'utf8'));
 const javaRegistry = await readFile(resolve(root, '../backend/src/main/java/com/xc/luckysheet/server/mutation/MutationDescriptorRegistry.java'), 'utf8');
 const generatedTypeScript = await readFile(resolve(root, 'packages/protocol/src/generated-contract.ts'), 'utf8');
 const generatedJava = await readFile(resolve(root, '../backend/src/main/java/com/xc/luckysheet/server/contract/GeneratedWorkbookContract.java'), 'utf8');
@@ -15,6 +16,7 @@ const frontend = await Promise.all([
   readFile(resolve(root, 'packages/spreadsheet-app/src/features/review/commands.ts'), 'utf8'),
 ]);
 const violations = [];
+if (snapshotSchema?.properties?.version?.const !== contracts.workbook.snapshotVersion) violations.push('WorkbookSnapshot JSON Schema version is out of sync with workbook-contract.json');
 if (!generatedTypeScript.includes(`WORKBOOK_CONTRACT_API_VERSION = ${JSON.stringify(contracts.apiVersion)}`)
   || !generatedJava.includes(`API_VERSION = ${JSON.stringify(contracts.apiVersion)}`)) {
   violations.push('generated contract outputs are stale; run npm run generate:contracts');
@@ -29,6 +31,10 @@ if (!hub.includes('AbortController') || !hub.includes('loadGeneration')) {
   violations.push('workbook hub must cancel stale loads and guard request generations');
 }
 for (const [id, capability] of Object.entries(contracts.mutations)) {
+  for (const field of ['durability', 'remote', 'schema', 'minRole', 'rebasePolicy', 'javaReducer']) {
+    if (!(field in capability)) violations.push(`mutation ${id} is missing manifest field ${field}`);
+  }
+  if (capability.remote && !capability.javaReducer) violations.push(`remote mutation ${id} must declare a Java reducer`);
   const visible = frontend.some((source) => source.includes(`'${id}'`));
   if (capability.remote && visible && javaRegistry.includes(`Map.entry("${id}"`)) {
     violations.push(`remote visible mutation ${id} is still marked unavailable by Java`);

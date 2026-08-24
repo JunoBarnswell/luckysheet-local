@@ -91,6 +91,7 @@ interface StyleContext {
   differentialStyles: Array<CellStyle | undefined>;
   normalFont: OoxmlNormalFont;
   maximumDigitWidthPx: number;
+  themeColors: string[];
 }
 
 interface SheetDescriptor {
@@ -130,13 +131,14 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
 
   const normalizedFiles: Record<string, Uint8Array> = {};
   for (const [name, data] of Object.entries(files)) normalizedFiles[normalizePartName(name)] = data;
-  if (!normalizedFiles['xl/workbook.xml']) throw new Error('Not a valid XLSX package: xl/workbook.xml is missing');
-
   const relationships = readRelationships(normalizedFiles);
-  const dateSystem = parseWorkbookDateSystem(strFromU8(normalizedFiles['xl/workbook.xml']));
-  const sheetPartById = readSheetPartMap(normalizedFiles, relationships);
+  const rootOfficeDocument = (relationships[''] ?? []).find((relation) => isRelationshipKind(relation.type, 'officeDocument'));
+  const workbookPart = rootOfficeDocument ? resolveTarget('', rootOfficeDocument.target) : 'xl/workbook.xml';
+  if (!normalizedFiles[workbookPart]) throw new Error(`Not a valid XLSX package: workbook part is missing (${workbookPart})`);
+  const dateSystem = parseWorkbookDateSystem(strFromU8(normalizedFiles[workbookPart]));
+  const sheetPartById = readSheetPartMap(normalizedFiles, relationships, workbookPart);
   const coreParts = new Set<string>([
-    '[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels',
+    '[Content_Types].xml', '_rels/.rels', workbookPart, relationshipPartName(workbookPart),
     'xl/styles.xml', 'xl/sharedStrings.xml',
     ...Object.values(sheetPartById),
   ]);
@@ -148,13 +150,14 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
     if (!coreParts.has(name)) opaqueParts[name] = data.slice();
   }
 
-  const nativePivotGraph = hasNativePivotMarkers(normalizedFiles)
+  const nativePivotGraph = workbookPart === 'xl/workbook.xml' && hasNativePivotMarkers(normalizedFiles)
     ? readNativePivotGraph({ files: normalizedFiles, relationships, sheetPartById })
     : undefined;
   return {
     files: normalizedFiles,
     package: {
       schema: 'XlsxPackage',
+      workbookPart,
       parts: cloneParts(normalizedFiles),
       opaqueParts,
       relationships,
@@ -168,17 +171,18 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
 
 export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedXlsxOptions = {}): ParsedXlsxPackage {
   const files = loaded.files;
-  const workbookXml = parseXml(strFromU8(files['xl/workbook.xml']!));
+  const workbookPart = loaded.package.workbookPart;
+  const workbookXml = parseXml(strFromU8(files[workbookPart]!));
   const workbook = firstElement(workbookXml, 'workbook');
   const relationships = loaded.package.relationships;
   const descriptors: SheetDescriptor[] = [];
-  const workbookRels = relationships['xl/workbook.xml'] ?? [];
+  const workbookRels = relationships[workbookPart] ?? [];
   const sheetNodes = children(child(workbook, 'sheets'), 'sheet');
   for (let index = 0; index < sheetNodes.length; index += 1) {
     const node = sheetNodes[index]!;
     const relationId = node.attrs['r:id'] ?? node.attrs.id ?? '';
     const relation = workbookRels.find((candidate) => candidate.id === relationId && isRelationshipKind(candidate.type, 'worksheet'));
-    const part = relation ? resolveTarget('xl/workbook.xml', relation.target) : `xl/worksheets/sheet${index + 1}.xml`;
+    const part = relation ? resolveTarget(workbookPart, relation.target) : resolveTarget(workbookPart, `worksheets/sheet${index + 1}.xml`);
     if (!files[part]) throw new Error(`Workbook sheet relation points to missing part: ${part}`);
     const sheetId = `sheet-${node.attrs.sheetId ?? index + 1}`;
     descriptors.push({
@@ -191,11 +195,11 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
   }
   if (descriptors.length === 0) throw new Error('XLSX workbook has no worksheets');
 
-  const sharedStringsPart = resolveWorkbookRelatedPart(workbookRels, 'sharedStrings', 'xl/sharedStrings.xml');
-  const stylesPart = resolveWorkbookRelatedPart(workbookRels, 'styles', 'xl/styles.xml');
-  const themePart = resolveWorkbookRelatedPart(workbookRels, 'theme', 'xl/theme/theme1.xml');
-  const sharedStrings = parseSharedStrings(files[sharedStringsPart]);
+  const sharedStringsPart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'sharedStrings', resolveTarget(workbookPart, 'sharedStrings.xml'));
+  const stylesPart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'styles', resolveTarget(workbookPart, 'styles.xml'));
+  const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
+  const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
   const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.package, sharedStrings, styles));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
@@ -206,6 +210,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
     version: 3,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
+    dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
     definedNames,
     definedNameModels,
     dataSources: [],
@@ -216,6 +221,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
     )),
     sheets,
   };
+  applyPrintDefinedNames(snapshot);
   attachNativePivots(snapshot, loaded.package.nativePivotGraph, loaded.package.sheetPartById);
   return { package: loaded.package, snapshot, features: detectPackageFeatures(loaded.package, snapshot) };
 }
@@ -258,7 +264,7 @@ export function exportSnapshotToXlsxPackage(
     for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
     const relationships = mergeRelationships(nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
   }
 
   const workbookRelations = mergeRelationships(
@@ -373,7 +379,7 @@ function parseSheet(
       const address = { row: entry.row, column: entry.column };
       const styleId = cellNode.attrs.s;
       const style = styleId === undefined ? undefined : styles.records[Number(styleId)];
-      const valueRecord = readCellValue(cellNode, sharedStrings);
+      const valueRecord = readCellValue(cellNode, sharedStrings, styles.themeColors);
       const formulaRecord = readFormula(cellNode, address, sharedFormulaMasters, descriptor);
       const cell: CellData = {
         value: valueRecord.value,
@@ -395,7 +401,7 @@ function parseSheet(
     .map((range) => ({ range: { ...range, sheetId: descriptor.id }, anchor: { row: range.startRow, column: range.startColumn } } satisfies MergeSpan));
   validateNonOverlappingMerges(merges, descriptor);
   const hiddenColumns = parseHiddenColumns(root);
-  const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), []);
+  const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), styles.themeColors);
   const notes = parseNotes(root, descriptor, files, pkg);
   const sheetTables = parseSheetTables(root, descriptor, files, pkg);
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
@@ -559,10 +565,10 @@ function parseSheetTables(
   });
 }
 
-function parseSharedStrings(bytes: Uint8Array | undefined): SharedStringRecord[] {
+function parseSharedStrings(bytes: Uint8Array | undefined, themeColors: string[]): SharedStringRecord[] {
   if (!bytes) return [];
   const root = firstElement(parseXml(strFromU8(bytes)), 'sst');
-  return children(root, 'si').map(parseRichTextContainer);
+  return children(root, 'si').map((item) => parseRichTextContainer(item, themeColors));
 }
 
 function parseStyles(
@@ -572,7 +578,7 @@ function parseStyles(
 ): StyleContext {
   const fallbackFont = { family: DEFAULT_EXCEL_FONT_FAMILY, sizePt: DEFAULT_EXCEL_FONT_SIZE_PT };
   if (!bytes) {
-    return { records: [{}], differentialStyles: [], normalFont: fallbackFont, maximumDigitWidthPx: measurer.maximumDigitWidthPx(fallbackFont) };
+    return { records: [{}], differentialStyles: [], normalFont: fallbackFont, maximumDigitWidthPx: measurer.maximumDigitWidthPx(fallbackFont), themeColors: [] };
   }
   const root = firstElement(parseXml(strFromU8(bytes)), 'styleSheet');
   const themeColors = parseThemeColors(themeBytes);
@@ -635,6 +641,7 @@ function parseStyles(
     differentialStyles,
     normalFont,
     maximumDigitWidthPx: measurer.maximumDigitWidthPx(normalFont),
+    themeColors,
   };
 }
 
@@ -644,7 +651,7 @@ function resolvedXfId(xf: XmlNode, base: XmlNode | undefined, key: string, apply
   return Number(base?.attrs[key] ?? own ?? 0) || 0;
 }
 
-function parseRichTextContainer(container: XmlNode): SharedStringRecord {
+function parseRichTextContainer(container: XmlNode, themeColors: string[] = []): SharedStringRecord {
   const runs = children(container, 'r');
   if (!runs.length) return { value: descendants(container, 't').map(textContent).join('') };
   const richText = runs.map((run) => {
@@ -653,7 +660,7 @@ function parseRichTextContainer(container: XmlNode): SharedStringRecord {
     const preservedProperties = properties?.children
       .map((property) => localName(property.name))
       .filter((name) => !known.has(name)) ?? [];
-    const style = parseFontStyle(properties, []);
+    const style = parseFontStyle(properties, themeColors);
     return {
       text: descendants(run, 't').map(textContent).join(''),
       ...(Object.keys(style).length ? { style } : {}),
@@ -948,6 +955,7 @@ function buildWorksheetXml(
   files: Map<string, Uint8Array>,
   styleIndexes: Map<string, number>,
   differentialStyleIndexes: Map<string, number>,
+  maximumDigitWidthPx: number,
   includeCachedValues: boolean,
   nativeDisplayCells?: Record<string, Record<string, CellData>>,
   nativeControls: NativePivotControlDefinition[] = [],
@@ -960,14 +968,14 @@ function buildWorksheetXml(
   const pane = sheet.pane;
   const paneXml = pane.kind === 'none' ? '' : `<pane xSplit="${roundMetric(pane.xSplit)}" ySplit="${roundMetric(pane.ySplit)}" topLeftCell="${columnToLetter(pane.startColumn)}${pane.startRow + 1}" activePane="${pane.activePane ?? 'bottomRight'}"${pane.kind === 'frozen' ? ` state="${pane.state ?? 'frozen'}"` : ''}/>`;
   xml += `<sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.showGridlines === false ? '0' : '1'}" showRowColHeaders="${sheet.showHeaders === false ? '0' : '1'}" zoomScale="${sheet.zoom ?? 100}">${paneXml}</sheetView></sheetViews>`;
-  xml += `<sheetFormatPr baseColWidth="8" defaultColWidth="${roundMetric(pixelsToExcelColumnWidth(sheet.defaultColumnWidthPx))}" defaultRowHeight="${roundMetric(pixelsToPoints(sheet.defaultRowHeightPx))}"/>`;
+  xml += `<sheetFormatPr baseColWidth="8" defaultColWidth="${roundMetric(pixelsToExcelColumnWidth(sheet.defaultColumnWidthPx, maximumDigitWidthPx))}" defaultRowHeight="${roundMetric(pixelsToPoints(sheet.defaultRowHeightPx))}"/>`;
   const outlinedColumns = sheet.outline?.groups.filter((group) => group.axis === 'column').flatMap((group) => Array.from({ length: group.end - group.start + 1 }, (_, offset) => group.start + offset)) ?? [];
   const columnIndexes = [...new Set([...Object.keys(sheet.columnWidthsPx ?? {}).map(Number), ...(sheet.hiddenColumns ?? []), ...outlinedColumns])].sort((a, b) => a - b);
   if (columnIndexes.length) {
     xml += `<cols>${columnIndexes.map((column) => {
       const width = sheet.columnWidthsPx?.[column];
       const columnOutline = outlineLevelAt(sheet.outline, 'column', column);
-      return `<col min="${column + 1}" max="${column + 1}"${width === undefined ? '' : ` width="${roundMetric(pixelsToExcelColumnWidth(width))}" customWidth="1"`}${sheet.hiddenColumns?.includes(column) ? ' hidden="1"' : ''}${columnOutline ? ` outlineLevel="${columnOutline.level}"${columnOutline.collapsed ? ' collapsed="1"' : ''}` : ''}/>`;
+      return `<col min="${column + 1}" max="${column + 1}"${width === undefined ? '' : ` width="${roundMetric(pixelsToExcelColumnWidth(width, maximumDigitWidthPx))}" customWidth="1"`}${sheet.hiddenColumns?.includes(column) ? ' hidden="1"' : ''}${columnOutline ? ` outlineLevel="${columnOutline.level}"${columnOutline.collapsed ? ' collapsed="1"' : ''}` : ''}/>`;
     }).join('')}</cols>`;
   }
   xml += '<sheetData>';
@@ -1055,17 +1063,21 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   const styleKey = JSON.stringify({ style: cell.style, numberFormat: cell.numberFormat });
   const style = cell.style || cell.numberFormat ? (styleIndexes.get(styleKey) ?? 1) : undefined;
   const styleAttr = style === undefined ? '' : ` s="${style}"`;
-  if (cell.formula) {
-    const formula = cell.formula.startsWith('=') ? cell.formula.slice(1) : cell.formula;
+  const metadata = cell.formulaMetadata;
+  if (cell.formula || metadata?.preservedOnly) {
+    const sourceFormula = metadata?.sourceFormula ?? cell.formula ?? '';
+    const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
     const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(String(cachedValue))}</v>` : '';
-    const metadata = cell.formulaMetadata;
-    const formulaAttrs = metadata?.kind === 'array'
+    const formulaAttrs = metadata?.kind === 'shared' && metadata.preservedOnly
+      ? ` t="shared"${metadata.sharedIndex !== undefined ? ` si="${metadata.sharedIndex}"` : ''}${metadata.sharedMaster && metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
+      : metadata?.kind === 'array'
       ? ` t="array"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'dataTable'
         ? ` t="dataTable"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
         : '';
-    return `<c r="${ref}"${styleAttr}${cached && typeof cachedValue === 'string' ? ' t="str"' : ''}><f${formulaAttrs}>${encodeXml(formula)}</f>${cached}</c>`;
+    const formulaBody = metadata?.kind === 'shared' && metadata.preservedOnly && !metadata.sharedMaster ? '' : encodeXml(formula);
+    return `<c r="${ref}"${styleAttr}${cached && typeof cachedValue === 'string' ? ' t="str"' : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
   }
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;
   if (typeof cell.value === 'boolean') return `<c r="${ref}"${styleAttr} t="b"><v>${cell.value ? '1' : '0'}</v></c>`;
@@ -1160,9 +1172,10 @@ function serializePrintDocument(document: NonNullable<WorkbookSnapshot['printDoc
   const printOptions = `<printOptions horizontalCentered="${setup.centerHorizontally ? '1' : '0'}" verticalCentered="${setup.centerVertically ? '1' : '0'}" headings="${setup.printHeadings ? '1' : '0'}" gridLines="${setup.printGridlines ? '1' : '0'}"/>`;
   const margins = `<pageMargins left="${setup.margins.left}" right="${setup.margins.right}" top="${setup.margins.top}" bottom="${setup.margins.bottom}" header="${setup.margins.header}" footer="${setup.margins.footer}"/>`;
   const pageSetup = `<pageSetup${paperSize ? ` paperSize="${paperSize}"` : ''} orientation="${setup.orientation}" scale="${setup.scale}"${setup.fitToWidth !== undefined ? ` fitToWidth="${setup.fitToWidth}"` : ''}${setup.fitToHeight !== undefined ? ` fitToHeight="${setup.fitToHeight}"` : ''}/>`;
+  const headerFooter = setup.headerText || setup.footerText ? `<headerFooter>${setup.headerText ? `<oddHeader>${encodeXml(setup.headerText)}</oddHeader>` : ''}${setup.footerText ? `<oddFooter>${encodeXml(setup.footerText)}</oddFooter>` : ''}</headerFooter>` : '';
   const rows = document.pageBreaks.filter((entry) => entry.row !== undefined);
   const columns = document.pageBreaks.filter((entry) => entry.column !== undefined);
-  return `${printOptions}${margins}${pageSetup}${rows.length ? `<rowBreaks count="${rows.length}" manualBreakCount="${rows.length}">${rows.map((entry) => `<brk id="${entry.row}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>` : ''}${columns.length ? `<colBreaks count="${columns.length}" manualBreakCount="${columns.length}">${columns.map((entry) => `<brk id="${entry.column}" min="0" max="1048575" man="1"/>`).join('')}</colBreaks>` : ''}`;
+  return `${printOptions}${margins}${pageSetup}${headerFooter}${rows.length ? `<rowBreaks count="${rows.length}" manualBreakCount="${rows.length}">${rows.map((entry) => `<brk id="${entry.row}" min="0" max="16383" man="1"/>`).join('')}</rowBreaks>` : ''}${columns.length ? `<colBreaks count="${columns.length}" manualBreakCount="${columns.length}">${columns.map((entry) => `<brk id="${entry.column}" min="0" max="1048575" man="1"/>`).join('')}</colBreaks>` : ''}`;
 }
 
 function outlineLevelAt(outline: OutlineModel | undefined, axis: 'row' | 'column', index: number): { level: number; collapsed: boolean } | undefined {
@@ -1224,7 +1237,20 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
     xml += `<sheet name="${encodeXml(sheet?.name ?? descriptor.name)}" sheetId="${encodeXml(descriptor.id.replace(/^sheet-/, ''))}" r:id="${id}"${sheet?.hidden ? ' state="hidden"' : ''}/>`;
   }
   xml += '</sheets>';
-  const names: DefinedNameModel[] = snapshot.definedNameModels ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }));
+  const names: DefinedNameModel[] = structuredClone(snapshot.definedNameModels ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const })));
+  for (const document of snapshot.printDocuments ?? []) {
+    const sheet = snapshot.sheets.find((candidate) => candidate.id === document.sheetId);
+    if (!sheet) continue;
+    const qualified = `'${sheet.name.replace(/'/g, "''")}'!`;
+    if (document.printAreas.length && !names.some((name) => name.name === '_xlnm.Print_Area' && name.scope === 'sheet' && name.sheetId === sheet.id)) {
+      names.push({ name: '_xlnm.Print_Area', scope: 'sheet', sheetId: sheet.id, formula: `=${document.printAreas.map((area) => `${qualified}${rangeToA1(area.range)}`).join(',')}`, hidden: true });
+    }
+    const titleParts = [
+      document.repeatRows ? `${qualified}$${document.repeatRows.start + 1}:$${document.repeatRows.end + 1}` : '',
+      document.repeatColumns ? `${qualified}$${columnToLetter(document.repeatColumns.start)}:$${columnToLetter(document.repeatColumns.end)}` : '',
+    ].filter(Boolean);
+    if (titleParts.length && !names.some((name) => name.name === '_xlnm.Print_Titles' && name.scope === 'sheet' && name.sheetId === sheet.id)) names.push({ name: '_xlnm.Print_Titles', scope: 'sheet', sheetId: sheet.id, formula: `=${titleParts.join(',')}`, hidden: true });
+  }
   if (names.length) {
     xml += '<definedNames>';
     for (const name of names) {
@@ -1299,7 +1325,7 @@ function buildRelationshipsXml(relationships: XlsxRelationship[]): string {
 }
 
 function buildRootRelationshipsXml(existing: XlsxRelationship[]): string {
-  const relationships = mergeRelationships(existing, [{ id: '', type: REL_OFFICE_DOCUMENT, target: 'xl/workbook.xml' }]);
+  const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: 'xl/workbook.xml' }]);
   return buildRelationshipsXml(relationships);
 }
 
@@ -1387,6 +1413,39 @@ function parseDefinedNames(node: XmlNode | undefined, descriptors: SheetDescript
   });
 }
 
+function applyPrintDefinedNames(snapshot: WorkbookSnapshot): void {
+  const documents = new Map((snapshot.printDocuments ?? []).map((document) => [document.sheetId, document]));
+  const ensureDocument = (sheetId: string) => {
+    let document = documents.get(sheetId);
+    if (!document) {
+      document = { schema: 'PrintDocument', unitId: snapshot.unitId, sheetId, pageSetup: { paperSize: 'a4', orientation: 'portrait', margins: { top: 0.75, right: 0.7, bottom: 0.75, left: 0.7, header: 0.3, footer: 0.3 }, scale: 100, printGridlines: false, printHeadings: false, centerHorizontally: false, centerVertically: false }, printAreas: [], pageBreaks: [] };
+      documents.set(sheetId, document);
+    }
+    return document;
+  };
+  for (const name of snapshot.definedNameModels ?? []) {
+    if (name.scope !== 'sheet' || !name.sheetId) continue;
+    const formula = name.formula.replace(/^=/, '');
+    if (name.name === '_xlnm.Print_Area') {
+      const document = ensureDocument(name.sheetId);
+      document.printAreas = formula.split(',').flatMap((part) => {
+        const range = parseRange(part.split('!').pop()?.replace(/\$/g, ''));
+        return range ? [{ sheetId: name.sheetId!, range: { ...range, sheetId: name.sheetId! } }] : [];
+      });
+    } else if (name.name === '_xlnm.Print_Titles') {
+      const document = ensureDocument(name.sheetId);
+      for (const part of formula.split(',')) {
+        const reference = part.split('!').pop()?.replace(/\$/g, '') ?? '';
+        const rows = /^(\d+):(\d+)$/.exec(reference);
+        const columns = /^([A-Za-z]+):([A-Za-z]+)$/.exec(reference);
+        if (rows) document.repeatRows = { start: Number(rows[1]) - 1, end: Number(rows[2]) - 1 };
+        if (columns) document.repeatColumns = { start: columnFromLetter(columns[1]!), end: columnFromLetter(columns[2]!) };
+      }
+    }
+  }
+  snapshot.printDocuments = [...documents.values()];
+}
+
 interface SharedFormulaMaster {
   row: number;
   column: number;
@@ -1437,12 +1496,13 @@ function readFormula(
       const formula = address.row === master.row && address.column === master.column
         ? formatFormula(parseFormula(master.formula))
         : formatFormula(offsetAst(parseFormula(master.formula), address.row - master.row, address.column - master.column));
-      return { formula, metadata: { kind: 'shared', sharedIndex: index, ...(master.range ? { range: master.range } : {}) } };
+      return { formula, metadata: { kind: 'shared', sharedIndex: index, sharedMaster: address.row === master.row && address.column === master.column, ...(master.range ? { range: master.range } : {}) } };
     } catch {
       return {
         metadata: {
           kind: 'shared',
           sharedIndex: index,
+          sharedMaster: address.row === master.row && address.column === master.column,
           ...(master.range ? { range: master.range } : {}),
           preservedOnly: true,
           reason: 'Shared formula uses syntax outside the canonical formula AST',
@@ -1498,10 +1558,10 @@ function parseConditionalFormats(root: XmlNode, descriptor: SheetDescriptor, sty
       } else if (type === 'top10') {
         result.push({ ...base, type: 'topBottom', operator: xmlBoolean(node.attrs.bottom ?? '0') ? 'bottom' : 'top', topBottom: { direction: xmlBoolean(node.attrs.bottom ?? '0') ? 'bottom' : 'top', rank: finitePositive(node.attrs.rank, 10), ...(xmlBoolean(node.attrs.percent ?? '0') ? { percent: true } : {}) } });
       } else if (type === 'dataBar') {
-        const color = resolveColor(child(child(node, 'dataBar'), 'color'), []);
+        const color = resolveColor(child(child(node, 'dataBar'), 'color'), styles.themeColors);
         result.push({ ...base, type: 'dataBar', ...(color ? { barColor: color } : {}) });
       } else if (type === 'colorScale') {
-        const colors = children(child(node, 'colorScale'), 'color').map((color) => resolveColor(color, [])).filter((value): value is string => Boolean(value));
+        const colors = children(child(node, 'colorScale'), 'color').map((color) => resolveColor(color, styles.themeColors)).filter((value): value is string => Boolean(value));
         result.push({ ...base, type: 'colorScale', ...(colors[0] ? { minColor: colors[0] } : {}), ...(colors.length === 3 && colors[1] ? { midColor: colors[1] } : {}), ...(colors.at(-1) ? { maxColor: colors.at(-1)! } : {}) });
       } else if (type === 'iconSet') {
         result.push({ ...base, type: 'iconSet' });
@@ -1579,11 +1639,12 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): FilterMode
     if (!Number.isSafeInteger(relative) || relative < 0) continue;
     const absolute = range.startColumn + relative;
     const filters = children(child(column, 'filters'), 'filter').map((filter) => filter.attrs.val ?? '');
+    const filtersNode = child(column, 'filters');
     const custom = children(child(column, 'customFilters'), 'customFilter');
     criteria[absolute] = {
       column: absolute,
       ...(filters.length ? { selectedValues: filters } : {}),
-      ...(child(column, 'filters')?.attrs.blank !== undefined ? { excludeBlanks: !xmlBoolean(child(column, 'filters')!.attrs.blank) } : {}),
+      ...(filtersNode?.attrs.blank !== undefined ? { excludeBlanks: !xmlBoolean(filtersNode.attrs.blank) } : {}),
       ...(custom[0]?.attrs.operator ? { conditionOperator: custom[0].attrs.operator } : {}),
       ...(custom[0]?.attrs.val ? { conditionValue: custom[0].attrs.val } : {}),
       ...(custom[1]?.attrs.val ? { conditionValue2: custom[1].attrs.val } : {}),
@@ -1639,9 +1700,10 @@ function parsePrintDocument(root: XmlNode, unitId: string, sheetId: string): Non
   const pageSetup = child(root, 'pageSetup');
   const margins = child(root, 'pageMargins');
   const printOptions = child(root, 'printOptions');
+  const headerFooter = child(root, 'headerFooter');
   const rowBreaks = children(child(root, 'rowBreaks'), 'brk');
   const columnBreaks = children(child(root, 'colBreaks'), 'brk');
-  if (!pageSetup && !margins && !printOptions && !rowBreaks.length && !columnBreaks.length) return [];
+  if (!pageSetup && !margins && !printOptions && !headerFooter && !rowBreaks.length && !columnBreaks.length) return [];
   const paper = Number(pageSetup?.attrs.paperSize);
   return [{
     schema: 'PrintDocument', unitId, sheetId,
@@ -1654,6 +1716,8 @@ function parsePrintDocument(root: XmlNode, unitId: string, sheetId: string): Non
       ...(pageSetup?.attrs.fitToHeight !== undefined ? { fitToHeight: Number(pageSetup.attrs.fitToHeight) } : {}),
       printGridlines: xmlBoolean(printOptions?.attrs.gridLines ?? '0'), printHeadings: xmlBoolean(printOptions?.attrs.headings ?? '0'),
       centerHorizontally: xmlBoolean(printOptions?.attrs.horizontalCentered ?? '0'), centerVertically: xmlBoolean(printOptions?.attrs.verticalCentered ?? '0'),
+      ...(child(headerFooter, 'oddHeader') ? { headerText: textContent(child(headerFooter, 'oddHeader')) } : {}),
+      ...(child(headerFooter, 'oddFooter') ? { footerText: textContent(child(headerFooter, 'oddFooter')) } : {}),
     },
     printAreas: [],
     pageBreaks: [
@@ -1727,9 +1791,9 @@ function parseColumnWidths(root: XmlNode, maximumDigitWidthPx: number): Record<n
   return result;
 }
 
-function readCellValue(cell: XmlNode, sharedStrings: SharedStringRecord[]): SharedStringRecord & { value: string | number | boolean | null } {
+function readCellValue(cell: XmlNode, sharedStrings: SharedStringRecord[], themeColors: string[]): { value: string | number | boolean | null; richText?: RichTextRun[] } {
   const type = cell.attrs.t;
-  if (type === 'inlineStr') return parseRichTextContainer(child(cell, 'is') ?? cell);
+  if (type === 'inlineStr') return parseRichTextContainer(child(cell, 'is') ?? cell, themeColors);
   const raw = textContent(child(cell, 'v'));
   if (raw === '') return { value: null };
   if (type === 's') return sharedStrings[Number(raw)] ?? { value: '' };
@@ -1770,14 +1834,14 @@ function readRelationships(files: Record<string, Uint8Array>): Record<string, Xl
   return result;
 }
 
-function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Record<string, XlsxRelationship[]>): Record<string, string> {
+function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Record<string, XlsxRelationship[]>, workbookPart: string): Record<string, string> {
   const map: Record<string, string> = {};
-  const workbook = firstElement(parseXml(strFromU8(files['xl/workbook.xml']!)), 'workbook');
-  const rels = relationships['xl/workbook.xml'] ?? [];
+  const workbook = firstElement(parseXml(strFromU8(files[workbookPart]!)), 'workbook');
+  const rels = relationships[workbookPart] ?? [];
   children(child(workbook, 'sheets'), 'sheet').forEach((node, index) => {
     const id = `sheet-${node.attrs.sheetId ?? index + 1}`;
     const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id));
-    map[id] = relation ? resolveTarget('xl/workbook.xml', relation.target) : `xl/worksheets/sheet${index + 1}.xml`;
+    map[id] = relation ? resolveTarget(workbookPart, relation.target) : resolveTarget(workbookPart, `worksheets/sheet${index + 1}.xml`);
   });
   return map;
 }
@@ -1854,9 +1918,9 @@ function isRelationshipKind(type: string, kind: string): boolean {
   return relationshipKind(type).toLocaleLowerCase() === kind.toLocaleLowerCase();
 }
 
-function resolveWorkbookRelatedPart(relationships: XlsxRelationship[], kind: string, fallback: string): string {
+function resolveWorkbookRelatedPart(workbookPart: string, relationships: XlsxRelationship[], kind: string, fallback: string): string {
   const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, kind));
-  return relation ? resolveTarget('xl/workbook.xml', relation.target) : fallback;
+  return relation ? resolveTarget(workbookPart, relation.target) : fallback;
 }
 
 function requireSheetRange(value: string | undefined, descriptor: SheetDescriptor, feature: string): RangeRef {

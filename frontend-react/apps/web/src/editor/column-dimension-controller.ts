@@ -1,4 +1,4 @@
-import { DEFAULT_EXCEL_MAX_DIGIT_WIDTH_PX, MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth } from '@react-sheets/exchange-xlsx';
+import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth } from '@react-sheets/exchange-xlsx';
 import { DEFAULT_RENDER_THEME, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
@@ -17,8 +17,9 @@ export class ColumnDimensionController {
   ) {}
 
   previewPixels(widthPx: number): ColumnWidthPreview {
-    const bounded = Math.max(0, Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH), widthPx));
-    return { widthPx: Math.round(bounded), excelWidth: pixelsToExcelColumnWidth(bounded, DEFAULT_EXCEL_MAX_DIGIT_WIDTH_PX) };
+    const maximumDigitWidthPx = this.getSheet().maximumDigitWidthPx;
+    const bounded = Math.max(0, Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, maximumDigitWidthPx), widthPx));
+    return { widthPx: Math.round(bounded), excelWidth: pixelsToExcelColumnWidth(bounded, maximumDigitWidthPx) };
   }
 
   selectedColumns(includeOrdinaryCellRanges = true): number[] {
@@ -50,11 +51,11 @@ export class ColumnDimensionController {
       return;
     }
     this.setHidden(columns, false);
-    this.setPixels(columns, excelColumnWidthToPixels(excelWidth));
+    this.setPixels(columns, excelColumnWidthToPixels(excelWidth, this.getSheet().maximumDigitWidthPx));
   }
 
   setPixels(columns: readonly number[], widthPx: number): void {
-    const maxPx = excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH);
+    const maxPx = excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, this.getSheet().maximumDigitWidthPx);
     this.session.resizeColumns(columns, Math.max(1, Math.min(maxPx, Math.round(widthPx))));
   }
 
@@ -64,7 +65,7 @@ export class ColumnDimensionController {
 
   setDefaultExcelWidth(excelWidth: number): void {
     if (!Number.isFinite(excelWidth) || excelWidth <= 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw new Error('Default Excel column width must be between 0 and 255');
-    this.session.setDefaultColumnWidth(excelColumnWidthToPixels(excelWidth));
+    this.session.setDefaultColumnWidth(excelColumnWidthToPixels(excelWidth, this.getSheet().maximumDigitWidthPx));
   }
 
   cancelAutoFit(): void {
@@ -127,7 +128,7 @@ export class ColumnDimensionController {
       }
       if ((row - sheet.usedRange.startRow) % 1_000 === 0) await yieldToBrowser();
     }
-    return [...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH), Math.max(8, widthPx)) }));
+    return [...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, sheet.maximumDigitWidthPx), Math.max(8, widthPx)) }));
   }
 
   private async measureInWorker(sheet: CanvasSheetSnapshot, columns: number[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
@@ -156,7 +157,7 @@ export class ColumnDimensionController {
         await yieldToBrowser();
       }
       worker.postMessage({ kind: 'finish', taskId });
-      return (await result).map((entry) => ({ ...entry, widthPx: Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH), Math.max(8, entry.widthPx)) }));
+      return (await result).map((entry) => ({ ...entry, widthPx: Math.min(excelColumnWidthToPixels(MAX_EXCEL_COLUMN_WIDTH, sheet.maximumDigitWidthPx), Math.max(8, entry.widthPx)) }));
     } finally {
       worker.terminate();
     }

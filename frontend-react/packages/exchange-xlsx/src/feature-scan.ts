@@ -63,6 +63,19 @@ export function scanFormulaPreserveIssues(snapshot: WorkbookSnapshot): Compatibi
       const row = sheet.cells[rowKey] ?? {};
       for (const colKey of Object.keys(row)) {
         const formula = row[colKey]?.formula;
+        const metadata = row[colKey]?.formulaMetadata;
+        if (metadata?.preservedOnly) {
+          const key = `${sheet.id}:${rowKey}:${colKey}:preserved-formula`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            issues.push({
+              level: 'C', severity: 'warning', feature: metadata.kind === 'dataTable' ? 'data-table-formula' : 'formulas',
+              location: `${sheet.name}!${colKey}${Number(rowKey) + 1}`,
+              message: `Formula is preserved-only: ${metadata.reason ?? 'unsupported formula syntax'}`,
+              preserved: true, status: 'preserved-only', reason: metadata.reason ?? 'unsupported formula syntax',
+            });
+          }
+        }
         if (!formula) continue;
         for (const rule of PRESERVE_FORMULA_PATTERNS) {
           if (!rule.pattern.test(formula) || seen.has(rule.feature)) continue;

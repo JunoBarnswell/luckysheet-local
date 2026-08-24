@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://react-sheets.local/contracts/workbook-snapshot.schema.json",
+  "title": "WorkbookSnapshot",
+  "type": "object",
+  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataSources", "sheets"],
+  "properties": {
+    "schema": { "const": "WorkbookSnapshot" },
+    "version": { "const": 3 },
+    "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "dimensionMetrics": {
+      "type": "object",
+      "required": ["normalFontFamily", "normalFontSizePx", "maximumDigitWidthPx"],
+      "properties": {
+        "normalFontFamily": { "type": "string", "minLength": 1 },
+        "normalFontSizePx": { "type": "number", "exclusiveMinimum": 0 },
+        "maximumDigitWidthPx": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "dataSources": { "type": "array" },
+    "sheets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/worksheet" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "pane": {
+      "oneOf": [
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "none" } }, "additionalProperties": false },
+        {
+          "type": "object",
+          "required": ["kind", "xSplit", "ySplit", "startRow", "startColumn"],
+          "properties": {
+            "kind": { "enum": ["frozen", "split"] },
+            "xSplit": { "type": "number", "minimum": 0 },
+            "ySplit": { "type": "number", "minimum": 0 },
+            "startRow": { "type": "integer", "minimum": 0 },
+            "startColumn": { "type": "integer", "minimum": 0 },
+            "activePane": { "enum": ["topLeft", "topRight", "bottomLeft", "bottomRight"] },
+            "state": { "enum": ["frozen", "frozenSplit"] }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "positiveSizeMap": {
+      "type": "object",
+      "patternProperties": { "^(0|[1-9][0-9]*)$": { "type": "number", "exclusiveMinimum": 0 } },
+      "additionalProperties": false
+    },
+    "worksheet": {
+      "type": "object",
+      "required": ["id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "defaultRowHeightPx", "defaultColumnWidthPx"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "rowCount": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "columnCount": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "cells": { "type": "object" },
+        "merges": { "type": "array" },
+        "pane": { "$ref": "#/$defs/pane" },
+        "pivots": { "type": "array" },
+        "sparklines": { "type": "array" },
+        "drawings": { "type": "array" },
+        "drawingPayloads": { "type": "object" },
+        "defaultRowHeightPx": { "type": "number", "exclusiveMinimum": 0 },
+        "defaultColumnWidthPx": { "type": "number", "exclusiveMinimum": 0 },
+        "rowHeightsPx": { "$ref": "#/$defs/positiveSizeMap" },
+        "columnWidthsPx": { "$ref": "#/$defs/positiveSizeMap" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

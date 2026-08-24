@@ -52,6 +52,7 @@ HELP.md
 
 # Local temp / cache
 .univer-temp/
+backend/data/
 
 # Univer competitive analysis (local clone + npm mirror)
 vendor/univer/

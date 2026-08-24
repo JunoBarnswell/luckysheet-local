@@ -18,7 +18,7 @@ import type {
   DefinedNameScope,
 } from './domain';
 import { normalizeDefinedNameModel } from './domain';
-import type { WorkbookSnapshot } from './snapshot';
+import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
 import {
   normalizePrintDocumentSnapshot,
   normalizeQueryDefinitionSnapshot,
@@ -110,6 +110,7 @@ export interface RichTextRun {
 export interface FormulaMetadata {
   kind: 'normal' | 'shared' | 'array' | 'dataTable';
   sharedIndex?: number;
+  sharedMaster?: boolean;
   range?: string;
   preservedOnly?: boolean;
   reason?: string;
@@ -149,6 +150,14 @@ export type WorksheetPane =
       startColumn: Column;
       activePane?: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
     };
+
+export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
+  if (pane.kind === 'none') return { kind: 'none' };
+  const activePane = pane.activePane ?? (pane.xSplit > 0 && pane.ySplit > 0 ? 'bottomRight' : pane.xSplit > 0 ? 'topRight' : pane.ySplit > 0 ? 'bottomLeft' : 'topLeft');
+  return pane.kind === 'frozen'
+    ? { ...pane, activePane, state: pane.state ?? 'frozen' }
+    : { ...pane, activePane };
+}
 
 export type {
   SelectionSnapshot,
@@ -205,6 +214,7 @@ export {
   createWorkbookSnapshot,
   migrateStoredWorkbookSnapshot,
   type WorkbookSnapshot,
+  type WorkbookDimensionMetrics,
 } from './snapshot';
 export {
   normalizePrintDocumentSnapshot,
@@ -532,7 +542,7 @@ export class WorksheetModel {
     copy.zoom = this.zoom;
     copy.hidden = this.hidden;
     copy.tabColor = this.tabColor;
-    copy.pane = { ...this.pane };
+    copy.pane = normalizeWorksheetPane(this.pane);
     return copy;
   }
 
@@ -623,6 +633,7 @@ export class WorkbookModel {
   sheetOrder: SheetId[] = [];
   /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
   readonly definedNameModels: DefinedNameModel[] = [];
+  dimensionMetrics: WorkbookDimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
 
   /**
    * Formula engines still accept a workbook-scope string map. This is a
@@ -892,6 +903,7 @@ export class WorkbookModel {
       version: 3,
       unitId: this.unitId,
       name: this.name,
+      dimensionMetrics: structuredClone(this.dimensionMetrics),
       // Keep the legacy formula-map field as a derived wire projection for
       // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
@@ -908,7 +920,7 @@ export class WorkbookModel {
         cells: sheet.cells.toJSON(),
         dataRegions: structuredClone(sheet.dataRegions),
         merges: structuredClone(sheet.merges),
-        pane: { ...sheet.pane },
+        pane: normalizeWorksheetPane(sheet.pane),
         pivots: structuredClone(sheet.pivots),
         sparklines: structuredClone(sheet.sparklines),
         conditionalFormats: structuredClone(sheet.conditionalFormats),
@@ -951,6 +963,7 @@ export class WorkbookModel {
     if (snapshot.version !== 3) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
+    workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
     workbook.sheets.clear();
     // `definedNameModels` is canonical. The optional map is accepted only as
     // a boundary projection for older snapshots and is immediately folded
@@ -977,7 +990,7 @@ export class WorkbookModel {
       });
       if (input.dataRegions) sheet.dataRegions.push(...structuredClone(input.dataRegions));
       sheet.merges.push(...structuredClone(input.merges));
-      sheet.pane = { ...input.pane };
+      sheet.pane = normalizeWorksheetPane(input.pane);
       sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
       sheet.sparklines.push(...structuredClone(input.sparklines));
       if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));

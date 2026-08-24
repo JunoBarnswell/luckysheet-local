@@ -33,6 +33,8 @@ export interface CellPatch {
   styleId?: CellPatchField<NonNullable<CellData['styleId']>>;
   style?: CellPatchField<CellStyle>;
   numberFormat?: CellPatchField<NonNullable<CellData['numberFormat']>>;
+  richText?: CellPatchField<NonNullable<CellData['richText']>>;
+  formulaMetadata?: CellPatchField<NonNullable<CellData['formulaMetadata']>>;
   formulaValue?: CellPatchField<NonNullable<CellData['formulaValue']>>;
   note?: CellPatchField<NonNullable<CellData['note']>>;
   comment?: CellPatchField<NonNullable<CellData['comment']>>;

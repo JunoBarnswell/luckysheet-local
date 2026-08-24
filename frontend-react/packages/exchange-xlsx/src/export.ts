@@ -6,6 +6,7 @@ import { createCompatibilityReport, refreshCompatibilitySummary } from './compat
 import { verifyXlsxSourceArtifact } from './source-artifact';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import type { XlsxExportOptions, XlsxExportResult, XlsxSourceArtifact } from './types';
+import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
 
 export interface XlsxExportRequest {
   snapshot: WorkbookSnapshot;
@@ -29,7 +30,9 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   const emittedPackage = loadXlsxPackage(buffer).package;
   const snapshotFeatures = scanSnapshotFeatures(request.snapshot);
   const packageFeatures = detectPackageFeatures(emittedPackage);
-  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures])];
+  const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
+  const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
+  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourceWorksheetDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(request.snapshot, emittedPackage.nativePivotGraph);
   const preservedFeatures = sourcePackage ? new Set(Object.keys(sourcePackage.opaqueParts).flatMap((name) => {
     const lower = name.toLowerCase();
@@ -45,7 +48,8 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   // Only parts that survived the writer can be preserved-only. The source
   // package is not authoritative after native graph synchronization.
   for (const feature of [...preservedFeatures]) if (!packageFeatures.includes(feature)) preservedFeatures.delete(feature);
-  const editableFeatures = new Set(['cells', 'formulas', 'styles', 'merges', 'freeze', 'defined-names', 'hyperlinks', 'tables']);
+  const editableFeatures = new Set(detectedFeatures.filter((feature) => capabilityFor(feature).read !== 'none' && capabilityFor(feature).write !== 'none'));
+  editableFeatures.add('defined-names');
   if (nativeStatus.pivot) editableFeatures.add('pivot');
   if (nativeStatus.slicer) editableFeatures.add('slicer');
   if (nativeStatus.timeline) editableFeatures.add('timeline');
@@ -56,7 +60,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
     importLevel: request.options.compatibilityTarget,
     exportLevel: request.options.compatibilityTarget,
     dateSystem,
-    detectedFeatures,
+    detectedFeatures: [...detectedFeatures, ...emittedWorksheetDetections, ...sourceWorksheetDetections],
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures,

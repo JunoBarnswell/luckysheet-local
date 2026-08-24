@@ -185,6 +185,7 @@ export interface NativePivotPackageUpdate {
  */
 export interface XlsxPackage {
   schema: 'XlsxPackage';
+  workbookPart: string;
   parts: Record<string, Uint8Array>;
   opaqueParts: Record<string, Uint8Array>;
   relationships: Record<string, XlsxRelationship[]>;

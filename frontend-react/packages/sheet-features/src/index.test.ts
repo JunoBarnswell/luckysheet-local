@@ -397,14 +397,14 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
     range: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 1 },
     anchor: { row: 2, column: 0 },
   });
-  sheet.freeze = { xSplit: 0, ySplit: 1, startRow: 0, startColumn: 0 };
+  sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 1, startRow: 0, startColumn: 0 };
 
   runtime.execute('sheet.rows.insert', { sheetId: sheet.id, at: 1, count: 2 });
   assert.equal(sheet.rowCount, 1002);
   assert.equal(sheet.cells.get(4, 0)?.value, 42);
   assert.equal(sheet.cells.get(4, 0)?.formula, '=A1+1');
   assert.equal(sheet.merges[0]?.range.startRow, 4);
-  assert.equal(sheet.freeze.ySplit, 3);
+  assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.ySplit : 0, 3);
 
   runtime.undo();
   assert.equal(sheet.cells.get(2, 0)?.value, 42);

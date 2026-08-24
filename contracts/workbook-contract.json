@@ -17,18 +17,18 @@
     "INTERNAL_ERROR"
   ],
   "mutations": {
-    "automation.recording.changed": { "durability": "transient", "remote": false },
-    "pivot.chart.create": { "durability": "transient", "remote": false, "replacement": "drawing.add" },
-    "sheet.add": { "durability": "remote", "remote": true },
-    "sheet.remove": { "durability": "remote", "remote": true },
-    "sheet.rename": { "durability": "remote", "remote": true },
-    "sheet.duplicated": { "durability": "remote", "remote": true },
-    "sheet.restore": { "durability": "remote", "remote": true },
-    "hyperlink.set": { "durability": "remote", "remote": true },
-    "hyperlink.remove": { "durability": "remote", "remote": true },
-    "column.defaultWidth.resize": { "durability": "remote", "remote": true },
-    "columns.visibility": { "durability": "remote", "remote": true },
-    "xlsx.layout.repaired": { "durability": "remote", "remote": true },
-    "query.load.workbook-table": { "durability": "local", "remote": false }
+    "automation.recording.changed": { "durability": "transient", "remote": false, "schema": "AutomationRecordingChanged", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false },
+    "pivot.chart.create": { "durability": "transient", "remote": false, "schema": "PivotChartCreate", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false, "replacement": "drawing.add" },
+    "sheet.add": { "durability": "remote", "remote": true, "schema": "SheetAdd", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "sheet.remove": { "durability": "remote", "remote": true, "schema": "SheetRemove", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "sheet.rename": { "durability": "remote", "remote": true, "schema": "SheetRename", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "sheet.duplicated": { "durability": "remote", "remote": true, "schema": "SheetDuplicate", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "sheet.restore": { "durability": "remote", "remote": true, "schema": "SheetRestore", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "hyperlink.set": { "durability": "remote", "remote": true, "schema": "HyperlinkSet", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
+    "hyperlink.remove": { "durability": "remote", "remote": true, "schema": "HyperlinkRemove", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
+    "column.defaultWidth.resize": { "durability": "remote", "remote": true, "schema": "DefaultColumnWidthResizePx", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "columns.visibility": { "durability": "remote", "remote": true, "schema": "ColumnsVisibility", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
+    "xlsx.layout.repaired": { "durability": "remote", "remote": true, "schema": "XlsxLayoutRepair", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
+    "query.load.workbook-table": { "durability": "local", "remote": false, "schema": "QueryLoadWorkbookTable", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false }
   }
 }

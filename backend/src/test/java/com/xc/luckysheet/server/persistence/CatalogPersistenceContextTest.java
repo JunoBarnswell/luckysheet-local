@@ -47,7 +47,7 @@ class CatalogPersistenceContextTest {
     @Test
     void catalogCreatesPersonalSpaceAndReturnsOneActorEnrichedSummary() throws Exception {
         var snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":2,"unitId":"book-context","name":"Context","dataSources":[],"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{}}]}
+                {"schema":"WorkbookSnapshot","version":3,"unitId":"book-context","name":"Context","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"dataSources":[],"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{},"merges":[],"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{}}]}
                 """);
         catalog.create(new CreateWorkbookRequest("book-context", "Context", snapshot), "actor-context");
         var summaries = catalog.list("actor-context", "recent", null, null, null, 0, 50);

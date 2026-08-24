@@ -21,6 +21,7 @@ export interface WorkbookSnapshot {
   version: 3;
   unitId: UnitId;
   name: string;
+  dimensionMetrics: WorkbookDimensionMetrics;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
   tables?: WorkbookTableModel[];
@@ -29,6 +30,12 @@ export interface WorkbookSnapshot {
   printDocuments?: PrintDocumentSnapshot[];
   queryDefinitions?: QueryDefinitionSnapshot[];
   sheets: SheetSnapshot[];
+}
+
+export interface WorkbookDimensionMetrics {
+  normalFontFamily: string;
+  normalFontSizePx: number;
+  maximumDigitWidthPx: number;
 }
 
 export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 3 as const;
@@ -45,6 +52,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   if (input.version !== 2 || !Array.isArray(input.sheets)) throw new Error(`Unsupported workbook snapshot version: ${String(input.version)}`);
   input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+  input.dimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
   for (const sheet of input.sheets as Array<Record<string, any>>) {
     sheet.defaultRowHeightPx = finiteStoredSize(sheet.defaultRowHeight, 28);
     sheet.defaultColumnWidthPx = finiteStoredSize(sheet.defaultColumnWidth, 110);
@@ -102,6 +110,9 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     throw new Error(`Unsupported workbook snapshot version: ${String(snapshot.version)}`);
   }
   if (!Array.isArray(snapshot.dataSources)) throw new Error('Workbook snapshot dataSources must be an array');
+  if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
+    || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
+    || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
   return structuredClone(snapshot);
 }
 

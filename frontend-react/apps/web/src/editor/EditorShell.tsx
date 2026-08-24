@@ -299,6 +299,7 @@ export function EditorShell({
         open={columnWidthDialog !== null}
         columnCount={columnWidthDialog?.columns.length ?? 0}
         defaultMode={columnWidthDialog?.defaultMode}
+        maximumDigitWidthPx={state.selectedSheet.maximumDigitWidthPx}
         initialWidthPx={columnWidthDialog?.defaultMode ? state.selectedSheet.defaultColumnWidthPx : state.selectedSheet.columnWidthsPx[columnWidthDialog?.columns[0] ?? -1] ?? state.selectedSheet.defaultColumnWidthPx}
         onClose={() => setColumnWidthDialog(null)}
         onApply={(excelWidth) => {

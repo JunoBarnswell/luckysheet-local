@@ -7,18 +7,19 @@ export interface ColumnWidthDialogProps {
   columnCount: number;
   initialWidthPx: number;
   defaultMode?: boolean;
+  maximumDigitWidthPx: number;
   onClose: () => void;
   onApply: (excelWidth: number) => void;
 }
 
-export function ColumnWidthDialog({ open, columnCount, initialWidthPx, defaultMode = false, onClose, onApply }: ColumnWidthDialogProps) {
+export function ColumnWidthDialog({ open, columnCount, initialWidthPx, defaultMode = false, maximumDigitWidthPx, onClose, onApply }: ColumnWidthDialogProps) {
   const [value, setValue] = useState('8.71');
   useEffect(() => {
-    if (open) setValue(pixelsToExcelColumnWidth(initialWidthPx).toFixed(2));
-  }, [initialWidthPx, open]);
+    if (open) setValue(pixelsToExcelColumnWidth(initialWidthPx, maximumDigitWidthPx).toFixed(2));
+  }, [initialWidthPx, maximumDigitWidthPx, open]);
   const numeric = Number(value);
   const valid = Number.isFinite(numeric) && numeric >= (defaultMode ? 1 / 256 : 0) && numeric <= MAX_EXCEL_COLUMN_WIDTH;
-  const pixels = valid ? excelColumnWidthToPixels(numeric) : 0;
+  const pixels = valid ? excelColumnWidthToPixels(numeric, maximumDigitWidthPx) : 0;
   return (
     <Dialog
       open={open}

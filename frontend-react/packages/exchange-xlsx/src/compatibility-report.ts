@@ -3,15 +3,16 @@ import type { CompatibilityIssue, CompatibilityLevel, CompatibilityReport, DateS
 const LEVEL_A_FEATURES = new Set([
   'cells', 'formulas', 'styles', 'merges', 'freeze', 'defined-names',
   'hyperlinks', 'comments', 'filters', 'validation', 'conditional-format', 'tables', 'images',
+  'rich-text', 'split', 'outline',
 ]);
 
 const LEVEL_B_FEATURES = new Set([
-  'charts', 'sparklines', 'pivot', 'slicer', 'timeline', 'print-setup', 'theme',
+  'charts', 'sparklines', 'pivot', 'slicer', 'timeline', 'print-setup', 'theme', 'protection', 'extended-validation', 'extended-conditional-format',
 ]);
 
 const LEVEL_C_FEATURES = new Set([
   'vba', 'unknown-extension', 'external-connection', 'macro', 'external-workbook',
-  'cube', 'indirect', 'getpivotdata',
+  'cube', 'indirect', 'getpivotdata', 'unknown-worksheet-node',
 ]);
 
 export function classifyFeature(feature: string): CompatibilityLevel {

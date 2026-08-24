@@ -26,12 +26,15 @@ public class WorkbookImportController {
     public WorkbookImportResponse importWorkbook(
             @RequestPart("file") MultipartFile file,
             @RequestPart("snapshot") String snapshot,
+            @RequestParam int xlsxCodecVersion,
+            @RequestParam String detectedFeatures,
+            @RequestParam String capabilityReport,
             @RequestParam(required = false) @Size(max = 500) String name,
             @RequestParam(required = false) String spaceId,
             @RequestParam(required = false) String folderId,
             Authentication authentication
     ) {
         ActorIdentity.requireRegisteredActor(authentication);
-        return catalog.importXlsx(file, name, spaceId, folderId, snapshot, ActorIdentity.subject(authentication));
+        return catalog.importXlsx(file, name, spaceId, folderId, snapshot, xlsxCodecVersion, detectedFeatures, capabilityReport, ActorIdentity.subject(authentication));
     }
 }

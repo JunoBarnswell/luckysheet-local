@@ -7,20 +7,23 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-08-24";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 2;
+    public static final int SNAPSHOT_VERSION = 3;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
-        Map.entry("automation.recording.changed", new MutationCapability("transient", false)),
-        Map.entry("pivot.chart.create", new MutationCapability("transient", false)),
-        Map.entry("sheet.add", new MutationCapability("remote", true)),
-        Map.entry("sheet.remove", new MutationCapability("remote", true)),
-        Map.entry("sheet.rename", new MutationCapability("remote", true)),
-        Map.entry("sheet.duplicated", new MutationCapability("remote", true)),
-        Map.entry("sheet.restore", new MutationCapability("remote", true)),
-        Map.entry("hyperlink.set", new MutationCapability("remote", true)),
-        Map.entry("hyperlink.remove", new MutationCapability("remote", true)),
-        Map.entry("query.load.workbook-table", new MutationCapability("local", false))
+        Map.entry("automation.recording.changed", new MutationCapability("transient", false, "AutomationRecordingChanged", "editor", "none", false)),
+        Map.entry("pivot.chart.create", new MutationCapability("transient", false, "PivotChartCreate", "editor", "none", false)),
+        Map.entry("sheet.add", new MutationCapability("remote", true, "SheetAdd", "editor", "exact", true)),
+        Map.entry("sheet.remove", new MutationCapability("remote", true, "SheetRemove", "editor", "exact", true)),
+        Map.entry("sheet.rename", new MutationCapability("remote", true, "SheetRename", "editor", "exact", true)),
+        Map.entry("sheet.duplicated", new MutationCapability("remote", true, "SheetDuplicate", "editor", "exact", true)),
+        Map.entry("sheet.restore", new MutationCapability("remote", true, "SheetRestore", "editor", "exact", true)),
+        Map.entry("hyperlink.set", new MutationCapability("remote", true, "HyperlinkSet", "editor", "range", true)),
+        Map.entry("hyperlink.remove", new MutationCapability("remote", true, "HyperlinkRemove", "editor", "range", true)),
+        Map.entry("column.defaultWidth.resize", new MutationCapability("remote", true, "DefaultColumnWidthResizePx", "editor", "exact", true)),
+        Map.entry("columns.visibility", new MutationCapability("remote", true, "ColumnsVisibility", "editor", "range", true)),
+        Map.entry("xlsx.layout.repaired", new MutationCapability("remote", true, "XlsxLayoutRepair", "editor", "exact", true)),
+        Map.entry("query.load.workbook-table", new MutationCapability("local", false, "QueryLoadWorkbookTable", "editor", "none", false))
     );
 
     private GeneratedWorkbookContract() {}
@@ -29,5 +32,5 @@ public final class GeneratedWorkbookContract {
         return MUTATIONS.get(id);
     }
 
-    public record MutationCapability(String durability, boolean remote) {}
+    public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean javaReducer) {}
 }
