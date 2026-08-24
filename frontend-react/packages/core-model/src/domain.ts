@@ -1,4 +1,4 @@
-import type { CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
+import type { AutoFilterModel, CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
 import type { PivotMemberKey } from './pivot';
 
 /**
@@ -128,6 +128,7 @@ export interface SheetTableModel {
   showBandedRows: boolean;
   showBandedColumns: boolean;
   showFilterButton: boolean;
+  autoFilter?: AutoFilterModel;
   columns: SheetTableColumn[];
   styleName?: string;
 }

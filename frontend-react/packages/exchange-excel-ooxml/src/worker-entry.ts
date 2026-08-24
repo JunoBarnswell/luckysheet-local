@@ -27,8 +27,7 @@ export async function consumeXlsxWorkerTask(payload: unknown): Promise<XlsxWorke
         snapshot: payload.payload.snapshot,
         fileName: payload.payload.fileName,
         options: payload.payload.options,
-        ...(payload.payload.package ? { package: payload.payload.package } : {}),
-        ...(payload.payload.sourceArtifact ? { sourceArtifact: payload.payload.sourceArtifact } : {}),
+        ...(payload.payload.nativePackage ? { nativePackage: payload.payload.nativePackage } : {}),
       });
     return {
       protocol: XLSX_WORKER_PROTOCOL,
@@ -77,7 +76,7 @@ export function installXlsxWorkerEntry(scope: XlsxWorkerScope): () => void {
       if (result.status === 'completed') {
         const completed = result.result;
         if ('buffer' in completed) transfers.push(completed.buffer);
-        else transfers.push(completed.sourceArtifact.buffer);
+        else transfers.push(completed.nativePackage.sourceBytes);
       }
       scope.postMessage(result, transfers);
     });

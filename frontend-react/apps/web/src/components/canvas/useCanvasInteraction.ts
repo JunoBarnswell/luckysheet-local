@@ -500,7 +500,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
             return;
           }
         }
-        if (sheet.filterColumns.includes(headerHit.index)) setFilterPopover({ column: headerHit.index, x: event.clientX, y: event.clientY });
+        if (sheet.filterRangeColumns.includes(headerHit.index)) setFilterPopover({ column: headerHit.index, x: event.clientX, y: event.clientY });
       }
       dragRef.current = {
         kind: "select",
@@ -525,7 +525,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     if (primaryRange && !activePivotContextHit) {
       const rect = skeleton.getRangeRect({ startRow: primaryRange.endRow, endRow: primaryRange.endRow, startColumn: primaryRange.endColumn, endColumn: primaryRange.endColumn });
       if (rect) {
-        const screen = engine.contentToMainScreen({ x: rect.x + rect.width, y: rect.y + rect.height }, { row: primaryRange.endRow, column: primaryRange.endColumn });
+        const screen = engine.contentToScreen({ x: rect.x + rect.width, y: rect.y + rect.height }, { row: primaryRange.endRow, column: primaryRange.endColumn });
         if (Math.abs(local.x - screen.x) <= 5 && Math.abs(local.y - screen.y) <= 5) {
           dragRef.current = {
             kind: "fill",

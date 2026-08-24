@@ -1,5 +1,5 @@
 import React, { createContext, useContext } from 'react';
-import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-xlsx';
+import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import {
   Box,
   Button,

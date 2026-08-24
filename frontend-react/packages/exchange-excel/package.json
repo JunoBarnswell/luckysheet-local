@@ -1,11 +1,10 @@
 {
-  "name": "@react-sheets/exchange-xlsx",
+  "name": "@react-sheets/exchange-excel",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
     "@react-sheets/core-model": "file:../core-model",
-    "@react-sheets/formula-engine": "file:../formula-engine",
-    "fflate": "^0.8.2"
+    "@react-sheets/exchange-excel-ooxml": "file:../exchange-excel-ooxml"
   }
 }

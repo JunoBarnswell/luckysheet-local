@@ -39,7 +39,7 @@ function shouldDrawRect(rects: readonly Rect[] | undefined, rect: Rect): boolean
 
 export function drawGridLayer(options: PaneDrawOptions): void {
   const { context, skeleton, visibleRange, theme, pane, drawRects } = options;
-  const background = { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height };
+  const background = { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height };
   context.fillStyle = theme.canvasBackground;
   context.fillRect(background.x, background.y, background.width, background.height);
   if (!visibleRange) return;
@@ -479,7 +479,7 @@ function drawWrapped(
 
 export function drawExtensionsLayer(options: ExtensionsDrawOptions): void {
   const { context, floatables, pane } = options;
-  const paneContent = { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height };
+  const paneContent = { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height };
   for (const drawable of floatables) {
     const b = drawable.bounds;
     const intersects = b.x < paneContent.x + paneContent.width

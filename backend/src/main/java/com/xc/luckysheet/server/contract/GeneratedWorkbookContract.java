@@ -7,7 +7,7 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-08-24";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 3;
+    public static final int SNAPSHOT_VERSION = 4;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR");
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
@@ -22,7 +22,6 @@ public final class GeneratedWorkbookContract {
         Map.entry("hyperlink.remove", new MutationCapability("remote", true, "HyperlinkRemove", "editor", "range", true)),
         Map.entry("column.defaultWidth.resize", new MutationCapability("remote", true, "DefaultColumnWidthResizePx", "editor", "exact", true)),
         Map.entry("columns.visibility", new MutationCapability("remote", true, "ColumnsVisibility", "editor", "range", true)),
-        Map.entry("xlsx.layout.repaired", new MutationCapability("remote", true, "XlsxLayoutRepair", "editor", "exact", true)),
         Map.entry("query.load.workbook-table", new MutationCapability("local", false, "QueryLoadWorkbookTable", "editor", "none", false))
     );
 

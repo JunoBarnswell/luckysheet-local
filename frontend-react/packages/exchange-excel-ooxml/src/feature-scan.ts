@@ -40,7 +40,7 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
     if ((sheet.conditionalFormats?.length ?? 0) > 0) features.add('conditional-format');
     if ((sheet.dataValidations?.length ?? 0) > 0) features.add('validation');
     if ((sheet.sheetTables?.length ?? 0) > 0) features.add('tables');
-    if (sheet.filter) features.add('filters');
+    if (sheet.autoFilter) features.add('filters');
     if (sheet.protectionRules?.length) features.add('protection');
     if ((sheet.commentThreads?.length ?? 0) > 0) features.add('comments');
     if (sheet.notes?.length) features.add('comments');

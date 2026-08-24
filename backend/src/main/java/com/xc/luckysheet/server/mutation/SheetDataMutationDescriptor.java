@@ -19,7 +19,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             "sheet.reordered",
             "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
             "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
-            "filter.set", "filter.remove",
+            "autoFilter.set", "autoFilter.remove",
             "cf.add", "cf.remove", "cf.clear",
             "dv.add", "dv.remove", "banded.set", "outline.set",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update"
@@ -39,8 +39,8 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "row.hidden", "row.unhidden" -> List.of(SnapshotMutationSupport.rowRange(root, mutation.sheetId(), renameIndex(params, "index", "row")));
             case "column.hidden", "column.unhidden" -> List.of(SnapshotMutationSupport.columnRange(root, mutation.sheetId(), renameIndex(params, "index", "column")));
             case "rows.unhidden.all", "rows.hidden.restore", "columns.unhidden.all", "columns.hidden.restore" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
-            case "filter.set" -> List.of(filterRange(root, mutation.sheetId(), params));
-            case "filter.remove" -> existingFilterRange(root, mutation.sheetId());
+            case "autoFilter.set" -> List.of(filterRange(root, mutation.sheetId(), params));
+            case "autoFilter.remove" -> existingFilterRange(root, mutation.sheetId());
             case "cf.add" -> ruleRanges(root, mutation.sheetId(), SnapshotMutationSupport.requiredObject(params, "rule"));
             case "cf.remove" -> existingRuleRanges(root, mutation.sheetId(), "conditionalFormats", SnapshotMutationSupport.text(params, "ruleId"));
             case "cf.clear" -> allRuleRanges(root, mutation.sheetId(), "conditionalFormats");
@@ -76,8 +76,8 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "column.unhidden" -> setHidden(root, sheet, mutation.sheetId(), params, "hiddenColumns", "index", false, false);
             case "columns.unhidden.all" -> sheet.set("hiddenColumns", JsonNodeFactory.instance.arrayNode());
             case "columns.hidden.restore" -> restoreHidden(root, sheet, mutation.sheetId(), params, "hiddenColumns", false);
-            case "filter.set" -> sheet.set("filter", filter(root, mutation.sheetId(), params).deepCopy());
-            case "filter.remove" -> sheet.remove("filter");
+            case "autoFilter.set" -> sheet.set("autoFilter", filter(root, mutation.sheetId(), params).deepCopy());
+            case "autoFilter.remove" -> sheet.remove("autoFilter");
             case "cf.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
             case "cf.remove" -> removeRule(sheet, params, "conditionalFormats");
             case "cf.clear" -> sheet.set("conditionalFormats", JsonNodeFactory.instance.arrayNode());
@@ -133,12 +133,12 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     }
 
     private ObjectNode filter(ObjectNode root, String sheetId, ObjectNode params) {
-        ObjectNode filter = SnapshotMutationSupport.requiredObject(params, "filter");
+        ObjectNode filter = SnapshotMutationSupport.requiredObject(params, "autoFilter");
         SnapshotMutationSupport.requireEntitySheet(filter, sheetId);
         RangeRef range = SnapshotMutationSupport.range(root, filter.get("range"));
         SnapshotMutationSupport.requireSheet(range, sheetId);
-        JsonNode criteria = filter.get("criteria");
-        if (criteria == null || !criteria.isObject()) throw ServiceException.validation("Filter criteria must be an object");
+        JsonNode columns = filter.get("columns");
+        if (columns == null || !columns.isObject()) throw ServiceException.validation("AutoFilter columns must be an object");
         return filter;
     }
 
@@ -148,9 +148,9 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     private List<RangeRef> existingFilterRange(ObjectNode root, String sheetId) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
-        JsonNode filter = sheet.get("filter");
+        JsonNode filter = sheet.get("autoFilter");
         if (filter == null || filter.isNull()) return List.of();
-        return List.of(SnapshotMutationSupport.range(root, SnapshotMutationSupport.requiredObject(sheet, "filter").get("range")));
+        return List.of(SnapshotMutationSupport.range(root, SnapshotMutationSupport.requiredObject(sheet, "autoFilter").get("range")));
     }
 
     private void upsertRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {

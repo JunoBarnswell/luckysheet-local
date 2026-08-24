@@ -1,33 +1,31 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import { exportSnapshotToXlsxBuffer, loadXlsxPackage } from './archive';
+import { exportSnapshotToXlsxBuffer, loadOpcPackageGraph } from './archive';
 import { detectPackageFeatures } from './ooxml';
 import { nativePivotFeatureStatus } from './native-pivot';
 import { createCompatibilityReport, refreshCompatibilitySummary } from './compatibility-report';
-import { verifyXlsxSourceArtifact } from './source-artifact';
+import { createNativePackageState, verifyNativePackageState } from './native-package-state';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
-import type { XlsxExportOptions, XlsxExportResult, XlsxSourceArtifact } from './types';
+import type { XlsxExportOptions, XlsxExportResult, NativePackageState } from './types';
 import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
 
 export interface XlsxExportRequest {
   snapshot: WorkbookSnapshot;
   fileName: string;
   options: XlsxExportOptions;
-  /** Original package returned by importXlsx. Unsupported parts are preserved. */
-  package?: import('./types').XlsxPackage;
-  /** Original bytes are sufficient to reconstruct a package when `package` is not retained. */
-  sourceArtifact?: XlsxSourceArtifact;
+  /** The one native package state returned by the import transaction. */
+  nativePackage?: NativePackageState;
 }
 
 /** 导出 XLSX 并生成 Compatibility Report */
 export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExportResult> {
-  if (request.sourceArtifact) await verifyXlsxSourceArtifact(request.sourceArtifact);
-  const sourcePackage = request.package ?? (request.sourceArtifact ? loadXlsxPackage(request.sourceArtifact.buffer).package : undefined);
-  const dateSystem = request.options.dateSystem ?? sourcePackage?.dateSystem ?? request.sourceArtifact?.dateSystem ?? '1900';
+  if (request.nativePackage) await verifyNativePackageState(request.nativePackage);
+  const sourcePackage = request.nativePackage?.packageGraph;
+  const dateSystem = request.options.dateSystem ?? sourcePackage?.dateSystem ?? request.nativePackage?.dateSystem ?? '1900';
   const buffer = exportSnapshotToXlsxBuffer(request.snapshot, sourcePackage, request.options);
   // Report the package that was actually emitted. This prevents a deleted
   // native Pivot/Slicer/Timeline from being reported as preserved merely
   // because its source package contained the old opaque part.
-  const emittedPackage = loadXlsxPackage(buffer).package;
+  const emittedPackage = loadOpcPackageGraph(buffer, {}, request.fileName).packageGraph;
   const snapshotFeatures = scanSnapshotFeatures(request.snapshot);
   const packageFeatures = detectPackageFeatures(emittedPackage);
   const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
@@ -71,7 +69,15 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
     taskId: `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     report: completedReport,
     buffer,
-    fileName: request.fileName.endsWith('.xlsx') ? request.fileName : `${request.fileName}.xlsx`,
-    package: emittedPackage,
+    fileName: request.fileName.includes('.') ? request.fileName : `${request.fileName}.${sourcePackage?.format.variant ?? 'xlsx'}`,
+    nativePackage: await createNativePackageState({
+      fileName: request.fileName,
+      buffer,
+      dateSystem,
+      packageGraph: emittedPackage,
+      format: emittedPackage.format,
+      detectedFeatures,
+      compatibility: completedReport,
+    }),
   };
 }

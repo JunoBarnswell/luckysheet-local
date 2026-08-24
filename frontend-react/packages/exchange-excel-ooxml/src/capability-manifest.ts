@@ -1,7 +1,7 @@
 import { strFromU8 } from 'fflate';
 import { child, children, descendants, localName, parseXml } from './xml';
 import type { CompatibilityFeatureDetection } from './compatibility-report';
-import type { XlsxPackage } from './types';
+import type { OpcPackageGraph } from './types';
 
 export type XlsxCapabilityState = 'full' | 'partial' | 'none';
 
@@ -67,7 +67,7 @@ const WORKSHEET_NODES = new Map<string, string>([
 
 const STRUCTURAL_NODES = new Set(['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'sheetCalcPr', 'phoneticPr', 'extLst']);
 
-export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, pkg: XlsxPackage): CompatibilityFeatureDetection[] {
+export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
   const detections: CompatibilityFeatureDetection[] = [];
   for (const part of new Set(Object.values(pkg.sheetPartById))) {
     const bytes = files[part];

@@ -1,7 +1,14 @@
 /** XLSX 兼容级别 */
 export type CompatibilityLevel = 'A' | 'B' | 'C';
 export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
-export const XLSX_CODEC_VERSION = 3 as const;
+export const OOXML_CODEC_REVISION = 4 as const;
+
+export type ExcelDocumentFormat =
+  | { family: 'ooxml'; profile: 'transitional' | 'strict'; variant: 'xlsx' | 'xlsm' | 'xltx' | 'xltm' | 'xlam' }
+  | { family: 'xlsb'; variant: 'xlsb' }
+  | { family: 'biff'; variant: 'xls' }
+  | { family: 'text'; variant: 'csv' | 'txt' }
+  | { family: 'ods'; variant: 'ods' };
 
 /** Excel 日期系统 */
 export type DateSystem = '1900' | '1904';
@@ -54,17 +61,18 @@ export interface XlsxRelationship {
  * to preserve OOXML parts which the editable model does not understand yet
  * (for example VBA, custom XML, and native Pivot parts).
  */
-export interface XlsxSourceArtifact {
-  schema: 'XlsxSourceArtifact';
+export interface NativePackageState {
+  schema: 'NativePackageState';
+  format: ExcelDocumentFormat;
   fileName: string;
-  buffer: ArrayBuffer;
+  sourceBytes: ArrayBuffer;
   checksum: string;
   dateSystem: DateSystem;
   detectedFeatures: string[];
-  /** Missing only on records created before codec provenance was introduced. */
-  xlsxCodecVersion?: number;
-  /** Missing only on legacy source-artifact records. */
-  capabilityReport?: CompatibilityReport;
+  packageGraph: OpcPackageGraph;
+  ownership: FeatureOwnershipResult[];
+  codecRevision: number;
+  compatibility: CompatibilityReport;
 }
 
 export type NativePivotSource =
@@ -183,8 +191,8 @@ export interface NativePivotPackageUpdate {
  * does not edit.  Export overlays the editable core parts on this package so
  * chart/pivot/VBA/custom XML bytes are not silently discarded.
  */
-export interface XlsxPackage {
-  schema: 'XlsxPackage';
+export interface OpcPackageGraph {
+  schema: 'OpcPackageGraph';
   workbookPart: string;
   parts: Record<string, Uint8Array>;
   opaqueParts: Record<string, Uint8Array>;
@@ -192,7 +200,19 @@ export interface XlsxPackage {
   sheetPartById: Record<string, string>;
   contentTypesXml?: Uint8Array;
   dateSystem: DateSystem;
+  format: ExcelDocumentFormat;
+  profile: 'transitional' | 'strict';
   nativePivotGraph?: NativePivotGraph;
+}
+
+export interface FeatureOwnershipResult {
+  feature: string;
+  scope: string;
+  read: 'full' | 'partial' | 'none';
+  edit: 'full' | 'partial' | 'none';
+  write: 'full' | 'partial' | 'none';
+  preserve: 'full' | 'partial' | 'none';
+  ownership: 'editable-owned' | 'preserved-owned' | 'mixed-owned';
 }
 
 export type CompatibilityIssueSeverity = 'error' | 'warning' | 'info';
@@ -233,9 +253,7 @@ export interface XlsxImportResult {
   payload: XlsxWorkbookPayload;
   report: CompatibilityReport;
   snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
-  /** Pass this package to exportXlsx to preserve unsupported OOXML features. */
-  package: XlsxPackage;
-  sourceArtifact: XlsxSourceArtifact;
+  nativePackage: NativePackageState;
   taskId?: string;
 }
 
@@ -244,5 +262,5 @@ export interface XlsxExportResult {
   report: CompatibilityReport;
   buffer: ArrayBuffer;
   fileName: string;
-  package?: XlsxPackage;
+  nativePackage?: NativePackageState;
 }

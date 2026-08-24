@@ -4,14 +4,14 @@ import type {
   ConditionalFormatRule,
   DataSourceManifest,
   DrawingObject,
-  FilterModel,
+  AutoFilterModel,
   RangeRef,
   SheetDataRegion,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
-import { normalizeFilterModel, type DataSortParams } from './data-features';
+import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { copyRangeToClipboardData, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { parseFormula } from '@react-sheets/formula-engine';
@@ -76,7 +76,7 @@ export interface ReplaceRangeParams {
 export interface FilterToggleParams {
   sheetId: string;
   range?: RangeRef;
-  filter?: FilterModel;
+  autoFilter?: AutoFilterModel;
 }
 
 export interface FilterCriteriaParams {
@@ -262,7 +262,7 @@ function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
 
 function isValidFilterToggleParams(value: unknown): value is FilterToggleParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string') return false;
-  return (value.range === undefined || isRange(value.range)) && (value.filter === undefined || isRecord(value.filter));
+  return (value.range === undefined || isRange(value.range)) && (value.autoFilter === undefined || isRecord(value.autoFilter));
 }
 
 function isValidFilterCriteriaParams(value: unknown): value is FilterCriteriaParams {
@@ -424,17 +424,19 @@ function getAppliedSortState(sheet: WorksheetModel): AppliedSortState | undefine
   return state ? structuredClone(state) : undefined;
 }
 
-function hasFilterCriteria(filter: FilterModel | undefined): boolean {
-  return Boolean(filter && Object.values(filter.criteria).some((entry) => Boolean(
-    entry.selectedValues?.length || entry.excludeBlanks || entry.conditionOperator,
-  )));
+function hasFilterCriteria(filter: AutoFilterModel | undefined): boolean {
+  return Boolean(filter && Object.values(filter.columns).some((entry) => Boolean(entry.criterion)));
 }
 
-function buildFilterFromParams(params: FilterToggleParams, sheet: WorksheetModel): FilterModel {
-  if (params.filter) return normalizeFilterModel(params.filter);
+function buildFilterFromParams(params: FilterToggleParams, sheet: WorksheetModel): AutoFilterModel {
+  if (params.autoFilter) return normalizeAutoFilterModel(params.autoFilter);
   if (!params.range) throw new Error('Filter range is required when creating a filter');
   const range = normalizeRange(params.range, params.sheetId);
-  return { sheetId: params.sheetId, range, criteria: {} };
+  const columns: AutoFilterModel['columns'] = {};
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    columns[column] = { column, showButton: true, hiddenButton: false };
+  }
+  return { sheetId: params.sheetId, range, columns };
 }
 
 function findPreset(id: string | HomeStylePreset): HomeStylePreset {
@@ -870,45 +872,45 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   });
 
   runtime.registry.registerCommand<FilterToggleParams>({
-    id: 'sheet.filter.toggle',
+    id: 'sheet.autoFilter.toggle',
     execute: (params, context) => {
       if (!isValidFilterToggleParams(params)) throw new Error('Invalid filter toggle parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
       if (params.range) assertNoDataRegionIntersection(sheet, normalizeRange(params.range, params.sheetId), 'Filter');
-      const current = sheet.filter ? normalizeFilterModel(sheet.filter) : undefined;
+      const current = sheet.autoFilter ? normalizeAutoFilterModel(sheet.autoFilter) : undefined;
       if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter');
       if (!current) {
         const next = buildFilterFromParams(params, sheet);
-        return runtime.execute('sheet.filter.set', { sheetId: params.sheetId, filter: next });
+        return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
       }
       const requestedRange = params.range ? normalizeRange(params.range, params.sheetId) : current.range;
-      if (rangeEquals(current.range, requestedRange)) return runtime.execute('sheet.filter.remove', { sheetId: params.sheetId });
-      const next = params.filter ? buildFilterFromParams(params, sheet) : { ...current, range: requestedRange };
-      return runtime.execute('sheet.filter.set', { sheetId: params.sheetId, filter: next });
+      if (rangeEquals(current.range, requestedRange)) return runtime.execute('sheet.autoFilter.remove', { sheetId: params.sheetId });
+      const next = params.autoFilter ? buildFilterFromParams(params, sheet) : { ...current, range: requestedRange };
+      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
     },
   });
 
   runtime.registry.registerCommand<FilterCriteriaParams>({
-    id: 'sheet.filter.clearCriteria',
+    id: 'sheet.autoFilter.clearCriteria',
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter clearCriteria parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
-      if (!sheet.filter) return homeResult(context, []);
-      const current = normalizeFilterModel(sheet.filter);
+      if (!sheet.autoFilter) return homeResult(context, []);
+      const current = normalizeAutoFilterModel(sheet.autoFilter);
       assertNoDataRegionIntersection(sheet, current.range, 'Filter');
       if (params.range && !rangesIntersect(current.range, normalizeRange(params.range, params.sheetId))) return homeResult(context, []);
       if (!hasFilterCriteria(current)) return homeResult(context, [current.range]);
-      return runtime.execute('sheet.filter.set', { sheetId: params.sheetId, filter: { ...current, criteria: {} } });
+      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: { ...current, columns: Object.fromEntries(Object.entries(current.columns).map(([key, value]) => [key, { ...value, criterion: undefined }])) } });
     },
   });
 
   runtime.registry.registerCommand<FilterCriteriaParams>({
-    id: 'sheet.filter.reapply',
+    id: 'sheet.autoFilter.reapply',
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter reapply parameters');
-      const filter = context.workbook.getSheet(params.sheetId).filter;
-      if (filter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), filter.range, 'Filter');
-      return filter ? homeResult(context, [structuredClone(filter.range)]) : homeResult(context, []);
+      const autoFilter = context.workbook.getSheet(params.sheetId).autoFilter;
+      if (autoFilter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), autoFilter.range, 'Filter');
+      return autoFilter ? homeResult(context, [structuredClone(autoFilter.range)]) : homeResult(context, []);
     },
   });
 

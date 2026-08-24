@@ -145,11 +145,16 @@ export const DEFAULT_LAYER_DEFINITIONS: readonly LayerDefinition[] = [
   { id: "chrome", zIndex: 4, scrollable: false, pointerEvents: "none" },
 ];
 
-// ---------- 冻结窗格 ----------
+// ---------- 文档窗格 ----------
 
-export interface FreezeSplits {
+export interface PaneLayout {
+  kind: 'none' | 'frozen' | 'split';
   xSplit: number;
   ySplit: number;
+  startRow: number;
+  startColumn: number;
+  activePane?: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
+  state: 'frozen' | 'frozenSplit' | 'split';
 }
 
 export type PaneId = "topLeft" | "topRight" | "bottomLeft" | "main";
@@ -157,9 +162,15 @@ export type PaneId = "topLeft" | "topRight" | "bottomLeft" | "main";
 /** 单个窗格:屏幕矩形 + 内容滚动偏移 + 可见模型范围 */
 export interface RenderPane {
   id: PaneId;
-  rect: Rect;
-  offset: Point;
-  range: CellRange | null;
+  screenRect: Rect;
+  contentOrigin: Point;
+  visibleRange: CellRange | null;
+}
+
+export interface PaneMap {
+  panes: readonly RenderPane[];
+  paneAtLocalPoint(point: Point): RenderPane | null;
+  paneForCell(cell: CellAddress): RenderPane | null;
 }
 
 // ---------- Chrome(表头/选区等非滚动覆盖层) ----------

@@ -287,9 +287,9 @@ function recordingContext() {
 function mainPane(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): RenderPane {
   return {
     id: 'main',
-    rect: { x: 46, y: 24, width: 260, height: 180 },
-    offset: { x: 0, y: 0 },
-    range,
+    screenRect: { x: 46, y: 24, width: 260, height: 180 },
+    contentOrigin: { x: 0, y: 0 },
+    visibleRange: range,
   };
 }
 
@@ -376,18 +376,18 @@ test('pane translation preserves model coordinates for C9', () => {
   engine.dispose();
 });
 
-test('contentToMainScreen selects the cell pane for frozen rows and columns', () => {
+test('contentToScreen selects the cell pane for frozen rows and columns', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
   });
-  engine.setFreeze({ xSplit: 1, ySplit: 1 });
+  engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' });
   engine.render();
   const topLeft = renderSkeleton.getCellRect(0, 0)!;
   const main = renderSkeleton.getCellRect(4, 2)!;
-  assert.deepEqual(engine.contentToMainScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
-  assert.deepEqual(engine.contentToMainScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 196, y: 124 });
+  assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
+  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 146, y: 104 });
   engine.dispose();
 });
 
@@ -411,7 +411,7 @@ test('content range screen geometry splits overlays across frozen panes', () => 
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 30, scrollY: 20, devicePixelRatio: 1 },
   });
-  engine.setFreeze({ xSplit: 1, ySplit: 1 });
+  engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' });
   engine.render();
   const rects = engine.contentRangeToScreenRects({ startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 });
   assert.ok(rects.some((rect) => rect.x === 46 && rect.y === 24));

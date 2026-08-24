@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { createXlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
+import { createNativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import type { OpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
   LocalWorkspaceStore,
@@ -85,15 +86,26 @@ describe('persistence storage', () => {
     const databaseName = `persistence-artifact-${Date.now()}-${Math.random()}`;
     const persistence = new WorkspacePersistence({ databaseName, indexedDB: null });
     const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
-    const artifact = await createXlsxSourceArtifact({
+    const artifact = await createNativePackageState({
       fileName: 'artifact.xlsx',
       buffer: new Uint8Array([80, 75, 3, 4]).buffer,
       dateSystem: '1900',
+      packageGraph: {
+        schema: 'OpcPackageGraph',
+        workbookPart: 'xl/workbook.xml',
+        parts: {},
+        opaqueParts: {},
+        relationships: {},
+        sheetPartById: {},
+        dateSystem: '1900',
+        format: { family: 'ooxml', profile: 'transitional', variant: 'xlsx' },
+        profile: 'transitional',
+      } satisfies OpcPackageGraph,
       detectedFeatures: ['worksheet'],
     });
 
     const record = await persistence.checkpointWithArtifact(snapshot, 3, 0, 'local-only', artifact);
     assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
-    assert.equal((await persistence.xlsxArtifacts.load(snapshot.unitId))?.checksum, artifact.checksum);
+    assert.equal((await persistence.nativePackages.load(snapshot.unitId))?.checksum, artifact.checksum);
   });
 });

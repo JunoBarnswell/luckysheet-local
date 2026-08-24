@@ -33,7 +33,7 @@ import type {
   SparklineModel,
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
-import { FilterPopover } from "./FilterPopover";
+import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
@@ -100,7 +100,7 @@ export interface SheetCanvasProps {
   onShortcut?: (id: string) => boolean;
   canRepeat?: boolean;
   onOpenInspector: () => void;
-  onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
+  onApplyFilter: (column: number, patch: FilterPatch) => void;
   onToggleOutline?: (groupId: string) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
@@ -424,7 +424,7 @@ export function SheetCanvas({
     const state = createEmptyChromeState();
     state.selection = toChromeSelection(selection);
     state.editing = editingCell ? { row: editingCell.row, column: editingCell.column } : null;
-    state.filterColumns = sheet.filterColumns;
+    state.filterColumns = sheet.activeFilterColumns;
     state.filterButtons = sheet.filterButtons;
     state.tableOutlines = sheet.sheetTables.map((table) => ({
       startRow: table.range.startRow,
@@ -442,7 +442,7 @@ export function SheetCanvas({
     }));
     state.selectedFloatingId = selectedFloatingId;
     return state;
-  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterButtons, sheet.filterColumns, sheet.outlineControls, sheet.sheetTables]);
+  }, [editingCell, peers, selectedFloatingId, selection, sheet.activeFilterColumns, sheet.filterButtons, sheet.outlineControls, sheet.sheetTables]);
 
   const canvasInteraction = useCanvasInteraction({
     canRepeat,
@@ -515,11 +515,7 @@ export function SheetCanvas({
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    engine.setFreeze(
-      sheet.pane.kind === 'frozen' && (sheet.pane.xSplit > 0 || sheet.pane.ySplit > 0)
-        ? { xSplit: sheet.pane.xSplit, ySplit: sheet.pane.ySplit }
-        : null,
-    );
+    engine.setPane(sheet.pane.kind === 'none' ? null : sheet.pane);
   }, [sheet.pane]);
 
   useEffect(() => {
@@ -715,7 +711,7 @@ export function SheetCanvas({
     // pane is not the correct origin for frozen rows/columns.
     const rect = engine.skeleton.getCellRect(editingCell.row, editingCell.column);
     if (!rect) return null;
-    const topLeft = engine.contentToMainScreen({ x: rect.x, y: rect.y }, editingCell);
+    const topLeft = engine.contentToScreen({ x: rect.x, y: rect.y }, editingCell);
     return {
       x: topLeft.x,
       y: topLeft.y,
@@ -841,6 +837,8 @@ export function SheetCanvas({
           {filterPopover ? (
             <FilterPopover
               column={filterPopover.column}
+              x={filterPopover.x}
+              y={filterPopover.y}
               sheet={sheet}
               onApply={(patch) => {
                 onApplyFilter(filterPopover.column, patch);

@@ -27,7 +27,7 @@ describe('structural operations', () => {
     const { workbook } = seedWorkbook();
     const sheet = workbook.getSheet('s1');
     sheet.merges.push({ range: { sheetId: 's1', startRow: 2, endRow: 3, startColumn: 1, endColumn: 1 }, anchor: { row: 2, column: 1 } });
-    sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0 };
+    sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0, state: 'frozen' };
     StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 3 });
     assert.equal(sheet.cells.get(2, 0)?.value ?? null, null);
     assert.equal(sheet.cells.get(5, 0)?.value, 'A2');

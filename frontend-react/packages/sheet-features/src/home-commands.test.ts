@@ -45,14 +45,14 @@ test('filter toggle, clearCriteria and reapply preserve the filter contract', ()
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);
   const range = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
-  runtime.execute('sheet.filter.toggle', { sheetId: sheet.id, range });
-  assert.ok(sheet.filter);
-  sheet.filter!.criteria[0] = { column: 0, selectedValues: ['A'] };
-  runtime.execute('sheet.filter.clearCriteria', { sheetId: sheet.id });
-  assert.deepEqual(sheet.filter?.criteria, {});
-  assert.deepEqual(runtime.execute('sheet.filter.reapply', { sheetId: sheet.id }).affectedRanges, [range]);
-  runtime.execute('sheet.filter.toggle', { sheetId: sheet.id, range });
-  assert.equal(sheet.filter, undefined);
+  runtime.execute('sheet.autoFilter.toggle', { sheetId: sheet.id, range });
+  assert.ok(sheet.autoFilter);
+  sheet.autoFilter!.columns[0] = { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['A'], includeBlank: false } };
+  runtime.execute('sheet.autoFilter.clearCriteria', { sheetId: sheet.id });
+  assert.equal(Object.values(sheet.autoFilter?.columns ?? {}).some((column) => Boolean(column.criterion)), false);
+  assert.deepEqual(runtime.execute('sheet.autoFilter.reapply', { sheetId: sheet.id }).affectedRanges, [range]);
+  runtime.execute('sheet.autoFilter.toggle', { sheetId: sheet.id, range });
+  assert.equal(sheet.autoFilter, undefined);
 });
 
 test('replace all is one history action and restores every cell', () => {

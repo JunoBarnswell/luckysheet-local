@@ -7,6 +7,7 @@ import type {
   DataSourceManifest,
   DefinedNameModel,
   DataValidationRule,
+  FilterCriterion,
   DrawingObject,
   DrawingTransform,
   ImageDrawingPayload,
@@ -30,11 +31,10 @@ import type {
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
-import type { XlsxLayoutRepairPlan, XlsxPackage, XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
+import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import { computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
-  createFilterModelForTable,
   defaultTotalsFunction,
   findSheetTableAt,
   findValidationRule,
@@ -231,8 +231,6 @@ export interface UiSnapshot {
   hasPendingOperations: boolean;
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
-  needsLayoutRepair: boolean;
-  layoutRepairPreview: XlsxLayoutRepairPlan | null;
   tables: readonly WorkbookTableModel[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
@@ -360,11 +358,8 @@ export class WorkbookSession {
   private hasPendingOperations = false;
   private persistenceChecksum = '';
   private compatibilityReport: CompatibilityReport | null = null;
-  private needsLayoutRepair = false;
-  private layoutRepairPreview: XlsxLayoutRepairPlan | null = null;
-  /** Runtime package plus local-only original ZIP context for honest export. */
-  private xlsxPackage: XlsxPackage | undefined;
-  private xlsxSourceArtifact: XlsxSourceArtifact | undefined;
+  /** The sole native package baseline paired with this workbook snapshot. */
+  private nativePackage: NativePackageState | undefined;
   private showFunctionWizard = false;
   private showSortDialog = false;
   private showFindReplace = false;
@@ -522,12 +517,9 @@ export class WorkbookSession {
     );
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
-      const artifact = await this.runtime.workspacePersistence.xlsxArtifacts.load(this.runtime.model.unitId);
+      const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
-        this.xlsxSourceArtifact = artifact;
-        const { xlsxArtifactNeedsLayoutRepair } = await import('@react-sheets/exchange-xlsx');
-        this.needsLayoutRepair = xlsxArtifactNeedsLayoutRepair(artifact);
-        if (this.needsLayoutRepair) this.notify('This XLSX was imported with an older geometry codec. Preview layout repair before applying changes.');
+        this.nativePackage = artifact;
       }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
     }).catch((error: unknown) => {
@@ -669,8 +661,8 @@ export class WorkbookSession {
       canFormat: this.canExecute('sheet.style.set', { style: {} }),
       canEdit: this.canExecute('sheet.range.clear', { mode: 'contents' }),
       canStructure: this.canExecute('sheet.rows.insert', { count: 1 }),
-      hasFilter: Boolean(sheet.filter),
-      hasFilterCriteria: Object.keys(sheet.filter?.criteria ?? {}).length > 0,
+      hasFilter: Boolean(sheet.autoFilter),
+      hasFilterCriteria: Object.values(sheet.autoFilter?.columns ?? {}).some((column) => Boolean(column.criterion)),
     };
   }
 
@@ -735,8 +727,6 @@ export class WorkbookSession {
       hasPendingOperations: this.hasPendingOperations,
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
-      needsLayoutRepair: this.needsLayoutRepair,
-      layoutRepairPreview: this.layoutRepairPreview,
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
       dataSources: [...this.runtime.model.dataSources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
@@ -894,10 +884,10 @@ export class WorkbookSession {
       || commandId === 'sheet.merge.remove'
       || commandId === 'sheet.merge.center'
       || commandId === 'sheet.merge.across'
-      || commandId === 'sheet.filter.toggle'
-      || commandId === 'sheet.filter.set'
-      || commandId === 'sheet.filter.clearCriteria'
-      || commandId === 'sheet.filter.reapply'
+      || commandId === 'sheet.autoFilter.toggle'
+      || commandId === 'sheet.autoFilter.set'
+      || commandId === 'sheet.autoFilter.clearCriteria'
+      || commandId === 'sheet.autoFilter.reapply'
       || commandId === 'sheet.cf.add'
       || commandId === 'sheet.cf.remove'
       || commandId === 'sheet.cf.clear'
@@ -1570,7 +1560,7 @@ export class WorkbookSession {
 
   syncDraftFromPrimary(): void {
     const sel = this.selectionService.getState();
-    const cell = this.runtime.model.getSheet(this.activeSheetId).cells.get(sel.activeCell.row, sel.activeCell.column);
+    const cell = this.readResolvedCell(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
     this.formulaDraft = cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
     this.emit();
   }
@@ -1870,6 +1860,12 @@ export class WorkbookSession {
   beginEdit(initialText?: string): void {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const target = { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, text: initialText ?? '' };
+    const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', target, this.actorId, this.activeSheetId);
+    if (!permission.allowed) {
+      this.notify(permission.reason ?? 'This cell is not editable');
+      return;
+    }
     for (const spill of sheet.spillRanges) {
       if (isSpillChild(spill, sel.activeCell.row, sel.activeCell.column)) {
         this.notify('Spill cells are read-only');
@@ -2595,20 +2591,32 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  applyFilter(column: number, patch: { selectedValues?: string[] | null; conditionOperator?: string; conditionValue?: string }): void {
+  applyFilter(column: number, patch: { criterion?: FilterCriterion }): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const tableOwner = sheet.sheetTables.find((table) => table.autoFilter && table.range.startColumn <= column && table.range.endColumn >= column);
     const baseRange =
-      sheet.filter?.range ??
+      tableOwner?.autoFilter?.range ?? sheet.autoFilter?.range ??
       this.getCurrentRegion();
-    const criteria = { ...(sheet.filter?.criteria ?? {}) };
-    criteria[column] = { column, selectedValues: patch.selectedValues ?? undefined, conditionOperator: patch.conditionOperator, conditionValue: patch.conditionValue };
-    this.dispatch({ commandId: 'sheet.filter.set', params: { sheetId: this.activeSheetId, filter: { sheetId: this.activeSheetId, range: baseRange, criteria } } });
+    const columns = { ...(tableOwner?.autoFilter?.columns ?? sheet.autoFilter?.columns ?? {}) };
+    for (let current = baseRange.startColumn; current <= baseRange.endColumn; current += 1) {
+      columns[current] ??= { column: current, showButton: true, hiddenButton: false };
+    }
+    columns[column] = { ...(columns[column] ?? { column, showButton: true, hiddenButton: false }), criterion: patch.criterion ? structuredClone(patch.criterion) : undefined };
+    const autoFilter = { sheetId: this.activeSheetId, range: baseRange, columns };
+    if (tableOwner) {
+      this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter } });
+    } else {
+      this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter } });
+    }
   }
 
   applyFilterSelection(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    if (sheet.filter) {
-      this.dispatch({ commandId: 'sheet.filter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
+    const tableFilter = sheet.sheetTables.find((table) => table.autoFilter)?.autoFilter;
+    if (sheet.autoFilter || tableFilter) {
+      const owner = sheet.sheetTables.find((table) => table.autoFilter);
+      if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id } });
+      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
       return;
     }
     const range = this.getCurrentRegion();
@@ -2616,7 +2624,7 @@ export class WorkbookSession {
       this.notify('Select a data region with a header row before enabling Filter');
       return;
     }
-    this.dispatch({ commandId: 'sheet.filter.toggle', params: {
+    this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
       sheetId: this.activeSheetId,
       range,
     } });
@@ -2624,24 +2632,28 @@ export class WorkbookSession {
 
   clearFilter(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    if (!sheet.filter) {
+    const owner = sheet.sheetTables.find((table) => table.autoFilter);
+    const autoFilter = owner?.autoFilter ?? sheet.autoFilter;
+    if (!autoFilter) {
       this.notify('No filter is active in the current region');
       return;
     }
-    if (Object.keys(sheet.filter.criteria).length === 0) {
+    if (!Object.values(autoFilter.columns).some((column) => Boolean(column.criterion))) {
       this.notify('No filter criteria are active in the current region');
       return;
     }
-    this.dispatch({ commandId: 'sheet.filter.clearCriteria', params: {
-      sheetId: this.activeSheetId,
-      range: this.getCurrentRegion(),
-    } });
+    const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
+    if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id, autoFilter: { ...autoFilter, columns } } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
   }
 
   closeFilter(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    if (!sheet.filter) return;
-    this.dispatch({ commandId: 'sheet.filter.toggle', params: { sheetId: this.activeSheetId, range: sheet.filter.range } });
+    const owner = sheet.sheetTables.find((table) => table.autoFilter);
+    const autoFilter = owner?.autoFilter ?? sheet.autoFilter;
+    if (!autoFilter) return;
+    if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
   }
 
   async findReplace(params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }): Promise<number> {
@@ -3495,74 +3507,20 @@ export class WorkbookSession {
     }
     try {
       const exported = await exchangeExportXlsx(this.runtime.model.snapshot(), {
-        fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
-        package: this.xlsxPackage,
-        sourceArtifact: this.xlsxSourceArtifact,
+      fileName: fileName ?? `${this.runtime.model.name || 'workbook'}.xlsx`,
+        nativePackage: this.nativePackage,
         execution: this.xlsxExecution,
         revision: this.version,
       });
       this.compatibilityReport = exported.report;
       this.notify(summarizeCompatibilityReport(exported.report));
       this.refresh();
-      this.xlsxPackage = undefined;
       if (!exported.buffer || !exported.fileName) return null;
       return { buffer: exported.buffer, fileName: exported.fileName };
     } catch (error) {
       this.notify(error instanceof Error ? error.message : 'XLSX export failed');
       return null;
     }
-  }
-
-  async previewXlsxLayoutRepair(): Promise<XlsxLayoutRepairPlan | null> {
-    if (!this.xlsxSourceArtifact) {
-      this.notify('The original XLSX is not available. Re-import the source file to repair layout safely.');
-      return null;
-    }
-    try {
-      const { createXlsxLayoutRepairPlan } = await import('@react-sheets/exchange-xlsx');
-      const plan = await createXlsxLayoutRepairPlan(this.runtime.model.snapshot(), this.xlsxSourceArtifact);
-      this.layoutRepairPreview = plan;
-      this.compatibilityReport = plan.report;
-      this.notify(`Layout repair preview: ${plan.summary.columns} columns, ${plan.summary.rows} rows, ${plan.summary.fonts} fonts, ${plan.summary.panes} panes.`);
-      this.refresh();
-      return plan;
-    } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'Unable to preview XLSX layout repair');
-      return null;
-    }
-  }
-
-  async applyXlsxLayoutRepair(): Promise<boolean> {
-    const plan = this.layoutRepairPreview;
-    const artifact = this.xlsxSourceArtifact;
-    if (!plan || !artifact) {
-      this.notify('Preview the XLSX layout repair before applying it.');
-      return false;
-    }
-    if (plan.sourceChecksum !== artifact.checksum) {
-      this.notify('The source XLSX changed after the preview. Generate a new repair preview.');
-      return false;
-    }
-    try {
-      this.runCommand('workbook.xlsx.layout.repair', plan);
-      const { createXlsxSourceArtifact } = await import('@react-sheets/exchange-xlsx');
-      const upgraded = await createXlsxSourceArtifact({ fileName: artifact.fileName, buffer: artifact.buffer, dateSystem: artifact.dateSystem, detectedFeatures: artifact.detectedFeatures, capabilityReport: plan.report });
-      await this.runtime.workspacePersistence.xlsxArtifacts.save(this.runtime.model.unitId, upgraded);
-      this.xlsxSourceArtifact = upgraded;
-      this.needsLayoutRepair = false;
-      this.layoutRepairPreview = null;
-      this.notify('XLSX layout repair applied without changing cell values or formulas.');
-      this.refresh();
-      return true;
-    } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'XLSX layout repair failed');
-      return false;
-    }
-  }
-
-  clearXlsxLayoutRepairPreview(): void {
-    this.layoutRepairPreview = null;
-    this.refresh();
   }
 
   clearCompatibilityReport(): void {
@@ -3673,9 +3631,6 @@ export class WorkbookSession {
       columns,
     };
     this.runCommand('sheetTable.add', table);
-    if (table.showFilterButton) {
-      this.runCommand('sheet.filter.set', { sheetId: this.activeSheetId, filter: createFilterModelForTable(table) });
-    }
     this.notify(`Sheet table ${table.name} created`);
     this.refresh();
   }

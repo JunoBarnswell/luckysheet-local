@@ -161,8 +161,7 @@ export async function exportXlsxWithWorker(request: XlsxExportRequest, port?: Xl
       fileName: request.fileName,
       snapshot: request.snapshot,
       options: request.options,
-      ...(request.package ? { package: request.package } : {}),
-      ...(request.sourceArtifact ? { sourceArtifact: request.sourceArtifact } : {}),
+      ...(request.nativePackage ? { nativePackage: request.nativePackage } : {}),
     }));
     return unwrapExportResult(result);
   } finally {

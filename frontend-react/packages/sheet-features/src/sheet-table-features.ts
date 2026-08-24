@@ -1,7 +1,7 @@
 import type {
   CellData,
   CellStyle,
-  FilterModel,
+  AutoFilterModel,
   RangeRef,
   SheetTableModel,
   WorksheetModel,
@@ -48,7 +48,11 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
     throw new Error('Sheet Table with header and total rows requires at least one body row');
   }
   if (sheet && range.endRow >= sheet.rowCount) throw new Error('Sheet Table exceeds worksheet rows');
-  return { ...structuredClone(table), range };
+  const normalized = { ...structuredClone(table), range };
+  if (normalized.showFilterButton && normalized.hasHeaderRow && !normalized.autoFilter) {
+    normalized.autoFilter = createAutoFilterModelForTable(normalized);
+  }
+  return normalized;
 }
 
 export function isPointInRange(range: RangeRef, row: number, column: number): boolean {
@@ -110,12 +114,21 @@ export function mergePresentationStyles(...styles: Array<Partial<CellStyle> | un
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
-export function createFilterModelForTable(table: SheetTableModel): FilterModel {
+export function createAutoFilterModelForTable(table: SheetTableModel): AutoFilterModel {
+  const range = normalizeRangeRef(table.range);
+  const columns: AutoFilterModel['columns'] = {};
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    columns[column] = { column, showButton: table.showFilterButton, hiddenButton: false };
+  }
   return {
     sheetId: table.sheetId,
-    range: normalizeRangeRef(table.range),
-    criteria: {},
+    range,
+    columns,
   };
+}
+
+export function resolveWorksheetAutoFilter(sheet: WorksheetModel): AutoFilterModel | undefined {
+  return sheet.autoFilter ?? sheet.sheetTables.find((table) => table.autoFilter)?.autoFilter;
 }
 
 export function tableFilterColumns(table: SheetTableModel): number[] {
@@ -127,16 +140,54 @@ export function tableFilterColumns(table: SheetTableModel): number[] {
 }
 
 export function resolveActiveFilterColumns(sheet: WorksheetModel): number[] {
-  if (!sheet.filter) return [];
-  const fromCriteria = Object.keys(sheet.filter.criteria)
+  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  if (!autoFilter) return [];
+  const fromCriteria = Object.values(autoFilter.columns)
+    .filter((column) => Boolean(column.criterion))
+    .map((column) => column.column)
     .map(Number)
     .filter((column) => Number.isFinite(column));
-  if (fromCriteria.length > 0) return fromCriteria.sort((left, right) => left - right);
+  return fromCriteria.sort((left, right) => left - right);
+}
 
-  const range = normalizeRangeRef(sheet.filter.range);
+export function resolveFilterRangeColumns(sheet: WorksheetModel): number[] {
+  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  if (!autoFilter) return [];
+
+  const range = normalizeRangeRef(autoFilter.range);
   const columns: number[] = [];
   for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
   return columns;
+}
+
+export interface FilterButtonState {
+  column: number;
+  available: boolean;
+  active: boolean;
+  sorted: boolean;
+  hiddenButton: boolean;
+  showButton: boolean;
+}
+
+export function resolveFilterButtonStates(sheet: WorksheetModel): FilterButtonState[] {
+  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  if (!autoFilter) return [];
+  const sorted = new Set(autoFilter.sortState?.conditions.flatMap((condition) => {
+    const result: number[] = [];
+    for (let column = condition.ref.startColumn; column <= condition.ref.endColumn; column += 1) result.push(column);
+    return result;
+  }) ?? []);
+  return resolveFilterRangeColumns(sheet).map((column) => {
+    const entry = autoFilter.columns[column] ?? { column, showButton: true, hiddenButton: false };
+    return {
+      column,
+      available: true,
+      active: Boolean(entry.criterion),
+      sorted: sorted.has(column),
+      hiddenButton: entry.hiddenButton,
+      showButton: entry.showButton,
+    };
+  });
 }
 
 export interface FilterButtonCell {
@@ -154,8 +205,9 @@ function rangesEqual(left: RangeRef, right: RangeRef): boolean {
 }
 
 export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel | undefined {
-  if (!sheet.filter) return undefined;
-  const filterRange = normalizeRangeRef(sheet.filter.range);
+  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  if (!autoFilter) return undefined;
+  const filterRange = normalizeRangeRef(autoFilter.range);
   return sheet.sheetTables.find(
     (table) => table.sheetId === sheet.id
       && table.showFilterButton
@@ -166,11 +218,12 @@ export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel 
 /** 表筛选漏斗绘制在表头行；普通区域筛选仍走列头字母条 */
 export function resolveFilterButtonCells(sheet: WorksheetModel): FilterButtonCell[] {
   const table = findSheetTableForFilter(sheet);
-  if (!table) return [];
-  const range = normalizeRangeRef(table.range);
-  const headerRow = table.hasHeaderRow ? range.startRow : range.startRow;
+  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  const range = normalizeRangeRef(autoFilter?.range ?? { sheetId: sheet.id, startRow: 0, endRow: -1, startColumn: 0, endColumn: -1 });
+  if (range.endRow < range.startRow || range.endColumn < range.startColumn) return [];
+  const headerRow = table?.hasHeaderRow ? range.startRow : range.startRow;
   const buttons: FilterButtonCell[] = [];
-  for (let column = range.startColumn; column <= range.endColumn; column++) {
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) {
     buttons.push({ row: headerRow, column });
   }
   return buttons;

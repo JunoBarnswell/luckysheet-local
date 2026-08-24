@@ -6,7 +6,7 @@ import type {
   DataValidationRule,
   DefinedNameModel,
   DrawingObject,
-  FilterModel,
+  AutoFilterModel,
   MergeSpan,
   OutlineModel,
   ProtectionRule,
@@ -32,7 +32,8 @@ import {
 import {
   DEFAULT_XLSX_ZIP_LIMITS,
   type DateSystem,
-  type XlsxPackage,
+  type ExcelDocumentFormat,
+  type OpcPackageGraph,
   type XlsxRelationship,
   type XlsxZipLimits,
 } from './types';
@@ -60,13 +61,13 @@ const REL_SHARED_STRINGS = `${NS_DOC_REL}/sharedStrings`;
 const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
 
-export interface LoadedXlsxPackage {
-  package: XlsxPackage;
+export interface LoadedOpcPackageGraph {
+  packageGraph: OpcPackageGraph;
   files: Record<string, Uint8Array>;
 }
 
-export interface ParsedXlsxPackage {
-  package: XlsxPackage;
+export interface ParsedOpcPackageGraph {
+  packageGraph: OpcPackageGraph;
   snapshot: WorkbookSnapshot;
   features: string[];
 }
@@ -101,7 +102,7 @@ interface SheetDescriptor {
   hidden: boolean;
 }
 
-export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial<XlsxZipLimits> = {}): LoadedXlsxPackage {
+export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Partial<XlsxZipLimits> = {}, fileName = 'workbook.xlsx'): LoadedOpcPackageGraph {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const effective = { ...DEFAULT_XLSX_ZIP_LIMITS, ...limits };
   if (bytes.byteLength > effective.maxArchiveBytes) {
@@ -136,6 +137,7 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
   const workbookPart = rootOfficeDocument ? resolveTarget('', rootOfficeDocument.target) : 'xl/workbook.xml';
   if (!normalizedFiles[workbookPart]) throw new Error(`Not a valid XLSX package: workbook part is missing (${workbookPart})`);
   const dateSystem = parseWorkbookDateSystem(strFromU8(normalizedFiles[workbookPart]));
+  const format = detectOoxmlFormat(normalizedFiles, workbookPart, fileName);
   const sheetPartById = readSheetPartMap(normalizedFiles, relationships, workbookPart);
   const coreParts = new Set<string>([
     '[Content_Types].xml', '_rels/.rels', workbookPart, relationshipPartName(workbookPart),
@@ -155,8 +157,8 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
     : undefined;
   return {
     files: normalizedFiles,
-    package: {
-      schema: 'XlsxPackage',
+    packageGraph: {
+      schema: 'OpcPackageGraph',
       workbookPart,
       parts: cloneParts(normalizedFiles),
       opaqueParts,
@@ -164,17 +166,19 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
       sheetPartById,
       contentTypesXml: normalizedFiles['[Content_Types].xml']?.slice(),
       dateSystem,
+      format,
+      profile: format.family === 'ooxml' ? format.profile : 'transitional',
       ...(nativePivotGraph ? { nativePivotGraph } : {}),
     },
   };
 }
 
-export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedXlsxOptions = {}): ParsedXlsxPackage {
+export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoadedXlsxOptions = {}): ParsedOpcPackageGraph {
   const files = loaded.files;
-  const workbookPart = loaded.package.workbookPart;
+  const workbookPart = loaded.packageGraph.workbookPart;
   const workbookXml = parseXml(strFromU8(files[workbookPart]!));
   const workbook = firstElement(workbookXml, 'workbook');
-  const relationships = loaded.package.relationships;
+  const relationships = loaded.packageGraph.relationships;
   const descriptors: SheetDescriptor[] = [];
   const workbookRels = relationships[workbookPart] ?? [];
   const sheetNodes = children(child(workbook, 'sheets'), 'sheet');
@@ -191,7 +195,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
       part,
       hidden: node.attrs.state === 'hidden' || node.attrs.state === 'veryHidden',
     });
-    loaded.package.sheetPartById[sheetId] = part;
+    loaded.packageGraph.sheetPartById[sheetId] = part;
   }
   if (descriptors.length === 0) throw new Error('XLSX workbook has no worksheets');
 
@@ -200,14 +204,14 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
   const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
-  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.package, sharedStrings, styles));
+  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 3,
+    version: 4,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -222,14 +226,24 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
     sheets,
   };
   applyPrintDefinedNames(snapshot);
-  attachNativePivots(snapshot, loaded.package.nativePivotGraph, loaded.package.sheetPartById);
-  return { package: loaded.package, snapshot, features: detectPackageFeatures(loaded.package, snapshot) };
+  attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
+  return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
 }
 
-export function exportSnapshotToXlsxPackage(
+function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: string, fileName: string): ExcelDocumentFormat {
+  const lowerName = fileName.toLocaleLowerCase();
+  const workbookXml = strFromU8(files[workbookPart] ?? new Uint8Array());
+  const contentTypes = strFromU8(files['[Content_Types].xml'] ?? new Uint8Array());
+  const strict = workbookXml.includes('purl.oclc.org/ooxml/spreadsheetml') || contentTypes.includes('purl.oclc.org/ooxml/officeDocument');
+  const hasMacros = Object.keys(files).some((name) => name.toLocaleLowerCase().endsWith('vbaProject.bin'));
+  const variant = lowerName.endsWith('.xlam') ? 'xlam' : lowerName.endsWith('.xltm') ? 'xltm' : lowerName.endsWith('.xltx') ? 'xltx' : lowerName.endsWith('.xlsm') || hasMacros ? 'xlsm' : 'xlsx';
+  return { family: 'ooxml', profile: strict ? 'strict' : 'transitional', variant };
+}
+
+export function exportSnapshotToOpcPackageGraph(
   snapshot: WorkbookSnapshot,
   options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean },
-  preserved?: XlsxPackage,
+  preserved?: OpcPackageGraph,
 ): ArrayBuffer {
   const files = new Map<string, Uint8Array>();
   if (preserved) {
@@ -239,6 +253,10 @@ export function exportSnapshotToXlsxPackage(
     }
   }
   const sourceFiles = preserved?.parts ?? {};
+  const workbookPart = preserved?.workbookPart ?? 'xl/workbook.xml';
+  const workbookRelationships = preserved?.relationships[workbookPart] ?? [];
+  const stylesPart = relationshipTarget(preserved, workbookPart, REL_STYLES) ?? 'xl/styles.xml';
+  const sharedStringsPart = relationshipTarget(preserved, workbookPart, REL_SHARED_STRINGS) ?? 'xl/sharedStrings.xml';
   const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
   const sheetPartById = Object.fromEntries(snapshot.sheets.map((sheet, index) => [sheet.id, sheetParts[index]!])) as Record<string, string>;
   const nativeUpdate = synchronizeNativePivotPackage({
@@ -268,26 +286,46 @@ export function exportSnapshotToXlsxPackage(
   }
 
   const workbookRelations = mergeRelationships(
-    nativeUpdate.relationships['xl/workbook.xml'] ?? preserved?.relationships['xl/workbook.xml'] ?? [],
+    nativeUpdate.relationships[workbookPart] ?? workbookRelationships,
     [
-      { id: '', type: REL_STYLES, target: 'styles.xml' },
-      { id: '', type: REL_SHARED_STRINGS, target: 'sharedStrings.xml' },
-      ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget('xl/workbook.xml', part) })),
+      { id: '', type: REL_STYLES, target: relativeTarget(workbookPart, stylesPart) },
+      { id: '', type: REL_SHARED_STRINGS, target: relativeTarget(workbookPart, sharedStringsPart) },
+      ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget(workbookPart, part) })),
     ],
   );
-  files.set('xl/workbook.xml', strToU8(buildWorkbookXml(snapshot, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
-  files.set('xl/_rels/workbook.xml.rels', strToU8(buildRelationshipsXml(workbookRelations)));
-  files.set('_rels/.rels', strToU8(buildRootRelationshipsXml(preserved?.relationships[''] ?? [])));
-  files.set('xl/styles.xml', strToU8(styleOutput));
-  files.set('xl/sharedStrings.xml', strToU8(sharedOutput));
+  files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
+  files.set(relationshipPartName(workbookPart), strToU8(buildRelationshipsXml(workbookRelations)));
+  files.set('_rels/.rels', strToU8(buildRootRelationshipsXml(preserved?.relationships[''] ?? [], workbookPart)));
+  files.set(stylesPart, strToU8(styleOutput));
+  files.set(sharedStringsPart, strToU8(sharedOutput));
   for (const [source, relationships] of Object.entries(sheetRelationships)) {
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
   }
   for (const [source, relationships] of Object.entries(nativeUpdate.relationships)) {
-    if (!source || source === 'xl/workbook.xml' || sheetRelationships[source]) continue;
+    if (!source || source === workbookPart || sheetRelationships[source]) continue;
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
   }
-  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved)));
+  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved, workbookPart, stylesPart, sharedStringsPart)));
+
+  if (preserved?.profile === 'strict') {
+    const strictParts = new Set<string>([
+      workbookPart,
+      stylesPart,
+      sharedStringsPart,
+      ...sheetParts,
+      relationshipPartName(workbookPart),
+      '_rels/.rels',
+      '[Content_Types].xml',
+      ...Object.keys(sheetRelationships).map(relationshipPartName),
+    ]);
+    for (const name of strictParts) {
+      const data = files.get(name);
+      if (!data || !name.endsWith('.xml')) continue;
+      files.set(name, strToU8(strFromU8(data)
+        .replaceAll(NS_MAIN, 'http://purl.oclc.org/ooxml/spreadsheetml/main')
+        .replaceAll(NS_DOC_REL, 'http://purl.oclc.org/ooxml/officeDocument/relationships')));
+    }
+  }
 
   const zipped: Record<string, Uint8Array> = {};
   for (const [name, data] of files) zipped[name] = data;
@@ -295,7 +333,7 @@ export function exportSnapshotToXlsxPackage(
   return zippedBytes.buffer.slice(zippedBytes.byteOffset, zippedBytes.byteOffset + zippedBytes.byteLength) as ArrayBuffer;
 }
 
-export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnapshot): string[] {
+export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookSnapshot): string[] {
   const features = new Set<string>(snapshot ? ['cells', 'styles'] : []);
   for (const name of Object.keys(pkg.parts)) {
     const lower = name.toLowerCase();
@@ -321,7 +359,7 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
       if (sheet.conditionalFormats?.length) features.add('conditional-format');
       if (sheet.dataValidations?.length) features.add('validation');
       if (sheet.sheetTables?.length) features.add('tables');
-      if (sheet.filter) features.add('filters');
+      if (sheet.autoFilter) features.add('filters');
       if (sheet.notes?.length || sheet.commentThreads?.length) features.add('comments');
       for (const payload of Object.values(sheet.drawingPayloads)) {
         if (payload.kind === 'chart') features.add('charts');
@@ -338,7 +376,7 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
 function parseSheet(
   descriptor: SheetDescriptor,
   files: Record<string, Uint8Array>,
-  pkg: XlsxPackage,
+  pkg: OpcPackageGraph,
   sharedStrings: SharedStringRecord[],
   styles: StyleContext,
 ): SheetSnapshot {
@@ -406,7 +444,7 @@ function parseSheet(
   const sheetTables = parseSheetTables(root, descriptor, files, pkg);
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
-  const filter = parseAutoFilter(root, descriptor);
+  const autoFilter = parseAutoFilter(root, descriptor);
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
@@ -435,7 +473,7 @@ function parseSheet(
     tabColor,
     ...(hyperlinks.length ? { hyperlinks } : {}),
     notes,
-    ...(filter ? { filter } : {}),
+    ...(autoFilter ? { autoFilter } : {}),
     ...(outline ? { outline } : {}),
     protectionRules,
     showGridlines: sheetView?.attrs.showGridLines !== '0' && sheetView?.attrs.showGridLines !== 'false',
@@ -530,7 +568,7 @@ function parseSheetTables(
   root: XmlNode,
   descriptor: SheetDescriptor,
   files: Record<string, Uint8Array>,
-  pkg: XlsxPackage,
+  pkg: OpcPackageGraph,
 ): NonNullable<SheetSnapshot['sheetTables']> {
   return children(child(root, 'tableParts'), 'tablePart').flatMap((partNode) => {
     const relationId = partNode.attrs['r:id'] ?? partNode.attrs.id;
@@ -549,6 +587,7 @@ function parseSheetTables(
       ...(column.attrs.totalsRowFunction ? { totalsFunction: column.attrs.totalsRowFunction as NonNullable<SheetSnapshot['sheetTables']>[number]['columns'][number]['totalsFunction'] } : {}),
     }));
     const tableNumber = table.attrs.id ?? (part.replace(/[^0-9]/g, '') || descriptor.id);
+    const tableAutoFilter = parseAutoFilter(table, descriptor);
     return [{
       id: `table-${tableNumber}`,
       sheetId: descriptor.id,
@@ -559,6 +598,7 @@ function parseSheetTables(
       showBandedRows: child(table, 'tableStyleInfo')?.attrs.showRowStripes !== '0',
       showBandedColumns: child(table, 'tableStyleInfo')?.attrs.showColumnStripes === '1',
       showFilterButton: table.attrs.headerRowCount !== '0',
+      ...(tableAutoFilter ? { autoFilter: tableAutoFilter } : {}),
       columns,
       ...(child(table, 'tableStyleInfo')?.attrs.name ? { styleName: child(table, 'tableStyleInfo')!.attrs.name } : {}),
     }];
@@ -877,7 +917,7 @@ function buildStyles(snapshot: WorkbookSnapshot): string {
 function prepareTableParts(
   sheet: SheetSnapshot,
   sourcePart: string,
-  preserved: XlsxPackage | undefined,
+  preserved: OpcPackageGraph | undefined,
   files: Map<string, Uint8Array>,
 ): { parts: Map<string, string>; required: Array<Pick<XlsxRelationship, 'type' | 'target'>> } {
   const tables = sheet.sheetTables ?? [];
@@ -916,7 +956,9 @@ function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number],
   const style = table.styleName
     ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="0" showLastColumn="0" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
     : '';
-  const autoFilter = table.showFilterButton && table.hasHeaderRow ? `<autoFilter ref="${encodeXml(ref)}"/>` : '';
+  const autoFilter = table.autoFilter
+    ? serializeAutoFilter(table.autoFilter)
+    : table.showFilterButton && table.hasHeaderRow ? `<autoFilter ref="${encodeXml(ref)}"/>` : '';
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="${NS_MAIN}" id="${numericId}" name="${encodeXml(table.name)}" displayName="${encodeXml(table.name)}" ref="${encodeXml(ref)}" headerRowCount="${table.hasHeaderRow ? '1' : '0'}" totalsRowCount="${table.hasTotalRow ? '1' : '0'}">${autoFilter}<tableColumns count="${table.columns.length}">${columns}</tableColumns>${style}</table>`;
 }
 
@@ -997,7 +1039,7 @@ function buildWorksheetXml(
   }
   xml += '</sheetData>';
   if (sheet.protectionRules?.length) xml += serializeProtection(sheet.protectionRules);
-  if (sheet.filter) xml += serializeAutoFilter(sheet.filter);
+  if (sheet.autoFilter) xml += serializeAutoFilter(sheet.autoFilter);
   if (sheet.merges.length) {
     xml += `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((merge) => `<mergeCell ref="${rangeToA1(merge.range)}"/>`).join('')}</mergeCells>`;
   }
@@ -1149,14 +1191,24 @@ function serializeDataValidations(rules: DataValidationRule[]): string {
   return `<dataValidations count="${rules.length}">${body}</dataValidations>`;
 }
 
-function serializeAutoFilter(filter: FilterModel): string {
-  const columns = Object.values(filter.criteria).map((condition) => {
-    const colId = condition.column - filter.range.startColumn;
-    if (condition.selectedValues?.length) return `<filterColumn colId="${colId}"><filters${condition.excludeBlanks === false ? ' blank="1"' : ''}>${condition.selectedValues.map((value) => `<filter val="${encodeXml(value)}"/>`).join('')}</filters></filterColumn>`;
-    if (condition.conditionValue !== undefined) return `<filterColumn colId="${colId}"><customFilters><customFilter${condition.conditionOperator ? ` operator="${encodeXml(condition.conditionOperator)}"` : ''} val="${encodeXml(condition.conditionValue)}"/>${condition.conditionValue2 !== undefined ? `<customFilter val="${encodeXml(condition.conditionValue2)}"/>` : ''}</customFilters></filterColumn>`;
+function serializeAutoFilter(filter: AutoFilterModel): string {
+  const columns = Object.values(filter.columns).map((column) => {
+    const colId = column.column - filter.range.startColumn;
+    const criterion = column.criterion;
+    if (!criterion) return '';
+    if (criterion.kind === 'values') {
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}</filters></filterColumn>`;
+    }
+    if (criterion.kind === 'custom') {
+      const conditions = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+      return `<filterColumn colId="${colId}"><customFilters${criterion.join === 'or' ? ' and="0"' : ''}>${conditions.map((condition) => `<customFilter operator="${encodeXml(condition.operator)}" val="${encodeXml(String(condition.value ?? ''))}"/>`).join('')}</customFilters></filterColumn>`;
+    }
     return '';
   }).join('');
-  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}</autoFilter>`;
+  const sortState = filter.sortState
+    ? `<sortState ref="${rangeToA1(filter.sortState.ref)}">${filter.sortState.conditions.map((condition) => `<sortCondition ref="${rangeToA1(condition.ref)}" descending="${condition.descending ? '1' : '0'}"/>`).join('')}</sortState>`
+    : '';
+  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}${sortState}</autoFilter>`;
 }
 
 function serializeProtection(rules: ProtectionRule[]): string {
@@ -1227,11 +1279,11 @@ function serializeWorkbookControlExtensions(original: XmlNode | undefined, contr
   return serializeXml(root);
 }
 
-function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: XlsxPackage): string {
-  const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget('xl/workbook.xml', relation.target) === target)?.id ?? '';
+function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: OpcPackageGraph): string {
+  const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget(workbookPart, relation.target) === target)?.id ?? '';
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
-    const target = relativeTarget('xl/workbook.xml', descriptor.part);
+    const target = relativeTarget(workbookPart, descriptor.part);
     const id = relationFor(descriptor.part, REL_WORKSHEET);
     const sheet = snapshot.sheets.find((candidate) => candidate.id === descriptor.id);
     xml += `<sheet name="${encodeXml(sheet?.name ?? descriptor.name)}" sheetId="${encodeXml(descriptor.id.replace(/^sheet-/, ''))}" r:id="${id}"${sheet?.hidden ? ' state="hidden"' : ''}/>`;
@@ -1267,7 +1319,7 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
   }
   // Preserve workbook-level extension/calculation metadata that this package
   // does not edit.  Sheet references and defined names above remain canonical.
-  const originalRoot = preserved?.parts['xl/workbook.xml'] ? firstElement(parseXml(strFromU8(preserved.parts['xl/workbook.xml'])), 'workbook') : undefined;
+  const originalRoot = preserved?.parts[workbookPart] ? firstElement(parseXml(strFromU8(preserved.parts[workbookPart])), 'workbook') : undefined;
   if (originalRoot) {
     let hasExtensionList = false;
     for (const node of originalRoot.children) {
@@ -1282,12 +1334,22 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
   return `${xml}</workbook>`;
 }
 
-function buildContentTypesXml(files: Map<string, Uint8Array>, preserved?: XlsxPackage): string {
+function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string): string {
   const defaults = new Map<string, string>([['rels', 'application/vnd.openxmlformats-package.relationships+xml'], ['xml', 'application/xml']]);
+  const variant = preserved?.format.family === 'ooxml' ? preserved.format.variant : 'xlsx';
+  const mainType = variant === 'xlsm'
+    ? 'application/vnd.ms-excel.sheet.macroEnabled.main+xml'
+    : variant === 'xltm'
+      ? 'application/vnd.ms-excel.template.macroEnabled.main+xml'
+      : variant === 'xltx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml'
+        : variant === 'xlam'
+          ? 'application/vnd.ms-excel.addin.macroEnabled.main+xml'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml';
   const overrides = new Map<string, string>([
-    ['/xl/workbook.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
-    ['/xl/styles.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
-    ['/xl/sharedStrings.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
+    [`/${workbookPart}`, mainType],
+    [`/${stylesPart}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
+    [`/${sharedStringsPart}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
   ]);
   const original = preserved?.contentTypesXml ? firstElement(parseXml(strFromU8(preserved.contentTypesXml)), 'Types') : undefined;
   for (const node of children(original, 'Default')) if (node.attrs.Extension && node.attrs.ContentType) defaults.set(node.attrs.Extension, node.attrs.ContentType);
@@ -1324,8 +1386,8 @@ function buildRelationshipsXml(relationships: XlsxRelationship[]): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS_REL}">${relationships.map((relation) => `<Relationship Id="${encodeXml(relation.id)}" Type="${encodeXml(relation.type)}" Target="${encodeXml(relation.target)}"${relation.targetMode ? ` TargetMode="${encodeXml(relation.targetMode)}"` : ''}/>`).join('')}</Relationships>`;
 }
 
-function buildRootRelationshipsXml(existing: XlsxRelationship[]): string {
-  const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: 'xl/workbook.xml' }]);
+function buildRootRelationshipsXml(existing: XlsxRelationship[], workbookPart = 'xl/workbook.xml'): string {
+  const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) }]);
   return buildRelationshipsXml(relationships);
 }
 
@@ -1388,7 +1450,7 @@ function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row:
   return undefined;
 }
 
-function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: XlsxPackage): SheetSnapshot['notes'] {
+function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['notes'] {
   const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => isRelationshipKind(candidate.type, 'comments'));
   if (!relation) return [];
   const part = resolveTarget(descriptor.part, relation.target);
@@ -1629,11 +1691,11 @@ function normalizeValidationOperator(value: string | undefined): DataValidationR
   return supported.has(value as DataValidationRule['operator']) ? value as DataValidationRule['operator'] : undefined;
 }
 
-function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): FilterModel | undefined {
+function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): AutoFilterModel | undefined {
   const node = child(root, 'autoFilter');
   if (!node?.attrs.ref) return undefined;
   const range = requireSheetRange(node.attrs.ref, descriptor, 'auto filter');
-  const criteria: FilterModel['criteria'] = {};
+  const columns: AutoFilterModel['columns'] = {};
   for (const column of children(node, 'filterColumn')) {
     const relative = Number(column.attrs.colId);
     if (!Number.isSafeInteger(relative) || relative < 0) continue;
@@ -1641,16 +1703,33 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): FilterMode
     const filters = children(child(column, 'filters'), 'filter').map((filter) => filter.attrs.val ?? '');
     const filtersNode = child(column, 'filters');
     const custom = children(child(column, 'customFilters'), 'customFilter');
-    criteria[absolute] = {
+    columns[absolute] = {
       column: absolute,
-      ...(filters.length ? { selectedValues: filters } : {}),
-      ...(filtersNode?.attrs.blank !== undefined ? { excludeBlanks: !xmlBoolean(filtersNode.attrs.blank) } : {}),
-      ...(custom[0]?.attrs.operator ? { conditionOperator: custom[0].attrs.operator } : {}),
-      ...(custom[0]?.attrs.val ? { conditionValue: custom[0].attrs.val } : {}),
-      ...(custom[1]?.attrs.val ? { conditionValue2: custom[1].attrs.val } : {}),
+      showButton: column.attrs.hiddenButton !== '1',
+      hiddenButton: column.attrs.hiddenButton === '1',
+      criterion: filters.length || filtersNode?.attrs.blank !== undefined
+        ? { kind: 'values', values: filters, includeBlank: filtersNode?.attrs.blank === '1' }
+        : custom.length
+          ? {
+            kind: 'custom',
+            join: custom[0]?.attrs.and === '0' ? 'or' : 'and',
+            conditions: [
+              { operator: (custom[0]?.attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[0]?.attrs.val ?? null },
+              custom[1] ? { operator: (custom[1].attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[1].attrs.val ?? null } : undefined,
+            ],
+          }
+          : undefined,
     };
   }
-  return { sheetId: descriptor.id, range: { ...range, sheetId: descriptor.id }, criteria };
+  const sort = child(root, 'sortState');
+  const sortState = sort ? {
+    ref: { ...requireSheetRange(sort.attrs.ref ?? node.attrs.ref, descriptor, 'sort state'), sheetId: descriptor.id },
+    conditions: children(sort, 'sortCondition').map((condition) => ({
+      ref: { ...requireSheetRange(condition.attrs.ref ?? node.attrs.ref, descriptor, 'sort condition'), sheetId: descriptor.id },
+      descending: xmlBoolean(condition.attrs.descending ?? '0'),
+    })),
+  } : undefined;
+  return { sheetId: descriptor.id, range: { ...range, sheetId: descriptor.id }, columns, sortState };
 }
 
 function parseOutline(root: XmlNode): OutlineModel | undefined {
@@ -1753,6 +1832,7 @@ function parsePane(root: XmlNode): WorksheetPane {
     startRow: topLeft?.row ?? 0,
     startColumn: topLeft?.column ?? 0,
     ...(activePane ? { activePane } : {}),
+    state: 'split',
   };
 }
 
@@ -1899,6 +1979,11 @@ function relativeTarget(source: string, target: string): string {
     targetParts.shift();
   }
   return `${'../'.repeat(sourceParts.length)}${targetParts.join('/')}`;
+}
+
+function relationshipTarget(pkg: OpcPackageGraph | undefined, source: string, type: string): string | undefined {
+  const relation = pkg?.relationships[source]?.find((candidate) => isRelationshipKind(candidate.type, relationshipKind(type)));
+  return relation ? resolveTarget(source, relation.target) : undefined;
 }
 
 function cloneParts(parts: Record<string, Uint8Array>): Record<string, Uint8Array> {

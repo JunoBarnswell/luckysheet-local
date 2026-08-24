@@ -435,8 +435,11 @@ function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, se
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
     for (const range of rule.ranges) shiftContainedRange(range, selection, rowDelta, columnDelta);
   }
-  if (sheet.filter) shiftContainedRange(sheet.filter.range, selection, rowDelta, columnDelta);
-  for (const table of sheet.sheetTables) shiftContainedRange(table.range, selection, rowDelta, columnDelta);
+  if (sheet.autoFilter) shiftContainedRange(sheet.autoFilter.range, selection, rowDelta, columnDelta);
+  for (const table of sheet.sheetTables) {
+    shiftContainedRange(table.range, selection, rowDelta, columnDelta);
+    if (table.autoFilter) shiftContainedRange(table.autoFilter.range, selection, rowDelta, columnDelta);
+  }
   for (const table of workbook.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id) shiftContainedRange(table.sourceRange, selection, rowDelta, columnDelta);
   }
@@ -663,21 +666,38 @@ function shiftRuleRanges(rules: Array<{ ranges: RangeRef[] }>, axis: 'row' | 'co
 }
 
 function shiftFilter(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
-  if (!sheet.filter) return;
-  if (!shiftRangeRef(sheet.filter.range, axis, at, count, direction)) {
-    sheet.filter = undefined;
+  if (!sheet.autoFilter) return;
+  if (!shiftRangeRef(sheet.autoFilter.range, axis, at, count, direction)) {
+    sheet.autoFilter = undefined;
     return;
   }
   if (axis === 'column') {
-    const next: typeof sheet.filter.criteria = {};
-    for (const [key, condition] of Object.entries(sheet.filter.criteria)) {
+    const next: typeof sheet.autoFilter.columns = {};
+    for (const [key, columnDefinition] of Object.entries(sheet.autoFilter.columns)) {
       const column = Number(key);
       const shifted = shiftIndex(column, at, count, direction);
       if (shifted == null) continue;
-      next[shifted] = { ...condition, column: shifted };
+      next[shifted] = { ...columnDefinition, column: shifted };
     }
-    sheet.filter.criteria = next;
+    sheet.autoFilter.columns = next;
   }
+}
+
+function shiftTableAutoFilter(table: SheetTableModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+  const autoFilter = table.autoFilter;
+  if (!autoFilter) return;
+  if (!shiftRangeRef(autoFilter.range, axis, at, count, direction)) {
+    table.autoFilter = undefined;
+    return;
+  }
+  if (axis !== 'column') return;
+  const next: typeof autoFilter.columns = {};
+  for (const [key, column] of Object.entries(autoFilter.columns)) {
+    const shifted = shiftIndex(Number(key), at, count, direction);
+    if (shifted == null) continue;
+    next[shifted] = { ...column, column: shifted };
+  }
+  autoFilter.columns = next;
 }
 
 function shiftFreeze(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
@@ -804,6 +824,7 @@ function shiftDrawingAnchor(drawing: DrawingObject, axis: 'row' | 'column', at: 
 function shiftSheetTables(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   const kept = sheet.sheetTables.filter((table) => shiftRangeRef(table.range, axis, at, count, direction));
   sheet.sheetTables.splice(0, sheet.sheetTables.length, ...kept);
+  for (const table of sheet.sheetTables) shiftTableAutoFilter(table, axis, at, count, direction);
 }
 
 function shiftWorkbookTables(
@@ -1010,8 +1031,11 @@ function applyMoveRange(
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
     for (const range of rule.ranges) relocate(range);
   }
-  if (sheet.filter) relocate(sheet.filter.range);
-  for (const table of sheet.sheetTables) relocate(table.range);
+  if (sheet.autoFilter) relocate(sheet.autoFilter.range);
+  for (const table of sheet.sheetTables) {
+    relocate(table.range);
+    if (table.autoFilter) relocate(table.autoFilter.range);
+  }
   for (const table of workbook.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
   }
@@ -1156,8 +1180,11 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
     for (const range of rule.ranges) validateRange(range, 'rule range');
   }
-  if (sheet.filter) validateRange(sheet.filter.range, 'filter');
-  for (const table of sheet.sheetTables) validateRange(table.range, `table ${table.id}`);
+  if (sheet.autoFilter) validateRange(sheet.autoFilter.range, 'filter');
+  for (const table of sheet.sheetTables) {
+    validateRange(table.range, `table ${table.id}`);
+    if (table.autoFilter) validateRange(table.autoFilter.range, `table ${table.id} autoFilter`);
+  }
   for (const table of workbook.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id) validateRange(table.sourceRange, `workbook table ${table.id}`);
   }

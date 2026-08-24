@@ -397,7 +397,7 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
     range: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 1 },
     anchor: { row: 2, column: 0 },
   });
-  sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 1, startRow: 0, startColumn: 0 };
+  sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 1, startRow: 0, startColumn: 0, state: 'frozen' };
 
   runtime.execute('sheet.rows.insert', { sheetId: sheet.id, at: 1, count: 2 });
   assert.equal(sheet.rowCount, 1002);

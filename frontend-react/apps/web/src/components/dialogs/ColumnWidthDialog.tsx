@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { excelColumnWidthToPixels, MAX_EXCEL_COLUMN_WIDTH, pixelsToExcelColumnWidth } from '@react-sheets/exchange-xlsx';
+import { excelColumnWidthToPixels, MAX_EXCEL_COLUMN_WIDTH, pixelsToExcelColumnWidth } from '@react-sheets/exchange-excel-ooxml';
 import { Button, Dialog, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
 
 export interface ColumnWidthDialogProps {

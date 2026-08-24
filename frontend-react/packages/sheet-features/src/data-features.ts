@@ -2,12 +2,16 @@ import type {
   CellData,
   ConditionalFormatRule,
   DataValidationRule,
+  AutoFilterColumn,
+  AutoFilterModel,
+  FilterCriterion,
   RangeRef,
   WorkbookModel,
   WorksheetModel,
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
 import { StructuralTransform, applyRowPermutation, columnLabel, validatePermutationMetadata } from "@react-sheets/core-model";
+import { resolveWorksheetAutoFilter } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
   evaluateFormula,
@@ -548,30 +552,42 @@ const FILTER_OPERATORS = new Set([
   'notblank', 'not blanks', 'between', 'datebefore', 'dateafter', 'dateequals',
 ]);
 
-export function normalizeFilterModel(filter: import('@react-sheets/core-model').FilterModel): import('@react-sheets/core-model').FilterModel {
+export function normalizeAutoFilterModel(filter: AutoFilterModel): AutoFilterModel {
   const range = normalizeRangeRef(filter.range);
   if (range.sheetId !== filter.sheetId) throw new Error('Filter range must target its sheetId');
-  const criteria: Record<number, import('@react-sheets/core-model').FilterColumnCondition> = {};
-  for (const [rawColumn, input] of Object.entries(filter.criteria)) {
+  const columns: Record<number, AutoFilterColumn> = {};
+  for (const [rawColumn, input] of Object.entries(filter.columns)) {
     const column = Number(rawColumn);
     if (!Number.isInteger(column) || column < range.startColumn || column > range.endColumn) throw new Error('Filter criterion is outside the filter range');
-    const conditionOperator = input.conditionOperator?.trim().toLocaleLowerCase();
-    if (conditionOperator && !FILTER_OPERATORS.has(conditionOperator)) throw new Error(`Unsupported filter condition: ${input.conditionOperator}`);
-    if (conditionOperator === 'between' && input.conditionValue2 == null) throw new Error('Between filter requires two values');
-    criteria[column] = {
+    if (!input || input.column !== column) throw new Error('Filter column identity is invalid');
+    columns[column] = {
       ...structuredClone(input),
       column,
-      ...(input.selectedValues ? { selectedValues: [...new Set(input.selectedValues.map(String))] } : {}),
-      ...(conditionOperator ? { conditionOperator } : {}),
+      showButton: input.showButton !== false,
+      hiddenButton: input.hiddenButton === true,
+      criterion: input.criterion ? normalizeCriterion(input.criterion) : undefined,
     };
   }
-  return { sheetId: filter.sheetId, range, criteria };
+  return { sheetId: filter.sheetId, range, columns, sortState: filter.sortState ? structuredClone(filter.sortState) : undefined, preservedXml: structuredClone(filter.preservedXml) };
+}
+
+function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
+  if (criterion.kind === 'values') return { ...structuredClone(criterion), values: [...new Set(criterion.values)] };
+  if (criterion.kind === 'custom') {
+    if (!criterion.conditions[0]) throw new Error('Custom filter requires a condition');
+    return structuredClone(criterion);
+  }
+  if (criterion.kind === 'top10' && (!Number.isSafeInteger(criterion.rank) || criterion.rank <= 0)) throw new Error('Top10 filter rank must be positive');
+  return structuredClone(criterion);
 }
 
 export function computeFilterHiddenRows(sheet: WorksheetModel): Set<number> {
   const hidden = new Set<number>();
-  let filter: import('@react-sheets/core-model').FilterModel | undefined;
-  try { filter = sheet.filter ? normalizeFilterModel(sheet.filter) : undefined; }
+  let filter: import('@react-sheets/core-model').AutoFilterModel | undefined;
+  try {
+    const source = resolveWorksheetAutoFilter(sheet);
+    filter = source ? normalizeAutoFilterModel(source) : undefined;
+  }
   catch {
     // Malformed filter state must not expose unfiltered data accidentally.
     for (let row = 0; row < sheet.rowCount; row += 1) hidden.add(row);
@@ -584,28 +600,60 @@ export function computeFilterHiddenRows(sheet: WorksheetModel): Set<number> {
     && entry.range.startColumn === filter.range.startColumn
     && entry.range.endColumn === filter.range.endColumn);
   const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
-  for (const rawKey of Object.keys(filter.criteria)) {
+  for (const rawKey of Object.keys(filter.columns)) {
     const column = Number(rawKey);
-    const criterion = filter.criteria[column];
+    const criterion = filter.columns[column]?.criterion;
     if (!criterion) continue;
     for (let row = filter.range.startRow + 1; row <= endRow; row++) {
       const cell = sheet.cells.get(row, column);
       const text = cellText(cell);
-      let visible = true;
-      if (criterion.selectedValues != null) {
-        const normalized = text.toLocaleLowerCase();
-        visible = criterion.selectedValues.some((value) => value.toLocaleLowerCase() === normalized);
-      }
-      if (visible && criterion.excludeBlanks && text === "") {
-        visible = false;
-      }
-      if (visible && criterion.conditionOperator && criterion.conditionValue != null) {
-        visible = evaluateFilterCondition(text, criterion.conditionOperator, criterion.conditionValue, criterion.conditionValue2);
-      }
+      const visible = matchesFilterCriterion(cell?.value ?? null, text, criterion);
       if (!visible) hidden.add(row);
     }
   }
   return hidden;
+}
+
+/**
+ * Computes the complete value domain for one filter column. The column's own
+ * criterion is deliberately ignored while all other column criteria remain
+ * active, matching Excel's filter menu recovery semantics.
+ */
+export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number): string[] {
+  const source = resolveWorksheetAutoFilter(sheet);
+  const filter = source ? normalizeAutoFilterModel(source) : undefined;
+  if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) return [];
+  const values = new Set<string>();
+  for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row += 1) {
+    const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
+      if (entry.column === column || !entry.criterion) return true;
+      const cell = sheet.cells.get(row, entry.column);
+      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion);
+    });
+    if (!otherColumnsMatch) continue;
+    const cell = sheet.cells.get(row, column);
+    values.add(cellText(cell));
+  }
+  return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+function matchesFilterCriterion(value: unknown, text: string, criterion: FilterCriterion): boolean {
+  if (criterion.kind === 'values') {
+    if (text === '' && criterion.includeBlank) return true;
+    return criterion.values.some((candidate) => String(candidate ?? '').toLocaleLowerCase() === text.toLocaleLowerCase());
+  }
+  if (criterion.kind === 'custom') {
+    const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition))
+      .map((condition) => evaluateFilterCondition(text, condition.operator, String(condition.value ?? '')));
+    return criterion.join === 'and' ? results.every(Boolean) : results.some(Boolean);
+  }
+  if (criterion.kind === 'top10' || criterion.kind === 'dynamic' || criterion.kind === 'color' || criterion.kind === 'icon') {
+    // Ranking, dynamic date and visual criteria are resolved by the typed index
+    // before row projection. They are intentionally not treated as value filters.
+    void value;
+    return true;
+  }
+  return true;
 }
 
 function evaluateFilterCondition(text: string, operator: string, operand: string, operand2?: string): boolean {
@@ -1077,7 +1125,7 @@ function assertMatrixTransformSupported(sheet: WorksheetModel, range: RangeRef):
   if (sheet.sheetTables.some((table) => intersects(table.range))) throw new Error('Matrix transform cannot rewrite a Sheet Table');
   if (sheet.conditionalFormats.some((rule) => rule.ranges.some(intersects))) throw new Error('Matrix transform cannot rewrite conditional-format ranges');
   if (sheet.dataValidations.some((rule) => rule.ranges.some(intersects))) throw new Error('Matrix transform cannot rewrite validation ranges');
-  if (sheet.filter && intersects(sheet.filter.range)) throw new Error('Matrix transform cannot rewrite a filtered range');
+  if (sheet.autoFilter && intersects(sheet.autoFilter.range)) throw new Error('Matrix transform cannot rewrite a filtered range');
   if (sheet.drawings.some((drawing) => drawing.anchor.kind !== 'absolute'
     && drawing.anchor.row !== undefined && drawing.anchor.row >= range.startRow && drawing.anchor.row <= range.endRow)) {
     throw new Error('Matrix transform cannot rewrite drawing anchors');

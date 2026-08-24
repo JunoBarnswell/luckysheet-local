@@ -207,7 +207,7 @@ public class WorkbookCatalogService {
             Instant now = Instant.now();
             artifacts.save(new WorkbookSourceArtifactEntity(targetId, sourceArtifact.getFileName(), sourceArtifact.getMimeType(),
                     sourceArtifact.getChecksum(), sourceArtifact.getByteLength(), sourceArtifact.getContent().clone(),
-                    sourceArtifact.getDetectedFeaturesJson(), now, now));
+                    sourceArtifact.getNativeMetadataJson(), now, now));
         }
         return summaryForActor(copied, actor);
     }
@@ -280,8 +280,8 @@ public class WorkbookCatalogService {
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity entity = artifacts.findById(unitId).orElseGet(() ->
                 new WorkbookSourceArtifactEntity(unitId, safeFileName(fileName), safeMimeType(mimeType), actual,
-                        content.length, content.clone(), "[]", now, now));
-        entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), "[]", now);
+                        content.length, content.clone(), "{\"schema\":\"NativePackageMetadata\",\"format\":\"xlsx\",\"codecRevision\":4}", now, now));
+        entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), "{\"schema\":\"NativePackageMetadata\",\"format\":\"xlsx\",\"codecRevision\":4}", now);
         artifacts.save(entity);
         return artifactResponse(entity);
     }
@@ -292,9 +292,8 @@ public class WorkbookCatalogService {
     }
 
     @Transactional
-    public WorkbookImportResponse importXlsx(MultipartFile file, String name, String spaceId, String folderId,
-                                             String snapshotJson, int xlsxCodecVersion, String detectedFeaturesJson,
-                                             String capabilityReportJson, String actor) {
+    public WorkbookImportResponse importWorkbook(MultipartFile file, String name, String spaceId, String folderId,
+                                                 String snapshotJson, String format, String nativeMetadataJson, String actor) {
         if (file == null || file.isEmpty()) throw ServiceException.validation("XLSX file is required");
         if (file.getSize() > MAX_XLSX_BYTES) throw ServiceException.validation("XLSX file exceeds 50 MiB");
         if (snapshotJson == null || snapshotJson.isBlank()) throw ServiceException.validation("Parsed workbook snapshot is required");
@@ -316,22 +315,18 @@ public class WorkbookCatalogService {
         String unitId = snapshot.path("unitId").asText("").trim();
         if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
         WorkbookSnapshotValidator.requireCanonical(snapshot, unitId);
-        if (xlsxCodecVersion < 1) throw ServiceException.validation("XLSX codec version is invalid");
-        JsonNode detectedFeatures;
-        JsonNode capabilityReport;
+        JsonNode nativeMetadata;
         try {
-            detectedFeatures = mapper.readTree(detectedFeaturesJson);
-            capabilityReport = mapper.readTree(capabilityReportJson);
+            nativeMetadata = mapper.readTree(nativeMetadataJson);
         } catch (Exception error) {
-            throw ServiceException.validation("XLSX capability metadata is invalid");
+            throw ServiceException.validation("Native package metadata is invalid");
         }
-        if (detectedFeatures == null || !detectedFeatures.isArray() || capabilityReport == null || !capabilityReport.isObject()
-                || !"CompatibilityReport".equals(capabilityReport.path("schema").asText())) {
-            throw ServiceException.validation("XLSX capability metadata is invalid");
+        if (format == null || format.isBlank() || nativeMetadata == null || !nativeMetadata.isObject()
+                || !"NativePackageMetadata".equals(nativeMetadata.path("schema").asText())) {
+            throw ServiceException.validation("Native package metadata is invalid");
         }
-        ObjectNode artifactMetadata = mapper.createObjectNode().put("xlsxCodecVersion", xlsxCodecVersion);
-        artifactMetadata.set("detectedFeatures", detectedFeatures.deepCopy());
-        artifactMetadata.set("capabilityReport", capabilityReport.deepCopy());
+        ObjectNode artifactMetadata = mapper.createObjectNode().put("schema", "NativePackageMetadata").put("format", format);
+        artifactMetadata.setAll((ObjectNode) nativeMetadata.deepCopy());
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
                 WorkbookSource.XLSX_IMPORT), actor);
         String digest = checksum(content);

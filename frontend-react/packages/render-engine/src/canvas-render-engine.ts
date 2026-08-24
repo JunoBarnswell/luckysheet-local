@@ -1,6 +1,6 @@
 import { drawCellLayer, drawExtensionsLayer, drawGridLayer } from "./cell-renderer";
 import { DirtyRangeSet } from "./dirty-ranges";
-import { calculateRenderPlan, computeRenderPanes, defaultHeaderOffset, type RenderPlan } from "./render-plan";
+import { calculateRenderPlan, computePaneMap, defaultHeaderOffset, type RenderPlan } from "./render-plan";
 import { Scene } from "./scene";
 import { SheetSkeleton } from "./sheet-skeleton";
 import { Viewport } from "./viewport";
@@ -25,7 +25,7 @@ import {
   type RenderPane,
   type RenderTheme,
   type ViewportSnapshot,
-  type FreezeSplits,
+  type PaneLayout,
   DEFAULT_LAYER_DEFINITIONS as DEFAULT_LAYERS_SOURCE,
   DEFAULT_RENDER_THEME,
 } from "./types";
@@ -70,7 +70,7 @@ export class CanvasRenderEngine {
   private frameUsesAnimationFrame = false;
   private disposed = false;
 
-  private freezeSplits: FreezeSplits | null = null;
+  private paneLayout: PaneLayout | null = null;
   private readonly headerOrigin: Point = defaultHeaderOffset();
   private chrome: ChromeState = createEmptyChromeState();
   private floatables: readonly FloatingDrawable[] = [];
@@ -223,9 +223,9 @@ export class CanvasRenderEngine {
 
   // ---------- 冻结 / Chrome / 浮动对象 ----------
 
-  setFreeze(freeze: FreezeSplits | null): void {
+  setPane(pane: PaneLayout | null): void {
     this.assertActive();
-    this.freezeSplits = freeze && (freeze.xSplit > 0 || freeze.ySplit > 0) ? freeze : null;
+    this.paneLayout = pane && pane.kind !== 'none' && (pane.xSplit > 0 || pane.ySplit > 0) ? structuredClone(pane) : null;
     this.forceFullRedraw = true;
     this.requestRender();
   }
@@ -262,9 +262,9 @@ export class CanvasRenderEngine {
     const origin = this.headerOrigin;
     let frozenLeft = 0;
     let frozenTop = 0;
-    if (this.freezeSplits) {
-      for (let c = 0; c < this.freezeSplits.xSplit; c++) frozenLeft += this.skeletonModel.getColumnWidth(c);
-      for (let r = 0; r < this.freezeSplits.ySplit; r++) frozenTop += this.skeletonModel.getRowHeight(r);
+    if (this.paneLayout?.kind === 'frozen') {
+      for (let c = 0; c < this.paneLayout.xSplit; c++) frozenLeft += this.skeletonModel.getColumnWidth(c);
+      for (let r = 0; r < this.paneLayout.ySplit; r++) frozenTop += this.skeletonModel.getRowHeight(r);
     }
     const viewLeft = origin.x + frozenLeft;
     const viewTop = origin.y + frozenTop;
@@ -272,8 +272,8 @@ export class CanvasRenderEngine {
     const viewHeight = Math.max(1, this.viewport.height - viewTop);
 
     // 单元格在冻结区内的行列无需滚动
-    const inFrozenColumn = this.freezeSplits != null && cell.column < this.freezeSplits.xSplit;
-    const inFrozenRow = this.freezeSplits != null && cell.row < this.freezeSplits.ySplit;
+    const inFrozenColumn = this.paneLayout?.kind === 'frozen' && cell.column < this.paneLayout.xSplit;
+    const inFrozenRow = this.paneLayout?.kind === 'frozen' && cell.row < this.paneLayout.ySplit;
 
     let nextScrollX = this.viewport.scrollX;
     let nextScrollY = this.viewport.scrollY;
@@ -298,10 +298,10 @@ export class CanvasRenderEngine {
   paneAtLocalPoint(local: Point): RenderPane | null {
     const plan = this.lastPlan;
     const panes = plan?.panes
-      ?? computeRenderPanes(this.skeletonModel, this.viewport.getSnapshot(), this.freezeSplits, this.headerOrigin);
+      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin).panes;
     for (const pane of panes) {
-      if (local.x >= pane.rect.x && local.x <= pane.rect.x + pane.rect.width
-        && local.y >= pane.rect.y && local.y <= pane.rect.y + pane.rect.height) {
+      if (local.x >= pane.screenRect.x && local.x <= pane.screenRect.x + pane.screenRect.width
+        && local.y >= pane.screenRect.y && local.y <= pane.screenRect.y + pane.screenRect.height) {
         return pane;
       }
     }
@@ -312,7 +312,7 @@ export class CanvasRenderEngine {
   localToContent(local: Point): Point {
     const pane = this.paneAtLocalPoint(local);
     if (!pane) return { x: local.x, y: local.y };
-    return { x: local.x - pane.rect.x + pane.offset.x, y: local.y - pane.rect.y + pane.offset.y };
+    return { x: local.x - pane.screenRect.x + pane.contentOrigin.x, y: local.y - pane.screenRect.y + pane.contentOrigin.y };
   }
 
   /** 屏幕本地坐标 → 模型单元格(null = 表头区或越界) */
@@ -330,7 +330,7 @@ export class CanvasRenderEngine {
     if (local.y < origin.y && local.x >= origin.x) {
       const pane = this.paneAtLocalPoint({ x: local.x, y: origin.y + 1 });
       if (!pane) return null;
-      const contentX = local.x - pane.rect.x + pane.offset.x;
+      const contentX = local.x - pane.screenRect.x + pane.contentOrigin.x;
       const column = this.skeletonModel.findColumnAt(contentX);
       if (column < 0) return null;
       const boundary = this.skeletonModel.getColumnLeft(column) + this.skeletonModel.getColumnWidth(column) - contentX;
@@ -340,7 +340,7 @@ export class CanvasRenderEngine {
     if (local.x < origin.x && local.y >= origin.y) {
       const pane = this.paneAtLocalPoint({ x: origin.x + 1, y: local.y });
       if (!pane) return null;
-      const contentY = local.y - pane.rect.y + pane.offset.y;
+      const contentY = local.y - pane.screenRect.y + pane.contentOrigin.y;
       const row = this.skeletonModel.findRowAt(contentY);
       if (row < 0) return null;
       const boundary = this.skeletonModel.getRowTop(row) + this.skeletonModel.getRowHeight(row) - contentY;
@@ -351,23 +351,24 @@ export class CanvasRenderEngine {
   }
 
   /**
-   * 内容坐标 → 当前窗格屏幕坐标。
+   * 内容坐标 → PaneMap 决定的屏幕坐标。
    *
-   * 浮动对象没有模型单元格，继续使用主窗格；单元格编辑器必须传入
-   * cell，否则冻结行/列会错误地套用 main pane 的原点，把编辑框落到
-   * 另一格（通常表现为 A2/首格）。
+   * 单元格编辑器必须传入 cell；浮动对象使用内容点定位。
    */
-  contentToMainScreen(content: Point, cell?: CellAddress): Point {
+  contentToScreen(content: Point, cell?: CellAddress): Point {
     const panes = this.lastPlan?.panes
-      ?? computeRenderPanes(this.skeletonModel, this.viewport.getSnapshot(), this.freezeSplits, this.headerOrigin);
+      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin).panes;
     const main = panes.find((pane) => pane.id === "main") ?? panes.at(-1)!;
     const target = cell
-      ? panes.find((pane) => pane.range
-        && cell.row >= pane.range.startRow && cell.row <= pane.range.endRow
-        && cell.column >= pane.range.startColumn && cell.column <= pane.range.endColumn)
+      ? panes.find((pane) => pane.visibleRange
+        && cell.row >= pane.visibleRange.startRow && cell.row <= pane.visibleRange.endRow
+        && cell.column >= pane.visibleRange.startColumn && cell.column <= pane.visibleRange.endColumn)
       : undefined;
-    const pane = target ?? main;
-    return { x: content.x - pane.offset.x + pane.rect.x, y: content.y - pane.offset.y + pane.rect.y };
+    const pane = target ?? panes.find((candidate) => content.x >= candidate.contentOrigin.x
+      && content.x <= candidate.contentOrigin.x + candidate.screenRect.width
+      && content.y >= candidate.contentOrigin.y
+      && content.y <= candidate.contentOrigin.y + candidate.screenRect.height) ?? main;
+    return { x: content.x - pane.contentOrigin.x + pane.screenRect.x, y: content.y - pane.contentOrigin.y + pane.screenRect.y };
   }
 
   /**
@@ -379,17 +380,17 @@ export class CanvasRenderEngine {
     const content = this.skeletonModel.getRangeRect(range);
     if (!content) return [];
     const panes = this.lastPlan?.panes
-      ?? computeRenderPanes(this.skeletonModel, this.viewport.getSnapshot(), this.freezeSplits, this.headerOrigin);
+      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin).panes;
     const rects: Rect[] = [];
     for (const pane of panes) {
-      const left = Math.max(content.x, pane.offset.x);
-      const top = Math.max(content.y, pane.offset.y);
-      const right = Math.min(content.x + content.width, pane.offset.x + pane.rect.width);
-      const bottom = Math.min(content.y + content.height, pane.offset.y + pane.rect.height);
+      const left = Math.max(content.x, pane.contentOrigin.x);
+      const top = Math.max(content.y, pane.contentOrigin.y);
+      const right = Math.min(content.x + content.width, pane.contentOrigin.x + pane.screenRect.width);
+      const bottom = Math.min(content.y + content.height, pane.contentOrigin.y + pane.screenRect.height);
       if (right <= left || bottom <= top) continue;
       rects.push({
-        x: left - pane.offset.x + pane.rect.x,
-        y: top - pane.offset.y + pane.rect.y,
+        x: left - pane.contentOrigin.x + pane.screenRect.x,
+        y: top - pane.contentOrigin.y + pane.screenRect.y,
         width: right - left,
         height: bottom - top,
       });
@@ -406,7 +407,7 @@ export class CanvasRenderEngine {
     }
     for (let i = this.floatables.length - 1; i >= 0; i--) {
       const drawable = this.floatables[i]!;
-      const screen = this.contentToMainScreen(drawable.bounds);
+      const screen = this.contentToScreen(drawable.bounds);
       if (local.x >= screen.x && local.x <= screen.x + drawable.bounds.width
         && local.y >= screen.y && local.y <= screen.y + drawable.bounds.height) {
         return { kind: drawable.kind, id: drawable.id };
@@ -418,7 +419,7 @@ export class CanvasRenderEngine {
   hitFloatingHandles(local: Point, id: string): FloatingHit | null {
     const drawable = this.floatables.find((item) => item.id === id);
     if (!drawable) return null;
-    const screen = this.contentToMainScreen(drawable.bounds);
+    const screen = this.contentToScreen(drawable.bounds);
     const tolerance = 5;
     const handles: Array<[FloatingHandle, Point]> = [
       ["nw", { x: screen.x, y: screen.y }],
@@ -461,7 +462,7 @@ export class CanvasRenderEngine {
       forceFull: this.forceFullRedraw || scrolling,
       chromeDirty: this.chromeDirty,
       layers: this.layerDefinitions,
-      freeze: this.freezeSplits,
+      pane: this.paneLayout,
       headerOffset: this.headerOrigin,
     });
     if (this.scene.mounted) this.applyPlan(plan);
@@ -539,14 +540,14 @@ export class CanvasRenderEngine {
       for (const pane of plan.panes) {
         context.save();
         context.beginPath();
-        context.rect(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
+        context.rect(pane.screenRect.x, pane.screenRect.y, pane.screenRect.width, pane.screenRect.height);
         context.clip();
-        context.translate(pane.rect.x - pane.offset.x, pane.rect.y - pane.offset.y);
+        context.translate(pane.screenRect.x - pane.contentOrigin.x, pane.screenRect.y - pane.contentOrigin.y);
         const options = {
           context,
           skeleton: this.skeletonModel,
           pane,
-          visibleRange: pane.range,
+          visibleRange: pane.visibleRange,
           cellProvider: this.cellProvider,
           theme: this.theme,
           drawRects: convertDrawRectsForPane(drawRects, pane),
@@ -587,8 +588,8 @@ export class CanvasRenderEngine {
 function convertDrawRectsForPane(rects: readonly Rect[] | undefined, pane: RenderPane): Rect[] | undefined {
   if (!rects) return undefined;
   return rects.map((rect) => ({
-    x: rect.x - pane.rect.x + pane.offset.x,
-    y: rect.y - pane.rect.y + pane.offset.y,
+    x: rect.x - pane.screenRect.x + pane.contentOrigin.x,
+    y: rect.y - pane.screenRect.y + pane.contentOrigin.y,
     width: rect.width,
     height: rect.height,
   }));

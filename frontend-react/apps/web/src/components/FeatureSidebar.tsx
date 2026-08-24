@@ -106,12 +106,8 @@ export interface FeatureSidebarProps {
   onPreviewRevision?: (revision: number) => void;
   onClearHistoryPreview?: () => void;
   onRefreshRevisions?: () => void;
-  compatibilityReport?: import('@react-sheets/exchange-xlsx').CompatibilityReport | null;
+  compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport?: () => void;
-  needsLayoutRepair?: boolean;
-  layoutRepairPreview?: import('@react-sheets/exchange-xlsx').XlsxLayoutRepairPlan | null;
-  onPreviewLayoutRepair?: () => void;
-  onApplyLayoutRepair?: () => void;
   tables: readonly WorkbookTableModel[];
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
@@ -196,10 +192,6 @@ function InspectorPanel({
   sheet,
   compatibilityReport,
   onClearCompatibilityReport,
-  needsLayoutRepair,
-  layoutRepairPreview,
-  onPreviewLayoutRepair,
-  onApplyLayoutRepair,
   onAddComment,
   onReplyComment,
   onResolveComment,
@@ -211,12 +203,8 @@ function InspectorPanel({
 }: {
   activeCell: string;
   sheet: CanvasSheetSnapshot;
-  compatibilityReport?: import('@react-sheets/exchange-xlsx').CompatibilityReport | null;
+  compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport?: () => void;
-  needsLayoutRepair?: boolean;
-  layoutRepairPreview?: import('@react-sheets/exchange-xlsx').XlsxLayoutRepairPlan | null;
-  onPreviewLayoutRepair?: () => void;
-  onApplyLayoutRepair?: () => void;
   onAddComment?: (text: string) => void;
   onReplyComment?: (text: string) => void;
   onResolveComment?: () => void;
@@ -270,7 +258,7 @@ function InspectorPanel({
         onRemoveHyperlink={onRemoveHyperlink}
       />
 
-      <CompatibilityReportPanel report={compatibilityReport ?? null} onClear={onClearCompatibilityReport} needsLayoutRepair={needsLayoutRepair} repairPreview={layoutRepairPreview} onPreviewRepair={onPreviewLayoutRepair} onApplyRepair={onApplyLayoutRepair} />
+      <CompatibilityReportPanel report={compatibilityReport ?? null} onClear={onClearCompatibilityReport} />
 
       <Panel className="shadow-none">
         <PanelHeader>
@@ -337,10 +325,6 @@ export function FeatureSidebar({
   onRefreshRevisions,
   compatibilityReport = null,
   onClearCompatibilityReport,
-  needsLayoutRepair = false,
-  layoutRepairPreview = null,
-  onPreviewLayoutRepair,
-  onApplyLayoutRepair,
   tables,
   onReadDataRows,
   onRemoveDataTable,
@@ -464,10 +448,6 @@ export function FeatureSidebar({
             sheet={sheet}
             compatibilityReport={compatibilityReport}
             onClearCompatibilityReport={onClearCompatibilityReport}
-            needsLayoutRepair={needsLayoutRepair}
-            layoutRepairPreview={layoutRepairPreview}
-            onPreviewLayoutRepair={onPreviewLayoutRepair}
-            onApplyLayoutRepair={onApplyLayoutRepair}
             onAddComment={onAddComment}
             onReplyComment={onReplyComment}
             onResolveComment={onResolveComment}

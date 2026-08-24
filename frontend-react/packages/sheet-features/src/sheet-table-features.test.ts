@@ -5,7 +5,7 @@ import type { SheetTableModel } from '@react-sheets/core-model';
 import {
   buildTotalRowFormula,
   computeSheetTableCellStyle,
-  createFilterModelForTable,
+  createAutoFilterModelForTable,
   findSheetTableAt,
   isPointInRange,
   mergePresentationStyles,
@@ -43,8 +43,8 @@ test('computeSheetTableCellStyle styles header, body bands, and total row', () =
   assert.deepEqual(tableBodyBounds(sampleTable), { startRow: 1, endRow: 2 });
 });
 
-test('createFilterModelForTable uses the table range', () => {
-  const filter = createFilterModelForTable(sampleTable);
+test('createAutoFilterModelForTable uses the table range', () => {
+  const filter = createAutoFilterModelForTable(sampleTable);
   assert.deepEqual(filter.range, sampleTable.range);
   assert.equal(filter.sheetId, 's1');
 });
@@ -81,7 +81,7 @@ test('planTotalRowToggle expands range and writes total row formulas', () => {
 test('resolveFilterButtonCells targets table header row when filter matches table', () => {
   const sheet = new WorksheetModel('s1', 'Sheet1');
   sheet.sheetTables.push(sampleTable);
-  sheet.filter = createFilterModelForTable(sampleTable);
+  sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
   assert.deepEqual(resolveFilterButtonCells(sheet), [
     { row: 0, column: 0 },
     { row: 0, column: 1 },

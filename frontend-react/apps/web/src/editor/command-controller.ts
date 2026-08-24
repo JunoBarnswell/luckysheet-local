@@ -214,8 +214,8 @@ export function useEditorCommandController({
     const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
-  const buildFilterSelectionCommand = (): CommandDescriptor => ({ commandId: "sheet.filter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange } });
-  const buildClearFilterCommand = (): CommandDescriptor => ({ commandId: "sheet.filter.clearCriteria", params: { sheetId: state.activeSheetId, range: currentDataRange } });
+  const buildFilterSelectionCommand = (): CommandDescriptor => ({ commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange } });
+  const buildClearFilterCommand = (): CommandDescriptor => ({ commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: currentDataRange } });
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
     void ascending;
     const range = session.getCurrentRegion();

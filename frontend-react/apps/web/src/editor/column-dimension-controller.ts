@@ -1,4 +1,4 @@
-import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth } from '@react-sheets/exchange-xlsx';
+import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth } from '@react-sheets/exchange-excel-ooxml';
 import { DEFAULT_RENDER_THEME, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
 

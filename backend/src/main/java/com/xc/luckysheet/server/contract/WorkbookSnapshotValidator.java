@@ -68,6 +68,19 @@ public final class WorkbookSnapshotValidator {
                     || "split".equals(sheet.path("pane").path("kind").asText()))) {
                 throw ServiceException.validation("Workbook snapshot sheet pixel geometry is invalid");
             }
+            JsonNode pane = sheet.path("pane");
+            if (!"none".equals(pane.path("kind").asText())) {
+                String state = pane.path("state").asText();
+                if (("frozen".equals(pane.path("kind").asText()) && !("frozen".equals(state) || "frozenSplit".equals(state)))
+                        || ("split".equals(pane.path("kind").asText()) && !"split".equals(state))) {
+                    throw ServiceException.validation("Workbook snapshot pane state is invalid");
+                }
+            }
+            JsonNode autoFilter = sheet.get("autoFilter");
+            if (autoFilter != null && (!autoFilter.isObject() || !sheetId.equals(autoFilter.path("sheetId").asText())
+                    || !autoFilter.path("range").isObject() || !autoFilter.path("columns").isObject())) {
+                throw ServiceException.validation("Workbook snapshot autoFilter is invalid");
+            }
         }
         return snapshot;
     }
@@ -77,6 +90,34 @@ public final class WorkbookSnapshotValidator {
         if (value == null || !value.isObject()) throw ServiceException.validation("Stored workbook snapshot must be an object");
         ObjectNode snapshot = ((ObjectNode) value).deepCopy();
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
+            return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 3 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
+                if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
+                ObjectNode sheet = (ObjectNode) raw;
+                JsonNode legacy = sheet.get("filter");
+                if (legacy == null || !legacy.isObject()) continue;
+                ObjectNode autoFilter = snapshot.objectNode();
+                autoFilter.put("sheetId", legacy.path("sheetId").asText(sheet.path("id").asText()));
+                autoFilter.set("range", legacy.path("range").deepCopy());
+                ObjectNode columns = snapshot.objectNode();
+                legacy.path("criteria").fields().forEachRemaining(entry -> {
+                    int columnIndex = Integer.parseInt(entry.getKey());
+                    ObjectNode column = snapshot.objectNode().put("column", columnIndex).put("showButton", true).put("hiddenButton", false);
+                    JsonNode selected = entry.getValue().get("selectedValues");
+                    if (selected != null && selected.isArray()) {
+                        ObjectNode criterion = snapshot.objectNode().put("kind", "values").put("includeBlank", !entry.getValue().path("excludeBlanks").asBoolean(false));
+                        criterion.set("values", selected.deepCopy());
+                        column.set("criterion", criterion);
+                    }
+                    columns.set(entry.getKey(), column);
+                });
+                autoFilter.set("columns", columns);
+                sheet.set("autoFilter", autoFilter);
+                sheet.remove("filter");
+            }
             return requireCanonical(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) != 2 || !snapshot.path("sheets").isArray()) {

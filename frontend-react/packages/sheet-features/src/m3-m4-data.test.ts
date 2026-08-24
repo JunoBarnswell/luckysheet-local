@@ -6,7 +6,7 @@ import {
   computeConditionalOverlays,
   computeFilterHiddenRows,
   registerSheetCommands,
-  normalizeFilterModel,
+  normalizeAutoFilterModel,
   normalizeDataValidationRule,
   validationList,
   validateDataInput,
@@ -108,15 +108,15 @@ test('Filter supports compound text/blank/date conditions and rejects out-of-ran
   sheet.cells.set(1, 0, { value: 'Alpha' });
   sheet.cells.set(2, 0, { value: '' });
   sheet.cells.set(3, 0, { value: 'Beta' });
-  sheet.filter = normalizeFilterModel({
+  sheet.autoFilter = normalizeAutoFilterModel({
     sheetId: sheet.id,
     range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
-    criteria: { 0: { column: 0, conditionOperator: 'contains', conditionValue: 'a' } },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'contains', value: 'a' }] } } },
   });
   assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [2]);
-  assert.throws(() => normalizeFilterModel({
-    ...sheet.filter!,
-    criteria: { 1: { column: 1, conditionOperator: 'equals', conditionValue: 'x' } },
+  assert.throws(() => normalizeAutoFilterModel({
+    ...sheet.autoFilter!,
+    columns: { 1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'equals', value: 'x' }] } } },
   }), /outside/);
 });
 

@@ -48,7 +48,7 @@ export {
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
-  LocalXlsxArtifactStore,
+  LocalNativePackageStore,
   buildWorkspaceRecord,
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
@@ -60,7 +60,7 @@ export {
   type IndexedDbWorkspaceStoreOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
-  type XlsxArtifactRecord,
+  type NativePackageRecord,
 } from './features/persistence';
 export {
   buildPrintSnapshot,

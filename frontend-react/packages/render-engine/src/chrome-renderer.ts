@@ -7,7 +7,7 @@ import {
   type RenderTheme,
 } from "./types";
 import { SheetSkeleton, columnLabelOf } from "./sheet-skeleton";
-import { computeRenderPanes, defaultHeaderOffset } from "./render-plan";
+import { defaultHeaderOffset } from "./render-plan";
 import type { RenderPlan } from "./render-plan";
 
 export interface ChromeDrawOptions {
@@ -26,7 +26,7 @@ export function drawChromeLayer(options: ChromeDrawOptions): void {
   drawHeaderStrips(options);
   drawSelection(options);
   if (chrome.editing) drawEditingOutline(options, chrome.editing);
-  drawFreezeTrapLines(context, options.skeleton, plan.viewport.width, plan.viewport.height);
+  drawFreezeTrapLines(context, plan);
   drawResizePreview(options);
   drawTableOutlines(options);
   drawOutlineControls(options);
@@ -36,7 +36,7 @@ export function drawChromeLayer(options: ChromeDrawOptions): void {
 }
 
 function paneTransform(pane: RenderPane): { dx: number; dy: number } {
-  return { dx: pane.rect.x - pane.offset.x, dy: pane.rect.y - pane.offset.y };
+  return { dx: pane.screenRect.x - pane.contentOrigin.x, dy: pane.screenRect.y - pane.contentOrigin.y };
 }
 
 function contentRangeRect(skeleton: SheetSkeleton, range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): Rect | null {
@@ -64,9 +64,9 @@ function drawSelectionOutlines(
     const contentRect = contentRangeRect(skeleton, range);
     if (!contentRect) continue;
     for (const pane of panes) {
-      if (pane.rect.width <= 0 || pane.rect.height <= 0) continue;
+      if (pane.screenRect.width <= 0 || pane.screenRect.height <= 0) continue;
       const visible = intersect(
-        { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height },
+        { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height },
         contentRect,
       );
       if (!visible) continue;
@@ -93,7 +93,7 @@ function drawSelection(options: ChromeDrawOptions): void {
     const contentRect = contentRangeRect(skeleton, range);
     if (!contentRect) continue;
     for (const pane of panes) {
-      const visible = intersect({ x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height }, contentRect);
+      const visible = intersect({ x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height }, contentRect);
       if (!visible) continue;
       const t = paneTransform(pane);
       context.fillStyle = theme.selectionBackground;
@@ -107,7 +107,7 @@ function drawSelection(options: ChromeDrawOptions): void {
     const drawn = drawSelectionOutlines(
       context,
       skeleton,
-      panes.filter((pane) => !isFullSpanRow(selectionRanges[i]!, skeleton) && !isFullSpanCol(selectionRanges[i]!, skeleton) || true),
+      panes,
       [selectionRanges[i]!],
       theme.selectionBorder,
       isPrimary ? 2 : 1,
@@ -122,9 +122,9 @@ function drawSelection(options: ChromeDrawOptions): void {
         endColumn: primaryCell.column,
       });
       if (primaryRect) {
-        const targetPane = panes.find((pane) => pane.range
-          && primaryCell.row >= pane.range.startRow && primaryCell.row <= pane.range.endRow
-          && primaryCell.column >= pane.range.startColumn && primaryCell.column <= pane.range.endColumn)
+        const targetPane = panes.find((pane) => pane.visibleRange
+          && primaryCell.row >= pane.visibleRange.startRow && primaryCell.row <= pane.visibleRange.endRow
+          && primaryCell.column >= pane.visibleRange.startColumn && primaryCell.column <= pane.visibleRange.endColumn)
           ?? panes.find((pane) => pane.id === "main")
           ?? panes.at(-1)!;
         const t = paneTransform(targetPane);
@@ -143,19 +143,12 @@ function drawSelection(options: ChromeDrawOptions): void {
   }
 }
 
-function isFullSpanRow(_range: unknown, _skeleton: SheetSkeleton): boolean {
-  return false;
-}
-function isFullSpanCol(_range: unknown, _skeleton: SheetSkeleton): boolean {
-  return false;
-}
-
 function drawEditingOutline(options: ChromeDrawOptions, editing: { row: number; column: number }): void {
   const { context, skeleton, plan, theme } = options;
   const rect = skeleton.getCellRect(editing.row, editing.column);
   if (!rect) return;
   for (const pane of plan.panes) {
-    const visible = intersect({ x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height }, rect);
+    const visible = intersect({ x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height }, rect);
     if (!visible) continue;
     const t = paneTransform(pane);
     context.save();
@@ -167,11 +160,24 @@ function drawEditingOutline(options: ChromeDrawOptions, editing: { row: number; 
   }
 }
 
-function drawFreezeTrapLines(context: CanvasRenderingContext2D, skeleton: SheetSkeleton, width: number, height: number): void {
-  // 冻结线由窗格边界推导:重算冻结切分(与 render-plan 相同逻辑)
-  void skeleton;
-  void width;
-  void height;
+function drawFreezeTrapLines(context: CanvasRenderingContext2D, plan: RenderPlan): void {
+  const leftBoundary = plan.panes.find((pane) => pane.id === 'topRight' || pane.id === 'main')?.screenRect.x;
+  const topBoundary = plan.panes.find((pane) => pane.id === 'bottomLeft' || pane.id === 'main')?.screenRect.y;
+  if (leftBoundary === undefined && topBoundary === undefined) return;
+  context.save();
+  context.strokeStyle = '#94a3b8';
+  context.lineWidth = 1;
+  context.beginPath();
+  if (leftBoundary !== undefined) {
+    context.moveTo(Math.round(leftBoundary) + 0.5, 0);
+    context.lineTo(Math.round(leftBoundary) + 0.5, plan.viewport.height);
+  }
+  if (topBoundary !== undefined) {
+    context.moveTo(0, Math.round(topBoundary) + 0.5);
+    context.lineTo(plan.viewport.width, Math.round(topBoundary) + 0.5);
+  }
+  context.stroke();
+  context.restore();
 }
 
 function drawResizePreview(options: ChromeDrawOptions): void {
@@ -188,7 +194,7 @@ function drawResizePreview(options: ChromeDrawOptions): void {
     let frozenLeft = 0;
     const main = plan.panes.find((pane) => pane.id === "main") ?? plan.panes.at(-1);
     if (main) {
-      const x = Math.round(left - main.offset.x + main.rect.x) + 0.5;
+      const x = Math.round(left - main.contentOrigin.x + main.screenRect.x) + 0.5;
       context.moveTo(x, origin.y);
       context.lineTo(x, plan.viewport.height);
     }
@@ -197,7 +203,7 @@ function drawResizePreview(options: ChromeDrawOptions): void {
     const top = skeleton.getRowTop(preview.index) + preview.sizePx;
     const main = plan.panes.find((pane) => pane.id === "main") ?? plan.panes.at(-1);
     if (main) {
-      const y = Math.round(top - main.offset.y + main.rect.y) + 0.5;
+      const y = Math.round(top - main.contentOrigin.y + main.screenRect.y) + 0.5;
       context.moveTo(origin.x, y);
       context.lineTo(plan.viewport.width, y);
     }
@@ -225,7 +231,7 @@ function drawTableOutlines(options: ChromeDrawOptions): void {
     if (!contentRect) continue;
     for (const pane of plan.panes) {
       const visible = intersect(
-        { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height },
+        { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height },
         contentRect,
       );
       if (!visible) continue;
@@ -276,7 +282,7 @@ function drawOutlineControls(options: ChromeDrawOptions): void {
       const rowTop = skeleton.getRowTop(control.index);
       const rowHeight = skeleton.getRowHeight(control.index);
       for (const pane of plan.panes) {
-        const visibleTop = rowTop - pane.offset.y + pane.rect.y;
+        const visibleTop = rowTop - pane.contentOrigin.y + pane.screenRect.y;
         if (visibleTop + rowHeight < origin.y || visibleTop > plan.viewport.height) continue;
         const buttonLeft = 4 + (control.level - 1) * 10;
         const buttonTop = visibleTop + Math.max(2, (rowHeight - 10) / 2);
@@ -285,11 +291,11 @@ function drawOutlineControls(options: ChromeDrawOptions): void {
       continue;
     }
     for (const pane of plan.panes) {
-      if (pane.offset.y !== 0 || pane.id === 'bottomLeft') continue;
+      if (pane.contentOrigin.y !== 0 || pane.id === 'bottomLeft') continue;
       const t = paneTransform(pane);
       const left = skeleton.getColumnLeft(control.index);
       const width = skeleton.getColumnWidth(control.index);
-      if (left + width <= pane.offset.x || left >= pane.offset.x + pane.rect.width) continue;
+      if (left + width <= pane.contentOrigin.x || left >= pane.contentOrigin.x + pane.screenRect.width) continue;
       const buttonLeft = left + t.dx + 2;
       const buttonTop = 2 + (control.level - 1) * 10;
       drawOutlineButton(context, buttonLeft, buttonTop, control.collapsed);
@@ -319,7 +325,7 @@ function drawFilterFunnels(options: ChromeDrawOptions): void {
         const rect = skeleton.getCellRect(button.row, button.column);
         if (!rect) continue;
         const visible = intersect(
-          { x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height },
+          { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height },
           rect,
         );
         if (!visible) continue;
@@ -333,12 +339,12 @@ function drawFilterFunnels(options: ChromeDrawOptions): void {
 
   if (chrome.filterColumns.length === 0) return;
   for (const pane of plan.panes) {
-    if (pane.offset.y !== 0 || pane.id === "bottomLeft") continue;
+    if (pane.contentOrigin.y !== 0 || pane.id === "bottomLeft") continue;
     const t = paneTransform(pane);
     for (const column of chrome.filterColumns) {
       const left = skeleton.getColumnLeft(column);
       const width = skeleton.getColumnWidth(column);
-      if (left + width <= pane.offset.x || left >= pane.offset.x + pane.rect.width) continue;
+      if (left + width <= pane.contentOrigin.x || left >= pane.contentOrigin.x + pane.screenRect.width) continue;
       const cx = left + width + t.dx - 9;
       const cy = COL_HEADER_HEIGHT / 2;
       drawFilterFunnelIcon(context, cx, cy);
@@ -352,7 +358,7 @@ function drawRemoteCursors(options: ChromeDrawOptions): void {
     const rect = skeleton.getCellRect(cursor.row, cursor.column);
     if (!rect) continue;
     for (const pane of plan.panes) {
-      const visible = intersect({ x: pane.offset.x, y: pane.offset.y, width: pane.rect.width, height: pane.rect.height }, rect);
+      const visible = intersect({ x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height }, rect);
       if (!visible) continue;
       const t = paneTransform(pane);
       context.strokeStyle = cursor.color;
@@ -387,9 +393,9 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
 
   // 列头
   for (const pane of plan.panes) {
-    if (pane.range == null) continue;
+    if (pane.visibleRange == null) continue;
     const t = paneTransform(pane);
-    for (let column = pane.range.startColumn; column <= pane.range.endColumn; column++) {
+    for (let column = pane.visibleRange.startColumn; column <= pane.visibleRange.endColumn; column++) {
       const left = skeleton.getColumnLeft(column) + t.dx;
       const width = skeleton.getColumnWidth(column);
        const isSelected = isColumnSelected(chrome, column);
@@ -404,7 +410,7 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
       context.fillText(columnLabelOf(column), left + width / 2, origin.y + COL_HEADER_HEIGHT / 2 + 1);
     }
     // 行头
-    for (let row = pane.range.startRow; row <= pane.range.endRow; row++) {
+    for (let row = pane.visibleRange.startRow; row <= pane.visibleRange.endRow; row++) {
       const top = skeleton.getRowTop(row) + t.dy;
       const height = skeleton.getRowHeight(row);
        const isSelected = isRowSelected(chrome, row);

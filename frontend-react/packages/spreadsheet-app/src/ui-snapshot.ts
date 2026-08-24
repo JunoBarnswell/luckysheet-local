@@ -8,6 +8,7 @@ import type {
   DrawingObject,
   DrawingPayload,
   WorksheetPane,
+  AutoFilterModel,
   MergeSpan,
   OutlineGroup,
   PivotModel,
@@ -23,6 +24,7 @@ import {
   computeBandedCellStyle,
   computeConditionalOverlays,
   computeFilterHiddenRows,
+  getAutoFilterValueDomain,
   computeOutlineHiddenColumns,
   computeOutlineHiddenRows,
   computeSheetTableCellStyle,
@@ -30,6 +32,8 @@ import {
   mergePresentationStyles,
   resolveActiveFilterColumns,
   resolveFilterButtonCells,
+  resolveFilterRangeColumns,
+  resolveWorksheetAutoFilter,
   resolveOutlineControls,
   validateDataInput,
   type ConditionalOverlay,
@@ -47,7 +51,7 @@ import {
 import { cellAddress, columnLabel } from './address';
 import { getCellNote } from '@react-sheets/core-model';
 import type { DataSourceContentQuery } from './features/data-source';
-import { resolveCell } from './features/data-source';
+import { createWorkbookCellResolver } from './features/data-source';
 import {
   findCommentThreadAt,
   getCellHyperlink,
@@ -102,6 +106,7 @@ export interface CanvasSheetSnapshot {
   dataValidations: DataValidationRule[];
   merges: MergeSpan[];
   pane: WorksheetPane;
+  autoFilter?: AutoFilterModel;
   defaultRowHeightPx: number;
   defaultColumnWidthPx: number;
   maximumDigitWidthPx: number;
@@ -111,8 +116,10 @@ export interface CanvasSheetSnapshot {
   hiddenColumns: number[];
   outlineGroups: OutlineGroup[];
   outlineControls: OutlineControl[];
-  filterColumns: number[];
+  filterRangeColumns: number[];
+  activeFilterColumns: number[];
   filterButtons: FilterButtonCell[];
+  getFilterValueDomain: (column: number) => string[];
   sheetTables: SheetTableModel[];
   tabColor?: string;
   hidden?: boolean;
@@ -204,12 +211,14 @@ export function buildCanvasSheetSnapshot(
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
+  const cellResolver = createWorkbookCellResolver(dataContent);
   const filterHidden = computeFilterHiddenRows(sheet);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
   const hiddenColumns = new Set<number>([...sheet.hiddenColumns, ...outlineHiddenColumns]);
-  const filterColumns = resolveActiveFilterColumns(sheet);
+  const filterRangeColumns = resolveFilterRangeColumns(sheet);
+  const activeFilterColumns = resolveActiveFilterColumns(sheet);
   const filterButtons = resolveFilterButtonCells(sheet);
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
@@ -217,8 +226,7 @@ export function buildCanvasSheetSnapshot(
 
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
-    if (hiddenRows.has(row) || hiddenColumns.has(column)) return undefined;
-    const resolved = resolveCell(sheet, row, column, dataContent);
+    const resolved = cellResolver.resolve(sheet, row, column);
     const modelCell = resolved?.cell;
     const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
     const key = `${row}:${column}`;
@@ -312,6 +320,7 @@ export function buildCanvasSheetSnapshot(
     dataValidations: [...sheet.dataValidations],
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
+    autoFilter: resolveWorksheetAutoFilter(sheet) ? structuredClone(resolveWorksheetAutoFilter(sheet)) : undefined,
     defaultRowHeightPx: sheet.defaultRowHeightPx,
     defaultColumnWidthPx: sheet.defaultColumnWidthPx,
     maximumDigitWidthPx: workbook.dimensionMetrics.maximumDigitWidthPx,
@@ -321,8 +330,10 @@ export function buildCanvasSheetSnapshot(
     hiddenColumns: [...hiddenColumns].sort((a, b) => a - b),
     outlineGroups: sheet.outline ? structuredClone(sheet.outline.groups) : [],
     outlineControls,
-    filterColumns,
+    filterRangeColumns,
+    activeFilterColumns,
     filterButtons,
+    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column),
     sheetTables: [...sheet.sheetTables],
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,

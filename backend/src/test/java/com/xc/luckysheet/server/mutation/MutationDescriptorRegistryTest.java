@@ -52,14 +52,14 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
                 "cell.set", "cell.restore", "range.set", "range.paste", "range.clear", "range.clear.restore",
-                "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "xlsx.layout.repaired", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
+                "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
                 "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore", "hyperlink.set", "hyperlink.remove",
                 "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
-                "filter.set", "filter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
+                "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
                 "sheetTable.add", "sheetTable.remove", "sheetTable.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
@@ -128,8 +128,8 @@ class MutationDescriptorRegistryTest {
         var snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":10,"cells":{},"conditionalFormats":[],"dataValidations":[],"sheetTables":[]}],"definedNameModels":[],"printDocuments":[]}
                 """);
-        var filter = new OperationMutation("filter.set", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","filter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"criteria":{}}}
+        var filter = new OperationMutation("autoFilter.set", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","autoFilter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"columns":{}}}
                 """));
         var conditionalFormat = new OperationMutation("cf.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","rule":{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0}],"type":"highlight"}}
@@ -148,7 +148,7 @@ class MutationDescriptorRegistryTest {
         }
 
         var sheet = current.path("sheets").get(0);
-        assertEquals(4, sheet.path("filter").path("range").path("endRow").asInt());
+        assertEquals(4, sheet.path("autoFilter").path("range").path("endRow").asInt());
         assertEquals("cf-1", sheet.path("conditionalFormats").get(0).path("id").asText());
         assertEquals("table-1", sheet.path("sheetTables").get(0).path("id").asText());
         assertEquals(2, sheet.path("hiddenRows").get(0).asInt());

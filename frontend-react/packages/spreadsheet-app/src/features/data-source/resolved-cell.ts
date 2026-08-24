@@ -65,6 +65,15 @@ export interface ResolvedCell {
 
 export type DataContentMap = ReadonlyMap<string, DataSourceContentQuery>;
 
+/** The single application read contract for sparse and block-backed cells. */
+export interface WorkbookCellResolver {
+  resolve(sheet: WorksheetModel, row: number, column: number): ResolvedCell | undefined;
+}
+
+export function createWorkbookCellResolver(dataContent: DataContentMap = new Map()): WorkbookCellResolver {
+  return { resolve: (sheet, row, column) => resolveCell(sheet, row, column, dataContent) };
+}
+
 export interface MaterializedDataRegionCell {
   row: number;
   column: number;

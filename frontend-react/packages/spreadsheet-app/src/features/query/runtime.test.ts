@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { exportSnapshotToXlsxBase64 } from '@react-sheets/exchange-xlsx';
+import { exportSnapshotToXlsxBase64 } from '@react-sheets/exchange-excel-ooxml';
 import { CommandRegistry, CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import {
