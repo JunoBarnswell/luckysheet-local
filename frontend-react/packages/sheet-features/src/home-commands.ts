@@ -945,8 +945,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidFilterSortParams(params)) throw new Error('Invalid AutoFilter sort parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
-      const filter = resolveActiveAutoFilter(sheet);
-      const owner = resolveFilterOwner(sheet);
+      const filter = resolveActiveAutoFilter(sheet, params.column);
+      const owner = resolveFilterOwner(sheet, params.column);
       if (!filter || !owner) throw new Error('No active AutoFilter in the current worksheet');
       if (params.column < filter.range.startColumn || params.column > filter.range.endColumn) throw new Error('Filter sort column is outside the filter range');
       const table = owner.kind === 'table' ? sheet.sheetTables.find((entry) => entry.id === owner.tableId) : undefined;

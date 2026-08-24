@@ -273,7 +273,8 @@ export function exportSnapshotToOpcPackageGraph(
     sheetPartById,
   });
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
-  const styleOutput = buildStyles(snapshot);
+  const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
+  const styleOutput = buildStyles(snapshot, originalStylesXml);
   const styleIndexes = collectStyleIndexes(snapshot);
   const differentialStyleIndexes = collectDifferentialStyleIndexes(snapshot);
   const sharedOutput = buildSharedStrings(snapshot);
@@ -458,21 +459,21 @@ function parseSheet(
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
   const autoFilter = parseAutoFilter(root, descriptor, styles);
-  const filterOwnedRows = new Set<number>();
-  if (autoFilter && Object.values(autoFilter.columns).some((column) => Boolean(column.criterion))) {
-    const range = autoFilter.range;
-    for (let row = range.startRow + 1; row <= range.endRow; row += 1) filterOwnedRows.add(row);
-  }
-  for (const table of sheetTables) {
-    if (!table.autoFilter || !Object.values(table.autoFilter.columns).some((column) => Boolean(column.criterion))) continue;
-    const endRow = table.hasTotalRow ? table.autoFilter.range.endRow - 1 : table.autoFilter.range.endRow;
-    for (let row = table.autoFilter.range.startRow + 1; row <= endRow; row += 1) filterOwnedRows.add(row);
-  }
-  const manualHiddenRows = hiddenRows.filter((row) => !filterOwnedRows.has(row));
-  materializeFilterMetadata(cells, descriptor.id, [
+  const importedFilters = [
     ...(autoFilter ? [autoFilter] : []),
     ...sheetTables.flatMap((table) => table.autoFilter ? [table.autoFilter] : []),
-  ], conditionalFormats);
+  ];
+  materializeFilterMetadata(cells, descriptor.id, importedFilters, conditionalFormats);
+  const filterOwnedRows = new Set<number>();
+  for (const filter of importedFilters) {
+    const table = sheetTables.find((candidate) => candidate.autoFilter === filter);
+    const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+    for (const row of hiddenRows) {
+      if (row <= filter.range.startRow || row > endRow || !filterRowMatches(cells, filter, row, pkg.dateSystem)) continue;
+      filterOwnedRows.add(row);
+    }
+  }
+  const manualHiddenRows = hiddenRows.filter((row) => !filterOwnedRows.has(row));
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
@@ -510,6 +511,104 @@ function parseSheet(
     ...(sheetTables.length ? { sheetTables } : {}),
     hidden: descriptor.hidden,
   };
+}
+
+function filterRowMatches(
+  cells: Record<string, Record<string, CellData>>,
+  filter: AutoFilterModel,
+  row: number,
+  dateSystem: DateSystem,
+): boolean {
+  for (const column of Object.values(filter.columns)) {
+    const criterion = column.criterion;
+    if (!criterion) continue;
+    const cell = cells[String(row)]?.[String(column.column)];
+    const value = cell?.value ?? null;
+    const text = value == null ? '' : String(value);
+    if (criterion.kind === 'values') {
+      const valueMatches = criterion.values.some((candidate) => String(candidate ?? '').toLocaleLowerCase() === text.toLocaleLowerCase())
+        || (text === '' && criterion.includeBlank);
+      const dateMatches = (criterion.dateGroups ?? []).some((group) => dateMatchesGroup(toFilterDate(value, text, dateSystem), group));
+      if (!valueMatches && !dateMatches) return false;
+    } else if (criterion.kind === 'custom') {
+      const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition)).map((condition) => compareFilterText(text, String(condition.value ?? ''), condition.operator));
+      if (criterion.join === 'and' ? !results.every(Boolean) : !results.some(Boolean)) return false;
+    } else if (criterion.kind === 'dynamic') {
+      if (!matchesDynamicFilter(toFilterDate(value, text, dateSystem), criterion.type)) return false;
+    } else if (criterion.kind === 'top10') {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return false;
+      const values = Array.from({ length: filter.range.endRow - filter.range.startRow }, (_, index) => {
+        const candidate = cells[String(filter.range.startRow + 1 + index)]?.[String(column.column)]?.value;
+        return typeof candidate === 'number' ? candidate : Number(candidate);
+      }).filter(Number.isFinite).sort((left, right) => criterion.top ? right - left : left - right);
+      const requested = criterion.percent ? Math.max(1, Math.ceil(values.length * criterion.rank / 100)) : criterion.rank;
+      const cutoff = values[Math.min(requested, values.length) - 1];
+      if (cutoff === undefined || (criterion.top ? numeric < cutoff : numeric > cutoff)) return false;
+    } else if (criterion.kind === 'color') {
+      if (!(cell?.filterMetadata?.color?.dxfId === criterion.dxfId
+        || (criterion.style && (criterion.target === 'cell' ? cell?.style?.background === criterion.style.background : cell?.style?.textColor === criterion.style.textColor)))) return false;
+    } else if (criterion.kind === 'icon') {
+      if (cell?.filterMetadata?.icon?.iconSet !== criterion.iconSet || cell.filterMetadata.icon.iconId !== criterion.iconId) return false;
+    }
+  }
+  return true;
+}
+
+function compareFilterText(text: string, operand: string, operator: string): boolean {
+  const left = text.toLocaleLowerCase();
+  const right = operand.toLocaleLowerCase();
+  const numericLeft = Number(text);
+  const numericRight = Number(operand);
+  const numeric = Number.isFinite(numericLeft) && Number.isFinite(numericRight);
+  switch (operator.toLocaleLowerCase()) {
+    case 'equals': case '=': return left === right;
+    case 'notequals': case 'not equal': case '<>': return left !== right;
+    case 'lessthan': case '<': return numeric ? numericLeft < numericRight : left < right;
+    case 'lessthanorequal': case '<=': return numeric ? numericLeft <= numericRight : left <= right;
+    case 'greaterthan': case '>': return numeric ? numericLeft > numericRight : left > right;
+    case 'greaterthanorequal': case '>=': return numeric ? numericLeft >= numericRight : left >= right;
+    case 'contains': return left.includes(right);
+    case 'notcontains': return !left.includes(right);
+    case 'beginswith': return left.startsWith(right);
+    case 'endswith': return left.endsWith(right);
+    default: return false;
+  }
+}
+
+function dateMatchesGroup(date: Date | null, group: { year: number; month?: number; day?: number; hour?: number; minute?: number; second?: number }): boolean {
+  return Boolean(date) && date!.getFullYear() === group.year
+    && (group.month === undefined || date!.getMonth() + 1 === group.month)
+    && (group.day === undefined || date!.getDate() === group.day)
+    && (group.hour === undefined || date!.getHours() === group.hour)
+    && (group.minute === undefined || date!.getMinutes() === group.minute)
+    && (group.second === undefined || date!.getSeconds() === group.second);
+}
+
+function toFilterDate(value: unknown, text: string, dateSystem: DateSystem): Date | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
+    return new Date(epoch + value * 24 * 60 * 60 * 1000);
+  }
+  const timestamp = Date.parse(String(value ?? text));
+  return Number.isNaN(timestamp) ? null : new Date(timestamp);
+}
+
+function matchesDynamicFilter(date: Date | null, type: import('@react-sheets/core-model').DynamicFilterType): boolean {
+  if (!date) return false;
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const day = 24 * 60 * 60 * 1000;
+  const monday = new Date(start); monday.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const ranges: Record<import('@react-sheets/core-model').DynamicFilterType, [Date, Date]> = {
+    today: [start, new Date(start.getTime() + day)], yesterday: [new Date(start.getTime() - day), start], tomorrow: [new Date(start.getTime() + day), new Date(start.getTime() + 2 * day)],
+    thisWeek: [monday, new Date(monday.getTime() + 7 * day)], lastWeek: [new Date(monday.getTime() - 7 * day), monday], nextWeek: [new Date(monday.getTime() + 7 * day), new Date(monday.getTime() + 14 * day)],
+    thisMonth: [new Date(start.getFullYear(), start.getMonth(), 1), new Date(start.getFullYear(), start.getMonth() + 1, 1)], lastMonth: [new Date(start.getFullYear(), start.getMonth() - 1, 1), new Date(start.getFullYear(), start.getMonth(), 1)], nextMonth: [new Date(start.getFullYear(), start.getMonth() + 1, 1), new Date(start.getFullYear(), start.getMonth() + 2, 1)],
+    thisQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 3, 1)], lastQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 - 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1)], nextQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 6, 1)],
+    thisYear: [new Date(start.getFullYear(), 0, 1), new Date(start.getFullYear() + 1, 0, 1)], lastYear: [new Date(start.getFullYear() - 1, 0, 1), new Date(start.getFullYear(), 0, 1)], nextYear: [new Date(start.getFullYear() + 1, 0, 1), new Date(start.getFullYear() + 2, 0, 1)], yearToDate: [new Date(start.getFullYear(), 0, 1), new Date(start.getTime() + day)],
+  };
+  const [from, to] = ranges[type];
+  return date >= from && date < to;
 }
 
 function materializeFilterMetadata(
@@ -941,7 +1040,7 @@ function buildSharedStrings(snapshot: WorkbookSnapshot): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si>${serializeRichText(value.value, value.richText)}</si>`).join('')}</sst>`;
 }
 
-function buildStyles(snapshot: WorkbookSnapshot): string {
+function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): string {
   const records: StyleRecord[] = [{}];
   const indexes = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
@@ -1008,7 +1107,10 @@ function buildStyles(snapshot: WorkbookSnapshot): string {
     return `<xf ${attrs.join(' ')}${alignment || protection ? ` applyAlignment="${alignment ? '1' : '0'}" applyProtection="${protection ? '1' : '0'}">${alignment}${protection}</xf>` : '/>'}`;
   }).join('');
   const differentialStyles = [...collectDifferentialStyleIndexes(snapshot).keys()].map((key) => `<dxf>${serializeDifferentialStyle(JSON.parse(key) as CellStyle)}</dxf>`).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs></styleSheet>`;
+  const originalRoot = originalStylesXml ? firstElement(parseXml(originalStylesXml), 'styleSheet') : undefined;
+  const originalTableStyles = originalRoot ? child(originalRoot, 'tableStyles') : undefined;
+  const tableStyles = originalTableStyles ? serializeXml(originalTableStyles) : '';
+  return `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="1"><cellStyle name="Normal" builtinId="0"/></cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs>${tableStyles}</styleSheet>`;
 }
 
 function prepareTableParts(
@@ -1191,9 +1293,9 @@ function buildWorksheetXml(
     const preservedNodes = new Map<string, XmlNode>();
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
+      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'controls' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
     }
-    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts']) {
+    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'controls', 'picture', 'tableParts']) {
       const node = preservedNodes.get(name);
       if (node) xml += serializeXml(node);
     }
@@ -1217,7 +1319,8 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
     const sourceFormula = metadata?.sourceFormula ?? cell.formula ?? '';
     const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
-    const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(String(cachedValue))}</v>` : '';
+    const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(typeof cachedValue === 'boolean' ? (cachedValue ? '1' : '0') : String(cachedValue))}</v>` : '';
+    const cachedType = typeof cachedValue === 'boolean' ? 'b' : typeof cachedValue === 'string' ? 'str' : undefined;
     const formulaAttrs = metadata?.kind === 'shared' && metadata.preservedOnly
       ? ` t="shared"${metadata.sharedIndex !== undefined ? ` si="${metadata.sharedIndex}"` : ''}${metadata.sharedMaster && metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'array'
@@ -1226,7 +1329,7 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
         ? ` t="dataTable"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
         : '';
     const formulaBody = metadata?.kind === 'shared' && metadata.preservedOnly && !metadata.sharedMaster ? '' : encodeXml(formula);
-    return `<c r="${ref}"${styleAttr}${cached && typeof cachedValue === 'string' ? ' t="str"' : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
+    return `<c r="${ref}"${styleAttr}${cachedType ? ` t="${cachedType}"` : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
   }
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;
   if (typeof cell.value === 'boolean') return `<c r="${ref}"${styleAttr} t="b"><v>${cell.value ? '1' : '0'}</v></c>`;

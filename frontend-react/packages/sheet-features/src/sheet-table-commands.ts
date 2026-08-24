@@ -353,7 +353,8 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
               affectedRanges: [structuredClone(previousFilter.range)],
             }],
             apply: () => {
-              linkedTable.autoFilter = structuredClone(nextFilter);
+              const replacement = sheet.sheetTables.find((candidate) => candidate.id === linkedTable.id);
+              if (replacement) replacement.autoFilter = structuredClone(nextFilter);
             },
           });
         } else {

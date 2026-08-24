@@ -111,7 +111,7 @@ export function computePaneMap(
   if (!frozen) {
     const splitX = pointsToPixels(pane.xSplit / 20);
     const splitY = pointsToPixels(pane.ySplit / 20);
-    return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, splitX, splitY, pane.startRow, pane.startColumn, 0, 0));
+    return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, splitX, splitY, 0, 0, 0, 0));
   }
 
   frozenLeft = Math.min(frozenLeft, gridWidth);

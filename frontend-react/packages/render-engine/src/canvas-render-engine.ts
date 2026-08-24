@@ -225,7 +225,7 @@ export class CanvasRenderEngine {
 
   setPane(pane: PaneLayout | null): void {
     this.assertActive();
-    if (!this.paneLayout && pane?.kind === 'frozen') {
+    if (!this.paneLayout && (pane?.kind === 'frozen' || pane?.kind === 'split')) {
       this.viewport.setSnapshot({
         scrollX: this.skeletonModel.getColumnLeft(Math.max(0, Math.trunc(pane.startColumn))),
         scrollY: this.skeletonModel.getRowTop(Math.max(0, Math.trunc(pane.startRow))),

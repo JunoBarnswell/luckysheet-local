@@ -524,6 +524,8 @@ export class WorkbookSession {
       const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
       if (!this.disposed && generation === this.lifecycleGeneration && artifact) {
         this.nativePackage = artifact;
+        this.projectionGeneration += 1;
+        this.emit();
       }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
     }).catch((error: unknown) => {
@@ -2624,7 +2626,7 @@ export class WorkbookSession {
 
   sortFilterColumn(column: number, ascending: boolean): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const filter = resolveActiveAutoFilter(sheet);
+    const filter = resolveActiveAutoFilter(sheet, column);
     if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) {
       this.notify('No active filter is available for this column');
       return;
@@ -2637,7 +2639,10 @@ export class WorkbookSession {
     const activeFilter = resolveActiveAutoFilter(sheet);
     const owner = resolveFilterOwner(sheet);
     if (activeFilter && owner) {
-      if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId } });
+      if (owner.kind === 'table') {
+        const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
+        if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
+      }
       else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
       return;
     }
@@ -2674,7 +2679,10 @@ export class WorkbookSession {
     const autoFilter = resolveActiveAutoFilter(sheet);
     const owner = resolveFilterOwner(sheet);
     if (!autoFilter || !owner) return;
-    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId } });
+    if (owner.kind === 'table') {
+      const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
+      if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
+    }
     else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
   }
 
