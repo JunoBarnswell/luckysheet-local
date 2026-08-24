@@ -218,6 +218,11 @@ public final class WorkbookSnapshotValidator {
         if (value == null || !value.isObject() || !sheetId.equals(value.path("sheetId").asText())) {
             throw ServiceException.validation("AutoFilter range is invalid");
         }
+        for (String coordinate : java.util.List.of("startRow", "endRow", "startColumn", "endColumn")) {
+            if (!value.has(coordinate) || !value.get(coordinate).isIntegralNumber()) {
+                throw ServiceException.validation("AutoFilter range coordinates are required");
+            }
+        }
         try {
             return new RangeRef(sheetId, value.path("startRow").asInt(), value.path("endRow").asInt(), value.path("startColumn").asInt(), value.path("endColumn").asInt());
         } catch (IllegalArgumentException error) {

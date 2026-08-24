@@ -158,7 +158,7 @@ components:
         range: { type: object }
         columns: { type: object, additionalProperties: { type: object } }
         sortState: { type: object }
-          additionalProperties: false
+        additionalProperties: false
     WorksheetSnapshot:
       type: object
       required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, defaultRowHeightPx, defaultColumnWidthPx]

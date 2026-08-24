@@ -302,6 +302,8 @@ export interface ConditionalFormatRule {
   midColor?: string;
   maxColor?: string;
   barColor?: string;
+  iconSet?: string;
+  iconThresholds?: Array<{ type: 'percent' | 'percentile' | 'num' | 'formula'; value?: number }>;
   topBottom?: ConditionalFormatTopBottom;
 }
 

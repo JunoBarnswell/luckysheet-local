@@ -39,7 +39,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
     if (lower.includes('/pivot')) return ['pivot'];
     if (lower.includes('/slicer')) return ['slicer'];
     if (lower.includes('/timeline')) return ['timeline'];
-    if (lower.includes('vba') || lower.endsWith('.bin')) return request.options.preserveMacros === false ? [] : ['vba'];
+    if (isVbaPartForReport(name, sourcePackage)) return request.options.preserveMacros === false ? [] : ['vba'];
     if (lower.includes('externalconnections') || lower.includes('connections.xml')) return ['external-connection'];
     if (lower.includes('/drawings/')) return ['images'];
     return [];
@@ -81,6 +81,21 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
       compatibility: completedReport,
     }),
   };
+}
+
+function isVbaPartForReport(name: string, packageGraph: NonNullable<XlsxExportRequest['nativePackage']>['packageGraph']): boolean {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('vbaproject.bin') || lower.endsWith('vbaprojectsignature.bin')) return true;
+  for (const [source, relationships] of Object.entries(packageGraph.relationships)) {
+    for (const relationship of relationships) {
+      if (relationship.type.toLowerCase().includes('vbaproject')) {
+        const base = source.includes('/') ? source.slice(0, source.lastIndexOf('/') + 1) : '';
+        const target = relationship.target.startsWith('/') ? relationship.target.slice(1) : `${base}${relationship.target}`;
+        if (target.replace(/\\/g, '/').replace(/^\/+/, '') === name.replace(/^\/+/, '')) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function fileNameForFormat(input: string, variant: string): string {

@@ -57,25 +57,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
       if (sheet.pane && typeof sheet.pane === 'object' && sheet.pane.kind !== 'none') {
         sheet.pane.state = sheet.pane.kind === 'split' ? 'split' : (sheet.pane.state ?? 'frozen');
       }
-      if (sheet.filter) {
-        const legacy = sheet.filter as Record<string, any>;
-        const columns: Record<string, any> = {};
-        for (const [key, condition] of Object.entries(legacy.criteria ?? {})) {
-          const item = condition as Record<string, any>;
-          columns[key] = {
-            column: Number(key),
-            showButton: true,
-            hiddenButton: false,
-            criterion: item.selectedValues
-              ? { kind: 'values', values: item.selectedValues, includeBlank: item.selectedValues.some((value: unknown) => value === '' || value === null) }
-              : item.conditionOperator
-                ? { kind: 'custom', join: 'and', conditions: [{ operator: item.conditionOperator, value: item.conditionValue ?? null }] }
-                : undefined,
-          };
-        }
-        sheet.autoFilter = { sheetId: legacy.sheetId, range: legacy.range, columns };
-        delete sheet.filter;
-      }
+      migrateLegacyFilter(sheet);
     }
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
@@ -93,6 +75,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     sheet.pane = xSplit > 0 || ySplit > 0
       ? { kind: 'frozen', xSplit, ySplit, startRow: Number(freeze?.startRow ?? ySplit), startColumn: Number(freeze?.startColumn ?? xSplit), state: 'frozen' }
       : { kind: 'none' };
+    migrateLegacyFilter(sheet);
     migrateLegacyFontSizes(sheet.cells);
     migrateLegacyFontSizes(sheet.conditionalFormats);
     delete sheet.defaultRowHeight;
@@ -102,6 +85,28 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete sheet.freeze;
   }
   return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+}
+
+function migrateLegacyFilter(sheet: Record<string, any>): void {
+  if (!sheet.filter || typeof sheet.filter !== 'object') return;
+  const legacy = sheet.filter as Record<string, any>;
+  const columns: Record<string, any> = {};
+  for (const [key, condition] of Object.entries(legacy.criteria ?? {})) {
+    const item = condition as Record<string, any>;
+    const selectedValues = Array.isArray(item.selectedValues) ? item.selectedValues : undefined;
+    columns[key] = {
+      column: Number(key),
+      showButton: true,
+      hiddenButton: false,
+      criterion: selectedValues
+        ? { kind: 'values', values: selectedValues, includeBlank: selectedValues.some((value: unknown) => value === '' || value === null) }
+        : item.conditionOperator
+          ? { kind: 'custom', join: 'and', conditions: [{ operator: item.conditionOperator, value: item.conditionValue ?? null }] }
+          : undefined,
+    };
+  }
+  sheet.autoFilter = { sheetId: legacy.sheetId ?? sheet.id, range: legacy.range, columns };
+  delete sheet.filter;
 }
 
 function finiteStoredSize(value: unknown, fallback: number): number {

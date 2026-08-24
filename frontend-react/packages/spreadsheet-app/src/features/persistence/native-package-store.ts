@@ -1,5 +1,5 @@
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { importXlsx, verifyNativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import { importXlsx, loadOpcPackageGraph, verifyNativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import {
   openWorkspaceDatabase,
   requestResult,
@@ -55,6 +55,22 @@ function copyRecord(record: NativePackageRecord): NativePackageRecord {
   return { ...record, artifact: copyArtifact(record.artifact) };
 }
 
+function compactArtifact(artifact: NativePackageState): NativePackageState {
+  return {
+    ...artifact,
+    sourceBytes: artifact.sourceBytes.slice(0),
+    packageGraph: {
+      ...structuredClone(artifact.packageGraph),
+      parts: {},
+      opaqueParts: {},
+      contentTypesXml: artifact.packageGraph.contentTypesXml?.slice(),
+    },
+    detectedFeatures: [...artifact.detectedFeatures],
+    ownership: structuredClone(artifact.ownership),
+    compatibility: structuredClone(artifact.compatibility),
+  };
+}
+
 export async function buildNativePackageRecord(unitId: string, artifact: NativePackageState): Promise<NativePackageRecord> {
   if (!unitId.trim()) throw new Error('Workbook unitId is required for a native package');
   await verifyNativePackageState(artifact);
@@ -62,7 +78,7 @@ export async function buildNativePackageRecord(unitId: string, artifact: NativeP
     schema: 'NativePackageRecord',
     version: 1,
     unitId,
-    artifact: copyArtifact(artifact),
+    artifact: compactArtifact(artifact),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -115,7 +131,17 @@ export class LocalNativePackageStore {
     }
     try {
       await verifyNativePackageState(record.artifact);
-      return copyArtifact(record.artifact);
+      let packageGraph = record.artifact.packageGraph;
+      if (Object.keys(packageGraph.parts).length === 0) {
+        try {
+          packageGraph = loadOpcPackageGraph(record.artifact.sourceBytes, {}, record.artifact.fileName).packageGraph;
+        } catch {
+          // Focused persistence tests and explicit memory callers may provide
+          // a verified native state whose source bytes are not a full archive.
+          // Keep its canonical metadata instead of deleting a checksummed record.
+        }
+      }
+      return copyArtifact({ ...record.artifact, packageGraph });
     } catch {
       await this.remove(unitId);
       return null;

@@ -225,6 +225,13 @@ export class CanvasRenderEngine {
 
   setPane(pane: PaneLayout | null): void {
     this.assertActive();
+    if (!this.paneLayout && pane?.kind === 'frozen') {
+      this.viewport.setSnapshot({
+        scrollX: this.skeletonModel.getColumnLeft(Math.max(0, Math.trunc(pane.startColumn))),
+        scrollY: this.skeletonModel.getRowTop(Math.max(0, Math.trunc(pane.startRow))),
+      });
+      this.viewport.clampTo(this.skeletonModel.contentSize);
+    }
     this.paneLayout = pane && pane.kind !== 'none' && (pane.xSplit > 0 || pane.ySplit > 0) ? structuredClone(pane) : null;
     this.forceFullRedraw = true;
     this.requestRender();

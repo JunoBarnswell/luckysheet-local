@@ -109,16 +109,18 @@ export function computePaneMap(
   let frozenTop = 0;
   for (let r = 0; r < ySplit; r++) frozenTop += skeleton.getRowHeight(r);
   if (!frozen) {
-    const splitX = pointsToPixels(pane.xSplit / 20, viewport.devicePixelRatio);
-    const splitY = pointsToPixels(pane.ySplit / 20, viewport.devicePixelRatio);
+    const splitX = pointsToPixels(pane.xSplit / 20);
+    const splitY = pointsToPixels(pane.ySplit / 20);
     return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, splitX, splitY, pane.startRow, pane.startColumn, 0, 0));
   }
 
   frozenLeft = Math.min(frozenLeft, gridWidth);
   frozenTop = Math.min(frozenTop, gridHeight);
-  const mainStartRow = Math.max(Math.trunc(pane.startRow), ySplit);
-  const mainStartColumn = Math.max(Math.trunc(pane.startColumn), xSplit);
-  return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, frozenLeft, frozenTop, mainStartRow, mainStartColumn, ySplit, xSplit), true);
+  // startRow/startColumn describe the initial scroll position saved by Excel;
+  // they are seeded into Viewport when the pane is installed, not used as an
+  // immutable content origin. This keeps rows between the frozen boundary and
+  // the saved position reachable by scrolling back.
+  return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, frozenLeft, frozenTop, 0, 0, ySplit, xSplit), true);
 }
 
 function createPaneMap(panes: RenderPane[], enforceDisjoint = false): PaneMap {
@@ -154,8 +156,8 @@ function rangesOverlap(left: CellRange, right: CellRange): boolean {
     && right.startColumn <= left.endColumn;
 }
 
-function pointsToPixels(points: number, devicePixelRatio: number): number {
-  return Math.max(0, points * (96 / 72) * Math.max(0.5, devicePixelRatio));
+function pointsToPixels(points: number): number {
+  return Math.max(0, points * (96 / 72));
 }
 
 function buildPanes(

@@ -401,6 +401,27 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
   engine.dispose();
 });
 
+test('saved frozen top-left cell seeds initial scroll without blocking earlier rows', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 200, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const engine = new CanvasRenderEngine({ skeleton: renderSkeleton, viewport: { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 } });
+  engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 100, startColumn: 1, state: 'frozen' });
+  assert.equal(engine.viewport.getSnapshot().scrollY, renderSkeleton.getRowTop(100));
+  engine.scrollTo(0, 0);
+  assert.equal(engine.viewport.getSnapshot().scrollY, 0);
+  engine.render();
+  assert.equal(engine.lastRenderPlan?.paneMap.paneForCell({ row: 1, column: 1 })?.id, 'main');
+  engine.dispose();
+});
+
+test('split pane point geometry is independent of display DPR', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 50, columnCount: 20, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const pane = { kind: 'split' as const, xSplit: 1440, ySplit: 720, startRow: 0, startColumn: 0, state: 'split' as const };
+  const one = computePaneMap(renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, pane, defaultHeaderOffset());
+  const two = computePaneMap(renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 2 }, pane, defaultHeaderOffset());
+  assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.x, two.panes.find((entry) => entry.id === 'main')?.screenRect.x);
+  assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.y, two.panes.find((entry) => entry.id === 'main')?.screenRect.y);
+});
+
 test('frozen 2x2 pane map clamps the main origin and keeps four ranges disjoint', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const map = computePaneMap(renderSkeleton, { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, {
