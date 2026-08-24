@@ -229,119 +229,159 @@ function applyReviewMutation(mutationId: string, params: unknown, context: impor
 export function registerReviewCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
-  runtime.registry.registerMutation<NoteSetParams>('note.set', (item, context) => {
+  runtime.registry.registerMutation<NoteSetParams>({
+      id: 'note.set',
+      handler: (item, context) => {
     const params = item.params;
     context.workbook.getSheet(params.sheetId).notes.set(noteCellKey(params.row, params.column), structuredClone(params.note));
-  }, {
+  },
+      metadata: {
     schema: { name: 'NoteSetParams', validate: isNoteSet },
     permission: { capability: 'review.note' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
     inversePolicy: { allowedMutationIds: ['note.set', 'note.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<NoteRemoveParams>('note.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<NoteRemoveParams>({
+      id: 'note.remove',
+      handler: (item, context) => {
     const params = item.params;
     const removed = context.workbook.getSheet(params.sheetId).notes.delete(noteCellKey(params.row, params.column));
     if (!removed) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
-  }, {
+  },
+      metadata: {
     schema: { name: 'NoteRemoveParams', validate: isNoteRemove },
     permission: { capability: 'review.note' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
     inversePolicy: { allowedMutationIds: ['note.set'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<NoteVisibilityParams>('note.visibility', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<NoteVisibilityParams>({
+      id: 'note.visibility',
+      handler: (item, context) => {
     const params = item.params;
     const note = context.workbook.getSheet(params.sheetId).notes.get(noteCellKey(params.row, params.column));
     if (!note) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
     note.visible = params.visible;
-  }, {
+  },
+      metadata: {
     schema: { name: 'NoteVisibilityParams', validate: isNoteVisibility },
     permission: { capability: 'review.note' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
     inversePolicy: { allowedMutationIds: ['note.visibility'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
-  runtime.registry.registerMutation<CommentAddParams>('comment.add', (item, context) => {
+  runtime.registry.registerMutation<CommentAddParams>({
+      id: 'comment.add',
+      handler: (item, context) => {
     const params = item.params;
     const threads = context.workbook.getSheet(params.sheetId).commentThreads;
     if (threads.some((entry) => entry.id === params.thread.id)) throw new Error(`Comment thread already exists: ${params.thread.id}`);
     threads.push(structuredClone(params.thread));
-  }, {
+  },
+      metadata: {
     schema: { name: 'CommentAddParams', validate: isCommentAdd },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
     inversePolicy: { allowedMutationIds: ['comment.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<CommentReplyParams>('comment.reply', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<CommentReplyParams>({
+      id: 'comment.reply',
+      handler: (item, context) => {
     const params = item.params;
     const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
     if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     if (thread.replies.some((entry) => entry.id === params.reply.id)) throw new Error(`Comment reply already exists: ${params.reply.id}`);
     thread.replies.push(structuredClone(params.reply));
-  }, {
+  },
+      metadata: {
     schema: { name: 'CommentReplyParams', validate: isCommentReplyParams },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['comment.reply.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<CommentReplyRemoveParams>('comment.reply.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<CommentReplyRemoveParams>({
+      id: 'comment.reply.remove',
+      handler: (item, context) => {
     const params = item.params;
     const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
     if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     const index = thread.replies.findIndex((entry) => entry.id === params.replyId);
     if (index < 0) throw new Error(`Comment reply not found: ${params.replyId}`);
     thread.replies.splice(index, 1);
-  }, {
+  },
+      metadata: {
     schema: { name: 'CommentReplyRemoveParams', validate: isCommentReplyRemove },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['comment.reply'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<CommentResolveParams>('comment.resolve', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<CommentResolveParams>({
+      id: 'comment.resolve',
+      handler: (item, context) => {
     const params = item.params;
     const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
     if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
     if (params.resolved && !params.resolvedAt) throw new Error('Resolving a comment requires resolvedAt from the operation payload');
     thread.resolved = params.resolved;
     thread.resolvedAt = params.resolved ? params.resolvedAt : undefined;
-  }, {
+  },
+      metadata: {
     schema: { name: 'CommentResolveParams', validate: isCommentResolve },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['comment.resolve'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<CommentRemoveParams>('comment.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<CommentRemoveParams>({
+      id: 'comment.remove',
+      handler: (item, context) => {
     const params = item.params;
     const removed = removeById(context.workbook.getSheet(params.sheetId).commentThreads, params.threadId);
     if (!removed) throw new Error(`Comment thread not found: ${params.threadId}`);
-  }, {
+  },
+      metadata: {
     schema: { name: 'CommentRemoveParams', validate: isCommentRemove },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['comment.add'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
-  runtime.registry.registerMutation<HyperlinkSetParams>('hyperlink.set', (item, context) => {
+  runtime.registry.registerMutation<HyperlinkSetParams>({
+      id: 'hyperlink.set',
+      handler: (item, context) => {
     const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
     setCellHyperlink(sheet, params.row, params.column, params.hyperlink);
-  }, {
+  },
+      metadata: {
     schema: { name: 'HyperlinkSetParams', validate: isHyperlinkSet },
     permission: { capability: 'review.hyperlink' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
     inversePolicy: { allowedMutationIds: ['hyperlink.set', 'hyperlink.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<HyperlinkRemoveParams>('hyperlink.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<HyperlinkRemoveParams>({
+      id: 'hyperlink.remove',
+      handler: (item, context) => {
     const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
     if (!removeCellHyperlink(sheet, params.row, params.column)) {
       throw new Error(`Hyperlink not found at ${params.sheetId}!${params.row}:${params.column}`);
     }
-  }, {
+  },
+      metadata: {
     schema: { name: 'HyperlinkRemoveParams', validate: isHyperlinkRemove },
     permission: { capability: 'review.hyperlink' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
     inversePolicy: { allowedMutationIds: ['hyperlink.set'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
   runtime.registry.registerCommand<NoteSetParams>({
     id: 'note.set',

@@ -66,6 +66,11 @@ test('sort and remove duplicates preserve formulas and use structural row deleti
     ],
   });
   commands.execute('sheet.sort', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }, sortColumn: 0, ascending: true, hasHeader: true });
+  const permutation = commands.getUndoEntries().at(-1)?.redo[0];
+  assert.equal(permutation?.id, 'rows.permuted');
+  assert.deepEqual(permutation?.affectedRanges, [{
+    sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 16_383,
+  }]);
   assert.equal(sheet.cells.get(1, 0)?.value, 'A');
   assert.equal(sheet.cells.get(1, 2)?.formula, '=B3*2');
   commands.execute('data.removeDuplicates', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }, columns: [0], hasHeader: true });

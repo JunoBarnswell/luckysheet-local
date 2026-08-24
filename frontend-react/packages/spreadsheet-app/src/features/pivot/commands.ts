@@ -290,30 +290,42 @@ function applyPivotRemove(context: CommandContext, params: string, sheetId: stri
 export function registerPivotCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
-  runtime.registry.registerMutation<PivotModel>('pivot.add', (item, context) => {
+  runtime.registry.registerMutation<PivotModel>({
+      id: 'pivot.add',
+      handler: (item, context) => {
     applyPivotAdd(context, item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'PivotModel', validate: isPivotModel },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['pivot.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<string>('pivot.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<string>({
+      id: 'pivot.remove',
+      handler: (item, context) => {
     applyPivotRemove(context, item.params, item.sheetId);
-  }, {
+  },
+      metadata: {
     schema: { name: 'PivotId', validate: isNonEmptyString },
     permission: { capability: 'pivot.delete' },
     affectedRanges: { resolve: () => [], mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['pivot.add'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<PivotUpdateParams>('pivot.update', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<PivotUpdateParams>({
+      id: 'pivot.update',
+      handler: (item, context) => {
     applyPivotUpdate(context, item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'PivotUpdateParams', validate: isPivotUpdate },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['pivot.update'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
   runtime.registry.registerCommand<PivotModel>({
     id: 'pivot.add',
@@ -390,23 +402,31 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   });
   commandIds.push('pivot.refresh');
 
-  runtime.registry.registerMutation<PivotDrillDownParams>('pivot.drilldown.add', (item, context) => {
+  runtime.registry.registerMutation<PivotDrillDownParams>({
+      id: 'pivot.drilldown.add',
+      handler: (item, context) => {
     writePivotDrillDown(context, item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'PivotDrillDownParams', validate: isPivotDrillDown },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['pivot.drilldown.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<PivotDrillDownRemoveParams>('pivot.drilldown.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<PivotDrillDownRemoveParams>({
+      id: 'pivot.drilldown.remove',
+      handler: (item, context) => {
     if (!context.workbook.sheets.has(item.params.targetSheetId)) throw new Error(`Unknown drill-down target: ${item.params.targetSheetId}`);
     context.workbook.removeSheet(item.params.targetSheetId);
-  }, {
+  },
+      metadata: {
     schema: { name: 'PivotDrillDownRemoveParams', validate: isPivotDrillDownRemove },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: (value) => isPivotDrillDownRemove(value) ? sheetRange(value.targetSheetId) : [], mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['pivot.drilldown.add'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
   const registerLayoutPatch = <P extends { sheetId: string; pivotId: string; fieldId: string }>(
     commandId: string,

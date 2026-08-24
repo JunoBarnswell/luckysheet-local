@@ -30,8 +30,10 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "rows.permuted" -> {
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
-                RangeRef sheet = SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId());
-                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), sheet.startColumn(), sheet.endColumn()));
+                // Row permutation remaps row-addressed metadata such as
+                // protection rules across the full Excel coordinate domain,
+                // not merely the materialized worksheet width.
+                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, SnapshotMutationSupport.MAX_COLUMN));
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         };

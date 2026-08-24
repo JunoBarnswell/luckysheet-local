@@ -281,29 +281,8 @@ export class CommandRegistry {
     this.operations.set(operation.id, operation as Operation<unknown>);
   }
 
-  registerMutation<P>(registration: MutationRegistration<P>): void;
-  /**
-   * Implementation-level call shape retained for feature migration. The
-   * metadata argument is optional only at the TypeScript boundary; omitting
-   * it is rejected immediately at runtime and by the static registry gate.
-   */
-  registerMutation<P>(id: string, handler: MutationHandler<P>, metadata?: MutationRegistrationMetadata<P>): void;
-  registerMutation<P>(
-    registrationOrId: MutationRegistration<P> | string,
-    legacyHandler?: MutationHandler<P>,
-    legacyMetadata?: MutationRegistrationMetadata<P>,
-  ): void {
-    if (typeof registrationOrId === 'string') {
-      registrationOrId = {
-        id: registrationOrId,
-        handler: legacyHandler as MutationHandler<P>,
-        metadata: legacyMetadata as MutationRegistrationMetadata<P>,
-      };
-    }
-    if (!isRecord(registrationOrId)) {
-      throw new Error('Mutation registration requires a canonical object contract');
-    }
-    const candidate = registrationOrId as unknown as MutationRegistration<P>;
+  registerMutation<P>(registration: MutationRegistration<P>): void {
+    const candidate = registration as unknown as MutationRegistration<P>;
     const normalized = validateRegistrationMetadata(candidate.id, candidate.metadata);
     if (normalized.issues.length > 0 || !normalized.metadata) {
       throw new Error(`Invalid mutation registration ${candidate.id}: ${formatIssues(normalized.issues)}`);

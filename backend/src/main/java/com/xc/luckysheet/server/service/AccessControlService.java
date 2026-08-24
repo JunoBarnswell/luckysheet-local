@@ -4,6 +4,7 @@ import com.xc.luckysheet.server.contract.AclEntry;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -38,7 +39,9 @@ public class AccessControlService {
         return store.listAcl(unitId);
     }
 
+    @Transactional
     public AclEntry grant(String unitId, String actor, String target, WorkbookAclRole role) {
+        store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         require(unitId, actor, WorkbookAclRole.OWNER);
         if (target == null || target.isBlank()) throw ServiceException.validation("ACL subject is required");
         if (role == null || role == WorkbookAclRole.OWNER) throw ServiceException.validation("Only editor, commenter or viewer may be granted");
@@ -48,7 +51,9 @@ public class AccessControlService {
                 .orElseThrow(() -> new IllegalStateException("ACL write was not persisted"));
     }
 
+    @Transactional
     public void revoke(String unitId, String actor, String target) {
+        store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         require(unitId, actor, WorkbookAclRole.OWNER);
         if (authorization.role(unitId, target).orElse(null) == WorkbookAclRole.OWNER) {
             throw ServiceException.forbidden("The workbook owner cannot be revoked");

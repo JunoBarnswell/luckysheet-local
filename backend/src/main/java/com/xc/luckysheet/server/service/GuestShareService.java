@@ -36,6 +36,7 @@ public class GuestShareService {
 
     @Transactional
     public ShareResponse create(String unitId, ShareCreateRequest request, String actor) {
+        store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         // The owner check must use the persistent ACL, never a client role.
         requireOwner(unitId, actor);
         lifecycle.requireActive(unitId);
@@ -60,6 +61,7 @@ public class GuestShareService {
 
     @Transactional
     public void revoke(String unitId, UUID shareId, String actor) {
+        store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         requireOwner(unitId, actor);
         lifecycle.requireActive(unitId);
         if (store.revokeShare(unitId, shareId, Instant.now()) == 0) throw ServiceException.notFound("Share link not found or already revoked");

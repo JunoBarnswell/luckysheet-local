@@ -140,21 +140,21 @@ function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot
  * `workbook.restore` mutation carrying the materialized historical snapshot.
  */
 export function registerHistoryCommands(registry: CommandRegistry): void {
-  registry.registerMutation<ServerRestoreMutationParams>(
-    'workbook.restore',
-    (item, context) => {
+  registry.registerMutation<ServerRestoreMutationParams>({
+    id: 'workbook.restore',
+    handler: (item, context) => {
       if (!isServerRestoreMutationParams(item.params)) {
         throw new Error('workbook.restore must be a server-generated targetRevision mutation');
       }
       applyRestoredWorkbook(context.workbook, item.params.snapshot);
     },
-    {
+    metadata: {
       schema: { name: 'ServerRestoreMutationParams', validate: isServerRestoreMutationParams },
       permission: { capability: 'history.restore' },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['workbook.restore'],
     },
-  );
+  });
 
   registry.registerCommand<RestoreCommandParams>({
     id: 'history.restore',
