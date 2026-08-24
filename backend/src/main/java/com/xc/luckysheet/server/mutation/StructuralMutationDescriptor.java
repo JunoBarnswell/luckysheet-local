@@ -28,7 +28,11 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         return switch (id()) {
             case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
-            case "rows.permuted" -> List.of(ownRange(root, mutation.sheetId(), params));
+            case "rows.permuted" -> {
+                RangeRef selected = ownRange(root, mutation.sheetId(), params);
+                RangeRef sheet = SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId());
+                yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), sheet.startColumn(), sheet.endColumn()));
+            }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         };
     }
