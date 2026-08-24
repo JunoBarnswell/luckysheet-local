@@ -143,9 +143,9 @@ export function HomeRibbon({
             <Tile type="button" disabled={disabled} icon="clipboard" className={dense ? '!w-[60px]' : undefined} onClick={() => context.actions.onPaste()} title={homeText(locale, 'pasteAll')}>
               {homeText(locale, 'pasteAll')}
             </Tile>
-            <Stack gap="none" className="w-9 pt-1">
-              {command('clipboard.cut', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}
-              {command('clipboard.copy', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}
+            <Stack gap="none" className="w-9">
+              {command('clipboard.cut', { iconOnly: true, className: '!h-[19px] !min-h-0 !w-8 !rounded-none' })}
+              {command('clipboard.copy', { iconOnly: true, className: '!h-[19px] !min-h-0 !w-8 !rounded-none' })}
               <Button
                 aria-label={homeText(locale, 'formatPainter')}
                 aria-pressed={formatPainterActive}
@@ -156,10 +156,11 @@ export function HomeRibbon({
                 size="xs"
                 title={homeText(locale, 'formatPainterHint')}
                 variant="ghost"
-                className="!h-7 !min-h-0 !w-8 !rounded-none"
+                className="!h-[19px] !min-h-0 !w-8 !rounded-none"
                 onClick={() => onBeginFormatPainter(false)}
                 onDoubleClick={() => onBeginFormatPainter(true)}
               />
+              {command('clipboard.paste-special', { iconOnly: true, className: '!h-[19px] !min-h-0 !w-8 !rounded-none' })}
             </Stack>
           </Inline>
         </HomeGroup>

@@ -419,7 +419,7 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
   const fieldId = resolveFieldId(filter.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId}`);
   if (filter.kind === 'manual') {
-    return { kind: 'manual', fieldId, mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
+    return { kind: 'manual', fieldId, scope: filter.scope ?? 'report', mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
   }
   if (filter.kind === 'top-items') {
     const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
@@ -1028,11 +1028,14 @@ function buildPivotGridProjectionCandidate(
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
-  for (const filter of definition.layout.filters) {
-    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`));
+  for (const filter of definition.layout.filters.filter((entry) => entry.scope !== 'field')) {
+    const selected = filter.kind === 'manual' && filter.mode !== 'all';
+    const count = selected ? filter.memberKeys.length : 0;
+    const filterText = selected ? `${fieldName(filter.fieldId, definition.fieldCatalog)}: ${count} selected` : `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`;
+    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, filterText, { fieldId: filter.fieldId, filterSummary: { fieldName: fieldName(filter.fieldId, definition.fieldCatalog), mode: selected ? 'selected' : 'all', count } }));
     row += 1;
   }
-  for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', index === 0 ? { captionKey: 'row-labels' } : {}));
+  for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
   const columnPaths = tree?.columnPaths ?? [];
   const values = definition.layout.values;
   for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
@@ -1042,7 +1045,7 @@ function buildPivotGridProjectionCandidate(
       const valueField = values[valueIndex];
       const valueCaption = valueField ? (valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)) : '';
       const label = path.length ? `${path.map(display).join(' / ')} ${valueCaption}`.trim() : valueCaption;
-      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path }));
+      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId }));
     }
   }
   row += 1;

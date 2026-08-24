@@ -37,7 +37,7 @@ function removeField(layout: PivotLayout, fieldId: string): PivotLayout {
 }
 function moveField(layout: PivotLayout, field: PivotFieldDefinition, area: Area, index: number): PivotLayout {
   const next = removeField(layout, field.fieldId);
-  if (area === 'filters') next.filters.splice(index, 0, { kind: 'manual', fieldId: field.fieldId, mode: 'all', memberKeys: [] });
+  if (area === 'filters') next.filters.splice(index, 0, { kind: 'manual', fieldId: field.fieldId, scope: 'report', mode: 'all', memberKeys: [] });
   else if (area === 'columns') next.columns.splice(index, 0, { fieldId: field.fieldId });
   else if (area === 'rows') next.rows.splice(index, 0, { fieldId: field.fieldId });
   else next.values.splice(index, 0, { fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
@@ -66,7 +66,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const layout = delayUpdate && draft ? draft : pivot?.layout;
   const disabled = Boolean(state?.disabled || state?.loading || state?.error || !pivot || !layout);
 
-  const filters = layout?.filters.map((field) => field.fieldId) ?? [];
+  const filters = layout?.filters.filter((field) => field.scope !== 'field').map((field) => field.fieldId) ?? [];
   const columns = layout?.columns.map((field) => field.fieldId) ?? [];
   const rows = layout?.rows.map((field) => field.fieldId) ?? [];
   const values = layout?.values ?? [];
@@ -109,7 +109,16 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
     }
     applyLayout(next);
   };
-  const filter = (fieldId: string, nextFilter: PivotManualFilterState) => applyLayout({ ...cloneLayout(layout), filters: layout.filters.map((entry) => entry.fieldId === fieldId ? { kind: 'manual' as const, fieldId, mode: nextFilter.mode, memberKeys: [...nextFilter.memberKeys] } : entry) });
+  const filter = (fieldId: string, nextFilter: PivotManualFilterState) => {
+    const next = cloneLayout(layout);
+    const index = next.filters.findIndex((entry) => entry.fieldId === fieldId);
+    const current = index >= 0 ? next.filters[index] : undefined;
+    const scope = rows.includes(fieldId) || columns.includes(fieldId) ? 'field' as const : current?.scope ?? 'report' as const;
+    const criterion = { kind: 'manual' as const, fieldId, scope, mode: nextFilter.mode, memberKeys: [...nextFilter.memberKeys] };
+    if (index >= 0) next.filters[index] = criterion;
+    else next.filters.push(criterion);
+    applyLayout(next);
+  };
   const sort = (fieldId: string, nextSort: Parameters<NonNullable<PivotPanelCallbacks['onSortChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry) });
   const group = (fieldId: string, nextGroup: Parameters<NonNullable<PivotPanelCallbacks['onGroupChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry) });
   const valueChange = (value: PivotValueField) => applyLayout({ ...cloneLayout(layout), values: layout.values.map((entry) => entry.fieldId === value.fieldId ? value : entry) });

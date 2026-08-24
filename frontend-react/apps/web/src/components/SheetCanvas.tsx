@@ -24,10 +24,12 @@ import type {
   DrawingObject,
   DrawingPayload,
   PivotGridProjection,
+  PivotFilter,
   PivotHitTest,
   PivotProjectionCell,
   PivotSourceRowPath,
   PivotResultTree,
+  PivotSort,
   RangeRef,
   SparklineModel,
   WorkbookTableModel,
@@ -41,7 +43,8 @@ import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
 import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
 import type { ColumnDimensionController } from '../editor/column-dimension-controller';
 import type { Locale } from '../i18n';
-import { pivotText } from './pivot/pivot-localization';
+import { pivotTemplate, pivotText } from './pivot/pivot-localization';
+import { PivotHeaderFilterPopover } from './pivot/PivotHeaderFilterPopover';
 
 export interface SheetCanvasProps {
   locale: Locale;
@@ -68,6 +71,7 @@ export interface SheetCanvasProps {
   getPivotContextMenuItems?: (hit: ResolvedContextHit) => readonly ContextMenuItem[];
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
+  onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onCommitCell: (value: string) => void;
@@ -219,7 +223,9 @@ export function isPivotValueCell(cell: PivotProjectionCell): boolean {
 
 /** Convert a derived projection cell to the render-engine cell contract. */
 export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US'): CellRenderData {
-  const localizedText = cell.captionKey === 'row-labels'
+  const localizedText = cell.filterSummary
+    ? `${cell.filterSummary.fieldName}: ${cell.filterSummary.mode === 'all' ? pivotText(locale, 'allItems') : pivotTemplate(locale, 'selectedItems', { count: cell.filterSummary.count })}`
+    : cell.captionKey === 'row-labels'
     ? pivotText(locale, 'rowLabels')
     : cell.captionKey === 'grand-total'
       ? pivotText(locale, 'grandTotal')
@@ -286,6 +292,7 @@ export function SheetCanvas({
   onPivotContextHit,
   getPivotContextMenuItems,
   onPivotShowDetails,
+  onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
   onCommitCell,
@@ -334,6 +341,7 @@ export function SheetCanvas({
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
+  const [pivotFilterPopover, setPivotFilterPopover] = useState<{ pivotId: string; fieldId: string; scope: 'report' | 'field'; x: number; y: number } | null>(null);
   const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
   const [scrollTick, setScrollTick] = useState(0);
@@ -419,6 +427,12 @@ export function SheetCanvas({
       || projection.refresh.status === "stale"),
     [sheet.pivotProjections],
   );
+  const pivotHeaderFilterCells = useMemo(() => Object.values(sheet.pivotProjections).flatMap((projection) => {
+    if (projection.collision.status !== 'clear') return [];
+    return projection.cells
+      .filter((cell) => (cell.kind === 'column-header' || cell.kind === 'filter') && Boolean(cell.fieldId))
+      .map((cell) => ({ projection, cell }));
+  }), [sheet.pivotProjections]);
 
   // ---------- 浮动对象绘制器 ----------
 
@@ -848,6 +862,14 @@ export function SheetCanvas({
                 scrollTick={scrollTick}
               />
             )) : null}
+            {engineReady ? pivotHeaderFilterCells.map(({ cell, projection }) => {
+              const row = projection.target.anchor.row + cell.row;
+              const column = projection.target.anchor.column + cell.column;
+              const rect = engineRef.current?.contentRangeToScreenRects({ startRow: row, endRow: row, startColumn: column, endColumn: column })[0];
+              if (!rect || !cell.fieldId) return null;
+              const fieldName = sheet.pivots.find((pivot) => pivot.id === projection.pivotId)?.fieldCatalog.fields.find((field) => field.fieldId === cell.fieldId)?.name ?? cell.fieldId;
+              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${fieldName}`} icon="chevron-down" iconOnly size="xs" variant="ghost" className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => setPivotFilterPopover({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height })} />;
+            }) : null}
           </Box>
 
           {editorRect && editingCell ? (
@@ -865,6 +887,15 @@ export function SheetCanvas({
               />
             </Box>
           ) : null}
+
+          {pivotFilterPopover ? (() => {
+            const pivot = sheet.pivots.find((candidate) => candidate.id === pivotFilterPopover.pivotId);
+            const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
+            const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
+            const currentFilter = pivot?.layout.filters.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope);
+            const valueFieldId = pivot?.layout.values[0]?.fieldId;
+            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFieldId={valueFieldId} currentFilter={currentFilter} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope); setPivotFilterPopover(null); }} /> : null;
+          })() : null}
 
           {fillPreview ? (
             <FillPreviewOverlay engine={engineRef.current} preview={fillPreview} />

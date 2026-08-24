@@ -42,6 +42,11 @@ describe('native PivotGridProjection contract', () => {
     pivot.layout.filters = [{ kind: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notDeepEqual({ type: 'text', value: '1' }, { type: 'number', value: 1 });
+    pivot.layout.filters = [{ kind: 'manual', scope: 'field', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
+    const fieldFiltered = buildPivotGridProjection(workbook, pivot);
+    assert.equal(fieldFiltered.cells.some((cell) => cell.kind === 'filter'), false);
+    assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
   });
 
   it('implements each aggregate independently', () => {

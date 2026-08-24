@@ -303,7 +303,7 @@
       "sortRange": "排序区域",
       "conditionalFormat": "条件格式",
       "cellTemplate": "单元格样式模板",
-      "cellEditor": "单元格编辑器设置",
+      "cellEditor": "编辑器设置",
       "tableSheet": "集算表",
       "ganttSheet": "甘特表",
       "reportSheet": "报表",

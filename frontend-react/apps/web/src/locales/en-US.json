@@ -303,7 +303,7 @@
       "sortRange": "Sort Range",
       "conditionalFormat": "Conditional Format",
       "cellTemplate": "Cell Style Template",
-      "cellEditor": "Cell Editor Settings",
+      "cellEditor": "Editor Settings",
       "tableSheet": "TableSheet",
       "ganttSheet": "GanttSheet",
       "reportSheet": "ReportSheet",

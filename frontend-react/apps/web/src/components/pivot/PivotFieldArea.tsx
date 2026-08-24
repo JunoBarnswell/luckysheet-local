@@ -74,6 +74,23 @@ function filterForMode(field: AreaItem, state: PivotManualFilterState, mode: Piv
   return { mode, memberKeys: all.filter((key) => !selected.some((candidate) => pivotMemberKeyEquals(candidate, key))) };
 }
 
+function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state: PivotManualFilterState, onFilter: NonNullable<PivotFieldAreaProps['onFilter']>): ReactNode {
+  return (
+    <Stack gap="xs" className="max-h-[18rem] min-w-[13rem] overflow-auto p-2">
+      <Text size="xs" weight="semibold">{pivotText(locale, 'filterValues')}</Text>
+      <Select aria-label={`${field.name} ${pivotText(locale, 'filterMode')}`} sizeVariant="sm" disabled={disabled} value={state.mode} onChange={(event) => onFilter(field.fieldId, filterForMode(field, state, event.target.value as PivotManualFilterState['mode']))}>
+        <option value="all">{pivotText(locale, 'showAll')}</option>
+        <option value="include">{pivotText(locale, 'includeSelected')}</option>
+        <option value="exclude">{pivotText(locale, 'excludeSelected')}</option>
+      </Select>
+      {(field.values ?? []).map((value) => {
+        const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, keyFor(value)));
+        return <CheckToggle key={pivotMemberKey(keyFor(value))} label={String(value)} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />;
+      })}
+    </Stack>
+  );
+}
+
 function groupOptions(locale: Locale, field: AreaItem, onGroup?: PivotFieldAreaProps['onGroup']): ReactNode {
   if (!onGroup) return null;
   if (field.dataType === 'date') {
@@ -141,6 +158,14 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
           >
             <Icon name="menu" size="xs" className="text-slate-300" />
             <Text size="xs" weight="medium" className="min-w-0 flex-1 truncate">{field.name}</Text>
+            {area !== 'values' && onFilter && field.values?.length ? (
+              <DropdownMenu
+                align="right"
+                trigger={<Button aria-label={`${pivotText(locale, 'filterValues')}: ${field.name}`} icon="filter" iconOnly size="xs" variant={filterStates[field.fieldId]?.mode && filterStates[field.fieldId]?.mode !== 'all' ? 'soft' : 'ghost'} />}
+              >
+                {filterOptions(locale, field, disabled, filterStates[field.fieldId] ?? { mode: 'all', memberKeys: [] }, onFilter)}
+              </DropdownMenu>
+            ) : null}
             <DropdownMenu
               align="right"
               trigger={<Button aria-label={`${pivotText(locale, 'fieldMenu')}: ${field.name}`} icon="more-horizontal" iconOnly size="xs" variant="ghost" />}
@@ -155,10 +180,6 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
                      </Inline>
                       {onSort ? <Stack gap="xs" className="border-t border-slate-100 pt-1"><Text size="xs" weight="semibold">{pivotText(locale, 'sortBy')}</Text><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'label' }); close(); }}>{pivotText(locale, 'ascending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'label' }); close(); }}>{pivotText(locale, 'descending')}</Button></Inline><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'value' }); close(); }}>{pivotText(locale, 'valueAscending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'value' }); close(); }}>{pivotText(locale, 'valueDescending')}</Button></Inline><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, undefined); close(); }}>{pivotText(locale, 'clearSort')}</Button></Stack> : null}
                       {groupOptions(locale, field, onGroup)}
-                      {onFilter && field.values?.length ? (() => {
-                       const state = filterStates[field.fieldId] ?? { mode: 'all' as const, memberKeys: [] };
-                        return <Stack gap="xs" className="border-t border-slate-100 pt-1"><Text size="xs" weight="semibold">{pivotText(locale, 'filterValues')}</Text><Select aria-label={`${field.name} ${pivotText(locale, 'filterMode')}`} sizeVariant="sm" disabled={disabled} value={state.mode} onChange={(event) => onFilter(field.fieldId, filterForMode(field, state, event.target.value as PivotManualFilterState['mode']))}><option value="all">{pivotText(locale, 'showAll')}</option><option value="include">{pivotText(locale, 'includeSelected')}</option><option value="exclude">{pivotText(locale, 'excludeSelected')}</option></Select>{field.values.map((value) => { const textValue = String(value); const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, keyFor(value))); return <CheckToggle key={pivotMemberKey(keyFor(value))} label={textValue} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />; })}</Stack>;
-                      })() : null}
                       {area === 'values' && onValueChange ? (() => {
                         const value = valueFields.find((entry) => entry.fieldId === field.fieldId);
                         return value ? <PivotValueEditor locale={locale} fields={fields} value={value} disabled={disabled} onChange={onValueChange} /> : null;
