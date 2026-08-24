@@ -40,7 +40,7 @@ describe('WorkbookSession data objects integration', () => {
     assert.equal(sheet.sheetTables.length, 1);
     assert.equal(sheet.sheetTables[0]?.name, 'Table1');
     assert.equal(sheet.sheetTables[0]?.columns.length, 2);
-    assert.ok(sheet.filter);
+    assert.ok(sheet.sheetTables[0]?.autoFilter);
   });
 
   it('addConditionalFormat stores rules on the worksheet', () => {
@@ -104,10 +104,10 @@ describe('WorkbookSession data objects integration', () => {
   it('applyFilter sets filter criteria on the sheet', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
-    app.applyFilter(0, { selectedValues: ['East', 'West'] });
+    app.applyFilter(0, { criterion: { kind: 'values', values: ['East', 'West'], includeBlank: false } });
 
-    const filter = app['runtime'].model.getSheet(sheetId).filter;
-    assert.ok(filter);
-    assert.deepEqual(filter?.criteria[0]?.selectedValues, ['East', 'West']);
+    const autoFilter = app['runtime'].model.getSheet(sheetId).autoFilter;
+    assert.ok(autoFilter);
+    assert.deepEqual(autoFilter?.columns[0]?.criterion, { kind: 'values', values: ['East', 'West'], includeBlank: false });
   });
 });

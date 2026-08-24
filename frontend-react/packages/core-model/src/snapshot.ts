@@ -3,6 +3,7 @@ import type {
   DataSourceManifest,
   SheetId,
   SheetSnapshot,
+  RangeRef,
   WorkbookModel,
   WorkbookTableModel,
   UnitId,
@@ -18,7 +19,7 @@ import { WorkbookModel as WorkbookModelClass } from './index';
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 3;
+  version: 4;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -38,7 +39,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 3 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 4 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -50,6 +51,16 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   const input = structuredClone(value) as Record<string, any>;
   if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  if (input.version === 3 && Array.isArray(input.sheets)) {
+    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    for (const sheet of input.sheets as Array<Record<string, any>>) {
+      if (sheet.pane && typeof sheet.pane === 'object' && sheet.pane.kind !== 'none') {
+        sheet.pane.state = sheet.pane.kind === 'split' ? 'split' : (sheet.pane.state ?? 'frozen');
+      }
+      migrateLegacyFilter(sheet);
+    }
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
   if (input.version !== 2 || !Array.isArray(input.sheets)) throw new Error(`Unsupported workbook snapshot version: ${String(input.version)}`);
   input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
   input.dimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
@@ -64,6 +75,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     sheet.pane = xSplit > 0 || ySplit > 0
       ? { kind: 'frozen', xSplit, ySplit, startRow: Number(freeze?.startRow ?? ySplit), startColumn: Number(freeze?.startColumn ?? xSplit), state: 'frozen' }
       : { kind: 'none' };
+    migrateLegacyFilter(sheet);
     migrateLegacyFontSizes(sheet.cells);
     migrateLegacyFontSizes(sheet.conditionalFormats);
     delete sheet.defaultRowHeight;
@@ -73,6 +85,28 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete sheet.freeze;
   }
   return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+}
+
+function migrateLegacyFilter(sheet: Record<string, any>): void {
+  if (!sheet.filter || typeof sheet.filter !== 'object') return;
+  const legacy = sheet.filter as Record<string, any>;
+  const columns: Record<string, any> = {};
+  for (const [key, condition] of Object.entries(legacy.criteria ?? {})) {
+    const item = condition as Record<string, any>;
+    const selectedValues = Array.isArray(item.selectedValues) ? item.selectedValues : undefined;
+    columns[key] = {
+      column: Number(key),
+      showButton: true,
+      hiddenButton: false,
+      criterion: selectedValues
+        ? { kind: 'values', values: selectedValues, includeBlank: selectedValues.some((value: unknown) => value === '' || value === null) }
+        : item.conditionOperator
+          ? { kind: 'custom', join: 'and', conditions: [{ operator: item.conditionOperator, value: item.conditionValue ?? null }] }
+          : undefined,
+    };
+  }
+  sheet.autoFilter = { sheetId: legacy.sheetId ?? sheet.id, range: legacy.range, columns };
+  delete sheet.filter;
 }
 
 function finiteStoredSize(value: unknown, fallback: number): number {
@@ -113,7 +147,52 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
     || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
+  for (const sheet of snapshot.sheets) {
+    const pane = sheet.pane;
+    if (pane.kind === 'frozen') {
+      if (!Number.isInteger(pane.xSplit) || !Number.isInteger(pane.ySplit) || pane.xSplit < 0 || pane.ySplit < 0) {
+        throw new Error('Frozen pane split counts must be non-negative integers');
+      }
+    } else if (pane.kind === 'split') {
+      if (!Number.isFinite(pane.xSplit) || !Number.isFinite(pane.ySplit) || pane.xSplit < 0 || pane.ySplit < 0) {
+        throw new Error('Split pane positions must be finite non-negative numbers');
+      }
+    }
+    if (sheet.autoFilter) {
+      if (sheet.autoFilter.range.sheetId !== sheet.id) throw new Error('AutoFilter range must target its worksheet');
+      for (const [key, column] of Object.entries(sheet.autoFilter.columns)) {
+        if (!Number.isSafeInteger(Number(key)) || column.column !== Number(key)) throw new Error('AutoFilter column identity is invalid');
+      }
+    }
+    const tableFilters = (sheet.sheetTables ?? []).filter((table) => Boolean(table.autoFilter));
+    for (const table of tableFilters) {
+      const filter = table.autoFilter!;
+      if (filter.sheetId !== sheet.id || filter.range.sheetId !== sheet.id || !sameRange(filter.range, table.range)) {
+        throw new Error('Table AutoFilter must equal its Table range');
+      }
+      for (const [key, column] of Object.entries(filter.columns)) {
+        if (!Number.isSafeInteger(Number(key)) || column.column !== Number(key)
+          || column.column < filter.range.startColumn || column.column > filter.range.endColumn) {
+          throw new Error('Table AutoFilter column identity is invalid');
+        }
+      }
+    }
+    if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
+      throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
+    }
+  }
   return structuredClone(snapshot);
+}
+
+function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId
+    && left.startRow <= right.endRow && right.startRow <= left.endRow
+    && left.startColumn <= right.endColumn && right.startColumn <= left.endColumn;
+}
+
+function sameRange(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId && left.startRow === right.startRow && left.endRow === right.endRow
+    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
 }
 
 export function loadWorkbookFromSnapshot(snapshot: WorkbookSnapshot): WorkbookModelClass {

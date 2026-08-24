@@ -9,11 +9,7 @@ import {
   transactionComplete,
   type IndexedDbStoreOptions,
   WORKSPACE_DATABASE_NAME,
-  XLSX_ARTIFACT_STORE_NAME,
 } from './indexed-db';
-
-/** Kept as a store-name export for callers that build explicit transactions. */
-export const XLSX_ARTIFACT_STORE = XLSX_ARTIFACT_STORE_NAME;
 
 export interface DataBlockRecord {
   schema: 'DataBlockRecord';

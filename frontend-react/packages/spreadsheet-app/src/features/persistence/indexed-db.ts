@@ -7,11 +7,11 @@
  * WorkbookSnapshot or an operation envelope.
  */
 export const WORKSPACE_DATABASE_NAME = 'react-sheets-workspaces';
-export const WORKSPACE_DATABASE_VERSION = 5;
+export const WORKSPACE_DATABASE_VERSION = 6;
 
 export const WORKSPACE_STORE_NAME = 'workspaces';
 export const DATA_BLOCK_STORE_NAME = 'dataBlocks';
-export const XLSX_ARTIFACT_STORE_NAME = 'xlsxArtifacts';
+export const NATIVE_PACKAGE_STORE_NAME = 'nativePackages';
 export const OVERLAY_STORE_NAME = 'sparseOverlays';
 
 /** Structural factory shape also accepts the lightweight test doubles used by callers. */
@@ -94,8 +94,8 @@ export function ensureWorkspaceStores(database: IDBDatabase): void {
     database.createObjectStore(WORKSPACE_STORE_NAME, { keyPath: 'unitId' });
   }
   createSourceBlockStore(database);
-  if (!database.objectStoreNames.contains(XLSX_ARTIFACT_STORE_NAME)) {
-    database.createObjectStore(XLSX_ARTIFACT_STORE_NAME, { keyPath: 'unitId' });
+  if (!database.objectStoreNames.contains(NATIVE_PACKAGE_STORE_NAME)) {
+    database.createObjectStore(NATIVE_PACKAGE_STORE_NAME, { keyPath: 'unitId' });
   }
   createOverlayStore(database);
 }

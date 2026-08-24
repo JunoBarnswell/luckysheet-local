@@ -4,7 +4,7 @@ import type {
   CellStyle,
   ConditionalFormatRule,
   DataValidationRule,
-  FilterModel,
+  AutoFilterModel,
   WorksheetPane,
   MergeSpan,
   RangeRef,
@@ -16,13 +16,13 @@ import type {
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
-import type { XlsxLayoutRepairPlan } from '@react-sheets/exchange-xlsx';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { shiftFormula } from './clipboard';
 import { buildCellFromText } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
+import { validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 
@@ -385,10 +385,10 @@ function isSheetViewMutation(value: unknown): value is { sheetId: string; showGr
     && (value.zoom === undefined || (typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom > 0));
 }
 
-function isFilterMutation(value: unknown): value is { sheetId: string; filter: FilterModel } {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.filter)
-    && typeof value.filter.sheetId === 'string' && isRange(value.filter.range)
-    && isRecord(value.filter.criteria);
+function isFilterMutation(value: unknown): value is { sheetId: string; autoFilter: AutoFilterModel } {
+  return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.autoFilter)
+    && typeof value.autoFilter.sheetId === 'string' && isRange(value.autoFilter.range)
+    && isRecord(value.autoFilter.columns);
 }
 
 function isFilterRemoveMutation(value: unknown): value is { sheetId: string; range?: RangeRef } {
@@ -453,99 +453,12 @@ function restoreCell(
   else sheet.cells.delete(row, column);
 }
 
-interface XlsxLayoutRepairMutationParams {
-  sourceChecksum: string;
-  sheets: Array<{
-    sheetId: string;
-    defaultRowHeightPx: number;
-    defaultColumnWidthPx: number;
-    rowHeightsPx: Record<number, number>;
-    columnWidthsPx: Record<number, number>;
-    pane: WorksheetPane;
-    fontSizesPx: Array<{ row: number; column: number; fontSizePx: number | null }>;
-  }>;
-}
-
-function isLayoutRepairMutation(value: unknown): value is XlsxLayoutRepairMutationParams {
-  return isRecord(value) && typeof value.sourceChecksum === 'string' && value.sourceChecksum.length > 0 && Array.isArray(value.sheets)
-    && value.sheets.every((sheet) => isRecord(sheet) && typeof sheet.sheetId === 'string'
-      && typeof sheet.defaultRowHeightPx === 'number' && sheet.defaultRowHeightPx > 0
-      && typeof sheet.defaultColumnWidthPx === 'number' && sheet.defaultColumnWidthPx > 0
-      && isRecord(sheet.rowHeightsPx) && isRecord(sheet.columnWidthsPx) && isWorksheetPane(sheet.pane)
-      && Array.isArray(sheet.fontSizesPx) && sheet.fontSizesPx.every((entry) => isRecord(entry) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0 && Number.isSafeInteger(entry.column) && Number(entry.column) >= 0 && (entry.fontSizePx === null || (typeof entry.fontSizePx === 'number' && entry.fontSizePx > 0))));
-}
-
-function applyLayoutRepair(workbook: WorkbookModel, params: XlsxLayoutRepairMutationParams): void {
-  for (const repair of params.sheets) {
-    const sheet = workbook.getSheet(repair.sheetId);
-    sheet.defaultRowHeightPx = repair.defaultRowHeightPx;
-    sheet.defaultColumnWidthPx = repair.defaultColumnWidthPx;
-    for (const key of Object.keys(sheet.rowHeightsPx)) delete sheet.rowHeightsPx[Number(key)];
-    for (const key of Object.keys(sheet.columnWidthsPx)) delete sheet.columnWidthsPx[Number(key)];
-    Object.assign(sheet.rowHeightsPx, repair.rowHeightsPx);
-    Object.assign(sheet.columnWidthsPx, repair.columnWidthsPx);
-    sheet.pane = structuredClone(repair.pane);
-    for (const entry of repair.fontSizesPx) {
-      const cell = sheet.cells.get(entry.row, entry.column);
-      if (!cell) continue;
-      const style = { ...(cell.style ?? {}) };
-      if (entry.fontSizePx === null) delete style.fontSizePx;
-      else style.fontSizePx = entry.fontSizePx;
-      sheet.cells.set(entry.row, entry.column, { ...cell, style: Object.keys(style).length ? style : undefined });
-    }
-  }
-}
-
-function inverseLayoutRepair(workbook: WorkbookModel, params: XlsxLayoutRepairMutationParams): XlsxLayoutRepairMutationParams {
-  return {
-    sourceChecksum: params.sourceChecksum,
-    sheets: params.sheets.map((repair) => {
-      const sheet = workbook.getSheet(repair.sheetId);
-      return {
-        sheetId: repair.sheetId,
-        defaultRowHeightPx: sheet.defaultRowHeightPx,
-        defaultColumnWidthPx: sheet.defaultColumnWidthPx,
-        rowHeightsPx: { ...sheet.rowHeightsPx },
-        columnWidthsPx: { ...sheet.columnWidthsPx },
-        pane: structuredClone(sheet.pane),
-        fontSizesPx: repair.fontSizesPx.map((entry) => ({ row: entry.row, column: entry.column, fontSizePx: sheet.cells.get(entry.row, entry.column)?.style?.fontSizePx ?? null })),
-      };
-    }),
-  };
-}
-
 export function registerSheetCommands(runtime: CommandRuntime): void {
   registerEditingCommands(runtime);
   registerDataToolCommands(runtime);
   registerSheetTableCommands(runtime);
   registerOutlineCommands(runtime);
   registerHomeCommands(runtime);
-
-  runtime.registry.registerMutation<XlsxLayoutRepairMutationParams>({
-    id: 'xlsx.layout.repaired',
-    handler: (item, context) => {
-      if (!isLayoutRepairMutation(item.params)) throw new Error('Invalid xlsx.layout.repaired mutation payload');
-      applyLayoutRepair(context.workbook, item.params);
-    },
-    metadata: {
-      schema: { name: 'XlsxLayoutRepair', validate: isLayoutRepairMutation },
-      permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => params.sheets.map((sheet) => ({ sheetId: sheet.sheetId, startRow: 0, endRow: 1_048_575, startColumn: 0, endColumn: 16_383 })), mode: 'declared' },
-      inverseIds: ['xlsx.layout.repaired'],
-    },
-  });
-  runtime.registry.registerCommand<XlsxLayoutRepairPlan>({
-    id: 'workbook.xlsx.layout.repair',
-    execute: (plan, context) => {
-      const params: XlsxLayoutRepairMutationParams = { sourceChecksum: plan.sourceChecksum, sheets: structuredClone(plan.sheets) };
-      if (!isLayoutRepairMutation(params)) throw new Error('Invalid XLSX layout repair plan');
-      if (!params.sheets.length) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const inverse = inverseLayoutRepair(context.workbook, params);
-      const affectedRanges = params.sheets.map((sheet) => ({ sheetId: sheet.sheetId, startRow: 0, endRow: 1_048_575, startColumn: 0, endColumn: 16_383 }));
-      context.applyMutation({ id: 'xlsx.layout.repaired', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params, affectedRanges, inverse: [{ id: 'xlsx.layout.repaired', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: inverse, affectedRanges }], apply: () => applyLayoutRepair(context.workbook, params) });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',
@@ -1993,90 +1906,93 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   });
 
   // 13. 筛选 / 条件格式 / 数据验证 / 色带 / 名称
-  runtime.registry.registerMutation<{ sheetId: string; filter: FilterModel }>({
-    id: 'filter.set',
+  runtime.registry.registerMutation<{ sheetId: string; autoFilter: AutoFilterModel }>({
+    id: 'autoFilter.set',
     handler: (item, context) => {
-      if (!isFilterMutation(item.params)) throw new Error('Invalid filter.set mutation payload');
+      if (!isFilterMutation(item.params)) throw new Error('Invalid autoFilter.set mutation payload');
       const params = item.params;
-      context.workbook.getSheet(params.sheetId).filter = structuredClone(params.filter);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      sheet.autoFilter = validateFilterOwnership(sheet, params.autoFilter, { kind: 'worksheet' });
     },
     metadata: {
-      schema: { name: 'FilterSet', validate: isFilterMutation },
-      permission: { capability: 'sheet.filter.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => [structuredClone(params.filter.range)], mode: 'exact' },
-      inverseIds: ['filter.set', 'filter.remove'],
+      schema: { name: 'AutoFilterSet', validate: isFilterMutation },
+      permission: { capability: 'sheet.autoFilter.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => [structuredClone(params.autoFilter.range)], mode: 'exact' },
+      inverseIds: ['autoFilter.set', 'autoFilter.remove'],
     },
   });
   runtime.registry.registerMutation<{ sheetId: string; range?: RangeRef }>({
-    id: 'filter.remove',
+    id: 'autoFilter.remove',
     handler: (item, context) => {
-      if (!isFilterRemoveMutation(item.params)) throw new Error('Invalid filter.remove mutation payload');
-      context.workbook.getSheet(item.params.sheetId).filter = undefined;
+      if (!isFilterRemoveMutation(item.params)) throw new Error('Invalid autoFilter.remove mutation payload');
+      context.workbook.getSheet(item.params.sheetId).autoFilter = undefined;
     },
     metadata: {
-      schema: { name: 'FilterRemove', validate: isFilterRemoveMutation },
-      permission: { capability: 'sheet.filter.write', roles: ['owner', 'editor'] },
+      schema: { name: 'AutoFilterRemove', validate: isFilterRemoveMutation },
+      permission: { capability: 'sheet.autoFilter.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.range ? [structuredClone(params.range)] : [], mode: 'declared' },
-      inverseIds: ['filter.set'],
+      inverseIds: ['autoFilter.set'],
     },
   });
-  runtime.registry.registerCommand<{ sheetId: string; filter: FilterModel }>({
-    id: 'sheet.filter.set',
+  runtime.registry.registerCommand<{ sheetId: string; autoFilter: AutoFilterModel }>({
+    id: 'sheet.autoFilter.set',
     execute: (params, context) => {
-      const previous = context.workbook.getSheet(params.sheetId).filter;
-      const affectedRanges: RangeRef[] = [structuredClone(params.filter.range)];
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const autoFilter = validateFilterOwnership(sheet, params.autoFilter, { kind: 'worksheet' });
+      const previous = sheet.autoFilter;
+      const affectedRanges: RangeRef[] = [structuredClone(autoFilter.range)];
       context.applyMutation({
-        id: 'filter.set',
+        id: 'autoFilter.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: { ...params, autoFilter },
         affectedRanges,
         inverse: previous
           ? [{
-            id: 'filter.set',
+            id: 'autoFilter.set',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, filter: structuredClone(previous) },
+            params: { sheetId: params.sheetId, autoFilter: structuredClone(previous) },
             affectedRanges,
           }]
           : [{
-            id: 'filter.remove',
+            id: 'autoFilter.remove',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, range: params.filter.range },
+            params: { sheetId: params.sheetId, range: autoFilter.range },
             affectedRanges,
           }],
         apply: () => {
-          context.workbook.getSheet(params.sheetId).filter = structuredClone(params.filter);
+          sheet.autoFilter = structuredClone(autoFilter);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
   runtime.registry.registerCommand<{ sheetId: string }>({
-    id: 'sheet.filter.remove',
+    id: 'sheet.autoFilter.remove',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const previous = sheet.filter;
+      const previous = sheet.autoFilter;
       if (!previous) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const affectedRanges: RangeRef[] = [structuredClone(previous.range)];
       context.applyMutation({
-        id: 'filter.remove',
+        id: 'autoFilter.remove',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: { ...params, range: previous.range },
         affectedRanges,
         inverse: [
           {
-            id: 'filter.set',
+            id: 'autoFilter.set',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, filter: structuredClone(previous) },
+            params: { sheetId: params.sheetId, autoFilter: structuredClone(previous) },
             affectedRanges,
           },
         ],
         apply: () => {
-          context.workbook.getSheet(params.sheetId).filter = undefined;
+          context.workbook.getSheet(params.sheetId).autoFilter = undefined;
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

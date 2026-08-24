@@ -37,59 +37,59 @@ export function EditorDialogHost({
   return (
     <Suspense fallback={null}>
       <FunctionWizardDialog
-        open={state.showFunctionWizard}
+        open={state.dialogs.active === 'function-wizard'}
         onClose={session.closeFunctionWizard.bind(session)}
         onInsertFormula={(formula) => { session.setFormulaDraft(formula); session.commitFormula(formula); }}
       />
       <SortDialog
-        open={state.showSortDialog}
+        open={state.dialogs.active === 'sort-dialog'}
         columns={sortColumns}
         locale={locale}
         onClose={session.closeSortDialog.bind(session)}
         onSort={(criteria, hasHeader) => session.sortRange(criteria, hasHeader)}
       />
       <FindReplaceDialog
-        open={state.showFindReplace}
-        initialFind={state.findQuery}
+        open={state.dialogs.active === 'find-replace'}
+        initialFind={state.dialogs.findQuery}
         locale={locale}
         onClose={session.closeFindReplace.bind(session)}
         onReplaceAll={(params) => session.findReplace(params)}
       />
       <GoToDialog
-        open={state.showGoTo}
+        open={state.dialogs.active === 'goto'}
         locale={locale}
         onClose={session.closeGoTo.bind(session)}
         onGoTo={(reference) => session.selectAddress(reference)}
         onGoToSpecial={(kind) => session.goToSpecial(kind)}
       />
       <PasteSpecialDialog
-        open={state.showPasteSpecial}
+        open={state.dialogs.active === 'paste-special'}
         locale={locale}
         onClose={session.closePasteSpecial.bind(session)}
         onPaste={(mode) => session.pasteSpecial(mode)}
       />
       <FormatCellsDialog
-        open={state.showFormatCells}
+        open={state.dialogs.active === 'format-cells'}
         initial={formatCellsInitial}
         locale={locale}
         onClose={session.closeFormatCells.bind(session)}
         onApply={(draft) => session.formatCells({ numberFormat: draft.numberFormat, style: draft.style })}
       />
       <ShiftCellsDialog
-        open={state.showShiftCells}
+        open={state.dialogs.active === 'shift-cells'}
         locale={locale}
         onClose={session.closeShiftCells.bind(session)}
         onShift={(direction) => session.shiftCells(direction)}
       />
       <MergeConfirmDialog
-        open={state.showMergeConfirm}
-        discardedCellCount={state.mergeDiscardCount}
+        open={state.dialogs.active === 'merge-confirm'}
+        discardedCellCount={state.dialogs.mergeDiscardCount}
         locale={locale}
         onCancel={() => session.cancelMergeCells()}
         onConfirm={() => session.confirmMergeCells()}
       />
       <CreatePivotTableDialog
-        open={state.showCreatePivotDialog}
+        open={state.dialogs.active === 'create-pivot'}
         sourceRegion={session.getCurrentRegion()}
         sourceOptions={pivotSourceOptions.map(({ id, label }) => ({ id, label }))}
         activeSheetName={state.selectedSheet.name}
@@ -97,7 +97,7 @@ export function EditorDialogHost({
         onCreate={createPivotFromDialog}
       />
       <PrintPreviewDialog
-        open={state.showPrintPreview}
+        open={state.dialogs.active === 'print-preview'}
         onClose={() => session.setShowPrintPreview(false)}
         sheetId={state.activeSheetId}
         rowCount={state.selectedSheet.rowCount}

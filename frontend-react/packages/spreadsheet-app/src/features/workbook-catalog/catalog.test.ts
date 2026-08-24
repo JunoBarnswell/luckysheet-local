@@ -56,11 +56,11 @@ describe('WorkbookCatalogService', () => {
     const generated = await exchangeExportXlsx(source.snapshot(), { fileName: 'source.xlsx', execution: 'inline-test' });
     assert.ok(generated.buffer);
 
-    const imported = await catalog.importXlsx({ fileName: 'source.xlsx', buffer: generated.buffer!, execution: 'inline-test' });
+  const imported = await catalog.importWorkbook({ fileName: 'source.xlsx', buffer: generated.buffer!, execution: 'inline-test' });
     assert.notEqual(imported.entry.unitId, original.unitId);
     assert.notEqual(imported.entry.unitId, source.unitId);
     assert.equal((await catalog.open(original.unitId)).snapshot.name, '会议记录模板');
-    const exported = await catalog.exportXlsx(imported.entry.unitId, { execution: 'inline-test' });
+  const exported = await catalog.exportWorkbook(imported.entry.unitId, { execution: 'inline-test' });
     assert.ok(exported.buffer.byteLength > 0);
     assert.equal(exported.fileName, 'source.xlsx');
   });
@@ -157,5 +157,16 @@ describe('Workbook catalog state', () => {
     await first.put('source-1', 'block-1', overlay);
     assert.ok(await first.get('source-1', 'block-1', 1));
     assert.equal(await second.get('source-1', 'block-1', 1), null);
+  });
+
+  it('creates the deterministic Designer Demo fixture without changing blank defaults', () => {
+    const blank = createTemplateSnapshot('blank', 'blank-fixture');
+    const demo = createTemplateSnapshot('designer-demo', 'demo-fixture');
+    assert.equal(blank.name, '空白工作簿');
+    assert.equal(demo.name, 'SpreadJS Designer Demo');
+    assert.equal(demo.sheets.length, 7);
+    assert.equal(demo.sheets[0]?.name, '目录索引');
+    assert.match(String(demo.sheets[0]?.cells['1']?.['1']?.value ?? ''), /SpreadJS/);
+    assert.ok(demo.sheets[0]?.merges.some((merge) => merge.range.startRow === 1 && merge.range.endRow === 1));
   });
 });

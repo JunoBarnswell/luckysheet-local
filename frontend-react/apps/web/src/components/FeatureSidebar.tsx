@@ -74,10 +74,10 @@ export interface FeatureSidebarProps {
   drawings: readonly DrawingObject[];
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   selectedDrawingIds?: readonly string[];
-  onSelectDrawing?: (drawingId: string, mode: DrawingSelectionMode) => void;
-  onSetDrawingVisibility?: (drawingId: string, visible: boolean) => void;
-  onRenameDrawing?: (drawingId: string, name: string) => void;
-  onReorderDrawing?: (drawingId: string, direction: 'forward' | 'backward') => void;
+  onSelectDrawing: (drawingId: string, mode: DrawingSelectionMode) => void;
+  onSetDrawingVisibility: (drawingId: string, visible: boolean) => void;
+  onRenameDrawing: (drawingId: string, name: string) => void;
+  onReorderDrawing: (drawingId: string, direction: 'forward' | 'backward') => void;
   pivot?: PivotModel;
   pivotList?: readonly { id: string; label: string }[];
   activePivotId?: string;
@@ -92,8 +92,8 @@ export interface FeatureSidebarProps {
   formulaAuditSectionStates?: FormulaAuditSectionStates;
   formulaAuditCallbacks?: FormulaAuditPanelCallbacks;
   definedNames?: readonly DefinedNameModel[];
-  onSaveDefinedName?: (input: DefinedNameModel) => void;
-  onRemoveDefinedName?: (input: DefinedNameModel) => void;
+  onSaveDefinedName: (input: DefinedNameModel) => void;
+  onRemoveDefinedName: (input: DefinedNameModel) => void;
   sparklines: SparklineModel[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
@@ -101,17 +101,13 @@ export interface FeatureSidebarProps {
   remoteRevisions: readonly RevisionRecord[];
   historyPreviewRevision?: number | null;
   canRestoreHistory?: boolean;
-  onUndoToHistory?: (index: number) => void;
-  onRestoreRevision?: (revision: number) => void;
-  onPreviewRevision?: (revision: number) => void;
-  onClearHistoryPreview?: () => void;
-  onRefreshRevisions?: () => void;
-  compatibilityReport?: import('@react-sheets/exchange-xlsx').CompatibilityReport | null;
-  onClearCompatibilityReport?: () => void;
-  needsLayoutRepair?: boolean;
-  layoutRepairPreview?: import('@react-sheets/exchange-xlsx').XlsxLayoutRepairPlan | null;
-  onPreviewLayoutRepair?: () => void;
-  onApplyLayoutRepair?: () => void;
+  onUndoToHistory: (index: number) => void;
+  onRestoreRevision: (revision: number) => void;
+  onPreviewRevision: (revision: number) => void;
+  onClearHistoryPreview: () => void;
+  onRefreshRevisions: () => void;
+  compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
+  onClearCompatibilityReport: () => void;
   tables: readonly WorkbookTableModel[];
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
@@ -128,39 +124,39 @@ export interface FeatureSidebarProps {
   queryConnectors?: readonly string[];
   loadedQueries?: readonly { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string }[];
   lastQueryResult?: { queryId: string; queryName: string; columns: readonly string[]; rowCount: number; loadedAt: string } | null;
-  canQuery?: boolean;
-  onLoadQuery?: (query: QueryDefinition) => Promise<void>;
-  onRefreshQuery?: (queryId: string) => Promise<void>;
-  onTestQueryConnection?: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
+  canQuery: boolean;
+  onLoadQuery: (query: QueryDefinition) => Promise<void>;
+  onRefreshQuery: (queryId: string) => Promise<void>;
+  onTestQueryConnection: (connectorId: string, config: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>;
   automationRecording?: boolean;
   recordedScript?: string;
   lastScriptResult?: { ok: boolean; durationMs: number; error?: string } | null;
-  canRunScripts?: boolean;
-  onRunAutomationScript?: (source: string) => void;
-  onStartAutomationRecording?: () => void;
-  onStopAutomationRecording?: () => void;
+  canRunScripts: boolean;
+  onRunAutomationScript: (source: string) => void;
+  onStartAutomationRecording: () => void;
+  onStopAutomationRecording: () => void;
   lastWhatIfMessage?: string | null;
-  canRunExtended?: boolean;
-  onGoalSeek?: (params: { setRow: number; setColumn: number; targetValue: number; changingRow: number; changingColumn: number }) => void;
-  onRunDataTable?: (params: {
+  canRunExtended: boolean;
+  onGoalSeek: (params: { setRow: number; setColumn: number; targetValue: number; changingRow: number; changingColumn: number }) => void;
+  onRunDataTable: (params: {
     inputMode: 'row' | 'column';
     inputCell: { row: number; column: number };
     tableRange: { startRow: number; startColumn: number; endRow: number; endColumn: number };
   }) => void;
-  onRunScenario?: (params: {
+  onRunScenario: (params: {
     name: string;
     changingCell: { row: number; column: number };
     changingValue: number;
     resultCell: { row: number; column: number };
   }) => void;
-  onAddComment?: (text: string) => void;
-  onReplyComment?: (text: string) => void;
-  onResolveComment?: () => void;
-  onRemoveComment?: () => void;
-  onAddNote?: (text: string) => void;
-  onRemoveNote?: () => void;
-  onSetHyperlink?: (url: string) => void;
-  onRemoveHyperlink?: () => void;
+  onAddComment: (text: string) => void;
+  onReplyComment: (text: string) => void;
+  onResolveComment: () => void;
+  onRemoveComment: () => void;
+  onAddNote: (text: string) => void;
+  onRemoveNote: () => void;
+  onSetHyperlink: (url: string) => void;
+  onRemoveHyperlink: () => void;
 }
 
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
@@ -196,10 +192,6 @@ function InspectorPanel({
   sheet,
   compatibilityReport,
   onClearCompatibilityReport,
-  needsLayoutRepair,
-  layoutRepairPreview,
-  onPreviewLayoutRepair,
-  onApplyLayoutRepair,
   onAddComment,
   onReplyComment,
   onResolveComment,
@@ -211,20 +203,16 @@ function InspectorPanel({
 }: {
   activeCell: string;
   sheet: CanvasSheetSnapshot;
-  compatibilityReport?: import('@react-sheets/exchange-xlsx').CompatibilityReport | null;
-  onClearCompatibilityReport?: () => void;
-  needsLayoutRepair?: boolean;
-  layoutRepairPreview?: import('@react-sheets/exchange-xlsx').XlsxLayoutRepairPlan | null;
-  onPreviewLayoutRepair?: () => void;
-  onApplyLayoutRepair?: () => void;
-  onAddComment?: (text: string) => void;
-  onReplyComment?: (text: string) => void;
-  onResolveComment?: () => void;
-  onRemoveComment?: () => void;
-  onAddNote?: (text: string) => void;
-  onRemoveNote?: () => void;
-  onSetHyperlink?: (url: string) => void;
-  onRemoveHyperlink?: () => void;
+  compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
+  onClearCompatibilityReport: () => void;
+  onAddComment: (text: string) => void;
+  onReplyComment: (text: string) => void;
+  onResolveComment: () => void;
+  onRemoveComment: () => void;
+  onAddNote: (text: string) => void;
+  onRemoveNote: () => void;
+  onSetHyperlink: (url: string) => void;
+  onRemoveHyperlink: () => void;
 }) {
   const selectedAddress = parseAddress(activeCell);
   const selected = selectedAddress ? sheet.getCell(selectedAddress.row, selectedAddress.column) : undefined;
@@ -270,7 +258,7 @@ function InspectorPanel({
         onRemoveHyperlink={onRemoveHyperlink}
       />
 
-      <CompatibilityReportPanel report={compatibilityReport ?? null} onClear={onClearCompatibilityReport} needsLayoutRepair={needsLayoutRepair} repairPreview={layoutRepairPreview} onPreviewRepair={onPreviewLayoutRepair} onApplyRepair={onApplyLayoutRepair} />
+      <CompatibilityReportPanel report={compatibilityReport ?? null} onClear={onClearCompatibilityReport} />
 
       <Panel className="shadow-none">
         <PanelHeader>
@@ -337,10 +325,6 @@ export function FeatureSidebar({
   onRefreshRevisions,
   compatibilityReport = null,
   onClearCompatibilityReport,
-  needsLayoutRepair = false,
-  layoutRepairPreview = null,
-  onPreviewLayoutRepair,
-  onApplyLayoutRepair,
   tables,
   onReadDataRows,
   onRemoveDataTable,
@@ -357,19 +341,19 @@ export function FeatureSidebar({
   queryConnectors = [],
   loadedQueries = [],
   lastQueryResult = null,
-  canQuery = true,
+  canQuery,
   onLoadQuery,
   onRefreshQuery,
   onTestQueryConnection,
   automationRecording = false,
   recordedScript = '',
   lastScriptResult = null,
-  canRunScripts = true,
+  canRunScripts,
   onRunAutomationScript,
   onStartAutomationRecording,
   onStopAutomationRecording,
   lastWhatIfMessage = null,
-  canRunExtended = true,
+  canRunExtended,
   onGoalSeek,
   onRunDataTable,
   onRunScenario,
@@ -464,10 +448,6 @@ export function FeatureSidebar({
             sheet={sheet}
             compatibilityReport={compatibilityReport}
             onClearCompatibilityReport={onClearCompatibilityReport}
-            needsLayoutRepair={needsLayoutRepair}
-            layoutRepairPreview={layoutRepairPreview}
-            onPreviewLayoutRepair={onPreviewLayoutRepair}
-            onApplyLayoutRepair={onApplyLayoutRepair}
             onAddComment={onAddComment}
             onReplyComment={onReplyComment}
             onResolveComment={onResolveComment}
@@ -510,7 +490,7 @@ export function FeatureSidebar({
             state={formulaAuditState}
           />
         ) : null}
-        {phase === 'ready' && activePanel === 'definedNames' && onSaveDefinedName && onRemoveDefinedName ? (
+        {phase === 'ready' && activePanel === 'definedNames' ? (
           <DefinedNamesPanel
             sheetId={sheetId}
             names={definedNames}
@@ -526,7 +506,7 @@ export function FeatureSidebar({
             onCommand={onCommand}
           />
         ) : null}
-        {phase === 'ready' && activePanel === 'selectionPane' && onSelectDrawing && onSetDrawingVisibility ? (
+        {phase === 'ready' && activePanel === 'selectionPane' ? (
           <SelectionPane
             locale={locale}
             disabled={disabled}
@@ -584,9 +564,9 @@ export function FeatureSidebar({
             recordedScript={recordedScript}
             lastResult={lastScriptResult}
             canRunScripts={canRunScripts}
-            onRunScript={onRunAutomationScript ?? (() => undefined)}
-            onStartRecording={onStartAutomationRecording ?? (() => undefined)}
-            onStopRecording={onStopAutomationRecording ?? (() => undefined)}
+            onRunScript={onRunAutomationScript}
+            onStartRecording={onStartAutomationRecording}
+            onStopRecording={onStopAutomationRecording}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'extended' ? (
@@ -594,9 +574,9 @@ export function FeatureSidebar({
             lastWhatIfMessage={lastWhatIfMessage}
             canRunExtended={canRunExtended}
             sheetId={sheetId}
-            onGoalSeek={onGoalSeek ?? (() => undefined)}
-            onRunDataTable={onRunDataTable ?? (() => undefined)}
-            onRunScenario={onRunScenario ?? (() => undefined)}
+            onGoalSeek={onGoalSeek}
+            onRunDataTable={onRunDataTable}
+            onRunScenario={onRunScenario}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'query' ? (
@@ -605,9 +585,9 @@ export function FeatureSidebar({
             loadedQueries={loadedQueries}
             lastResult={lastQueryResult}
             canQuery={canQuery}
-            onLoadQuery={onLoadQuery ?? (async () => undefined)}
-            onRefreshQuery={onRefreshQuery ?? (async () => undefined)}
-            onTestConnection={onTestQueryConnection ?? (async () => ({ ok: false, message: 'Query unavailable' }))}
+            onLoadQuery={onLoadQuery}
+            onRefreshQuery={onRefreshQuery}
+            onTestConnection={onTestQueryConnection}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'history' ? (
@@ -650,14 +630,14 @@ function CommentHyperlinkForms({
   commentText: string;
   note?: import('@react-sheets/core-model').CellNote;
   hyperlinkUrl: string;
-  onAddComment?: (text: string) => void;
-  onReplyComment?: (text: string) => void;
-  onResolveComment?: () => void;
-  onRemoveComment?: () => void;
-  onAddNote?: (text: string) => void;
-  onRemoveNote?: () => void;
-  onSetHyperlink?: (url: string) => void;
-  onRemoveHyperlink?: () => void;
+  onAddComment: (text: string) => void;
+  onReplyComment: (text: string) => void;
+  onResolveComment: () => void;
+  onRemoveComment: () => void;
+  onAddNote: (text: string) => void;
+  onRemoveNote: () => void;
+  onSetHyperlink: (url: string) => void;
+  onRemoveHyperlink: () => void;
 }) {
   const [commentText, setCommentText] = useState('');
   const [noteText, setNoteText] = useState('');
@@ -687,7 +667,7 @@ function CommentHyperlinkForms({
               onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setNoteText(event.target.value)}
             />
             <Inline gap="sm" className="justify-end">
-              {onRemoveNote && note ? (
+              {note ? (
                 <Button size="sm" variant="ghost" onClick={() => { onRemoveNote(); setNoteText(''); }}>
                   Remove
                 </Button>
@@ -696,7 +676,7 @@ function CommentHyperlinkForms({
                 size="sm"
                 variant="primary"
                 onClick={() => {
-                  if (!onAddNote || !noteText.trim()) return;
+                  if (!noteText.trim()) return;
                   onAddNote(noteText.trim());
                 }}
               >
@@ -723,16 +703,14 @@ function CommentHyperlinkForms({
               onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setCommentText(event.target.value)}
             />
             <Inline gap="sm" className="justify-end">
-              {onRemoveComment ? (
-                <Button size="sm" variant="ghost" onClick={() => { onRemoveComment(); }}>
-                  Clear
-                </Button>
-              ) : null}
+              <Button size="sm" variant="ghost" onClick={() => { onRemoveComment(); }}>
+                Clear
+              </Button>
               <Button
                 size="sm"
                 variant="primary"
                 onClick={() => {
-                  if (!onAddComment || !commentText.trim()) return;
+                  if (!commentText.trim()) return;
                   onAddComment(commentText.trim());
                   setCommentText('');
                 }}
@@ -763,8 +741,8 @@ function CommentHyperlinkForms({
               ))}
               <Textarea rows={2} aria-label="Reply to comment" placeholder="Reply to this comment" value={replyText} onChange={(event) => setReplyText(event.target.value)} />
               <Inline gap="sm" className="justify-end">
-                {onResolveComment && !comment.resolved ? <Button size="xs" variant="ghost" onClick={onResolveComment}>Resolve</Button> : null}
-                <Button size="xs" variant="primary" disabled={!replyText.trim() || !onReplyComment} onClick={() => { onReplyComment?.(replyText.trim()); setReplyText(''); }}>Reply</Button>
+                {!comment.resolved ? <Button size="xs" variant="ghost" onClick={onResolveComment}>Resolve</Button> : null}
+                <Button size="xs" variant="primary" disabled={!replyText.trim()} onClick={() => { onReplyComment(replyText.trim()); setReplyText(''); }}>Reply</Button>
               </Inline>
             </Stack>
           </PanelBody>

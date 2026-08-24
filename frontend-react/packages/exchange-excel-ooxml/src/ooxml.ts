@@ -6,7 +6,7 @@ import type {
   DataValidationRule,
   DefinedNameModel,
   DrawingObject,
-  FilterModel,
+  AutoFilterModel,
   MergeSpan,
   OutlineModel,
   ProtectionRule,
@@ -32,12 +32,17 @@ import {
 import {
   DEFAULT_XLSX_ZIP_LIMITS,
   type DateSystem,
-  type XlsxPackage,
+  type ExcelDocumentFormat,
+  type OpcPackageGraph,
   type XlsxRelationship,
   type XlsxZipLimits,
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 import {
   DEFAULT_EXCEL_FONT_FAMILY,
   DEFAULT_EXCEL_FONT_SIZE_PT,
@@ -60,13 +65,13 @@ const REL_SHARED_STRINGS = `${NS_DOC_REL}/sharedStrings`;
 const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
 
-export interface LoadedXlsxPackage {
-  package: XlsxPackage;
+export interface LoadedOpcPackageGraph {
+  packageGraph: OpcPackageGraph;
   files: Record<string, Uint8Array>;
 }
 
-export interface ParsedXlsxPackage {
-  package: XlsxPackage;
+export interface ParsedOpcPackageGraph {
+  packageGraph: OpcPackageGraph;
   snapshot: WorkbookSnapshot;
   features: string[];
 }
@@ -101,7 +106,7 @@ interface SheetDescriptor {
   hidden: boolean;
 }
 
-export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial<XlsxZipLimits> = {}): LoadedXlsxPackage {
+export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Partial<XlsxZipLimits> = {}, fileName = 'workbook.xlsx'): LoadedOpcPackageGraph {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const effective = { ...DEFAULT_XLSX_ZIP_LIMITS, ...limits };
   if (bytes.byteLength > effective.maxArchiveBytes) {
@@ -136,6 +141,7 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
   const workbookPart = rootOfficeDocument ? resolveTarget('', rootOfficeDocument.target) : 'xl/workbook.xml';
   if (!normalizedFiles[workbookPart]) throw new Error(`Not a valid XLSX package: workbook part is missing (${workbookPart})`);
   const dateSystem = parseWorkbookDateSystem(strFromU8(normalizedFiles[workbookPart]));
+  const format = detectOoxmlFormat(normalizedFiles, workbookPart, fileName);
   const sheetPartById = readSheetPartMap(normalizedFiles, relationships, workbookPart);
   const coreParts = new Set<string>([
     '[Content_Types].xml', '_rels/.rels', workbookPart, relationshipPartName(workbookPart),
@@ -155,8 +161,8 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
     : undefined;
   return {
     files: normalizedFiles,
-    package: {
-      schema: 'XlsxPackage',
+    packageGraph: {
+      schema: 'OpcPackageGraph',
       workbookPart,
       parts: cloneParts(normalizedFiles),
       opaqueParts,
@@ -164,17 +170,19 @@ export function loadXlsxPackage(input: ArrayBuffer | Uint8Array, limits: Partial
       sheetPartById,
       contentTypesXml: normalizedFiles['[Content_Types].xml']?.slice(),
       dateSystem,
+      format,
+      profile: format.family === 'ooxml' ? format.profile : 'transitional',
       ...(nativePivotGraph ? { nativePivotGraph } : {}),
     },
   };
 }
 
-export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedXlsxOptions = {}): ParsedXlsxPackage {
+export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoadedXlsxOptions = {}): ParsedOpcPackageGraph {
   const files = loaded.files;
-  const workbookPart = loaded.package.workbookPart;
+  const workbookPart = loaded.packageGraph.workbookPart;
   const workbookXml = parseXml(strFromU8(files[workbookPart]!));
   const workbook = firstElement(workbookXml, 'workbook');
-  const relationships = loaded.package.relationships;
+  const relationships = loaded.packageGraph.relationships;
   const descriptors: SheetDescriptor[] = [];
   const workbookRels = relationships[workbookPart] ?? [];
   const sheetNodes = children(child(workbook, 'sheets'), 'sheet');
@@ -191,7 +199,7 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
       part,
       hidden: node.attrs.state === 'hidden' || node.attrs.state === 'veryHidden',
     });
-    loaded.package.sheetPartById[sheetId] = part;
+    loaded.packageGraph.sheetPartById[sheetId] = part;
   }
   if (descriptors.length === 0) throw new Error('XLSX workbook has no worksheets');
 
@@ -200,14 +208,14 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
   const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
-  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.package, sharedStrings, styles));
+  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 3,
+    version: 4,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -222,23 +230,39 @@ export function parseLoadedXlsx(loaded: LoadedXlsxPackage, options: ParseLoadedX
     sheets,
   };
   applyPrintDefinedNames(snapshot);
-  attachNativePivots(snapshot, loaded.package.nativePivotGraph, loaded.package.sheetPartById);
-  return { package: loaded.package, snapshot, features: detectPackageFeatures(loaded.package, snapshot) };
+  attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
+  return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
 }
 
-export function exportSnapshotToXlsxPackage(
+function detectOoxmlFormat(files: Record<string, Uint8Array>, workbookPart: string, fileName: string): ExcelDocumentFormat {
+  const lowerName = fileName.toLocaleLowerCase();
+  const workbookXml = strFromU8(files[workbookPart] ?? new Uint8Array());
+  const contentTypes = strFromU8(files['[Content_Types].xml'] ?? new Uint8Array());
+  const strict = workbookXml.includes('purl.oclc.org/ooxml/spreadsheetml') || contentTypes.includes('purl.oclc.org/ooxml/officeDocument');
+  const hasMacros = Object.keys(files).some((name) => isVbaPart(name, undefined, files));
+  const variant = lowerName.endsWith('.xlam') ? 'xlam' : lowerName.endsWith('.xltm') ? 'xltm' : lowerName.endsWith('.xltx') ? 'xltx' : lowerName.endsWith('.xlsm') || hasMacros ? 'xlsm' : 'xlsx';
+  return { family: 'ooxml', profile: strict ? 'strict' : 'transitional', variant };
+}
+
+export function exportSnapshotToOpcPackageGraph(
   snapshot: WorkbookSnapshot,
   options: { dateSystem: DateSystem; includeCachedValues?: boolean; preserveMacros?: boolean },
-  preserved?: XlsxPackage,
+  preserved?: OpcPackageGraph,
 ): ArrayBuffer {
   const files = new Map<string, Uint8Array>();
   if (preserved) {
     for (const [name, data] of Object.entries(preserved.parts)) {
-      if (options.preserveMacros === false && isMacroPart(name)) continue;
+      if (options.preserveMacros === false && isVbaPart(name, preserved)) continue;
       files.set(normalizePartName(name), data.slice());
     }
   }
   const sourceFiles = preserved?.parts ?? {};
+  const workbookPart = preserved?.workbookPart ?? 'xl/workbook.xml';
+  const workbookRelationships = options.preserveMacros === false
+    ? filterMacroRelationships(workbookPart, preserved?.relationships[workbookPart] ?? [], preserved)
+    : preserved?.relationships[workbookPart] ?? [];
+  const stylesPart = relationshipTarget(preserved, workbookPart, REL_STYLES) ?? 'xl/styles.xml';
+  const sharedStringsPart = relationshipTarget(preserved, workbookPart, REL_SHARED_STRINGS) ?? 'xl/sharedStrings.xml';
   const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
   const sheetPartById = Object.fromEntries(snapshot.sheets.map((sheet, index) => [sheet.id, sheetParts[index]!])) as Record<string, string>;
   const nativeUpdate = synchronizeNativePivotPackage({
@@ -249,7 +273,8 @@ export function exportSnapshotToXlsxPackage(
     sheetPartById,
   });
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
-  const styleOutput = buildStyles(snapshot);
+  const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
+  const styleOutput = buildStyles(snapshot, originalStylesXml);
   const styleIndexes = collectStyleIndexes(snapshot);
   const differentialStyleIndexes = collectDifferentialStyleIndexes(snapshot);
   const sharedOutput = buildSharedStrings(snapshot);
@@ -260,34 +285,61 @@ export function exportSnapshotToXlsxPackage(
     const original = preserved ? strFromU8(sourceFiles[part] ?? new Uint8Array()) : '';
     const originalRoot = original ? firstElement(parseXml(original), 'worksheet') : undefined;
     const requiredHyperlinks = collectHyperlinkRelationships(sheet, preserved?.relationships[part] ?? []);
-    const tableParts = prepareTableParts(sheet, part, preserved, files);
+    const tableParts = prepareTableParts(sheet, part, preserved, files, differentialStyleIndexes);
     for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
-    const relationships = mergeRelationships(nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
+    const originalRelationships = nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [];
+    const relationships = mergeRelationships(
+      options.preserveMacros === false ? filterMacroRelationships(part, originalRelationships, preserved) : originalRelationships,
+      [...requiredHyperlinks, ...tableParts.required],
+    );
     sheetRelationships[part] = relationships;
     files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
   }
 
+  const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
   const workbookRelations = mergeRelationships(
-    nativeUpdate.relationships['xl/workbook.xml'] ?? preserved?.relationships['xl/workbook.xml'] ?? [],
+    options.preserveMacros === false ? filterMacroRelationships(workbookPart, workbookRelationsSource, preserved) : workbookRelationsSource,
     [
-      { id: '', type: REL_STYLES, target: 'styles.xml' },
-      { id: '', type: REL_SHARED_STRINGS, target: 'sharedStrings.xml' },
-      ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget('xl/workbook.xml', part) })),
+      { id: '', type: REL_STYLES, target: relativeTarget(workbookPart, stylesPart) },
+      { id: '', type: REL_SHARED_STRINGS, target: relativeTarget(workbookPart, sharedStringsPart) },
+      ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget(workbookPart, part) })),
     ],
   );
-  files.set('xl/workbook.xml', strToU8(buildWorkbookXml(snapshot, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
-  files.set('xl/_rels/workbook.xml.rels', strToU8(buildRelationshipsXml(workbookRelations)));
-  files.set('_rels/.rels', strToU8(buildRootRelationshipsXml(preserved?.relationships[''] ?? [])));
-  files.set('xl/styles.xml', strToU8(styleOutput));
-  files.set('xl/sharedStrings.xml', strToU8(sharedOutput));
+  files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
+  files.set(relationshipPartName(workbookPart), strToU8(buildRelationshipsXml(workbookRelations)));
+  files.set('_rels/.rels', strToU8(buildRootRelationshipsXml(preserved?.relationships[''] ?? [], workbookPart)));
+  files.set(stylesPart, strToU8(styleOutput));
+  files.set(sharedStringsPart, strToU8(sharedOutput));
   for (const [source, relationships] of Object.entries(sheetRelationships)) {
     files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
   }
   for (const [source, relationships] of Object.entries(nativeUpdate.relationships)) {
-    if (!source || source === 'xl/workbook.xml' || sheetRelationships[source]) continue;
-    files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(relationships)));
+    if (!source || source === workbookPart || sheetRelationships[source]) continue;
+    const outputRelationships = options.preserveMacros === false ? filterMacroRelationships(source, relationships, preserved) : relationships;
+    files.set(relationshipPartName(source), strToU8(buildRelationshipsXml(outputRelationships)));
   }
-  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved)));
+  files.set('[Content_Types].xml', strToU8(buildContentTypesXml(files, preserved, workbookPart, stylesPart, sharedStringsPart)));
+
+  if (preserved?.profile === 'strict') {
+    const strictParts = new Set<string>([
+      workbookPart,
+      stylesPart,
+      sharedStringsPart,
+      ...sheetParts,
+      relationshipPartName(workbookPart),
+      '_rels/.rels',
+      '[Content_Types].xml',
+      ...Object.keys(sheetRelationships).map(relationshipPartName),
+      ...Object.keys(nativeUpdate.relationships).map(relationshipPartName),
+    ]);
+    for (const name of strictParts) {
+      const data = files.get(name);
+      if (!data) continue;
+      files.set(name, strToU8(strFromU8(data)
+        .replaceAll(NS_MAIN, 'http://purl.oclc.org/ooxml/spreadsheetml/main')
+        .replaceAll(NS_DOC_REL, 'http://purl.oclc.org/ooxml/officeDocument/relationships')));
+    }
+  }
 
   const zipped: Record<string, Uint8Array> = {};
   for (const [name, data] of files) zipped[name] = data;
@@ -295,13 +347,13 @@ export function exportSnapshotToXlsxPackage(
   return zippedBytes.buffer.slice(zippedBytes.byteOffset, zippedBytes.byteOffset + zippedBytes.byteLength) as ArrayBuffer;
 }
 
-export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnapshot): string[] {
+export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookSnapshot): string[] {
   const features = new Set<string>(snapshot ? ['cells', 'styles'] : []);
   for (const name of Object.keys(pkg.parts)) {
     const lower = name.toLowerCase();
     if (lower.includes('/charts/')) features.add('charts');
     if (lower.includes('/pivot') || lower.includes('pivottableparts')) features.add('pivot');
-    if (lower.includes('vba') || lower.endsWith('.bin')) features.add('vba');
+    if (isVbaPart(name, pkg)) features.add('vba');
     if (lower.includes('externalconnections') || lower.includes('connections.xml')) features.add('external-connection');
     if (lower.includes('/slicers/') || lower.includes('slicer')) features.add('slicer');
     if (lower.includes('/timelines/') || lower.includes('timeline')) features.add('timeline');
@@ -321,7 +373,7 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
       if (sheet.conditionalFormats?.length) features.add('conditional-format');
       if (sheet.dataValidations?.length) features.add('validation');
       if (sheet.sheetTables?.length) features.add('tables');
-      if (sheet.filter) features.add('filters');
+      if (sheet.autoFilter) features.add('filters');
       if (sheet.notes?.length || sheet.commentThreads?.length) features.add('comments');
       for (const payload of Object.values(sheet.drawingPayloads)) {
         if (payload.kind === 'chart') features.add('charts');
@@ -338,7 +390,7 @@ export function detectPackageFeatures(pkg: XlsxPackage, snapshot?: WorkbookSnaps
 function parseSheet(
   descriptor: SheetDescriptor,
   files: Record<string, Uint8Array>,
-  pkg: XlsxPackage,
+  pkg: OpcPackageGraph,
   sharedStrings: SharedStringRecord[],
   styles: StyleContext,
 ): SheetSnapshot {
@@ -403,10 +455,25 @@ function parseSheet(
   const hiddenColumns = parseHiddenColumns(root);
   const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), styles.themeColors);
   const notes = parseNotes(root, descriptor, files, pkg);
-  const sheetTables = parseSheetTables(root, descriptor, files, pkg);
+  const sheetTables = parseSheetTables(root, descriptor, files, pkg, styles);
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
-  const filter = parseAutoFilter(root, descriptor);
+  const autoFilter = parseAutoFilter(root, descriptor, styles);
+  const importedFilters = [
+    ...(autoFilter ? [autoFilter] : []),
+    ...sheetTables.flatMap((table) => table.autoFilter ? [table.autoFilter] : []),
+  ];
+  materializeFilterMetadata(cells, descriptor.id, importedFilters, conditionalFormats);
+  const filterOwnedRows = new Set<number>();
+  for (const filter of importedFilters) {
+    const table = sheetTables.find((candidate) => candidate.autoFilter === filter);
+    const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+    for (const row of hiddenRows) {
+      if (row <= filter.range.startRow || row > endRow || !filterRowMatches(cells, filter, row, pkg.dateSystem)) continue;
+      filterOwnedRows.add(row);
+    }
+  }
+  const manualHiddenRows = hiddenRows.filter((row) => !filterOwnedRows.has(row));
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
@@ -430,12 +497,12 @@ function parseSheet(
     defaultColumnWidthPx,
     rowHeightsPx,
     columnWidthsPx,
-    hiddenRows,
+    hiddenRows: manualHiddenRows,
     hiddenColumns,
     tabColor,
     ...(hyperlinks.length ? { hyperlinks } : {}),
     notes,
-    ...(filter ? { filter } : {}),
+    ...(autoFilter ? { autoFilter } : {}),
     ...(outline ? { outline } : {}),
     protectionRules,
     showGridlines: sheetView?.attrs.showGridLines !== '0' && sheetView?.attrs.showGridLines !== 'false',
@@ -444,6 +511,172 @@ function parseSheet(
     ...(sheetTables.length ? { sheetTables } : {}),
     hidden: descriptor.hidden,
   };
+}
+
+function filterRowMatches(
+  cells: Record<string, Record<string, CellData>>,
+  filter: AutoFilterModel,
+  row: number,
+  dateSystem: DateSystem,
+): boolean {
+  for (const column of Object.values(filter.columns)) {
+    const criterion = column.criterion;
+    if (!criterion) continue;
+    const cell = cells[String(row)]?.[String(column.column)];
+    const value = cell?.value ?? null;
+    const text = value == null ? '' : String(value);
+    if (criterion.kind === 'values') {
+      const valueMatches = criterion.values.some((candidate) => String(candidate ?? '').toLocaleLowerCase() === text.toLocaleLowerCase())
+        || (text === '' && criterion.includeBlank);
+      const dateMatches = (criterion.dateGroups ?? []).some((group) => dateMatchesGroup(toFilterDate(value, text, dateSystem), group));
+      if (!valueMatches && !dateMatches) return false;
+    } else if (criterion.kind === 'custom') {
+      const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition)).map((condition) => compareFilterText(text, String(condition.value ?? ''), condition.operator));
+      if (criterion.join === 'and' ? !results.every(Boolean) : !results.some(Boolean)) return false;
+    } else if (criterion.kind === 'dynamic') {
+      if (!matchesDynamicFilter(toFilterDate(value, text, dateSystem), criterion.type)) return false;
+    } else if (criterion.kind === 'top10') {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return false;
+      const values = Array.from({ length: filter.range.endRow - filter.range.startRow }, (_, index) => {
+        const candidate = cells[String(filter.range.startRow + 1 + index)]?.[String(column.column)]?.value;
+        return typeof candidate === 'number' ? candidate : Number(candidate);
+      }).filter(Number.isFinite).sort((left, right) => criterion.top ? right - left : left - right);
+      const requested = criterion.percent ? Math.max(1, Math.ceil(values.length * criterion.rank / 100)) : criterion.rank;
+      const cutoff = values[Math.min(requested, values.length) - 1];
+      if (cutoff === undefined || (criterion.top ? numeric < cutoff : numeric > cutoff)) return false;
+    } else if (criterion.kind === 'color') {
+      if (!(cell?.filterMetadata?.color?.dxfId === criterion.dxfId
+        || (criterion.style && (criterion.target === 'cell' ? cell?.style?.background === criterion.style.background : cell?.style?.textColor === criterion.style.textColor)))) return false;
+    } else if (criterion.kind === 'icon') {
+      if (cell?.filterMetadata?.icon?.iconSet !== criterion.iconSet || cell.filterMetadata.icon.iconId !== criterion.iconId) return false;
+    }
+  }
+  return true;
+}
+
+function compareFilterText(text: string, operand: string, operator: string): boolean {
+  const left = text.toLocaleLowerCase();
+  const right = operand.toLocaleLowerCase();
+  const numericLeft = Number(text);
+  const numericRight = Number(operand);
+  const numeric = Number.isFinite(numericLeft) && Number.isFinite(numericRight);
+  switch (operator.toLocaleLowerCase()) {
+    case 'equals': case '=': return left === right;
+    case 'notequals': case 'not equal': case '<>': return left !== right;
+    case 'lessthan': case '<': return numeric ? numericLeft < numericRight : left < right;
+    case 'lessthanorequal': case '<=': return numeric ? numericLeft <= numericRight : left <= right;
+    case 'greaterthan': case '>': return numeric ? numericLeft > numericRight : left > right;
+    case 'greaterthanorequal': case '>=': return numeric ? numericLeft >= numericRight : left >= right;
+    case 'contains': return left.includes(right);
+    case 'notcontains': return !left.includes(right);
+    case 'beginswith': return left.startsWith(right);
+    case 'endswith': return left.endsWith(right);
+    default: return false;
+  }
+}
+
+function dateMatchesGroup(date: Date | null, group: { year: number; month?: number; day?: number; hour?: number; minute?: number; second?: number }): boolean {
+  return Boolean(date) && date!.getFullYear() === group.year
+    && (group.month === undefined || date!.getMonth() + 1 === group.month)
+    && (group.day === undefined || date!.getDate() === group.day)
+    && (group.hour === undefined || date!.getHours() === group.hour)
+    && (group.minute === undefined || date!.getMinutes() === group.minute)
+    && (group.second === undefined || date!.getSeconds() === group.second);
+}
+
+function toFilterDate(value: unknown, text: string, dateSystem: DateSystem): Date | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
+    return new Date(epoch + value * 24 * 60 * 60 * 1000);
+  }
+  const timestamp = Date.parse(String(value ?? text));
+  return Number.isNaN(timestamp) ? null : new Date(timestamp);
+}
+
+function matchesDynamicFilter(date: Date | null, type: import('@react-sheets/core-model').DynamicFilterType): boolean {
+  if (!date) return false;
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const day = 24 * 60 * 60 * 1000;
+  const monday = new Date(start); monday.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const ranges: Record<import('@react-sheets/core-model').DynamicFilterType, [Date, Date]> = {
+    today: [start, new Date(start.getTime() + day)], yesterday: [new Date(start.getTime() - day), start], tomorrow: [new Date(start.getTime() + day), new Date(start.getTime() + 2 * day)],
+    thisWeek: [monday, new Date(monday.getTime() + 7 * day)], lastWeek: [new Date(monday.getTime() - 7 * day), monday], nextWeek: [new Date(monday.getTime() + 7 * day), new Date(monday.getTime() + 14 * day)],
+    thisMonth: [new Date(start.getFullYear(), start.getMonth(), 1), new Date(start.getFullYear(), start.getMonth() + 1, 1)], lastMonth: [new Date(start.getFullYear(), start.getMonth() - 1, 1), new Date(start.getFullYear(), start.getMonth(), 1)], nextMonth: [new Date(start.getFullYear(), start.getMonth() + 1, 1), new Date(start.getFullYear(), start.getMonth() + 2, 1)],
+    thisQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 3, 1)], lastQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 - 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1)], nextQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 6, 1)],
+    thisYear: [new Date(start.getFullYear(), 0, 1), new Date(start.getFullYear() + 1, 0, 1)], lastYear: [new Date(start.getFullYear() - 1, 0, 1), new Date(start.getFullYear(), 0, 1)], nextYear: [new Date(start.getFullYear() + 1, 0, 1), new Date(start.getFullYear() + 2, 0, 1)], yearToDate: [new Date(start.getFullYear(), 0, 1), new Date(start.getTime() + day)],
+  };
+  const [from, to] = ranges[type];
+  return date >= from && date < to;
+}
+
+function materializeFilterMetadata(
+  cells: Record<string, Record<string, CellData>>,
+  sheetId: string,
+  filters: AutoFilterModel[],
+  conditionalFormats: ConditionalFormatRule[],
+): void {
+  const inRange = (range: RangeRef, row: number, column: number): boolean => range.sheetId === sheetId
+    && row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn;
+  for (const filter of filters) {
+    for (const column of Object.values(filter.columns)) {
+      const criterion = column.criterion;
+      if (!criterion || (criterion.kind !== 'color' && criterion.kind !== 'icon')) continue;
+      for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row += 1) {
+        const cell = cells[String(row)]?.[String(column.column)];
+        if (!cell) continue;
+        if (criterion.kind === 'color' && criterion.style) {
+          const matches = criterion.target === 'cell'
+            ? criterion.style.background !== undefined && cell.style?.background === criterion.style.background
+            : criterion.style.textColor !== undefined && cell.style?.textColor === criterion.style.textColor;
+          if (matches) cell.filterMetadata = { ...cell.filterMetadata, color: { target: criterion.target, dxfId: criterion.dxfId, value: criterion.target === 'cell' ? criterion.style.background : criterion.style.textColor } };
+        }
+        if (criterion.kind === 'icon') {
+          const rule = conditionalFormats.find((candidate) => candidate.type === 'iconSet' && candidate.ranges.some((range) => inRange(range, row, column.column)));
+          const numeric = typeof cell.value === 'number' ? cell.value : Number(cell.value);
+          if (rule && Number.isFinite(numeric)) {
+            const ruleRange = rule.ranges.find((range) => inRange(range, row, column.column));
+            const values = ruleRange ? numericValues(cells, ruleRange) : [];
+            const thresholds = resolveIconThresholds(rule.iconThresholds, values);
+            const iconId = thresholds.reduce((identity, threshold, index) => numeric >= threshold ? index : identity, 0);
+            cell.filterMetadata = { ...cell.filterMetadata, icon: { iconSet: criterion.iconSet, iconId } };
+          }
+        }
+      }
+    }
+  }
+}
+
+function numericValues(cells: Record<string, Record<string, CellData>>, range: RangeRef): number[] {
+  const values: number[] = [];
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const value = cells[String(row)]?.[String(column)]?.value;
+      const numeric = typeof value === 'number' ? value : Number(value);
+      if (Number.isFinite(numeric)) values.push(numeric);
+    }
+  }
+  return values.sort((left, right) => left - right);
+}
+
+function resolveIconThresholds(
+  definitions: Array<{ type: 'percent' | 'percentile' | 'num' | 'formula'; value?: number }> | undefined,
+  values: number[],
+): number[] {
+  if (!values.length) return [];
+  const min = values[0]!;
+  const max = values.at(-1)!;
+  const span = max - min || 1;
+  return (definitions?.length ? definitions : [{ type: 'percent', value: 0 }, { type: 'percent', value: 33 }, { type: 'percent', value: 67 }]).map((definition) => {
+    const value = definition.value ?? 0;
+    if (definition.type === 'num' || definition.type === 'formula') return value;
+    if (definition.type === 'percentile') {
+      const index = Math.min(values.length - 1, Math.max(0, Math.ceil((value / 100) * values.length) - 1));
+      return values[index]!;
+    }
+    return min + span * value / 100;
+  });
 }
 
 function attachNativePivots(snapshot: WorkbookSnapshot, graph: NativePivotGraph | undefined, sheetPartById: Record<string, string>): void {
@@ -530,7 +763,8 @@ function parseSheetTables(
   root: XmlNode,
   descriptor: SheetDescriptor,
   files: Record<string, Uint8Array>,
-  pkg: XlsxPackage,
+  pkg: OpcPackageGraph,
+  styles: StyleContext,
 ): NonNullable<SheetSnapshot['sheetTables']> {
   return children(child(root, 'tableParts'), 'tablePart').flatMap((partNode) => {
     const relationId = partNode.attrs['r:id'] ?? partNode.attrs.id;
@@ -549,6 +783,7 @@ function parseSheetTables(
       ...(column.attrs.totalsRowFunction ? { totalsFunction: column.attrs.totalsRowFunction as NonNullable<SheetSnapshot['sheetTables']>[number]['columns'][number]['totalsFunction'] } : {}),
     }));
     const tableNumber = table.attrs.id ?? (part.replace(/[^0-9]/g, '') || descriptor.id);
+  const tableAutoFilter = parseAutoFilter(table, descriptor, styles);
     return [{
       id: `table-${tableNumber}`,
       sheetId: descriptor.id,
@@ -559,6 +794,7 @@ function parseSheetTables(
       showBandedRows: child(table, 'tableStyleInfo')?.attrs.showRowStripes !== '0',
       showBandedColumns: child(table, 'tableStyleInfo')?.attrs.showColumnStripes === '1',
       showFilterButton: table.attrs.headerRowCount !== '0',
+      ...(tableAutoFilter ? { autoFilter: tableAutoFilter } : {}),
       columns,
       ...(child(table, 'tableStyleInfo')?.attrs.name ? { styleName: child(table, 'tableStyleInfo')!.attrs.name } : {}),
     }];
@@ -804,7 +1040,7 @@ function buildSharedStrings(snapshot: WorkbookSnapshot): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="${NS_MAIN}" count="${values.length}" uniqueCount="${values.length}">${values.map((value) => `<si>${serializeRichText(value.value, value.richText)}</si>`).join('')}</sst>`;
 }
 
-function buildStyles(snapshot: WorkbookSnapshot): string {
+function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): string {
   const records: StyleRecord[] = [{}];
   const indexes = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
@@ -871,14 +1107,18 @@ function buildStyles(snapshot: WorkbookSnapshot): string {
     return `<xf ${attrs.join(' ')}${alignment || protection ? ` applyAlignment="${alignment ? '1' : '0'}" applyProtection="${protection ? '1' : '0'}">${alignment}${protection}</xf>` : '/>'}`;
   }).join('');
   const differentialStyles = [...collectDifferentialStyleIndexes(snapshot).keys()].map((key) => `<dxf>${serializeDifferentialStyle(JSON.parse(key) as CellStyle)}</dxf>`).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs></styleSheet>`;
+  const originalRoot = originalStylesXml ? firstElement(parseXml(originalStylesXml), 'styleSheet') : undefined;
+  const originalTableStyles = originalRoot ? child(originalRoot, 'tableStyles') : undefined;
+  const tableStyles = originalTableStyles ? serializeXml(originalTableStyles) : '';
+  return `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="1"><cellStyle name="Normal" builtinId="0"/></cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs>${tableStyles}</styleSheet>`;
 }
 
 function prepareTableParts(
   sheet: SheetSnapshot,
   sourcePart: string,
-  preserved: XlsxPackage | undefined,
+  preserved: OpcPackageGraph | undefined,
   files: Map<string, Uint8Array>,
+  differentialStyleIndexes: Map<string, number>,
 ): { parts: Map<string, string>; required: Array<Pick<XlsxRelationship, 'type' | 'target'>> } {
   const tables = sheet.sheetTables ?? [];
   if (!tables.length) return { parts: new Map(), required: [] };
@@ -903,20 +1143,22 @@ function prepareTableParts(
       } while (usedParts.has(part));
     }
     usedParts.add(part);
-    parts.set(part, buildTableXml(table, index + 1));
+    parts.set(part, buildTableXml(table, index + 1, differentialStyleIndexes));
     required.push({ type: `${NS_DOC_REL}/table`, target: relativeTarget(sourcePart, part) });
   }
   return { parts, required };
 }
 
-function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number], fallbackId: number): string {
+function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number], fallbackId: number, differentialStyleIndexes: Map<string, number>): string {
   const numericId = Number(table.id.replace(/\D/g, '')) || fallbackId;
   const ref = rangeToA1(table.range);
   const columns = table.columns.map((column, index) => `<tableColumn id="${index + 1}" name="${encodeXml(column.name)}"${column.totalsFunction && column.totalsFunction !== 'none' ? ` totalsRowFunction="${encodeXml(column.totalsFunction)}"` : ''}/>`).join('');
   const style = table.styleName
     ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="0" showLastColumn="0" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
     : '';
-  const autoFilter = table.showFilterButton && table.hasHeaderRow ? `<autoFilter ref="${encodeXml(ref)}"/>` : '';
+  const autoFilter = table.autoFilter
+    ? serializeAutoFilter(table.autoFilter, differentialStyleIndexes)
+    : table.showFilterButton && table.hasHeaderRow ? `<autoFilter ref="${encodeXml(ref)}"/>` : '';
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="${NS_MAIN}" id="${numericId}" name="${encodeXml(table.name)}" displayName="${encodeXml(table.name)}" ref="${encodeXml(ref)}" headerRowCount="${table.hasHeaderRow ? '1' : '0'}" totalsRowCount="${table.hasTotalRow ? '1' : '0'}">${autoFilter}<tableColumns count="${table.columns.length}">${columns}</tableColumns>${style}</table>`;
 }
 
@@ -942,6 +1184,15 @@ function collectDifferentialStyleIndexes(snapshot: WorkbookSnapshot): Map<string
       if (!rule.style) continue;
       const key = JSON.stringify(rule.style);
       if (!indexes.has(key)) indexes.set(key, indexes.size);
+    }
+    const filters = [sheet.autoFilter, ...(sheet.sheetTables ?? []).map((table) => table.autoFilter)].filter((filter): filter is AutoFilterModel => Boolean(filter));
+    for (const filter of filters) {
+      for (const column of Object.values(filter.columns)) {
+        const criterion = column.criterion;
+        if (criterion?.kind !== 'color' || !criterion.style) continue;
+        const key = JSON.stringify(criterion.style);
+        if (!indexes.has(key)) indexes.set(key, indexes.size);
+      }
     }
   }
   return indexes;
@@ -997,7 +1248,7 @@ function buildWorksheetXml(
   }
   xml += '</sheetData>';
   if (sheet.protectionRules?.length) xml += serializeProtection(sheet.protectionRules);
-  if (sheet.filter) xml += serializeAutoFilter(sheet.filter);
+  if (sheet.autoFilter) xml += serializeAutoFilter(sheet.autoFilter, differentialStyleIndexes);
   if (sheet.merges.length) {
     xml += `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((merge) => `<mergeCell ref="${rangeToA1(merge.range)}"/>`).join('')}</mergeCells>`;
   }
@@ -1042,9 +1293,9 @@ function buildWorksheetXml(
     const preservedNodes = new Map<string, XmlNode>();
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
+      if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'controls' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
     }
-    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'picture', 'tableParts']) {
+    for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'controls', 'picture', 'tableParts']) {
       const node = preservedNodes.get(name);
       if (node) xml += serializeXml(node);
     }
@@ -1068,7 +1319,8 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
     const sourceFormula = metadata?.sourceFormula ?? cell.formula ?? '';
     const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
-    const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(String(cachedValue))}</v>` : '';
+    const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(typeof cachedValue === 'boolean' ? (cachedValue ? '1' : '0') : String(cachedValue))}</v>` : '';
+    const cachedType = typeof cachedValue === 'boolean' ? 'b' : typeof cachedValue === 'string' ? 'str' : undefined;
     const formulaAttrs = metadata?.kind === 'shared' && metadata.preservedOnly
       ? ` t="shared"${metadata.sharedIndex !== undefined ? ` si="${metadata.sharedIndex}"` : ''}${metadata.sharedMaster && metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'array'
@@ -1077,7 +1329,7 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
         ? ` t="dataTable"${metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
         : '';
     const formulaBody = metadata?.kind === 'shared' && metadata.preservedOnly && !metadata.sharedMaster ? '' : encodeXml(formula);
-    return `<c r="${ref}"${styleAttr}${cached && typeof cachedValue === 'string' ? ' t="str"' : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
+    return `<c r="${ref}"${styleAttr}${cachedType ? ` t="${cachedType}"` : ''}><f${formulaAttrs}>${formulaBody}</f>${cached}</c>`;
   }
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;
   if (typeof cell.value === 'boolean') return `<c r="${ref}"${styleAttr} t="b"><v>${cell.value ? '1' : '0'}</v></c>`;
@@ -1133,7 +1385,12 @@ function serializeConditionalFormats(rules: ConditionalFormatRule[], differentia
       body = `<colorScale>${colors.map((_, colorIndex) => `<cfvo type="${colorIndex === 0 ? 'min' : colorIndex === colors.length - 1 ? 'max' : 'percentile'}"${colorIndex > 0 && colorIndex < colors.length - 1 ? ' val="50"' : ''}/>`).join('')}${colors.map((color) => `<color rgb="${ooxmlRgb(color)}"/>`).join('')}</colorScale>`;
     } else {
       attrs = ' type="iconSet"';
-      body = '<iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="67"/></iconSet>';
+      const thresholds = rule.iconThresholds?.length ? rule.iconThresholds : [
+        { type: 'percent' as const, value: 0 },
+        { type: 'percent' as const, value: 33 },
+        { type: 'percent' as const, value: 67 },
+      ];
+      body = `<iconSet iconSet="${encodeXml(rule.iconSet ?? '3TrafficLights1')}">${thresholds.map((threshold) => `<cfvo type="${threshold.type}"${threshold.value === undefined ? '' : ` val="${threshold.value}"`}/>`).join('')}</iconSet>`;
     }
     return `<conditionalFormatting sqref="${encodeXml(sqref)}"><cfRule${attrs}${common}>${body}</cfRule></conditionalFormatting>`;
   }).join('');
@@ -1149,14 +1406,52 @@ function serializeDataValidations(rules: DataValidationRule[]): string {
   return `<dataValidations count="${rules.length}">${body}</dataValidations>`;
 }
 
-function serializeAutoFilter(filter: FilterModel): string {
-  const columns = Object.values(filter.criteria).map((condition) => {
-    const colId = condition.column - filter.range.startColumn;
-    if (condition.selectedValues?.length) return `<filterColumn colId="${colId}"><filters${condition.excludeBlanks === false ? ' blank="1"' : ''}>${condition.selectedValues.map((value) => `<filter val="${encodeXml(value)}"/>`).join('')}</filters></filterColumn>`;
-    if (condition.conditionValue !== undefined) return `<filterColumn colId="${colId}"><customFilters><customFilter${condition.conditionOperator ? ` operator="${encodeXml(condition.conditionOperator)}"` : ''} val="${encodeXml(condition.conditionValue)}"/>${condition.conditionValue2 !== undefined ? `<customFilter val="${encodeXml(condition.conditionValue2)}"/>` : ''}</customFilters></filterColumn>`;
-    return '';
+function serializeAutoFilter(filter: AutoFilterModel, differentialStyleIndexes?: Map<string, number>): string {
+  const columns = Object.values(filter.columns).map((column) => {
+    const colId = column.column - filter.range.startColumn;
+    const criterion = column.criterion;
+    const preserved = isRecord(column.preservedXml) && Array.isArray(column.preservedXml.children)
+      ? column.preservedXml.children.filter((value): value is string => typeof value === 'string').join('')
+      : '';
+    const buttonAttrs = `${column.showButton === false ? ' showButton="0"' : ''}${column.hiddenButton ? ' hiddenButton="1"' : ''}`;
+    if (!criterion && column.showButton !== false && !column.hiddenButton && !preserved) return '';
+    if (!criterion) return `<filterColumn colId="${colId}"${buttonAttrs}>${preserved}</filterColumn>`;
+    if (criterion.kind === 'values') {
+      const dateGroups = (criterion.dateGroups ?? []).map((group) => {
+        const grouping = group.second !== undefined ? 'second' : group.minute !== undefined ? 'minute' : group.hour !== undefined ? 'hour' : group.day !== undefined ? 'day' : group.month !== undefined ? 'month' : 'year';
+        const attrs = [`dateTimeGrouping="${grouping}"`, `year="${group.year}"`];
+        if (group.month !== undefined) attrs.push(`month="${group.month}"`);
+        if (group.day !== undefined) attrs.push(`day="${group.day}"`);
+        if (group.hour !== undefined) attrs.push(`hour="${group.hour}"`);
+        if (group.minute !== undefined) attrs.push(`minute="${group.minute}"`);
+        if (group.second !== undefined) attrs.push(`second="${group.second}"`);
+        return `<dateGroupItem ${attrs.join(' ')}/>`;
+      }).join('');
+      return `<filterColumn colId="${colId}"${buttonAttrs}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}${dateGroups}</filters>${preserved}</filterColumn>`;
+    }
+    if (criterion.kind === 'custom') {
+      const conditions = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+      return `<filterColumn colId="${colId}"${buttonAttrs}><customFilters${criterion.join === 'or' ? ' and="0"' : ''}>${conditions.map((condition) => `<customFilter operator="${encodeXml(condition.operator)}" val="${encodeXml(String(condition.value ?? ''))}"/>`).join('')}</customFilters>${preserved}</filterColumn>`;
+    }
+    if (criterion.kind === 'dynamic') {
+      return `<filterColumn colId="${colId}"${buttonAttrs}><dynamicFilter type="${encodeXml(criterion.type)}"${criterion.value === undefined ? '' : ` val="${criterion.value}"`}${criterion.maxValue === undefined ? '' : ` maxVal="${criterion.maxValue}"`}/>${preserved}</filterColumn>`;
+    }
+    if (criterion.kind === 'top10') {
+      return `<filterColumn colId="${colId}"${buttonAttrs}><top10 top="${criterion.top ? '1' : '0'}"${criterion.percent ? ' percent="1"' : ''} rank="${criterion.rank}"${criterion.filterValue === undefined ? '' : ` filterVal="${criterion.filterValue}"`}/>${preserved}</filterColumn>`;
+    }
+    if (criterion.kind === 'color') {
+      const styleKey = criterion.style ? JSON.stringify(criterion.style) : undefined;
+      const dxfId = criterion.dxfId >= 0 ? criterion.dxfId : styleKey && differentialStyleIndexes?.get(styleKey);
+      if (dxfId === undefined) throw new Error('Color AutoFilter requires a differential style identity');
+      return `<filterColumn colId="${colId}"${buttonAttrs}><colorFilter dxfId="${dxfId}" cellColor="${criterion.target === 'cell' ? '1' : '0'}"/>${preserved}</filterColumn>`;
+    }
+    return `<filterColumn colId="${colId}"${buttonAttrs}><iconFilter iconSet="${encodeXml(criterion.iconSet)}" iconId="${criterion.iconId}"/>${preserved}</filterColumn>`;
   }).join('');
-  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}</autoFilter>`;
+  const sortState = filter.sortState
+    ? `<sortState ref="${rangeToA1(filter.sortState.ref)}">${filter.sortState.conditions.map((condition) => `<sortCondition ref="${rangeToA1(condition.ref)}" descending="${condition.descending ? '1' : '0'}"/>`).join('')}</sortState>`
+    : '';
+  const preserved = isRecord(filter.preservedXml) && typeof filter.preservedXml.extLst === 'string' ? filter.preservedXml.extLst : '';
+  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}${sortState}${preserved}</autoFilter>`;
 }
 
 function serializeProtection(rules: ProtectionRule[]): string {
@@ -1227,11 +1522,11 @@ function serializeWorkbookControlExtensions(original: XmlNode | undefined, contr
   return serializeXml(root);
 }
 
-function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: XlsxPackage): string {
-  const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget('xl/workbook.xml', relation.target) === target)?.id ?? '';
+function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, relationships: XlsxRelationship[], descriptors: SheetDescriptor[], dateSystem: DateSystem, nativePivotGraph?: NativePivotGraph, preserved?: OpcPackageGraph): string {
+  const relationFor = (target: string, type: string) => relationships.find((relation) => isRelationshipKind(relation.type, relationshipKind(type)) && resolveTarget(workbookPart, relation.target) === target)?.id ?? '';
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"><workbookPr date1904="${dateSystem === '1904' ? '1' : '0'}"/><sheets>`;
   for (const descriptor of descriptors) {
-    const target = relativeTarget('xl/workbook.xml', descriptor.part);
+    const target = relativeTarget(workbookPart, descriptor.part);
     const id = relationFor(descriptor.part, REL_WORKSHEET);
     const sheet = snapshot.sheets.find((candidate) => candidate.id === descriptor.id);
     xml += `<sheet name="${encodeXml(sheet?.name ?? descriptor.name)}" sheetId="${encodeXml(descriptor.id.replace(/^sheet-/, ''))}" r:id="${id}"${sheet?.hidden ? ' state="hidden"' : ''}/>`;
@@ -1267,7 +1562,7 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
   }
   // Preserve workbook-level extension/calculation metadata that this package
   // does not edit.  Sheet references and defined names above remain canonical.
-  const originalRoot = preserved?.parts['xl/workbook.xml'] ? firstElement(parseXml(strFromU8(preserved.parts['xl/workbook.xml'])), 'workbook') : undefined;
+  const originalRoot = preserved?.parts[workbookPart] ? firstElement(parseXml(strFromU8(preserved.parts[workbookPart])), 'workbook') : undefined;
   if (originalRoot) {
     let hasExtensionList = false;
     for (const node of originalRoot.children) {
@@ -1282,12 +1577,22 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, relationships: XlsxRelatio
   return `${xml}</workbook>`;
 }
 
-function buildContentTypesXml(files: Map<string, Uint8Array>, preserved?: XlsxPackage): string {
+function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string): string {
   const defaults = new Map<string, string>([['rels', 'application/vnd.openxmlformats-package.relationships+xml'], ['xml', 'application/xml']]);
+  const variant = preserved?.format.family === 'ooxml' ? preserved.format.variant : 'xlsx';
+  const mainType = variant === 'xlsm'
+    ? 'application/vnd.ms-excel.sheet.macroEnabled.main+xml'
+    : variant === 'xltm'
+      ? 'application/vnd.ms-excel.template.macroEnabled.main+xml'
+      : variant === 'xltx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml'
+        : variant === 'xlam'
+          ? 'application/vnd.ms-excel.addin.macroEnabled.main+xml'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml';
   const overrides = new Map<string, string>([
-    ['/xl/workbook.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'],
-    ['/xl/styles.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
-    ['/xl/sharedStrings.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
+    [`/${workbookPart}`, mainType],
+    [`/${stylesPart}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'],
+    [`/${sharedStringsPart}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'],
   ]);
   const original = preserved?.contentTypesXml ? firstElement(parseXml(strFromU8(preserved.contentTypesXml)), 'Types') : undefined;
   for (const node of children(original, 'Default')) if (node.attrs.Extension && node.attrs.ContentType) defaults.set(node.attrs.Extension, node.attrs.ContentType);
@@ -1324,8 +1629,8 @@ function buildRelationshipsXml(relationships: XlsxRelationship[]): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS_REL}">${relationships.map((relation) => `<Relationship Id="${encodeXml(relation.id)}" Type="${encodeXml(relation.type)}" Target="${encodeXml(relation.target)}"${relation.targetMode ? ` TargetMode="${encodeXml(relation.targetMode)}"` : ''}/>`).join('')}</Relationships>`;
 }
 
-function buildRootRelationshipsXml(existing: XlsxRelationship[]): string {
-  const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: 'xl/workbook.xml' }]);
+function buildRootRelationshipsXml(existing: XlsxRelationship[], workbookPart = 'xl/workbook.xml'): string {
+  const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) }]);
   return buildRelationshipsXml(relationships);
 }
 
@@ -1388,7 +1693,7 @@ function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row:
   return undefined;
 }
 
-function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: XlsxPackage): SheetSnapshot['notes'] {
+function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['notes'] {
   const relation = (pkg.relationships[descriptor.part] ?? []).find((candidate) => isRelationshipKind(candidate.type, 'comments'));
   if (!relation) return [];
   const part = resolveTarget(descriptor.part, relation.target);
@@ -1564,7 +1869,12 @@ function parseConditionalFormats(root: XmlNode, descriptor: SheetDescriptor, sty
         const colors = children(child(node, 'colorScale'), 'color').map((color) => resolveColor(color, styles.themeColors)).filter((value): value is string => Boolean(value));
         result.push({ ...base, type: 'colorScale', ...(colors[0] ? { minColor: colors[0] } : {}), ...(colors.length === 3 && colors[1] ? { midColor: colors[1] } : {}), ...(colors.at(-1) ? { maxColor: colors.at(-1)! } : {}) });
       } else if (type === 'iconSet') {
-        result.push({ ...base, type: 'iconSet' });
+        const iconSet = child(node, 'iconSet');
+        const iconThresholds = children(iconSet, 'cfvo').map((threshold) => ({
+          type: (threshold.attrs.type ?? 'percent') as 'percent' | 'percentile' | 'num' | 'formula',
+          ...(threshold.attrs.val === undefined || !Number.isFinite(Number(threshold.attrs.val)) ? {} : { value: Number(threshold.attrs.val) }),
+        }));
+        result.push({ ...base, type: 'iconSet', ...(iconSet?.attrs.iconSet ? { iconSet: iconSet.attrs.iconSet } : {}), ...(iconThresholds.length ? { iconThresholds } : {}) });
       }
     }
   }
@@ -1629,28 +1939,79 @@ function normalizeValidationOperator(value: string | undefined): DataValidationR
   return supported.has(value as DataValidationRule['operator']) ? value as DataValidationRule['operator'] : undefined;
 }
 
-function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): FilterModel | undefined {
+function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: StyleContext): AutoFilterModel | undefined {
   const node = child(root, 'autoFilter');
   if (!node?.attrs.ref) return undefined;
   const range = requireSheetRange(node.attrs.ref, descriptor, 'auto filter');
-  const criteria: FilterModel['criteria'] = {};
+  const columns: AutoFilterModel['columns'] = {};
   for (const column of children(node, 'filterColumn')) {
     const relative = Number(column.attrs.colId);
     if (!Number.isSafeInteger(relative) || relative < 0) continue;
     const absolute = range.startColumn + relative;
-    const filters = children(child(column, 'filters'), 'filter').map((filter) => filter.attrs.val ?? '');
     const filtersNode = child(column, 'filters');
+    const filters = children(filtersNode, 'filter').map((filter) => filter.attrs.val ?? '');
+    const dateGroups = children(filtersNode, 'dateGroupItem').flatMap((item) => {
+      if (!item.attrs.dateTimeGrouping) return [];
+      return [{
+        year: Number(item.attrs.year ?? 0),
+        ...(item.attrs.month === undefined ? {} : { month: Number(item.attrs.month) }),
+        ...(item.attrs.day === undefined ? {} : { day: Number(item.attrs.day) }),
+        ...(item.attrs.hour === undefined ? {} : { hour: Number(item.attrs.hour) }),
+        ...(item.attrs.minute === undefined ? {} : { minute: Number(item.attrs.minute) }),
+        ...(item.attrs.second === undefined ? {} : { second: Number(item.attrs.second) }),
+      }];
+    });
     const custom = children(child(column, 'customFilters'), 'customFilter');
-    criteria[absolute] = {
+    const customFiltersNode = child(column, 'customFilters');
+    const dynamic = child(column, 'dynamicFilter');
+    const top10 = child(column, 'top10');
+    const color = child(column, 'colorFilter');
+    const icon = child(column, 'iconFilter');
+    const known = new Set(['filters', 'customFilters', 'dynamicFilter', 'top10', 'colorFilter', 'iconFilter']);
+    const preservedChildren = column.children.filter((candidate) => !known.has(localName(candidate.name))).map(serializeXml);
+    columns[absolute] = {
       column: absolute,
-      ...(filters.length ? { selectedValues: filters } : {}),
-      ...(filtersNode?.attrs.blank !== undefined ? { excludeBlanks: !xmlBoolean(filtersNode.attrs.blank) } : {}),
-      ...(custom[0]?.attrs.operator ? { conditionOperator: custom[0].attrs.operator } : {}),
-      ...(custom[0]?.attrs.val ? { conditionValue: custom[0].attrs.val } : {}),
-      ...(custom[1]?.attrs.val ? { conditionValue2: custom[1].attrs.val } : {}),
+      showButton: column.attrs.showButton !== '0',
+      hiddenButton: column.attrs.hiddenButton === '1',
+      ...(preservedChildren.length ? { preservedXml: { children: preservedChildren } } : {}),
+      criterion: filters.length || dateGroups.length || filtersNode?.attrs.blank !== undefined
+        ? { kind: 'values', values: filters, includeBlank: filtersNode?.attrs.blank === '1', ...(dateGroups.length ? { dateGroups } : {}) }
+        : custom.length
+          ? {
+            kind: 'custom',
+            join: customFiltersNode?.attrs.and === '0' ? 'or' : 'and',
+            conditions: [
+              { operator: (custom[0]?.attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[0]?.attrs.val ?? null },
+              custom[1] ? { operator: (custom[1].attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[1].attrs.val ?? null } : undefined,
+            ],
+          }
+          : dynamic?.attrs.type
+            ? { kind: 'dynamic', type: dynamic.attrs.type as import('@react-sheets/core-model').DynamicFilterType, ...(dynamic.attrs.val === undefined ? {} : { value: Number(dynamic.attrs.val) }), ...(dynamic.attrs.maxVal === undefined ? {} : { maxValue: Number(dynamic.attrs.maxVal) }) }
+            : top10
+              ? { kind: 'top10', top: top10.attrs.top !== '0', percent: top10.attrs.percent === '1', rank: Number(top10.attrs.rank ?? 10), ...(top10.attrs.filterVal === undefined ? {} : { filterValue: Number(top10.attrs.filterVal) }) }
+              : color
+                ? { kind: 'color', target: color.attrs.cellColor === '0' ? 'font' : 'cell', dxfId: Number(color.attrs.dxfId ?? -1), ...(styles?.differentialStyles[Number(color.attrs.dxfId)] ? { style: structuredClone(styles.differentialStyles[Number(color.attrs.dxfId)]!) } : {}) }
+                : icon
+                  ? { kind: 'icon', iconSet: icon.attrs.iconSet ?? '', iconId: Number(icon.attrs.iconId ?? -1) }
+                  : undefined,
     };
   }
-  return { sheetId: descriptor.id, range: { ...range, sheetId: descriptor.id }, criteria };
+  const sort = child(node, 'sortState');
+  const sortState = sort ? {
+    ref: { ...requireSheetRange(sort.attrs.ref ?? node.attrs.ref, descriptor, 'sort state'), sheetId: descriptor.id },
+    conditions: children(sort, 'sortCondition').map((condition) => ({
+      ref: { ...requireSheetRange(condition.attrs.ref ?? node.attrs.ref, descriptor, 'sort condition'), sheetId: descriptor.id },
+      descending: xmlBoolean(condition.attrs.descending ?? '0'),
+    })),
+  } : undefined;
+  const preserved = node.children.filter((candidate) => localName(candidate.name) === 'extLst').map(serializeXml);
+  return {
+    sheetId: descriptor.id,
+    range: { ...range, sheetId: descriptor.id },
+    columns,
+    sortState,
+    ...(preserved.length ? { preservedXml: { extLst: preserved.join('') } } : {}),
+  };
 }
 
 function parseOutline(root: XmlNode): OutlineModel | undefined {
@@ -1753,6 +2114,7 @@ function parsePane(root: XmlNode): WorksheetPane {
     startRow: topLeft?.row ?? 0,
     startColumn: topLeft?.column ?? 0,
     ...(activePane ? { activePane } : {}),
+    state: 'split',
   };
 }
 
@@ -1901,12 +2263,38 @@ function relativeTarget(source: string, target: string): string {
   return `${'../'.repeat(sourceParts.length)}${targetParts.join('/')}`;
 }
 
+function relationshipTarget(pkg: OpcPackageGraph | undefined, source: string, type: string): string | undefined {
+  const relation = pkg?.relationships[source]?.find((candidate) => isRelationshipKind(candidate.type, relationshipKind(type)));
+  return relation ? resolveTarget(source, relation.target) : undefined;
+}
+
 function cloneParts(parts: Record<string, Uint8Array>): Record<string, Uint8Array> {
   return Object.fromEntries(Object.entries(parts).map(([name, data]) => [name, data.slice()]));
 }
 
-function isMacroPart(name: string): boolean {
-  return name.toLowerCase().includes('vba') || name.toLowerCase().endsWith('.bin');
+function isVbaPart(name: string, pkg?: OpcPackageGraph, files?: Record<string, Uint8Array>): boolean {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('vbaproject.bin') || lower.endsWith('vbaprojectsignature.bin')) return true;
+  if (pkg) {
+    for (const [source, relationships] of Object.entries(pkg.relationships)) {
+      for (const relation of relationships) {
+        const type = relation.type.toLowerCase();
+        if (!type.includes('vbaproject')) continue;
+        if (resolveTarget(source, relation.target) === name) return true;
+      }
+    }
+    const contentTypes = pkg.contentTypesXml ? strFromU8(pkg.contentTypesXml) : '';
+    if (contentTypes.includes(`/` + name) && /vbaProject/i.test(contentTypes)) return true;
+  }
+  if (files) {
+    const contentTypes = files['[Content_Types].xml'] ? strFromU8(files['[Content_Types].xml']!) : '';
+    if (contentTypes.includes(`/` + name) && /vbaProject/i.test(contentTypes)) return true;
+  }
+  return false;
+}
+
+function filterMacroRelationships(source: string, relationships: XlsxRelationship[], pkg: OpcPackageGraph | undefined): XlsxRelationship[] {
+  return relationships.filter((relationship) => !isVbaPart(resolveTarget(source, relationship.target), pkg));
 }
 
 function relationshipKind(type: string): string {

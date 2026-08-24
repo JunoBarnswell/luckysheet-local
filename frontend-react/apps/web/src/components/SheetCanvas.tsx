@@ -6,9 +6,8 @@ import {
   Panel,
   Stack,
   StatePanel,
-  Text,
   Button,
-  Inline,
+  ScrollBar,
 } from "@react-sheets/ui-system";
 import {
   CanvasRenderSurface,
@@ -33,7 +32,7 @@ import type {
   SparklineModel,
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
-import { FilterPopover } from "./FilterPopover";
+import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
@@ -63,7 +62,7 @@ export interface SheetCanvasProps {
   /** Lets the host add/replace Pivot-specific right-click commands. */
   getPivotContextMenuItems?: (hit: ResolvedContextHit) => readonly ContextMenuItem[];
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
-  onPivotShowDetails?: (request: PivotShowDetailsRequest) => void;
+  onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onCommitCell: (value: string) => void;
@@ -87,7 +86,7 @@ export interface SheetCanvasProps {
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onFloatingRemove: (drawingId: string) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
-  onClearSelection?: (mode: "contents" | "formats") => void;
+  onClearSelection: (mode: "contents" | "formats") => void;
   /** Format painter is a transient session interaction, never canvas-local state. */
   formatPainterActive?: boolean;
   onCancelFormatPainter?: () => void;
@@ -100,7 +99,8 @@ export interface SheetCanvasProps {
   onShortcut?: (id: string) => boolean;
   canRepeat?: boolean;
   onOpenInspector: () => void;
-  onApplyFilter: (column: number, patch: { selectedValues?: string[] | null }) => void;
+  onApplyFilter: (column: number, patch: FilterPatch) => void;
+  onSortFilterColumn: (column: number, ascending: boolean) => void;
   onToggleOutline?: (groupId: string) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
@@ -307,6 +307,7 @@ export function SheetCanvas({
   canRepeat = false,
   onOpenInspector,
   onApplyFilter,
+  onSortFilterColumn,
   onToggleOutline,
   getValidationList,
   onRetry,
@@ -318,7 +319,6 @@ export function SheetCanvas({
   const contextRangeRef = useRef<RangeRef | null>(null);
   const [contextMenu, setContextMenu] = useState({ x: 0, y: 0, open: false });
   const [contextHit, setContextHit] = useState<ResolvedContextHit | null>(null);
-  const [contextHeader, setContextHeader] = useState<'row' | 'column' | null>(null);
   const [filterPopover, setFilterPopover] = useState<{ column: number; x: number; y: number } | null>(null);
   const [validationDropdown, setValidationDropdown] = useState<{ row: number; column: number; options: string[] } | null>(null);
   const [fillPreview, setFillPreview] = useState<{ startRow: number; endRow: number; startColumn: number; endColumn: number } | null>(null);
@@ -424,7 +424,7 @@ export function SheetCanvas({
     const state = createEmptyChromeState();
     state.selection = toChromeSelection(selection);
     state.editing = editingCell ? { row: editingCell.row, column: editingCell.column } : null;
-    state.filterColumns = sheet.filterColumns;
+    state.filterColumns = sheet.activeFilterColumns;
     state.filterButtons = sheet.filterButtons;
     state.tableOutlines = sheet.sheetTables.map((table) => ({
       startRow: table.range.startRow,
@@ -442,7 +442,7 @@ export function SheetCanvas({
     }));
     state.selectedFloatingId = selectedFloatingId;
     return state;
-  }, [editingCell, peers, selectedFloatingId, selection, sheet.filterButtons, sheet.filterColumns, sheet.outlineControls, sheet.sheetTables]);
+  }, [editingCell, peers, selectedFloatingId, selection, sheet.activeFilterColumns, sheet.filterButtons, sheet.outlineControls, sheet.sheetTables]);
 
   const canvasInteraction = useCanvasInteraction({
     canRepeat,
@@ -515,11 +515,7 @@ export function SheetCanvas({
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    engine.setFreeze(
-      sheet.pane.kind === 'frozen' && (sheet.pane.xSplit > 0 || sheet.pane.ySplit > 0)
-        ? { xSplit: sheet.pane.xSplit, ySplit: sheet.pane.ySplit }
-        : null,
-    );
+    engine.setPane(sheet.pane.kind === 'none' ? null : sheet.pane);
   }, [sheet.pane]);
 
   useEffect(() => {
@@ -560,8 +556,8 @@ export function SheetCanvas({
         {
           id: "pivot-show-details",
           label: "Show Details",
-          disabled: sourceRowPaths.length === 0 || !onPivotShowDetails,
-          onSelect: () => onPivotShowDetails?.({
+          disabled: sourceRowPaths.length === 0,
+          onSelect: () => onPivotShowDetails({
             pivotId: contextHit.pivot!.pivotId,
             sourceRowPaths,
             hit: contextHit,
@@ -575,13 +571,24 @@ export function SheetCanvas({
       ];
     }
     const getContextRange = () => contextRangeRef.current ?? selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
-    if (contextHeader === 'column') {
+    if (contextHit?.kind === 'column-header') {
       const columns = columnDimensions.selectedColumns();
       return [
         { id: 'column-width', label: 'Column Width…', onSelect: () => onOpenColumnWidthDialog(columns) },
         { id: 'column-autofit', label: 'AutoFit Column Width', onSelect: () => { void columnDimensions.autoFit(columns); } },
         { id: 'column-hide', label: 'Hide Columns', onSelect: () => columnDimensions.setHidden(columns, true) },
         { id: 'column-unhide', label: 'Unhide Columns', onSelect: () => columnDimensions.setHidden(columns, false) },
+      ];
+    }
+    if (contextHit?.kind === 'row-header') {
+      const range = getContextRange();
+      const startRow = range?.startRow ?? selection.activeCell.row;
+      const rowCount = range ? range.endRow - range.startRow + 1 : 1;
+      return [
+        { id: 'row-insert', label: 'Insert rows above', onSelect: () => onCommand({ commandId: 'sheet.rows.insert', params: { sheetId, at: startRow, count: rowCount } }) },
+        { id: 'row-delete', label: 'Delete rows', danger: true, onSelect: () => onCommand({ commandId: 'sheet.rows.delete', params: { sheetId, at: startRow, count: rowCount } }) },
+        { id: 'row-hide', label: 'Hide rows', onSelect: () => onCommand({ commandId: 'sheet.row.hide', params: { sheetId, index: startRow } }) },
+        { id: 'row-unhide', label: 'Unhide rows', onSelect: () => onCommand({ commandId: 'sheet.rows.unhide.all', params: { sheetId } }) },
       ];
     }
     const items: ContextMenuItem[] = [
@@ -598,12 +605,12 @@ export function SheetCanvas({
       { id: "hide-col", label: "Hide columns", onSelect: () => { const range = getContextRange(); if (range) onCommand({ commandId: "sheet.column.hide", params: { sheetId, index: range.startColumn } }); } },
       { id: "unhide-all", label: "Unhide all", onSelect: () => onCommand({ commandId: "sheet.rows.unhide.all", params: { sheetId } }) },
       { id: "sep-3", label: "", separator: true },
-      { id: "clear", label: "Clear contents", onSelect: () => onClearSelection?.("contents") },
-      { id: "clear-formats", label: "Clear formats", onSelect: () => onClearSelection?.("formats") },
+      { id: "clear", label: "Clear contents", onSelect: () => onClearSelection("contents") },
+      { id: "clear-formats", label: "Clear formats", onSelect: () => onClearSelection("formats") },
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [columnDimensions, contextHeader, contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
+  }, [columnDimensions, contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -617,8 +624,13 @@ export function SheetCanvas({
     }
     const local = canvasInteraction.localPointOf(event);
     const headerHit = engine.headerHitAtLocal(local);
-    setContextHit(null);
-    setContextHeader(headerHit?.kind === 'col' ? 'column' : headerHit?.kind === 'row' ? 'row' : null);
+    setContextHit(headerHit?.kind === 'row' || headerHit?.kind === 'col'
+      ? resolveContextHit({
+        sheetId,
+        header: headerHit.kind === 'row' ? 'row' : 'column',
+        cell: { row: headerHit.kind === 'row' ? headerHit.index : 0, column: headerHit.kind === 'col' ? headerHit.index : 0 },
+      })
+      : null);
     contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? null;
     if (headerHit?.kind === "corner") {
       contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, skeleton.rowCount - 1), startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) };
@@ -715,7 +727,7 @@ export function SheetCanvas({
     // pane is not the correct origin for frozen rows/columns.
     const rect = engine.skeleton.getCellRect(editingCell.row, editingCell.column);
     if (!rect) return null;
-    const topLeft = engine.contentToMainScreen({ x: rect.x, y: rect.y }, editingCell);
+    const topLeft = engine.contentToScreen({ x: rect.x, y: rect.y }, editingCell);
     return {
       x: topLeft.x,
       y: topLeft.y,
@@ -756,16 +768,6 @@ export function SheetCanvas({
   return (
     <Panel className="h-full min-h-0 flex-1 overflow-hidden">
       <Stack gap="none" className="h-full">
-        <Inline gap="xs" className="items-center justify-between border-b border-slate-100 px-3 py-1.5">
-          <Inline gap="xs" className="items-center">
-            <Text size="xs" tone="muted">Sheet</Text>
-            <Text size="xs" weight="semibold">{sheet.name}</Text>
-            {sheet.pane.kind !== 'none' ? (
-              <Text size="xs" tone="subtle">{sheet.pane.kind} {sheet.pane.xSplit}x{sheet.pane.ySplit}</Text>
-            ) : null}
-          </Inline>
-          <Text size="xs" tone="subtle">{activeCell}</Text>
-        </Inline>
         <Box className="relative min-h-0 flex-1">
           <Box
             ref={containerRef}
@@ -798,6 +800,28 @@ export function SheetCanvas({
               }}
               className="absolute inset-0"
             />
+            {engineReady && engineRef.current ? (() => {
+              const viewport = engineRef.current.viewport.getSnapshot();
+              const content = engineRef.current.skeleton.contentSize;
+              return (
+                <>
+                  <ScrollBar
+                    contentSize={content.width}
+                    offset={viewport.scrollX}
+                    onChange={(offset) => engineRef.current?.scrollTo(offset, viewport.scrollY)}
+                    orientation="horizontal"
+                    viewportSize={viewport.width}
+                  />
+                  <ScrollBar
+                    contentSize={content.height}
+                    offset={viewport.scrollY}
+                    onChange={(offset) => engineRef.current?.scrollTo(viewport.scrollX, offset)}
+                    orientation="vertical"
+                    viewportSize={viewport.height}
+                  />
+                </>
+              );
+            })() : null}
             {engineReady ? pivotStatusProjections.map((projection) => (
               <PivotProjectionStatusNotice
                 key={`${projection.pivotId}:${projection.refresh.status}:${projection.refresh.error ?? ""}`}
@@ -841,9 +865,15 @@ export function SheetCanvas({
           {filterPopover ? (
             <FilterPopover
               column={filterPopover.column}
+              x={filterPopover.x}
+              y={filterPopover.y}
               sheet={sheet}
               onApply={(patch) => {
                 onApplyFilter(filterPopover.column, patch);
+                setFilterPopover(null);
+              }}
+              onSort={(ascending) => {
+                onSortFilterColumn(filterPopover.column, ascending);
                 setFilterPopover(null);
               }}
               onClose={() => setFilterPopover(null)}

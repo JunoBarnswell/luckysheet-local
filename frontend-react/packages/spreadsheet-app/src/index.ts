@@ -22,7 +22,7 @@ export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParam
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
-export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey } from './types';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey, SheetDialogState } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,
@@ -48,7 +48,7 @@ export {
   WorkspacePersistence,
   LocalDataBlockStore,
   DataBlockSynchronizer,
-  LocalXlsxArtifactStore,
+  LocalNativePackageStore,
   buildWorkspaceRecord,
   verifyWorkspaceRecord,
   verifyPendingOperationJournal,
@@ -60,7 +60,7 @@ export {
   type IndexedDbWorkspaceStoreOptions,
   type DataBlockRecord,
   type DataBlockSyncOptions,
-  type XlsxArtifactRecord,
+  type NativePackageRecord,
 } from './features/persistence';
 export {
   buildPrintSnapshot,
@@ -145,4 +145,4 @@ export { CollaborationSession } from './collaboration';
 export { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './features/pivot/engine';
 export { cellAddress, columnLabel, parseAddress } from './address';
 export type { CanvasSheetSnapshot, CanvasCellSnapshot, PreviewRowSnapshot } from './ui-snapshot';
-export type { AppPhase, RibbonTabId, SidebarPanelId, SaveState, PeerCursor, UiSessionIntent } from './types';
+export type { AppPhase, FocusState, FocusTarget, InputMode, RibbonTabId, SidebarPanelId, SaveState, PeerCursor, UiSessionIntent } from './types';

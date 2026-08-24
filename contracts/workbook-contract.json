@@ -2,7 +2,7 @@
   "apiVersion": "2026-08-24",
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
-    "snapshotVersion": 3,
+    "snapshotVersion": 4,
     "maxNameLength": 255
   },
   "errors": [
@@ -28,7 +28,6 @@
     "hyperlink.remove": { "durability": "remote", "remote": true, "schema": "HyperlinkRemove", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
     "column.defaultWidth.resize": { "durability": "remote", "remote": true, "schema": "DefaultColumnWidthResizePx", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "columns.visibility": { "durability": "remote", "remote": true, "schema": "ColumnsVisibility", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
-    "xlsx.layout.repaired": { "durability": "remote", "remote": true, "schema": "XlsxLayoutRepair", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "query.load.workbook-table": { "durability": "local", "remote": false, "schema": "QueryLoadWorkbookTable", "minRole": "editor", "rebasePolicy": "none", "javaReducer": false }
   }
 }

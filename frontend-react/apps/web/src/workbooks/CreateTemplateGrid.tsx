@@ -18,7 +18,7 @@ export function CreateTemplateGrid({ templates = workbookTemplates, onSelect, on
         </Inline>
         {onMoreTemplates ? <Button icon="arrow-right" onClick={onMoreTemplates} size="sm" variant="ghost" className="text-brand-dark hover:bg-brand-soft">更多模板</Button> : null}
       </Inline>
-      <Box className="grid grid-cols-1 gap-5 min-[620px]:grid-cols-2 min-[930px]:grid-cols-3 min-[1320px]:grid-cols-6 min-[1440px]:px-[18px]">
+      <Box className="grid grid-cols-1 gap-5 min-[620px]:grid-cols-2 min-[930px]:grid-cols-3 min-[1320px]:grid-cols-6 min-[1600px]:grid-cols-7 min-[1440px]:px-[18px]">
         {templates.map((template, index) => (
           <Button
             key={template.kind}

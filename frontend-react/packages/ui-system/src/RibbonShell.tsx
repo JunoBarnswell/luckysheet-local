@@ -1,4 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Button } from './Button';
+import { DropdownMenu } from './DropdownMenu';
 import { Box, Inline, Text } from './layout';
 import { RIBBON_TAB_ORDER, type RibbonLayoutMode, type RibbonLayoutState, type RibbonTabId } from './shell-types';
 import { Tab, TabList, Tabs } from './Tabs';
@@ -18,6 +20,8 @@ export interface RibbonShellProps {
   /** Context tabs are session state supplied by the host, never workbook data. */
   contextualTabs?: readonly RibbonTabId[];
   disabled?: boolean;
+  licenseEntry?: ReactNode;
+  onFileEntry?: () => void;
   onTabChange: (tab: RibbonTabId) => void;
   status?: ReactNode;
   tabLabel: (tab: RibbonTabId) => string;
@@ -28,13 +32,18 @@ export function RibbonShell({
   children,
   contextualTabs = [],
   disabled = false,
+  licenseEntry,
+  onFileEntry,
   onTabChange,
   status,
   tabLabel,
 }: RibbonShellProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<RibbonLayoutState>({ mode: 'wide', width: 1120 });
-  const tabs = [...RIBBON_TAB_ORDER, ...contextualTabs.filter((tab, index, values) => !RIBBON_TAB_ORDER.includes(tab) && values.indexOf(tab) === index)];
+  const tabs = [
+    ...RIBBON_TAB_ORDER.filter((tab) => (!onFileEntry || tab !== 'file') && (tab !== 'automate' || layout.width >= 1440)),
+    ...contextualTabs.filter((tab, index, values) => !RIBBON_TAB_ORDER.includes(tab) && values.indexOf(tab) === index),
+  ];
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -57,9 +66,30 @@ export function RibbonShell({
   }, []);
 
   return (
-    <Tabs ref={rootRef} className="border-b border-slate-200 bg-white" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
-      <Inline gap="lg" className="min-h-10 flex-wrap px-4 py-1">
-        <TabList label="Workbook ribbon tabs" className="h-full flex-wrap gap-1">
+    <Tabs ref={rootRef} className="h-[142px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
+      <Inline gap="none" className="h-[39px] flex-nowrap px-2">
+        {onFileEntry ? (
+          <DropdownMenu
+            disabled={disabled}
+            trigger={(
+              <Button
+                aria-label="Open workbook menu"
+                className="h-full w-[48px] shrink-0 rounded-none border-b-2 border-transparent px-0 text-xs font-semibold text-slate-700 hover:border-[#217345] hover:bg-[#f3f8f4] hover:text-[#217345]"
+                size="sm"
+                variant="ghost"
+              >
+                文件
+              </Button>
+            )}
+          >
+            {({ close }) => (
+              <Button className="min-w-[9rem] justify-start" onClick={() => { close(); onFileEntry(); }} size="sm" variant="ghost">
+                File / 工作簿
+              </Button>
+            )}
+          </DropdownMenu>
+        ) : null}
+        <TabList label="Workbook ribbon tabs" className="h-full flex-nowrap gap-0">
           {tabs.map((tab) => (
             <Tab
               key={tab}
@@ -67,19 +97,20 @@ export function RibbonShell({
               data-testid={`ribbon-tab-${tab}`}
               disabled={disabled}
               onClick={() => onTabChange(tab)}
-              className="h-full border-b-2 border-transparent px-3 text-xs font-semibold data-active:border-blue-600 data-active:text-blue-600"
+              className="!h-full !min-h-0 !rounded-none border-b-2 border-transparent px-3 text-xs font-semibold text-[#3d3c41] aria-selected:!bg-white aria-selected:!text-[#217345] aria-selected:border-[#217345]"
             >
               {tabLabel(tab)}
             </Tab>
           ))}
         </TabList>
+        {licenseEntry ? <Box className="ml-2 flex h-full items-center">{licenseEntry}</Box> : null}
         {status ? (
           <Inline gap="xs" className="ml-auto shrink-0 border-l border-slate-100 pl-3">
             {status}
           </Inline>
         ) : null}
       </Inline>
-      <Box className="min-h-[104px] overflow-hidden border-t border-slate-100 bg-slate-50/80 px-4 py-2">
+      <Box className="h-[103px] overflow-hidden border-t-0 bg-white px-2 py-0">
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>

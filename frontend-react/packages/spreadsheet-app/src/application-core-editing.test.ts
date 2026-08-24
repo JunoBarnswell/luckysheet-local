@@ -223,8 +223,8 @@ describe('WorkbookSession core editing integration', () => {
 
     const before = app['runtime'].commands.getHistoryDepth().undo;
     app.requestMergeCells();
-    assert.equal(app.getUiSnapshot().showMergeConfirm, true);
-    assert.equal(app.getUiSnapshot().mergeDiscardCount, 1);
+  assert.equal(app.getUiSnapshot().dialogs.active, 'merge-confirm');
+  assert.equal(app.getUiSnapshot().dialogs.mergeDiscardCount, 1);
 
     app.confirmMergeCells();
     const sheet = app['runtime'].model.getSheet(sheetId);

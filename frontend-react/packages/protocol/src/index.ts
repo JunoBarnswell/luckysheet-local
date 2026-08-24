@@ -1008,16 +1008,16 @@ export interface WorkbookSourceArtifactMetadata {
   mimeType?: string;
   unitId: string;
   updatedAt: string;
-  xlsxCodecVersion?: number;
+  format?: string;
+  codecRevision?: number;
 }
 
 export interface WorkbookImportRequest extends WorkbookCreateMetadata {
   artifact: Blob;
   artifactFileName: string;
   snapshot: WorkbookSnapshot;
-  xlsxCodecVersion: number;
-  detectedFeatures: string[];
-  capabilityReport: Record<string, unknown>;
+  format: string;
+  nativeMetadata: Record<string, unknown>;
 }
 
 export interface WorkbookImportResponse {
@@ -1284,9 +1284,8 @@ export class WorkbookApiClient {
     const form = new FormData();
     form.append('file', input.artifact, input.artifactFileName);
     form.append('snapshot', JSON.stringify(input.snapshot));
-    form.append('xlsxCodecVersion', String(input.xlsxCodecVersion));
-    form.append('detectedFeatures', JSON.stringify(input.detectedFeatures));
-    form.append('capabilityReport', JSON.stringify(input.capabilityReport));
+    form.append('format', input.format);
+    form.append('nativeMetadata', JSON.stringify(input.nativeMetadata));
     if (input.snapshot.name) form.append('name', input.snapshot.name);
     if (input.spaceId) form.append('spaceId', input.spaceId);
     if (input.folderId) form.append('folderId', input.folderId);
@@ -1301,7 +1300,7 @@ export class WorkbookApiClient {
 
   async putWorkbookSourceArtifact(unitId: string, artifact: Blob, fileName: string): Promise<WorkbookSourceArtifactMetadata> {
     const checksum = await sha256(artifact);
-    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/source-artifact`, {
+    return this.json<WorkbookSourceArtifactMetadata>(`/api/workbooks/${encodeURIComponent(unitId)}/native-package-state`, {
       method: 'PUT',
       headers: {
         'content-type': 'application/octet-stream',
@@ -1313,13 +1312,14 @@ export class WorkbookApiClient {
   }
 
   async getWorkbookSourceArtifact(unitId: string): Promise<{ artifact: Blob; metadata: WorkbookSourceArtifactMetadata }> {
-    const response = await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/source-artifact`);
+    const response = await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/native-package-state`);
     const disposition = response.headers.get('content-disposition') ?? '';
     const fileNameMatch = /filename="?([^";]+)"?/i.exec(disposition);
     const fileName = fileNameMatch?.[1];
     const checksum = response.headers.get('x-content-sha256');
     const byteLength = Number(response.headers.get('content-length') ?? 0);
-    const xlsxCodecVersion = Number(response.headers.get('x-xlsx-codec-version') ?? 1);
+    const codecRevision = Number(response.headers.get('x-native-codec-revision') ?? 1);
+    const format = response.headers.get('x-native-format') ?? undefined;
     if (!fileName || !checksum) throw new ApiRequestError('Workbook source artifact response omitted metadata', response.status, 'INTERNAL_ERROR');
     const artifact = await response.blob();
     return {
@@ -1331,7 +1331,8 @@ export class WorkbookApiClient {
         mimeType: response.headers.get('content-type') ?? undefined,
         unitId,
         updatedAt: response.headers.get('last-modified') ?? new Date().toISOString(),
-        xlsxCodecVersion: Number.isSafeInteger(xlsxCodecVersion) && xlsxCodecVersion > 0 ? xlsxCodecVersion : 1,
+        format,
+        codecRevision: Number.isSafeInteger(codecRevision) && codecRevision > 0 ? codecRevision : 1,
       },
     };
   }

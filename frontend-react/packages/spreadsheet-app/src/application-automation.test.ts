@@ -30,7 +30,7 @@ describe('WorkbookSession automation integration', () => {
     assert.equal(app.getUiSnapshot().lastScriptResult?.ok, true, app.getUiSnapshot().lastScriptResult?.error ?? 'Automation worker did not complete');
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.cells.get(0, 0)?.value, 'Automated');
-    assert.equal(app.getUiSnapshot().activePanel, 'automate');
+    assert.equal(app.getUiSnapshot().panels.active, 'automate');
   });
 
   it('records commands into facade script text', () => {

@@ -98,6 +98,11 @@ export interface CellData {
   /** @deprecated prefer hyperlinkDetail */
   hyperlink?: string;
   hyperlinkDetail?: CellHyperlink;
+  /** Native AutoFilter color/icon identity resolved at the import boundary. */
+  filterMetadata?: {
+    color?: { target: 'cell' | 'font'; dxfId?: number; value?: string };
+    icon?: { iconSet: string; iconId: number };
+  };
 }
 
 export interface RichTextRun {
@@ -139,7 +144,7 @@ export type WorksheetPane =
       startRow: Row;
       startColumn: Column;
       activePane?: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
-      state?: 'frozen' | 'frozenSplit';
+      state: 'frozen' | 'frozenSplit';
     }
   | {
       kind: 'split';
@@ -149,14 +154,15 @@ export type WorksheetPane =
       startRow: Row;
       startColumn: Column;
       activePane?: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
+      state: 'split';
     };
 
 export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
   if (pane.kind === 'none') return { kind: 'none' };
   const activePane = pane.activePane ?? (pane.xSplit > 0 && pane.ySplit > 0 ? 'bottomRight' : pane.xSplit > 0 ? 'topRight' : pane.ySplit > 0 ? 'bottomLeft' : 'topLeft');
   return pane.kind === 'frozen'
-    ? { ...pane, activePane, state: pane.state ?? 'frozen' }
-    : { ...pane, activePane };
+    ? { ...pane, activePane, state: pane.state }
+    : { ...pane, activePane, state: 'split' };
 }
 
 export type {
@@ -296,6 +302,8 @@ export interface ConditionalFormatRule {
   midColor?: string;
   maxColor?: string;
   barColor?: string;
+  iconSet?: string;
+  iconThresholds?: Array<{ type: 'percent' | 'percentile' | 'num' | 'formula'; value?: number }>;
   topBottom?: ConditionalFormatTopBottom;
 }
 
@@ -330,19 +338,68 @@ export interface DataValidationRule {
   errorMessage?: string;
 }
 
-export interface FilterColumnCondition {
-  column: Column;
-  selectedValues?: string[];
-  excludeBlanks?: boolean;
-  conditionOperator?: string;
-  conditionValue?: string;
-  conditionValue2?: string;
+export type FilterScalar = string | number | boolean | null;
+
+export interface DateGroupItem {
+  year: number;
+  month?: number;
+  day?: number;
+  hour?: number;
+  minute?: number;
+  second?: number;
 }
 
-export interface FilterModel {
+export type FilterComparisonOperator =
+  | 'equals'
+  | 'notEquals'
+  | 'lessThan'
+  | 'lessThanOrEqual'
+  | 'greaterThan'
+  | 'greaterThanOrEqual'
+  | 'contains'
+  | 'notContains'
+  | 'beginsWith'
+  | 'endsWith';
+
+export interface FilterComparison {
+  operator: FilterComparisonOperator;
+  value: FilterScalar;
+}
+
+export type DynamicFilterType =
+  | 'today' | 'yesterday' | 'tomorrow'
+  | 'thisWeek' | 'lastWeek' | 'nextWeek'
+  | 'thisMonth' | 'lastMonth' | 'nextMonth'
+  | 'thisQuarter' | 'lastQuarter' | 'nextQuarter'
+  | 'thisYear' | 'lastYear' | 'nextYear' | 'yearToDate';
+
+export type FilterCriterion =
+  | { kind: 'values'; values: FilterScalar[]; includeBlank: boolean; dateGroups?: DateGroupItem[] }
+  | { kind: 'custom'; join: 'and' | 'or'; conditions: [FilterComparison, FilterComparison?] }
+  | { kind: 'dynamic'; type: DynamicFilterType; value?: number; maxValue?: number }
+  | { kind: 'top10'; top: boolean; percent: boolean; rank: number; filterValue?: number }
+  | { kind: 'color'; target: 'cell' | 'font'; dxfId: number; style?: Partial<CellStyle> }
+  | { kind: 'icon'; iconSet: string; iconId: number };
+
+export interface SortStateModel {
+  ref: RangeRef;
+  conditions: Array<{ ref: RangeRef; descending: boolean; customList?: string[] }>;
+}
+
+export interface AutoFilterColumn {
+  column: Column;
+  criterion?: FilterCriterion;
+  showButton: boolean;
+  hiddenButton: boolean;
+  preservedXml?: unknown;
+}
+
+export interface AutoFilterModel {
   sheetId: SheetId;
   range: RangeRef;
-  criteria: Record<Column, FilterColumnCondition>;
+  columns: Record<Column, AutoFilterColumn>;
+  sortState?: SortStateModel;
+  preservedXml?: unknown;
 }
 
 export interface SortCriterion {
@@ -494,7 +551,7 @@ export class WorksheetModel {
   showHeaders = true;
   zoom = 100;
   hidden = false;
-  filter?: FilterModel;
+  autoFilter?: AutoFilterModel;
   bandedRule?: BandedRule;
   defaultRowHeightPx = 20;
   defaultColumnWidthPx = 64;
@@ -519,7 +576,7 @@ export class WorksheetModel {
     copy.sparklines.push(...structuredClone(this.sparklines));
     copy.conditionalFormats.push(...structuredClone(this.conditionalFormats));
     copy.dataValidations.push(...structuredClone(this.dataValidations));
-    copy.filter = this.filter ? structuredClone(this.filter) : undefined;
+    copy.autoFilter = this.autoFilter ? structuredClone(this.autoFilter) : undefined;
     copy.bandedRule = this.bandedRule ? structuredClone(this.bandedRule) : undefined;
     copy.defaultRowHeightPx = this.defaultRowHeightPx;
     copy.defaultColumnWidthPx = this.defaultColumnWidthPx;
@@ -609,7 +666,7 @@ export interface SheetSnapshot {
   hiddenColumns?: number[];
   tabColor?: string;
   bandedRule?: BandedRule;
-  filter?: FilterModel;
+  autoFilter?: AutoFilterModel;
   sheetTables?: SheetTableModel[];
   spillRanges?: SpillRange[];
   protectionRules?: ProtectionRule[];
@@ -900,7 +957,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 3,
+      version: 4,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -933,7 +990,7 @@ export class WorkbookModel {
         hiddenColumns: [...sheet.hiddenColumns],
         tabColor: sheet.tabColor,
         bandedRule: sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined,
-        filter: sheet.filter ? structuredClone(sheet.filter) : undefined,
+        autoFilter: sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined,
         sheetTables: structuredClone(sheet.sheetTables),
         sparklineGroups: structuredClone(sheet.sparklineGroups),
         drawings: structuredClone(sheet.drawings),
@@ -960,7 +1017,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 3) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 4) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
@@ -1014,7 +1071,7 @@ export class WorkbookModel {
       if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
       if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
       if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);
-      if (input.filter) sheet.filter = structuredClone(input.filter);
+      if (input.autoFilter) sheet.autoFilter = structuredClone(input.autoFilter);
       if (input.sheetTables) sheet.sheetTables.push(...structuredClone(input.sheetTables));
       if (input.spillRanges) sheet.spillRanges.push(...structuredClone(input.spillRanges));
       if (input.protectionRules) sheet.protectionRules.push(...structuredClone(input.protectionRules));

@@ -40,6 +40,7 @@ export interface CellPatch {
   comment?: CellPatchField<NonNullable<CellData['comment']>>;
   hyperlink?: CellPatchField<NonNullable<CellData['hyperlink']>>;
   hyperlinkDetail?: CellPatchField<NonNullable<CellData['hyperlinkDetail']>>;
+  filterMetadata?: CellPatchField<NonNullable<CellData['filterMetadata']>>;
 }
 
 /** Canonical runtime/persistence carrier beside a sparse CellMatrix entry. */
@@ -64,6 +65,15 @@ export interface ResolvedCell {
 }
 
 export type DataContentMap = ReadonlyMap<string, DataSourceContentQuery>;
+
+/** The single application read contract for sparse and block-backed cells. */
+export interface WorkbookCellResolver {
+  resolve(sheet: WorksheetModel, row: number, column: number): ResolvedCell | undefined;
+}
+
+export function createWorkbookCellResolver(dataContent: DataContentMap = new Map()): WorkbookCellResolver {
+  return { resolve: (sheet, row, column) => resolveCell(sheet, row, column, dataContent) };
+}
 
 export interface MaterializedDataRegionCell {
   row: number;
@@ -101,6 +111,7 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'comment',
   'hyperlink',
   'hyperlinkDetail',
+  'filterMetadata',
 ];
 const PATCH_KEYS: readonly CellPatchKey[] = ['value', ...PATCH_FIELDS];
 

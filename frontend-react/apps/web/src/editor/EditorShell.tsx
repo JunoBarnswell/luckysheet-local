@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AppShell, Box, Button, DropdownMenu, Inline, Stack } from "@react-sheets/ui-system";
+import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { DesignerShell, Box, Inline } from "@react-sheets/ui-system";
 import { FormulaBar } from "../components/FormulaBar";
 import { SheetTabs } from "../components/SheetTabs";
 import { StatusBar } from "../components/StatusBar";
-import { localeLabels, shellLabels, type Locale } from "../i18n";
+import { type Locale } from "../i18n";
 import zhCN from "../locales/zh-CN.json";
 import enUS from "../locales/en-US.json";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
@@ -15,6 +15,7 @@ import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
 import { ColumnDimensionController } from './column-dimension-controller';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
+import { DesignerHelpRail } from '../components/DesignerHelpRail';
 
 const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
@@ -23,8 +24,6 @@ export interface EditorShellProps {
   session: WorkbookSession;
   locale: Locale;
   isBusy: boolean;
-  sidebarOpen: boolean;
-  onSidebarOpenChange: (open: boolean) => void;
   controller: EditorCommandController;
   dispatchCommand: (descriptor: CommandDescriptor) => void;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
@@ -34,7 +33,6 @@ export interface EditorShellProps {
   exportXlsx: () => void | Promise<void>;
   importXlsx: () => void;
   renameWorkbook: (name: string) => void | Promise<void>;
-  onSetBackstageInfo: () => void;
   onOpenPrintPreview: () => void;
 }
 
@@ -48,8 +46,6 @@ export function EditorShell({
   session,
   locale,
   isBusy,
-  sidebarOpen,
-  onSidebarOpenChange,
   controller,
   dispatchCommand,
   dispatchSessionIntent,
@@ -59,7 +55,6 @@ export function EditorShell({
   exportXlsx,
   importXlsx,
   renameWorkbook,
-  onSetBackstageInfo,
   onOpenPrintPreview,
 }: EditorShellProps): ReactNode {
   const sheetRef = useRef(state.selectedSheet);
@@ -70,7 +65,6 @@ export function EditorShell({
     () => new ColumnDimensionController(session, () => sheetRef.current, () => selectionRef.current),
     [session],
   );
-  const [columnWidthDialog, setColumnWidthDialog] = useState<{ columns: number[]; defaultMode: boolean } | null>(null);
   useEffect(() => () => columnDimensions.cancelAutoFit(), [columnDimensions]);
   const selectedCellStyle = state.homeRibbon.style;
   const formatCellsInitial = {
@@ -82,62 +76,27 @@ export function EditorShell({
 
   return (
     <>
-      <AppShell
+      <DesignerShell
         formulaBar={(
           <FormulaBar
             cellName={state.activeCell}
             disabled={isBusy}
-            formula={state.formulaDraft}
+            formula={state.editSession?.draftText ?? state.formulaDraft}
             locale={locale}
+            onBeginEdit={() => {
+              const started = state.editSession ? true : session.beginEdit();
+              if (started) session.setFocusState('formula-edit', 'formula-bar');
+            }}
             onCancel={session.cancelEdit.bind(session)}
             onChange={session.setFormulaDraft.bind(session)}
-            onCommit={() => { if (state.editingCell) session.commitEdit("down"); else session.commitFormula(); }}
+            onCommit={() => { if (state.editSession) session.commitEdit("down"); else session.commitFormula(); }}
             onNameBoxCommit={(value) => session.selectAddress(value)}
             onOpenWizard={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
             phase={state.phase}
           />
         )}
+        floatingOverlay={<DesignerHelpRail />}
         isBusy={isBusy}
-        labels={shellLabels(locale, state.saveState)}
-        localeMenuLabel={localeLabels[locale]}
-        notice={state.notice}
-        onLocaleChange={setLocale}
-        onSearch={(query) => dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findQuery: query })}
-        onShare={copyWorkbookLink}
-        peers={state.peers}
-        workbookMenu={(
-          <DropdownMenu
-            align="right"
-            trigger={<Button aria-label="Open workbook menu" disabled={isBusy} icon="more-horizontal" iconOnly size="sm" variant="ghost" className="text-slate-300 hover:bg-slate-800 hover:text-white" />}
-          >
-            {({ close }) => (
-              <Stack gap="xs" className="min-w-44">
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { onSetBackstageInfo(); close(); }}>
-                  File / 工作簿
-                </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => {
-                  const nextName = window.prompt("Enter workbook name:", state.workbookName);
-                  if (nextName?.trim()) void renameWorkbook(nextName.trim());
-                  close();
-                }}>
-                  Rename workbook
-                </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); copyWorkbookLink(); }}>
-                  Copy workbook link
-                </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); void exportXlsx(); }}>
-                  Export .xlsx
-                </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); importXlsx(); }}>
-                  Import .xlsx
-                </Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onOpenPrintPreview(); }}>
-                  Print / Save as PDF
-                </Button>
-              </Stack>
-            )}
-          </DropdownMenu>
-        )}
         ribbon={(
           <RibbonHost
             state={state}
@@ -151,11 +110,10 @@ export function EditorShell({
             importXlsx={importXlsx}
             commands={controller}
             columnDimensions={columnDimensions}
-            onOpenColumnWidthDialog={(columns) => setColumnWidthDialog({ columns, defaultMode: false })}
-            onOpenDefaultColumnWidthDialog={() => setColumnWidthDialog({ columns: columnDimensions.selectedColumns(), defaultMode: true })}
+            onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
+            onOpenDefaultColumnWidthDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns: columnDimensions.selectedColumns(), defaultMode: true } })}
           />
         )}
-        saveState={state.saveState}
         sheetTabs={(
           <SheetTabs
             activeSheetId={state.activeSheetId}
@@ -169,6 +127,10 @@ export function EditorShell({
             onHideSheet={session.hideSheet.bind(session)}
             onSetTabColor={session.setSheetTabColor.bind(session)}
             onMoveSheet={session.moveSheet.bind(session)}
+            dialog={state.dialogs.sheet}
+            onOpenDialog={(sheetDialog) => dispatchSessionIntent({ type: "dialog.open", dialog: sheetDialog.kind === "rename" ? "sheet-rename" : sheetDialog.kind === "tab-color" ? "sheet-tab-color" : "sheet-delete", sheet: sheetDialog })}
+            onUpdateDialog={(value) => dispatchSessionIntent({ type: "dialog.update", value })}
+            onCloseDialog={session.closeActiveDialog.bind(session)}
             sheets={state.sheets}
           />
         )}
@@ -188,7 +150,6 @@ export function EditorShell({
             hasPendingOperations={state.hasPendingOperations}
           />
         )}
-        title={state.workbookName}
         workspacePhase={state.phase}
       >
         <Inline gap="none" className="h-full min-h-0 w-full flex-nowrap">
@@ -199,8 +160,8 @@ export function EditorShell({
                 sheetId={state.activeSheetId}
                 selection={state.selection}
                 activeCell={state.activeCell}
-                formulaDraft={state.formulaDraft}
-                editingCell={state.editingCell}
+                formulaDraft={state.editSession?.draftText ?? state.formulaDraft}
+                editingCell={state.editSession?.cell ?? null}
                 phase={state.phase}
                 zoom={state.zoom}
                 peers={state.peers}
@@ -211,7 +172,7 @@ export function EditorShell({
                   if (pivotId) {
                     session.setActivePivotContext(pivotId, state.activeSheetId);
                     controller.setActivePivotId(pivotId);
-                    onSidebarOpenChange(true);
+                    session.setPanelOpen(true);
                     dispatchSessionIntent({ type: "panel.open", panel: "pivot" });
                   } else session.setActivePivotContext(null);
                 }}
@@ -245,7 +206,7 @@ export function EditorShell({
                 onSelectAll={session.selectAll.bind(session)}
                 onResizeRow={session.resizeRow.bind(session)}
                 columnDimensions={columnDimensions}
-                onOpenColumnWidthDialog={(columns) => setColumnWidthDialog({ columns, defaultMode: false })}
+                onOpenColumnWidthDialog={(columns) => dispatchSessionIntent({ type: "dialog.open", dialog: "column-width", columnWidth: { columns, defaultMode: false } })}
                 onFillRange={session.fillRange.bind(session)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
@@ -265,6 +226,7 @@ export function EditorShell({
                 canRepeat={session.canRepeatLastCommand()}
                 onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
                 onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
+                onSortFilterColumn={(column, ascending) => session.sortFilterColumn(column, ascending)}
                 onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}
                 getValidationList={session.getValidationAt.bind(session)}
                 onRetry={session.retry.bind(session)}
@@ -276,8 +238,8 @@ export function EditorShell({
             state={state}
             session={session}
             locale={locale}
-            sidebarOpen={sidebarOpen}
-            onSidebarOpenChange={onSidebarOpenChange}
+            sidebarOpen={state.panels.open}
+            onSidebarOpenChange={session.setPanelOpen.bind(session)}
             selectedRange={controller.selectedRange}
             dispatchCommand={dispatchCommand}
             dispatchSessionIntent={dispatchSessionIntent}
@@ -285,7 +247,7 @@ export function EditorShell({
             title={locale === "zh-CN" ? zhCN.sidebar.title : enUS.sidebar.title}
           />
         </Inline>
-      </AppShell>
+      </DesignerShell>
       <EditorDialogHost
         state={state}
         session={session}
@@ -296,15 +258,16 @@ export function EditorShell({
         createPivotFromDialog={controller.createPivotFromDialog}
       />
       <ColumnWidthDialog
-        open={columnWidthDialog !== null}
-        columnCount={columnWidthDialog?.columns.length ?? 0}
-        defaultMode={columnWidthDialog?.defaultMode}
+        open={state.dialogs.active === 'column-width'}
+        columnCount={state.dialogs.columnWidth?.columns.length ?? 0}
+        defaultMode={state.dialogs.columnWidth?.defaultMode}
         maximumDigitWidthPx={state.selectedSheet.maximumDigitWidthPx}
-        initialWidthPx={columnWidthDialog?.defaultMode ? state.selectedSheet.defaultColumnWidthPx : state.selectedSheet.columnWidthsPx[columnWidthDialog?.columns[0] ?? -1] ?? state.selectedSheet.defaultColumnWidthPx}
-        onClose={() => setColumnWidthDialog(null)}
+        initialWidthPx={state.dialogs.columnWidth?.defaultMode ? state.selectedSheet.defaultColumnWidthPx : state.selectedSheet.columnWidthsPx[state.dialogs.columnWidth?.columns[0] ?? -1] ?? state.selectedSheet.defaultColumnWidthPx}
+        onClose={() => session.closeActiveDialog()}
         onApply={(excelWidth) => {
-          if (columnWidthDialog?.defaultMode) columnDimensions.setDefaultExcelWidth(excelWidth);
-          else columnDimensions.setExcelWidth(columnWidthDialog?.columns ?? [], excelWidth);
+          if (state.dialogs.columnWidth?.defaultMode) columnDimensions.setDefaultExcelWidth(excelWidth);
+          else columnDimensions.setExcelWidth(state.dialogs.columnWidth?.columns ?? [], excelWidth);
+          session.closeActiveDialog();
         }}
       />
     </>

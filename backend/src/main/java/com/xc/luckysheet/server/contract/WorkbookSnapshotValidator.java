@@ -68,6 +68,35 @@ public final class WorkbookSnapshotValidator {
                     || "split".equals(sheet.path("pane").path("kind").asText()))) {
                 throw ServiceException.validation("Workbook snapshot sheet pixel geometry is invalid");
             }
+            JsonNode pane = sheet.path("pane");
+            if (!"none".equals(pane.path("kind").asText())) {
+                String state = pane.path("state").asText();
+                if (("frozen".equals(pane.path("kind").asText()) && !("frozen".equals(state) || "frozenSplit".equals(state)))
+                        || ("split".equals(pane.path("kind").asText()) && !"split".equals(state))) {
+                    throw ServiceException.validation("Workbook snapshot pane state is invalid");
+                }
+            }
+            JsonNode autoFilter = sheet.get("autoFilter");
+            RangeRef worksheetFilterRange = autoFilter == null || autoFilter.isNull() ? null : validateAutoFilter(autoFilter, sheetId, null);
+            java.util.List<RangeRef> tableFilterRanges = new java.util.ArrayList<>();
+            JsonNode tables = sheet.get("sheetTables");
+            if (tables != null && !tables.isNull()) {
+                if (!tables.isArray()) throw ServiceException.validation("Workbook snapshot sheetTables is invalid");
+                for (JsonNode table : tables) {
+                    if (!table.isObject()) throw ServiceException.validation("Workbook snapshot table is invalid");
+                    JsonNode tableFilter = table.get("autoFilter");
+                    if (tableFilter == null || tableFilter.isNull()) continue;
+                    RangeRef tableRange = rangeOf(table.get("range"), sheetId);
+                    RangeRef filterRange = validateAutoFilter(tableFilter, sheetId, tableRange);
+                    if (worksheetFilterRange != null && overlaps(worksheetFilterRange, filterRange)) {
+                        throw ServiceException.validation("Worksheet and Table AutoFilter ranges cannot overlap");
+                    }
+                    if (tableFilterRanges.stream().anyMatch(existing -> overlaps(existing, filterRange))) {
+                        throw ServiceException.validation("Table AutoFilter ranges cannot overlap");
+                    }
+                    tableFilterRanges.add(filterRange);
+                }
+            }
         }
         return snapshot;
     }
@@ -77,6 +106,50 @@ public final class WorkbookSnapshotValidator {
         if (value == null || !value.isObject()) throw ServiceException.validation("Stored workbook snapshot must be an object");
         ObjectNode snapshot = ((ObjectNode) value).deepCopy();
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
+            return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 3 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
+                if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
+                ObjectNode sheet = (ObjectNode) raw;
+                JsonNode pane = sheet.get("pane");
+                if (pane != null && pane.isObject() && !"none".equals(pane.path("kind").asText())) {
+                    ObjectNode paneObject = (ObjectNode) pane;
+                    String kind = pane.path("kind").asText();
+                    if (!paneObject.has("state")) paneObject.put("state", "split".equals(kind) ? "split" : "frozen");
+                    if (!paneObject.has("startRow")) paneObject.put("startRow", pane.path("ySplit").asInt(0));
+                    if (!paneObject.has("startColumn")) paneObject.put("startColumn", pane.path("xSplit").asInt(0));
+                }
+                JsonNode legacy = sheet.get("filter");
+                if (legacy == null || !legacy.isObject()) continue;
+                ObjectNode autoFilter = snapshot.objectNode();
+                autoFilter.put("sheetId", legacy.path("sheetId").asText(sheet.path("id").asText()));
+                autoFilter.set("range", legacy.path("range").deepCopy());
+                ObjectNode columns = snapshot.objectNode();
+                legacy.path("criteria").fields().forEachRemaining(entry -> {
+                    int columnIndex = Integer.parseInt(entry.getKey());
+                    ObjectNode column = snapshot.objectNode().put("column", columnIndex).put("showButton", true).put("hiddenButton", false);
+                    JsonNode selected = entry.getValue().get("selectedValues");
+                    if (selected != null && selected.isArray()) {
+                        boolean includeBlank = false;
+                        for (JsonNode selectedValue : selected) includeBlank |= selectedValue.isNull() || selectedValue.asText().isEmpty();
+                        ObjectNode criterion = snapshot.objectNode().put("kind", "values").put("includeBlank", includeBlank);
+                        criterion.set("values", selected.deepCopy());
+                        column.set("criterion", criterion);
+                    } else if (entry.getValue().has("conditionOperator")) {
+                        ObjectNode criterion = snapshot.objectNode().put("kind", "custom").put("join", "and");
+                        ArrayNode conditions = snapshot.arrayNode();
+                        conditions.add(snapshot.objectNode().put("operator", entry.getValue().path("conditionOperator").asText()).set("value", entry.getValue().get("conditionValue")));
+                        criterion.set("conditions", conditions);
+                        column.set("criterion", criterion);
+                    }
+                    columns.set(entry.getKey(), column);
+                });
+                autoFilter.set("columns", columns);
+                sheet.set("autoFilter", autoFilter);
+                sheet.remove("filter");
+            }
             return requireCanonical(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) != 2 || !snapshot.path("sheets").isArray()) {
@@ -108,6 +181,63 @@ public final class WorkbookSnapshotValidator {
 
     private static double positiveOr(JsonNode value, double fallback) {
         return value != null && value.isNumber() && value.asDouble() > 0 ? value.asDouble() : fallback;
+    }
+
+    private static RangeRef validateAutoFilter(JsonNode filter, String sheetId, RangeRef expectedRange) {
+        if (!filter.isObject() || !sheetId.equals(filter.path("sheetId").asText())) {
+            throw ServiceException.validation("Workbook snapshot autoFilter is invalid");
+        }
+        RangeRef range = rangeOf(filter.get("range"), sheetId);
+        if (expectedRange != null && !sameRange(range, expectedRange)) {
+            throw ServiceException.validation("Table AutoFilter range must equal the Table range");
+        }
+        JsonNode columns = filter.get("columns");
+        if (columns == null || !columns.isObject()) throw ServiceException.validation("AutoFilter columns must be an object");
+        columns.fields().forEachRemaining(entry -> {
+            try {
+                int key = Integer.parseInt(entry.getKey());
+                JsonNode column = entry.getValue();
+                if (!column.isObject() || column.path("column").asInt(Integer.MIN_VALUE) != key
+                        || key < range.startColumn() || key > range.endColumn()
+                        || !column.path("showButton").isBoolean() || !column.path("hiddenButton").isBoolean()) {
+                    throw ServiceException.validation("AutoFilter column identity is invalid");
+                }
+                JsonNode criterion = column.get("criterion");
+                if (criterion != null && !criterion.isNull()
+                        && (!criterion.isObject() || !java.util.Set.of("values", "custom", "dynamic", "top10", "color", "icon").contains(criterion.path("kind").asText()))) {
+                    throw ServiceException.validation("AutoFilter criterion kind is invalid");
+                }
+            } catch (NumberFormatException error) {
+                throw ServiceException.validation("AutoFilter column key is invalid");
+            }
+        });
+        return range;
+    }
+
+    private static RangeRef rangeOf(JsonNode value, String sheetId) {
+        if (value == null || !value.isObject() || !sheetId.equals(value.path("sheetId").asText())) {
+            throw ServiceException.validation("AutoFilter range is invalid");
+        }
+        for (String coordinate : java.util.List.of("startRow", "endRow", "startColumn", "endColumn")) {
+            if (!value.has(coordinate) || !value.get(coordinate).isIntegralNumber()) {
+                throw ServiceException.validation("AutoFilter range coordinates are required");
+            }
+        }
+        try {
+            return new RangeRef(sheetId, value.path("startRow").asInt(), value.path("endRow").asInt(), value.path("startColumn").asInt(), value.path("endColumn").asInt());
+        } catch (IllegalArgumentException error) {
+            throw ServiceException.validation("AutoFilter range is invalid");
+        }
+    }
+
+    private static boolean sameRange(RangeRef left, RangeRef right) {
+        return left.sheetId().equals(right.sheetId()) && left.startRow() == right.startRow() && left.endRow() == right.endRow()
+                && left.startColumn() == right.startColumn() && left.endColumn() == right.endColumn();
+    }
+
+    private static boolean overlaps(RangeRef left, RangeRef right) {
+        return left.startRow() <= right.endRow() && right.startRow() <= left.endRow()
+                && left.startColumn() <= right.endColumn() && right.startColumn() <= left.endColumn();
     }
 
     private static ObjectNode copyObjectOrEmpty(JsonNode value) {

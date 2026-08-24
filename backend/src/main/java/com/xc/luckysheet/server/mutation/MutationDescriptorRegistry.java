@@ -36,7 +36,7 @@ public class MutationDescriptorRegistry {
             "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve",
             "dataRegion.add", "dataRegion.remove", "dataSource.add", "dataSource.remove", "dataSource.update",
             "drawing.add", "drawing.anchor", "drawing.payload.update", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.zorder", "drawing.zorder.restore",
-            "dv.add", "dv.remove", "filter.remove", "filter.set", "freeze.set",
+            "dv.add", "dv.remove", "autoFilter.remove", "autoFilter.set", "freeze.set",
             "hyperlink.remove", "hyperlink.set", "merge.remove", "merge.set",
             "name.remove", "name.set", "note.remove", "note.set", "note.visibility", "outline.set",
             "pivot.add", "pivot.chart.create", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
@@ -45,9 +45,9 @@ public class MutationDescriptorRegistry {
             "range.clear", "range.clear.restore", "range.paste", "range.set",
             "row.hidden", "row.resize", "row.unhidden", "rows.deleted", "rows.hidden.restore", "rows.inserted", "rows.permuted", "rows.unhidden.all",
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
-            "sheetTable.add", "sheetTable.remove", "sheetTable.update",
+            "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
-            "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore", "xlsx.layout.repaired"
+            "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
             Map.entry("automation.recording.changed", "Recorder state is transient session state and must not enter workbook history."),
@@ -57,7 +57,6 @@ public class MutationDescriptorRegistry {
             Map.entry("rows.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("rows.permuted", "Requires row permutation of formulas, objects, tables, validations and every structural participant."),
             Map.entry("query.load.workbook-table", "Workbook-table query result blocks have no persisted, frontend-readable canonical data plane."),
             Map.entry("pivot.chart.create", "PivotChart is persisted through one canonical drawing.add mutation; the UI command must never cross the workbook mutation boundary."),
             Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
@@ -80,7 +79,6 @@ public class MutationDescriptorRegistry {
         register(new PresentationDescriptor("column.resize"));
         register(new PresentationDescriptor("column.defaultWidth.resize"));
         register(new PresentationDescriptor("columns.visibility"));
-        register(new PresentationDescriptor("xlsx.layout.repaired"));
         register(new PresentationDescriptor("view.set"));
         register(new PresentationDescriptor("sheet.hidden"));
         register(new PresentationDescriptor("sheet.unhidden"));
@@ -422,7 +420,6 @@ public class MutationDescriptorRegistry {
                 case "row.resize" -> List.of(SnapshotMutationSupport.rowRange(root, mutation.sheetId(), params));
                 case "column.resize" -> List.of(SnapshotMutationSupport.columnRange(root, mutation.sheetId(), params));
                 case "columns.visibility" -> visibilityRanges(root, mutation.sheetId(), params);
-                case "xlsx.layout.repaired" -> layoutRepairRanges(root, params);
                 case "freeze.set", "view.set", "column.defaultWidth.resize", "sheet.hidden", "sheet.unhidden", "sheet.tabColor" -> List.of();
                 default -> throw ServiceException.validation("Unsupported presentation mutation: " + id());
             };
@@ -442,7 +439,6 @@ public class MutationDescriptorRegistry {
                 case "column.resize" -> resize(root, sheet, mutation.sheetId(), params, "columnWidthsPx", "column", "widthPx");
                 case "column.defaultWidth.resize" -> defaultColumnWidth(params, sheet);
                 case "columns.visibility" -> columnVisibility(root, sheet, mutation.sheetId(), params);
-                case "xlsx.layout.repaired" -> layoutRepair(root, params);
                 case "view.set" -> view(params, sheet);
                 case "sheet.hidden" -> sheet.put("hidden", true);
                 case "sheet.unhidden" -> sheet.put("hidden", false);
@@ -534,54 +530,6 @@ public class MutationDescriptorRegistry {
             JsonNode width = params.get("widthPx");
             if (width == null || !width.isNumber() || width.asDouble() <= 0 || !Double.isFinite(width.asDouble())) throw ServiceException.validation("widthPx must be a positive number");
             sheet.set("defaultColumnWidthPx", width.deepCopy());
-        }
-
-        private List<RangeRef> layoutRepairRanges(ObjectNode root, ObjectNode params) {
-            JsonNode repairs = params.get("sheets");
-            if (params.path("sourceChecksum").asText().isBlank() || repairs == null || !repairs.isArray() || repairs.isEmpty()) throw ServiceException.validation("xlsx.layout.repaired requires source checksum and sheets");
-            List<RangeRef> ranges = new ArrayList<>();
-            for (JsonNode repair : repairs) {
-                String sheetId = repair.path("sheetId").asText();
-                SnapshotMutationSupport.sheet(root, sheetId);
-                ranges.add(new RangeRef(sheetId, 0, SnapshotMutationSupport.MAX_ROW, 0, SnapshotMutationSupport.MAX_COLUMN));
-            }
-            return List.copyOf(ranges);
-        }
-
-        private void layoutRepair(ObjectNode root, ObjectNode params) {
-            for (JsonNode raw : params.path("sheets")) {
-                if (!raw.isObject()) throw ServiceException.validation("XLSX layout repair sheet is invalid");
-                ObjectNode repair = (ObjectNode) raw;
-                ObjectNode target = SnapshotMutationSupport.sheet(root, repair.path("sheetId").asText());
-                for (String field : List.of("defaultRowHeightPx", "defaultColumnWidthPx")) {
-                    JsonNode value = repair.get(field);
-                    if (value == null || !value.isNumber() || value.asDouble() <= 0 || !Double.isFinite(value.asDouble())) throw ServiceException.validation(field + " is invalid");
-                    target.set(field, value.deepCopy());
-                }
-                for (String field : List.of("rowHeightsPx", "columnWidthsPx")) {
-                    JsonNode value = repair.get(field);
-                    if (value == null || !value.isObject()) throw ServiceException.validation(field + " is invalid");
-                    target.set(field, value.deepCopy());
-                }
-                JsonNode pane = repair.get("pane");
-                if (pane == null || !pane.isObject()) throw ServiceException.validation("pane is invalid");
-                target.set("pane", pane.deepCopy());
-                JsonNode fonts = repair.get("fontSizesPx");
-                if (fonts == null || !fonts.isArray()) throw ServiceException.validation("fontSizesPx is invalid");
-                for (JsonNode font : fonts) {
-                    int row = font.path("row").asInt(-1);
-                    int column = font.path("column").asInt(-1);
-                    if (row < 0 || column < 0) throw ServiceException.validation("Font repair coordinate is invalid");
-                    ObjectNode cell = SnapshotMutationSupport.cell(target, new SnapshotMutationSupport.CellCoordinate(row, column), false);
-                    if (cell == null) continue;
-                    ObjectNode style = cell.path("style").isObject() ? (ObjectNode) cell.path("style") : cell.putObject("style");
-                    JsonNode value = font.get("fontSizePx");
-                    if (value == null || value.isNull()) style.remove("fontSizePx");
-                    else if (!value.isNumber() || value.asDouble() <= 0) throw ServiceException.validation("fontSizePx is invalid");
-                    else style.set("fontSizePx", value.deepCopy());
-                    if (style.isEmpty()) cell.remove("style");
-                }
-            }
         }
 
         private void resize(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection, String coordinateName, String valueName) {

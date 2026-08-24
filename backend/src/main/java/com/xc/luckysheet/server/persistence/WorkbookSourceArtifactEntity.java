@@ -34,8 +34,8 @@ public class WorkbookSourceArtifactEntity {
     private byte[] content;
 
     @JdbcTypeCode(SqlTypes.LONGVARCHAR)
-    @Column(name = "detected_features_json", nullable = false)
-    private String detectedFeaturesJson;
+    @Column(name = "native_metadata_json", nullable = false)
+    private String nativeMetadataJson;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -46,14 +46,14 @@ public class WorkbookSourceArtifactEntity {
     protected WorkbookSourceArtifactEntity() {}
 
     public WorkbookSourceArtifactEntity(String unitId, String fileName, String mimeType, String checksum, long byteLength,
-                                        byte[] content, String detectedFeaturesJson, Instant createdAt, Instant updatedAt) {
+                                        byte[] content, String nativeMetadataJson, Instant createdAt, Instant updatedAt) {
         this.unitId = unitId;
         this.fileName = fileName;
         this.mimeType = mimeType;
         this.checksum = checksum;
         this.byteLength = byteLength;
         this.content = content;
-        this.detectedFeaturesJson = detectedFeaturesJson == null ? "[]" : detectedFeaturesJson;
+        this.nativeMetadataJson = nativeMetadataJson == null ? "{}" : nativeMetadataJson;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
@@ -64,22 +64,26 @@ public class WorkbookSourceArtifactEntity {
     public String getChecksum() { return checksum; }
     public long getByteLength() { return byteLength; }
     public byte[] getContent() { return content; }
-    public String getDetectedFeaturesJson() { return detectedFeaturesJson; }
-    public int getXlsxCodecVersion() {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"xlsxCodecVersion\\\"\\s*:\\s*(\\d+)").matcher(detectedFeaturesJson);
+    public String getNativeMetadataJson() { return nativeMetadataJson; }
+    public String getFormat() {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"format\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"").matcher(nativeMetadataJson);
+        return matcher.find() ? matcher.group(1) : "xlsx";
+    }
+    public int getCodecRevision() {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"codecRevision\\\"\\s*:\\s*(\\d+)").matcher(nativeMetadataJson);
         return matcher.find() ? Integer.parseInt(matcher.group(1)) : 1;
     }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 
     public void update(String fileName, String mimeType, String checksum, long byteLength, byte[] content,
-                       String detectedFeaturesJson, Instant updatedAt) {
+                       String nativeMetadataJson, Instant updatedAt) {
         this.fileName = fileName;
         this.mimeType = mimeType;
         this.checksum = checksum;
         this.byteLength = byteLength;
         this.content = content;
-        this.detectedFeaturesJson = detectedFeaturesJson == null ? "[]" : detectedFeaturesJson;
+        this.nativeMetadataJson = nativeMetadataJson == null ? "{}" : nativeMetadataJson;
         this.updatedAt = updatedAt;
     }
 }

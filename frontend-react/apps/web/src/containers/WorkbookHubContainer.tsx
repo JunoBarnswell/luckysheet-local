@@ -10,6 +10,7 @@ import {
   type WorkbookCatalogItem,
   type WorkbookCategoryTab,
   type WorkbookHubSection,
+  type WorkbookOpenOptions,
   type WorkbookTemplateKind,
 } from '../workbooks';
 import { useApplicationServices } from '../ApplicationServicesProvider';
@@ -31,7 +32,7 @@ interface FolderLocation {
 }
 
 interface WorkbookHubContainerProps {
-  onOpenWorkbook: (unitId: string) => void;
+  onOpenWorkbook: (unitId: string, options?: WorkbookOpenOptions) => void;
 }
 
 function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
@@ -91,7 +92,7 @@ function folderLocations(folders: readonly WorkspaceFolder[], spaces: readonly W
 function templateIdFromUi(kind: WorkbookTemplateKind): WorkbookTemplateId | null {
   if (kind === 'import') return null;
   if (kind === 'project') return 'project-plan';
-  if (kind === 'budget' || kind === 'pivot' || kind === 'blank' || kind === 'template') return kind;
+  if (kind === 'budget' || kind === 'pivot' || kind === 'blank' || kind === 'template' || kind === 'designer-demo') return kind;
   return null;
 }
 
@@ -268,7 +269,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
         metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
         source: 'native',
       });
-      onOpenWorkbook(entry.unitId);
+      onOpenWorkbook(entry.unitId, pendingTemplate === 'designer-demo' ? { initialCell: 'B1' } : undefined);
     });
   }, [catalog, execute, onOpenWorkbook, pendingTemplate, requireCloudSignIn]);
 
@@ -276,7 +277,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     void execute(async () => {
       const targetLocation = destinationFromLocation(value.locationId);
       if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
-      const result = await catalog.importXlsx({
+      const result = await catalog.importWorkbook({
         fileName: value.file.name,
         buffer: await value.file.arrayBuffer(),
         destination: targetLocation.destination,
@@ -297,7 +298,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
 
   const exportWorkbook = useCallback((unitId: string) => {
     void execute(async () => {
-      const exported = await catalog.exportXlsx(unitId);
+      const exported = await catalog.exportWorkbook(unitId);
       downloadXlsx(exported.buffer, exported.fileName);
     });
   }, [catalog, execute]);

@@ -1,9 +1,9 @@
-import type { RangeRef, SheetTableModel } from '@react-sheets/core-model';
+import type { AutoFilterModel, RangeRef, SheetTableModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
-  findSheetTableForFilter,
   planTotalRowToggle,
   snapshotTotalRowCells,
+  validateFilterOwnership,
   validateSheetTableModel,
 } from './sheet-table-features';
 
@@ -39,6 +39,19 @@ function tableRange(value: SheetTableModel): RangeRef[] {
   return [structuredClone(value.range)];
 }
 
+interface TableAutoFilterParams {
+  sheetId: string;
+  tableId: string;
+  autoFilter?: AutoFilterModel;
+}
+
+function isTableAutoFilter(value: unknown): value is TableAutoFilterParams {
+  return isRecord(value)
+    && typeof value.sheetId === 'string'
+    && typeof value.tableId === 'string'
+    && (value.autoFilter === undefined || (isRecord(value.autoFilter) && isRange(value.autoFilter.range) && isRecord(value.autoFilter.columns)));
+}
+
 function removedTableRange(value: { range: RangeRef }): RangeRef[] {
   return [structuredClone(value.range)];
 }
@@ -46,7 +59,7 @@ function removedTableRange(value: { range: RangeRef }): RangeRef[] {
 export interface AddSheetTableParams extends SheetTableModel {}
 
 export function registerSheetTableCommands(runtime: CommandRuntime): void {
-  runtime.registry.registerMutation({
+  runtime.registry.registerMutation<AddSheetTableParams>({
     id: 'sheetTable.add',
     handler: (item, context) => {
       if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.add mutation payload');
@@ -58,6 +71,24 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
       inverseIds: ['sheetTable.remove'],
+    },
+  });
+  runtime.registry.registerMutation<TableAutoFilterParams>({
+    id: 'sheetTable.autoFilter.set',
+    handler: (item, context) => {
+      if (!isTableAutoFilter(item.params)) throw new Error('Invalid sheetTable.autoFilter.set mutation payload');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const table = sheet.sheetTables.find((entry) => entry.id === item.params.tableId);
+      if (!table) throw new Error(`Sheet Table not found: ${item.params.tableId}`);
+      table.autoFilter = item.params.autoFilter
+        ? validateFilterOwnership(sheet, item.params.autoFilter, { kind: 'table', tableId: table.id })
+        : undefined;
+    },
+    metadata: {
+      schema: { name: 'SheetTableAutoFilterSet', validate: isTableAutoFilter },
+      permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => params.autoFilter ? [structuredClone(params.autoFilter.range)] : [], mode: 'declared' },
+      inverseIds: ['sheetTable.autoFilter.set'],
     },
   });
   runtime.registry.registerMutation({
@@ -115,6 +146,39 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         inverse: [{ id: 'sheetTable.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, tableId: params.id, range: params.range }, affectedRanges }],
         apply: () => {
           context.workbook.getSheet(params.sheetId).sheetTables.push(structuredClone(table));
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<TableAutoFilterParams>({
+    id: 'sheetTable.autoFilter.set',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const table = sheet.sheetTables.find((entry) => entry.id === params.tableId);
+      if (!table) throw new Error(`Sheet Table not found: ${params.tableId}`);
+      const previous = table.autoFilter ? structuredClone(table.autoFilter) : undefined;
+      const next = params.autoFilter
+        ? validateFilterOwnership(sheet, params.autoFilter, { kind: 'table', tableId: table.id })
+        : undefined;
+      const affectedRanges = [structuredClone(table.range)];
+      const mutationParams = { ...params, autoFilter: next };
+      context.applyMutation({
+        id: 'sheetTable.autoFilter.set',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: mutationParams,
+        affectedRanges,
+        inverse: [{
+          id: 'sheetTable.autoFilter.set',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, tableId: params.tableId, autoFilter: previous },
+          affectedRanges,
+        }],
+        apply: () => {
+          table.autoFilter = next ? structuredClone(next) : undefined;
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -191,8 +255,8 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         endColumn: plan.endColumn,
       };
       const affectedRanges: RangeRef[] = [structuredClone(previousTable.range), cellRange];
-      const previousFilter = sheet.filter ? structuredClone(sheet.filter) : undefined;
-      const linkedTable = findSheetTableForFilter(sheet);
+      const linkedTable = sheet.sheetTables.find((table) => table.id === previousTable.id && table.autoFilter);
+      const previousFilter = linkedTable?.autoFilter ? structuredClone(linkedTable.autoFilter) : sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined;
       let mutationCount = 0;
 
       // A total row is a real worksheet row. Insert/delete it through the
@@ -274,23 +338,44 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
           ...previousFilter,
           range: structuredClone(plan.nextTable.range),
         };
-        context.applyMutation({
-          id: 'filter.set',
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, filter: nextFilter },
-          affectedRanges: [structuredClone(plan.nextTable.range)],
-          inverse: [{
-            id: 'filter.set',
+        if (linkedTable) {
+          context.applyMutation({
+            id: 'sheetTable.autoFilter.set',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, filter: previousFilter },
-            affectedRanges: [structuredClone(previousFilter.range)],
-          }],
-          apply: () => {
-            sheet.filter = structuredClone(nextFilter);
-          },
-        });
+            params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: nextFilter },
+            affectedRanges: [structuredClone(plan.nextTable.range)],
+            inverse: [{
+              id: 'sheetTable.autoFilter.set',
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: previousFilter },
+              affectedRanges: [structuredClone(previousFilter.range)],
+            }],
+            apply: () => {
+              const replacement = sheet.sheetTables.find((candidate) => candidate.id === linkedTable.id);
+              if (replacement) replacement.autoFilter = structuredClone(nextFilter);
+            },
+          });
+        } else {
+          context.applyMutation({
+            id: 'autoFilter.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, autoFilter: nextFilter },
+            affectedRanges: [structuredClone(plan.nextTable.range)],
+            inverse: [{
+              id: 'autoFilter.set',
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, autoFilter: previousFilter },
+              affectedRanges: [structuredClone(previousFilter.range)],
+            }],
+            apply: () => {
+              sheet.autoFilter = structuredClone(nextFilter);
+            },
+          });
+        }
         mutationCount += 1;
       }
 

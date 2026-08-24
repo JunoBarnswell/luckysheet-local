@@ -2,6 +2,18 @@ import type { ReactNode } from 'react';
 
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';
 
+export const DESIGNER_GEOMETRY = {
+  viewportWidth: 1280,
+  viewportHeight: 720,
+  ribbonHeight: 142,
+  formulaBarHeight: 37,
+  workspaceHeight: 519,
+  sheetTabsHeight: 29,
+  statusBarHeight: 22,
+  ribbonTabHeight: 36,
+  ribbonContentHeight: 106,
+} as const;
+
 export interface PeerCursor {
   actorId: string;
   name: string;
@@ -17,6 +29,7 @@ export type RibbonTabId =
   | 'data'
   | 'review'
   | 'view'
+  | 'settings'
   | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign';
@@ -30,6 +43,7 @@ export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'data',
   'review',
   'view',
+  'settings',
   'automate',
 ] as const;
 
@@ -40,33 +54,13 @@ export interface RibbonLayoutState {
   width: number;
 }
 
-export interface AppShellProps {
+export interface DesignerShellProps {
   children: ReactNode;
   formulaBar: ReactNode;
   isBusy: boolean;
-  notice: string;
-  onSearch?: (query: string) => void;
-  onShare: () => void;
-  peers: readonly PeerCursor[];
-  workbookMenu?: ReactNode;
   ribbon: ReactNode;
-  saveState: SaveState;
   sheetTabs: ReactNode;
   statusBar: ReactNode;
-  title: string;
+  floatingOverlay?: ReactNode;
   workspacePhase: string;
-  /** Localized shell strings */
-  labels: {
-    workspaceLabel: string;
-    planningWorkbook: string;
-    personal: string;
-    searchWorkbook: string;
-    share: string;
-    language: string;
-    english: string;
-    simplifiedChinese: string;
-    saveState: string;
-  };
-  localeMenuLabel: string;
-  onLocaleChange: (locale: 'zh-CN' | 'en-US') => void;
 }

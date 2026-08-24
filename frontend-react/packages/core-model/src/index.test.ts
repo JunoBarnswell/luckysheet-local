@@ -66,7 +66,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 3 },
     anchor: { row: 0, column: 0 },
   });
-  sheet.pane = { kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1 };
+  sheet.pane = { kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' };
   sheet.rowHeightsPx[0] = 40;
   sheet.columnWidthsPx[0] = 160;
   sheet.hiddenRows.add(5);

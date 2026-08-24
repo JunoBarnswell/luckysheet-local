@@ -5,8 +5,9 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import {
   computeConditionalOverlays,
   computeFilterHiddenRows,
+  getAutoFilterValueDomain,
   registerSheetCommands,
-  normalizeFilterModel,
+  normalizeAutoFilterModel,
   normalizeDataValidationRule,
   validationList,
   validateDataInput,
@@ -108,16 +109,79 @@ test('Filter supports compound text/blank/date conditions and rejects out-of-ran
   sheet.cells.set(1, 0, { value: 'Alpha' });
   sheet.cells.set(2, 0, { value: '' });
   sheet.cells.set(3, 0, { value: 'Beta' });
-  sheet.filter = normalizeFilterModel({
+  sheet.autoFilter = normalizeAutoFilterModel({
     sheetId: sheet.id,
     range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
-    criteria: { 0: { column: 0, conditionOperator: 'contains', conditionValue: 'a' } },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'contains', value: 'a' }] } } },
   });
   assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [2]);
-  assert.throws(() => normalizeFilterModel({
-    ...sheet.filter!,
-    criteria: { 1: { column: 1, conditionOperator: 'equals', conditionValue: 'x' } },
+  assert.throws(() => normalizeAutoFilterModel({
+    ...sheet.autoFilter!,
+    columns: { 1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'equals', value: 'x' }] } } },
   }), /outside/);
+});
+
+test('AutoFilter value domain is complete and ignores the current column criterion', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (let row = 0; row <= 250; row += 1) {
+    sheet.cells.set(row, 0, { value: row === 0 ? 'Name' : `Value-${row}` });
+    sheet.cells.set(row, 1, { value: row === 0 ? 'Group' : row % 2 === 0 ? 'keep' : 'drop' });
+  }
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 250, startColumn: 0, endColumn: 1 },
+    columns: {
+      0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['Value-2'], includeBlank: false } },
+      1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['keep'], includeBlank: false } },
+    },
+  });
+  const domain = getAutoFilterValueDomain(sheet, 0);
+  assert.equal(domain.length, 125);
+  assert.equal(domain.includes('Value-2'), true);
+  assert.equal(domain.includes('Value-3'), false);
+});
+
+test('AutoFilter evaluates Top10 and dynamic date criteria against canonical rows', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Amount' });
+  [10, 5, 20, 1].forEach((value, index) => sheet.cells.set(index + 1, 0, { value }));
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'top10', top: true, percent: false, rank: 2 } } },
+  });
+  assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [2, 4]);
+
+  const today = new Date();
+  const isoToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  sheet.cells.set(0, 0, { value: 'Date' });
+  sheet.cells.set(1, 0, { value: isoToday });
+  sheet.cells.set(2, 0, { value: '2000-01-01' });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'dynamic', type: 'today' } } },
+  });
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], [2]);
+});
+
+test('AutoFilter color and icon criteria use native cell metadata or imported differential style', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Status' });
+  sheet.cells.set(1, 0, { value: 'red', style: { background: '#ff0000' } });
+  sheet.cells.set(2, 0, { value: 'blue', style: { background: '#0000ff' } });
+  sheet.cells.set(3, 0, { value: 'icon', filterMetadata: { icon: { iconSet: '3TrafficLights1', iconId: 2 } } });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#ff0000' } } } },
+  });
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], [2, 3]);
+  sheet.autoFilter.columns[0]!.criterion = { kind: 'icon', iconSet: '3TrafficLights1', iconId: 2 };
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], [1, 2]);
 });
 
 test('Validation supports custom AST, formula-backed list, time/date, multi-select and non-blocking alerts', () => {

@@ -121,8 +121,8 @@ export function applyRowPermutation(sheet: WorksheetModel, permutation: RowPermu
         ? remapRangeRows(ruleRange, rowMap)
         : ruleRange);
   }
-  if (sheet.filter && rowInRange(range, sheet.filter.range.startRow) && rowInRange(range, sheet.filter.range.endRow)) {
-    sheet.filter.range = remapRangeRows(sheet.filter.range, rowMap);
+  if (sheet.autoFilter && rowInRange(range, sheet.autoFilter.range.startRow) && rowInRange(range, sheet.autoFilter.range.endRow)) {
+    sheet.autoFilter.range = remapRangeRows(sheet.autoFilter.range, rowMap);
   }
   for (const table of sheet.sheetTables) {
     if (rowInRange(range, table.range.startRow) && rowInRange(range, table.range.endRow)) {

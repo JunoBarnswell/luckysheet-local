@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Box, Button, Inline, Panel, PanelBody, PanelHeader, PanelTitle, Stack, StatePanel, Text } from '@react-sheets/ui-system';
+import { Box, Button, Dialog, Inline, Panel, PanelBody, PanelHeader, PanelTitle, Stack, StatePanel, Text } from '@react-sheets/ui-system';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { TableRowsResponse } from '@react-sheets/spreadsheet-app';
 
@@ -13,6 +13,7 @@ export function DataModelPanel({ onReadRows, onRemove, tables }: DataModelPanelP
   const [preview, setPreview] = useState<Record<string, TableRowsResponse>>({});
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deleteTableId, setDeleteTableId] = useState<string | null>(null);
 
   if (tables.length === 0) {
     return <StatePanel kind="empty" title="No data tables" description="Select a range and choose Data → Create Data Table to build a paged data source." />;
@@ -46,7 +47,7 @@ export function DataModelPanel({ onReadRows, onRemove, tables }: DataModelPanelP
                     return { ...current, [table.id]: { ...response, rows: [...(previous?.rows ?? []), ...response.rows] } };
                   })).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table query failed')).finally(() => setLoading(null));
                 }}>Load more</Button> : null}
-                <Button size="xs" variant="danger" icon="trash" onClick={() => { if (window.confirm(`Delete data table ${table.name}?`)) void onRemove(table.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table deletion failed')); }}>Delete</Button>
+                <Button size="xs" variant="danger" icon="trash" onClick={() => setDeleteTableId(table.id)}>Delete</Button>
                 </Inline>
               </Inline>
             </PanelHeader>
@@ -68,6 +69,16 @@ export function DataModelPanel({ onReadRows, onRemove, tables }: DataModelPanelP
           </Panel>
         );
       })}
+      <Dialog open={deleteTableId !== null} title="Delete data table" onClose={() => setDeleteTableId(null)} maxWidth="sm">
+        <Text size="sm">Delete {tables.find((table) => table.id === deleteTableId)?.name ?? 'this data table'}? The operation can be undone.</Text>
+        <Inline gap="sm" className="mt-4 justify-end">
+          <Button size="sm" variant="ghost" onClick={() => setDeleteTableId(null)}>Cancel</Button>
+          <Button size="sm" variant="danger" onClick={() => {
+            if (!deleteTableId) return;
+            void onRemove(deleteTableId).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Data table deletion failed')).finally(() => setDeleteTableId(null));
+          }}>Delete</Button>
+        </Inline>
+      </Dialog>
     </Stack>
   );
 }

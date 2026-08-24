@@ -6,6 +6,7 @@ import {
   SheetSkeleton,
   Viewport,
   calculateRenderPlan,
+  computePaneMap,
   calculateScrollDelta,
   createEmptyChromeState,
   defaultHeaderOffset,
@@ -244,6 +245,15 @@ test('SheetSkeleton virtualizes very large uniform dimensions without dense arra
   assert.equal(largeSkeleton.getVisibleRowModels().length, 0);
 });
 
+test('hidden rows collapse layout geometry without losing model row identity', () => {
+  const hiddenSkeleton = new SheetSkeleton({ rowCount: 6, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50, hiddenRows: new Set([2, 4]) });
+  assert.equal(hiddenSkeleton.getRowHeight(2), 0);
+  assert.equal(hiddenSkeleton.getRowTop(3), 40);
+  assert.equal(hiddenSkeleton.getCellRect(2, 0), null);
+  assert.deepEqual(hiddenSkeleton.getCellAtPoint({ x: 25, y: 41 }), { row: 3, column: 0 });
+  assert.equal(hiddenSkeleton.totalHeight, 80);
+});
+
 function recordingContext() {
   const textCalls: Array<{ text: string; x: number; y: number }> = [];
   const lineCalls: Array<{ from: [number, number]; to: [number, number] }> = [];
@@ -287,9 +297,9 @@ function recordingContext() {
 function mainPane(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): RenderPane {
   return {
     id: 'main',
-    rect: { x: 46, y: 24, width: 260, height: 180 },
-    offset: { x: 0, y: 0 },
-    range,
+    screenRect: { x: 39, y: 20, width: 260, height: 180 },
+    contentOrigin: { x: 0, y: 0 },
+    visibleRange: range,
   };
 }
 
@@ -372,23 +382,63 @@ test('pane translation preserves model coordinates for C9', () => {
   });
   engine.render();
   const cell = renderSkeleton.getCellRect(8, 2)!;
-  assert.deepEqual(engine.cellAtLocalPoint({ x: 46 + cell.x + cell.width / 2, y: 24 + cell.y + cell.height / 2 }), { row: 8, column: 2 });
+  assert.deepEqual(engine.cellAtLocalPoint({ x: 39 + cell.x + cell.width / 2, y: 20 + cell.y + cell.height / 2 }), { row: 8, column: 2 });
   engine.dispose();
 });
 
-test('contentToMainScreen selects the cell pane for frozen rows and columns', () => {
+test('contentToScreen selects the cell pane for frozen rows and columns', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
   });
-  engine.setFreeze({ xSplit: 1, ySplit: 1 });
+  engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' });
   engine.render();
   const topLeft = renderSkeleton.getCellRect(0, 0)!;
   const main = renderSkeleton.getCellRect(4, 2)!;
-  assert.deepEqual(engine.contentToMainScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
-  assert.deepEqual(engine.contentToMainScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 196, y: 124 });
+  assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 39, y: 20 });
+  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 139, y: 100 });
   engine.dispose();
+});
+
+test('saved frozen top-left cell seeds initial scroll without blocking earlier rows', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 200, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const engine = new CanvasRenderEngine({ skeleton: renderSkeleton, viewport: { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 } });
+  engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 100, startColumn: 1, state: 'frozen' });
+  assert.equal(engine.viewport.getSnapshot().scrollY, renderSkeleton.getRowTop(100));
+  engine.scrollTo(0, 0);
+  assert.equal(engine.viewport.getSnapshot().scrollY, 0);
+  engine.render();
+  assert.equal(engine.lastRenderPlan?.paneMap.paneForCell({ row: 1, column: 1 })?.id, 'main');
+  engine.dispose();
+});
+
+test('split pane point geometry is independent of display DPR', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 50, columnCount: 20, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const pane = { kind: 'split' as const, xSplit: 1440, ySplit: 720, startRow: 0, startColumn: 0, state: 'split' as const };
+  const one = computePaneMap(renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, pane, defaultHeaderOffset());
+  const two = computePaneMap(renderSkeleton, { width: 800, height: 500, scrollX: 0, scrollY: 0, devicePixelRatio: 2 }, pane, defaultHeaderOffset());
+  assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.x, two.panes.find((entry) => entry.id === 'main')?.screenRect.x);
+  assert.equal(one.panes.find((entry) => entry.id === 'main')?.screenRect.y, two.panes.find((entry) => entry.id === 'main')?.screenRect.y);
+});
+
+test('frozen 2x2 pane map clamps the main origin and keeps four ranges disjoint', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const map = computePaneMap(renderSkeleton, { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, {
+    kind: 'frozen', xSplit: 2, ySplit: 2, startRow: 0, startColumn: 0, state: 'frozen',
+  }, defaultHeaderOffset());
+  const byId = new Map(map.panes.map((pane) => [pane.id, pane]));
+  assert.deepEqual(byId.get('topLeft')?.visibleRange, { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 });
+  assert.equal(byId.get('topRight')?.visibleRange?.startRow, 0);
+  assert.equal(byId.get('topRight')?.visibleRange?.startColumn, 2);
+  assert.equal(byId.get('bottomLeft')?.visibleRange?.startRow, 2);
+  assert.equal(byId.get('bottomLeft')?.visibleRange?.startColumn, 0);
+  assert.equal(byId.get('main')?.visibleRange?.startRow, 2);
+  assert.equal(byId.get('main')?.visibleRange?.startColumn, 2);
+  assert.equal(map.paneForCell({ row: 0, column: 0 })?.id, 'topLeft');
+  assert.equal(map.paneForCell({ row: 0, column: 2 })?.id, 'topRight');
+  assert.equal(map.paneForCell({ row: 2, column: 0 })?.id, 'bottomLeft');
+  assert.equal(map.paneForCell({ row: 2, column: 2 })?.id, 'main');
 });
 
 test('selection header projection highlights ordinary rectangles and explicit skeleton bounds', () => {
@@ -411,10 +461,10 @@ test('content range screen geometry splits overlays across frozen panes', () => 
     skeleton: renderSkeleton,
     viewport: { width: 300, height: 220, scrollX: 30, scrollY: 20, devicePixelRatio: 1 },
   });
-  engine.setFreeze({ xSplit: 1, ySplit: 1 });
+  engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' });
   engine.render();
   const rects = engine.contentRangeToScreenRects({ startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 });
-  assert.ok(rects.some((rect) => rect.x === 46 && rect.y === 24));
+  assert.ok(rects.some((rect) => rect.x === 39 && rect.y === 20));
   assert.ok(rects.length >= 2);
   engine.dispose();
 });

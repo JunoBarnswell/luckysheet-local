@@ -207,10 +207,12 @@ export class SheetSkeleton {
   }
 
   getRowHeight(row: number): number {
+    if (this.isRowHidden(row)) return 0;
     return this.virtualRows ? this.getVirtualRowHeight(row) : this.rowHeightsByModel[row] ?? 0;
   }
 
   getColumnWidth(column: number): number {
+    if (this.isColumnHidden(column)) return 0;
     return this.virtualColumns ? this.getVirtualColumnWidth(column) : this.columnWidthsByModel[column] ?? 0;
   }
 

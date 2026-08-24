@@ -327,25 +327,25 @@ final class StructuralSnapshotReducer {
     }
 
     private static void shiftFilter(ObjectNode root, ObjectNode owner, String targetSheetId, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        JsonNode filterRaw = owner.get("filter");
+        JsonNode filterRaw = owner.get("autoFilter");
         if (filterRaw == null || filterRaw.isNull()) return;
         ObjectNode filter = requireObject(filterRaw, "Filter");
         if (!shiftRange(root, filter.get("range"), targetSheetId, axis, at, count, direction)) {
-            owner.remove("filter");
+            owner.remove("autoFilter");
             return;
         }
         if (axis != FormulaReferenceTransformer.Axis.COLUMN || !targetSheetId.equals(owner.path("id").asText())) return;
-        ObjectNode criteria = SnapshotMutationSupport.requiredObject(filter, "criteria");
+        ObjectNode criteria = SnapshotMutationSupport.requiredObject(filter, "columns");
         ObjectNode next = JsonNodeFactory.instance.objectNode();
         criteria.fields().forEachRemaining(entry -> {
             int column = integerKey(entry.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Filter criteria column");
             int shifted = shiftIndex(column, at, count, direction);
             if (shifted < 0) return;
-            ObjectNode condition = requireObject(entry.getValue(), "Filter condition").deepCopy();
+            ObjectNode condition = requireObject(entry.getValue(), "AutoFilter column").deepCopy();
             condition.put("column", shifted);
             next.set(Integer.toString(shifted), condition);
         });
-        filter.set("criteria", next);
+        filter.set("columns", next);
     }
 
     private static void shiftFreeze(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
@@ -646,7 +646,7 @@ final class StructuralSnapshotReducer {
                 for (JsonNode range : requireObject(rule, "Range rule").path("ranges")) moveContainedRange(range, selection, rowDelta, columnDelta);
             }
         }
-        JsonNode filter = sheet.get("filter");
+        JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) moveContainedRange(filter.get("range"), selection, rowDelta, columnDelta);
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) moveContainedRange(requireObject(table, "Sheet table").get("range"), selection, rowDelta, columnDelta);
         for (JsonNode table : SnapshotMutationSupport.array(root, "tables")) {
@@ -874,7 +874,7 @@ final class StructuralSnapshotReducer {
         for (String property : List.of("conditionalFormats", "dataValidations")) {
             for (JsonNode rule : SnapshotMutationSupport.array(sheet, property)) for (JsonNode ruleRange : requireObject(rule, "Range rule").path("ranges")) remapRangeRows(ruleRange, range, rowMap);
         }
-        JsonNode filter = sheet.get("filter");
+        JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) remapRangeRows(filter.get("range"), range, rowMap);
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) remapRangeRows(requireObject(table, "Sheet table").get("range"), range, rowMap);
         for (JsonNode rawPivot : SnapshotMutationSupport.array(sheet, "pivots")) {

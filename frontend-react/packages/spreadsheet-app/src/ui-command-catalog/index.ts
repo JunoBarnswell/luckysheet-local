@@ -10,6 +10,7 @@ export type RibbonCatalogTabId =
   | 'data'
   | 'review'
   | 'view'
+  | 'settings'
   | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign';
@@ -47,6 +48,7 @@ export type RibbonGroupId =
   | 'zoom'
   | 'printLayout'
   | 'appearanceFiles'
+  | 'settings'
   | 'pivotAnalyze'
   | 'pivotDesign';
 
@@ -171,6 +173,8 @@ export type RibbonCommandId =
   | 'zoomReset'
   | 'printPdf'
   | 'bandedRows'
+  | 'settings'
+  | 'commandPalette'
   | 'pivotRefresh'
   | 'pivotFieldList';
 
@@ -314,7 +318,7 @@ export type RibbonCommandResult =
   | { type: 'intent'; intent: UiSessionIntent }
   | { type: 'callback'; invoke: () => void };
 
-export interface RibbonCommandDefinition {
+export interface CommandDefinition {
   readonly id: RibbonCommandId;
   readonly tab: RibbonCatalogTabId;
   readonly group: RibbonGroupId;
@@ -374,6 +378,7 @@ export const RIBBON_TEXT = {
     zoom: 'groups.zoom',
     printLayout: 'groups.printLayout',
     appearanceFiles: 'groups.appearanceFiles',
+    settings: 'groups.settings',
     pivotAnalyze: 'groups.pivotAnalyze',
     pivotDesign: 'groups.pivotDesign',
   },
@@ -500,6 +505,8 @@ export const RIBBON_TEXT = {
     zoomReset: 'commands.zoomReset',
     printPdf: 'commands.printPdf',
     bandedRows: 'commands.bandedRows',
+    settings: 'commands.settings',
+    commandPalette: 'commands.commandPalette',
   },
 } as const satisfies {
   groups: Record<RibbonGroupId, `groups.${RibbonGroupId}`>;
@@ -545,6 +552,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('zoom', 'view', 20),
   group('printLayout', 'view', 40),
   group('appearanceFiles', 'view', 60),
+  group('settings', 'settings', 10),
   group('pivotAnalyze', 'pivotAnalyze', 10),
   group('pivotDesign', 'pivotDesign', 10),
 ] as const;
@@ -557,7 +565,7 @@ const command = (
   labelKey: RibbonTextKey,
   icon: RibbonIconName | undefined,
   params?: unknown,
-): RibbonCommandDefinition => ({
+): CommandDefinition => ({
   id,
   tab,
   group: groupId,
@@ -580,7 +588,7 @@ const callback = (
   labelKey: RibbonTextKey,
   invoke: (context: RibbonCommandContext) => void,
   icon?: RibbonIconName,
-): RibbonCommandDefinition => ({
+): CommandDefinition => ({
   id,
   tab,
   group: groupId,
@@ -598,7 +606,7 @@ const intent = (
   labelKey: RibbonTextKey,
   buildIntent: (context: RibbonCommandContext) => UiSessionIntent,
   icon?: RibbonIconName,
-): RibbonCommandDefinition => ({
+): CommandDefinition => ({
   id,
   tab,
   group: groupId,
@@ -616,7 +624,7 @@ const dynamicCommand = (
   labelKey: RibbonTextKey,
   buildDescriptor: (context: RibbonCommandContext) => CommandDescriptor | undefined,
   icon?: RibbonIconName,
-): RibbonCommandDefinition => ({
+): CommandDefinition => ({
   id,
   tab,
   group: groupId,
@@ -636,7 +644,7 @@ const styleCommand = (
   icon: RibbonIconName,
   style: (context: RibbonCommandContext) => Record<string, unknown>,
   active?: (context: RibbonCommandContext) => boolean,
-): RibbonCommandDefinition => ({
+): CommandDefinition => ({
   ...command(id, 'home', 'font', 'sheet.style.set', labelKey, icon),
   build: (context) => ({
     type: 'command',
@@ -646,7 +654,7 @@ const styleCommand = (
   active,
 });
 
-export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
+export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('save', 'file', 'workbook', RIBBON_TEXT.commands.save, (context) => context.actions.onSave()),
   callback('exportXlsx', 'file', 'workbook', RIBBON_TEXT.commands.exportXlsx, (context) => context.actions.onExportXlsx()),
   callback('importXlsx', 'file', 'workbook', RIBBON_TEXT.commands.importXlsx, (context) => context.actions.onImportXlsx()),
@@ -694,7 +702,7 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   command('alignRight', 'home', 'alignment', 'sheet.style.set', RIBBON_TEXT.commands.alignRight, 'align-right', { style: { horizontalAlignment: 'right' } }),
   styleCommand('wrapText', RIBBON_TEXT.commands.wrapText, 'wrap-text', (context) => ({ wrapText: !context.cellStyle.wrapText }), (context) => Boolean(context.cellStyle.wrapText)),
   command('mergeCells', 'home', 'alignment', 'sheet.merge.set', RIBBON_TEXT.commands.mergeCells, 'merge-cells'),
-  intent('formatCells', 'home', 'number', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' })),
+  intent('formatCells', 'home', 'number', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' }), 'table'),
   command('numberFormatGeneral', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatGeneral, undefined, { style: { numberFormat: 'general' } }),
   command('numberFormatCurrency', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatCurrency, 'dollar-sign', { style: { numberFormat: '$#,##0' } }),
   command('numberFormatPercent', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatPercent, 'percent', { style: { numberFormat: '0%' } }),
@@ -800,16 +808,18 @@ export const RIBBON_COMMAND_CATALOG: readonly RibbonCommandDefinition[] = [
   intent('zoomIn', 'view', 'zoom', RIBBON_TEXT.commands.zoomIn, () => ({ type: 'zoom.adjust', delta: 10 }), 'zoom-in'),
   intent('zoomOut', 'view', 'zoom', RIBBON_TEXT.commands.zoomOut, () => ({ type: 'zoom.adjust', delta: -10 }), 'zoom-out'),
   intent('zoomReset', 'view', 'zoom', RIBBON_TEXT.commands.zoomReset, () => ({ type: 'zoom.set', value: 100 })),
+  intent('commandPalette', 'view', 'zoom', RIBBON_TEXT.commands.commandPalette, () => ({ type: 'command-palette.open' }), 'search'),
   intent('printPdf', 'view', 'printLayout', RIBBON_TEXT.commands.printPdf, () => ({ type: 'dialog.open', dialog: 'print-preview' }), 'printer'),
   callback('bandedRows', 'view', 'appearanceFiles', RIBBON_TEXT.commands.bandedRows, (context) => context.actions.onToggleBandedRows()),
+  intent('settings', 'settings', 'settings', RIBBON_TEXT.commands.settings, () => ({ type: 'backstage.open', panel: 'options' }), 'sliders'),
   callback('exportXlsxView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.exportXlsxView, (context) => context.actions.onExportXlsx()),
   callback('importXlsxView', 'view', 'appearanceFiles', RIBBON_TEXT.commands.importXlsxView, (context) => context.actions.onImportXlsx()),
 ] as const;
 
-const commandById = new Map<RibbonCommandId, RibbonCommandDefinition>(RIBBON_COMMAND_CATALOG.map((definition) => [definition.id, definition] as const));
+const commandById = new Map<RibbonCommandId, CommandDefinition>(RIBBON_COMMAND_CATALOG.map((definition) => [definition.id, definition] as const));
 const groupById = new Map<RibbonGroupId, RibbonGroupDefinition>(RIBBON_GROUP_CATALOG.map((definition) => [definition.id, definition] as const));
 
-export function getRibbonCommandDefinition(id: RibbonCommandId): RibbonCommandDefinition {
+export function getRibbonCommandDefinition(id: RibbonCommandId): CommandDefinition {
   const definition = commandById.get(id);
   if (!definition) throw new Error(`Unknown Ribbon command: ${id}`);
   return definition;
@@ -821,11 +831,11 @@ export function getRibbonGroupDefinition(id: RibbonGroupId): RibbonGroupDefiniti
   return definition;
 }
 
-export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonCommandContext): readonly RibbonCommandDefinition[] {
+export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonCommandContext): readonly CommandDefinition[] {
   return RIBBON_COMMAND_CATALOG.filter((definition) => definition.tab === tab && (definition.when?.(context) ?? true));
 }
 
-export function isRibbonCommandEnabled(definition: RibbonCommandDefinition, context: RibbonCommandContext): boolean {
+export function isRibbonCommandEnabled(definition: CommandDefinition, context: RibbonCommandContext): boolean {
   if (context.disabled || !(definition.enabled?.(context) ?? true)) return false;
   return definition.build(context) !== undefined;
 }

@@ -1,5 +1,5 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import type { XlsxExportOptions, XlsxExportResult, XlsxImportOptions, XlsxImportResult, XlsxPackage, XlsxSourceArtifact } from './types';
+import type { XlsxExportOptions, XlsxExportResult, XlsxImportOptions, XlsxImportResult, NativePackageState } from './types';
 
 export const XLSX_WORKER_PROTOCOL = 'react-sheets/xlsx-exchange';
 export const XLSX_WORKER_VERSION = 1;
@@ -14,8 +14,7 @@ export interface XlsxWorkerExportPayload {
   fileName: string;
   snapshot: WorkbookSnapshot;
   options: XlsxExportOptions;
-  package?: XlsxPackage;
-  sourceArtifact?: XlsxSourceArtifact;
+  nativePackage?: NativePackageState;
 }
 
 export interface XlsxWorkerImportRequest {

@@ -136,7 +136,7 @@ public class WorkbookController {
         return catalog.putUserState(unitId, request, ActorIdentity.subject(authentication));
     }
 
-    @PutMapping(value = "/{unitId}/source-artifact", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @PutMapping(value = "/{unitId}/native-package-state", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public WorkbookArtifactResponse putSourceArtifact(
             @PathVariable String unitId,
             @RequestHeader(value = "X-File-Name", required = false) String fileName,
@@ -148,14 +148,15 @@ public class WorkbookController {
         return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, ActorIdentity.subject(authentication));
     }
 
-    @GetMapping(value = "/{unitId}/source-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @GetMapping(value = "/{unitId}/native-package-state", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
         WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(artifact.getMimeType()))
                 .contentLength(artifact.getByteLength())
                 .header("X-Content-SHA256", artifact.getChecksum())
-                .header("X-XLSX-Codec-Version", Integer.toString(artifact.getXlsxCodecVersion()))
+                .header("X-Native-Codec-Revision", Integer.toString(artifact.getCodecRevision()))
+                .header("X-Native-Format", artifact.getFormat())
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + artifact.getFileName().replace("\"", "") + "\"")
                 .body(artifact.getContent());
     }

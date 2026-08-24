@@ -68,7 +68,7 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 3,
+          version: 4,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -110,7 +110,7 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 3,
+          version: 4,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -216,7 +216,7 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 3,
+    version: 4,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },

@@ -3,8 +3,8 @@ import type {
   CompatibilityReport,
   XlsxExportOptions,
   XlsxImportOptions,
-  XlsxSourceArtifact,
-} from '@react-sheets/exchange-xlsx';
+  NativePackageState,
+} from '@react-sheets/exchange-excel-ooxml';
 import type {
   WorkbookAclRole,
   ApiRequestOptions,
@@ -94,21 +94,21 @@ export interface WorkbookCatalogImportInput {
   spaceId?: string;
   options?: Partial<XlsxImportOptions>;
   execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-xlsx').XlsxWorkerPort;
+  workerPort?: import('@react-sheets/exchange-excel-ooxml').XlsxWorkerPort;
 }
 
 export interface WorkbookCatalogImportResult {
   entry: WorkbookCatalogEntry;
   snapshot: WorkbookSnapshot;
   report: CompatibilityReport;
-  sourceArtifact?: XlsxSourceArtifact;
+  nativePackage?: NativePackageState;
 }
 
 export interface WorkbookCatalogExportInput {
   fileName?: string;
   options?: Partial<XlsxExportOptions>;
   execution?: 'worker' | 'inline-test';
-  workerPort?: import('@react-sheets/exchange-xlsx').XlsxWorkerPort;
+  workerPort?: import('@react-sheets/exchange-excel-ooxml').XlsxWorkerPort;
 }
 
 export interface WorkbookCatalogExportResult {

@@ -78,6 +78,7 @@ export function createSpreadsheetShortcutRegistry(): ShortcutRegistry {
   registry.register({ id: 'format.italic', scopes: grid, key: 'i', primary: true });
   registry.register({ id: 'format.underline', scopes: grid, key: 'u', primary: true });
   registry.register({ id: 'find.open', scopes: grid, key: 'f', primary: true });
+  registry.register({ id: 'commandPalette.open', scopes: grid, key: 'p', primary: true });
   registry.register({ id: 'replace.open', scopes: grid, key: 'h', primary: true });
   registry.register({ id: 'name.goto', scopes: grid, key: 'g', primary: true });
   registry.register({ id: 'format.cells', scopes: grid, key: '1', primary: true });

@@ -1,19 +1,14 @@
 import React from 'react';
 import { Box, Button, Panel, PanelBody, PanelHeader, PanelTitle, Stack, Text } from '@react-sheets/ui-system';
-import type { CompatibilityReport } from '@react-sheets/exchange-xlsx';
-import type { XlsxLayoutRepairPlan } from '@react-sheets/exchange-xlsx';
+import type { CompatibilityReport } from '@react-sheets/exchange-excel-ooxml';
 
 export interface CompatibilityReportPanelProps {
   report: CompatibilityReport | null;
   onClear?: () => void;
-  needsLayoutRepair?: boolean;
-  repairPreview?: XlsxLayoutRepairPlan | null;
-  onPreviewRepair?: () => void;
-  onApplyRepair?: () => void;
 }
 
-export function CompatibilityReportPanel({ report, onClear, needsLayoutRepair = false, repairPreview, onPreviewRepair, onApplyRepair }: CompatibilityReportPanelProps) {
-  if (!report && !needsLayoutRepair) {
+export function CompatibilityReportPanel({ report, onClear }: CompatibilityReportPanelProps) {
+  if (!report) {
     return (
       <Panel className="shadow-none">
         <PanelBody>
@@ -33,14 +28,6 @@ export function CompatibilityReportPanel({ report, onClear, needsLayoutRepair = 
       </PanelHeader>
       <PanelBody>
         <Stack gap="sm">
-          {needsLayoutRepair ? (
-            <Stack gap="xs" className="rounded-lg border border-amber-300 bg-amber-50 p-3">
-              <Text size="sm" weight="semibold">Imported layout needs repair</Text>
-              <Text size="xs" tone="muted">The original XLSX is available. Repair only updates row/column geometry, font units and pane metadata.</Text>
-              {repairPreview ? <Text size="xs">Preview: {repairPreview.summary.columns} columns · {repairPreview.summary.rows} rows · {repairPreview.summary.fonts} fonts · {repairPreview.summary.panes} panes</Text> : null}
-              {repairPreview ? <Button size="sm" variant="primary" onClick={onApplyRepair}>Apply layout repair</Button> : <Button size="sm" variant="secondary" onClick={onPreviewRepair}>Preview layout repair</Button>}
-            </Stack>
-          ) : null}
           {report ? (
             <>
           <Text size="xs">

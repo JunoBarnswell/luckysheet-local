@@ -6,7 +6,7 @@
   "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataSources", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 3 },
+    "version": { "const": 4 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -33,7 +33,7 @@
         { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "none" } }, "additionalProperties": false },
         {
           "type": "object",
-          "required": ["kind", "xSplit", "ySplit", "startRow", "startColumn"],
+          "required": ["kind", "xSplit", "ySplit", "startRow", "startColumn", "state"],
           "properties": {
             "kind": { "enum": ["frozen", "split"] },
             "xSplit": { "type": "number", "minimum": 0 },
@@ -41,7 +41,7 @@
             "startRow": { "type": "integer", "minimum": 0 },
             "startColumn": { "type": "integer", "minimum": 0 },
             "activePane": { "enum": ["topLeft", "topRight", "bottomLeft", "bottomRight"] },
-            "state": { "enum": ["frozen", "frozenSplit"] }
+            "state": { "enum": ["frozen", "frozenSplit", "split"] }
           },
           "additionalProperties": false
         }
@@ -50,6 +50,17 @@
     "positiveSizeMap": {
       "type": "object",
       "patternProperties": { "^(0|[1-9][0-9]*)$": { "type": "number", "exclusiveMinimum": 0 } },
+      "additionalProperties": false
+    },
+    "autoFilter": {
+      "type": "object",
+      "required": ["sheetId", "range", "columns"],
+      "properties": {
+        "sheetId": { "type": "string", "minLength": 1 },
+        "range": { "type": "object" },
+        "columns": { "type": "object", "additionalProperties": { "type": "object" } },
+        "sortState": { "type": ["object", "null"] }
+      },
       "additionalProperties": false
     },
     "worksheet": {
@@ -63,6 +74,7 @@
         "cells": { "type": "object" },
         "merges": { "type": "array" },
         "pane": { "$ref": "#/$defs/pane" },
+        "autoFilter": { "$ref": "#/$defs/autoFilter" },
         "pivots": { "type": "array" },
         "sparklines": { "type": "array" },
         "drawings": { "type": "array" },

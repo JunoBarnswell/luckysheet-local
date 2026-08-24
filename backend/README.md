@@ -6,6 +6,8 @@ The service has one JPA domain model and supports H2, PostgreSQL, and MySQL pers
 
 Examples: local development uses the default H2 profile; PostgreSQL deployments set `SPRING_PROFILES_ACTIVE=postgres`; MySQL deployments set `SPRING_PROFILES_ACTIVE=mysql`. Provider profiles select only the datasource/Flyway dialect boundary—the workbook, ACL, operation, and outbox semantics remain identical.
 
+Production should activate the common fail-closed profile together with exactly one provider profile, for example `SPRING_PROFILES_ACTIVE=prod,postgres` or `prod,mysql`. The `prod` profile requires `DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_AUDIENCE`, and `WEB_ALLOWED_ORIGINS`; it never falls back to local H2 or placeholder authentication values. `prod,h2` is available only for controlled non-production deployments.
+
 Database overrides and authentication settings for a deployed environment:
 
 - `DATABASE_URL`
@@ -30,7 +32,7 @@ The workbook catalog contract is:
 - `POST /api/workbooks` creates a native workbook in the actor's personal space unless `spaceId`/`folderId` are supplied.
 - `PATCH /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/copy`, `DELETE /api/workbooks/{unitId}`, `POST /api/workbooks/{unitId}/restore-from-trash`, and `DELETE /api/workbooks/{unitId}/purge` manage metadata and lifecycle. Purge requires a previously trashed owner workbook.
 - `GET/PUT /api/workbooks/{unitId}/user-state` manages actor-specific favorite, last-opened, autosave/sync, default cloud location, offline cache, import compatibility, language, and theme state.
-- `GET/PUT /api/workbooks/{unitId}/source-artifact` streams the XLSX source artifact with an SHA-256 header. `POST /api/workbook-imports` accepts `file` and a browser-parsed `snapshot` multipart part and creates a new workbook atomically.
+- `GET/PUT /api/workbooks/{unitId}/native-package-state` streams the native package state with an SHA-256 header. `POST /api/workbook-imports` accepts `file`, `format`, `nativeMetadata`, and a browser-parsed `snapshot` multipart part and creates a new workbook atomically.
 - `GET/POST /api/spaces`, `/api/spaces/{spaceId}/folders`, and `/api/spaces/{spaceId}/members` manage spaces, folder trees, and membership. Effective workbook access is the strongest of owner, workbook ACL, and space membership.
 
 Workbook mutations are written only through `POST /api/workbooks/{unitId}/operations`. WebSocket clients receive committed `revision.created` events and may publish presence/cursor state; operation submits, snapshot requests, acknowledgements, and rejects are not accepted on the socket.

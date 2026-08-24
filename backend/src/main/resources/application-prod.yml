@@ -1,0 +1,61 @@
+# Production profile: all deployment-specific values come from the environment
+# or an external secret/config provider. No local H2 or fake authentication
+# defaults are allowed when this profile is active.
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DATABASE_POOL_SIZE:20}
+      minimum-idle: ${DATABASE_MIN_IDLE:5}
+      connection-timeout: ${DATABASE_CONNECTION_TIMEOUT_MS:30000}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    validate-on-migrate: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${AUTH_ISSUER}
+          jwk-set-uri: ${AUTH_JWKS_URL}
+
+server:
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: framework
+
+luckysheet:
+  auth:
+    issuer: ${AUTH_ISSUER}
+    audience: ${AUTH_AUDIENCE}
+    jwks-url: ${AUTH_JWKS_URL}
+  websocket:
+    allowed-origins: ${WEB_ALLOWED_ORIGINS}
+  coordination:
+    multi-instance: ${COORDINATION_MULTI_INSTANCE:false}
+    redis-enabled: ${COORDINATION_REDIS_ENABLED:${COORDINATION_MULTI_INSTANCE:false}}
+    redis-url: ${COORDINATION_REDIS_URL:}
+    channel: ${COORDINATION_REDIS_CHANNEL:luckysheet:coordination}
+    outbox-poll-interval: ${COORDINATION_OUTBOX_POLL_INTERVAL:PT1S}
+    outbox-poll-interval-ms: ${COORDINATION_OUTBOX_POLL_INTERVAL_MS:1000}
+    outbox-lease: ${COORDINATION_OUTBOX_LEASE:PT30S}
+    outbox-batch-size: ${COORDINATION_OUTBOX_BATCH_SIZE:100}
+    presence-ttl: ${COORDINATION_PRESENCE_TTL:PT45S}
+  query:
+    enabled: ${QUERY_EXECUTION_ENABLED:true}
+    max-rows: ${QUERY_MAX_ROWS:10000}
+    max-columns: ${QUERY_MAX_COLUMNS:500}
+    max-response-bytes: ${QUERY_MAX_RESPONSE_BYTES:5000000}
+    timeout: ${QUERY_TIMEOUT:PT10S}
+    worker-threads: ${QUERY_WORKER_THREADS:4}
+    sources: {}
+  share:
+    default-lifetime: ${SHARE_DEFAULT_LIFETIME:PT24H}
+    max-lifetime: ${SHARE_MAX_LIFETIME:P30D}

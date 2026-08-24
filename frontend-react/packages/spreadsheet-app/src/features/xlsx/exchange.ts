@@ -2,12 +2,12 @@ import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import type {
   CompatibilityReport,
   CompatibilityLevel,
-  XlsxPackage,
-  XlsxSourceArtifact,
+  NativePackageState,
   XlsxExportOptions,
   XlsxImportOptions,
   XlsxWorkerPort,
-} from '@react-sheets/exchange-xlsx';
+} from '@react-sheets/exchange-excel-ooxml';
+import { excelCodecRegistry } from '@react-sheets/exchange-excel-ooxml';
 
 export type { CompatibilityReport, CompatibilityLevel, XlsxExportOptions, XlsxImportOptions };
 
@@ -25,8 +25,7 @@ export interface XlsxImportParams {
 export interface XlsxExportParams {
   fileName?: string;
   options?: Partial<XlsxExportOptions>;
-  package?: XlsxPackage;
-  sourceArtifact?: XlsxSourceArtifact;
+  nativePackage?: NativePackageState;
   workerPort?: XlsxWorkerPort;
   execution?: 'worker' | 'inline-test';
   revision?: number;
@@ -37,8 +36,7 @@ export interface XlsxExchangeResult {
   snapshot?: WorkbookSnapshot;
   buffer?: ArrayBuffer;
   fileName?: string;
-  sourceArtifact?: XlsxSourceArtifact;
-  package?: XlsxPackage;
+  nativePackage?: NativePackageState;
 }
 
 export function buildXlsxImportOptions(overrides: Partial<XlsxImportOptions> = {}): XlsxImportOptions {
@@ -46,7 +44,7 @@ export function buildXlsxImportOptions(overrides: Partial<XlsxImportOptions> = {
     compatibilityTarget: overrides.compatibilityTarget ?? DEFAULT_XLSX_COMPATIBILITY,
     compatibilityMode: overrides.compatibilityMode,
     dateSystem: overrides.dateSystem,
-    preserveMacros: overrides.preserveMacros ?? false,
+    preserveMacros: overrides.preserveMacros ?? true,
   };
 }
 
@@ -58,25 +56,20 @@ export function buildXlsxExportOptions(overrides: Partial<XlsxExportOptions> = {
   };
 }
 
-async function loadExchangeXlsx() {
-  return import('@react-sheets/exchange-xlsx');
-}
-
 export async function exchangeImportXlsx(params: XlsxImportParams): Promise<XlsxExchangeResult> {
-  const exchange = await loadExchangeXlsx();
   const request = {
     fileName: params.fileName,
     buffer: params.buffer,
     options: buildXlsxImportOptions(params.options),
+    workerPort: params.workerPort,
+    execution: params.execution,
+    revision: params.revision,
   };
-  const result = params.execution === 'inline-test'
-    ? await exchange.importXlsx(request)
-    : await exchange.importXlsxWithWorker(request, params.workerPort, params.revision ?? 0);
+  const result = await excelCodecRegistry.import(request);
   return {
     report: result.report,
     snapshot: result.snapshot,
-    sourceArtifact: result.sourceArtifact,
-    package: result.package,
+    nativePackage: result.nativePackage,
   };
 }
 
@@ -84,23 +77,22 @@ export async function exchangeExportXlsx(
   snapshot: WorkbookSnapshot,
   params: XlsxExportParams = {},
 ): Promise<XlsxExchangeResult> {
-  const exchange = await loadExchangeXlsx();
   const fileName = params.fileName ?? `${snapshot.name || 'workbook'}.xlsx`;
   const request = {
     snapshot,
     fileName,
     options: buildXlsxExportOptions(params.options),
-    ...(params.package ? { package: params.package } : {}),
-    ...(params.sourceArtifact ? { sourceArtifact: params.sourceArtifact } : {}),
+    ...(params.nativePackage ? { nativePackage: params.nativePackage } : {}),
+    workerPort: params.workerPort,
+    execution: params.execution,
+    revision: params.revision,
   };
-  const result = params.execution === 'inline-test'
-    ? await exchange.exportXlsx(request)
-    : await exchange.exportXlsxWithWorker(request, params.workerPort, params.revision ?? 0);
+  const result = await excelCodecRegistry.export(request);
   return {
     report: result.report,
     buffer: result.buffer,
     fileName: result.fileName,
-    package: result.package,
+    nativePackage: result.nativePackage,
   };
 }
 

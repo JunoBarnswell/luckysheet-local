@@ -9,8 +9,8 @@ async function createLocalWorkbook(page: import('@playwright/test').Page, name: 
   await dialog.getByLabel('工作簿名称').fill(name);
   await dialog.getByLabel('保存位置').selectOption('local');
   await dialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+$/);
-  await expect(page.getByTestId('app-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
+  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
 }
 
 test.describe('workbook hub', () => {
@@ -34,12 +34,12 @@ test.describe('workbook hub', () => {
     await expect(page.getByTestId('workbook-backstage')).toBeVisible();
     await expect(page.getByTestId('workbook-backstage').getByText('文件名：Backstage UAT', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '返回编辑器', exact: true }).click();
-    await expect(page.getByTestId('app-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
   });
 
   test('does not turn an unknown unauthenticated route into a blank local workbook', async ({ page }) => {
     await page.goto('/workbooks/not-a-local-workbook');
-    await expect(page.getByTestId('app-shell')).toHaveCount(0);
+  await expect(page.getByTestId('designer-shell')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: /云端身份尚未配置|需要云端登录/ })).toBeVisible();
   });
 });

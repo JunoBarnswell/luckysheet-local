@@ -5,7 +5,7 @@
   "dependencies": {
     "@react-sheets/command-runtime": "file:../../packages/command-runtime",
     "@react-sheets/core-model": "file:../../packages/core-model",
-    "@react-sheets/exchange-xlsx": "file:../../packages/exchange-xlsx",
+    "@react-sheets/exchange-excel-ooxml": "file:../../packages/exchange-excel-ooxml",
     "@react-sheets/formula-engine": "file:../../packages/formula-engine",
     "@react-sheets/protocol": "file:../../packages/protocol",
     "@react-sheets/render-engine": "file:../../packages/render-engine",

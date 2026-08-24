@@ -122,7 +122,7 @@ components:
       required: [schema, version, unitId, name, sheets, dataSources, dimensionMetrics]
       properties:
         schema: { const: WorkbookSnapshot }
-        version: { const: 3 }
+        version: { const: 4 }
         unitId: { type: string, minLength: 1, maxLength: 200 }
         name: { type: string, minLength: 1, maxLength: 255 }
         dimensionMetrics:
@@ -141,7 +141,7 @@ components:
           properties: { kind: { const: none } }
           additionalProperties: false
         - type: object
-          required: [kind, xSplit, ySplit, startRow, startColumn]
+          required: [kind, xSplit, ySplit, startRow, startColumn, state]
           properties:
             kind: { enum: [frozen, split] }
             xSplit: { type: number, minimum: 0 }
@@ -149,8 +149,16 @@ components:
             startRow: { type: integer, minimum: 0 }
             startColumn: { type: integer, minimum: 0 }
             activePane: { enum: [topLeft, topRight, bottomLeft, bottomRight] }
-            state: { enum: [frozen, frozenSplit] }
-          additionalProperties: false
+            state: { enum: [frozen, frozenSplit, split] }
+    AutoFilter:
+      type: object
+      required: [sheetId, range, columns]
+      properties:
+        sheetId: { type: string, minLength: 1 }
+        range: { type: object }
+        columns: { type: object, additionalProperties: { type: object } }
+        sortState: { type: object }
+        additionalProperties: false
     WorksheetSnapshot:
       type: object
       required: [id, name, rowCount, columnCount, cells, merges, pane, pivots, sparklines, drawings, drawingPayloads, defaultRowHeightPx, defaultColumnWidthPx]
@@ -162,6 +170,7 @@ components:
         cells: { type: object, additionalProperties: { type: object } }
         merges: { type: array, items: { type: object } }
         pane: { $ref: '#/components/schemas/WorksheetPane' }
+        autoFilter: { $ref: '#/components/schemas/AutoFilter' }
         pivots: { type: array, items: { type: object } }
         sparklines: { type: array, items: { type: object } }
         drawings: { type: array, items: { type: object } }

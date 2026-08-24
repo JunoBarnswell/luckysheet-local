@@ -1,9 +1,9 @@
 import { migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from '@react-sheets/core-model';
-import type { XlsxSourceArtifact } from '@react-sheets/exchange-xlsx';
+import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { computeChecksum, verifyChecksum } from './checksum';
 import { LocalDataBlockStore } from './data-block-store';
-import { buildXlsxArtifactRecord, LocalXlsxArtifactStore } from './xlsx-artifact-store';
+import { buildNativePackageRecord, LocalNativePackageStore } from './native-package-store';
 import { LocalSparseOverlayStore } from '../data-source/overlay-store';
 import {
   openWorkspaceDatabase,
@@ -11,7 +11,7 @@ import {
   transactionComplete,
   WORKSPACE_DATABASE_NAME,
   WORKSPACE_STORE_NAME,
-  XLSX_ARTIFACT_STORE_NAME,
+  NATIVE_PACKAGE_STORE_NAME,
   type IndexedDbStoreOptions,
 } from './indexed-db';
 
@@ -461,7 +461,7 @@ export class WorkspacePersistence {
   readonly store: LocalWorkspaceStore;
   readonly dataBlocks: LocalDataBlockStore;
   readonly sparseOverlays: LocalSparseOverlayStore;
-  readonly xlsxArtifacts: LocalXlsxArtifactStore;
+  readonly nativePackages: LocalNativePackageStore;
   private readonly options: IndexedDbWorkspaceStoreOptions;
 
   constructor(options: IndexedDbWorkspaceStoreOptions = {}, operationJournal = new OperationJournalStore()) {
@@ -469,7 +469,7 @@ export class WorkspacePersistence {
     this.store = new LocalWorkspaceStore(options);
     this.dataBlocks = new LocalDataBlockStore(options);
     this.sparseOverlays = new LocalSparseOverlayStore(options);
-    this.xlsxArtifacts = new LocalXlsxArtifactStore(options);
+    this.nativePackages = new LocalNativePackageStore(options);
     this.operationJournal = operationJournal;
   }
 
@@ -523,7 +523,7 @@ export class WorkspacePersistence {
     localRevision: number,
     serverRevision: number,
     syncMode: 'remote' | 'local-only',
-    artifact: XlsxSourceArtifact,
+    artifact: NativePackageState,
     pendingJournal = this.operationJournal.read(snapshot.unitId),
     metadata?: Partial<WorkspaceRecordMetadata>,
     userState?: Partial<WorkspaceUserState>,
@@ -540,19 +540,19 @@ export class WorkspacePersistence {
       metadata: { ...(previous?.metadata ?? {}), ...(metadata ?? {}) },
       userState: { ...(previous?.userState ?? {}), ...(userState ?? {}) },
     });
-    const artifactRecord = await buildXlsxArtifactRecord(snapshot.unitId, artifact);
+    const artifactRecord = await buildNativePackageRecord(snapshot.unitId, artifact);
     const database = await openWorkspaceDatabase(this.options);
     if (!database) {
       await this.store.save(record);
-      await this.xlsxArtifacts.save(snapshot.unitId, artifact);
+      await this.nativePackages.save(snapshot.unitId, artifact);
       return record;
     }
     const transaction = database.transaction(
-      [WORKSPACE_STORE_NAME, XLSX_ARTIFACT_STORE_NAME],
+      [WORKSPACE_STORE_NAME, NATIVE_PACKAGE_STORE_NAME],
       'readwrite',
     );
     transaction.objectStore(WORKSPACE_STORE_NAME).put(clone(record));
-    transaction.objectStore(XLSX_ARTIFACT_STORE_NAME).put(artifactRecord);
+    transaction.objectStore(NATIVE_PACKAGE_STORE_NAME).put(artifactRecord);
     await transactionComplete(transaction);
     return record;
   }
@@ -585,7 +585,7 @@ export class WorkspacePersistence {
 
   async clear(unitId: string): Promise<void> {
     this.operationJournal.clear(unitId);
-    await Promise.all([this.store.delete(unitId), this.xlsxArtifacts.remove(unitId)]);
+    await Promise.all([this.store.delete(unitId), this.nativePackages.remove(unitId)]);
   }
 }
 

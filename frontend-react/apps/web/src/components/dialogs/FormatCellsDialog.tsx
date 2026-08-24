@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { CellBorders, CellStyle } from '@react-sheets/core-model';
-import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-xlsx';
+import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import { Box, Button, CheckToggle, ColorPicker, Dialog, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';

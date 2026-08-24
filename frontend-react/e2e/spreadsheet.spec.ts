@@ -1,6 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const DEFAULT_COLUMN_WIDTH_PX = 64;
+const ROW_HEADER_WIDTH_PX = 39;
+const COLUMN_HEADER_HEIGHT_PX = 20;
 const DEFAULT_ROW_HEIGHT_PX = 20;
 
 async function waitForWorkspace(page: Page) {
@@ -12,20 +14,39 @@ async function waitForWorkspace(page: Page) {
   await createDialog.getByLabel('工作簿名称').fill(`E2E ${Date.now()}`);
   await createDialog.getByLabel('保存位置').selectOption('local');
   await createDialog.getByRole('button', { name: '创建工作簿' }).click();
-  await expect(page).toHaveURL(/\/workbooks\/[^/]+$/);
-  await expect(page.getByTestId('app-shell')).toBeVisible();
-  await expect(page.getByTestId('app-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
+  await expect(page.getByTestId('designer-shell')).toBeVisible();
+  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+}
+
+async function waitForDesignerDemo(page: Page) {
+  page.on('pageerror', (error) => console.log(`[pageerror] ${error.message}\n${error.stack ?? ''}`));
+  page.on('console', (message) => { if (message.type() === 'error') console.log(`[console.error] ${message.text()}`); });
+  await page.addInitScript(() => window.localStorage.setItem('react-sheets:locale', 'zh-CN'));
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('/');
+  await expect(page.getByTestId('workbook-hub')).toBeVisible();
+  await page.getByRole('button', { name: 'Designer Demo' }).click();
+  const createDialog = page.getByTestId('create-workbook-dialog');
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByLabel('工作簿名称').fill(`Designer Demo E2E ${Date.now()}`);
+  await createDialog.getByLabel('保存位置').selectOption('local');
+  await createDialog.getByRole('button', { name: '创建工作簿' }).click();
+  await expect(page).toHaveURL(/\/workbooks\/[^/]+(?:\?.*)?$/);
+  await expect(page.getByTestId('designer-shell')).toBeVisible();
+  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready', { timeout: 30_000 });
+  await expect(page.getByTestId('name-box')).toHaveValue('B1');
 }
 
 async function focusCanvas(page: Page) {
   const canvas = page.getByTestId('sheet-canvas');
-  // A1 单元格中心：行头 46px + 列宽一半，列头 24px + 行高一半
-  await canvas.click({ position: { x: 78, y: 34 } });
+  // A1 单元格中心：行头 39px + 列宽一半，列头 20px + 行高一半
+  await canvas.click({ position: { x: 78, y: COLUMN_HEADER_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2 } });
   return canvas;
 }
 
 function cellPoint(box: { x: number; y: number }, row: number, column: number) {
-  return { x: box.x + 46 + column * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, y: box.y + 24 + row * DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2 };
+  return { x: box.x + ROW_HEADER_WIDTH_PX + column * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, y: box.y + COLUMN_HEADER_HEIGHT_PX + row * DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2 };
 }
 
 async function dragCells(page: Page, canvas: ReturnType<Page['getByTestId']>, from: { row: number; column: number }, to: { row: number; column: number }) {
@@ -39,6 +60,34 @@ async function dragCells(page: Page, canvas: ReturnType<Page['getByTestId']>, fr
 }
 
 test.describe('spreadsheet baseline', () => {
+  test('Designer Demo shell exposes the fixed 1280x720 geometry and real palette entry', async ({ page }) => {
+    await waitForDesignerDemo(page);
+    const geometry = await page.evaluate(() => {
+      const rect = (selector: string) => {
+        const node = document.querySelector(selector);
+        if (!node) return null;
+        const box = node.getBoundingClientRect();
+        return { y: Math.round(box.y), height: Math.round(box.height) };
+      };
+      return {
+        ribbon: rect('[data-testid="designer-ribbon"]'),
+        formulaBar: rect('[data-testid="designer-formula-bar"]'),
+        workspace: rect('[data-testid="designer-workspace"]'),
+        sheetTabs: rect('[data-testid="designer-sheet-tabs"]'),
+        statusBar: rect('[data-testid="designer-status-bar"]'),
+      };
+    });
+    expect(geometry.ribbon).toEqual({ y: 0, height: 142 });
+    expect(geometry.formulaBar).toEqual({ y: 142, height: 37 });
+    expect(geometry.workspace).toEqual({ y: 179, height: 519 });
+    expect(geometry.statusBar).toEqual({ y: 698, height: 22 });
+    await page.screenshot({ path: 'test-results/designer-demo-1280-current.png' });
+    await page.getByRole('tab', { name: '视图' }).click();
+    await page.getByRole('button', { name: '命令面板' }).click();
+    await expect(page.getByTestId('command-palette')).toBeVisible();
+    await expect(page.getByRole('button', { name: /保存/ }).first()).toBeVisible();
+  });
+
   test('selection updates the name box', async ({ page }) => {
     await waitForWorkspace(page);
     await focusCanvas(page);
@@ -201,15 +250,15 @@ test.describe('spreadsheet baseline', () => {
     const box = await canvas.boundingBox();
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
 
-    await page.mouse.move(box.x + 20, box.y + 24 + DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2);
+    await page.mouse.move(box.x + 20, box.y + COLUMN_HEADER_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2);
     await page.mouse.down();
-    await page.mouse.move(box.x + 20, box.y + 24 + 8 * DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2);
+    await page.mouse.move(box.x + 20, box.y + COLUMN_HEADER_HEIGHT_PX + 8 * DEFAULT_ROW_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX / 2);
     await page.mouse.up();
     await expect(page.getByTestId('name-box')).toHaveValue('A9');
 
-    await page.mouse.move(box.x + 46 + 55, box.y + 12);
+    await page.mouse.move(box.x + ROW_HEADER_WIDTH_PX + 55, box.y + 12);
     await page.mouse.down();
-    await page.mouse.move(box.x + 46 + 2 * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
+    await page.mouse.move(box.x + ROW_HEADER_WIDTH_PX + 2 * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
     await page.mouse.up();
     await expect(page.getByTestId('name-box')).toHaveValue('C1');
   });
@@ -221,13 +270,13 @@ test.describe('spreadsheet baseline', () => {
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
 
     // Full-column A:C selection.
-    await page.mouse.move(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
+    await page.mouse.move(box.x + ROW_HEADER_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
     await page.mouse.down();
-    await page.mouse.move(box.x + 46 + 2 * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
+    await page.mouse.move(box.x + ROW_HEADER_WIDTH_PX + 2 * DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12);
     await page.mouse.up();
 
     // Drag the C boundary; the preview exposes both character and pixel units.
-    const boundary = box.x + 46 + 3 * DEFAULT_COLUMN_WIDTH_PX;
+    const boundary = box.x + ROW_HEADER_WIDTH_PX + 3 * DEFAULT_COLUMN_WIDTH_PX;
     await page.mouse.move(boundary, box.y + 12);
     await page.mouse.down();
     await page.mouse.move(boundary + 24, box.y + 12);
@@ -235,7 +284,7 @@ test.describe('spreadsheet baseline', () => {
     await page.mouse.up();
 
     // Right-click keeps the complete multi-column selection and opens exact width.
-    await page.mouse.click(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
+    await page.mouse.click(box.x + ROW_HEADER_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
     await page.getByRole('menuitem', { name: 'Column Width…' }).click();
     const dialog = page.getByRole('dialog', { name: 'Column Width' });
     await expect(dialog).toBeVisible();
@@ -248,7 +297,7 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByRole('button', { name: 'AutoFit Column Width', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'AutoFit Column Width', exact: true }).click();
 
-    await page.mouse.click(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
+    await page.mouse.click(box.x + ROW_HEADER_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX / 2, box.y + 12, { button: 'right' });
     await page.getByRole('menuitem', { name: 'Hide Columns', exact: true }).click();
     await canvas.press('Control+Z');
   });
@@ -287,7 +336,7 @@ test.describe('spreadsheet baseline', () => {
     await canvas.focus();
     const box = await canvas.boundingBox();
     if (!box) throw new Error('Spreadsheet canvas has no bounds');
-    await page.mouse.move(box.x + 46 + DEFAULT_COLUMN_WIDTH_PX - 4, box.y + 24 + DEFAULT_ROW_HEIGHT_PX - 4);
+    await page.mouse.move(box.x + ROW_HEADER_WIDTH_PX + DEFAULT_COLUMN_WIDTH_PX - 4, box.y + COLUMN_HEADER_HEIGHT_PX + DEFAULT_ROW_HEIGHT_PX - 4);
     await page.mouse.down();
     await page.mouse.move(...Object.values(cellPoint(box, 2, 2)) as [number, number]);
     await page.mouse.up();
@@ -315,7 +364,7 @@ test.describe('spreadsheet baseline', () => {
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
 
     await page.reload();
-    await expect(page.getByTestId('app-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+  await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
     await focusCanvas(page);
     await expect(page.getByTestId('formula-input')).toHaveValue('=1+2');
     expect(apiRequests).toEqual([]);

@@ -1,7 +1,7 @@
 import type {
   CellData,
   CellStyle,
-  FilterModel,
+  AutoFilterModel,
   RangeRef,
   SheetTableModel,
   WorksheetModel,
@@ -47,8 +47,15 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
   if (table.hasHeaderRow && table.hasTotalRow && range.endRow - range.startRow < 2) {
     throw new Error('Sheet Table with header and total rows requires at least one body row');
   }
+  if (table.autoFilter) {
+    validateFilterModelOwnership(table.autoFilter, table.sheetId, range, 'Table AutoFilter');
+  }
   if (sheet && range.endRow >= sheet.rowCount) throw new Error('Sheet Table exceeds worksheet rows');
-  return { ...structuredClone(table), range };
+  const normalized = { ...structuredClone(table), range };
+  if (normalized.showFilterButton && normalized.hasHeaderRow && !normalized.autoFilter) {
+    normalized.autoFilter = createAutoFilterModelForTable(normalized);
+  }
+  return normalized;
 }
 
 export function isPointInRange(range: RangeRef, row: number, column: number): boolean {
@@ -110,12 +117,93 @@ export function mergePresentationStyles(...styles: Array<Partial<CellStyle> | un
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
-export function createFilterModelForTable(table: SheetTableModel): FilterModel {
+export function createAutoFilterModelForTable(table: SheetTableModel): AutoFilterModel {
+  const range = normalizeRangeRef(table.range);
+  const columns: AutoFilterModel['columns'] = {};
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    columns[column] = { column, showButton: table.showFilterButton, hiddenButton: false };
+  }
   return {
     sheetId: table.sheetId,
-    range: normalizeRangeRef(table.range),
-    criteria: {},
+    range,
+    columns,
   };
+}
+
+export type FilterOwner = { kind: 'worksheet' } | { kind: 'table'; tableId: string };
+
+export interface ResolvedAutoFilter {
+  owner: FilterOwner;
+  autoFilter: AutoFilterModel;
+}
+
+export function resolveAutoFilters(sheet: WorksheetModel): ResolvedAutoFilter[] {
+  const resolved: ResolvedAutoFilter[] = sheet.autoFilter
+    ? [{ owner: { kind: 'worksheet' }, autoFilter: sheet.autoFilter }]
+    : [];
+  for (const table of sheet.sheetTables.filter((entry) => entry.sheetId === sheet.id && entry.autoFilter)) {
+    const autoFilter = table.autoFilter!;
+    validateFilterModelOwnership(autoFilter, sheet.id, table.range, 'Table AutoFilter');
+    if (resolved.some((entry) => rangesOverlap(entry.autoFilter.range, autoFilter.range))) {
+      throw new Error('AutoFilter ranges cannot overlap');
+    }
+    resolved.push({ owner: { kind: 'table', tableId: table.id }, autoFilter });
+  }
+  return resolved;
+}
+
+export function resolveActiveAutoFilter(sheet: WorksheetModel, column?: number): AutoFilterModel | undefined {
+  return (column === undefined
+    ? resolveAutoFilters(sheet)[0]
+    : resolveAutoFilters(sheet).find((entry) => column >= entry.autoFilter.range.startColumn && column <= entry.autoFilter.range.endColumn))?.autoFilter;
+}
+
+export function resolveFilterOwner(sheet: WorksheetModel, column?: number): FilterOwner | undefined {
+  return (column === undefined
+    ? resolveAutoFilters(sheet)[0]
+    : resolveAutoFilters(sheet).find((entry) => column >= entry.autoFilter.range.startColumn && column <= entry.autoFilter.range.endColumn))?.owner;
+}
+
+export function validateFilterModelOwnership(
+  filter: AutoFilterModel,
+  sheetId: string,
+  ownerRange: RangeRef,
+  label: string,
+): AutoFilterModel {
+  const range = normalizeRangeRef(filter.range);
+  if (filter.sheetId !== sheetId || range.sheetId !== sheetId) throw new Error(`${label} must target its worksheet`);
+  if (!rangesEqual(range, normalizeRangeRef(ownerRange))) throw new Error(`${label} range must equal its owner range`);
+  for (const [key, column] of Object.entries(filter.columns)) {
+    if (Number(key) !== column.column || column.column < range.startColumn || column.column > range.endColumn) {
+      throw new Error(`${label} column is outside its range`);
+    }
+  }
+  return { ...structuredClone(filter), range };
+}
+
+export function validateFilterOwnership(
+  sheet: WorksheetModel,
+  candidate: AutoFilterModel,
+  owner: FilterOwner,
+): AutoFilterModel {
+  const normalized = normalizeRangeRef(candidate.range);
+  if (normalized.sheetId !== sheet.id || candidate.sheetId !== sheet.id) throw new Error('AutoFilter must target its worksheet');
+  if (owner.kind === 'worksheet') {
+    if (sheet.sheetTables.some((table) => table.sheetId === sheet.id && table.autoFilter && rangesOverlap(normalized, table.autoFilter.range))) {
+      throw new Error('Worksheet AutoFilter cannot overlap a Table AutoFilter');
+    }
+  } else {
+    const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId && entry.sheetId === sheet.id);
+    if (!table) throw new Error(`Sheet Table not found: ${owner.tableId}`);
+    validateFilterModelOwnership(candidate, sheet.id, table.range, 'Table AutoFilter');
+    if (sheet.autoFilter && rangesOverlap(normalized, sheet.autoFilter.range)) {
+      throw new Error('Table AutoFilter cannot overlap a Worksheet AutoFilter');
+    }
+    if (sheet.sheetTables.some((entry) => entry.id !== table.id && entry.sheetId === sheet.id && entry.autoFilter && rangesOverlap(normalized, entry.autoFilter.range))) {
+      throw new Error('Table AutoFilter cannot overlap another Table AutoFilter');
+    }
+  }
+  return { ...structuredClone(candidate), range: normalized };
 }
 
 export function tableFilterColumns(table: SheetTableModel): number[] {
@@ -127,21 +215,54 @@ export function tableFilterColumns(table: SheetTableModel): number[] {
 }
 
 export function resolveActiveFilterColumns(sheet: WorksheetModel): number[] {
-  if (!sheet.filter) return [];
-  const fromCriteria = Object.keys(sheet.filter.criteria)
+  const fromCriteria = resolveAutoFilters(sheet).flatMap(({ autoFilter }) => Object.values(autoFilter.columns)
+    .filter((column) => Boolean(column.criterion))
+    .map((column) => column.column)
     .map(Number)
-    .filter((column) => Number.isFinite(column));
-  if (fromCriteria.length > 0) return fromCriteria.sort((left, right) => left - right);
+    .filter((column) => Number.isFinite(column)));
+  return [...new Set(fromCriteria)].sort((left, right) => left - right);
+}
 
-  const range = normalizeRangeRef(sheet.filter.range);
-  const columns: number[] = [];
-  for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
-  return columns;
+export function resolveFilterRangeColumns(sheet: WorksheetModel): number[] {
+  const columns = new Set<number>();
+  for (const { autoFilter } of resolveAutoFilters(sheet)) {
+    const range = normalizeRangeRef(autoFilter.range);
+    for (let column = range.startColumn; column <= range.endColumn; column++) columns.add(column);
+  }
+  return [...columns].sort((left, right) => left - right);
+}
+
+export interface FilterButtonState {
+  column: number;
+  available: boolean;
+  active: boolean;
+  sorted: boolean;
+  hiddenButton: boolean;
+  showButton: boolean;
+}
+
+export function resolveFilterButtonStates(sheet: WorksheetModel): FilterButtonState[] {
+  const states = new Map<number, FilterButtonState>();
+  for (const { autoFilter } of resolveAutoFilters(sheet)) {
+    const sorted = new Set(autoFilter.sortState?.conditions.flatMap((condition) => {
+      const result: number[] = [];
+      for (let column = condition.ref.startColumn; column <= condition.ref.endColumn; column += 1) result.push(column);
+      return result;
+    }) ?? []);
+    const range = normalizeRangeRef(autoFilter.range);
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const entry = autoFilter.columns[column] ?? { column, showButton: true, hiddenButton: false };
+      states.set(column, { column, available: true, active: Boolean(entry.criterion), sorted: sorted.has(column), hiddenButton: entry.hiddenButton, showButton: entry.showButton });
+    }
+  }
+  return [...states.values()].sort((left, right) => left.column - right.column);
 }
 
 export interface FilterButtonCell {
   row: number;
   column: number;
+  active: boolean;
+  sorted: boolean;
 }
 
 function rangesEqual(left: RangeRef, right: RangeRef): boolean {
@@ -153,9 +274,17 @@ function rangesEqual(left: RangeRef, right: RangeRef): boolean {
     && a.endColumn === b.endColumn;
 }
 
+function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
+  const a = normalizeRangeRef(left);
+  const b = normalizeRangeRef(right);
+  return a.startRow <= b.endRow && b.startRow <= a.endRow
+    && a.startColumn <= b.endColumn && b.startColumn <= a.endColumn;
+}
+
 export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel | undefined {
-  if (!sheet.filter) return undefined;
-  const filterRange = normalizeRangeRef(sheet.filter.range);
+  const autoFilter = resolveActiveAutoFilter(sheet);
+  if (!autoFilter) return undefined;
+  const filterRange = normalizeRangeRef(autoFilter.range);
   return sheet.sheetTables.find(
     (table) => table.sheetId === sheet.id
       && table.showFilterButton
@@ -165,13 +294,16 @@ export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel 
 
 /** 表筛选漏斗绘制在表头行；普通区域筛选仍走列头字母条 */
 export function resolveFilterButtonCells(sheet: WorksheetModel): FilterButtonCell[] {
-  const table = findSheetTableForFilter(sheet);
-  if (!table) return [];
-  const range = normalizeRangeRef(table.range);
-  const headerRow = table.hasHeaderRow ? range.startRow : range.startRow;
   const buttons: FilterButtonCell[] = [];
-  for (let column = range.startColumn; column <= range.endColumn; column++) {
-    buttons.push({ row: headerRow, column });
+  for (const { owner, autoFilter } of resolveAutoFilters(sheet)) {
+    const range = normalizeRangeRef(autoFilter.range);
+    const table = owner.kind === 'table' ? sheet.sheetTables.find((entry) => entry.id === owner.tableId) : undefined;
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const entry = autoFilter.columns[column];
+      if (entry?.showButton === false || entry?.hiddenButton === true) continue;
+      const sorted = autoFilter.sortState?.conditions.some((condition) => column >= condition.ref.startColumn && column <= condition.ref.endColumn) ?? false;
+      buttons.push({ row: table?.hasHeaderRow ? range.startRow : range.startRow, column, active: Boolean(entry?.criterion), sorted });
+    }
   }
   return buttons;
 }

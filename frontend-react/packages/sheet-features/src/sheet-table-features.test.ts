@@ -5,12 +5,15 @@ import type { SheetTableModel } from '@react-sheets/core-model';
 import {
   buildTotalRowFormula,
   computeSheetTableCellStyle,
-  createFilterModelForTable,
+  createAutoFilterModelForTable,
   findSheetTableAt,
   isPointInRange,
   mergePresentationStyles,
   planTotalRowToggle,
   resolveFilterButtonCells,
+  resolveAutoFilters,
+  resolveActiveAutoFilter,
+  resolveFilterOwner,
   subtotalCodeForTotalsFunction,
   tableBodyBounds,
 } from './sheet-table-features';
@@ -43,8 +46,8 @@ test('computeSheetTableCellStyle styles header, body bands, and total row', () =
   assert.deepEqual(tableBodyBounds(sampleTable), { startRow: 1, endRow: 2 });
 });
 
-test('createFilterModelForTable uses the table range', () => {
-  const filter = createFilterModelForTable(sampleTable);
+test('createAutoFilterModelForTable uses the table range', () => {
+  const filter = createAutoFilterModelForTable(sampleTable);
   assert.deepEqual(filter.range, sampleTable.range);
   assert.equal(filter.sheetId, 's1');
 });
@@ -81,9 +84,38 @@ test('planTotalRowToggle expands range and writes total row formulas', () => {
 test('resolveFilterButtonCells targets table header row when filter matches table', () => {
   const sheet = new WorksheetModel('s1', 'Sheet1');
   sheet.sheetTables.push(sampleTable);
-  sheet.filter = createFilterModelForTable(sampleTable);
+  sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
+  sheet.autoFilter!.columns[0]!.criterion = { kind: 'values', values: ['A'], includeBlank: false };
   assert.deepEqual(resolveFilterButtonCells(sheet), [
-    { row: 0, column: 0 },
-    { row: 0, column: 1 },
+    { row: 0, column: 0, active: true, sorted: false },
+    { row: 0, column: 1, active: false, sorted: false },
+  ]);
+});
+
+test('Worksheet and Table AutoFilter ownership is singular for overlapping ranges', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const table = { ...sampleTable, autoFilter: createAutoFilterModelForTable(sampleTable) };
+  sheet.sheetTables.push(table);
+  assert.equal(resolveActiveAutoFilter(sheet)?.range.startRow, 0);
+  assert.deepEqual(resolveFilterOwner(sheet), { kind: 'table', tableId: table.id });
+  sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
+  assert.throws(() => resolveActiveAutoFilter(sheet), /cannot overlap/);
+});
+
+test('multiple non-overlapping Table AutoFilters retain independent owners and buttons', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const first = { ...sampleTable, autoFilter: createAutoFilterModelForTable(sampleTable) };
+  const second = {
+    ...sampleTable,
+    id: 't2',
+    name: 'Other',
+    range: { sheetId: 's1', startRow: 10, endRow: 13, startColumn: 0, endColumn: 1 },
+  };
+  second.autoFilter = createAutoFilterModelForTable(second);
+  sheet.sheetTables.push(first, second);
+  assert.equal(resolveAutoFilters(sheet).length, 2);
+  assert.deepEqual(resolveFilterButtonCells(sheet), [
+    { row: 0, column: 0, active: false, sorted: false }, { row: 0, column: 1, active: false, sorted: false },
+    { row: 10, column: 0, active: false, sorted: false }, { row: 10, column: 1, active: false, sorted: false },
   ]);
 });

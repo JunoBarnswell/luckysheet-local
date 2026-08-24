@@ -4,14 +4,15 @@ import type {
   ConditionalFormatRule,
   DataSourceManifest,
   DrawingObject,
-  FilterModel,
+  AutoFilterModel,
   RangeRef,
   SheetDataRegion,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
-import { normalizeFilterModel, type DataSortParams } from './data-features';
+import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
+import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { parseFormula } from '@react-sheets/formula-engine';
@@ -76,12 +77,18 @@ export interface ReplaceRangeParams {
 export interface FilterToggleParams {
   sheetId: string;
   range?: RangeRef;
-  filter?: FilterModel;
+  autoFilter?: AutoFilterModel;
 }
 
 export interface FilterCriteriaParams {
   sheetId: string;
   range?: RangeRef;
+}
+
+export interface FilterSortParams {
+  sheetId: string;
+  column: number;
+  ascending: boolean;
 }
 
 export interface SortReapplyParams {
@@ -262,11 +269,16 @@ function isValidReplaceParams(value: unknown): value is ReplaceRangeParams {
 
 function isValidFilterToggleParams(value: unknown): value is FilterToggleParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string') return false;
-  return (value.range === undefined || isRange(value.range)) && (value.filter === undefined || isRecord(value.filter));
+  return (value.range === undefined || isRange(value.range)) && (value.autoFilter === undefined || isRecord(value.autoFilter));
 }
 
 function isValidFilterCriteriaParams(value: unknown): value is FilterCriteriaParams {
   return isRecord(value) && typeof value.sheetId === 'string' && (value.range === undefined || isRange(value.range));
+}
+
+function isValidFilterSortParams(value: unknown): value is FilterSortParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && Number.isSafeInteger(value.column) && typeof value.ascending === 'boolean';
 }
 
 function isValidSortReapplyParams(value: unknown): value is SortReapplyParams {
@@ -424,17 +436,19 @@ function getAppliedSortState(sheet: WorksheetModel): AppliedSortState | undefine
   return state ? structuredClone(state) : undefined;
 }
 
-function hasFilterCriteria(filter: FilterModel | undefined): boolean {
-  return Boolean(filter && Object.values(filter.criteria).some((entry) => Boolean(
-    entry.selectedValues?.length || entry.excludeBlanks || entry.conditionOperator,
-  )));
+function hasFilterCriteria(filter: AutoFilterModel | undefined): boolean {
+  return Boolean(filter && Object.values(filter.columns).some((entry) => Boolean(entry.criterion)));
 }
 
-function buildFilterFromParams(params: FilterToggleParams, sheet: WorksheetModel): FilterModel {
-  if (params.filter) return normalizeFilterModel(params.filter);
+function buildFilterFromParams(params: FilterToggleParams, sheet: WorksheetModel): AutoFilterModel {
+  if (params.autoFilter) return normalizeAutoFilterModel(params.autoFilter);
   if (!params.range) throw new Error('Filter range is required when creating a filter');
   const range = normalizeRange(params.range, params.sheetId);
-  return { sheetId: params.sheetId, range, criteria: {} };
+  const columns: AutoFilterModel['columns'] = {};
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    columns[column] = { column, showButton: true, hiddenButton: false };
+  }
+  return { sheetId: params.sheetId, range, columns };
 }
 
 function findPreset(id: string | HomeStylePreset): HomeStylePreset {
@@ -870,45 +884,96 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   });
 
   runtime.registry.registerCommand<FilterToggleParams>({
-    id: 'sheet.filter.toggle',
+    id: 'sheet.autoFilter.toggle',
     execute: (params, context) => {
       if (!isValidFilterToggleParams(params)) throw new Error('Invalid filter toggle parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
       if (params.range) assertNoDataRegionIntersection(sheet, normalizeRange(params.range, params.sheetId), 'Filter');
-      const current = sheet.filter ? normalizeFilterModel(sheet.filter) : undefined;
+      const owner = resolveFilterOwner(sheet);
+      if (owner?.kind === 'table') {
+        const active = resolveActiveAutoFilter(sheet);
+        if (active && (!params.range || rangeEquals(active.range, normalizeRange(params.range, params.sheetId)))) {
+          return runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId });
+        }
+        throw new Error('Use the Table AutoFilter owner for this range');
+      }
+      const current = sheet.autoFilter ? normalizeAutoFilterModel(sheet.autoFilter) : undefined;
       if (current) assertNoDataRegionIntersection(sheet, current.range, 'Filter');
       if (!current) {
         const next = buildFilterFromParams(params, sheet);
-        return runtime.execute('sheet.filter.set', { sheetId: params.sheetId, filter: next });
+        return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
       }
       const requestedRange = params.range ? normalizeRange(params.range, params.sheetId) : current.range;
-      if (rangeEquals(current.range, requestedRange)) return runtime.execute('sheet.filter.remove', { sheetId: params.sheetId });
-      const next = params.filter ? buildFilterFromParams(params, sheet) : { ...current, range: requestedRange };
-      return runtime.execute('sheet.filter.set', { sheetId: params.sheetId, filter: next });
+      if (rangeEquals(current.range, requestedRange)) return runtime.execute('sheet.autoFilter.remove', { sheetId: params.sheetId });
+      const next = params.autoFilter ? buildFilterFromParams(params, sheet) : { ...current, range: requestedRange };
+      validateFilterOwnership(sheet, next, { kind: 'worksheet' });
+      return runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
     },
   });
 
   runtime.registry.registerCommand<FilterCriteriaParams>({
-    id: 'sheet.filter.clearCriteria',
+    id: 'sheet.autoFilter.clearCriteria',
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter clearCriteria parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
-      if (!sheet.filter) return homeResult(context, []);
-      const current = normalizeFilterModel(sheet.filter);
+      const currentSource = resolveActiveAutoFilter(sheet);
+      const owner = resolveFilterOwner(sheet);
+      if (!currentSource) return homeResult(context, []);
+      const current = normalizeAutoFilterModel(currentSource);
       assertNoDataRegionIntersection(sheet, current.range, 'Filter');
       if (params.range && !rangesIntersect(current.range, normalizeRange(params.range, params.sheetId))) return homeResult(context, []);
       if (!hasFilterCriteria(current)) return homeResult(context, [current.range]);
-      return runtime.execute('sheet.filter.set', { sheetId: params.sheetId, filter: { ...current, criteria: {} } });
+      const cleared = { ...current, columns: Object.fromEntries(Object.entries(current.columns).map(([key, value]) => [key, { ...value, criterion: undefined }])) };
+      return owner?.kind === 'table'
+        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: cleared })
+        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: cleared });
     },
   });
 
   runtime.registry.registerCommand<FilterCriteriaParams>({
-    id: 'sheet.filter.reapply',
+    id: 'sheet.autoFilter.reapply',
     execute: (params, context) => {
       if (!isValidFilterCriteriaParams(params)) throw new Error('Invalid filter reapply parameters');
-      const filter = context.workbook.getSheet(params.sheetId).filter;
-      if (filter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), filter.range, 'Filter');
-      return filter ? homeResult(context, [structuredClone(filter.range)]) : homeResult(context, []);
+      const autoFilter = resolveActiveAutoFilter(context.workbook.getSheet(params.sheetId));
+      if (autoFilter) assertNoDataRegionIntersection(context.workbook.getSheet(params.sheetId), autoFilter.range, 'Filter');
+      return autoFilter ? homeResult(context, [structuredClone(autoFilter.range)]) : homeResult(context, []);
+    },
+  });
+
+  runtime.registry.registerCommand<FilterSortParams>({
+    id: 'sheet.autoFilter.sort',
+    execute: (params, context) => {
+      if (!isValidFilterSortParams(params)) throw new Error('Invalid AutoFilter sort parameters');
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const filter = resolveActiveAutoFilter(sheet, params.column);
+      const owner = resolveFilterOwner(sheet, params.column);
+      if (!filter || !owner) throw new Error('No active AutoFilter in the current worksheet');
+      if (params.column < filter.range.startColumn || params.column > filter.range.endColumn) throw new Error('Filter sort column is outside the filter range');
+      const table = owner.kind === 'table' ? sheet.sheetTables.find((entry) => entry.id === owner.tableId) : undefined;
+      const sortRange = table?.hasTotalRow ? { ...filter.range, endRow: filter.range.endRow - 1 } : filter.range;
+      assertNoDataRegionIntersection(sheet, sortRange, 'Sort');
+      const sortResult = runtime.execute('data.sort.rows', {
+        sheetId: params.sheetId,
+        range: sortRange,
+        criteria: [{ column: params.column, ascending: params.ascending }],
+        hasHeader: true,
+      });
+      const sortState = {
+        ref: structuredClone(filter.range),
+        conditions: [{
+          ref: { ...structuredClone(sortRange), startColumn: params.column, endColumn: params.column },
+          descending: !params.ascending,
+        }],
+      };
+      const next = { ...filter, sortState };
+      const filterResult = owner.kind === 'table'
+        ? runtime.execute('sheetTable.autoFilter.set', { sheetId: params.sheetId, tableId: owner.tableId, autoFilter: next })
+        : runtime.execute('sheet.autoFilter.set', { sheetId: params.sheetId, autoFilter: next });
+      return {
+        ...filterResult,
+        mutationCount: sortResult.mutationCount + filterResult.mutationCount,
+        affectedRanges: [...sortResult.affectedRanges, ...filterResult.affectedRanges],
+      };
     },
   });
 
