@@ -52,6 +52,23 @@ interface RowsPermutedMutationParams {
   previousSortState?: AppliedSortState;
 }
 
+/**
+ * A row permutation remaps row-addressed metadata for every valid worksheet
+ * column, including protection rules outside the materialized grid width.
+ * This is the frontend half of the persisted rows.permuted contract.
+ */
+const EXCEL_MAX_COLUMN = 16_383;
+
+function rowsPermutedAffectedRanges(params: RowsPermutedMutationParams): RangeRef[] {
+  return [{
+    sheetId: params.sheetId,
+    startRow: params.range.startRow,
+    endRow: params.range.endRow,
+    startColumn: 0,
+    endColumn: EXCEL_MAX_COLUMN,
+  }];
+}
+
 function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationParams {
   if (!value || typeof value !== 'object') return false;
   const params = value as Record<string, unknown>;
@@ -1369,7 +1386,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
+      affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },
       inverseIds: ['rows.permuted'],
     },
   });
@@ -1389,7 +1406,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const bodyRange: RangeRef = { ...range, startRow };
       const inverseRows = new Array<number>(sourceRows.length);
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
-      const affectedRanges = [structuredClone(bodyRange)];
+      const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows });
       context.applyMutation({
         id: 'rows.permuted',
         unitId: context.workbook.unitId,

@@ -207,8 +207,15 @@ const violations = [];
 
 for (const file of files) {
   const relPath = relative(root, file).replaceAll('\\', '/');
-  if (isTestFile(relPath) || relPath === 'packages/command-runtime/src/index.ts') continue;
   const source = await readFile(file, 'utf8');
+  if (isTestFile(relPath)) {
+    for (const call of parseRegistrationCalls(source)) {
+      if (call.kind !== 'registerMutation' || call.arguments.trimStart()[0] === '{') continue;
+      violations.push(`${relPath}:${call.line}: registerMutation must use the canonical object contract`);
+    }
+    continue;
+  }
+  if (relPath === 'packages/command-runtime/src/index.ts') continue;
 
   for (const call of parseRegistrationCalls(source)) {
     const location = `${relPath}:${call.line}`;

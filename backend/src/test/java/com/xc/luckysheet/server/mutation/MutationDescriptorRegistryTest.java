@@ -127,7 +127,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"cells":{},"protectionRules":[
-                  {"id":"lock-d1-d5","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":3,"endColumn":3},"locked":true,"allow":{}}
+                  {"id":"lock-outside-grid","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":500,"endColumn":500},"locked":true,"allow":{}}
                 ]}]}
                 """);
         var mutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
@@ -136,6 +136,12 @@ class MutationDescriptorRegistryTest {
 
         ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
         assertEquals("FORBIDDEN", error.code());
+
+        var owner = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        assertEquals(0, owner.affectedRanges().getFirst().startColumn());
+        assertEquals(16_383, owner.affectedRanges().getFirst().endColumn());
+        var updated = owner.descriptor().apply(snapshot, mutation);
+        assertEquals(5, updated.path("sheets").get(0).path("protectionRules").get(0).path("range").path("startRow").asInt());
     }
 
     @Test

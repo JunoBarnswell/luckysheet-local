@@ -349,54 +349,78 @@ function validateSparklineState(context: CommandContext, sparkline: SparklineMod
 export function registerSparklineCommands(runtime: CommandRuntime): string[] {
   const commandIds: string[] = [];
 
-  runtime.registry.registerMutation<SparklineInsertParams>('sparkline.add', (item, context) => {
+  runtime.registry.registerMutation<SparklineInsertParams>({
+      id: 'sparkline.add',
+      handler: (item, context) => {
     applySparklineAdd(context, item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'SparklineInsertParams', validate: isSparklineInsert },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['sparkline.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<SparklineRemoveParams>('sparkline.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<SparklineRemoveParams>({
+      id: 'sparkline.remove',
+      handler: (item, context) => {
     applySparklineRemove(context, item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'SparklineRemoveParams', validate: isSparklineRemove },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['sparkline.add'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<SparklineUpdateParams>('sparkline.update', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<SparklineUpdateParams>({
+      id: 'sparkline.update',
+      handler: (item, context) => {
     applySparklineUpdate(context, item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'SparklineUpdateParams', validate: isSparklineUpdate },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['sparkline.update'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<SparklineGroupStateParams>('sparkline.group.add', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<SparklineGroupStateParams>({
+      id: 'sparkline.group.add',
+      handler: (item, context) => {
     applyGroupState(item.params, context);
-  }, {
+  },
+      metadata: {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['sparkline.group.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<SparklineGroupStateParams>('sparkline.group.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<SparklineGroupStateParams>({
+      id: 'sparkline.group.remove',
+      handler: (item, context) => {
     applyGroupState(item.params, context);
-  }, {
+  },
+      metadata: {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['sparkline.group.add'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<SparklineGroupStateParams>('sparkline.group.replace', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<SparklineGroupStateParams>({
+      id: 'sparkline.group.replace',
+      handler: (item, context) => {
     applyGroupState(item.params, context);
-  }, {
+  },
+      metadata: {
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['sparkline.group.replace'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
   runtime.registry.registerCommand<SparklineInsertParams>({
     id: 'sparkline.insert',

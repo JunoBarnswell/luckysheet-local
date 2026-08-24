@@ -21,11 +21,14 @@ public class WorkbookDataBlockService {
     public static final long MAX_WORKBOOK_BLOCK_COUNT = 10_000;
 
     private final WorkbookDataBlockStore store;
+    private final WorkbookDataBlockCommitService commitService;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
 
-    public WorkbookDataBlockService(WorkbookDataBlockStore store, AccessControlService access, WorkbookLifecycleService lifecycle) {
+    public WorkbookDataBlockService(WorkbookDataBlockStore store, WorkbookDataBlockCommitService commitService,
+                                    AccessControlService access, WorkbookLifecycleService lifecycle) {
         this.store = store;
+        this.commitService = commitService;
         this.access = access;
         this.lifecycle = lifecycle;
     }
@@ -43,8 +46,8 @@ public class WorkbookDataBlockService {
         String actualChecksum = sha256(content);
         if (!actualChecksum.equals(checksum)) throw ServiceException.validation("Data block checksum mismatch");
         Instant now = Instant.now();
-        DataBlockRow row = new DataBlockRow(unitId, sourceId, blockId, actualChecksum, content.length, content.clone(), now, now);
-        return metadata(store.upsertWithinQuota(row, MAX_WORKBOOK_BLOCK_BYTES, MAX_WORKBOOK_BLOCK_COUNT));
+        DataBlockRow row = new DataBlockRow(unitId, sourceId, blockId, actualChecksum, content.length, content, now, now);
+        return commitService.commit(row, MAX_WORKBOOK_BLOCK_BYTES, MAX_WORKBOOK_BLOCK_COUNT, actor);
     }
 
     public DataBlockRow get(String unitId, String sourceId, String blockId, String actor) {
@@ -57,15 +60,9 @@ public class WorkbookDataBlockService {
     }
 
     public void delete(String unitId, String sourceId, String blockId, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
-        lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
-        store.delete(unitId, sourceId, blockId);
-    }
-
-    private static DataBlockMetadata metadata(DataBlockRow row) {
-        return new DataBlockMetadata(row.unitId(), row.sourceId(), row.blockId(), row.checksum(), row.byteLength(), row.updatedAt());
+        commitService.delete(unitId, sourceId, blockId, actor);
     }
 
     private static void validateIdentity(String value, String field) {

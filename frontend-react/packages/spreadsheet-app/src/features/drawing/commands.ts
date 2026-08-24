@@ -382,70 +382,102 @@ function executeTransformBatch(params: DrawingTransformBatchParams, context: Com
 }
 
 export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime: DrawingRuntime): string[] {
-  runtime.registry.registerMutation<DrawingAddParams>('drawing.add', (item, context) => {
+  runtime.registry.registerMutation<DrawingAddParams>({
+      id: 'drawing.add',
+      handler: (item, context) => {
     addDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawing, item.params.payload);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingAddParams', validate: isDrawingAddParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.remove'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingRemoveParams>('drawing.remove', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingRemoveParams>({
+      id: 'drawing.remove',
+      handler: (item, context) => {
     removeDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingRemoveParams', validate: isDrawingRemoveParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.add'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingTransformParams>('drawing.transform', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingTransformParams>({
+      id: 'drawing.transform',
+      handler: (item, context) => {
     findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).transform = structuredClone(item.params.transform);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingTransformParams', validate: isTransformParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.transform'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingTransformBatchParams>('drawing.transform.batch', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingTransformBatchParams>({
+      id: 'drawing.transform.batch',
+      handler: (item, context) => {
     for (const entry of item.params.entries) findDrawing(context.workbook.getSheet(item.params.sheetId), entry.drawingId).transform = structuredClone(entry.after);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingTransformBatchParams', validate: isTransformBatchParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.transform.batch'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingAnchorParams>('drawing.anchor', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingAnchorParams>({
+      id: 'drawing.anchor',
+      handler: (item, context) => {
     findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).anchor = structuredClone(item.params.anchor);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingAnchorParams', validate: isAnchorParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.anchor'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingPayloadUpdateParams>('drawing.payload.update', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingPayloadUpdateParams>({
+      id: 'drawing.payload.update',
+      handler: (item, context) => {
     updatePayload(context.workbook.getSheet(item.params.sheetId), item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingPayloadUpdateParams', validate: isPayloadUpdateParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.payload.update'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingZOrderParams>('drawing.zorder', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingZOrderParams>({
+      id: 'drawing.zorder',
+      handler: (item, context) => {
     reorderDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId, item.params.direction);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingZOrderParams', validate: isZOrderParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.zorder.restore'], minCount: 1, maxCount: 1 },
-  });
-  runtime.registry.registerMutation<DrawingZOrderRestoreParams>('drawing.zorder.restore', (item, context) => {
+  },
+    });
+  runtime.registry.registerMutation<DrawingZOrderRestoreParams>({
+      id: 'drawing.zorder.restore',
+      handler: (item, context) => {
     restoreZOrder(context.workbook.getSheet(item.params.sheetId), item.params);
-  }, {
+  },
+      metadata: {
     schema: { name: 'DrawingZOrderRestoreParams', validate: isZOrderRestoreParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
     inversePolicy: { allowedMutationIds: ['drawing.zorder.restore'], minCount: 1, maxCount: 1 },
-  });
+  },
+    });
 
   const commandIds: string[] = [];
   runtime.registry.registerCommand<DrawingSelectParams>({

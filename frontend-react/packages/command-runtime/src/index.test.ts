@@ -276,7 +276,11 @@ test('CommandRegistry validates schema, permission, affected ranges, and declare
     affectedRanges: { resolve: () => [range] },
     inverseIds: ['cell.restore'],
   } as const;
-  registry.registerMutation('cell.set', () => undefined, metadata);
+  registry.registerMutation({
+    id: 'cell.set',
+    handler: () => undefined,
+    metadata,
+  });
   registry.registerMutation({
     id: 'cell.restore',
     handler: () => undefined,
@@ -306,7 +310,11 @@ test('CommandRegistry validates schema, permission, affected ranges, and declare
 
 test('CommandRegistry rejects incomplete metadata and declared inverse drift', () => {
   const registry = new CommandRegistry();
-  assert.throws(() => registry.registerMutation('missing.contract', () => undefined), /requires canonical metadata/);
+  assert.throws(() => registry.registerMutation({
+    id: 'missing.contract',
+    handler: () => undefined,
+    metadata: undefined as never,
+  }), /requires canonical metadata/);
   assert.throws(() => registry.registerMutation({
     id: 'broken.registration',
     handler: () => undefined,

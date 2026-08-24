@@ -110,20 +110,20 @@ function restoreWorkbookTable(context: CommandContext, payload: QueryWorkbookTab
 }
 
 function registerQueryMutations(registry: CommandRegistry, store: WorkbookTableQueryStore): void {
-  registry.registerMutation<QueryDefinitionReplaceMutationParams>(
-    'query.definition.replace',
-    (item, context) => {
+  registry.registerMutation<QueryDefinitionReplaceMutationParams>({
+    id: 'query.definition.replace',
+    handler: (item, context) => {
       if (!isQueryDefinitionReplacePayload(item.params)) throw new Error('Invalid query.definition.replace mutation payload');
       if (item.params.definition === null) context.workbook.removeQueryDefinition(item.params.queryId);
       else context.workbook.setQueryDefinition(item.params.definition);
     },
-    {
+    metadata: {
       schema: { name: 'QueryDefinitionReplaceMutationParams', validate: isQueryDefinitionReplacePayload },
       permission: { capability: 'query.definition.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['query.definition.replace'],
     },
-  );
+  });
   const applyCellQueryMutation = (item: import('@react-sheets/command-runtime').MutationInfo<QueryCellLoadPayload | QueryCellRestorePayload>, context: CommandContext): void => {
     const payload = item.params;
     if (!isQueryLoadPayload(payload)) throw new Error('Invalid query cell mutation payload');
