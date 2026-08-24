@@ -10,5 +10,6 @@ export * from './native-pivot';
 export * from './worker-protocol';
 export * from './worker-entry';
 export * from './worker-port';
+export * from './codec-registry';
 export * from './import';
 export * from './export';

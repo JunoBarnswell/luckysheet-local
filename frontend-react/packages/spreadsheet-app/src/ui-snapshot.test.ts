@@ -13,6 +13,32 @@ import {
 } from './features/data-source';
 
 describe('canonical drawing UI projection', () => {
+  it('collapses filtered rows in the render projection without blank placeholders', () => {
+    const workbook = new WorkbookModel('snapshot-filter', 'Snapshot Filter');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 5;
+    sheet.columnCount = 2;
+    sheet.cells.set(0, 0, { value: 'State' });
+    sheet.cells.set(0, 1, { value: 'Value' });
+    sheet.cells.set(1, 0, { value: 'Keep' });
+    sheet.cells.set(2, 0, { value: 'Drop' });
+    sheet.cells.set(3, 0, { value: 'Keep' });
+    sheet.cells.set(4, 0, { value: 'Drop' });
+    sheet.autoFilter = {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 },
+      columns: {
+        0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['Keep'], includeBlank: false } },
+        1: { column: 1, showButton: true, hiddenButton: false },
+      },
+    };
+
+    const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
+    assert.deepEqual(snapshot.hiddenRows, [2, 4]);
+    assert.deepEqual(snapshot.previewRows.map((row) => row.rowNumber), [1, 2, 4]);
+    assert.equal(snapshot.getCell(2, 0)?.value, 'Drop');
+  });
+
   it('exposes only DrawingObject and DrawingPayload to consumers', () => {
     const workbook = new WorkbookModel('snapshot-drawings', 'Snapshot Drawings');
     const sheet = workbook.getSheet(workbook.getSheets()[0]!.id);

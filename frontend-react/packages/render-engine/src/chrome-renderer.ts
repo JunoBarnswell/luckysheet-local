@@ -303,8 +303,8 @@ function drawOutlineControls(options: ChromeDrawOptions): void {
   }
 }
 
-function drawFilterFunnelIcon(context: CanvasRenderingContext2D, cx: number, cy: number): void {
-  context.fillStyle = '#2563eb';
+function drawFilterFunnelIcon(context: CanvasRenderingContext2D, cx: number, cy: number, active = false, sorted = false): void {
+  context.fillStyle = active || sorted ? '#217345' : '#6b7280';
   context.beginPath();
   context.moveTo(cx, cy - 4);
   context.lineTo(cx + 8, cy - 4);
@@ -332,7 +332,7 @@ function drawFilterFunnels(options: ChromeDrawOptions): void {
       if (!visible) continue;
       const cx = visible.x + transform.dx + visible.width - 12;
       const cy = visible.y + transform.dy + 8;
-      drawFilterFunnelIcon(context, cx, cy);
+      drawFilterFunnelIcon(context, cx, cy, button.active, button.sorted);
     }
     return;
   }
@@ -399,11 +399,11 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
       if (skeleton.isColumnHidden(column)) continue;
       const left = skeleton.getColumnLeft(column) + t.dx;
       const width = skeleton.getColumnWidth(column);
-       const isSelected = isColumnSelected(chrome, column);
+      const isSelected = isColumnSelected(chrome, column);
       if (isSelected) {
-        context.fillStyle = "#dbeafe";
+        context.fillStyle = theme.headerSelectionBackground;
         context.fillRect(left, origin.y, width, COL_HEADER_HEIGHT);
-        context.fillStyle = theme.headerText;
+        context.fillStyle = theme.headerSelectionText;
       }
       context.strokeStyle = theme.headerBorder;
       context.strokeRect(left + 0.5, origin.y + 0.5, width, COL_HEADER_HEIGHT - 1);
@@ -415,11 +415,11 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
       if (skeleton.isRowHidden(row)) continue;
       const top = skeleton.getRowTop(row) + t.dy;
       const height = skeleton.getRowHeight(row);
-       const isSelected = isRowSelected(chrome, row);
+      const isSelected = isRowSelected(chrome, row);
       if (isSelected) {
-        context.fillStyle = "#dbeafe";
+        context.fillStyle = theme.headerSelectionBackground;
         context.fillRect(0, top, origin.x, height);
-        context.fillStyle = theme.headerText;
+        context.fillStyle = theme.headerSelectionText;
       }
       context.strokeStyle = theme.headerBorder;
       context.strokeRect(0.5, top + 0.5, origin.x - 1, height);
@@ -429,7 +429,7 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
   }
 
   // 全选角块
-  context.fillStyle = chrome.selection.ranges.some((range) => isSelectAllRange(range, skeleton)) ? "#dbeafe" : theme.headerBackground;
+  context.fillStyle = chrome.selection.ranges.some((range) => isSelectAllRange(range, skeleton)) ? theme.headerSelectionBackground : theme.headerBackground;
   context.fillRect(0, 0, origin.x, origin.y);
   context.strokeStyle = theme.headerBorder;
   context.strokeRect(0.5, 0.5, origin.x - 1, origin.y - 1);

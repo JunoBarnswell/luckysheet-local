@@ -1,6 +1,6 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { Button } from './Button';
-import { Box, Inline, Kbd, Text } from './layout';
+import { Box, Inline } from './layout';
 import { TextInput } from './TextInput';
 
 export interface FormulaBarLabels {
@@ -19,6 +19,7 @@ export interface FormulaBarProps {
   formula: string;
   labels: FormulaBarLabels;
   onCancel: () => void;
+  onFocusFormula?: () => void;
   onChange: (value: string) => void;
   onCommit: () => void;
   onNameBoxCommit?: (value: string) => void;
@@ -33,6 +34,7 @@ export function FormulaBar({
   onCancel,
   onChange,
   onCommit,
+  onFocusFormula,
   onNameBoxCommit,
   onOpenWizard,
 }: FormulaBarProps) {
@@ -78,13 +80,13 @@ export function FormulaBar({
     <Box
       as="form"
       aria-label="Formula bar"
-      className="flex h-10 items-center gap-2 border-b border-slate-200 bg-white px-4"
+      className="flex h-[37px] items-center gap-1 border-y border-[#d9d9d9] border-t-[#eeeeee] bg-white px-2"
       data-testid="formula-bar"
       onSubmit={handleSubmit}
     >
       <TextInput
         aria-label={labels.selectedCell}
-        className="w-24 text-center font-mono text-xs font-bold text-slate-800 bg-slate-50 border-slate-200"
+        className="!h-[26px] !min-h-0 !w-[100px] flex-none rounded-[2px] border-[#d9d9d9] bg-white text-center font-mono text-xs font-bold text-slate-800"
         data-testid="name-box"
         disabled={disabled}
         readOnly={!onNameBoxCommit}
@@ -93,44 +95,41 @@ export function FormulaBar({
         onChange={(event: ChangeEvent<HTMLInputElement>) => setNameDraft(event.target.value)}
         onKeyDown={handleNameKeyDown}
       />
-      <Inline gap="sm" className="min-w-0 flex-1">
-        <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="sm" variant="outline">fx</Button>
+      <Button
+        aria-label={labels.cancel}
+        data-testid="formula-cancel"
+        disabled={disabled}
+        icon="x"
+        iconOnly
+        onClick={onCancel}
+        size="xs"
+        variant="ghost"
+        className="!h-[26px] !min-h-0 !w-7 rounded-[2px] text-slate-500"
+      />
+      <Button
+        aria-label={labels.apply}
+        data-testid="formula-apply"
+        disabled={disabled}
+        icon="check"
+        iconOnly
+        onClick={onCommit}
+        size="xs"
+        variant="ghost"
+        className="!h-[26px] !min-h-0 !w-7 rounded-[2px] text-slate-500"
+      />
+      <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="xs" variant="ghost" className="!h-[26px] !min-h-0 !w-8 rounded-[2px] text-[#6c9ac0]">fx</Button>
+      <Inline gap="none" className="min-w-0 flex-1">
         <TextInput
           aria-label={labels.formulaInput}
-          className="font-mono text-xs"
+          className="!h-[26px] !min-h-0 flex-1 rounded-[2px] border-[#d9d9d9] font-mono text-xs"
           data-testid="formula-input"
           disabled={disabled}
           onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}
+          onFocus={onFocusFormula}
           onKeyDown={handleFormulaKeyDown}
-          placeholder={labels.placeholder}
+          placeholder=""
           value={formula}
         />
-      </Inline>
-      <Inline gap="xs" className="shrink-0">
-        <Button
-          aria-label={labels.cancel}
-          data-testid="formula-cancel"
-          disabled={disabled}
-          icon="x"
-          iconOnly
-          onClick={onCancel}
-          size="sm"
-          variant="ghost"
-        />
-        <Button
-          aria-label={labels.apply}
-          data-testid="formula-apply"
-          disabled={disabled}
-          icon="check"
-          iconOnly
-          onClick={onCommit}
-          size="sm"
-          variant="soft"
-        />
-        <Inline gap="xs" className="hidden pl-2 lg:flex">
-          <Text size="xs" tone="subtle">{labels.applyHint}</Text>
-          <Kbd>Enter</Kbd>
-        </Inline>
       </Inline>
     </Box>
   );

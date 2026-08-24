@@ -359,7 +359,7 @@ export class WorkbookCatalogService {
     return { entry: localEntry(record, this.canUseRemote()), snapshot: clone(record.snapshot) };
   }
 
-  async importXlsx(input: WorkbookCatalogImportInput): Promise<WorkbookCatalogImportResult> {
+  async importWorkbook(input: WorkbookCatalogImportInput): Promise<WorkbookCatalogImportResult> {
     if (!input.fileName.trim()) throw new WorkbookCatalogError('invalid-input', 'XLSX file name is required');
     if (input.buffer.byteLength > DEFAULT_XLSX_IMPORT_MAX_BYTES) {
       throw new WorkbookCatalogError('invalid-input', `XLSX file exceeds ${DEFAULT_XLSX_IMPORT_MAX_BYTES} byte limit`);
@@ -433,7 +433,7 @@ export class WorkbookCatalogService {
     };
   }
 
-  async exportXlsx(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
+  async exportWorkbook(unitId: string, input: WorkbookCatalogExportInput = {}): Promise<WorkbookCatalogExportResult> {
     const opened = await this.open(unitId);
     let artifact = await this.persistence.nativePackages.load(unitId);
     if (!artifact && this.canUseRemote()) {

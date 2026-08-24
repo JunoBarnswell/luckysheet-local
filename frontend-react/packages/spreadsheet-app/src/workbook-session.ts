@@ -177,13 +177,24 @@ import { currentRegionOfSheet, inferTableFieldType, nextId, usedRangeOfSheet } f
 import type {
   ActiveContext,
   AppPhase,
+  BackstagePanel,
+  BackstageState,
+  ClipboardState,
+  DesignerState,
+  EditSession as DesignerEditSession,
+  FocusState,
   HomeRibbonState,
   HomeStyleKey,
+  InputMode,
+  PanelState,
   PeerCursor,
   RibbonTabId,
   SaveState,
   SidebarPanelId,
+  SheetDialogState,
   UiSessionIntent,
+  DialogState,
+  UndoRedoState,
 } from './types';
 
 export interface WorkbookSessionOptions {
@@ -198,7 +209,7 @@ export interface WorkbookSessionOptions {
   xlsxExecution?: 'worker' | 'inline-test';
 }
 
-export interface UiSnapshot {
+export interface UiSnapshot extends DesignerState {
   unitId: string;
   workbookName: string;
   phase: AppPhase;
@@ -208,7 +219,7 @@ export interface UiSnapshot {
   homeRibbon: HomeRibbonState;
   activeCell: string;
   activeSheetId: string;
-  activePanel: SidebarPanelId;
+  panels: PanelState;
   ribbonTab: RibbonTabId;
   formulaDraft: string;
   editingCell: { row: number; column: number } | null;
@@ -236,19 +247,10 @@ export interface UiSnapshot {
   tables: readonly WorkbookTableModel[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
-  showFunctionWizard: boolean;
-  showSortDialog: boolean;
-  showFindReplace: boolean;
-  showGoTo: boolean;
-  showPasteSpecial: boolean;
-  showFormatCells: boolean;
-  showShiftCells: boolean;
-  showMergeConfirm: boolean;
-  mergeDiscardCount: number;
-  showCreatePivotDialog: boolean;
+  dialogs: DialogState;
+  inputMode: InputMode;
+  focus: FocusState;
   formatPainter: 'once' | 'locked' | null;
-  findQuery: string;
-  showPrintPreview: boolean;
   printLayout: PrintLayout;
   printPages: readonly PrintPageSnapshot[];
   printPageCount: number;
@@ -262,6 +264,13 @@ export interface UiSnapshot {
   lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
   formulaAudit: FormulaAuditProjection;
   version: number;
+  /** Canonical DesignerState fields; render-specific projections remain read-only views of the same session. */
+  workbook: DesignerState['workbook'];
+  editSession: DesignerEditSession | null;
+  activeObject: DesignerState['activeObject'];
+  ribbon: DesignerState['ribbon'];
+  clipboard: ClipboardState;
+  undoRedo: UndoRedoState;
 }
 
 const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
@@ -340,7 +349,8 @@ export class WorkbookSession {
   private notice = 'Workbook engine ready';
   private version = 0;
   private activeSheetId: string;
-  private activePanel: SidebarPanelId = 'inspector';
+  private panels: PanelState = { active: 'inspector', open: false, dock: 'right' };
+  private backstage: BackstageState = { open: false, panel: 'info' };
   private ribbonTab: RibbonTabId = 'home';
   private formulaDraft = '';
   private zoom = 100;
@@ -363,20 +373,11 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private showFunctionWizard = false;
-  private showSortDialog = false;
-  private showFindReplace = false;
-  private showGoTo = false;
-  private showPasteSpecial = false;
-  private showFormatCells = false;
-  private showShiftCells = false;
-  private showMergeConfirm = false;
+  private dialogs: DialogState = { active: null, findQuery: '', mergeDiscardCount: 0, columnWidth: null, sheet: null };
   private pendingMergeRange: RangeRef | null = null;
-  private mergeDiscardCount = 0;
-  private showCreatePivotDialog = false;
+  private inputMode: InputMode = 'grid';
+  private focus: FocusState = { mode: 'grid', target: 'grid' };
   private formatPainter: { mode: 'once' | 'locked'; sourceRange: RangeRef } | null = null;
-  private findQuery = '';
-  private showPrintPreview = false;
   private printLayout: PrintLayout = {
     paper: 'A4',
     orientation: 'portrait',
@@ -514,11 +515,6 @@ export class WorkbookSession {
     this.started = true;
     const generation = ++this.lifecycleGeneration;
     this.persistenceDispose = startPersistenceSession(this.runtime);
-    this.collabDispose = startCollaborationSession(this.runtime, () =>
-      `${this.activeSheetId}:${this.selectionService.getState().activeCell.row}:${this.selectionService.getState().activeCell.column}`,
-      this.runtime.authTokenProvider,
-      this.runtime.shareTokenProvider,
-    );
     void this.runtime.persistenceReady.then(async () => {
       if (this.disposed || generation !== this.lifecycleGeneration) return;
       const artifact = await this.runtime.workspacePersistence.nativePackages.load(this.runtime.model.unitId);
@@ -528,6 +524,13 @@ export class WorkbookSession {
         this.emit();
       }
       if (!this.disposed && generation === this.lifecycleGeneration) this.restorePersistedQuerySessions();
+      if (!this.disposed && generation === this.lifecycleGeneration) {
+        this.collabDispose = startCollaborationSession(this.runtime, () =>
+          `${this.activeSheetId}:${this.selectionService.getState().activeCell.row}:${this.selectionService.getState().activeCell.column}`,
+          this.runtime.authTokenProvider,
+          this.runtime.shareTokenProvider,
+        );
+      }
     }).catch((error: unknown) => {
       if (!this.disposed && generation === this.lifecycleGeneration) this.notify(error instanceof Error ? error.message : 'Workbook persistence initialization failed');
     });
@@ -700,7 +703,14 @@ export class WorkbookSession {
     const selection = this.selectionService.getState();
     const collaboration = this.getCollaborationSnapshot();
     const homeRibbon = this.deriveHomeRibbonState(selection);
+    const undoEntries = this.runtime.commands.getUndoEntries();
+    const redoEntries = this.runtime.commands.getRedoEntries();
+    const activeEdit = this.editSession.active;
+    const activeDrawing = this.selectedFloatingId
+      ? selectedSheet.drawings.find((drawing) => drawing.id === this.selectedFloatingId)
+      : undefined;
     const snapshot: UiSnapshot = {
+      workbook: { unitId: this.runtime.model.unitId, name: this.runtime.model.name },
       unitId: this.runtime.model.unitId,
       workbookName: this.runtime.model.name,
       phase: this.phase,
@@ -710,7 +720,7 @@ export class WorkbookSession {
       homeRibbon,
       activeCell: this.selectionService.activeCell,
       activeSheetId: this.activeSheetId,
-      activePanel: this.activePanel,
+      panels: { ...this.panels },
       ribbonTab: this.ribbonTab,
       formulaDraft: this.formulaDraft,
       editingCell: this.editSession.editingCell,
@@ -738,19 +748,24 @@ export class WorkbookSession {
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
       dataSources: [...this.runtime.model.dataSources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
-      showFunctionWizard: this.showFunctionWizard,
-      showSortDialog: this.showSortDialog,
-      showFindReplace: this.showFindReplace,
-      showGoTo: this.showGoTo,
-      showPasteSpecial: this.showPasteSpecial,
-      showFormatCells: this.showFormatCells,
-      showShiftCells: this.showShiftCells,
-      showMergeConfirm: this.showMergeConfirm,
-      mergeDiscardCount: this.mergeDiscardCount,
-      showCreatePivotDialog: this.showCreatePivotDialog,
+      dialogs: { ...this.dialogs },
+      backstage: { ...this.backstage },
+      inputMode: this.inputMode,
+      focus: { ...this.focus },
+      editSession: activeEdit ? {
+        sheetId: activeEdit.sheetId,
+        cell: { row: activeEdit.row, column: activeEdit.column },
+        originalValue: activeEdit.originalValue?.value ?? null,
+        ...(activeEdit.originalFormula !== undefined ? { originalFormula: activeEdit.originalFormula } : {}),
+        draftText: activeEdit.currentDraft,
+        mode: activeEdit.originalFormula || activeEdit.currentDraft.startsWith('=') ? 'formula' : 'value',
+        source: this.focus.target === 'formula-bar' ? 'formulaBar' : 'cell',
+      } : null,
+      activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
+      ribbon: { activeTab: this.ribbonTab },
+      clipboard: { hasContent: Boolean(this.clipboardData), mode: this.clipboardData ? (this.clipboardData.isCut ? 'cut' : 'copy') : null },
+      undoRedo: { canUndo: undoEntries.length > 0, canRedo: redoEntries.length > 0, undoCount: undoEntries.length, redoCount: redoEntries.length },
       formatPainter: this.formatPainter?.mode ?? null,
-      findQuery: this.findQuery,
-      showPrintPreview: this.showPrintPreview,
       printLayout: this.printLayout,
       printPages: this.printSnapshot?.pageSnapshots ?? [],
       printPageCount: this.printSnapshot?.pageCount ?? 0,
@@ -969,7 +984,22 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet);
+        return;
+      case 'dialog.close':
+        this.closeActiveDialog();
+        return;
+      case 'dialog.update':
+        this.updateDialogDraft(intent.value);
+        return;
+      case 'command-palette.open':
+        this.openCommandPalette();
+        return;
+      case 'command-palette.close':
+        this.closeCommandPalette();
+        return;
+      case 'backstage.open':
+        this.openBackstage(intent.panel);
         return;
       case 'zoom.set':
         this.setZoom(intent.value);
@@ -981,6 +1011,25 @@ export class WorkbookSession {
         this.notify(intent.message);
         return;
     }
+  }
+
+  openBackstage(panel: BackstagePanel = 'info'): void {
+    this.backstage = { open: true, panel };
+    this.setFocusState('side-panel', 'side-panel');
+    this.emit();
+  }
+
+  closeBackstage(): void {
+    if (!this.backstage.open) return;
+    this.backstage = { ...this.backstage, open: false };
+    this.setFocusState('grid', 'grid');
+    this.emit();
+  }
+
+  setBackstagePanel(panel: BackstagePanel): void {
+    this.backstage = { open: true, panel };
+    this.setFocusState('side-panel', 'side-panel');
+    this.emit();
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
@@ -1165,7 +1214,7 @@ export class WorkbookSession {
     if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
     this.activeContext = next;
     if (pivotId !== null) {
-      this.activePanel = 'pivot';
+      this.panels = { ...this.panels, active: 'pivot', open: true };
       this.ribbonTab = 'pivotAnalyze';
     } else if (this.ribbonTab === 'pivotAnalyze' || this.ribbonTab === 'pivotDesign') {
       this.ribbonTab = 'home';
@@ -1493,11 +1542,17 @@ export class WorkbookSession {
 
   setRibbonTab(tab: RibbonTabId): void {
     this.ribbonTab = tab;
+    this.setFocusState('ribbon', 'ribbon');
     this.emit();
   }
 
   setActivePanel(panel: SidebarPanelId): void {
-    this.activePanel = panel;
+    this.panels = { ...this.panels, active: panel, open: true };
+    this.emit();
+  }
+
+  setPanelOpen(open: boolean): void {
+    this.panels = { ...this.panels, open };
     this.emit();
   }
 
@@ -1506,57 +1561,93 @@ export class WorkbookSession {
     this.emit();
   }
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot', findQuery?: string): void {
-    if (dialog === 'function-wizard') this.showFunctionWizard = true;
-    if (dialog === 'sort-dialog') this.showSortDialog = true;
-    if (dialog === 'find-replace') {
-      this.findQuery = findQuery ?? '';
-      this.showFindReplace = true;
-    }
-    if (dialog === 'goto') this.showGoTo = true;
-    if (dialog === 'paste-special') this.showPasteSpecial = true;
-    if (dialog === 'format-cells') this.showFormatCells = true;
-    if (dialog === 'shift-cells') this.showShiftCells = true;
-    if (dialog === 'create-pivot') this.showCreatePivotDialog = true;
+  setFocusState(mode: InputMode, target: FocusState['target'] = mode === 'cell-edit'
+    ? 'grid'
+    : mode === 'formula-edit'
+      ? 'formula-bar'
+      : mode === 'ribbon-keytip'
+        ? 'ribbon'
+        : mode === 'dropdown'
+          ? 'ribbon'
+          : mode): void {
+    this.inputMode = mode;
+    this.focus = { mode, target };
+  }
+
+  openCommandPalette = (): void => {
+    this.dialogs = { ...this.dialogs, active: 'command-palette' };
+    this.setFocusState('command-palette', 'command-palette');
+    this.emit();
+  };
+
+  closeCommandPalette = (): void => {
+    if (this.dialogs.active === 'command-palette') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
+    this.emit();
+  };
+
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState): void {
+    this.setFocusState('dialog', 'dialog');
+    const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
+    this.dialogs = { ...this.dialogs, active, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
-      this.showPrintPreview = true;
-      this.activePanel = 'print';
+      this.panels = { ...this.panels, active: 'print', open: true };
     }
     this.emit();
   }
 
+  closeActiveDialog(): void {
+    if (!this.dialogs.active) return;
+    this.dialogs = { ...this.dialogs, active: null, columnWidth: null, sheet: null };
+    this.setFocusState('grid', 'grid');
+    this.emit();
+  }
+
+  updateDialogDraft(value: string): void {
+    if (!this.dialogs.sheet) return;
+    this.dialogs = { ...this.dialogs, sheet: { ...this.dialogs.sheet, value } };
+    this.emit();
+  }
+
   closeFunctionWizard = (): void => {
-    this.showFunctionWizard = false;
+    if (this.dialogs.active === 'function-wizard') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closeSortDialog = (): void => {
-    this.showSortDialog = false;
+    if (this.dialogs.active === 'sort-dialog') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closeFindReplace = (): void => {
-    this.showFindReplace = false;
-    this.findQuery = '';
+    if (this.dialogs.active === 'find-replace') this.dialogs = { ...this.dialogs, active: null, findQuery: '' };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closeGoTo = (): void => {
-    this.showGoTo = false;
+    if (this.dialogs.active === 'goto') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closePasteSpecial = (): void => {
-    this.showPasteSpecial = false;
+    if (this.dialogs.active === 'paste-special') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closeFormatCells = (): void => {
-    this.showFormatCells = false;
+    if (this.dialogs.active === 'format-cells') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closeShiftCells = (): void => {
-    this.showShiftCells = false;
+    if (this.dialogs.active === 'shift-cells') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   closeCreatePivotDialog = (): void => {
-    this.showCreatePivotDialog = false;
+    if (this.dialogs.active === 'create-pivot') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
     this.emit();
   };
   pasteSpecial(mode: PasteMode): void {
@@ -1564,7 +1655,8 @@ export class WorkbookSession {
     this.closePasteSpecial();
   };
   setShowPrintPreview = (open: boolean): void => {
-    this.showPrintPreview = open;
+    this.dialogs = { ...this.dialogs, active: open ? 'print-preview' : null };
+    this.setFocusState(open ? 'dialog' : 'grid', open ? 'dialog' : 'grid');
     this.emit();
   };
 
@@ -1672,8 +1764,8 @@ export class WorkbookSession {
     }
     if (discardCount > 0) {
       this.pendingMergeRange = range;
-      this.mergeDiscardCount = discardCount;
-      this.showMergeConfirm = true;
+      this.dialogs = { ...this.dialogs, active: 'merge-confirm', mergeDiscardCount: discardCount };
+      this.setFocusState('dialog', 'dialog');
       this.emit();
       return;
     }
@@ -1682,17 +1774,17 @@ export class WorkbookSession {
 
   confirmMergeCells(): void {
     const range = this.pendingMergeRange;
-    this.showMergeConfirm = false;
+    this.dialogs = { ...this.dialogs, active: null, mergeDiscardCount: 0 };
+    this.setFocusState('grid', 'grid');
     this.pendingMergeRange = null;
-    this.mergeDiscardCount = 0;
     if (range) this.dispatch({ commandId: 'sheet.merge.center', params: { sheetId: range.sheetId, range, confirmDataLoss: true } });
     this.emit();
   }
 
   cancelMergeCells(): void {
-    this.showMergeConfirm = false;
+    this.dialogs = { ...this.dialogs, active: null, mergeDiscardCount: 0 };
+    this.setFocusState('grid', 'grid');
     this.pendingMergeRange = null;
-    this.mergeDiscardCount = 0;
     this.emit();
   }
 
@@ -1867,19 +1959,19 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  beginEdit(initialText?: string): void {
+  beginEdit(initialText?: string): boolean {
     const sel = this.selectionService.getState();
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const target = { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, text: initialText ?? '' };
     const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', target, this.actorId, this.activeSheetId);
     if (!permission.allowed) {
       this.notify(permission.reason ?? 'This cell is not editable');
-      return;
+      return false;
     }
     for (const spill of sheet.spillRanges) {
       if (isSpillChild(spill, sel.activeCell.row, sel.activeCell.column)) {
         this.notify('Spill cells are read-only');
-        return;
+        return false;
       }
     }
     const cell = this.readResolvedCell(sheet, sel.activeCell.row, sel.activeCell.column);
@@ -1891,12 +1983,15 @@ export class WorkbookSession {
       selection: this.selectionService.getSnapshot(),
       initialText,
     });
+    this.setFocusState('cell-edit', 'grid');
     this.formulaDraft = this.editSession.active?.currentDraft ?? '';
     this.emit();
+    return true;
   }
 
   cancelEdit(): void {
     this.formulaDraft = this.editSession.cancel();
+    this.setFocusState('grid', 'grid');
     this.emit();
   }
 
@@ -1937,6 +2032,7 @@ export class WorkbookSession {
     const [dr, dc] = deltas[moveAfter];
     this.movePrimary(dr, dc);
     this.syncDraftFromPrimary();
+    this.setFocusState('grid', 'grid');
     this.emit();
   }
 
@@ -2143,7 +2239,7 @@ export class WorkbookSession {
       this.addPivot(pivot);
       this.activeSheetId = targetSheetId;
       this.selectionService.resetForSheet(targetSheetId);
-      this.activePanel = 'pivot';
+      this.panels = { ...this.panels, active: 'pivot', open: true };
       this.notify('Blank PivotTable created. Drag fields into the Field List to build the report.');
       this.refresh();
       return pivotId;
@@ -3065,7 +3161,8 @@ export class WorkbookSession {
     const range = this.selectionService.primaryRangeOrDefault();
     this.runCommand('print.preview', { layout, sheetId: this.activeSheetId, range });
     const snapshot = this.rebuildPrintSnapshot(layout, range);
-    this.showPrintPreview = true;
+    this.dialogs = { ...this.dialogs, active: 'print-preview' };
+    this.setFocusState('dialog', 'dialog');
     this.notify(summarizePrintSnapshot(snapshot));
     this.emit();
   }
@@ -3078,7 +3175,8 @@ export class WorkbookSession {
     const range = this.selectionService.primaryRangeOrDefault();
     this.runCommand('print.export', { layout, sheetId: this.activeSheetId, range });
     const snapshot = this.rebuildPrintSnapshot(layout, range);
-    this.showPrintPreview = true;
+    this.dialogs = { ...this.dialogs, active: 'print-preview' };
+    this.setFocusState('dialog', 'dialog');
     void this.executePdfExport(snapshot);
     this.notify(summarizePrintSnapshot(snapshot));
     this.emit();
@@ -3114,7 +3212,7 @@ export class WorkbookSession {
   }
 
   openPrintLayout(): void {
-    this.activePanel = 'print';
+    this.panels = { ...this.panels, active: 'print', open: true };
     this.emit();
   }
 
@@ -3297,7 +3395,7 @@ export class WorkbookSession {
       const snapshot = buildQueryResultSnapshot(persistedQuery, result, resolvedTarget);
       this.querySessions.set(query.id, { definition: persistedQuery, lastResult: snapshot });
       this.lastQueryResult = snapshot;
-      this.activePanel = 'query';
+    this.panels = { ...this.panels, active: 'query', open: true };
       this.notify(summarizeQueryResult(snapshot));
       this.refresh();
     } catch (error) {
@@ -3416,7 +3514,7 @@ export class WorkbookSession {
     this.lastScriptResult = await runAutomationScriptAsync(this.runtime.model, this.runtime.commands, source, undefined, {
       workerFactory: this.automationWorkerFactory,
     });
-    this.activePanel = 'automate';
+    this.panels = { ...this.panels, active: 'automate', open: true };
     this.ribbonTab = 'automate';
     this.notify(summarizeScriptResult(this.lastScriptResult));
     this.refresh();
@@ -3437,7 +3535,7 @@ export class WorkbookSession {
     this.recorderDetach = this.runtime.commands.onCommand(this.commandRecorder.createListener());
     this.automationRecording = true;
     this.recordedScript = '';
-    this.activePanel = 'automate';
+    this.panels = { ...this.panels, active: 'automate', open: true };
     this.ribbonTab = 'automate';
     this.notify('Recording automation script');
     this.emit();
@@ -3482,7 +3580,7 @@ export class WorkbookSession {
     const result = command.plan?.result as GoalSeekResult | undefined;
     if (!result) throw new Error('Goal Seek command did not return a plan');
     this.lastWhatIfResult = result;
-    this.activePanel = 'extended';
+    this.panels = { ...this.panels, active: 'extended', open: true };
     this.notify(result.message ?? `Goal Seek ${result.status}`);
     this.refresh();
     return result;
@@ -3503,7 +3601,7 @@ export class WorkbookSession {
     const result = command.plan?.result as ScenarioResult | undefined;
     if (!result) throw new Error('Scenario command did not return a plan');
     this.lastWhatIfResult = result;
-    this.activePanel = 'extended';
+    this.panels = { ...this.panels, active: 'extended', open: true };
     this.notify(result.message);
     this.refresh();
     return result;
@@ -3518,7 +3616,7 @@ export class WorkbookSession {
     const result = command.plan?.result as DataTableResult | undefined;
     if (!result) throw new Error('Data Table command did not return a plan');
     this.lastWhatIfResult = result;
-    this.activePanel = 'extended';
+    this.panels = { ...this.panels, active: 'extended', open: true };
     this.notify(result.message);
     this.refresh();
     return result;

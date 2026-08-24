@@ -297,7 +297,7 @@ function recordingContext() {
 function mainPane(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): RenderPane {
   return {
     id: 'main',
-    screenRect: { x: 46, y: 24, width: 260, height: 180 },
+    screenRect: { x: 39, y: 20, width: 260, height: 180 },
     contentOrigin: { x: 0, y: 0 },
     visibleRange: range,
   };
@@ -382,7 +382,7 @@ test('pane translation preserves model coordinates for C9', () => {
   });
   engine.render();
   const cell = renderSkeleton.getCellRect(8, 2)!;
-  assert.deepEqual(engine.cellAtLocalPoint({ x: 46 + cell.x + cell.width / 2, y: 24 + cell.y + cell.height / 2 }), { row: 8, column: 2 });
+  assert.deepEqual(engine.cellAtLocalPoint({ x: 39 + cell.x + cell.width / 2, y: 20 + cell.y + cell.height / 2 }), { row: 8, column: 2 });
   engine.dispose();
 });
 
@@ -396,8 +396,8 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
   engine.render();
   const topLeft = renderSkeleton.getCellRect(0, 0)!;
   const main = renderSkeleton.getCellRect(4, 2)!;
-  assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
-  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 146, y: 104 });
+  assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 39, y: 20 });
+  assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 139, y: 100 });
   engine.dispose();
 });
 
@@ -464,7 +464,7 @@ test('content range screen geometry splits overlays across frozen panes', () => 
   engine.setPane({ kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' });
   engine.render();
   const rects = engine.contentRangeToScreenRects({ startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 });
-  assert.ok(rects.some((rect) => rect.x === 46 && rect.y === 24));
+  assert.ok(rects.some((rect) => rect.x === 39 && rect.y === 20));
   assert.ok(rects.length >= 2);
   engine.dispose();
 });

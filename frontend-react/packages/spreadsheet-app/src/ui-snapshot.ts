@@ -33,6 +33,7 @@ import {
   mergePresentationStyles,
   resolveActiveFilterColumns,
   resolveFilterButtonCells,
+  resolveFilterButtonStates,
   resolveFilterRangeColumns,
   resolveActiveAutoFilter,
   resolveFilterOwner,
@@ -41,6 +42,7 @@ import {
   type FilterDateSystem,
   type ConditionalOverlay,
   type FilterButtonCell,
+  type FilterButtonState,
   type OutlineControl,
 } from '@react-sheets/sheet-features';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
@@ -110,7 +112,8 @@ export interface CanvasSheetSnapshot {
   merges: MergeSpan[];
   pane: WorksheetPane;
   autoFilter?: AutoFilterModel;
-  filterOwner?: { kind: 'worksheet' | 'table'; tableId?: string };
+  getFilterOwner: (column: number) => { kind: 'worksheet' | 'table'; tableId?: string } | undefined;
+  getActiveAutoFilter: (column: number) => AutoFilterModel | undefined;
   defaultRowHeightPx: number;
   defaultColumnWidthPx: number;
   maximumDigitWidthPx: number;
@@ -123,6 +126,7 @@ export interface CanvasSheetSnapshot {
   filterRangeColumns: number[];
   activeFilterColumns: number[];
   filterButtons: FilterButtonCell[];
+  filterButtonStates: FilterButtonState[];
   getFilterValueDomain: (column: number) => string[];
   getFilterCriterion: (column: number) => FilterCriterion | undefined;
   getFilterColorDomain: (column: number) => Array<{ target: 'cell' | 'font'; color: string }>;
@@ -229,7 +233,6 @@ export function buildCanvasSheetSnapshot(
   const filterRangeColumns = resolveFilterRangeColumns(sheet);
   const activeFilterColumns = resolveActiveFilterColumns(sheet);
   const filterButtons = resolveFilterButtonCells(sheet);
-  const filterOwner = resolveFilterOwner(sheet);
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = usedRangeOfSheet(sheet);
@@ -274,7 +277,7 @@ export function buildCanvasSheetSnapshot(
   };
 
   const previewRows: PreviewRowSnapshot[] = [];
-  const previewRowLimit = Math.min(Math.max(60, sheet.rowCount), 200);
+  const previewRowLimit = Math.min(Math.max(0, sheet.rowCount), 200);
   for (let row = 0; row < previewRowLimit; row += 1) {
     if (hiddenRows.has(row)) continue;
     const cells: Array<{ value: string }> = [];
@@ -331,7 +334,6 @@ export function buildCanvasSheetSnapshot(
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
     autoFilter: resolveActiveAutoFilter(sheet) ? structuredClone(resolveActiveAutoFilter(sheet)) : undefined,
-    filterOwner,
     defaultRowHeightPx: sheet.defaultRowHeightPx,
     defaultColumnWidthPx: sheet.defaultColumnWidthPx,
     maximumDigitWidthPx: workbook.dimensionMetrics.maximumDigitWidthPx,
@@ -344,7 +346,13 @@ export function buildCanvasSheetSnapshot(
     filterRangeColumns,
     activeFilterColumns,
     filterButtons,
+    filterButtonStates: resolveFilterButtonStates(sheet),
     getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem),
+    getFilterOwner: (column) => resolveFilterOwner(sheet, column),
+    getActiveAutoFilter: (column) => {
+      const filter = resolveActiveAutoFilter(sheet, column);
+      return filter ? structuredClone(filter) : undefined;
+    },
     getFilterCriterion: (column) => resolveActiveAutoFilter(sheet, column)?.columns[column]?.criterion,
     getFilterColorDomain: (column) => {
       const range = resolveActiveAutoFilter(sheet, column)?.range;

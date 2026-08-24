@@ -44,7 +44,9 @@ export { DropdownMenu, type DropdownMenuProps } from './DropdownMenu';
 export { ColorPicker, type ColorPickerProps } from './ColorPicker';
 export { Select, type SelectOption, type SelectProps } from './Select';
 export { VirtualList, type VirtualListProps } from './VirtualList';
-export { AppShell, type AppShellProps, type PeerCursor, type SaveState } from './AppShell';
+export { ScrollBar, type ScrollBarProps } from './ScrollBar';
+export { DesignerShell, type DesignerShellProps } from './DesignerShell';
+export { DESIGNER_GEOMETRY, type PeerCursor, type SaveState } from './shell-types';
 export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';
 export {
   RibbonEmptyState,

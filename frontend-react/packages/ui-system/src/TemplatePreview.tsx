@@ -2,7 +2,7 @@ import { cn } from './cn';
 import { Icon } from './Icon';
 import { Box, Inline } from './layout';
 
-export type TemplatePreviewKind = 'blank' | 'template' | 'import' | 'pivot' | 'project' | 'budget';
+export type TemplatePreviewKind = 'blank' | 'template' | 'import' | 'pivot' | 'project' | 'budget' | 'designer-demo';
 
 export interface TemplatePreviewProps {
   kind: TemplatePreviewKind;
@@ -68,6 +68,20 @@ function BudgetPreview() {
   );
 }
 
+function DesignerDemoPreview() {
+  return (
+    <Box className="relative flex h-[102px] w-[138px] flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+      <Inline gap="none" className="h-5 bg-slate-100 px-1">
+        {Array.from({ length: 5 }, (_, index) => <Box key={index} className={cn('h-full flex-1 border-r border-slate-200', index === 1 && 'border-b-2 border-b-brand text-brand')} />)}
+      </Inline>
+      <Box className="h-2 bg-brand" />
+      <Box className="grid flex-1 grid-cols-5 grid-rows-4">
+        {Array.from({ length: 20 }, (_, index) => <Box key={index} className={cn('border-b border-r border-slate-100', index % 5 === 0 && 'bg-brand-soft')} />)}
+      </Box>
+    </Box>
+  );
+}
+
 export function TemplatePreview({ kind, className, compact = false }: TemplatePreviewProps) {
   return (
     <Box className={cn('relative flex h-[130px] items-center justify-center', compact && 'h-[92px]', className)}>
@@ -76,6 +90,7 @@ export function TemplatePreview({ kind, className, compact = false }: TemplatePr
       {kind === 'pivot' ? <PivotPreview /> : null}
       {kind === 'project' ? <ProjectPreview /> : null}
       {kind === 'budget' ? <BudgetPreview /> : null}
+      {kind === 'designer-demo' ? <DesignerDemoPreview /> : null}
     </Box>
   );
 }

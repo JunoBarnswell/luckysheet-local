@@ -54,7 +54,7 @@ export function RibbonHost({
 }: RibbonHostProps): ReactNode {
   return (
     <Ribbon
-      activeTab={state.ribbonTab}
+      activeTab={state.ribbon.activeTab}
       activePivot={state.activeContext.kind === "pivot"
         ? { sheetId: state.activeContext.sheetId, pivotId: state.activeContext.pivotId }
         : undefined}
@@ -127,6 +127,8 @@ export function RibbonHost({
       onTabChange={(tab: RibbonTabId) => session.setRibbonTab(tab)}
       phase={state.phase}
       homeState={state.homeRibbon}
+      commandPaletteOpen={state.dialogs.active === 'command-palette'}
+      onCloseCommandPalette={session.closeCommandPalette}
       formatPainterActive={state.formatPainter !== null}
       onBeginFormatPainter={(locked) => session.beginFormatPainter(Boolean(locked))}
       onMergeCells={() => session.requestMergeCells()}

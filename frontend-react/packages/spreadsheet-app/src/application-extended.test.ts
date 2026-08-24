@@ -28,7 +28,7 @@ describe('WorkbookSession extended integration', () => {
 
     assert.equal(result.status, 'converged');
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.value, 50);
-    assert.equal(app.getUiSnapshot().activePanel, 'extended');
+    assert.equal(app.getUiSnapshot().panels.active, 'extended');
   });
 
   it('blocks goal seek for viewers', () => {

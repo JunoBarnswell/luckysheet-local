@@ -1,9 +1,9 @@
 export type LayerId = string;
 
 /** 行标题列宽(px) */
-export const ROW_HEADER_WIDTH = 46;
+export const ROW_HEADER_WIDTH = 39;
 /** 列标题行高(px) */
-export const COL_HEADER_HEIGHT = 24;
+export const COL_HEADER_HEIGHT = 20;
 
 /** 拖拽命中边界(px) */
 export const RESIZE_HIT_TOLERANCE_PX = 4;
@@ -103,6 +103,8 @@ export interface RenderTheme {
   headerBackground: string;
   headerBorder: string;
   headerText: string;
+  headerSelectionBackground: string;
+  headerSelectionText: string;
   selectionBorder: string;
   selectionBackground: string;
   editingBorder: string;
@@ -113,17 +115,19 @@ export interface RenderTheme {
 
 export const DEFAULT_RENDER_THEME: RenderTheme = {
   canvasBackground: "#ffffff",
-  gridLine: "#e2e8f0",
-  cellText: "#1e293b",
-  cellFont: '13px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  gridLine: "#e6e4e5",
+  cellText: "#404040",
+  cellFont: '13px "Microsoft YaHei", "Segoe UI", sans-serif',
   cellPadding: 6,
   defaultCellBackground: "#ffffff",
-  headerBackground: "#f8fafc",
-  headerBorder: "#cbd5e1",
-  headerText: "#475569",
-  selectionBorder: "#2563eb",
-  selectionBackground: "rgba(37, 99, 235, 0.10)",
-  editingBorder: "#2563eb",
+  headerBackground: "#f5f4f5",
+  headerBorder: "#c0c5c8",
+  headerText: "#5b555a",
+  headerSelectionBackground: "#e3f4e9",
+  headerSelectionText: "#217345",
+  selectionBorder: "#217345",
+  selectionBackground: "rgba(33, 115, 69, 0.10)",
+  editingBorder: "#217345",
   fillHandleSize: 8,
   invalidColor: "#dc2626",
   commentMarkColor: "#dc2626",
@@ -199,6 +203,8 @@ export interface ResizePreview {
 export interface ChromeFilterButton {
   row: number;
   column: number;
+  active?: boolean;
+  sorted?: boolean;
 }
 
 export interface ChromeTableOutline {

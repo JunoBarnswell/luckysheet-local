@@ -261,6 +261,8 @@ export function resolveFilterButtonStates(sheet: WorksheetModel): FilterButtonSt
 export interface FilterButtonCell {
   row: number;
   column: number;
+  active: boolean;
+  sorted: boolean;
 }
 
 function rangesEqual(left: RangeRef, right: RangeRef): boolean {
@@ -299,7 +301,8 @@ export function resolveFilterButtonCells(sheet: WorksheetModel): FilterButtonCel
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
       const entry = autoFilter.columns[column];
       if (entry?.showButton === false || entry?.hiddenButton === true) continue;
-      buttons.push({ row: table?.hasHeaderRow ? range.startRow : range.startRow, column });
+      const sorted = autoFilter.sortState?.conditions.some((condition) => column >= condition.ref.startColumn && column <= condition.ref.endColumn) ?? false;
+      buttons.push({ row: table?.hasHeaderRow ? range.startRow : range.startRow, column, active: Boolean(entry?.criterion), sorted });
     }
   }
   return buttons;

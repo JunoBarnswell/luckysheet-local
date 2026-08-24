@@ -19,6 +19,8 @@ export interface FilterPopoverProps {
 
 type FilterMode = 'values' | 'text' | 'number' | 'date' | 'color' | 'icon';
 type CustomOperator = 'equals' | 'notEquals' | 'lessThan' | 'lessThanOrEqual' | 'greaterThan' | 'greaterThanOrEqual' | 'contains' | 'notContains' | 'beginsWith' | 'endsWith';
+type FilterJoin = 'and' | 'or';
+type DateMode = 'condition' | 'dynamic';
 type DynamicType = 'today' | 'yesterday' | 'tomorrow' | 'thisWeek' | 'lastWeek' | 'nextWeek' | 'thisMonth' | 'lastMonth' | 'nextMonth' | 'thisQuarter' | 'lastQuarter' | 'nextQuarter' | 'thisYear' | 'lastYear' | 'nextYear' | 'yearToDate';
 
 function criterionValues(criterion: FilterCriterion | undefined): string[] {
@@ -32,15 +34,20 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
   const icons = useMemo(() => sheet.getFilterIconDomain(column), [column, sheet]);
   const currentCriterion = sheet.getFilterCriterion(column);
   const [mode, setMode] = useState<FilterMode>(currentCriterion?.kind === 'custom' ? 'text' : currentCriterion?.kind === 'dynamic' ? 'date' : currentCriterion?.kind === 'top10' ? 'number' : currentCriterion?.kind === 'color' ? 'color' : currentCriterion?.kind === 'icon' ? 'icon' : 'values');
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(criterionValues(currentCriterion).length > 0 ? criterionValues(currentCriterion) : values));
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(currentCriterion?.kind === 'values' ? criterionValues(currentCriterion) : values));
   const [search, setSearch] = useState('');
   const [operator, setOperator] = useState<CustomOperator>(currentCriterion?.kind === 'custom' ? currentCriterion.conditions[0]?.operator as CustomOperator ?? 'contains' : 'contains');
   const [operand, setOperand] = useState(currentCriterion?.kind === 'custom' ? String(currentCriterion.conditions[0]?.value ?? '') : '');
+  const [useSecondCondition, setUseSecondCondition] = useState(Boolean(currentCriterion?.kind === 'custom' && currentCriterion.conditions[1]));
+  const [secondOperator, setSecondOperator] = useState<CustomOperator>(currentCriterion?.kind === 'custom' ? currentCriterion.conditions[1]?.operator as CustomOperator ?? 'contains' : 'contains');
+  const [secondOperand, setSecondOperand] = useState(currentCriterion?.kind === 'custom' ? String(currentCriterion.conditions[1]?.value ?? '') : '');
+  const [join, setJoin] = useState<FilterJoin>(currentCriterion?.kind === 'custom' ? currentCriterion.join : 'and');
   const [numberMode, setNumberMode] = useState<'condition' | 'top10'>(currentCriterion?.kind === 'top10' ? 'top10' : 'condition');
   const [top, setTop] = useState(currentCriterion?.kind === 'top10' ? currentCriterion.top : true);
   const [percent, setPercent] = useState(currentCriterion?.kind === 'top10' ? currentCriterion.percent : false);
   const [rank, setRank] = useState(String(currentCriterion?.kind === 'top10' ? currentCriterion.rank : 10));
   const [dynamicType, setDynamicType] = useState<DynamicType>(currentCriterion?.kind === 'dynamic' ? currentCriterion.type : 'today');
+  const [dateMode, setDateMode] = useState<DateMode>(currentCriterion?.kind === 'dynamic' ? 'dynamic' : 'condition');
   const [colorTarget, setColorTarget] = useState<'cell' | 'font'>(currentCriterion?.kind === 'color' ? currentCriterion.target : 'cell');
   const [color, setColor] = useState(currentCriterion?.kind === 'color' ? currentCriterion.style?.background ?? currentCriterion.style?.textColor ?? colors[0]?.color ?? '' : colors[0]?.color ?? '');
   const [icon, setIcon] = useState(currentCriterion?.kind === 'icon' ? `${currentCriterion.iconSet}:${currentCriterion.iconId}` : icons[0] ? `${icons[0].iconSet}:${icons[0].iconId}` : '');
@@ -58,7 +65,7 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
         onApply({ criterion: { kind: 'top10', top, percent, rank: Math.max(1, Number(rank) || 1) } });
         return;
       }
-      if (mode === 'date' && currentCriterion?.kind === 'dynamic') {
+      if (mode === 'date' && dateMode === 'dynamic') {
         onApply({ criterion: { kind: 'dynamic', type: dynamicType } });
         return;
       }
@@ -73,7 +80,9 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
         onApply({ criterion: { kind: 'icon', iconSet, iconId: Number(iconId) } });
         return;
       }
-      onApply({ criterion: { kind: 'custom', join: 'and', conditions: [{ operator, value: operand }] } });
+      const conditions: [{ operator: CustomOperator; value: string }, { operator: CustomOperator; value: string }?] = [{ operator, value: operand }];
+      if (useSecondCondition) conditions.push({ operator: secondOperator, value: secondOperand });
+      onApply({ criterion: { kind: 'custom', join, conditions } });
       return;
     }
     const selectedValues = [...selected];
@@ -127,6 +136,12 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
                 <option value="top10">Top 10</option>
               </Select>
             ) : null}
+            {mode === 'date' ? (
+              <Select sizeVariant="sm" aria-label="Date filter mode" value={dateMode} onChange={(event) => setDateMode(event.target.value as DateMode)}>
+                <option value="condition">Date condition</option>
+                <option value="dynamic">Dynamic date</option>
+              </Select>
+            ) : null}
             {mode === 'number' && numberMode === 'top10' ? (
               <Inline gap="xs">
                 <Select sizeVariant="sm" aria-label="Top or bottom" value={top ? 'top' : 'bottom'} onChange={(event) => setTop(event.target.value === 'top')}>
@@ -136,7 +151,7 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
                 <TextInput aria-label="Top 10 rank" value={rank} onChange={(event) => setRank(event.target.value)} />
                 <CheckToggle checked={percent} label="%" onChange={(event) => setPercent(event.target.checked)} />
               </Inline>
-            ) : mode === 'date' && currentCriterion?.kind === 'dynamic' ? (
+            ) : mode === 'date' && dateMode === 'dynamic' ? (
               <Select sizeVariant="sm" aria-label="Dynamic date filter" value={dynamicType} onChange={(event) => setDynamicType(event.target.value as DynamicType)}>
                 <option value="today">Today</option>
                 <option value="yesterday">Yesterday</option>
@@ -167,6 +182,28 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
               <option value="endsWith">Ends with</option>
             </Select>
             <TextInput aria-label="Custom filter value" placeholder={mode === 'date' ? 'YYYY-MM-DD' : 'Value'} value={operand} onChange={(event) => setOperand(event.target.value)} />
+            <CheckToggle checked={useSecondCondition} label="Use second condition" onChange={(event) => setUseSecondCondition(event.target.checked)} />
+            {useSecondCondition ? (
+              <>
+                <Select sizeVariant="sm" aria-label="Second custom filter operator" value={secondOperator} onChange={(event) => setSecondOperator(event.target.value as CustomOperator)}>
+                  <option value="equals">Equals</option>
+                  <option value="notEquals">Not equals</option>
+                  {mode !== 'text' ? <option value="lessThan">Less than</option> : null}
+                  {mode !== 'text' ? <option value="lessThanOrEqual">Less than or equal</option> : null}
+                  {mode !== 'text' ? <option value="greaterThan">Greater than</option> : null}
+                  {mode !== 'text' ? <option value="greaterThanOrEqual">Greater than or equal</option> : null}
+                  <option value="contains">Contains</option>
+                  <option value="notContains">Does not contain</option>
+                  <option value="beginsWith">Begins with</option>
+                  <option value="endsWith">Ends with</option>
+                </Select>
+                <TextInput aria-label="Second custom filter value" placeholder={mode === 'date' ? 'YYYY-MM-DD' : 'Value'} value={secondOperand} onChange={(event) => setSecondOperand(event.target.value)} />
+                <Select sizeVariant="sm" aria-label="Custom filter join" value={join} onChange={(event) => setJoin(event.target.value as FilterJoin)}>
+                  <option value="and">And</option>
+                  <option value="or">Or</option>
+                </Select>
+              </>
+            ) : null}
               </>
             )}
           </Stack>

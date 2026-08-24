@@ -290,7 +290,7 @@ export function resolveDisplayText(cell: CellRenderData): string {
 
 export function cellRenderFont(style: CellRenderData["style"], theme: RenderTheme): string {
   const size = style?.fontSizePx ?? 13;
-  const family = style?.fontFamily ? '"' + style.fontFamily + '", sans-serif' : "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+  const family = style?.fontFamily ? '"' + style.fontFamily + '", sans-serif' : '"Microsoft YaHei", "Segoe UI", sans-serif';
   const weight = style?.bold ? "700" : "400";
   const slant = style?.italic ? " italic" : "";
   return slant + " " + weight + " " + size + "px " + family;
@@ -452,15 +452,17 @@ function drawWrapped(
   vAlign: "top" | "middle" | "bottom",
   maxWidth: number,
 ): void {
-  const words = text.split(/\s+/);
-  const lineHeight = 14;
+  const hasCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(text);
+  const tokens = hasCjk ? Array.from(text) : text.split(/\s+/);
+  const lineHeight = 16;
   const lines: string[] = [];
   let currentLine = "";
-  for (const word of words) {
-    const attempt = currentLine ? currentLine + " " + word : word;
+  for (const token of tokens) {
+    const separator = hasCjk || !currentLine ? "" : " ";
+    const attempt = currentLine + separator + token;
     if (context.measureText(attempt).width > maxWidth && currentLine) {
       lines.push(currentLine);
-      currentLine = word;
+      currentLine = token;
     } else {
       currentLine = attempt;
     }

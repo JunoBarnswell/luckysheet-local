@@ -1,19 +1,16 @@
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import {
-  exportXlsx,
-  exportXlsxWithWorker,
-  importXlsx,
-  importXlsxWithWorker,
-  type CompatibilityReport,
-  type NativePackageState,
-  type XlsxExportOptions,
-  type XlsxImportOptions,
-  type XlsxWorkerPort,
-  type XlsxImportResult,
-  type XlsxExportResult,
-} from '@react-sheets/exchange-excel-ooxml';
-
-export type { CompatibilityReport, NativePackageState, XlsxExportOptions, XlsxExportResult, XlsxImportOptions, XlsxImportResult, XlsxWorkerPort } from '@react-sheets/exchange-excel-ooxml';
+import { exportXlsx } from './export';
+import { importXlsx } from './import';
+import { exportXlsxWithWorker, importXlsxWithWorker } from './worker-port';
+import type {
+  CompatibilityReport,
+  NativePackageState,
+  XlsxExportOptions,
+  XlsxExportResult,
+  XlsxImportOptions,
+  XlsxImportResult,
+} from './types';
+import type { XlsxWorkerPort } from './worker-port';
 
 export type ExcelFormatFamily = 'ooxml' | 'xlsb' | 'biff' | 'text' | 'ods';
 
@@ -43,7 +40,7 @@ export interface ExcelCodec<ImportRequest = unknown, ExportRequest = unknown> {
   export(request: ExportRequest): Promise<XlsxExportResult>;
 }
 
-/** Format selection boundary. Codecs own their native package semantics directly. */
+/** The single format boundary. Each future codec owns its native semantics. */
 export class ExcelCodecRegistry {
   private readonly codecs: ExcelCodec[];
 
@@ -87,3 +84,4 @@ const ooxmlCodec: ExcelCodec<ExcelImportTransaction, ExcelExportTransaction> = {
 };
 
 export const excelCodecRegistry = new ExcelCodecRegistry();
+export type { CompatibilityReport };

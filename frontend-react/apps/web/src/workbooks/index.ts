@@ -29,6 +29,7 @@ export {
   type WorkbookHubPageProps,
   type WorkbookHubSection,
   type WorkbookLifecycle,
+  type WorkbookOpenOptions,
   type WorkbookRole,
   type WorkbookSourceKind,
   type WorkbookStorageLocation,

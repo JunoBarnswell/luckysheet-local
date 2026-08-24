@@ -30,7 +30,7 @@ export interface FeaturePanelHostProps {
   title: string;
 }
 
-/** Feature panel boundary. It owns panel-only wiring and keeps AppShell free of feature props. */
+/** Feature panel boundary. It owns panel-only wiring and keeps DesignerShell free of feature props. */
 export function FeaturePanelHost({
   state,
   session,
@@ -48,7 +48,7 @@ export function FeaturePanelHost({
       <Suspense fallback={<Box className="h-full min-h-0" />}>
         <FeatureSidebar
           activeCell={state.activeCell}
-          activePanel={state.activePanel}
+          activePanel={state.panels.active}
           locale={locale}
           selectedRange={selectedRange}
           onPanelChange={(panel) => {

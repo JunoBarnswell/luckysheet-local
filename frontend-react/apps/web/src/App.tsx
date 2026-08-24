@@ -46,16 +46,21 @@ function EditorRoute({ unitId, onOpenHub }: { unitId: string; onOpenHub: () => v
   const { catalog, createWorkbookSessionOptions } = useApplicationServices();
   const { session, snapshot: state } = useWorkbookSession({ ...createWorkbookSessionOptions(unitId, auth.getAccessToken), initialPhase: getInitialSessionPhase() });
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [backstageOpen, setBackstageOpen] = useState(false);
-  const [backstagePanel, setBackstagePanel] = useState<"info" | "options">("info");
-  const previousPanelRef = useRef(state.activePanel);
+  const initialSelectionApplied = useRef(false);
   const isBusy = state.phase !== "ready";
+
+  useEffect(() => {
+    const initialCell = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("initialCell");
+    if (initialSelectionApplied.current || state.phase !== "ready" || !initialCell) return;
+    initialSelectionApplied.current = true;
+    session.selectAddress(initialCell);
+  }, [session, state.phase]);
 
   const setLocale = (nextLocale: Locale) => { setLocaleState(nextLocale); persistLocale(nextLocale); };
   const dispatchCommand = (descriptor: CommandDescriptor) => session.dispatch(descriptor);
-  const dispatchSessionIntent = (intent: UiSessionIntent) => { if (intent.type === "panel.open") setSidebarOpen(true); session.dispatchUiSessionIntent(intent); };
-  useEffect(() => { if (previousPanelRef.current !== state.activePanel) setSidebarOpen(true); previousPanelRef.current = state.activePanel; }, [state.activePanel]);
+  const dispatchSessionIntent = (intent: UiSessionIntent) => {
+    session.dispatchUiSessionIntent(intent);
+  };
 
   const controller = useEditorCommandController({ session, state, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
@@ -63,7 +68,7 @@ function EditorRoute({ unitId, onOpenHub }: { unitId: string; onOpenHub: () => v
   const exportXlsx = async () => {
     try {
       await session.saveWorkbook("Export workbook");
-      const exported = await catalog.exportXlsx(state.unitId);
+      const exported = await catalog.exportWorkbook(state.unitId);
       const href = URL.createObjectURL(new Blob([exported.buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
       const link = document.createElement("a"); link.href = href; link.download = exported.fileName; link.click(); URL.revokeObjectURL(href);
     } catch (cause) { session.notify(cause instanceof Error ? cause.message : "XLSX export failed"); }
@@ -74,20 +79,20 @@ function EditorRoute({ unitId, onOpenHub }: { unitId: string; onOpenHub: () => v
   };
   const importXlsx = () => navigate("/workbooks?dialog=import");
 
-  if (backstageOpen) {
+  if (state.backstage.open) {
     const syncStatus = state.saveState === "saved" ? "synced" : state.saveState === "saving" || state.saveState === "calculating" ? "syncing" : state.saveState === "conflict" ? "conflict" : state.saveState === "offline" ? "offline" : "error";
     const closeWorkbook = async () => { await session.saveWorkbook("Close workbook"); onOpenHub(); };
     const actions = [
-      { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => setBackstagePanel("info") },
+      { id: "info", label: "信息", description: "查看存储、版本与同步信息", icon: "info" as const, onSelect: () => session.setBackstagePanel("info") },
       { id: "save", label: "保存", description: "提交当前工作簿的保存点", icon: "save" as const, disabled: isBusy, onSelect: () => { void session.saveWorkbook("Backstage save"); } },
       { id: "import", label: "导入", description: "导入为新的工作簿", icon: "upload" as const, disabled: isBusy, onSelect: importXlsx },
       { id: "export", label: "导出", description: "下载当前工作簿的 XLSX 副本", icon: "download" as const, disabled: isBusy, onSelect: () => { void exportXlsx(); } },
       { id: "close", label: "关闭", description: "保存后返回工作簿中心", icon: "x" as const, disabled: isBusy, onSelect: () => { void closeWorkbook(); } },
-      { id: "options", label: "选项", description: "语言与工作簿偏好", icon: "settings" as const, onSelect: () => setBackstagePanel("options") },
+      { id: "options", label: "选项", description: "语言与工作簿偏好", icon: "settings" as const, onSelect: () => session.setBackstagePanel("options") },
     ];
     return (
-      <WorkbookBackstageShell actions={actions} onBack={() => setBackstageOpen(false)} onHelp={() => session.notify("帮助：导入会创建新的工作簿；云端与本地文件的状态会显示在文件中心。")} onSettings={() => setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
-        {backstagePanel === "info" ? (
+      <WorkbookBackstageShell actions={actions} onBack={() => session.closeBackstage()} onHelp={() => session.notify("帮助：导入会创建新的工作簿；云端与本地文件的状态会显示在文件中心。")} onSettings={() => session.setBackstagePanel("options")} readOnly={!state.permissions.editCell} syncStatus={syncStatus} workbookName={state.workbookName}>
+        {state.backstage.panel === "info" ? (
           <Stack gap="md" className="rounded-xl border border-brand-line bg-white p-6">
             <Text size="lg" weight="semibold">工作簿信息</Text>
             <Stack gap="xs">
@@ -105,7 +110,7 @@ function EditorRoute({ unitId, onOpenHub }: { unitId: string; onOpenHub: () => v
     );
   }
 
-  return <EditorShell state={state} session={session} locale={locale} isBusy={isBusy} sidebarOpen={sidebarOpen} onSidebarOpenChange={setSidebarOpen} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportXlsx={exportXlsx} importXlsx={importXlsx} renameWorkbook={renameWorkbook} onSetBackstageInfo={() => { setBackstagePanel("info"); setBackstageOpen(true); }} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
+  return <EditorShell state={state} session={session} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportXlsx={exportXlsx} importXlsx={importXlsx} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
 }
 
 export default function App() {
@@ -113,7 +118,10 @@ export default function App() {
   const auth = useAuthSnapshot();
   useEffect(() => { if (typeof window !== "undefined" && window.location.pathname === "/") navigate("/workbooks", { replace: true }); }, []);
   if (route.kind === "auth-callback" || route.kind === "auth-silent-renew" || auth.phase === "loading") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在验证登录状态" description="正在建立云端工作簿会话。" /></Box>;
-  if (route.kind === "hub") return <WorkbookHubContainer onOpenWorkbook={(unitId) => navigate(`/workbooks/${encodeURIComponent(unitId)}`)} />;
+  if (route.kind === "hub") return <WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
+    const query = options?.initialCell ? `?initialCell=${encodeURIComponent(options.initialCell)}` : "";
+    navigate(`/workbooks/${encodeURIComponent(unitId)}${query}`);
+  }} />;
   if (route.kind === "not-found") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel="返回工作簿中心" kind="error" title="页面不存在" description={`未找到 ${route.pathname}`} onAction={() => navigate("/workbooks", { replace: true })} /></Box>;
   if (route.kind !== "workbook") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel="返回工作簿中心" kind="error" title="路由状态无效" description="无法解析当前工作簿路由。" onAction={() => navigate("/workbooks", { replace: true })} /></Box>;
   return <WorkbookRouteGate unitId={route.unitId} />;

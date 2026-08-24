@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Box, Button, ContextMenu, Icon, Inline, Tab, Text, type ContextMenuItem } from '@react-sheets/ui-system';
-import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
+import React, { useRef, useState } from 'react';
+import { Box, Button, ContextMenu, Dialog, DropdownMenu, Inline, Stack, Tab, Text, TextInput, type ContextMenuItem } from '@react-sheets/ui-system';
+import type { CanvasSheetSnapshot, SheetDialogState } from '@react-sheets/spreadsheet-app';
 import type { Locale } from '../i18n';
 
 export interface SheetTabsProps {
@@ -16,6 +16,10 @@ export interface SheetTabsProps {
   onHideSheet?: (sheetId: string) => void;
   onSetTabColor?: (sheetId: string, color?: string) => void;
   onMoveSheet?: (sheetId: string, toIndex: number) => void;
+  dialog: SheetDialogState | null;
+  onOpenDialog: (dialog: SheetDialogState) => void;
+  onUpdateDialog: (value: string) => void;
+  onCloseDialog: () => void;
 }
 
 export function SheetTabs({
@@ -31,6 +35,10 @@ export function SheetTabs({
   onHideSheet,
   onSetTabColor,
   onMoveSheet,
+  dialog,
+  onOpenDialog,
+  onUpdateDialog,
+  onCloseDialog,
 }: SheetTabsProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -38,6 +46,7 @@ export function SheetTabs({
     open: boolean;
     targetSheetId?: string;
   }>({ x: 0, y: 0, open: false });
+  const tabsViewportRef = useRef<HTMLDivElement>(null);
 
   const handleContextMenu = (e: React.MouseEvent, sheetId: string) => {
     e.preventDefault();
@@ -58,10 +67,7 @@ export function SheetTabs({
       onSelect: () => {
         if (!contextMenu.targetSheetId) return;
         const currentName = sheets.find((s) => s.id === contextMenu.targetSheetId)?.name ?? '';
-        const newName = prompt(locale === 'zh-CN' ? '输入新工作表名称:' : 'Enter new sheet name:', currentName);
-        if (newName && newName.trim()) {
-          onRenameSheet?.(contextMenu.targetSheetId, newName.trim());
-        }
+        onOpenDialog({ kind: 'rename', sheetId: contextMenu.targetSheetId, value: currentName });
       },
     },
     {
@@ -100,9 +106,7 @@ export function SheetTabs({
       icon: 'palette',
       onSelect: () => {
         if (!contextMenu.targetSheetId) return;
-        const color = prompt(locale === 'zh-CN' ? '输入颜色 (#RRGGBB 或留空清除):' : 'Enter tab color (#RRGGBB or empty to clear):', '#3b82f6');
-        if (color === null) return;
-        onSetTabColor?.(contextMenu.targetSheetId, color.trim() || undefined);
+        onOpenDialog({ kind: 'tab-color', sheetId: contextMenu.targetSheetId, value: '#217345' });
       },
     },
     {
@@ -122,53 +126,72 @@ export function SheetTabs({
       disabled: sheets.length <= 1,
       onSelect: () => {
         if (!contextMenu.targetSheetId || sheets.length <= 1) return;
-        if (confirm(locale === 'zh-CN' ? '确定删除此工作表？' : 'Are you sure you want to delete this sheet?')) {
-          onDeleteSheet?.(contextMenu.targetSheetId);
-        }
+        onOpenDialog({ kind: 'delete', sheetId: contextMenu.targetSheetId, value: '' });
       },
     },
   ];
 
   return (
-    <Box as="nav" aria-label={locale === 'zh-CN' ? '工作表' : 'Worksheets'} className="flex h-10 items-center justify-between gap-4 border-t border-slate-200 bg-white px-3">
-      <Inline gap="xs" className="min-w-0 overflow-x-auto">
-        <Button
-          aria-label={locale === 'zh-CN' ? '添加工作表' : 'Add worksheet'}
+    <Box as="nav" aria-label={locale === 'zh-CN' ? '工作表' : 'Worksheets'} className="flex h-[29px] items-center gap-0 border-t border-[#d9d9d9] bg-white px-0">
+      <Inline gap="none" className="h-full min-w-0 flex-1 items-center pl-2">
+        <Button aria-label={locale === 'zh-CN' ? '向左滚动工作表' : 'Scroll worksheets left'} disabled={disabled} icon="chevron-left" iconOnly onClick={() => tabsViewportRef.current?.scrollBy({ left: -180, behavior: 'smooth' })} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />
+        <Button aria-label={locale === 'zh-CN' ? '向右滚动工作表' : 'Scroll worksheets right'} disabled={disabled} icon="chevron-right" iconOnly onClick={() => tabsViewportRef.current?.scrollBy({ left: 180, behavior: 'smooth' })} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />
+        <DropdownMenu
+          align="left"
           disabled={disabled}
-          icon="plus"
-          iconOnly
-          onClick={onAdd}
-          size="sm"
-          variant="soft"
-          className="h-7 w-7"
-        />
-        <Box className="mx-1 h-4 w-px shrink-0 bg-slate-200" />
-        {sheets.filter((sheet) => !sheet.hidden).map((sheet) => (
-          <Box
-            key={sheet.id}
-            onContextMenu={(e) => handleContextMenu(e, sheet.id)}
-            className="inline-flex"
-          >
-            <Tab
-              active={sheet.id === activeSheetId}
-              disabled={disabled}
-              onClick={() => onSelect(sheet.id)}
-              className="h-7 px-3 py-0 text-xs font-semibold"
-              style={sheet.tabColor ? { borderBottomColor: sheet.tabColor, borderBottomWidth: 2 } : undefined}
-            >
-              <Inline gap="xs">
-                <Icon name={sheet.isEmpty ? 'file-plus' : 'grid'} size="xs" />
-                <Text as="span">{sheet.name}</Text>
-              </Inline>
-            </Tab>
-          </Box>
-        ))}
-      </Inline>
-
-      <Inline gap="sm" className="hidden shrink-0 md:flex">
-        <Text size="xs" tone="subtle">{sheets.length} {locale === 'zh-CN' ? '个工作表' : 'worksheets'}</Text>
-        <Box className="h-4 w-px bg-slate-200" />
-        <Text size="xs" tone="muted">{locale === 'zh-CN' ? '已自动保存到本地工作簿' : 'Auto-saved locally'}</Text>
+          trigger={<Button aria-label={locale === 'zh-CN' ? '工作表列表' : 'Worksheet list'} icon="menu" iconOnly size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#217345]" />}
+        >
+          {({ close }) => (
+            <Stack gap="none" className="min-w-[13rem] p-1">
+              {sheets.filter((sheet) => !sheet.hidden).map((sheet) => (
+                <Button key={sheet.id} size="sm" variant={sheet.id === activeSheetId ? 'secondary' : 'ghost'} className="justify-start" onClick={() => { close(); onSelect(sheet.id); }}>
+                  {sheet.name}
+                </Button>
+              ))}
+            </Stack>
+          )}
+        </DropdownMenu>
+        <Box className="mx-3 h-5 w-px shrink-0 bg-[#d9d9d9]" />
+        <Box ref={tabsViewportRef} className="h-full w-[580px] shrink-0 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <Inline gap="none" className="h-full min-w-max items-center">
+            {sheets.filter((sheet) => !sheet.hidden).map((sheet) => (
+              <Box key={sheet.id} onContextMenu={(e) => handleContextMenu(e, sheet.id)} className="inline-flex h-full">
+                <Tab
+                  active={sheet.id === activeSheetId}
+                  disabled={disabled}
+                  onClick={() => onSelect(sheet.id)}
+                  className="!h-7 !min-h-0 !rounded-none border-b-2 border-transparent px-2 py-0 text-xs font-semibold aria-selected:!bg-[#e7feee] aria-selected:!text-[#217345]"
+                  style={sheet.tabColor ? { borderBottomColor: sheet.tabColor, borderBottomWidth: 2 } : undefined}
+                >
+                  <Text as="span">{sheet.name}</Text>
+                </Tab>
+              </Box>
+            ))}
+          </Inline>
+        </Box>
+        <Button aria-label={locale === 'zh-CN' ? '添加工作表' : 'Add worksheet'} disabled={disabled} icon="plus" iconOnly onClick={onAdd} size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />
+        <DropdownMenu
+          align="right"
+          disabled={disabled}
+          trigger={<Button aria-label={locale === 'zh-CN' ? '更多工作表操作' : 'More worksheet actions'} icon="more-vertical" iconOnly size="xs" variant="ghost" className="!h-7 !min-h-0 !w-7 rounded-none px-0 text-[#68736e]" />}
+        >
+          {({ close }) => (
+            <Stack gap="none" className="min-w-[13rem] p-1">
+              <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onAdd(); }}>
+                {locale === 'zh-CN' ? '新增工作表' : 'Add worksheet'}
+              </Button>
+              {sheets.filter((sheet) => !sheet.hidden).map((sheet) => (
+                <Button key={sheet.id} size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onSelect(sheet.id); }}>
+                  {sheet.name}
+                </Button>
+              ))}
+            </Stack>
+          )}
+        </DropdownMenu>
+        <Box aria-hidden="true" className="relative mx-3 h-2 min-w-0 flex-1">
+          <Box className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[#c7c7c7]" />
+          <Box className="absolute left-[38%] top-1/2 h-2 w-1 -translate-y-1/2 rounded-sm bg-[#8a8a8a]" />
+        </Box>
       </Inline>
 
       <ContextMenu
@@ -178,6 +201,42 @@ export function SheetTabs({
         items={menuItems}
         onClose={() => setContextMenu((prev) => ({ ...prev, open: false }))}
       />
+      <Dialog
+        open={dialog !== null}
+        title={dialog?.kind === 'rename' ? (locale === 'zh-CN' ? '重命名工作表' : 'Rename Sheet') : dialog?.kind === 'tab-color' ? (locale === 'zh-CN' ? '标签颜色' : 'Tab Color') : (locale === 'zh-CN' ? '删除工作表' : 'Delete Sheet')}
+        onClose={onCloseDialog}
+        maxWidth="sm"
+      >
+        {dialog?.kind === 'delete' ? (
+          <Text size="sm">{locale === 'zh-CN' ? '确定删除当前工作表？此操作支持撤销。' : 'Delete this worksheet? The action can be undone.'}</Text>
+        ) : (
+          <Stack gap="xs">
+            <Text size="xs" tone="muted">{dialog?.kind === 'rename' ? (locale === 'zh-CN' ? '输入新的工作表名称。' : 'Enter a new worksheet name.') : (locale === 'zh-CN' ? '输入 #RRGGBB 颜色，留空清除。' : 'Enter a #RRGGBB color, or leave empty to clear.')}</Text>
+            <TextInput
+              aria-label={dialog?.kind === 'rename' ? '工作表名称' : '标签颜色'}
+              autoFocus
+              value={dialog?.value ?? ''}
+              onChange={(event) => onUpdateDialog(event.target.value)}
+            />
+          </Stack>
+        )}
+        <Inline gap="sm" className="mt-4 justify-end">
+          <Button size="sm" variant="ghost" onClick={onCloseDialog}>{locale === 'zh-CN' ? '取消' : 'Cancel'}</Button>
+          <Button
+            size="sm"
+            variant={dialog?.kind === 'delete' ? 'danger' : 'primary'}
+            onClick={() => {
+              if (!dialog) return;
+              if (dialog.kind === 'rename' && dialog.value.trim()) onRenameSheet?.(dialog.sheetId, dialog.value.trim());
+              if (dialog.kind === 'tab-color') onSetTabColor?.(dialog.sheetId, dialog.value.trim() || undefined);
+              if (dialog.kind === 'delete') onDeleteSheet?.(dialog.sheetId);
+              onCloseDialog();
+            }}
+          >
+            {dialog?.kind === 'delete' ? (locale === 'zh-CN' ? '删除' : 'Delete') : (locale === 'zh-CN' ? '确定' : 'Apply')}
+          </Button>
+        </Inline>
+      </Dialog>
     </Box>
   );
 }

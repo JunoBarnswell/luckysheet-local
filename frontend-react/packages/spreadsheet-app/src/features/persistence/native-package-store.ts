@@ -1,5 +1,5 @@
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { importXlsx, loadOpcPackageGraph, verifyNativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import { loadOpcPackageGraph, verifyNativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import {
   openWorkspaceDatabase,
   requestResult,
@@ -15,18 +15,6 @@ export interface NativePackageRecord {
   unitId: string;
   artifact: NativePackageState;
   updatedAt: string;
-}
-
-interface LegacyXlsxArtifactRecord {
-  schema: 'XlsxArtifactRecord';
-  version: 1;
-  unitId: string;
-  artifact: {
-    schema: 'XlsxSourceArtifact';
-    fileName: string;
-    buffer: ArrayBuffer;
-    dateSystem: '1900' | '1904';
-  };
 }
 
 const memoryDatabases = new Map<string, Map<string, NativePackageRecord>>();
@@ -122,13 +110,7 @@ export class LocalNativePackageStore {
         return value;
       })()
       : memoryArtifacts(this.databaseName).get(unitId);
-    if (!record || record.schema !== 'NativePackageRecord' || record.version !== 1 || record.unitId !== unitId) {
-      if (db) {
-        const legacy = await this.loadLegacyArtifact(db, unitId);
-        if (legacy) return legacy;
-      }
-      return null;
-    }
+    if (!record || record.schema !== 'NativePackageRecord' || record.version !== 1 || record.unitId !== unitId) return null;
     try {
       await verifyNativePackageState(record.artifact);
       let packageGraph = record.artifact.packageGraph;
@@ -144,36 +126,6 @@ export class LocalNativePackageStore {
       return copyArtifact({ ...record.artifact, packageGraph });
     } catch {
       await this.remove(unitId);
-      return null;
-    }
-  }
-
-  private async loadLegacyArtifact(db: IDBDatabase, unitId: string): Promise<NativePackageState | null> {
-    if (!db.objectStoreNames.contains('xlsxArtifacts')) return null;
-    const transaction = db.transaction('xlsxArtifacts', 'readonly');
-    const legacy = await requestResult(transaction.objectStore('xlsxArtifacts').get(unitId)) as LegacyXlsxArtifactRecord | undefined;
-    await transactionComplete(transaction);
-    if (!legacy || legacy.schema !== 'XlsxArtifactRecord' || legacy.version !== 1 || legacy.unitId !== unitId
-      || legacy.artifact?.schema !== 'XlsxSourceArtifact' || !(legacy.artifact.buffer instanceof ArrayBuffer)) return null;
-    try {
-      const imported = await importXlsx({
-        fileName: legacy.artifact.fileName,
-        buffer: legacy.artifact.buffer.slice(0),
-        options: {
-          compatibilityTarget: 'B',
-          compatibilityMode: 'balanced',
-          dateSystem: legacy.artifact.dateSystem,
-          preserveMacros: true,
-        },
-      });
-      await this.save(unitId, imported.nativePackage);
-      const cleanup = db.transaction('xlsxArtifacts', 'readwrite');
-      cleanup.objectStore('xlsxArtifacts').delete(unitId);
-      await transactionComplete(cleanup);
-      return imported.nativePackage;
-    } catch {
-      // Keep the legacy record when conversion fails; losing the source bytes
-      // would make the workbook irrecoverable on the next export.
       return null;
     }
   }

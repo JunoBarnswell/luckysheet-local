@@ -85,9 +85,10 @@ test('resolveFilterButtonCells targets table header row when filter matches tabl
   const sheet = new WorksheetModel('s1', 'Sheet1');
   sheet.sheetTables.push(sampleTable);
   sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
+  sheet.autoFilter!.columns[0]!.criterion = { kind: 'values', values: ['A'], includeBlank: false };
   assert.deepEqual(resolveFilterButtonCells(sheet), [
-    { row: 0, column: 0 },
-    { row: 0, column: 1 },
+    { row: 0, column: 0, active: true, sorted: false },
+    { row: 0, column: 1, active: false, sorted: false },
   ]);
 });
 
@@ -114,7 +115,7 @@ test('multiple non-overlapping Table AutoFilters retain independent owners and b
   sheet.sheetTables.push(first, second);
   assert.equal(resolveAutoFilters(sheet).length, 2);
   assert.deepEqual(resolveFilterButtonCells(sheet), [
-    { row: 0, column: 0 }, { row: 0, column: 1 },
-    { row: 10, column: 0 }, { row: 10, column: 1 },
+    { row: 0, column: 0, active: false, sorted: false }, { row: 0, column: 1, active: false, sorted: false },
+    { row: 10, column: 0, active: false, sorted: false }, { row: 10, column: 1, active: false, sorted: false },
   ]);
 });

@@ -35,6 +35,10 @@ export type WorkbookCategoryTab = 'recent' | 'cloud' | 'local' | 'shared';
 export type WorkbookViewMode = 'list' | 'grid';
 export type WorkbookTemplateKind = TemplatePreviewKind;
 
+export interface WorkbookOpenOptions {
+  initialCell?: string;
+}
+
 export interface WorkbookTemplateDefinition {
   kind: WorkbookTemplateKind;
   title: string;
@@ -49,12 +53,13 @@ export const workbookTemplates: readonly WorkbookTemplateDefinition[] = [
   { kind: 'pivot', title: '数据透视表模板', description: '快速分析业务数据', icon: 'table-pivot' },
   { kind: 'project', title: '项目计划模板', description: '规划项目进度与任务', icon: 'chart' },
   { kind: 'budget', title: '预算模板', description: '管理收支与预算', icon: 'calculator' },
+  { kind: 'designer-demo', title: 'Designer Demo', description: 'SpreadJS Designer 视觉验收', icon: 'grid' },
 ];
 
 export interface WorkbookHubController {
   onNavigate: (section: WorkbookHubSection) => void;
   onCreateTemplate: (kind: WorkbookTemplateKind) => void;
-  onOpenWorkbook: (unitId: string) => void;
+  onOpenWorkbook: (unitId: string, options?: WorkbookOpenOptions) => void;
   onOpenInNewWindow: (unitId: string) => void;
   onImportWorkbook: () => void;
   onExportWorkbook: (unitId: string) => void;

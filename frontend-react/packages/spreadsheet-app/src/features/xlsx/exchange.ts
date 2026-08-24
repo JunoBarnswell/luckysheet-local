@@ -7,7 +7,7 @@ import type {
   XlsxImportOptions,
   XlsxWorkerPort,
 } from '@react-sheets/exchange-excel-ooxml';
-import { excelCodecRegistry } from '@react-sheets/exchange-excel';
+import { excelCodecRegistry } from '@react-sheets/exchange-excel-ooxml';
 
 export type { CompatibilityReport, CompatibilityLevel, XlsxExportOptions, XlsxImportOptions };
 

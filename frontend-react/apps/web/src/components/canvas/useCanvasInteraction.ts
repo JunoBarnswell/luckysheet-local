@@ -90,7 +90,7 @@ export interface CanvasInteractionOptions {
   formatPainterActive: boolean;
   canRepeat: boolean;
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
-  onPivotShowDetails?: (request: {
+  onPivotShowDetails: (request: {
     pivotId: string;
     sourceRowPaths: readonly PivotSourceRowPath[];
     hit: ResolvedContextHit;
@@ -758,7 +758,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onPivotContextHit?.(pivotContextHit);
       const pivotTarget = findPivotProjectionCell(sheet, hitCell.row, hitCell.column);
       if (pivotTarget && isPivotValueCell(pivotTarget.cell) && pivotTarget.cell.sourceRowPaths && pivotTarget.cell.sourceRowPaths.length > 0) {
-        onPivotShowDetails?.({ pivotId: pivotTarget.projection.pivotId, sourceRowPaths: pivotTarget.cell.sourceRowPaths, hit: pivotContextHit });
+        onPivotShowDetails({ pivotId: pivotTarget.projection.pivotId, sourceRowPaths: pivotTarget.cell.sourceRowPaths, hit: pivotContextHit });
       }
       return;
     }

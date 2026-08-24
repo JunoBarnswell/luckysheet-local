@@ -214,21 +214,19 @@ export function useEditorCommandController({
     const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
-  const buildFilterSelectionCommand = (): CommandDescriptor => state.selectedSheet.filterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: state.selectedSheet.filterOwner.tableId } }
+  const activeFilterOwner = state.selectedSheet.getFilterOwner(state.selection.activeCell.column);
+  const activeAutoFilter = state.selectedSheet.getActiveAutoFilter(state.selection.activeCell.column);
+  const buildFilterSelectionCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
+    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId } }
     : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange } };
-  const filterRange = state.selectedSheet.autoFilter?.range ?? currentDataRange;
-  const buildClearFilterCommand = (): CommandDescriptor => state.selectedSheet.filterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: state.selectedSheet.filterOwner.tableId } }
+  const filterRange = activeAutoFilter?.range ?? currentDataRange;
+  const buildClearFilterCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
+    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId } }
     : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange } };
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
-    void ascending;
     const range = session.getCurrentRegion();
-    if (range.endRow <= range.startRow) {
-      session.notify("Select a data region with at least one data row before sorting");
-      return undefined;
-    }
-    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, hasHeader: true } };
+    if (range.endRow <= range.startRow) return undefined;
+    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: true } };
   };
 
   const pivotSourceOptions = useMemo(() => {
@@ -361,6 +359,7 @@ export function useEditorCommandController({
       case "cells.insert": case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells" }); return true;
       case "filter.toggle": session.applyFilterSelection(); return true;
       case "find.open": case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace" }); return true;
+      case "commandPalette.open": dispatchSessionIntent({ type: "command-palette.open" }); return true;
       case "name.goto": case "navigation.goto": dispatchSessionIntent({ type: "dialog.open", dialog: "goto" }); return true;
       case "ribbon.home.keyTips": session.setRibbonTab("home"); session.notify("Home shortcuts are active"); return true;
       case "format.cells": dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells" }); return true;

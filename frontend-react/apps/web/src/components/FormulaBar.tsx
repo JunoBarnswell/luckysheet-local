@@ -8,6 +8,7 @@ export interface FormulaBarProps {
   formula: string;
   locale: Locale;
   onCancel: () => void;
+  onBeginEdit: () => void;
   onChange: (value: string) => void;
   onCommit: () => void;
   onNameBoxCommit?: (value: string) => void;
@@ -15,9 +16,10 @@ export interface FormulaBarProps {
   phase: AppPhase;
 }
 
-export function FormulaBar({ locale, phase, ...props }: FormulaBarProps) {
+export function FormulaBar({ locale, phase, onBeginEdit, ...props }: FormulaBarProps) {
   const shellProps: ShellFormulaBarProps = {
     ...props,
+    onFocusFormula: onBeginEdit,
     labels: formulaBarLabels(locale, phase),
   };
   return <FormulaBarShell {...shellProps} />;

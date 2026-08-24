@@ -18,7 +18,7 @@ describe('WorkbookSession print integration', () => {
       margin: { top: 20, right: 20, bottom: 20, left: 20 },
     });
     const snapshot = app.getUiSnapshot();
-    assert.equal(snapshot.showPrintPreview, true);
+    assert.equal(snapshot.dialogs.active, 'print-preview');
     assert.ok(snapshot.printPageCount >= 1);
     assert.ok(snapshot.printPages.length >= 1);
     assert.ok(snapshot.printArea);
@@ -62,7 +62,7 @@ describe('WorkbookSession print integration', () => {
       orientation: 'portrait',
       margin: { top: 20, right: 20, bottom: 20, left: 20 },
     });
-    assert.equal(app.getUiSnapshot().showPrintPreview, true);
+    assert.equal(app.getUiSnapshot().dialogs.active, 'print-preview');
     assert.ok(app.getUiSnapshot().printPageCount >= 1);
   });
 
