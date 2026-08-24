@@ -22,10 +22,6 @@ export interface RibbonHostProps {
   commands: Pick<
     EditorCommandController,
     | "buildSortDescriptor"
-    | "buildQuickChartCommand"
-    | "buildQuickSparklineCommand"
-    | "buildQuickShapeCommand"
-    | "buildDrawingCommand"
     | "buildTotalRowCommand"
     | "buildFilterSelectionCommand"
     | "buildClearFilterCommand"
@@ -96,13 +92,6 @@ export function RibbonHost({
       onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
       buildSortDescriptor={commands.buildSortDescriptor}
-      onCreatePivot={() => session.buildQuickPivotDescriptor()}
-      onCreateChart={commands.buildQuickChartCommand}
-      onCreateSparkline={commands.buildQuickSparklineCommand}
-      onCreateShape={commands.buildQuickShapeCommand}
-      onBringDrawingForward={() => commands.buildDrawingCommand("drawing.zorder", "forward")}
-      onSendDrawingBackward={() => commands.buildDrawingCommand("drawing.zorder", "backward")}
-      onRemoveDrawing={() => commands.buildDrawingCommand("drawing.remove")}
       onCreateSheetTable={() => session.createSheetTableFromSelection()}
       onCreateDataTable={() => session.createDataTableFromSelection()}
       onToggleSheetTableTotalRow={commands.buildTotalRowCommand}
@@ -125,6 +114,16 @@ export function RibbonHost({
       onToggleBandedRows={() => session.toggleBandedRows()}
       onSetRecalculationMode={(mode: "automatic" | "manual") => session.setRecalculationMode(mode)}
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
+      onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
+      onApplyBarcode={() => session.applyBarcode('qr')}
+      onCreateDataChart={() => session.insertDataChart('column')}
+      onCreateCamera={() => session.insertCamera()}
+      onCreateFormControl={(type) => session.insertFormControl(type)}
+      onApplyCheckbox={() => session.setCellEditor({ kind: 'checkbox' })}
+      onCreateTextBox={() => session.insertTextBox()}
+      onInsertChartType={(type) => session.insertChart(type)}
+      onInsertSparklineType={(type) => { session.insertSparkline(type); }}
+      onInsertShapeType={(type) => session.insertShape(type)}
       onTabChange={(tab: RibbonTabId) => session.setRibbonTab(tab)}
       phase={state.phase}
       homeState={state.homeRibbon}

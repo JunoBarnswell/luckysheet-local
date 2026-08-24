@@ -578,7 +578,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
 
     private static List<RangeRef> resolveTableRanges(ObjectNode root, String tableId) {
         List<RangeRef> ranges = new ArrayList<>();
-        JsonNode workbookTables = root.get("tables");
+        JsonNode workbookTables = root.path("dataModel").get("tables");
         if (workbookTables != null && workbookTables.isArray()) {
             for (JsonNode raw : workbookTables) if (raw.isObject() && tableId.equals(raw.path("id").asText())) {
                 JsonNode range = raw.get("sourceRange");
@@ -600,7 +600,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private static List<RangeRef> resolveDataSourceRanges(ObjectNode root, String sourceId) {
-        JsonNode rawSources = root.get("dataSources");
+        JsonNode rawSources = root.path("dataModel").get("sources");
         if (rawSources == null || !rawSources.isArray()) return List.of();
         for (JsonNode raw : rawSources) if (raw.isObject() && sourceId.equals(raw.path("id").asText())) {
             ObjectNode source = (ObjectNode) raw;

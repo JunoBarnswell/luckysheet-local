@@ -33,6 +33,7 @@ export interface CellPatch {
   styleId?: CellPatchField<NonNullable<CellData['styleId']>>;
   style?: CellPatchField<CellStyle>;
   editor?: CellPatchField<NonNullable<CellData['editor']>>;
+  presentation?: CellPatchField<NonNullable<CellData['presentation']>>;
   numberFormat?: CellPatchField<NonNullable<CellData['numberFormat']>>;
   richText?: CellPatchField<NonNullable<CellData['richText']>>;
   formulaMetadata?: CellPatchField<NonNullable<CellData['formulaMetadata']>>;
@@ -480,7 +481,7 @@ export function applyDataRegionMaterialization(
   for (const entry of prepared.materializedCells) sheet.cells.set(entry.row, entry.column, clone(entry.cell));
   sheet.dataRegions.splice(regionIndex, 1);
   const sourceRemoved = !sourceStillReferenced(workbook, prepared.region.sourceId);
-  if (sourceRemoved) workbook.dataSources.delete(prepared.region.sourceId);
+  if (sourceRemoved) workbook.dataModel.sources.delete(prepared.region.sourceId);
   return {
     ...prepared,
     regionIndex,
@@ -500,10 +501,10 @@ export function restoreDataRegionMaterialization(
     throw new Error(`Data region already exists: ${transaction.region.id}`);
   }
   if (transaction.sourceRemoved) {
-    if (workbook.dataSources.has(transaction.manifest.id)) {
+    if (workbook.dataModel.sources.has(transaction.manifest.id)) {
       throw new Error(`Data source already exists: ${transaction.manifest.id}`);
     }
-    workbook.dataSources.set(transaction.manifest.id, clone(transaction.manifest));
+    workbook.dataModel.sources.set(transaction.manifest.id, clone(transaction.manifest));
   }
   clearRange(sheet, transaction.range);
   for (const entry of transaction.previousCells) sheet.cells.set(entry.row, entry.column, clone(entry.cell));

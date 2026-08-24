@@ -30,6 +30,7 @@ import type {
   PivotResultTree,
   RangeRef,
   SparklineModel,
+  WorkbookTableModel,
 } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
@@ -55,6 +56,7 @@ export interface SheetCanvasProps {
   allSheets?: readonly CanvasSheetSnapshot[];
   pivotResults?: Record<string, PivotResultTree>;
   sparklines?: SparklineModel[];
+  tables?: readonly WorkbookTableModel[];
   selectedFloatingId: string | null;
   showFormulas?: boolean;
   /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
@@ -267,6 +269,7 @@ export function SheetCanvas({
   allSheets = [],
   pivotResults = {},
   sparklines = [],
+  tables = [],
   selectedFloatingId,
   showFormulas = false,
   onPivotContextHit,
@@ -375,6 +378,7 @@ export function SheetCanvas({
       displayValue: cell.value,
       style: cell.style,
       editor: cell.editor,
+      presentation: cell.presentation,
       overlay: cell.overlay
         ? {
             dataBar: cell.overlay.dataBar,
@@ -417,7 +421,8 @@ export function SheetCanvas({
     sheet,
     skeleton,
     sparklines,
-  }), [allSheets, drawingPayloads, drawings, pivotResults, sparklines, skeleton, sheet]);
+    tables,
+  }), [allSheets, drawingPayloads, drawings, pivotResults, sparklines, skeleton, sheet, tables]);
 
   // ---------- 引擎生命周期与 chrome 同步 ----------
 

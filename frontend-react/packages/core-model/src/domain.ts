@@ -133,7 +133,7 @@ export interface SheetTableModel {
   styleName?: string;
 }
 
-export type DrawingKind = 'image' | 'shape' | 'chart' | 'textbox' | 'slicer' | 'timeline';
+export type DrawingKind = 'image' | 'shape' | 'chart' | 'data-chart' | 'camera' | 'textbox' | 'form-control' | 'slicer' | 'timeline';
 
 export interface DrawingTransform {
   x: number;
@@ -174,6 +174,50 @@ export interface TextBoxDrawingPayload {
   text: string;
   textColor?: string;
   fontSize?: number;
+}
+
+export type DataChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';
+
+export interface DataChartDrawingPayload {
+  kind: 'data-chart';
+  tableId: string;
+  plots: Array<{
+    type: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'treemap' | 'funnel';
+    valueFieldId: string;
+    aggregate: DataChartAggregate;
+    categoryFieldId?: string;
+    colorFieldId?: string;
+    sizeFieldId?: string;
+  }>;
+  config: {
+    title?: string;
+    legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
+    showDataLabels?: boolean;
+  };
+}
+
+export interface CameraDrawingPayload {
+  kind: 'camera';
+  sourceRange: RangeRef;
+  refreshPolicy: 'live';
+}
+
+export type FormControlType = 'button' | 'spin-button' | 'list-box' | 'combo-box' | 'checkbox' | 'option-button' | 'group-box' | 'label' | 'scrollbar';
+
+export interface FormControlDrawingPayload {
+  kind: 'form-control';
+  controlType: FormControlType;
+  text?: string;
+  cellLink?: { sheetId: SheetId; row: Row; column: Column };
+  inputRange?: RangeRef;
+  value: string | number | boolean | null;
+  enabled: boolean;
+  style: {
+    fill: string;
+    border: string;
+    textColor: string;
+    fontSize?: number;
+  };
 }
 
 export type P1ChartType =
@@ -248,6 +292,9 @@ export type DrawingPayload =
   | ShapeDrawingPayload
   | TextBoxDrawingPayload
   | ChartDrawingPayload
+  | DataChartDrawingPayload
+  | CameraDrawingPayload
+  | FormControlDrawingPayload
   | PivotSlicerDrawingPayload
   | PivotTimelineDrawingPayload;
 

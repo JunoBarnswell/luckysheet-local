@@ -4,6 +4,7 @@ import type {
   CellNote,
   CellData,
   CellStyle,
+  CellPresentation,
   ConditionalFormatRule,
   DataValidationRule,
   DrawingObject,
@@ -72,6 +73,7 @@ export interface CanvasCellSnapshot {
   formula?: string;
   style?: CellStyle;
   editor?: CellEditorConfig;
+  presentation?: CellPresentation;
   value: string;
   hasComment?: boolean;
   commentText?: string;
@@ -238,12 +240,25 @@ export function buildCanvasSheetSnapshot(
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = usedRangeOfSheet(sheet);
+  const advancedTableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : sheet.kind === 'report-sheet' ? sheet.reportSheet?.tableId : undefined;
+  const advancedTable = advancedTableId ? workbook.dataModel.tables.get(advancedTableId) : undefined;
+
+  const resolveModelCell = (row: number, column: number): { cell?: CellData; owner: WorksheetModel; row: number; column: number } => {
+    const local = cellResolver.resolve(sheet, row, column)?.cell;
+    if (local || row === 0 || !advancedTable?.sourceRange) return { cell: local, owner: sheet, row, column };
+    const field = advancedTable.fields[column];
+    const sourceSheet = workbook.sheets.get(advancedTable.sourceRange.sheetId);
+    const sourceRow = advancedTable.sourceRange.startRow + row;
+    if (!field || !sourceSheet || sourceRow > advancedTable.sourceRange.endRow) return { owner: sheet, row, column };
+    const sourceColumn = advancedTable.sourceRange.startColumn + field.ordinal;
+    return { cell: cellResolver.resolve(sourceSheet, sourceRow, sourceColumn)?.cell, owner: sourceSheet, row: sourceRow, column: sourceColumn };
+  };
 
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
-    const resolved = cellResolver.resolve(sheet, row, column);
-    const modelCell = resolved?.cell;
-    const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
+    const resolved = resolveModelCell(row, column);
+    const modelCell = resolved.cell;
+    const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
     const key = `${row}:${column}`;
     const overlay = overlays.get(key);
     const table = findSheetTableAt(sheet, row, column);
@@ -267,6 +282,7 @@ export function buildCanvasSheetSnapshot(
       formula: modelCell?.formula,
       style,
       editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
+      presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,
       value,
       displayValue: value,
       hasComment: Boolean(comment || note),

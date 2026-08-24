@@ -1,14 +1,4 @@
-import type {
-  DefinedNameModel,
-  DataSourceManifest,
-  SheetId,
-  SheetSnapshot,
-  RangeRef,
-  WorkbookModel,
-  WorkbookTableModel,
-  CellStyleTemplate,
-  UnitId,
-} from './index';
+import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
 
@@ -20,15 +10,13 @@ import { WorkbookModel as WorkbookModelClass } from './index';
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 4;
+  version: 5;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
   definedNames?: Record<string, string>;
   definedNameModels?: DefinedNameModel[];
-  tables?: WorkbookTableModel[];
-  /** Metadata only; large source bytes live in the local data-block store. */
-  dataSources: DataSourceManifest[];
+  dataModel: import('./data-model').WorkbookDataModel;
   printDocuments?: PrintDocumentSnapshot[];
   queryDefinitions?: QueryDefinitionSnapshot[];
   /** Workbook-owned reusable styles and cell editor definitions. */
@@ -42,7 +30,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 4 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 5 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -54,18 +42,31 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   const input = structuredClone(value) as Record<string, any>;
   if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
-  if (input.version === 3 && Array.isArray(input.sheets)) {
+  if (input.version === 4 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    input.dataModel = {
+      sources: Array.isArray(input.dataSources) ? input.dataSources : [],
+      tables: Array.isArray(input.tables) ? input.tables : [],
+      relationships: [],
+      views: [],
+    };
+    delete input.dataSources;
+    delete input.tables;
+    for (const sheet of input.sheets as Array<Record<string, any>>) sheet.kind = sheet.kind ?? 'worksheet';
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
+  if (input.version === 3 && Array.isArray(input.sheets)) {
+    input.version = 4;
     for (const sheet of input.sheets as Array<Record<string, any>>) {
       if (sheet.pane && typeof sheet.pane === 'object' && sheet.pane.kind !== 'none') {
         sheet.pane.state = sheet.pane.kind === 'split' ? 'split' : (sheet.pane.state ?? 'frozen');
       }
       migrateLegacyFilter(sheet);
     }
-    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+    return migrateStoredWorkbookSnapshot(input);
   }
   if (input.version !== 2 || !Array.isArray(input.sheets)) throw new Error(`Unsupported workbook snapshot version: ${String(input.version)}`);
-  input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+  input.version = 4;
   input.dimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
   for (const sheet of input.sheets as Array<Record<string, any>>) {
     sheet.defaultRowHeightPx = finiteStoredSize(sheet.defaultRowHeight, 28);
@@ -87,7 +88,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete sheet.columnWidths;
     delete sheet.freeze;
   }
-  return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  return migrateStoredWorkbookSnapshot(input);
 }
 
 function migrateLegacyFilter(sheet: Record<string, any>): void {
@@ -146,11 +147,18 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (snapshot.version !== WORKBOOK_SNAPSHOT_SCHEMA_REVISION) {
     throw new Error(`Unsupported workbook snapshot version: ${String(snapshot.version)}`);
   }
-  if (!Array.isArray(snapshot.dataSources)) throw new Error('Workbook snapshot dataSources must be an array');
+  if (!snapshot.dataModel || !Array.isArray(snapshot.dataModel.sources) || !Array.isArray(snapshot.dataModel.tables)
+    || !Array.isArray(snapshot.dataModel.relationships) || !Array.isArray(snapshot.dataModel.views)) {
+    throw new Error('Workbook snapshot dataModel is invalid');
+  }
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
     || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
   for (const sheet of snapshot.sheets) {
+    if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');
+    if (sheet.kind === 'table-sheet' && !sheet.tableSheet) throw new Error('TableSheet definition is required');
+    if (sheet.kind === 'gantt-sheet' && !sheet.ganttSheet) throw new Error('GanttSheet definition is required');
+    if (sheet.kind === 'report-sheet' && !sheet.reportSheet) throw new Error('ReportSheet definition is required');
     const pane = sheet.pane;
     if (pane.kind === 'frozen') {
       if (!Number.isInteger(pane.xSplit) || !Number.isInteger(pane.ySplit) || pane.xSplit < 0 || pane.ySplit < 0) {
@@ -191,6 +199,12 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (!template.id.trim() || !template.name.trim() || templateIds.has(template.id)) throw new Error('Cell style template identity is invalid');
     if (template.style.indent !== undefined && (!Number.isInteger(template.style.indent) || template.style.indent < 0 || template.style.indent > 250)) {
       throw new Error('Cell style template indent is invalid');
+    }
+    if (template.editor && !['text', 'number', 'date', 'list', 'checkbox'].includes(template.editor.kind)) {
+      throw new Error('Cell style template editor is invalid');
+    }
+    if (template.editor?.kind === 'list' && (!Array.isArray(template.editor.values) || template.editor.values.some((value) => !value.trim()))) {
+      throw new Error('Cell style template list editor values are invalid');
     }
     templateIds.add(template.id);
   }

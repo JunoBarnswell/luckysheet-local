@@ -119,10 +119,10 @@ components:
         details: { type: object, additionalProperties: true }
     WorkbookSnapshot:
       type: object
-      required: [schema, version, unitId, name, sheets, dataSources, dimensionMetrics]
+      required: [schema, version, unitId, name, sheets, dataModel, dimensionMetrics]
       properties:
         schema: { const: WorkbookSnapshot }
-        version: { const: 4 }
+        version: { const: 5 }
         unitId: { type: string, minLength: 1, maxLength: 200 }
         name: { type: string, minLength: 1, maxLength: 255 }
         dimensionMetrics:
@@ -133,7 +133,14 @@ components:
             normalFontSizePx: { type: number, exclusiveMinimum: 0 }
             maximumDigitWidthPx: { type: number, exclusiveMinimum: 0 }
         sheets: { type: array, minItems: 1, items: { $ref: '#/components/schemas/WorksheetSnapshot' } }
-        dataSources: { type: array, items: { type: object } }
+        dataModel:
+          type: object
+          required: [sources, tables, relationships, views]
+          properties:
+            sources: { type: array, items: { type: object } }
+            tables: { type: array, items: { type: object } }
+            relationships: { type: array, items: { type: object } }
+            views: { type: array, items: { type: object } }
         cellStyleTemplates: { type: array, items: { type: object } }
     WorksheetPane:
       oneOf:

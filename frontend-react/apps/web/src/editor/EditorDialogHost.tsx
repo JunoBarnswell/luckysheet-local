@@ -15,6 +15,7 @@ const CreatePivotTableDialog = lazy(() => import("../components/dialogs/CreatePi
 const PrintPreviewDialog = lazy(() => import("../components/dialogs/PrintPreviewDialog").then((module) => ({ default: module.PrintPreviewDialog })));
 const CellTemplateDialog = lazy(() => import('../components/dialogs/CellTemplateDialog').then((module) => ({ default: module.CellTemplateDialog })));
 const CellEditorDialog = lazy(() => import('../components/dialogs/CellEditorDialog').then((module) => ({ default: module.CellEditorDialog })));
+const InsertPictureDialog = lazy(() => import('../components/dialogs/InsertPictureDialog').then((module) => ({ default: module.InsertPictureDialog })));
 
 export interface EditorDialogHostProps {
   state: UiSnapshot;
@@ -125,6 +126,11 @@ export function EditorDialogHost({
         open={state.dialogs.active === 'cell-editor'}
         onClose={session.closeActiveDialog.bind(session)}
         onApply={(editor) => { session.setCellEditor(editor); session.closeActiveDialog(); }}
+      />
+      <InsertPictureDialog
+        open={state.dialogs.active === 'insert-picture'}
+        onClose={session.closeActiveDialog.bind(session)}
+        onInsert={(file, placement) => session.insertImageFile(file, placement)}
       />
     </Suspense>
   );

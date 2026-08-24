@@ -41,7 +41,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         }
         if (id().equals("table.remove")) {
             String tableId = rawId(mutation.params(), "Table id");
-            ObjectNode table = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(root, "tables"), tableId);
+            ObjectNode table = SnapshotMutationSupport.findById(SnapshotMutationSupport.dataModelArray(root, "tables"), tableId);
             return table == null || table.get("sourceRange") == null ? List.of() : List.of(SnapshotMutationSupport.range(root, table.get("sourceRange")));
         }
         SnapshotMutationSupport.params(mutation);
@@ -64,14 +64,14 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
 
     private void addTable(ObjectNode root, ObjectNode table) {
         validateTable(root, table);
-        ArrayNode tables = SnapshotMutationSupport.array(root, "tables");
+        ArrayNode tables = SnapshotMutationSupport.dataModelArray(root, "tables");
         String id = SnapshotMutationSupport.text(table, "id");
         if (SnapshotMutationSupport.findById(tables, id) != null) throw ServiceException.conflict("Workbook table already exists: " + id);
         tables.add(table.deepCopy());
     }
 
     private void removeTable(ObjectNode root, String tableId) {
-        if (!SnapshotMutationSupport.removeById(SnapshotMutationSupport.array(root, "tables"), tableId)) throw ServiceException.notFound("Workbook table not found: " + tableId);
+        if (!SnapshotMutationSupport.removeById(SnapshotMutationSupport.dataModelArray(root, "tables"), tableId)) throw ServiceException.notFound("Workbook table not found: " + tableId);
     }
 
     private void validateTable(ObjectNode root, ObjectNode table) {

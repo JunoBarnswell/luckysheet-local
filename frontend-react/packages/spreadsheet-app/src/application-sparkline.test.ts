@@ -30,7 +30,7 @@ describe('WorkbookSession sparkline integration', () => {
     assert.equal(snapshot.selectedSheet.sparklines[0]?.anchor.column, 5);
   });
 
-  it('insertQuickSparkline uses the current selection and places sparkline to the right', () => {
+  it('insertSparkline uses the current selection and places sparkline to the right', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
@@ -46,7 +46,7 @@ describe('WorkbookSession sparkline integration', () => {
       activeCell: { row: 2, column: 1 },
       anchorCell: { row: 2, column: 1 },
     });
-    const sparklineId = app.insertQuickSparkline('column');
+    const sparklineId = app.insertSparkline('column');
     assert.ok(sparklineId);
     const snapshot = app.getUiSnapshot();
     const sparkline = snapshot.selectedSheet.sparklines.find((entry) => entry.id === sparklineId);
@@ -72,7 +72,7 @@ describe('WorkbookSession sparkline integration', () => {
       activeCell: { row: 1, column: 1 },
       anchorCell: { row: 1, column: 1 },
     });
-    const sparklineId = app.insertQuickSparkline('line');
+    const sparklineId = app.insertSparkline('line');
     assert.ok(sparklineId);
     const groupId = app.createSparklineGroup([sparklineId!], { showAxis: true, showMarkers: true });
     app.updateSparklineGroup(groupId, { showMarkers: false });
@@ -99,7 +99,7 @@ describe('WorkbookSession sparkline integration', () => {
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
     });
-    const sparklineId = app.insertQuickSparkline('line');
+    const sparklineId = app.insertSparkline('line');
     assert.ok(sparklineId);
     app.removeSparkline(sparklineId!);
     assert.equal(app.getUiSnapshot().selectedSheet.sparklines.length, 0);

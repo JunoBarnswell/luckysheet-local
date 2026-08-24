@@ -225,6 +225,7 @@ export interface CompatibilityIssue {
   message: string;
   preserved: boolean;
   status: 'editable' | 'preserved-only' | 'unsupported';
+  projection?: 'native' | 'projected' | 'preserved' | 'unsupported';
   reason: string;
 }
 

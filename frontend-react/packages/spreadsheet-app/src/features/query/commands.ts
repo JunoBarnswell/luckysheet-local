@@ -96,15 +96,15 @@ function restoreCells(context: CommandContext, payload: QueryCellRestorePayload)
 function applyWorkbookTable(context: CommandContext, payload: QueryWorkbookTableLoadPayload, store: WorkbookTableQueryStore): void {
   if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
   else context.workbook.setQueryDefinition(payload.queryDefinition);
-  context.workbook.tables.set(payload.table.id, structuredClone(payload.table));
+  context.workbook.dataModel.tables.set(payload.table.id, structuredClone(payload.table));
   store.set(payload.tableId, { result: structuredClone(payload.result), sourceRevision: payload.sourceRevision });
 }
 
 function restoreWorkbookTable(context: CommandContext, payload: QueryWorkbookTableRestorePayload, store: WorkbookTableQueryStore): void {
   if (payload.queryDefinition === null) context.workbook.removeQueryDefinition(payload.queryId);
   else context.workbook.setQueryDefinition(payload.queryDefinition);
-  if (payload.previousTable) context.workbook.tables.set(payload.tableId, structuredClone(payload.previousTable));
-  else context.workbook.tables.delete(payload.tableId);
+  if (payload.previousTable) context.workbook.dataModel.tables.set(payload.tableId, structuredClone(payload.previousTable));
+  else context.workbook.dataModel.tables.delete(payload.tableId);
   if (payload.previousRecord) store.set(payload.tableId, structuredClone(payload.previousRecord));
   else store.delete(payload.tableId);
 }

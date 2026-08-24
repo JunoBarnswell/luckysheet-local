@@ -86,6 +86,7 @@ export interface CellRenderData {
   displayValue?: string;
   style?: CellRenderStyle;
   editor?: { kind: 'text' | 'number' | 'date' | 'list' | 'checkbox'; values?: string[] };
+  presentation?: import('@react-sheets/core-model').CellPresentation;
   error?: string;
   merge?: MergeInfo;
   overlay?: ConditionalRenderOverlay;

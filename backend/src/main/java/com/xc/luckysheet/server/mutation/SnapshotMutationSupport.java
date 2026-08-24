@@ -80,6 +80,10 @@ final class SnapshotMutationSupport {
         return (ArrayNode) value;
     }
 
+    static ArrayNode dataModelArray(ObjectNode root, String property) {
+        return array(requiredObject(root, "dataModel"), property);
+    }
+
     static ArrayNode requiredArray(ObjectNode parent, String property) {
         JsonNode value = parent.get(property);
         if (value == null || !value.isArray()) throw ServiceException.validation(property + " must be an array");

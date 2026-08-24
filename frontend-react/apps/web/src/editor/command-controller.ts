@@ -7,8 +7,6 @@ import type {
   PivotFieldDefinition,
   PivotLayout,
   PivotSource,
-  ShapeDrawingPayload,
-  SparklineModel,
 } from "@react-sheets/core-model";
 import {
   type SelectionState,
@@ -44,10 +42,6 @@ export interface EditorCommandController {
   pivotCallbacks: PivotPanelCallbacks;
   pivotSourceOptions: Array<{ id: string; label: string; source: PivotSource }>;
   selectedDrawing: UiSnapshot["selectedSheet"]["drawings"][number] | undefined;
-  buildQuickChartCommand: () => CommandDescriptor;
-  buildQuickSparklineCommand: () => CommandDescriptor;
-  buildQuickShapeCommand: () => CommandDescriptor;
-  buildDrawingCommand: (commandId: "drawing.zorder" | "drawing.remove", direction?: "forward" | "backward") => CommandDescriptor | undefined;
   buildTotalRowCommand: () => CommandDescriptor | undefined;
   buildSubtotalCommand: () => CommandDescriptor;
   buildRemoveDuplicatesCommand: () => CommandDescriptor;
@@ -117,72 +111,6 @@ export function useEditorCommandController({
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
     ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, connectedPivotIds: record.payload.connectedPivotIds }]
     : []);
-
-  const buildQuickChartCommand = (): CommandDescriptor => {
-    const chartId = createWebId("chart");
-    const drawing: DrawingObject = {
-      id: createWebId("drawing"),
-      sheetId: state.activeSheetId,
-      kind: "chart",
-      payloadId: chartId,
-      anchor: { kind: "absolute" },
-      transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 },
-      zIndex: 0,
-    };
-    const payload: ChartDrawingPayload = {
-      kind: "chart",
-      chartId,
-      chartType: "column",
-      title: "Chart",
-      sourceRanges: [{ ...pivotSourceRange, sheetId: state.activeSheetId }],
-      legendPosition: "bottom",
-      showDataLabels: false,
-    };
-    return { commandId: "chart.insert", params: { sheetId: state.activeSheetId, drawing, payload } };
-  };
-
-  const buildQuickSparklineCommand = (): CommandDescriptor => {
-    const sparklineId = createWebId("sparkline");
-    return {
-      commandId: "sparkline.insertDataLocation",
-      params: {
-        sheetId: state.activeSheetId,
-        sparklineId,
-        dataRange: { ...pivotSourceRange, sheetId: state.activeSheetId },
-        location: { row: pivotSourceRange.startRow, column: pivotSourceRange.endColumn + 1 },
-        type: "line" as SparklineModel["type"],
-        highlightMax: true,
-        highlightMin: true,
-      },
-    };
-  };
-
-  const buildQuickShapeCommand = (): CommandDescriptor => {
-    const payloadId = createWebId("shape");
-    const drawingId = createWebId("drawing");
-    const payload: ShapeDrawingPayload = {
-      kind: "shape",
-      type: "rectangle",
-      fill: "#dbeafe",
-      stroke: "#2563eb",
-      strokeWidth: 2,
-      textColor: "#1e3a8a",
-      fontSize: 13,
-    };
-    return {
-      commandId: "drawing.add.shape",
-      params: {
-        sheetId: state.activeSheetId,
-        drawing: { id: drawingId, sheetId: state.activeSheetId, kind: "shape", payloadId, anchor: { kind: "absolute" }, transform: { x: 96, y: 96, width: 160, height: 60, rotation: 0 }, zIndex: 0 },
-        payload,
-      },
-    };
-  };
-
-  const buildDrawingCommand = (commandId: "drawing.zorder" | "drawing.remove", direction?: "forward" | "backward"): CommandDescriptor | undefined => {
-    if (!selectedDrawing) return undefined;
-    return { commandId, params: { sheetId: state.activeSheetId, drawingId: selectedDrawing.id, ...(direction ? { direction } : {}) } };
-  };
 
   const buildTotalRowCommand = (): CommandDescriptor | undefined => {
     const table = state.selectedSheet.sheetTables.find((entry) =>
@@ -414,10 +342,6 @@ export function useEditorCommandController({
     pivotCallbacks,
     pivotSourceOptions,
     selectedDrawing,
-    buildQuickChartCommand,
-    buildQuickSparklineCommand,
-    buildQuickShapeCommand,
-    buildDrawingCommand,
     buildTotalRowCommand,
     buildSubtotalCommand,
     buildRemoveDuplicatesCommand,

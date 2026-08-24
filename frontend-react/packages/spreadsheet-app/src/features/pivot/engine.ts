@@ -226,7 +226,7 @@ function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
   range: RangeRef;
   fields: Array<{ id: string; name: string }>;
 } {
-  const workbookTable = workbook.tables.get(tableId);
+  const workbookTable = workbook.dataModel.tables.get(tableId);
   if (workbookTable?.sourceRange) {
     return {
       range: workbookTable.sourceRange,

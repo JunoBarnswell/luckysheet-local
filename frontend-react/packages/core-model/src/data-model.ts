@@ -32,3 +32,82 @@ export interface WorkbookTableModel {
   blocks: WorkbookTableBlock[];
   revision: number;
 }
+
+export interface DataRelationship {
+  id: string;
+  fromTableId: string;
+  fromFieldId: string;
+  toTableId: string;
+  toFieldId: string;
+  cardinality: 'one-to-one' | 'one-to-many' | 'many-to-one';
+}
+
+export interface DataViewField {
+  fieldId: string;
+  caption: string;
+  formula?: string;
+  widthPx?: number;
+}
+
+export interface DataViewDefinition {
+  id: string;
+  name: string;
+  tableId: string;
+  fields: DataViewField[];
+  groupBy?: string[];
+  sort?: Array<{ fieldId: string; direction: 'asc' | 'desc' }>;
+}
+
+/** Canonical structured-data graph consumed by TableSheet, GanttSheet and DataChart. */
+export interface WorkbookDataModel {
+  sources: import('./data-source').DataSourceManifest[];
+  tables: WorkbookTableModel[];
+  relationships: DataRelationship[];
+  views: DataViewDefinition[];
+}
+
+export interface TableSheetColumn {
+  fieldId: string;
+  caption: string;
+  widthPx?: number;
+  type?: TableFieldType | 'formula' | 'lookup' | 'checkbox' | 'select' | 'currency' | 'percent' | 'barcode';
+  formula?: string;
+}
+
+export interface TableSheetDefinition {
+  viewId: string;
+  columns: TableSheetColumn[];
+  grouping: Array<{ fieldId: string; collapsed?: boolean }>;
+  sortState?: Array<{ fieldId: string; direction: 'asc' | 'desc' }>;
+}
+
+export interface GanttTaskFieldMap {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  progress: string;
+  parentId?: string;
+  dependencies?: string;
+}
+
+export interface GanttSheetDefinition {
+  viewId: string;
+  fieldMap: GanttTaskFieldMap;
+  calendar: { workingDays: number[]; dayStartHour: number; dayEndHour: number };
+  timeline: { unit: 'day' | 'week' | 'month' | 'quarter'; start?: string; end?: string };
+  dependencyStyle: { color: string; width: number };
+}
+
+export interface ReportBinding {
+  cell: { row: number; column: number };
+  expression: string;
+  direction?: 'vertical' | 'horizontal';
+}
+
+export interface ReportSheetDefinition {
+  templateSheetId: SheetId;
+  tableId?: string;
+  bindings: ReportBinding[];
+  pagination: { enabled: boolean; rowsPerPage?: number; repeatHeaderRows?: number[] };
+}

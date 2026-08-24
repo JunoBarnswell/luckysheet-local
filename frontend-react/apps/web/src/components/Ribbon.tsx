@@ -1,18 +1,10 @@
 import React, { createContext, useContext } from 'react';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import {
-  Box,
   Button,
-  ColorPicker,
-  Divider,
-  DropdownMenu,
   Icon,
-  Inline,
   RibbonShell,
-  Select,
-  Stack,
   Text,
-  TextInput,
   type RibbonTabId,
 } from '@react-sheets/ui-system';
 import {
@@ -30,14 +22,16 @@ import {
   type RibbonCommandContext,
   type RibbonCommandId,
   type RibbonCommandResult,
-  type RibbonGroupId,
   type UiSessionIntent,
 } from '@react-sheets/spreadsheet-app';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
-import { localizeText, translate, translateRibbonTab, translateRibbonText, type Locale } from '../i18n';
+import { translate, translateRibbonTab, translateRibbonText, type Locale } from '../i18n';
 import { homeText } from './home/home-localization';
 import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
+import { InsertRibbon } from './InsertRibbon';
+import { RibbonTabPresenter } from './RibbonTabPresenter';
+import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -84,13 +78,6 @@ export interface RibbonProps {
   onCreatePivotDialog?: () => void;
   /** Host-owned selection-aware sort builder. */
   buildSortDescriptor?: (ascending: boolean) => CommandDescriptor | undefined;
-  onCreatePivot: () => CommandDescriptor | undefined;
-  onCreateChart: () => CommandDescriptor | undefined;
-  onCreateSparkline: () => CommandDescriptor | undefined;
-  onCreateShape: () => CommandDescriptor | undefined;
-  onBringDrawingForward: () => CommandDescriptor | undefined;
-  onSendDrawingBackward: () => CommandDescriptor | undefined;
-  onRemoveDrawing: () => CommandDescriptor | undefined;
   onCreateSheetTable: () => void;
   onCreateDataTable: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
@@ -113,6 +100,16 @@ export interface RibbonProps {
   onToggleBandedRows: () => void;
   onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
   onOpenDefinedNames: () => void;
+  onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
+  onApplyBarcode: () => void;
+  onCreateDataChart: () => void;
+  onCreateCamera: () => void;
+  onCreateFormControl: (type?: FormControlType) => void;
+  onApplyCheckbox: () => void;
+  onCreateTextBox: () => void;
+  onInsertChartType: (type: ChartDrawingPayload['chartType']) => void;
+  onInsertSparklineType: (type: SparklineModel['type']) => void;
+  onInsertShapeType: (type: ShapeDrawingPayload['type']) => void;
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
@@ -126,49 +123,6 @@ export interface RibbonProps {
 const RibbonLocaleContext = createContext<Locale>('en-US');
 type RibbonLayoutMode = 'wide' | 'compact' | 'narrow';
 const RibbonLayoutContext = createContext<RibbonLayoutMode>('wide');
-
-function RibbonGroup({ children, label, group, className }: { children: React.ReactNode; label?: string; group?: RibbonGroupId; className?: string }) {
-  const locale = useContext(RibbonLocaleContext);
-  const layout = useContext(RibbonLayoutContext);
-  const definition = group ? getRibbonGroupDefinition(group) : undefined;
-  const localizedLabel = definition ? translateRibbonText(locale, definition.labelKey) : localizeText(locale, label ?? '');
-  const collapsed = definition
-    ? layout === 'narrow' ? definition.priority > 10 : layout === 'compact' ? definition.priority > 40 : false
-    : false;
-  if (collapsed) {
-    return (
-      <DropdownMenu
-        align="left"
-        trigger={(
-          <Button
-            aria-label={localizedLabel}
-            title={localizedLabel}
-            size="sm"
-            variant="ghost"
-            icon="more-horizontal"
-            className="max-w-[9rem] justify-start"
-          >
-            {localizedLabel}
-          </Button>
-        )}
-      >
-        <Stack gap="xs" className="min-w-[12rem] p-1">
-          {children}
-        </Stack>
-      </DropdownMenu>
-    );
-  }
-  return (
-    <Stack gap="xs" className={`h-[98px] min-w-0 shrink-0 justify-between ${className ?? ''}`}>
-      <Inline gap="xs" className="min-h-8 flex-wrap items-start">
-        {children}
-      </Inline>
-      <Text size="xs" tone="subtle" className="pointer-events-none text-center text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-        {localizedLabel}
-      </Text>
-    </Stack>
-  );
-}
 
 function CatalogButton({
   id,
@@ -271,13 +225,6 @@ export function Ribbon({
   onOpenDefaultColumnWidth,
   onCreatePivotDialog,
   buildSortDescriptor,
-  onCreatePivot,
-  onCreateChart,
-  onCreateSparkline,
-  onCreateShape,
-  onBringDrawingForward,
-  onSendDrawingBackward,
-  onRemoveDrawing,
   onCreateSheetTable,
   onCreateDataTable,
   onToggleSheetTableTotalRow,
@@ -300,6 +247,16 @@ export function Ribbon({
   onToggleBandedRows,
   onSetRecalculationMode,
   onOpenDefinedNames,
+  onCreateAdvancedSheet,
+  onApplyBarcode,
+  onCreateDataChart,
+  onCreateCamera,
+  onCreateFormControl,
+  onApplyCheckbox,
+  onCreateTextBox,
+  onInsertChartType,
+  onInsertSparklineType,
+  onInsertShapeType,
   onTabChange,
   phase,
   activePivot,
@@ -345,13 +302,6 @@ export function Ribbon({
     onAutoSum,
     onFill,
     onFreezeAtPrimary,
-    onCreatePivot,
-    onCreateChart,
-    onCreateSparkline,
-    onCreateShape,
-    onBringDrawingForward,
-    onSendDrawingBackward,
-    onRemoveDrawing,
     onCreateSheetTable,
     onCreateDataTable,
     onToggleSheetTableTotalRow,
@@ -374,6 +324,13 @@ export function Ribbon({
     onToggleBandedRows,
     onSetRecalculationMode,
     onOpenDefinedNames,
+    onCreateAdvancedSheet,
+    onApplyBarcode,
+    onCreateDataChart,
+    onCreateCamera,
+    onCreateFormControl: () => onCreateFormControl('button'),
+    onApplyCheckbox,
+    onCreateTextBox,
   };
   const catalogContext: RibbonCommandContext = {
     phase,
@@ -438,97 +395,7 @@ export function Ribbon({
       >
         {(layout) => (
           <RibbonLayoutContext.Provider value={layout.mode}>
-        {activeTab === 'file' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="workbook">
-              <CatalogButton id="save" context={catalogContext} onExecute={executeCatalogResult} variant="secondary" />
-              <CatalogButton id="exportXlsx" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="importXlsx" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'settings' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="settings">
-              <CatalogButton id="settings" context={catalogContext} onExecute={executeCatalogResult} variant="secondary" />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'automate' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="scripts">
-              <CatalogButton id="openAutomate" context={catalogContext} onExecute={executeCatalogResult} variant="primary" />
-              <CatalogButton id="runSampleScript" context={catalogContext} onExecute={executeCatalogResult} variant="outline" />
-              <CatalogButton id="startRecording" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="stopRecording" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'pageLayout' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="pageSetup">
-              <CatalogButton id="pageSetup" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="setPrintArea" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="clearPrintArea" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="printTitleRows" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="printTitleColumns" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-            <RibbonGroup group="scaleToFit">
-              <CatalogButton id="setScale100" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-            <RibbonGroup group="sheetOptions">
-              <CatalogButton id="viewGridlines" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="printGridlines" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="viewHeadings" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="printHeadings" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'formulas' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="calculation">
-              <CatalogButton id="calculateNow" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="calculationAutomatic" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="calculationManual" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="goalSeek" context={catalogContext} onExecute={executeCatalogResult} variant="outline" />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-            <RibbonGroup group="formulaAudit">
-              <CatalogButton id="tracePrecedents" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="traceDependents" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="removeArrows" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="showFormulas" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="errorChecking" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="evaluateFormula" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-            <RibbonGroup group="definedNames">
-              <CatalogButton id="definedNames" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'pivotAnalyze' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="pivotAnalyze">
-              <CatalogButton id="pivotRefresh" context={catalogContext} onExecute={executeCatalogResult} variant="primary" />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'pivotDesign' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="pivotDesign">
-              <CatalogButton id="pivotFieldList" context={catalogContext} onExecute={executeCatalogResult} variant="primary" />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
+        {activeTab !== 'home' && activeTab !== 'insert' ? <RibbonTabPresenter tab={activeTab} locale={locale} layout={layout} renderCommand={renderHomeCommand} /> : null}
 
         {activeTab === 'home' ? (
           <HomeRibbon
@@ -550,143 +417,18 @@ export function Ribbon({
           />
         ) : null}
         {activeTab === 'insert' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="tablesPivots">
-              <CatalogButton id="pivotTable" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="quickPivot" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="chartsVisuals">
-              <CatalogButton id="chartBuilder" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="columnChart" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="sparkline" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="quickSparkline" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="illustrations">
-              <CatalogButton id="shapesLines" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="rectangle" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="bringDrawingForward" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="sendDrawingBackward" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="removeDrawing" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="functions">
-              <CatalogButton id="insertFunction" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="cells">
-              <CatalogButton id="insertRow" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="insertColumn" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="deleteRow" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="deleteColumn" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
+          <InsertRibbon
+            locale={locale}
+            layout={layout}
+            disabled={disabled}
+            renderCommand={renderHomeCommand}
+            onInsertChart={onInsertChartType}
+            onInsertSparkline={onInsertSparklineType}
+            onInsertShape={onInsertShapeType}
+            onInsertFormControl={onCreateFormControl}
+          />
         ) : null}
 
-        {activeTab === 'data' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="sortFilter">
-              <CatalogButton id="sortAscending" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="sortDescending" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="customSort" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="dataTools">
-              <CatalogButton id="dataModel" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="createDataTable" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="formatAsTable" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="totalRow" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="dataValidation" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="filterSelection" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="clearFilter" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="outline">
-              <CatalogButton id="groupRows" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="ungroupRows" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="groupColumns" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="ungroupColumns" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="showLevel1" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="showLevel2" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="showLevel3" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="subtotal" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="removeDuplicates" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="textToColumns" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="findTransform">
-              <CatalogButton id="findReplace" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="goTo" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="transpose" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="flipHorizontal" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="flipVertical" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="splitByDelimiter" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'review' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="comments">
-              <CatalogButton id="newComment" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="resolveComment" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="showComments" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-            <RibbonGroup group="notesLinks">
-              <CatalogButton id="newNote" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="insertLink" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-            <RibbonGroup group="protection">
-              <CatalogButton id="protectSelection" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="unprotect" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-            <RibbonGroup group="historyAudit">
-              <CatalogButton id="revisionLog" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
-
-        {activeTab === 'view' ? (
-          <Inline gap="md" className="flex-wrap items-start">
-            <RibbonGroup group="freezePanes">
-              <CatalogButton id="freezeTopRow" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="freezeFirstColumn" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="freezeAtSelection" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="unfreezeAll" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="zoom">
-              <CatalogButton id="zoomIn" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="zoomOut" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="zoomReset" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="commandPalette" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="printLayout">
-              <CatalogButton id="printPdf" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-10" />
-
-            <RibbonGroup group="appearanceFiles">
-              <CatalogButton id="bandedRows" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="exportXlsxView" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="importXlsxView" context={catalogContext} onExecute={executeCatalogResult} />
-            </RibbonGroup>
-          </Inline>
-        ) : null}
           </RibbonLayoutContext.Provider>
         )}
       </RibbonShell>

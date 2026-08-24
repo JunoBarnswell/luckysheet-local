@@ -305,7 +305,7 @@ export function buildQueryLoadPlan(
 
   if (target.kind === 'workbook-table') {
     if (!target.tableId) throw new Error('Workbook-table query target requires tableId');
-    const table = workbook.tables.get(target.tableId);
+    const table = workbook.dataModel.tables.get(target.tableId);
     if (!table) throw new Error(`Unknown workbook table: ${target.tableId}`);
     const previous = tableStore.get(target.tableId);
     const nextTable: WorkbookTableModel = {

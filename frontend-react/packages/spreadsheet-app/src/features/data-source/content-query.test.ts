@@ -255,15 +255,15 @@ test('one-time overlay migration preserves block values before canonical resolut
 
   const prepared = await prepareDataRegionMaterialization(workbook, sheet.id, 'resolved-region', new Map([[sourceId, query]]));
   assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 1);
-  assert.equal(workbook.dataSources.has(sourceId), true);
+  assert.equal(workbook.dataModel.sources.has(sourceId), true);
   const transaction = applyDataRegionMaterialization(workbook, prepared);
   assert.equal(transaction.sourceRemoved, true);
   assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 0);
-  assert.equal(workbook.dataSources.has(sourceId), false);
+  assert.equal(workbook.dataModel.sources.has(sourceId), false);
   assert.equal(workbook.getSheet(sheet.id).cells.get(1, 1)?.value, 42);
   restoreDataRegionMaterialization(workbook, transaction);
   assert.equal(workbook.getSheet(sheet.id).dataRegions.length, 1);
-  assert.equal(workbook.dataSources.has(sourceId), true);
+  assert.equal(workbook.dataModel.sources.has(sourceId), true);
   const restoredTransactionCell = resolveCell(workbook.getSheet(sheet.id), 1, 1, new Map([[sourceId, query]]));
   assert.equal(restoredTransactionCell?.cell?.value, 42);
 });

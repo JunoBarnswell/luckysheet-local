@@ -47,7 +47,7 @@ describe('WorkbookSession chart integration', () => {
     assert.equal(snapshot.selectedFloatingId, null);
   });
 
-  it('insertQuickChart uses the current selection as source range', () => {
+  it('insertChart uses the current selection as source range', () => {
     const app = new WorkbookSession();
     app.runCommand('selection.set', {
       sheetId: app.getActiveSheetId(),
@@ -56,7 +56,7 @@ describe('WorkbookSession chart integration', () => {
       activeCell: { row: 1, column: 0 },
       anchorCell: { row: 1, column: 0 },
     });
-    app.insertQuickChart('bar');
+    app.insertChart('bar');
     const snapshot = app.getUiSnapshot();
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'chart');

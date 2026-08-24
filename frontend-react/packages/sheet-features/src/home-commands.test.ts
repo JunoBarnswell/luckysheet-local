@@ -180,7 +180,7 @@ test('dataRegion.materialize commits the prepared payload and restores it on und
     blocks: [],
     revision: 1,
   };
-  workbook.dataSources.set(manifest.id, manifest);
+  workbook.dataModel.sources.set(manifest.id, manifest);
   sheet.dataRegions.push(region);
   sheet.cells.set(0, 0, { value: 'Value' });
   sheet.cells.set(1, 0, { value: 10 });
@@ -197,10 +197,10 @@ test('dataRegion.materialize commits the prepared payload and restores it on und
   };
   runtime.execute('dataRegion.materialize.commit', payload);
   assert.equal(sheet.dataRegions.length, 0);
-  assert.equal(workbook.dataSources.has(manifest.id), false);
+  assert.equal(workbook.dataModel.sources.has(manifest.id), false);
   runtime.undo();
   assert.equal(sheet.dataRegions.length, 1);
-  assert.equal(workbook.dataSources.has(manifest.id), true);
+  assert.equal(workbook.dataModel.sources.has(manifest.id), true);
   assert.equal(sheet.cells.get(1, 0)?.value, 10);
 });
 

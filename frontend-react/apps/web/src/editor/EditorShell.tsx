@@ -191,6 +191,7 @@ export function EditorShell({
                 allSheets={state.sheets}
                 pivotResults={state.selectedSheet.pivotResults}
                 sparklines={state.selectedSheet.sparklines}
+                tables={state.tables}
                 onSelectionChange={handleSelectionChange}
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
@@ -210,7 +211,17 @@ export function EditorShell({
                 onFillRange={session.fillRange.bind(session)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
-                onFloatingSelect={(hit, mode) => session.setDrawingSelection(hit ? [hit.id] : [], mode)}
+                onFloatingSelect={(hit, mode) => {
+                  if (hit && !state.drawingSelectionMode) {
+                    const drawing = state.selectedSheet.drawings.find((entry) => entry.id === hit.id);
+                    const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
+                    if (payload?.kind === 'form-control') {
+                      dispatchCommand({ commandId: 'formControl.activate', params: { sheetId: state.activeSheetId, drawingId: hit.id } });
+                      return;
+                    }
+                  }
+                  session.setDrawingSelection(hit ? [hit.id] : [], mode);
+                }}
                 onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({ commandId: "drawing.move", params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } } })}
                 onFloatingRemove={(drawingId) => dispatchCommand({ commandId: "drawing.remove", params: { sheetId: state.activeSheetId, drawingId } })}
                 onCommand={dispatchCommand}

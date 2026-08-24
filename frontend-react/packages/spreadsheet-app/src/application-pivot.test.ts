@@ -56,7 +56,7 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.ok(snapshot.selectedSheet.pivotResults[pivot.id]!.rows.length > 0);
   });
 
-  it('insertQuickPivot builds a PivotTable from the current selection', () => {
+  it('insertPivotFromSelection builds a PivotTable from the current selection', () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app.runCommand('selection.set', {
@@ -66,7 +66,7 @@ describe('WorkbookSession PivotTable integration', () => {
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
     });
-    const pivotId = app.insertQuickPivot();
+    const pivotId = app.insertPivotFromSelection();
     assert.ok(pivotId);
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivotId!]);
   });

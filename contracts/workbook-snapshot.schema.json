@@ -3,10 +3,10 @@
   "$id": "https://react-sheets.local/contracts/workbook-snapshot.schema.json",
   "title": "WorkbookSnapshot",
   "type": "object",
-  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataSources", "sheets"],
+  "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 4 },
+    "version": { "const": 5 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -19,7 +19,17 @@
       },
       "additionalProperties": false
     },
-    "dataSources": { "type": "array" },
+    "dataModel": {
+      "type": "object",
+      "required": ["sources", "tables", "relationships", "views"],
+      "properties": {
+        "sources": { "type": "array" },
+        "tables": { "type": "array" },
+        "relationships": { "type": "array" },
+        "views": { "type": "array" }
+      },
+      "additionalProperties": false
+    },
     "cellStyleTemplates": { "type": "array" },
     "sheets": {
       "type": "array",
@@ -66,8 +76,9 @@
     },
     "worksheet": {
       "type": "object",
-      "required": ["id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "defaultRowHeightPx", "defaultColumnWidthPx"],
+      "required": ["kind", "id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "defaultRowHeightPx", "defaultColumnWidthPx"],
       "properties": {
+        "kind": { "enum": ["worksheet", "table-sheet", "gantt-sheet", "report-sheet"] },
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
         "rowCount": { "type": "integer", "minimum": 1, "maximum": 1048576 },

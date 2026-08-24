@@ -9,8 +9,8 @@ export type { RibbonLayoutMode, RibbonLayoutState, RibbonTabId } from './shell-t
 export { RIBBON_TAB_ORDER } from './shell-types';
 
 export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
-  if (width >= 1120) return 'wide';
-  if (width >= 760) return 'compact';
+  if (width >= 1280) return 'wide';
+  if (width >= 1024) return 'compact';
   return 'narrow';
 }
 
@@ -65,7 +65,7 @@ export function RibbonShell({
 
   return (
     <Tabs ref={rootRef} className="h-[142px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
-      <Inline gap="none" className="h-[39px] flex-nowrap px-2">
+      <Inline gap="none" className="h-[36px] flex-nowrap px-2">
         {onFileEntry ? (
           <DropdownMenu
             disabled={disabled}
@@ -107,7 +107,7 @@ export function RibbonShell({
           </Inline>
         ) : null}
       </Inline>
-      <Box className="h-[103px] overflow-hidden border-t-0 bg-white px-2 py-0">
+      <Box className="h-[106px] overflow-hidden border-t-0 bg-white px-2 py-0">
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>

@@ -65,6 +65,8 @@ const REL_STYLES = `${NS_DOC_REL}/styles`;
 const REL_SHARED_STRINGS = `${NS_DOC_REL}/sharedStrings`;
 const REL_HYPERLINK = `${NS_DOC_REL}/hyperlink`;
 const REL_DRAWING = `${NS_DOC_REL}/drawing`;
+const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml';
+const REACT_SHEETS_METADATA_PART = 'customXml/react-sheets-workbook.xml';
 
 export interface LoadedOpcPackageGraph {
   packageGraph: OpcPackageGraph;
@@ -217,13 +219,13 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 4,
+    version: 5,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
     definedNames,
     definedNameModels,
-    dataSources: [],
+    dataModel: { sources: [], tables: [], relationships: [], views: [] },
     cellStyleTemplates: styles.namedCellStyles,
     printDocuments: sheets.flatMap((sheet, index) => parsePrintDocument(
       firstElement(parseXml(strFromU8(files[descriptors[index]!.part]!)), 'worksheet'),
@@ -232,6 +234,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
     )),
     sheets,
   };
+  applyReactSheetsMetadata(snapshot, files[REACT_SHEETS_METADATA_PART], loaded.packageGraph);
   applyPrintDefinedNames(snapshot);
   attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
   return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };
@@ -310,7 +313,12 @@ export function exportSnapshotToOpcPackageGraph(
   );
   files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
   files.set(relationshipPartName(workbookPart), strToU8(buildRelationshipsXml(workbookRelations)));
-  files.set('_rels/.rels', strToU8(buildRootRelationshipsXml(preserved?.relationships[''] ?? [], workbookPart)));
+  files.set(REACT_SHEETS_METADATA_PART, strToU8(buildReactSheetsMetadata(snapshot)));
+  const rootRelationships = mergeRelationships(
+    (preserved?.relationships[''] ?? []).filter((relationship) => !isRelationshipKind(relationship.type, 'officeDocument') && relationship.type !== REL_CUSTOM_XML),
+    [{ id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) }, { id: '', type: REL_CUSTOM_XML, target: REACT_SHEETS_METADATA_PART }],
+  );
+  files.set('_rels/.rels', strToU8(buildRelationshipsXml(rootRelationships)));
   files.set(stylesPart, strToU8(styleOutput));
   files.set(sharedStringsPart, strToU8(sharedOutput));
   for (const [source, relationships] of Object.entries(sheetRelationships)) {
@@ -483,6 +491,7 @@ function parseSheet(
   const rowCount = Math.max(1000, maxRow + 1);
   const columnCount = Math.max(26, maxColumn + 1);
   return {
+    kind: 'worksheet',
     id: descriptor.id,
     name: descriptor.name,
     rowCount,
@@ -1664,6 +1673,75 @@ function buildRelationshipsXml(relationships: XlsxRelationship[]): string {
 function buildRootRelationshipsXml(existing: XlsxRelationship[], workbookPart = 'xl/workbook.xml'): string {
   const relationships = mergeRelationships(existing.filter((relation) => !isRelationshipKind(relation.type, 'officeDocument')), [{ id: '', type: REL_OFFICE_DOCUMENT, target: relativeTarget('', workbookPart) }]);
   return buildRelationshipsXml(relationships);
+}
+
+interface ReactSheetsPackageMetadata {
+  schema: 'ReactSheetsWorkbookMetadata';
+  version: 1;
+  dataModel: WorkbookSnapshot['dataModel'];
+  sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'drawings' | 'drawingPayloads'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
+}
+
+function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
+  const metadata: ReactSheetsPackageMetadata = {
+    schema: 'ReactSheetsWorkbookMetadata', version: 1, dataModel: structuredClone(snapshot.dataModel),
+    sheets: snapshot.sheets.map((sheet) => {
+      const cellMetadata: ReactSheetsPackageMetadata['sheets'][number]['cellMetadata'] = [];
+      for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) if (cell.presentation || cell.editor) cellMetadata.push({ row: Number(rowKey), column: Number(columnKey), presentation: cell.presentation ? structuredClone(cell.presentation) : undefined, editor: cell.editor ? structuredClone(cell.editor) : undefined });
+      const drawings = sheet.drawings.filter((drawing) => drawing.kind !== 'slicer' && drawing.kind !== 'timeline');
+      const payloadIds = new Set(drawings.map((drawing) => drawing.payloadId));
+      const drawingPayloads = Object.fromEntries(Object.entries(sheet.drawingPayloads).filter(([payloadId]) => payloadIds.has(payloadId)));
+      return { id: sheet.id, kind: sheet.kind, tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined, ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined, reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined, drawings: structuredClone(drawings), drawingPayloads: structuredClone(drawingPayloads), cellMetadata };
+    }),
+  };
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><reactSheetsWorkbook xmlns="urn:react-sheets:workbook-metadata:v1"><json>${encodeXml(JSON.stringify(metadata))}</json></reactSheetsWorkbook>`;
+}
+
+function remapSheetIdentity(value: unknown, fromId: string, toId: string): void {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) { for (const entry of value) remapSheetIdentity(entry, fromId, toId); return; }
+  const record = value as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(record)) {
+    if ((key === 'sheetId' || key === 'sourceSheetId' || key === 'templateSheetId') && entry === fromId) record[key] = toId;
+    else remapSheetIdentity(entry, fromId, toId);
+  }
+}
+
+function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array | undefined, graph: OpcPackageGraph): void {
+  if (!bytes) return;
+  try {
+    const root = firstElement(parseXml(strFromU8(bytes)), 'reactSheetsWorkbook');
+    const parsed = JSON.parse(textContent(child(root, 'json'))) as ReactSheetsPackageMetadata;
+    if (parsed.schema !== 'ReactSheetsWorkbookMetadata' || parsed.version !== 1 || !parsed.dataModel || !Array.isArray(parsed.sheets)) return;
+    snapshot.dataModel = structuredClone(parsed.dataModel);
+    for (let index = 0; index < parsed.sheets.length; index += 1) {
+      const metadata = parsed.sheets[index]!;
+      const sheet = snapshot.sheets.find((candidate) => candidate.id === metadata.id) ?? snapshot.sheets[index];
+      if (!sheet) continue;
+      const importedId = sheet.id;
+      if (importedId !== metadata.id) {
+        remapSheetIdentity(sheet, importedId, metadata.id);
+        sheet.id = metadata.id;
+        const part = graph.sheetPartById[importedId];
+        if (part) { delete graph.sheetPartById[importedId]; graph.sheetPartById[metadata.id] = part; }
+      }
+      sheet.kind = metadata.kind;
+      sheet.tableSheet = metadata.tableSheet ? structuredClone(metadata.tableSheet) : undefined;
+      sheet.ganttSheet = metadata.ganttSheet ? structuredClone(metadata.ganttSheet) : undefined;
+      sheet.reportSheet = metadata.reportSheet ? structuredClone(metadata.reportSheet) : undefined;
+      sheet.drawings = structuredClone(metadata.drawings);
+      sheet.drawingPayloads = structuredClone(metadata.drawingPayloads);
+      for (const entry of metadata.cellMetadata ?? []) {
+        sheet.cells[String(entry.row)] ??= {};
+        const cell = sheet.cells[String(entry.row)]![String(entry.column)] ?? { value: null };
+        if (entry.presentation) cell.presentation = structuredClone(entry.presentation);
+        if (entry.editor) cell.editor = structuredClone(entry.editor);
+        sheet.cells[String(entry.row)]![String(entry.column)] = cell;
+      }
+    }
+  } catch (error) {
+    throw new Error(`React Sheets workbook metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function mergeRelationships(existing: XlsxRelationship[], required: Array<Pick<XlsxRelationship, 'type' | 'target' | 'targetMode'> & { id?: string }>): XlsxRelationship[] {

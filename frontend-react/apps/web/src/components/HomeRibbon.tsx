@@ -54,8 +54,8 @@ export interface HomeRibbonProps {
 type Breakpoint = 'wide' | 'compact' | 'narrow';
 
 function breakpointFor(layout: RibbonLayoutState): Breakpoint {
-  if (layout.width >= 1600) return 'wide';
-  if (layout.width >= 1120) return 'compact';
+  if (layout.width >= 1280) return 'wide';
+  if (layout.width >= 1024) return 'compact';
   return 'narrow';
 }
 
@@ -108,7 +108,7 @@ export function HomeRibbon({
     return id ? renderCommand(id, options) : null;
   };
   const compact = breakpoint === 'compact';
-  const dense = compact && layout.width < 1400;
+  const dense = layout.width < 1600;
   const narrow = breakpoint === 'narrow';
 
   if (narrow) {
@@ -130,7 +130,7 @@ export function HomeRibbon({
   return (
     <HomeRibbonLocaleContext.Provider value={locale}>
       <Inline gap="none" className="h-[102px] flex-nowrap items-start overflow-hidden" data-testid="home-ribbon-groups">
-        <HomeGroup className={dense ? 'w-[54px]' : 'w-[70px]'} group="history">
+        <HomeGroup className={dense ? 'w-[50px]' : 'w-[70px]'} group="history">
           <Stack gap="none" className="items-center pt-1">
             {command('history.undo', { iconOnly: true, className: 'h-8 w-8 !rounded-none' })}
             {command('history.redo', { iconOnly: true, className: 'h-8 w-8 !rounded-none' })}
@@ -138,7 +138,7 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[96px]' : 'w-[112px]'} group="clipboard">
+        <HomeGroup className={dense ? 'w-[92px]' : 'w-[112px]'} group="clipboard">
           <Inline gap="none" className="h-[78px] items-start pt-1">
             <Tile type="button" disabled={disabled} icon="clipboard" className={dense ? '!w-[60px]' : undefined} onClick={() => context.actions.onPaste()} title={homeText(locale, 'pasteAll')}>
               {homeText(locale, 'pasteAll')}
@@ -164,7 +164,7 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[215px]' : 'w-[260px]'} group="font">
+        <HomeGroup className={dense ? 'w-[205px]' : 'w-[260px]'} group="font">
           <Stack gap="xs" className="px-1 pt-2">
             <Inline gap="xs" className="h-8 flex-nowrap items-start">
               <Box className={dense ? 'w-[96px] shrink-0' : 'w-[124px] shrink-0'}>
@@ -194,7 +194,7 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[220px]' : compact ? 'w-[250px]' : 'w-[315px]'} group="alignment">
+        <HomeGroup className={dense ? 'w-[205px]' : compact ? 'w-[250px]' : 'w-[315px]'} group="alignment">
           <Inline gap="none" className="h-[78px] px-1 pt-2">
             <Stack gap="none" className="w-[112px]">
               <Inline gap="none">{command('alignment.left', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}{command('alignment.center', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}{command('alignment.right', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}</Inline>
@@ -207,13 +207,13 @@ export function HomeRibbon({
             <Stack gap="none" className={dense ? 'w-[100px]' : compact ? 'w-[128px]' : 'w-[190px]'}>
               <Button aria-label={homeText(locale, 'wrapText')} disabled={!canFormat} icon="wrap-text" size="sm" variant="ghost" className="!h-8 !min-h-0 justify-start rounded-none" onClick={() => onEmitStyle({ wrapText: !cellStyle.wrapText })}>{homeText(locale, 'wrapText')}</Button>
               <Button aria-label="Merge and center" disabled={!canFormat} icon="merge-cells" size="sm" variant="ghost" className="!h-8 !min-h-0 justify-start rounded-none" onClick={onMergeCells}>合并后居中</Button>
-              <Inline gap="none" className="h-7">{command('alignment.indent-decrease', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}{command('alignment.indent-increase', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}</Inline>
+              <Inline gap="none" className="h-7">{command('alignment.indent-decrease', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}{command('alignment.indent-increase', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}{command('alignment.orientation', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}</Inline>
             </Stack>
           </Inline>
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[136px]' : 'w-[155px]'} group="number">
+        <HomeGroup className={dense ? 'w-[128px]' : 'w-[155px]'} group="number">
           <Stack gap="xs" className="px-1 pt-2">
             <Select aria-label={translateRibbonText(locale, 'groups.number')} disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
               {mixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
@@ -231,15 +231,15 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[296px]' : compact ? 'w-[290px]' : 'w-[435px]'} group="styles">
+        <HomeGroup className={dense ? 'w-[220px]' : compact ? 'w-[290px]' : 'w-[435px]'} group="styles">
           <Inline gap="none" className="h-[78px] items-start px-1 pt-1">
             {command('styles.conditional-format', { tile: true })}
             {command('styles.table', { tile: true })}
             {command('styles.format-cells', { tile: true, testId: 'ribbon-format-cells' })}
-            {!compact ? command('styles.validation', { tile: true }) : null}
-            {!compact ? command('styles.template', { tile: true }) : null}
-            {!compact ? command('styles.editor', { tile: true }) : null}
-            {compact ? (
+            {!compact && !dense ? command('styles.validation', { tile: true }) : null}
+            {!compact && !dense ? command('styles.template', { tile: true }) : null}
+            {!compact && !dense ? command('styles.editor', { tile: true }) : null}
+            {compact || dense ? (
               <DropdownMenu align="left" trigger={<Tile aria-label="More styles" disabled={disabled} icon="more-horizontal" type="button">更多</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">
                   {command('styles.validation', { className: 'w-full justify-start' })}
@@ -252,12 +252,14 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={compact ? (dense ? 'w-[58px]' : 'w-[78px]') : 'w-[210px]'} group="cells">
-          {compact ? (
+        <HomeGroup className={compact || dense ? 'w-[72px]' : 'w-[210px]'} group="cells">
+          {compact || dense ? (
             <DropdownMenu align="left" trigger={<Button aria-label="Cells" icon="columns" iconOnly size="sm" variant="ghost" className="m-5 !h-10 !w-10 rounded-none" />}>
               <Stack gap="none" className="min-w-[13rem] p-1">
                 {command('cells.insert', { className: 'w-full justify-start' })}
                 {command('cells.delete', { className: 'w-full justify-start' })}
+                {renderCommand('insertColumnHome', { className: 'w-full justify-start' })}
+                {renderCommand('deleteColumn', { className: 'w-full justify-start' })}
                 <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>列宽…</Button>
                 <Button size="sm" variant="ghost" className="justify-start" onClick={onAutoFitColumns}>自动调整列宽</Button>
                 <Button size="sm" variant="ghost" className="justify-start" onClick={onHideColumns}>隐藏列</Button>
@@ -267,8 +269,12 @@ export function HomeRibbon({
             </DropdownMenu>
           ) : (
             <Inline gap="none" className="h-[78px] px-1 pt-1">
-              {command('cells.insert', { tile: true })}
-              {command('cells.delete', { tile: true })}
+              <DropdownMenu align="left" trigger={<Tile aria-label="插入" icon="plus" type="button">插入</Tile>}>
+                <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('insertRowHome', { className: 'w-full justify-start' })}{renderCommand('insertColumnHome', { className: 'w-full justify-start' })}{renderCommand('shiftCells', { className: 'w-full justify-start' })}</Stack>
+              </DropdownMenu>
+              <DropdownMenu align="left" trigger={<Tile aria-label="删除" icon="trash" type="button">删除</Tile>}>
+                <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('deleteRow', { className: 'w-full justify-start' })}{renderCommand('deleteColumn', { className: 'w-full justify-start' })}{renderCommand('shiftCells', { className: 'w-full justify-start' })}</Stack>
+              </DropdownMenu>
               <DropdownMenu align="left" trigger={<Tile aria-label="Format cells" icon="columns" type="button">格式</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">
                   <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>列宽…</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onAutoFitColumns}>自动调整列宽</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onHideColumns}>隐藏列</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onUnhideColumns}>取消隐藏列</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onOpenDefaultColumnWidth}>默认列宽…</Button>
@@ -279,8 +285,8 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={compact ? (dense ? 'w-[104px]' : 'w-[118px]') : 'w-[235px]'} group="editing">
-          {compact ? (
+        <HomeGroup className={compact || dense ? 'w-[118px]' : 'w-[235px]'} group="editing">
+          {compact || dense ? (
             <Inline gap="none" className="h-[78px] flex-wrap px-1 pt-1">
               {command('editing.autosum', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none' })}
               {command('editing.fill-down', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none' })}

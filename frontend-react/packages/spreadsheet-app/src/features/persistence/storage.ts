@@ -575,7 +575,7 @@ export class WorkspacePersistence {
 
   async purge(unitId: string, cleanup?: { removeSparseSource?: (sourceId: string) => Promise<void> }): Promise<void> {
     const record = await this.store.open(unitId);
-    for (const source of record?.snapshot.dataSources ?? []) {
+    for (const source of record?.snapshot.dataModel.sources ?? []) {
       await this.dataBlocks.removeSource(source.id);
       await this.sparseOverlays.removeSource(source.id);
       await cleanup?.removeSparseSource?.(source.id);

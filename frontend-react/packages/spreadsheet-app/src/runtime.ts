@@ -598,7 +598,7 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
   for (const detach of runtime.dataContentDetachers) detach();
   runtime.dataContentDetachers = [];
   runtime.dataContent.clear();
-  for (const manifest of runtime.model.dataSources.values()) {
+  for (const manifest of runtime.model.dataModel.sources.values()) {
     const query = new DataSourceContentQuery(manifest, {
       get: async (reference) => {
         const ref = manifest.blocks.find((block) => block.id === reference.id && block.dataSourceId === reference.dataSourceId && block.checksum === reference.checksum);

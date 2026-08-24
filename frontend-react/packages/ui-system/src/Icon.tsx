@@ -6,6 +6,9 @@ export type IconName =
   | 'align-center'
   | 'align-left'
   | 'align-right'
+  | 'align-top'
+  | 'align-middle'
+  | 'align-bottom'
   | 'arrow-down'
   | 'arrow-left'
   | 'arrow-right'
@@ -14,6 +17,16 @@ export type IconName =
   | 'borders'
   | 'calculator'
   | 'chart'
+  | 'chart-column'
+  | 'chart-bar'
+  | 'chart-line'
+  | 'chart-area'
+  | 'chart-pie'
+  | 'chart-scatter'
+  | 'data-chart'
+  | 'barcode'
+  | 'camera'
+  | 'checkbox'
   | 'check'
   | 'check-circle'
   | 'clock'
@@ -38,6 +51,7 @@ export type IconName =
   | 'file-plus'
   | 'file-spreadsheet'
   | 'file-text'
+  | 'form-control'
   | 'filter'
   | 'freeze'
   | 'function'
@@ -53,6 +67,7 @@ export type IconName =
   | 'indent-increase'
   | 'keyboard'
   | 'layout'
+  | 'link'
   | 'loader'
   | 'lock'
   | 'maximize'
@@ -62,6 +77,7 @@ export type IconName =
   | 'more-horizontal'
   | 'more-vertical'
   | 'paint-bucket'
+  | 'picture'
   | 'palette'
   | 'pencil'
   | 'percent'
@@ -84,9 +100,13 @@ export type IconName =
   | 'sparkline'
   | 'strikethrough'
   | 'table'
+  | 'table-sheet'
+  | 'gantt-sheet'
+  | 'report-sheet'
   | 'table-pivot'
   | 'trash'
   | 'type'
+  | 'textbox'
   | 'underline'
   | 'undo'
   | 'upload'
@@ -122,6 +142,12 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M5 6h14" /><path d="M5 10h10" /><path d="M5 14h12" /><path d="M5 18h8" /></>;
     case 'align-right':
       return <><path d="M5 6h14" /><path d="M9 10h10" /><path d="M7 14h12" /><path d="M11 18h8" /></>;
+    case 'align-top':
+      return <><path d="M5 5h14" /><path d="M7 8h10M9 11h6M10 14h4" /></>;
+    case 'align-middle':
+      return <><path d="M4 12h16" /><path d="M7 7h10M9 10h6M9 14h6M7 17h10" /></>;
+    case 'align-bottom':
+      return <><path d="M5 19h14" /><path d="M10 10h4M9 13h6M7 16h10" /></>;
     case 'arrow-down':
       return <><path d="M12 5v14" /><path d="m6 13 6 6 6-6" /></>;
     case 'arrow-left':
@@ -138,6 +164,26 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01" /></>;
     case 'chart':
       return <><path d="M5 19V5" /><path d="M5 19h14" /><path d="m8 15 3-4 3 2 4-6" /></>;
+    case 'chart-column':
+      return <><path d="M4 20h16" /><rect x="6" y="11" width="3" height="7" fill="#f59e0b" stroke="none" /><rect x="11" y="6" width="3" height="12" fill="#3b82f6" stroke="none" /><rect x="16" y="3" width="3" height="15" fill="#ef4444" stroke="none" /></>;
+    case 'chart-bar':
+      return <><path d="M4 4v16" /><rect x="6" y="6" width="12" height="3" fill="#3b82f6" stroke="none" /><rect x="6" y="11" width="8" height="3" fill="#f59e0b" stroke="none" /><rect x="6" y="16" width="14" height="3" fill="#10b981" stroke="none" /></>;
+    case 'chart-line':
+      return <><path d="M4 19V5M4 19h16" /><path d="m6 15 4-5 4 3 5-7" stroke="#3b82f6" strokeWidth="2" /><circle cx="10" cy="10" r="1" fill="#3b82f6" stroke="none" /><circle cx="19" cy="6" r="1" fill="#3b82f6" stroke="none" /></>;
+    case 'chart-area':
+      return <><path d="M4 19V5M4 19h16" /><path d="m5 17 4-6 4 3 6-8v11Z" fill="#93c5fd" stroke="#2563eb" /></>;
+    case 'chart-pie':
+      return <><path d="M12 3a9 9 0 1 0 9 9h-9Z" fill="#93c5fd" /><path d="M14 3.3V10h6.7A9 9 0 0 0 14 3.3Z" fill="#f59e0b" /></>;
+    case 'chart-scatter':
+      return <><path d="M4 5v15h16" /><circle cx="8" cy="15" r="1.5" fill="#3b82f6" stroke="none" /><circle cx="12" cy="11" r="1.5" fill="#10b981" stroke="none" /><circle cx="17" cy="7" r="1.5" fill="#ef4444" stroke="none" /></>;
+    case 'data-chart':
+      return <><rect x="3" y="4" width="7" height="16" rx="1" fill="#93c5fd" /><path d="M5 8h3M5 12h3M5 16h3" /><rect x="13" y="11" width="3" height="8" fill="#10b981" stroke="none" /><rect x="18" y="6" width="3" height="13" fill="#3b82f6" stroke="none" /></>;
+    case 'barcode':
+      return <><path d="M4 5v14M7 5v14M10 5v14M12 5v14M16 5v14M19 5v14" strokeWidth="2" /><path d="M5.5 5v14M14 5v14" /></>;
+    case 'camera':
+      return <><path d="M8 7 9.5 4h5L16 7h3a2 2 0 0 1 2 2v9H3V9a2 2 0 0 1 2-2Z" /><circle cx="12" cy="13" r="4" /><path d="M6 10h.01" /></>;
+    case 'checkbox':
+      return <><rect x="4" y="4" width="16" height="16" rx="1" /><path d="m7 12 3 3 7-7" strokeWidth="2" /></>;
     case 'check':
       return <path d="m5 12 4.5 4.5L19 7" />;
     case 'check-circle':
@@ -190,6 +236,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M4 6h16" /><path d="M7 12h10" /><path d="M10 18h4" /></>;
     case 'freeze':
       return <><rect x="5" y="5" width="14" height="14" rx="1" /><path d="M5 10h14M10 5v14" /><path d="m16 8 2-2" /></>;
+    case 'form-control':
+      return <><rect x="3" y="5" width="18" height="14" rx="1" /><rect x="6" y="8" width="5" height="5" rx=".5" /><path d="m7 10 1.3 1.3L10 9" /><path d="M13 9h5M13 12h5M6 16h12" /></>;
     case 'function':
       return <path d="M7.5 19c1.4-2.8 2.2-6.2 2.7-10.5h5.3M8 6h7M6 13h8" />;
     case 'folder':
@@ -216,6 +264,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><rect x="3.5" y="6.5" width="17" height="11" rx="2" /><path d="M6.5 10h.01M9.5 10h.01M12.5 10h.01M15.5 10h.01M18.5 10h.01M6.5 14h9M17.5 14h1" /></>;
     case 'layout':
       return <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M4 10h16M10 10v9" /></>;
+    case 'link':
+      return <><path d="m9 15-2 2a3 3 0 0 1-4-4l4-4a3 3 0 0 1 4 0" /><path d="m15 9 2-2a3 3 0 0 1 4 4l-4 4a3 3 0 0 1-4 0" /><path d="m8 12 8 0" /></>;
     case 'loader':
       return <path d="M12 4a8 8 0 1 0 8 8" />;
     case 'lock':
@@ -234,6 +284,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><circle cx="12" cy="5" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none" /></>;
     case 'paint-bucket':
       return <><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z" /><path d="m5 2 5 5" /><path d="M2 13h15" /><path d="M22 20a2 2 0 1 1-4 0c0-1.6 2-4 2-4s2 2.4 2 4Z" /></>;
+    case 'picture':
+      return <><rect x="3" y="5" width="18" height="14" rx="1" /><circle cx="8" cy="10" r="2" fill="#f59e0b" stroke="none" /><path d="m5 17 5-5 3 3 2-2 4 4" fill="#93c5fd" /></>;
     case 'palette':
       return <path d="M12 4a8 8 0 0 0 0 16h1.1a1.9 1.9 0 0 0 .7-3.67A1.9 1.9 0 0 1 14.5 14H16a4 4 0 0 0 4-4 7 7 0 0 0-8-6Z" />;
     case 'pencil':
@@ -278,12 +330,20 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><path d="M16 4H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H8M4 12h16" /></>;
     case 'table':
       return <><rect x="4" y="5" width="16" height="14" rx="1" /><path d="M4 10h16M4 14h16M10 5v14M15 5v14" /></>;
+    case 'table-sheet':
+      return <><rect x="3" y="4" width="18" height="16" rx="1" /><path d="M3 9h18M8 4v16M14 4v16" /><path d="M5 6h1M10 6h2M16 6h3" stroke="#3b82f6" /></>;
+    case 'gantt-sheet':
+      return <><rect x="3" y="4" width="18" height="16" rx="1" /><path d="M9 4v16M3 9h18M3 14h18" /><rect x="11" y="6" width="7" height="2" fill="#3b82f6" stroke="none" /><rect x="13" y="11" width="6" height="2" fill="#10b981" stroke="none" /><rect x="10" y="16" width="5" height="2" fill="#f59e0b" stroke="none" /></>;
+    case 'report-sheet':
+      return <><path d="M6 3h9l4 4v14H6Z" /><path d="M15 3v5h4M9 11h7M9 15h7M9 18h5" /><rect x="3" y="7" width="6" height="6" fill="#93c5fd" /></>;
     case 'table-pivot':
       return <><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M4 9h16M9 4v16M4 14h5M9 14h11" /></>;
     case 'trash':
       return <><path d="M5 7h14M10 4h4l1 3H9l1-3Z" /><path d="m7 7 .8 13h8.4L17 7" /><path d="M10 11v5M14 11v5" /></>;
     case 'type':
       return <><path d="M4 7V4h16v3M9 20h6M12 4v16" /></>;
+    case 'textbox':
+      return <><rect x="3" y="5" width="18" height="14" rx="1" /><path d="M7 9V7h10v2M10 17h4M12 7v10" /></>;
     case 'underline':
       return <><path d="M7 5v5a5 5 0 0 0 10 0V5" /><path d="M5 19h14" /></>;
     case 'undo':

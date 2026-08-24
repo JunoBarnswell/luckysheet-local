@@ -484,7 +484,11 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
   if (!Array.isArray(input.sheets) || input.sheets.length === 0) {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
-  if (!Array.isArray(input.dataSources)) throw new Error('WorkbookSnapshot dataSources must be an array');
+  const dataModel = input.dataModel as Record<string, unknown> | undefined;
+  if (!dataModel || !Array.isArray(dataModel.sources) || !Array.isArray(dataModel.tables)
+    || !Array.isArray(dataModel.relationships) || !Array.isArray(dataModel.views)) {
+    throw new Error('WorkbookSnapshot dataModel is invalid');
+  }
   if (input.cellStyleTemplates !== undefined) {
     if (!Array.isArray(input.cellStyleTemplates)) throw new Error('WorkbookSnapshot cellStyleTemplates must be an array');
     const templateIds = new Set<string>();
@@ -498,7 +502,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     }
   }
   const sourceIds = new Set<string>();
-  for (const source of input.dataSources) {
+  for (const source of dataModel.sources) {
     validateDataSourceManifest(source);
     const id = (source as { id: string }).id;
     if (sourceIds.has(id)) throw new Error(`Duplicate data source: ${id}`);
@@ -512,6 +516,12 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     if (!isNonEmptyString(sheet.id) || !isNonEmptyString(sheet.name)) {
       throw new Error(`WorkbookSnapshot sheet[${index}] requires id and name`);
     }
+    if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(String(sheet.kind))) {
+      throw new Error(`WorkbookSnapshot sheet[${index}] kind is invalid`);
+    }
+    if (sheet.kind === 'table-sheet' && (!sheet.tableSheet || typeof sheet.tableSheet !== 'object')) throw new Error(`WorkbookSnapshot sheet[${index}] TableSheet definition is invalid`);
+    if (sheet.kind === 'gantt-sheet' && (!sheet.ganttSheet || typeof sheet.ganttSheet !== 'object')) throw new Error(`WorkbookSnapshot sheet[${index}] GanttSheet definition is invalid`);
+    if (sheet.kind === 'report-sheet' && (!sheet.reportSheet || typeof sheet.reportSheet !== 'object')) throw new Error(`WorkbookSnapshot sheet[${index}] ReportSheet definition is invalid`);
     if (!Number.isSafeInteger(sheet.rowCount) || Number(sheet.rowCount) <= 0
       || !Number.isSafeInteger(sheet.columnCount) || Number(sheet.columnCount) <= 0
       || !sheet.cells || typeof sheet.cells !== 'object'

@@ -1,4 +1,5 @@
 import { formatValue } from "@react-sheets/number-format";
+import * as bwipjs from "@bwip-js/browser";
 import {
   type CellAddress,
   type CellProvider,
@@ -182,12 +183,91 @@ export function drawCellLayer(options: PaneDrawOptions): void {
       if (cell?.invalid) drawInvalidRing(context, spanRect, theme);
 
       if (cell) {
-        drawCellValue(context, skeleton, options, address, cell, spanRect);
+        if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, spanRect, resolveDisplayText(cell), cell.presentation);
+        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, spanRect, cell.presentation);
+        else drawCellValue(context, skeleton, options, address, cell, spanRect);
         if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, cell.value === true || String(cell.value).toUpperCase() === 'TRUE');
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
     }
   }
+}
+
+const barcodeCanvasCache = new Map<string, HTMLCanvasElement | OffscreenCanvas>();
+const cellImageCache = new Map<string, HTMLImageElement>();
+const BARCODE_ENCODERS: Record<Extract<NonNullable<CellRenderData['presentation']>, { kind: 'barcode' }>['symbology'], string> = {
+  qr: 'qrcode', code128: 'code128', code39: 'code39', ean13: 'ean13', ean8: 'ean8', upca: 'upca', pdf417: 'pdf417', 'data-matrix': 'datamatrix',
+};
+
+function drawBarcodePresentation(
+  context: CanvasRenderingContext2D,
+  rect: Rect,
+  value: string,
+  presentation: Extract<NonNullable<CellRenderData['presentation']>, { kind: 'barcode' }>,
+): void {
+  const quiet = Math.max(1, presentation.options.quietZone);
+  const width = Math.max(8, Math.floor(rect.width - quiet * 2));
+  const height = Math.max(8, Math.floor(rect.height - quiet * 2));
+  const cacheKey = `${presentation.symbology}|${value}|${width}|${height}|${presentation.options.foreground}|${presentation.options.background}|${presentation.options.showText}`;
+  context.save();
+  context.fillStyle = presentation.options.background;
+  context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  try {
+    let canvas = barcodeCanvasCache.get(cacheKey);
+    if (!canvas) {
+      canvas = typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(width, height)
+        : document.createElement('canvas');
+      bwipjs.toCanvas(canvas, {
+        bcid: BARCODE_ENCODERS[presentation.symbology],
+        text: value,
+        scale: 1,
+        height: Math.max(4, Math.floor(height / 3)),
+        includetext: presentation.options.showText,
+        textxalign: 'center',
+        backgroundcolor: presentation.options.background.replace('#', ''),
+        barcolor: presentation.options.foreground.replace('#', ''),
+      });
+      barcodeCanvasCache.set(cacheKey, canvas);
+      if (barcodeCanvasCache.size > 256) barcodeCanvasCache.delete(barcodeCanvasCache.keys().next().value!);
+    }
+    context.drawImage(canvas, rect.x + quiet, rect.y + quiet, width, height);
+  } catch {
+    context.fillStyle = '#b91c1c';
+    context.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('Invalid barcode', rect.x + rect.width / 2, rect.y + rect.height / 2, width);
+  }
+  context.restore();
+}
+
+function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect, presentation: Extract<NonNullable<CellRenderData['presentation']>, { kind: 'image' }>): void {
+  if (typeof Image === 'undefined') return;
+  let image = cellImageCache.get(presentation.src);
+  if (!image) {
+    image = new Image();
+    image.src = presentation.src;
+    cellImageCache.set(presentation.src, image);
+  }
+  if (!image.complete || image.naturalWidth <= 0) return;
+  let x = rect.x;
+  let y = rect.y;
+  let width = rect.width;
+  let height = rect.height;
+  if (presentation.fit !== 'stretch') {
+    const scale = presentation.fit === 'cover' ? Math.max(width / image.naturalWidth, height / image.naturalHeight) : Math.min(width / image.naturalWidth, height / image.naturalHeight);
+    width = image.naturalWidth * scale;
+    height = image.naturalHeight * scale;
+    x += (rect.width - width) / 2;
+    y += (rect.height - height) / 2;
+  }
+  context.save();
+  context.beginPath();
+  context.rect(rect.x, rect.y, rect.width, rect.height);
+  context.clip();
+  context.drawImage(image, x, y, width, height);
+  context.restore();
 }
 
 function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, checked: boolean): void {

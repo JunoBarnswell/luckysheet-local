@@ -2,7 +2,7 @@
   "apiVersion": "2026-08-24",
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
-    "snapshotVersion": 4,
+    "snapshotVersion": 5,
     "maxNameLength": 255
   },
   "errors": [
