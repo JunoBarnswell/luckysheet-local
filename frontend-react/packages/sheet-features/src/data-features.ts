@@ -658,6 +658,9 @@ function matchesFilterCriterion(value: unknown, text: string, criterion: FilterC
     // than silently converting a visual filter into an unfiltered one.
     return criterion.kind === 'color'
       ? cell?.filterMetadata?.color?.dxfId === criterion.dxfId
+        || Boolean(criterion.style && (criterion.target === 'cell'
+          ? criterion.style.background !== undefined && cell?.style?.background === criterion.style.background
+          : criterion.style.textColor !== undefined && cell?.style?.textColor === criterion.style.textColor))
       : cell?.filterMetadata?.icon?.iconSet === criterion.iconSet && cell.filterMetadata.icon.iconId === criterion.iconId;
   }
   return true;
@@ -752,7 +755,7 @@ function evaluateFilterCondition(text: string, operator: string, operand: string
   const hasNumbers = Number.isFinite(numeric) && Number.isFinite(operandNumeric);
   const leftDate = Date.parse(text);
   const rightDate = Date.parse(operand);
-  const hasDates = !Number.isNaN(leftDate) && !Number.isNaN(rightDate);
+  const hasDates = looksLikeDate(text) && looksLikeDate(operand) && !Number.isNaN(leftDate) && !Number.isNaN(rightDate);
   switch (normalizedOperator) {
     case ">":
     case "greaterthan": return hasDates ? leftDate > rightDate : hasNumbers && numeric > operandNumeric;
@@ -791,6 +794,10 @@ function evaluateFilterCondition(text: string, operator: string, operand: string
     case "date equals": return compareDates(text, operand) === 0;
     default: return false;
   }
+}
+
+function looksLikeDate(value: string): boolean {
+  return /[-/:]/.test(value.trim()) && /\d/.test(value);
 }
 
 function compareDates(left: string, right: string): number {

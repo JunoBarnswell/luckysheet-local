@@ -43,6 +43,7 @@ export { Dialog, type DialogProps } from './Dialog';
 export { DropdownMenu, type DropdownMenuProps } from './DropdownMenu';
 export { ColorPicker, type ColorPickerProps } from './ColorPicker';
 export { Select, type SelectOption, type SelectProps } from './Select';
+export { VirtualList, type VirtualListProps } from './VirtualList';
 export { AppShell, type AppShellProps, type PeerCursor, type SaveState } from './AppShell';
 export { FormulaBar, type FormulaBarLabels, type FormulaBarProps } from './FormulaBar';
 export {

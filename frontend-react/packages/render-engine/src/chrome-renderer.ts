@@ -396,6 +396,7 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
     if (pane.visibleRange == null) continue;
     const t = paneTransform(pane);
     for (let column = pane.visibleRange.startColumn; column <= pane.visibleRange.endColumn; column++) {
+      if (skeleton.isColumnHidden(column)) continue;
       const left = skeleton.getColumnLeft(column) + t.dx;
       const width = skeleton.getColumnWidth(column);
        const isSelected = isColumnSelected(chrome, column);
@@ -411,6 +412,7 @@ function drawHeaderStrips(options: ChromeDrawOptions): void {
     }
     // 行头
     for (let row = pane.visibleRange.startRow; row <= pane.visibleRange.endRow; row++) {
+      if (skeleton.isRowHidden(row)) continue;
       const top = skeleton.getRowTop(row) + t.dy;
       const height = skeleton.getRowHeight(row);
        const isSelected = isRowSelected(chrome, row);

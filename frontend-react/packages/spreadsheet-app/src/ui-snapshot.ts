@@ -122,6 +122,8 @@ export interface CanvasSheetSnapshot {
   activeFilterColumns: number[];
   filterButtons: FilterButtonCell[];
   getFilterValueDomain: (column: number) => string[];
+  getFilterColorDomain: (column: number) => Array<{ target: 'cell' | 'font'; color: string }>;
+  getFilterIconDomain: (column: number) => Array<{ iconSet: string; iconId: number }>;
   sheetTables: SheetTableModel[];
   tabColor?: string;
   hidden?: boolean;
@@ -339,6 +341,27 @@ export function buildCanvasSheetSnapshot(
     activeFilterColumns,
     filterButtons,
     getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell),
+    getFilterColorDomain: (column) => {
+      const range = resolveActiveAutoFilter(sheet)?.range;
+      if (!range || column < range.startColumn || column > range.endColumn) return [];
+      const options = new Map<string, { target: 'cell' | 'font'; color: string }>();
+      for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+        const style = readFilterCell(row, column)?.style;
+        if (style?.background) options.set(`cell:${style.background}`, { target: 'cell', color: style.background });
+        if (style?.textColor) options.set(`font:${style.textColor}`, { target: 'font', color: style.textColor });
+      }
+      return [...options.values()].sort((left, right) => `${left.target}:${left.color}`.localeCompare(`${right.target}:${right.color}`));
+    },
+    getFilterIconDomain: (column) => {
+      const range = resolveActiveAutoFilter(sheet)?.range;
+      if (!range || column < range.startColumn || column > range.endColumn) return [];
+      const options = new Map<string, { iconSet: string; iconId: number }>();
+      for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+        const icon = readFilterCell(row, column)?.filterMetadata?.icon;
+        if (icon) options.set(`${icon.iconSet}:${icon.iconId}`, { ...icon });
+      }
+      return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));
+    },
     sheetTables: [...sheet.sheetTables],
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,

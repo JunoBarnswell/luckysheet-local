@@ -11,6 +11,8 @@ import {
   mergePresentationStyles,
   planTotalRowToggle,
   resolveFilterButtonCells,
+  resolveActiveAutoFilter,
+  resolveFilterOwner,
   subtotalCodeForTotalsFunction,
   tableBodyBounds,
 } from './sheet-table-features';
@@ -86,4 +88,14 @@ test('resolveFilterButtonCells targets table header row when filter matches tabl
     { row: 0, column: 0 },
     { row: 0, column: 1 },
   ]);
+});
+
+test('Worksheet and Table AutoFilter ownership is singular for overlapping ranges', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const table = { ...sampleTable, autoFilter: createAutoFilterModelForTable(sampleTable) };
+  sheet.sheetTables.push(table);
+  assert.equal(resolveActiveAutoFilter(sheet)?.range.startRow, 0);
+  assert.deepEqual(resolveFilterOwner(sheet), { kind: 'table', tableId: table.id });
+  sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
+  assert.throws(() => resolveActiveAutoFilter(sheet), /cannot overlap/);
 });

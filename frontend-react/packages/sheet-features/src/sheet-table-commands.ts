@@ -339,31 +339,43 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
           ...previousFilter,
           range: structuredClone(plan.nextTable.range),
         };
-        const filterMutationId = linkedTable ? 'sheetTable.autoFilter.set' : 'autoFilter.set';
-        const filterParams = linkedTable
-          ? { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: nextFilter }
-          : { sheetId: params.sheetId, autoFilter: nextFilter };
-        const inverseParams = linkedTable
-          ? { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: previousFilter }
-          : { sheetId: params.sheetId, autoFilter: previousFilter };
-        context.applyMutation({
-          id: filterMutationId,
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: filterParams,
-          affectedRanges: [structuredClone(plan.nextTable.range)],
-          inverse: [{
-            id: filterMutationId,
+        if (linkedTable) {
+          context.applyMutation({
+            id: 'sheetTable.autoFilter.set',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: inverseParams,
-            affectedRanges: [structuredClone(previousFilter.range)],
-          }],
-          apply: () => {
-            if (linkedTable) linkedTable.autoFilter = structuredClone(nextFilter);
-            else sheet.autoFilter = structuredClone(nextFilter);
-          },
-        });
+            params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: nextFilter },
+            affectedRanges: [structuredClone(plan.nextTable.range)],
+            inverse: [{
+              id: 'sheetTable.autoFilter.set',
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, tableId: linkedTable.id, autoFilter: previousFilter },
+              affectedRanges: [structuredClone(previousFilter.range)],
+            }],
+            apply: () => {
+              linkedTable.autoFilter = structuredClone(nextFilter);
+            },
+          });
+        } else {
+          context.applyMutation({
+            id: 'autoFilter.set',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: { sheetId: params.sheetId, autoFilter: nextFilter },
+            affectedRanges: [structuredClone(plan.nextTable.range)],
+            inverse: [{
+              id: 'autoFilter.set',
+              unitId: context.workbook.unitId,
+              sheetId: params.sheetId,
+              params: { sheetId: params.sheetId, autoFilter: previousFilter },
+              affectedRanges: [structuredClone(previousFilter.range)],
+            }],
+            apply: () => {
+              sheet.autoFilter = structuredClone(nextFilter);
+            },
+          });
+        }
         mutationCount += 1;
       }
 

@@ -52,7 +52,9 @@ export function drawGridLayer(options: PaneDrawOptions): void {
   context.lineWidth = 1;
   context.beginPath();
   for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
+    if (skeleton.isRowHidden(row)) continue;
     for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
+      if (skeleton.isColumnHidden(column)) continue;
       const cell = options.cellProvider({ row, column });
       if (cell?.merge) continue;
       const x = skeleton.getColumnLeft(column);
@@ -134,7 +136,9 @@ export function drawCellLayer(options: PaneDrawOptions): void {
   context.textBaseline = "middle";
 
   for (let row = visibleRange.startRow; row <= visibleRange.endRow; row++) {
+    if (skeleton.isRowHidden(row)) continue;
     for (let column = visibleRange.startColumn; column <= visibleRange.endColumn; column++) {
+      if (skeleton.isColumnHidden(column)) continue;
       const address: CellAddress = { row, column };
       const rect: Rect = {
         x: skeleton.getColumnLeft(column),

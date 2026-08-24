@@ -282,7 +282,7 @@ export function exportSnapshotToOpcPackageGraph(
     const original = preserved ? strFromU8(sourceFiles[part] ?? new Uint8Array()) : '';
     const originalRoot = original ? firstElement(parseXml(original), 'worksheet') : undefined;
     const requiredHyperlinks = collectHyperlinkRelationships(sheet, preserved?.relationships[part] ?? []);
-    const tableParts = prepareTableParts(sheet, part, preserved, files);
+    const tableParts = prepareTableParts(sheet, part, preserved, files, differentialStyleIndexes);
     for (const [tablePart, tableXml] of tableParts.parts) files.set(tablePart, strToU8(tableXml));
     const relationships = mergeRelationships(nativeUpdate.relationships[part] ?? preserved?.relationships[part] ?? [], [...requiredHyperlinks, ...tableParts.required]);
     sheetRelationships[part] = relationships;
@@ -445,10 +445,10 @@ function parseSheet(
   const hiddenColumns = parseHiddenColumns(root);
   const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), styles.themeColors);
   const notes = parseNotes(root, descriptor, files, pkg);
-  const sheetTables = parseSheetTables(root, descriptor, files, pkg);
+  const sheetTables = parseSheetTables(root, descriptor, files, pkg, styles);
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
-  const autoFilter = parseAutoFilter(root, descriptor);
+  const autoFilter = parseAutoFilter(root, descriptor, styles);
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
@@ -573,6 +573,7 @@ function parseSheetTables(
   descriptor: SheetDescriptor,
   files: Record<string, Uint8Array>,
   pkg: OpcPackageGraph,
+  styles: StyleContext,
 ): NonNullable<SheetSnapshot['sheetTables']> {
   return children(child(root, 'tableParts'), 'tablePart').flatMap((partNode) => {
     const relationId = partNode.attrs['r:id'] ?? partNode.attrs.id;
@@ -591,7 +592,7 @@ function parseSheetTables(
       ...(column.attrs.totalsRowFunction ? { totalsFunction: column.attrs.totalsRowFunction as NonNullable<SheetSnapshot['sheetTables']>[number]['columns'][number]['totalsFunction'] } : {}),
     }));
     const tableNumber = table.attrs.id ?? (part.replace(/[^0-9]/g, '') || descriptor.id);
-    const tableAutoFilter = parseAutoFilter(table, descriptor);
+  const tableAutoFilter = parseAutoFilter(table, descriptor, styles);
     return [{
       id: `table-${tableNumber}`,
       sheetId: descriptor.id,
@@ -923,6 +924,7 @@ function prepareTableParts(
   sourcePart: string,
   preserved: OpcPackageGraph | undefined,
   files: Map<string, Uint8Array>,
+  differentialStyleIndexes: Map<string, number>,
 ): { parts: Map<string, string>; required: Array<Pick<XlsxRelationship, 'type' | 'target'>> } {
   const tables = sheet.sheetTables ?? [];
   if (!tables.length) return { parts: new Map(), required: [] };
@@ -947,13 +949,13 @@ function prepareTableParts(
       } while (usedParts.has(part));
     }
     usedParts.add(part);
-    parts.set(part, buildTableXml(table, index + 1));
+    parts.set(part, buildTableXml(table, index + 1, differentialStyleIndexes));
     required.push({ type: `${NS_DOC_REL}/table`, target: relativeTarget(sourcePart, part) });
   }
   return { parts, required };
 }
 
-function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number], fallbackId: number): string {
+function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number], fallbackId: number, differentialStyleIndexes: Map<string, number>): string {
   const numericId = Number(table.id.replace(/\D/g, '')) || fallbackId;
   const ref = rangeToA1(table.range);
   const columns = table.columns.map((column, index) => `<tableColumn id="${index + 1}" name="${encodeXml(column.name)}"${column.totalsFunction && column.totalsFunction !== 'none' ? ` totalsRowFunction="${encodeXml(column.totalsFunction)}"` : ''}/>`).join('');
@@ -961,7 +963,7 @@ function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number],
     ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="0" showLastColumn="0" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
     : '';
   const autoFilter = table.autoFilter
-    ? serializeAutoFilter(table.autoFilter)
+    ? serializeAutoFilter(table.autoFilter, differentialStyleIndexes)
     : table.showFilterButton && table.hasHeaderRow ? `<autoFilter ref="${encodeXml(ref)}"/>` : '';
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="${NS_MAIN}" id="${numericId}" name="${encodeXml(table.name)}" displayName="${encodeXml(table.name)}" ref="${encodeXml(ref)}" headerRowCount="${table.hasHeaderRow ? '1' : '0'}" totalsRowCount="${table.hasTotalRow ? '1' : '0'}">${autoFilter}<tableColumns count="${table.columns.length}">${columns}</tableColumns>${style}</table>`;
 }
@@ -988,6 +990,15 @@ function collectDifferentialStyleIndexes(snapshot: WorkbookSnapshot): Map<string
       if (!rule.style) continue;
       const key = JSON.stringify(rule.style);
       if (!indexes.has(key)) indexes.set(key, indexes.size);
+    }
+    const filters = [sheet.autoFilter, ...(sheet.sheetTables ?? []).map((table) => table.autoFilter)].filter((filter): filter is AutoFilterModel => Boolean(filter));
+    for (const filter of filters) {
+      for (const column of Object.values(filter.columns)) {
+        const criterion = column.criterion;
+        if (criterion?.kind !== 'color' || !criterion.style) continue;
+        const key = JSON.stringify(criterion.style);
+        if (!indexes.has(key)) indexes.set(key, indexes.size);
+      }
     }
   }
   return indexes;
@@ -1043,7 +1054,7 @@ function buildWorksheetXml(
   }
   xml += '</sheetData>';
   if (sheet.protectionRules?.length) xml += serializeProtection(sheet.protectionRules);
-  if (sheet.autoFilter) xml += serializeAutoFilter(sheet.autoFilter);
+  if (sheet.autoFilter) xml += serializeAutoFilter(sheet.autoFilter, differentialStyleIndexes);
   if (sheet.merges.length) {
     xml += `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((merge) => `<mergeCell ref="${rangeToA1(merge.range)}"/>`).join('')}</mergeCells>`;
   }
@@ -1195,7 +1206,7 @@ function serializeDataValidations(rules: DataValidationRule[]): string {
   return `<dataValidations count="${rules.length}">${body}</dataValidations>`;
 }
 
-function serializeAutoFilter(filter: AutoFilterModel): string {
+function serializeAutoFilter(filter: AutoFilterModel, differentialStyleIndexes?: Map<string, number>): string {
   const columns = Object.values(filter.columns).map((column) => {
     const colId = column.column - filter.range.startColumn;
     const criterion = column.criterion;
@@ -1218,7 +1229,10 @@ function serializeAutoFilter(filter: AutoFilterModel): string {
       return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><top10 top="${criterion.top ? '1' : '0'}"${criterion.percent ? ' percent="1"' : ''} rank="${criterion.rank}"${criterion.filterValue === undefined ? '' : ` filterVal="${criterion.filterValue}"`}/>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'color') {
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><colorFilter dxfId="${criterion.dxfId}" cellColor="${criterion.target === 'cell' ? '1' : '0'}"/>${preserved}</filterColumn>`;
+      const styleKey = criterion.style ? JSON.stringify(criterion.style) : undefined;
+      const dxfId = criterion.dxfId >= 0 ? criterion.dxfId : styleKey && differentialStyleIndexes?.get(styleKey);
+      if (dxfId === undefined) throw new Error('Color AutoFilter requires a differential style identity');
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><colorFilter dxfId="${dxfId}" cellColor="${criterion.target === 'cell' ? '1' : '0'}"/>${preserved}</filterColumn>`;
     }
     return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><iconFilter iconSet="${encodeXml(criterion.iconSet)}" iconId="${criterion.iconId}"/>${preserved}</filterColumn>`;
   }).join('');
@@ -1709,7 +1723,7 @@ function normalizeValidationOperator(value: string | undefined): DataValidationR
   return supported.has(value as DataValidationRule['operator']) ? value as DataValidationRule['operator'] : undefined;
 }
 
-function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): AutoFilterModel | undefined {
+function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: StyleContext): AutoFilterModel | undefined {
   const node = child(root, 'autoFilter');
   if (!node?.attrs.ref) return undefined;
   const range = requireSheetRange(node.attrs.ref, descriptor, 'auto filter');
@@ -1748,7 +1762,7 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): AutoFilter
             : top10
               ? { kind: 'top10', top: top10.attrs.top !== '0', percent: top10.attrs.percent === '1', rank: Number(top10.attrs.rank ?? 10), ...(top10.attrs.filterVal === undefined ? {} : { filterValue: Number(top10.attrs.filterVal) }) }
               : color
-                ? { kind: 'color', target: color.attrs.cellColor === '0' ? 'font' : 'cell', dxfId: Number(color.attrs.dxfId ?? -1) }
+                ? { kind: 'color', target: color.attrs.cellColor === '0' ? 'font' : 'cell', dxfId: Number(color.attrs.dxfId ?? -1), ...(styles?.differentialStyles[Number(color.attrs.dxfId)] ? { style: structuredClone(styles.differentialStyles[Number(color.attrs.dxfId)]!) } : {}) }
                 : icon
                   ? { kind: 'icon', iconSet: icon.attrs.iconSet ?? '', iconId: Number(icon.attrs.iconId ?? -1) }
                   : undefined,

@@ -655,7 +655,7 @@ export class WorkbookSession {
 
     const exactMerge = sheet.merges.some((merge) => sameRange(merge.range, primary));
     const intersectsMerge = sheet.merges.some((merge) => selection.ranges.some((range) => rangesIntersect(range, merge.range)));
-    const activeAutoFilter = sheet.autoFilter ?? sheet.sheetTables.find((table) => table.autoFilter)?.autoFilter;
+    const activeAutoFilter = resolveActiveAutoFilter(sheet);
     return {
       sheetId: this.activeSheetId,
       ranges: selection.ranges.map((range) => structuredClone(range)),
@@ -891,8 +891,10 @@ export class WorkbookSession {
       || commandId === 'sheet.merge.across'
       || commandId === 'sheet.autoFilter.toggle'
       || commandId === 'sheet.autoFilter.set'
+      || commandId === 'sheet.autoFilter.sort'
       || commandId === 'sheet.autoFilter.clearCriteria'
       || commandId === 'sheet.autoFilter.reapply'
+      || commandId === 'sheetTable.autoFilter.set'
       || commandId === 'sheet.cf.add'
       || commandId === 'sheet.cf.remove'
       || commandId === 'sheet.cf.clear'
@@ -2631,10 +2633,10 @@ export class WorkbookSession {
 
   applyFilterSelection(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const tableFilter = sheet.sheetTables.find((table) => table.autoFilter)?.autoFilter;
-    if (sheet.autoFilter || tableFilter) {
-      const owner = sheet.sheetTables.find((table) => table.autoFilter);
-      if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id } });
+    const activeFilter = resolveActiveAutoFilter(sheet);
+    const owner = resolveFilterOwner(sheet);
+    if (activeFilter && owner) {
+      if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId } });
       else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
       return;
     }
@@ -2651,9 +2653,9 @@ export class WorkbookSession {
 
   clearFilter(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const owner = sheet.sheetTables.find((table) => table.autoFilter);
-    const autoFilter = owner?.autoFilter ?? sheet.autoFilter;
-    if (!autoFilter) {
+    const autoFilter = resolveActiveAutoFilter(sheet);
+    const owner = resolveFilterOwner(sheet);
+    if (!autoFilter || !owner) {
       this.notify('No filter is active in the current region');
       return;
     }
@@ -2662,16 +2664,16 @@ export class WorkbookSession {
       return;
     }
     const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
-    if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id, autoFilter: { ...autoFilter, columns } } });
+    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns } } });
     else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
   }
 
   closeFilter(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const owner = sheet.sheetTables.find((table) => table.autoFilter);
-    const autoFilter = owner?.autoFilter ?? sheet.autoFilter;
-    if (!autoFilter) return;
-    if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id } });
+    const autoFilter = resolveActiveAutoFilter(sheet);
+    const owner = resolveFilterOwner(sheet);
+    if (!autoFilter || !owner) return;
+    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId } });
     else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
   }
 

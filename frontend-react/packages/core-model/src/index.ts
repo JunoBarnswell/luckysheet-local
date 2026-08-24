@@ -376,7 +376,7 @@ export type FilterCriterion =
   | { kind: 'custom'; join: 'and' | 'or'; conditions: [FilterComparison, FilterComparison?] }
   | { kind: 'dynamic'; type: DynamicFilterType; value?: number; maxValue?: number }
   | { kind: 'top10'; top: boolean; percent: boolean; rank: number; filterValue?: number }
-  | { kind: 'color'; target: 'cell' | 'font'; dxfId: number }
+  | { kind: 'color'; target: 'cell' | 'font'; dxfId: number; style?: Partial<CellStyle> }
   | { kind: 'icon'; iconSet: string; iconId: number };
 
 export interface SortStateModel {

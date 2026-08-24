@@ -217,9 +217,10 @@ export function useEditorCommandController({
   const buildFilterSelectionCommand = (): CommandDescriptor => state.selectedSheet.filterOwner?.kind === 'table'
     ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: state.selectedSheet.filterOwner.tableId } }
     : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange } };
+  const filterRange = state.selectedSheet.autoFilter?.range ?? currentDataRange;
   const buildClearFilterCommand = (): CommandDescriptor => state.selectedSheet.filterOwner?.kind === 'table'
     ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: state.selectedSheet.filterOwner.tableId } }
-    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: currentDataRange } };
+    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange } };
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
     void ascending;
     const range = session.getCurrentRegion();

@@ -245,6 +245,15 @@ test('SheetSkeleton virtualizes very large uniform dimensions without dense arra
   assert.equal(largeSkeleton.getVisibleRowModels().length, 0);
 });
 
+test('hidden rows collapse layout geometry without losing model row identity', () => {
+  const hiddenSkeleton = new SheetSkeleton({ rowCount: 6, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50, hiddenRows: new Set([2, 4]) });
+  assert.equal(hiddenSkeleton.getRowHeight(2), 0);
+  assert.equal(hiddenSkeleton.getRowTop(3), 40);
+  assert.equal(hiddenSkeleton.getCellRect(2, 0), null);
+  assert.deepEqual(hiddenSkeleton.getCellAtPoint({ x: 25, y: 41 }), { row: 3, column: 0 });
+  assert.equal(hiddenSkeleton.totalHeight, 80);
+});
+
 function recordingContext() {
   const textCalls: Array<{ text: string; x: number; y: number }> = [];
   const lineCalls: Array<{ from: [number, number]; to: [number, number] }> = [];
