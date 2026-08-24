@@ -319,20 +319,20 @@ function drawFilterFunnelIcon(context: CanvasRenderingContext2D, cx: number, cy:
 function drawFilterFunnels(options: ChromeDrawOptions): void {
   const { context, skeleton, plan, chrome } = options;
   if (chrome.filterButtons.length > 0) {
-    for (const pane of plan.panes) {
+    for (const button of chrome.filterButtons) {
+      const pane = plan.paneMap.paneForCell({ row: button.row, column: button.column });
+      if (!pane) continue;
       const transform = paneTransform(pane);
-      for (const button of chrome.filterButtons) {
-        const rect = skeleton.getCellRect(button.row, button.column);
-        if (!rect) continue;
-        const visible = intersect(
-          { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height },
-          rect,
-        );
-        if (!visible) continue;
-        const cx = visible.x + transform.dx + visible.width - 12;
-        const cy = visible.y + transform.dy + 8;
-        drawFilterFunnelIcon(context, cx, cy);
-      }
+      const rect = skeleton.getCellRect(button.row, button.column);
+      if (!rect) continue;
+      const visible = intersect(
+        { x: pane.contentOrigin.x, y: pane.contentOrigin.y, width: pane.screenRect.width, height: pane.screenRect.height },
+        rect,
+      );
+      if (!visible) continue;
+      const cx = visible.x + transform.dx + visible.width - 12;
+      const cy = visible.y + transform.dy + 8;
+      drawFilterFunnelIcon(context, cx, cy);
     }
     return;
   }

@@ -101,6 +101,7 @@ export interface SheetCanvasProps {
   canRepeat?: boolean;
   onOpenInspector: () => void;
   onApplyFilter: (column: number, patch: FilterPatch) => void;
+  onSortFilterColumn: (column: number, ascending: boolean) => void;
   onToggleOutline?: (groupId: string) => void;
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
@@ -307,6 +308,7 @@ export function SheetCanvas({
   canRepeat = false,
   onOpenInspector,
   onApplyFilter,
+  onSortFilterColumn,
   onToggleOutline,
   getValidationList,
   onRetry,
@@ -842,6 +844,10 @@ export function SheetCanvas({
               sheet={sheet}
               onApply={(patch) => {
                 onApplyFilter(filterPopover.column, patch);
+                setFilterPopover(null);
+              }}
+              onSort={(ascending) => {
+                onSortFilterColumn(filterPopover.column, ascending);
                 setFilterPopover(null);
               }}
               onClose={() => setFilterPopover(null)}

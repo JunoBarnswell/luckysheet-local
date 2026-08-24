@@ -296,16 +296,7 @@ export class CanvasRenderEngine {
 
   /** 屏幕本地坐标 → 所在窗格 */
   paneAtLocalPoint(local: Point): RenderPane | null {
-    const plan = this.lastPlan;
-    const panes = plan?.panes
-      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin).panes;
-    for (const pane of panes) {
-      if (local.x >= pane.screenRect.x && local.x <= pane.screenRect.x + pane.screenRect.width
-        && local.y >= pane.screenRect.y && local.y <= pane.screenRect.y + pane.screenRect.height) {
-        return pane;
-      }
-    }
-    return panes.at(-1) ?? null;
+    return this.currentPaneMap().paneAtLocalPoint(local);
   }
 
   /** 屏幕本地坐标 → 内容坐标(按所在窗格的偏移换算) */
@@ -356,14 +347,10 @@ export class CanvasRenderEngine {
    * 单元格编辑器必须传入 cell；浮动对象使用内容点定位。
    */
   contentToScreen(content: Point, cell?: CellAddress): Point {
-    const panes = this.lastPlan?.panes
-      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin).panes;
+    const paneMap = this.currentPaneMap();
+    const panes = paneMap.panes;
     const main = panes.find((pane) => pane.id === "main") ?? panes.at(-1)!;
-    const target = cell
-      ? panes.find((pane) => pane.visibleRange
-        && cell.row >= pane.visibleRange.startRow && cell.row <= pane.visibleRange.endRow
-        && cell.column >= pane.visibleRange.startColumn && cell.column <= pane.visibleRange.endColumn)
-      : undefined;
+    const target = cell ? paneMap.paneForCell(cell) : undefined;
     const pane = target ?? panes.find((candidate) => content.x >= candidate.contentOrigin.x
       && content.x <= candidate.contentOrigin.x + candidate.screenRect.width
       && content.y >= candidate.contentOrigin.y
@@ -379,8 +366,7 @@ export class CanvasRenderEngine {
   contentRangeToScreenRects(range: CellRange): Rect[] {
     const content = this.skeletonModel.getRangeRect(range);
     if (!content) return [];
-    const panes = this.lastPlan?.panes
-      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin).panes;
+    const panes = this.currentPaneMap().panes;
     const rects: Rect[] = [];
     for (const pane of panes) {
       const left = Math.max(content.x, pane.contentOrigin.x);
@@ -574,6 +560,11 @@ export class CanvasRenderEngine {
 
   private assertActive(): void {
     if (this.disposed) throw new Error("CanvasRenderEngine has been disposed");
+  }
+
+  private currentPaneMap() {
+    return this.lastPlan?.paneMap
+      ?? computePaneMap(this.skeletonModel, this.viewport.getSnapshot(), this.paneLayout, this.headerOrigin);
   }
 
   private reviveIfDisposed(): void {

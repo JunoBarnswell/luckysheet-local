@@ -44,6 +44,8 @@ import {
   buildColumnOutlineGroup,
   normalizeRangeRef,
   parseTsv,
+  resolveActiveAutoFilter,
+  resolveFilterOwner,
   validationList,
   type ClipboardData,
   type DataRegionMaterializeParams,
@@ -98,9 +100,9 @@ import {
 } from './features/pivot-controls';
 import {
   prepareDataRegionMaterialization,
-  resolveCell as resolveWorkbookCell,
+  createWorkbookCellResolver,
 } from './features/data-source';
-import type { TableRowsResponse } from './features/data-source';
+import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
   buildCellNote,
   buildCommentReply,
@@ -325,6 +327,7 @@ export function getInitialSessionPhase(): AppPhase {
 
 export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
+  private readonly cellResolver: WorkbookCellResolver;
   private readonly permission: PermissionService;
   private readonly editSession = new EditSession();
   private readonly listeners = new Set<() => void>();
@@ -416,6 +419,7 @@ export class WorkbookSession {
       authTokenProvider,
       shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
     });
+    this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
     this.automationWorkerFactory = automationWorkerFactory;
     this.xlsxExecution = xlsxExecution;
@@ -594,7 +598,7 @@ export class WorkbookSession {
 
   /** The sole worksheet read path for session-level Home behavior. */
   private readResolvedCell(sheet: WorksheetModel, row: number, column: number): CellData | undefined {
-    return resolveWorkbookCell(sheet, row, column, this.runtime.dataContent)?.cell;
+    return this.cellResolver.resolve(sheet, row, column)?.cell;
   }
 
   /**
@@ -651,6 +655,7 @@ export class WorkbookSession {
 
     const exactMerge = sheet.merges.some((merge) => sameRange(merge.range, primary));
     const intersectsMerge = sheet.merges.some((merge) => selection.ranges.some((range) => rangesIntersect(range, merge.range)));
+    const activeAutoFilter = sheet.autoFilter ?? sheet.sheetTables.find((table) => table.autoFilter)?.autoFilter;
     return {
       sheetId: this.activeSheetId,
       ranges: selection.ranges.map((range) => structuredClone(range)),
@@ -661,8 +666,8 @@ export class WorkbookSession {
       canFormat: this.canExecute('sheet.style.set', { style: {} }),
       canEdit: this.canExecute('sheet.range.clear', { mode: 'contents' }),
       canStructure: this.canExecute('sheet.rows.insert', { count: 1 }),
-      hasFilter: Boolean(sheet.autoFilter),
-      hasFilterCriteria: Object.values(sheet.autoFilter?.columns ?? {}).some((column) => Boolean(column.criterion)),
+      hasFilter: Boolean(activeAutoFilter),
+      hasFilterCriteria: Object.values(activeAutoFilter?.columns ?? {}).some((column) => Boolean(column.criterion)),
     };
   }
 
@@ -2593,21 +2598,35 @@ export class WorkbookSession {
 
   applyFilter(column: number, patch: { criterion?: FilterCriterion }): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const tableOwner = sheet.sheetTables.find((table) => table.autoFilter && table.range.startColumn <= column && table.range.endColumn >= column);
+    const activeFilter = resolveActiveAutoFilter(sheet);
+    const owner = resolveFilterOwner(sheet);
+    const tableOwner = owner?.kind === 'table'
+      ? sheet.sheetTables.find((table) => table.id === owner.tableId)
+      : undefined;
     const baseRange =
-      tableOwner?.autoFilter?.range ?? sheet.autoFilter?.range ??
+      activeFilter?.range ?? tableOwner?.range ??
       this.getCurrentRegion();
-    const columns = { ...(tableOwner?.autoFilter?.columns ?? sheet.autoFilter?.columns ?? {}) };
+    const columns = { ...(activeFilter?.columns ?? {}) };
     for (let current = baseRange.startColumn; current <= baseRange.endColumn; current += 1) {
       columns[current] ??= { column: current, showButton: true, hiddenButton: false };
     }
     columns[column] = { ...(columns[column] ?? { column, showButton: true, hiddenButton: false }), criterion: patch.criterion ? structuredClone(patch.criterion) : undefined };
     const autoFilter = { sheetId: this.activeSheetId, range: baseRange, columns };
-    if (tableOwner) {
+    if (owner?.kind === 'table' && tableOwner) {
       this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter } });
     } else {
       this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter } });
     }
+  }
+
+  sortFilterColumn(column: number, ascending: boolean): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const filter = resolveActiveAutoFilter(sheet);
+    if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) {
+      this.notify('No active filter is available for this column');
+      return;
+    }
+    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending } });
   }
 
   applyFilterSelection(): void {
@@ -2644,7 +2663,7 @@ export class WorkbookSession {
     }
     const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
     if (owner) this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.id, autoFilter: { ...autoFilter, columns } } });
-    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
   }
 
   closeFilter(): void {

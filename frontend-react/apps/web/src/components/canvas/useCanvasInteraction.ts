@@ -288,6 +288,18 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
   }, [containerRef]);
 
+  const filterPopoverAnchor = useCallback((column: number, fallback: { x: number; y: number }): { x: number; y: number } => {
+    const engine = engineRef.current;
+    const host = containerRef.current;
+    const button = sheet.filterButtons.find((entry) => entry.column === column);
+    if (!engine || !host || !button) return fallback;
+    const rect = skeleton.getCellRect(button.row, button.column);
+    if (!rect) return fallback;
+    const bounds = host.getBoundingClientRect();
+    const topLeft = engine.contentToScreen({ x: rect.x, y: rect.y }, { row: button.row, column: button.column });
+    return { x: bounds.left + topLeft.x, y: bounds.top + topLeft.y + rect.height };
+  }, [containerRef, engineRef, sheet.filterButtons, skeleton]);
+
   const stopAutoScroll = useCallback(() => {
     autoScrollPointRef.current = null;
     if (autoScrollFrameRef.current === null) return;
@@ -500,7 +512,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
             return;
           }
         }
-        if (sheet.filterRangeColumns.includes(headerHit.index)) setFilterPopover({ column: headerHit.index, x: event.clientX, y: event.clientY });
+        if (sheet.filterRangeColumns.includes(headerHit.index)) {
+          const point = filterPopoverAnchor(headerHit.index, { x: event.clientX, y: event.clientY });
+          setFilterPopover({ column: headerHit.index, ...point });
+        }
       }
       dragRef.current = {
         kind: "select",
@@ -557,7 +572,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       if (cellRect) {
         const content = engine.localToContent(local);
         if (content.x >= cellRect.x + cellRect.width - 18) {
-          setFilterPopover({ column: hitCell.column, x: event.clientX, y: event.clientY });
+          const point = filterPopoverAnchor(hitCell.column, { x: event.clientX, y: event.clientY });
+          setFilterPopover({ column: hitCell.column, ...point });
           return;
         }
       }
@@ -581,7 +597,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange({ ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [containerRef, drawingSelectionMode, drawings, editingCell, engineRef, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll]);
+  }, [containerRef, drawingSelectionMode, drawings, editingCell, engineRef, filterPopoverAnchor, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;

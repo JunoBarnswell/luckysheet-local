@@ -44,6 +44,7 @@ export type RenderPlanReason = 'initial' | 'forced' | 'resize' | 'large-scroll' 
 export interface RenderPlan {
   viewport: ViewportSnapshot;
   visibleRange: CellRange | null;
+  paneMap: PaneMap;
   /** 冻结窗格切分结果(无冻结时为单个 main 窗格) */
   panes: RenderPane[];
   dirtyRanges: CellRange[];
@@ -110,20 +111,33 @@ export function computePaneMap(
   if (!frozen) {
     const splitX = pointsToPixels(pane.xSplit / 20, viewport.devicePixelRatio);
     const splitY = pointsToPixels(pane.ySplit / 20, viewport.devicePixelRatio);
-    return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, splitX, splitY, pane.startRow, pane.startColumn));
+    return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, splitX, splitY, pane.startRow, pane.startColumn, 0, 0));
   }
 
   frozenLeft = Math.min(frozenLeft, gridWidth);
   frozenTop = Math.min(frozenTop, gridHeight);
-  return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, frozenLeft, frozenTop, pane.startRow, pane.startColumn));
+  const mainStartRow = Math.max(Math.trunc(pane.startRow), ySplit);
+  const mainStartColumn = Math.max(Math.trunc(pane.startColumn), xSplit);
+  return createPaneMap(buildPanes(skeleton, viewport, originX, originY, gridWidth, gridHeight, frozenLeft, frozenTop, mainStartRow, mainStartColumn, ySplit, xSplit), true);
 }
 
-function createPaneMap(panes: RenderPane[]): PaneMap {
+function createPaneMap(panes: RenderPane[], enforceDisjoint = false): PaneMap {
+  if (enforceDisjoint) {
+    for (let leftIndex = 0; leftIndex < panes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < panes.length; rightIndex += 1) {
+        const left = panes[leftIndex]?.visibleRange;
+        const right = panes[rightIndex]?.visibleRange;
+        if (left && right && rangesOverlap(left, right)) {
+          throw new Error(`Frozen pane visible ranges overlap: ${panes[leftIndex]!.id} and ${panes[rightIndex]!.id}`);
+        }
+      }
+    }
+  }
   return {
     panes,
     paneAtLocalPoint(point) {
-      return panes.find((pane) => point.x >= pane.screenRect.x && point.x <= pane.screenRect.x + pane.screenRect.width
-        && point.y >= pane.screenRect.y && point.y <= pane.screenRect.y + pane.screenRect.height) ?? null;
+      return panes.find((pane) => point.x >= pane.screenRect.x && point.x < pane.screenRect.x + pane.screenRect.width
+        && point.y >= pane.screenRect.y && point.y < pane.screenRect.y + pane.screenRect.height) ?? null;
     },
     paneForCell(cell) {
       return panes.find((pane) => pane.visibleRange
@@ -131,6 +145,13 @@ function createPaneMap(panes: RenderPane[]): PaneMap {
         && cell.column >= pane.visibleRange.startColumn && cell.column <= pane.visibleRange.endColumn) ?? null;
     },
   };
+}
+
+function rangesOverlap(left: CellRange, right: CellRange): boolean {
+  return left.startRow <= right.endRow
+    && right.startRow <= left.endRow
+    && left.startColumn <= right.endColumn
+    && right.startColumn <= left.endColumn;
 }
 
 function pointsToPixels(points: number, devicePixelRatio: number): number {
@@ -148,6 +169,8 @@ function buildPanes(
   splitHeight: number,
   startRow: number,
   startColumn: number,
+  frozenRows: number,
+  frozenColumns: number,
 ): RenderPane[] {
   const leftWidth = Math.min(gridWidth, splitWidth);
   const topHeight = Math.min(gridHeight, splitHeight);
@@ -161,13 +184,35 @@ function buildPanes(
   ];
   return panes.filter((entry) => entry.screenRect.width > 0 && entry.screenRect.height > 0).map((entry) => ({
     ...entry,
-    visibleRange: skeleton.getVisibleRange({
+    visibleRange: clampFrozenRange(entry.id, skeleton.getVisibleRange({
       x: entry.contentOrigin.x,
       y: entry.contentOrigin.y,
       width: entry.screenRect.width,
       height: entry.screenRect.height,
-    }),
+    }), frozenRows, frozenColumns, skeleton),
   }));
+}
+
+function clampFrozenRange(
+  paneId: PaneId,
+  range: CellRange | null,
+  frozenRows: number,
+  frozenColumns: number,
+  skeleton: SheetSkeleton,
+): CellRange | null {
+  if (!range || (frozenRows <= 0 && frozenColumns <= 0)) return range;
+  const rowStart = paneId === 'topLeft' || paneId === 'topRight' ? 0 : frozenRows;
+  const rowEnd = paneId === 'topLeft' || paneId === 'topRight' ? frozenRows - 1 : skeleton.rowCount - 1;
+  const columnStart = paneId === 'topLeft' || paneId === 'bottomLeft' ? 0 : frozenColumns;
+  const columnEnd = paneId === 'topLeft' || paneId === 'bottomLeft' ? frozenColumns - 1 : skeleton.columnCount - 1;
+  const next = {
+    startRow: Math.max(range.startRow, rowStart),
+    endRow: Math.min(range.endRow, rowEnd),
+    startColumn: Math.max(range.startColumn, columnStart),
+    endColumn: Math.min(range.endColumn, columnEnd),
+  };
+  if (next.startRow > next.endRow || next.startColumn > next.endColumn) return null;
+  return next;
 }
 
 /** 默认表头偏移 */
@@ -352,6 +397,7 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
 
   return {
     viewport: { ...input.viewport },
+    paneMap,
     visibleRange: panes.at(-1)?.visibleRange ?? null,
     panes,
     dirtyRanges,

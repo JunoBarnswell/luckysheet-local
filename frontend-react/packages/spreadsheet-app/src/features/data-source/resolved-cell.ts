@@ -40,6 +40,7 @@ export interface CellPatch {
   comment?: CellPatchField<NonNullable<CellData['comment']>>;
   hyperlink?: CellPatchField<NonNullable<CellData['hyperlink']>>;
   hyperlinkDetail?: CellPatchField<NonNullable<CellData['hyperlinkDetail']>>;
+  filterMetadata?: CellPatchField<NonNullable<CellData['filterMetadata']>>;
 }
 
 /** Canonical runtime/persistence carrier beside a sparse CellMatrix entry. */
@@ -110,6 +111,7 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'comment',
   'hyperlink',
   'hyperlinkDetail',
+  'filterMetadata',
 ];
 const PATCH_KEYS: readonly CellPatchKey[] = ['value', ...PATCH_FIELDS];
 

@@ -47,6 +47,9 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
   if (table.hasHeaderRow && table.hasTotalRow && range.endRow - range.startRow < 2) {
     throw new Error('Sheet Table with header and total rows requires at least one body row');
   }
+  if (table.autoFilter) {
+    validateFilterModelOwnership(table.autoFilter, table.sheetId, range, 'Table AutoFilter');
+  }
   if (sheet && range.endRow >= sheet.rowCount) throw new Error('Sheet Table exceeds worksheet rows');
   const normalized = { ...structuredClone(table), range };
   if (normalized.showFilterButton && normalized.hasHeaderRow && !normalized.autoFilter) {
@@ -127,8 +130,68 @@ export function createAutoFilterModelForTable(table: SheetTableModel): AutoFilte
   };
 }
 
-export function resolveWorksheetAutoFilter(sheet: WorksheetModel): AutoFilterModel | undefined {
-  return sheet.autoFilter ?? sheet.sheetTables.find((table) => table.autoFilter)?.autoFilter;
+export type FilterOwner = { kind: 'worksheet' } | { kind: 'table'; tableId: string };
+
+export function resolveActiveAutoFilter(sheet: WorksheetModel): AutoFilterModel | undefined {
+  const tableFilters = sheet.sheetTables.filter((table) => table.sheetId === sheet.id && table.autoFilter);
+  if (tableFilters.length > 1) throw new Error('A worksheet cannot have multiple Table AutoFilter owners');
+  const tableFilter = tableFilters[0]?.autoFilter;
+  if (tableFilter) {
+    validateFilterModelOwnership(tableFilter, sheet.id, tableFilters[0]!.range, 'Table AutoFilter');
+  }
+  if (sheet.autoFilter && tableFilter && rangesOverlap(sheet.autoFilter.range, tableFilter.range)) {
+    throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
+  }
+  return sheet.autoFilter ?? tableFilter;
+}
+
+export function resolveFilterOwner(sheet: WorksheetModel): FilterOwner | undefined {
+  resolveActiveAutoFilter(sheet);
+  if (sheet.autoFilter) return { kind: 'worksheet' };
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id && entry.autoFilter);
+  return table ? { kind: 'table', tableId: table.id } : undefined;
+}
+
+export function validateFilterModelOwnership(
+  filter: AutoFilterModel,
+  sheetId: string,
+  ownerRange: RangeRef,
+  label: string,
+): AutoFilterModel {
+  const range = normalizeRangeRef(filter.range);
+  if (filter.sheetId !== sheetId || range.sheetId !== sheetId) throw new Error(`${label} must target its worksheet`);
+  if (!rangesEqual(range, normalizeRangeRef(ownerRange))) throw new Error(`${label} range must equal its owner range`);
+  for (const [key, column] of Object.entries(filter.columns)) {
+    if (Number(key) !== column.column || column.column < range.startColumn || column.column > range.endColumn) {
+      throw new Error(`${label} column is outside its range`);
+    }
+  }
+  return { ...structuredClone(filter), range };
+}
+
+export function validateFilterOwnership(
+  sheet: WorksheetModel,
+  candidate: AutoFilterModel,
+  owner: FilterOwner,
+): AutoFilterModel {
+  const normalized = normalizeRangeRef(candidate.range);
+  if (normalized.sheetId !== sheet.id || candidate.sheetId !== sheet.id) throw new Error('AutoFilter must target its worksheet');
+  if (owner.kind === 'worksheet') {
+    if (sheet.sheetTables.some((table) => table.sheetId === sheet.id && table.autoFilter && rangesOverlap(normalized, table.autoFilter.range))) {
+      throw new Error('Worksheet AutoFilter cannot overlap a Table AutoFilter');
+    }
+  } else {
+    const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId && entry.sheetId === sheet.id);
+    if (!table) throw new Error(`Sheet Table not found: ${owner.tableId}`);
+    validateFilterModelOwnership(candidate, sheet.id, table.range, 'Table AutoFilter');
+    if (sheet.autoFilter && rangesOverlap(normalized, sheet.autoFilter.range)) {
+      throw new Error('Table AutoFilter cannot overlap a Worksheet AutoFilter');
+    }
+    if (sheet.sheetTables.some((entry) => entry.id !== table.id && entry.sheetId === sheet.id && entry.autoFilter && rangesOverlap(normalized, entry.autoFilter.range))) {
+      throw new Error('Table AutoFilter cannot overlap another Table AutoFilter');
+    }
+  }
+  return { ...structuredClone(candidate), range: normalized };
 }
 
 export function tableFilterColumns(table: SheetTableModel): number[] {
@@ -140,7 +203,7 @@ export function tableFilterColumns(table: SheetTableModel): number[] {
 }
 
 export function resolveActiveFilterColumns(sheet: WorksheetModel): number[] {
-  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  const autoFilter = resolveActiveAutoFilter(sheet);
   if (!autoFilter) return [];
   const fromCriteria = Object.values(autoFilter.columns)
     .filter((column) => Boolean(column.criterion))
@@ -151,7 +214,7 @@ export function resolveActiveFilterColumns(sheet: WorksheetModel): number[] {
 }
 
 export function resolveFilterRangeColumns(sheet: WorksheetModel): number[] {
-  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  const autoFilter = resolveActiveAutoFilter(sheet);
   if (!autoFilter) return [];
 
   const range = normalizeRangeRef(autoFilter.range);
@@ -170,7 +233,7 @@ export interface FilterButtonState {
 }
 
 export function resolveFilterButtonStates(sheet: WorksheetModel): FilterButtonState[] {
-  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  const autoFilter = resolveActiveAutoFilter(sheet);
   if (!autoFilter) return [];
   const sorted = new Set(autoFilter.sortState?.conditions.flatMap((condition) => {
     const result: number[] = [];
@@ -204,8 +267,15 @@ function rangesEqual(left: RangeRef, right: RangeRef): boolean {
     && a.endColumn === b.endColumn;
 }
 
+function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
+  const a = normalizeRangeRef(left);
+  const b = normalizeRangeRef(right);
+  return a.startRow <= b.endRow && b.startRow <= a.endRow
+    && a.startColumn <= b.endColumn && b.startColumn <= a.endColumn;
+}
+
 export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel | undefined {
-  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  const autoFilter = resolveActiveAutoFilter(sheet);
   if (!autoFilter) return undefined;
   const filterRange = normalizeRangeRef(autoFilter.range);
   return sheet.sheetTables.find(
@@ -218,12 +288,14 @@ export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel 
 /** 表筛选漏斗绘制在表头行；普通区域筛选仍走列头字母条 */
 export function resolveFilterButtonCells(sheet: WorksheetModel): FilterButtonCell[] {
   const table = findSheetTableForFilter(sheet);
-  const autoFilter = resolveWorksheetAutoFilter(sheet);
+  const autoFilter = resolveActiveAutoFilter(sheet);
   const range = normalizeRangeRef(autoFilter?.range ?? { sheetId: sheet.id, startRow: 0, endRow: -1, startColumn: 0, endColumn: -1 });
   if (range.endRow < range.startRow || range.endColumn < range.startColumn) return [];
   const headerRow = table?.hasHeaderRow ? range.startRow : range.startRow;
   const buttons: FilterButtonCell[] = [];
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+    const entry = autoFilter?.columns[column];
+    if (entry?.showButton === false || entry?.hiddenButton === true) continue;
     buttons.push({ row: headerRow, column });
   }
   return buttons;

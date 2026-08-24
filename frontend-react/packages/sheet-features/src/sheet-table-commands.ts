@@ -4,6 +4,7 @@ import {
   findSheetTableForFilter,
   planTotalRowToggle,
   snapshotTotalRowCells,
+  validateFilterOwnership,
   validateSheetTableModel,
 } from './sheet-table-features';
 
@@ -77,9 +78,12 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
     id: 'sheetTable.autoFilter.set',
     handler: (item, context) => {
       if (!isTableAutoFilter(item.params)) throw new Error('Invalid sheetTable.autoFilter.set mutation payload');
-      const table = context.workbook.getSheet(item.params.sheetId).sheetTables.find((entry) => entry.id === item.params.tableId);
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const table = sheet.sheetTables.find((entry) => entry.id === item.params.tableId);
       if (!table) throw new Error(`Sheet Table not found: ${item.params.tableId}`);
-      table.autoFilter = item.params.autoFilter ? structuredClone(item.params.autoFilter) : undefined;
+      table.autoFilter = item.params.autoFilter
+        ? validateFilterOwnership(sheet, item.params.autoFilter, { kind: 'table', tableId: table.id })
+        : undefined;
     },
     metadata: {
       schema: { name: 'SheetTableAutoFilterSet', validate: isTableAutoFilter },
@@ -156,12 +160,16 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       const table = sheet.sheetTables.find((entry) => entry.id === params.tableId);
       if (!table) throw new Error(`Sheet Table not found: ${params.tableId}`);
       const previous = table.autoFilter ? structuredClone(table.autoFilter) : undefined;
+      const next = params.autoFilter
+        ? validateFilterOwnership(sheet, params.autoFilter, { kind: 'table', tableId: table.id })
+        : undefined;
       const affectedRanges = [structuredClone(table.range)];
+      const mutationParams = { ...params, autoFilter: next };
       context.applyMutation({
         id: 'sheetTable.autoFilter.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: mutationParams,
         affectedRanges,
         inverse: [{
           id: 'sheetTable.autoFilter.set',
@@ -171,7 +179,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => {
-          table.autoFilter = params.autoFilter ? structuredClone(params.autoFilter) : undefined;
+          table.autoFilter = next ? structuredClone(next) : undefined;
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

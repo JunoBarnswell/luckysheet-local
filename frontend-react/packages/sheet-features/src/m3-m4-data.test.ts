@@ -5,6 +5,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import {
   computeConditionalOverlays,
   computeFilterHiddenRows,
+  getAutoFilterValueDomain,
   registerSheetCommands,
   normalizeAutoFilterModel,
   normalizeDataValidationRule,
@@ -118,6 +119,27 @@ test('Filter supports compound text/blank/date conditions and rejects out-of-ran
     ...sheet.autoFilter!,
     columns: { 1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'equals', value: 'x' }] } } },
   }), /outside/);
+});
+
+test('AutoFilter value domain is complete and ignores the current column criterion', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (let row = 0; row <= 250; row += 1) {
+    sheet.cells.set(row, 0, { value: row === 0 ? 'Name' : `Value-${row}` });
+    sheet.cells.set(row, 1, { value: row === 0 ? 'Group' : row % 2 === 0 ? 'keep' : 'drop' });
+  }
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 250, startColumn: 0, endColumn: 1 },
+    columns: {
+      0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['Value-2'], includeBlank: false } },
+      1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['keep'], includeBlank: false } },
+    },
+  });
+  const domain = getAutoFilterValueDomain(sheet, 0);
+  assert.equal(domain.length, 125);
+  assert.equal(domain.includes('Value-2'), true);
+  assert.equal(domain.includes('Value-3'), false);
 });
 
 test('Validation supports custom AST, formula-backed list, time/date, multi-select and non-blocking alerts', () => {

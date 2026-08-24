@@ -13,21 +13,22 @@ export interface FilterPopoverProps {
   y: number;
   sheet: CanvasSheetSnapshot;
   onApply: (patch: FilterPatch) => void;
+  onSort: (ascending: boolean) => void;
   onClose: () => void;
 }
 
-type FilterMode = 'values' | 'custom';
-type CustomOperator = 'equals' | 'contains' | 'beginsWith' | 'endsWith' | 'notEquals';
+type FilterMode = 'values' | 'text' | 'number' | 'date';
+type CustomOperator = 'equals' | 'notEquals' | 'lessThan' | 'lessThanOrEqual' | 'greaterThan' | 'greaterThanOrEqual' | 'contains' | 'notContains' | 'beginsWith' | 'endsWith';
 
 function criterionValues(criterion: FilterCriterion | undefined): string[] {
   return criterion?.kind === 'values' ? criterion.values.map((value) => String(value ?? '')) : [];
 }
 
 /** Excel-style filter task surface. UI draft state is local; only OK emits a command payload. */
-export function FilterPopover({ column, x, y, sheet, onApply, onClose }: FilterPopoverProps): React.ReactElement {
+export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }: FilterPopoverProps): React.ReactElement {
   const values = useMemo(() => sheet.getFilterValueDomain(column), [column, sheet]);
   const currentCriterion = sheet.autoFilter?.columns[column]?.criterion;
-  const [mode, setMode] = useState<FilterMode>(currentCriterion?.kind === 'custom' ? 'custom' : 'values');
+  const [mode, setMode] = useState<FilterMode>(currentCriterion?.kind === 'custom' ? 'text' : 'values');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(criterionValues(currentCriterion).length > 0 ? criterionValues(currentCriterion) : values));
   const [search, setSearch] = useState('');
   const [operator, setOperator] = useState<CustomOperator>(currentCriterion?.kind === 'custom' ? currentCriterion.conditions[0]?.operator as CustomOperator ?? 'contains' : 'contains');
@@ -40,7 +41,7 @@ export function FilterPopover({ column, x, y, sheet, onApply, onClose }: FilterP
   const allVisibleSelected = visibleValues.length > 0 && visibleValues.every((value) => selected.has(value));
 
   const apply = (): void => {
-    if (mode === 'custom') {
+    if (mode !== 'values') {
       onApply({ criterion: { kind: 'custom', join: 'and', conditions: [{ operator, value: operand }] } });
       return;
     }
@@ -61,20 +62,31 @@ export function FilterPopover({ column, x, y, sheet, onApply, onClose }: FilterP
       <Stack gap="sm">
         <Text size="xs" weight="semibold">Filter column {sheet.columns[column]}</Text>
         <Inline gap="xs">
+          <Button size="xs" variant="ghost" onClick={() => onSort(true)}>Sort A to Z</Button>
+          <Button size="xs" variant="ghost" onClick={() => onSort(false)}>Sort Z to A</Button>
+        </Inline>
+        <Inline gap="xs">
           <Button size="xs" variant={mode === 'values' ? 'soft' : 'ghost'} onClick={() => setMode('values')}>Values</Button>
-          <Button size="xs" variant={mode === 'custom' ? 'soft' : 'ghost'} onClick={() => setMode('custom')}>Custom</Button>
+          <Button size="xs" variant={mode === 'text' ? 'soft' : 'ghost'} onClick={() => setMode('text')}>Text</Button>
+          <Button size="xs" variant={mode === 'number' ? 'soft' : 'ghost'} onClick={() => setMode('number')}>Number</Button>
+          <Button size="xs" variant={mode === 'date' ? 'soft' : 'ghost'} onClick={() => setMode('date')}>Date</Button>
         </Inline>
 
-        {mode === 'custom' ? (
+        {mode !== 'values' ? (
           <Stack gap="xs">
             <Select sizeVariant="sm" aria-label="Custom filter operator" value={operator} onChange={(event) => setOperator(event.target.value as CustomOperator)}>
               <option value="equals">Equals</option>
               <option value="notEquals">Not equals</option>
+              {mode !== 'text' ? <option value="lessThan">Less than</option> : null}
+              {mode !== 'text' ? <option value="lessThanOrEqual">Less than or equal</option> : null}
+              {mode !== 'text' ? <option value="greaterThan">Greater than</option> : null}
+              {mode !== 'text' ? <option value="greaterThanOrEqual">Greater than or equal</option> : null}
               <option value="contains">Contains</option>
+              <option value="notContains">Does not contain</option>
               <option value="beginsWith">Begins with</option>
               <option value="endsWith">Ends with</option>
             </Select>
-            <TextInput aria-label="Custom filter value" placeholder="Value" value={operand} onChange={(event) => setOperand(event.target.value)} />
+            <TextInput aria-label="Custom filter value" placeholder={mode === 'date' ? 'YYYY-MM-DD' : 'Value'} value={operand} onChange={(event) => setOperand(event.target.value)} />
           </Stack>
         ) : (
           <>

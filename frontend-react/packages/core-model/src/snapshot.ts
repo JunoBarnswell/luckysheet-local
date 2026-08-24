@@ -3,6 +3,7 @@ import type {
   DataSourceManifest,
   SheetId,
   SheetSnapshot,
+  RangeRef,
   WorkbookModel,
   WorkbookTableModel,
   UnitId,
@@ -158,8 +159,19 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
         if (!Number.isSafeInteger(Number(key)) || column.column !== Number(key)) throw new Error('AutoFilter column identity is invalid');
       }
     }
+    const tableFilters = (sheet.sheetTables ?? []).filter((table) => Boolean(table.autoFilter));
+    if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
+      throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
+    }
+    if (tableFilters.length > 1) throw new Error('A worksheet cannot have multiple Table AutoFilter owners');
   }
   return structuredClone(snapshot);
+}
+
+function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId
+    && left.startRow <= right.endRow && right.startRow <= left.endRow
+    && left.startColumn <= right.endColumn && right.startColumn <= left.endColumn;
 }
 
 export function loadWorkbookFromSnapshot(snapshot: WorkbookSnapshot): WorkbookModelClass {

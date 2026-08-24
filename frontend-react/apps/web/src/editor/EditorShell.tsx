@@ -265,6 +265,7 @@ export function EditorShell({
                 canRepeat={session.canRepeatLastCommand()}
                 onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
                 onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
+                onSortFilterColumn={(column, ascending) => session.sortFilterColumn(column, ascending)}
                 onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}
                 getValidationList={session.getValidationAt.bind(session)}
                 onRetry={session.retry.bind(session)}

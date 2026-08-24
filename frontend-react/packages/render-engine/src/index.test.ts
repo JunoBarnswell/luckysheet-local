@@ -6,6 +6,7 @@ import {
   SheetSkeleton,
   Viewport,
   calculateRenderPlan,
+  computePaneMap,
   calculateScrollDelta,
   createEmptyChromeState,
   defaultHeaderOffset,
@@ -389,6 +390,25 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
   assert.deepEqual(engine.contentToScreen({ x: topLeft.x, y: topLeft.y }, { row: 0, column: 0 }), { x: 46, y: 24 });
   assert.deepEqual(engine.contentToScreen({ x: main.x, y: main.y }, { row: 4, column: 2 }), { x: 146, y: 104 });
   engine.dispose();
+});
+
+test('frozen 2x2 pane map clamps the main origin and keeps four ranges disjoint', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const map = computePaneMap(renderSkeleton, { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 }, {
+    kind: 'frozen', xSplit: 2, ySplit: 2, startRow: 0, startColumn: 0, state: 'frozen',
+  }, defaultHeaderOffset());
+  const byId = new Map(map.panes.map((pane) => [pane.id, pane]));
+  assert.deepEqual(byId.get('topLeft')?.visibleRange, { startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 });
+  assert.equal(byId.get('topRight')?.visibleRange?.startRow, 0);
+  assert.equal(byId.get('topRight')?.visibleRange?.startColumn, 2);
+  assert.equal(byId.get('bottomLeft')?.visibleRange?.startRow, 2);
+  assert.equal(byId.get('bottomLeft')?.visibleRange?.startColumn, 0);
+  assert.equal(byId.get('main')?.visibleRange?.startRow, 2);
+  assert.equal(byId.get('main')?.visibleRange?.startColumn, 2);
+  assert.equal(map.paneForCell({ row: 0, column: 0 })?.id, 'topLeft');
+  assert.equal(map.paneForCell({ row: 0, column: 2 })?.id, 'topRight');
+  assert.equal(map.paneForCell({ row: 2, column: 0 })?.id, 'bottomLeft');
+  assert.equal(map.paneForCell({ row: 2, column: 2 })?.id, 'main');
 });
 
 test('selection header projection highlights ordinary rectangles and explicit skeleton bounds', () => {

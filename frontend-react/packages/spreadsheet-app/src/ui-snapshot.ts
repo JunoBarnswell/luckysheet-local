@@ -33,7 +33,8 @@ import {
   resolveActiveFilterColumns,
   resolveFilterButtonCells,
   resolveFilterRangeColumns,
-  resolveWorksheetAutoFilter,
+  resolveActiveAutoFilter,
+  resolveFilterOwner,
   resolveOutlineControls,
   validateDataInput,
   type ConditionalOverlay,
@@ -107,6 +108,7 @@ export interface CanvasSheetSnapshot {
   merges: MergeSpan[];
   pane: WorksheetPane;
   autoFilter?: AutoFilterModel;
+  filterOwner?: { kind: 'worksheet' | 'table'; tableId?: string };
   defaultRowHeightPx: number;
   defaultColumnWidthPx: number;
   maximumDigitWidthPx: number;
@@ -212,7 +214,8 @@ export function buildCanvasSheetSnapshot(
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
-  const filterHidden = computeFilterHiddenRows(sheet);
+  const readFilterCell = (row: number, column: number) => cellResolver.resolve(sheet, row, column)?.cell;
+  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
@@ -220,6 +223,7 @@ export function buildCanvasSheetSnapshot(
   const filterRangeColumns = resolveFilterRangeColumns(sheet);
   const activeFilterColumns = resolveActiveFilterColumns(sheet);
   const filterButtons = resolveFilterButtonCells(sheet);
+  const filterOwner = resolveFilterOwner(sheet);
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = usedRangeOfSheet(sheet);
@@ -320,7 +324,8 @@ export function buildCanvasSheetSnapshot(
     dataValidations: [...sheet.dataValidations],
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
-    autoFilter: resolveWorksheetAutoFilter(sheet) ? structuredClone(resolveWorksheetAutoFilter(sheet)) : undefined,
+    autoFilter: resolveActiveAutoFilter(sheet) ? structuredClone(resolveActiveAutoFilter(sheet)) : undefined,
+    filterOwner,
     defaultRowHeightPx: sheet.defaultRowHeightPx,
     defaultColumnWidthPx: sheet.defaultColumnWidthPx,
     maximumDigitWidthPx: workbook.dimensionMetrics.maximumDigitWidthPx,
@@ -333,7 +338,7 @@ export function buildCanvasSheetSnapshot(
     filterRangeColumns,
     activeFilterColumns,
     filterButtons,
-    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column),
+    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell),
     sheetTables: [...sheet.sheetTables],
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,

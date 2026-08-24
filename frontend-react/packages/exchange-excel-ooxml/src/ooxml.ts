@@ -39,6 +39,10 @@ import {
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 import {
   DEFAULT_EXCEL_FONT_FAMILY,
   DEFAULT_EXCEL_FONT_SIZE_PT,
@@ -1195,20 +1199,34 @@ function serializeAutoFilter(filter: AutoFilterModel): string {
   const columns = Object.values(filter.columns).map((column) => {
     const colId = column.column - filter.range.startColumn;
     const criterion = column.criterion;
-    if (!criterion) return '';
+    const preserved = isRecord(column.preservedXml) && Array.isArray(column.preservedXml.children)
+      ? column.preservedXml.children.filter((value): value is string => typeof value === 'string').join('')
+      : '';
+    if (!criterion && !column.hiddenButton && !preserved) return '';
+    if (!criterion) return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}>${preserved}</filterColumn>`;
     if (criterion.kind === 'values') {
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}</filters></filterColumn>`;
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}</filters>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'custom') {
       const conditions = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
-      return `<filterColumn colId="${colId}"><customFilters${criterion.join === 'or' ? ' and="0"' : ''}>${conditions.map((condition) => `<customFilter operator="${encodeXml(condition.operator)}" val="${encodeXml(String(condition.value ?? ''))}"/>`).join('')}</customFilters></filterColumn>`;
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><customFilters${criterion.join === 'or' ? ' and="0"' : ''}>${conditions.map((condition) => `<customFilter operator="${encodeXml(condition.operator)}" val="${encodeXml(String(condition.value ?? ''))}"/>`).join('')}</customFilters>${preserved}</filterColumn>`;
     }
-    return '';
+    if (criterion.kind === 'dynamic') {
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><dynamicFilter type="${encodeXml(criterion.type)}"${criterion.value === undefined ? '' : ` val="${criterion.value}"`}${criterion.maxValue === undefined ? '' : ` maxVal="${criterion.maxValue}"`}/>${preserved}</filterColumn>`;
+    }
+    if (criterion.kind === 'top10') {
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><top10 top="${criterion.top ? '1' : '0'}"${criterion.percent ? ' percent="1"' : ''} rank="${criterion.rank}"${criterion.filterValue === undefined ? '' : ` filterVal="${criterion.filterValue}"`}/>${preserved}</filterColumn>`;
+    }
+    if (criterion.kind === 'color') {
+      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><colorFilter dxfId="${criterion.dxfId}" cellColor="${criterion.target === 'cell' ? '1' : '0'}"/>${preserved}</filterColumn>`;
+    }
+    return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><iconFilter iconSet="${encodeXml(criterion.iconSet)}" iconId="${criterion.iconId}"/>${preserved}</filterColumn>`;
   }).join('');
   const sortState = filter.sortState
     ? `<sortState ref="${rangeToA1(filter.sortState.ref)}">${filter.sortState.conditions.map((condition) => `<sortCondition ref="${rangeToA1(condition.ref)}" descending="${condition.descending ? '1' : '0'}"/>`).join('')}</sortState>`
     : '';
-  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}${sortState}</autoFilter>`;
+  const preserved = isRecord(filter.preservedXml) && typeof filter.preservedXml.extLst === 'string' ? filter.preservedXml.extLst : '';
+  return `<autoFilter ref="${rangeToA1(filter.range)}">${columns}${sortState}${preserved}</autoFilter>`;
 }
 
 function serializeProtection(rules: ProtectionRule[]): string {
@@ -1703,10 +1721,17 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): AutoFilter
     const filters = children(child(column, 'filters'), 'filter').map((filter) => filter.attrs.val ?? '');
     const filtersNode = child(column, 'filters');
     const custom = children(child(column, 'customFilters'), 'customFilter');
+    const dynamic = child(column, 'dynamicFilter');
+    const top10 = child(column, 'top10');
+    const color = child(column, 'colorFilter');
+    const icon = child(column, 'iconFilter');
+    const known = new Set(['filters', 'customFilters', 'dynamicFilter', 'top10', 'colorFilter', 'iconFilter']);
+    const preservedChildren = column.children.filter((candidate) => !known.has(localName(candidate.name))).map(serializeXml);
     columns[absolute] = {
       column: absolute,
       showButton: column.attrs.hiddenButton !== '1',
       hiddenButton: column.attrs.hiddenButton === '1',
+      ...(preservedChildren.length ? { preservedXml: { children: preservedChildren } } : {}),
       criterion: filters.length || filtersNode?.attrs.blank !== undefined
         ? { kind: 'values', values: filters, includeBlank: filtersNode?.attrs.blank === '1' }
         : custom.length
@@ -1718,7 +1743,15 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): AutoFilter
               custom[1] ? { operator: (custom[1].attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[1].attrs.val ?? null } : undefined,
             ],
           }
-          : undefined,
+          : dynamic?.attrs.type
+            ? { kind: 'dynamic', type: dynamic.attrs.type as import('@react-sheets/core-model').DynamicFilterType, ...(dynamic.attrs.val === undefined ? {} : { value: Number(dynamic.attrs.val) }), ...(dynamic.attrs.maxVal === undefined ? {} : { maxValue: Number(dynamic.attrs.maxVal) }) }
+            : top10
+              ? { kind: 'top10', top: top10.attrs.top !== '0', percent: top10.attrs.percent === '1', rank: Number(top10.attrs.rank ?? 10), ...(top10.attrs.filterVal === undefined ? {} : { filterValue: Number(top10.attrs.filterVal) }) }
+              : color
+                ? { kind: 'color', target: color.attrs.cellColor === '0' ? 'font' : 'cell', dxfId: Number(color.attrs.dxfId ?? -1) }
+                : icon
+                  ? { kind: 'icon', iconSet: icon.attrs.iconSet ?? '', iconId: Number(icon.attrs.iconId ?? -1) }
+                  : undefined,
     };
   }
   const sort = child(root, 'sortState');
@@ -1729,7 +1762,14 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor): AutoFilter
       descending: xmlBoolean(condition.attrs.descending ?? '0'),
     })),
   } : undefined;
-  return { sheetId: descriptor.id, range: { ...range, sheetId: descriptor.id }, columns, sortState };
+  const preserved = root.children.filter((candidate) => localName(candidate.name) === 'extLst').map(serializeXml);
+  return {
+    sheetId: descriptor.id,
+    range: { ...range, sheetId: descriptor.id },
+    columns,
+    sortState,
+    ...(preserved.length ? { preservedXml: { extLst: preserved.join('') } } : {}),
+  };
 }
 
 function parseOutline(root: XmlNode): OutlineModel | undefined {

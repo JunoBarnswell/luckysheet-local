@@ -22,6 +22,7 @@ import { buildCellFromText } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
+import { validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 
@@ -1910,7 +1911,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isFilterMutation(item.params)) throw new Error('Invalid autoFilter.set mutation payload');
       const params = item.params;
-      context.workbook.getSheet(params.sheetId).autoFilter = structuredClone(params.autoFilter);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      sheet.autoFilter = validateFilterOwnership(sheet, params.autoFilter, { kind: 'worksheet' });
     },
     metadata: {
       schema: { name: 'AutoFilterSet', validate: isFilterMutation },
@@ -1935,13 +1937,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<{ sheetId: string; autoFilter: AutoFilterModel }>({
     id: 'sheet.autoFilter.set',
     execute: (params, context) => {
-      const previous = context.workbook.getSheet(params.sheetId).autoFilter;
-      const affectedRanges: RangeRef[] = [structuredClone(params.autoFilter.range)];
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const autoFilter = validateFilterOwnership(sheet, params.autoFilter, { kind: 'worksheet' });
+      const previous = sheet.autoFilter;
+      const affectedRanges: RangeRef[] = [structuredClone(autoFilter.range)];
       context.applyMutation({
         id: 'autoFilter.set',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
-        params,
+        params: { ...params, autoFilter },
         affectedRanges,
         inverse: previous
           ? [{
@@ -1955,11 +1959,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             id: 'autoFilter.remove',
             unitId: context.workbook.unitId,
             sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, range: params.autoFilter.range },
+            params: { sheetId: params.sheetId, range: autoFilter.range },
             affectedRanges,
           }],
         apply: () => {
-          context.workbook.getSheet(params.sheetId).autoFilter = structuredClone(params.autoFilter);
+          sheet.autoFilter = structuredClone(autoFilter);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

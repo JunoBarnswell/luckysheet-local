@@ -98,6 +98,11 @@ export interface CellData {
   /** @deprecated prefer hyperlinkDetail */
   hyperlink?: string;
   hyperlinkDetail?: CellHyperlink;
+  /** Native AutoFilter color/icon identity resolved at the import boundary. */
+  filterMetadata?: {
+    color?: { target: 'cell' | 'font'; dxfId?: number; value?: string };
+    icon?: { iconSet: string; iconId: number };
+  };
 }
 
 export interface RichTextRun {
