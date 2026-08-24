@@ -123,6 +123,22 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"cells":{},"protectionRules":[
+                  {"id":"lock-d1-d5","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":3,"endColumn":3},"locked":true,"allow":{}}
+                ]}]}
+                """);
+        var mutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":9,"startColumn":0,"endColumn":0},"sourceRows":[5,6,7,8,9,0,1,2,3,4]}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        assertEquals("FORBIDDEN", error.code());
+    }
+
+    @Test
     void sheetMetadataMutationsUseCanonicalCollectionsRatherThanClientRanges() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
