@@ -21,6 +21,8 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
         if (!cell) continue;
         if (cell.formula) hasFormula = true;
         if (cell.numberFormat) features.add('styles');
+        if (cell.presentation?.kind === 'barcode') features.add('barcode');
+        if (cell.presentation?.kind === 'image') features.add('images');
       }
     }
     if (sheet.merges.length > 0) features.add('merges');
@@ -32,6 +34,9 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
     // cannot silently miss a chart/image created through the command runtime.
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'chart') features.add('charts');
+      else if (payload.kind === 'data-chart') features.add('data-chart');
+      else if (payload.kind === 'camera') features.add('camera');
+      else if (payload.kind === 'form-control') features.add('form-control');
       else if (payload.kind === 'slicer') features.add('slicer');
       else if (payload.kind === 'timeline') features.add('timeline');
       else if (payload.kind === 'image' || payload.kind === 'shape' || payload.kind === 'textbox') features.add('images');
@@ -44,12 +49,16 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
     if (sheet.protectionRules?.length) features.add('protection');
     if ((sheet.commentThreads?.length ?? 0) > 0) features.add('comments');
     if (sheet.notes?.length) features.add('comments');
+    if (sheet.kind === 'table-sheet') features.add('table-sheet');
+    if (sheet.kind === 'gantt-sheet') features.add('gantt-sheet');
+    if (sheet.kind === 'report-sheet') features.add('report-sheet');
   }
 
   if (hasFormula) features.add('formulas');
   if (snapshot.definedNames && Object.keys(snapshot.definedNames).length > 0) {
     features.add('defined-names');
   }
+  if ((snapshot.cellStyleTemplates?.length ?? 0) > 0) features.add('cell-style-template');
 
   return [...features];
 }

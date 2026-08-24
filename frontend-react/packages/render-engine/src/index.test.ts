@@ -322,6 +322,17 @@ test('cell rendering calls the provider address and paints the value only in tha
   assert.deepEqual(textCalls, [{ text: '4', x: 106, y: 170 }]);
 });
 
+test('cell rendering applies top, middle, and bottom vertical alignment to unwrapped text', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 1, columnCount: 3, defaultRowHeight: 60, defaultColumnWidth: 50 });
+  const range = { startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 };
+  const provider = ({ column }: { row: number; column: number }): CellRenderData => ({ value: column, displayValue: String(column), style: { verticalAlignment: (['top', 'middle', 'bottom'] as const)[column] } });
+  const { context, textCalls } = recordingContext();
+  drawCellLayer({ context, skeleton: renderSkeleton, pane: mainPane(range), visibleRange: range, cellProvider: provider, theme: DEFAULT_RENDER_THEME });
+  assert.equal(textCalls[0]?.y, 12.5);
+  assert.equal(textCalls[1]?.y, 30);
+  assert.equal(textCalls[2]?.y, 47.5);
+});
+
 test('blank cells retain complete horizontal and vertical grid boundaries', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 3, columnCount: 3, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 };

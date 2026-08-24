@@ -3,8 +3,13 @@ import { describe, it } from 'node:test';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import {
   buildRibbonCommand,
+  adjustRibbonDecimalPlaces,
+  getRibbonSurfaces,
   getRibbonCommandDefinition,
   getRibbonGroupDefinition,
+  HOME_RIBBON_SURFACES,
+  INSERT_RIBBON_SURFACES,
+  RIBBON_TAB_SURFACES,
   isRibbonCommandEnabled,
   RIBBON_COMMAND_CATALOG,
   RIBBON_GROUP_CATALOG,
@@ -44,14 +49,8 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onToggleViewHeadings: () => undefined,
     onTogglePrintHeadings: () => undefined,
     onAutoSum: () => undefined,
+    onFill: () => undefined,
     onFreezeAtPrimary: () => undefined,
-    onCreatePivot: () => descriptor('pivot.add', { id: 'pivot-1' }),
-    onCreateChart: () => descriptor('chart.insert'),
-    onCreateSparkline: () => descriptor('sparkline.add'),
-    onCreateShape: () => descriptor('drawing.add'),
-    onBringDrawingForward: () => descriptor('drawing.zOrder'),
-    onSendDrawingBackward: () => descriptor('drawing.zOrder'),
-    onRemoveDrawing: () => descriptor('drawing.remove'),
     onCreateSheetTable: () => undefined,
     onCreateDataTable: () => undefined,
     onToggleSheetTableTotalRow: () => descriptor('sheetTable.update'),
@@ -74,6 +73,13 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onToggleBandedRows: () => undefined,
     onSetRecalculationMode: () => undefined,
     onOpenDefinedNames: () => undefined,
+    onCreateAdvancedSheet: () => undefined,
+    onApplyBarcode: () => undefined,
+    onCreateDataChart: () => undefined,
+    onCreateCamera: () => undefined,
+    onCreateFormControl: () => undefined,
+    onApplyCheckbox: () => undefined,
+    onCreateTextBox: () => undefined,
   };
   return {
     phase: 'ready',
@@ -113,10 +119,7 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(pivotAction?.type, 'callback');
     if (pivotAction?.type === 'callback') pivotAction.invoke();
     assert.equal(createPivotDialogCalls, 1);
-    assert.deepEqual(buildRibbonCommand('quickPivot', current), {
-      type: 'command',
-      descriptor: { commandId: 'pivot.add', params: { id: 'pivot-1' } },
-    });
+    assert.equal(buildRibbonCommand('tableSheet', current)?.type, 'callback');
   });
 
   it('honors phase and permission context before building a command', () => {
@@ -128,5 +131,41 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), forbidden), false);
     assert.equal(buildRibbonCommand('bold', forbidden), undefined);
     assert.equal(buildRibbonCommand('pivotTable', context()), undefined);
+  });
+
+  it('keeps every Home Ribbon surface reachable through one registered command or control', () => {
+    const positions = new Set<string>();
+    for (const surface of HOME_RIBBON_SURFACES) {
+      assert.equal(surface.tab, 'home');
+      assert.ok(surface.commandId || surface.controlId);
+      assert.equal(positions.has(`${surface.group}:${surface.order}`), false);
+      positions.add(`${surface.group}:${surface.order}`);
+      if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId));
+    }
+    assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
+  });
+
+  it('keeps Home and Insert surfaces unique and executable', () => {
+    const ids = new Set<string>();
+    for (const surface of RIBBON_TAB_SURFACES) {
+      assert.equal(ids.has(surface.id), false);
+      ids.add(surface.id);
+      assert.ok(surface.commandId || surface.controlId);
+      if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId));
+    }
+    assert.equal(INSERT_RIBBON_SURFACES.some((surface) => surface.id.includes('quick')), false);
+  });
+
+  it('adjusts decimals structurally without touching formatted cell text', () => {
+    assert.equal(adjustRibbonDecimalPlaces('general', 1), '0.0');
+    assert.equal(adjustRibbonDecimalPlaces('$#,##0.00', -1), '$#,##0.0');
+    assert.equal(adjustRibbonDecimalPlaces('0%', 2), '0.00%');
+  });
+
+  it('builds the complete alignment grid as canonical style commands', () => {
+    const ready = context({ cellStyle: { indent: 1, verticalAlignment: 'middle' } });
+    assert.deepEqual(buildRibbonCommand('alignTop', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { verticalAlignment: 'top' } } } });
+    assert.deepEqual(buildRibbonCommand('indentIncrease', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { indent: 2 } } } });
+    assert.deepEqual(buildRibbonCommand('indentDecrease', ready), { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { indent: 0 } } } });
   });
 });

@@ -59,6 +59,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         int columns = params.has("columnCount") ? dimension(params.get("columnCount"), "columnCount") : 26;
         ArrayNode sheets = SnapshotMutationSupport.sheets(root);
         ObjectNode sheet = JsonNodeFactory.instance.objectNode();
+        sheet.put("kind", "worksheet");
         sheet.put("id", id);
         sheet.put("name", name);
         sheet.put("rowCount", rows);

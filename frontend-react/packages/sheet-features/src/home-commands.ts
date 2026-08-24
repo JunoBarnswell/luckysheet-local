@@ -325,7 +325,7 @@ function applyDataRegionMaterialization(params: DataRegionMaterializeParams, con
     || currentRegion.headerRow !== params.region.headerRow) {
     throw new Error(`Data region ${params.region.id} changed before materialization commit`);
   }
-  const currentManifest = context.workbook.dataSources.get(params.manifest.id);
+  const currentManifest = context.workbook.dataModel.sources.get(params.manifest.id);
   if (!currentManifest || currentManifest.revision !== params.manifest.revision) {
     throw new Error(`Data source ${params.manifest.id} changed before materialization commit`);
   }
@@ -334,13 +334,13 @@ function applyDataRegionMaterialization(params: DataRegionMaterializeParams, con
   }
   for (const entry of params.materializedCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.dataRegions.splice(index, 1);
-  if (params.willRemoveSource) context.workbook.dataSources.delete(params.manifest.id);
+  if (params.willRemoveSource) context.workbook.dataModel.sources.delete(params.manifest.id);
 }
 
 function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
   const sheet = context.workbook.getSheet(params.sheetId);
   if (sheet.dataRegions.some((region) => region.id === params.region.id)) throw new Error(`Data region already exists: ${params.region.id}`);
-  if (params.willRemoveSource) context.workbook.dataSources.set(params.manifest.id, structuredClone(params.manifest));
+  if (params.willRemoveSource) context.workbook.dataModel.sources.set(params.manifest.id, structuredClone(params.manifest));
   for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
     for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
   }

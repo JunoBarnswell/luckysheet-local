@@ -1,8 +1,10 @@
 import type {
   CellComment,
+  CellEditorConfig,
   CellNote,
   CellData,
   CellStyle,
+  CellPresentation,
   ConditionalFormatRule,
   DataValidationRule,
   DrawingObject,
@@ -51,6 +53,8 @@ import {
   buildPivotGridProjection,
   computePivotResult,
   getLastValidPivotResult,
+  pivotResultMatchesLayoutAndFilter,
+  pivotResultMatchesRevision,
   type PivotProjectionSourceState,
 } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
@@ -70,6 +74,8 @@ export interface CanvasCellSnapshot {
   displayValue?: string;
   formula?: string;
   style?: CellStyle;
+  editor?: CellEditorConfig;
+  presentation?: CellPresentation;
   value: string;
   hasComment?: boolean;
   commentText?: string;
@@ -236,12 +242,25 @@ export function buildCanvasSheetSnapshot(
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = usedRangeOfSheet(sheet);
+  const advancedTableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : sheet.kind === 'report-sheet' ? sheet.reportSheet?.tableId : undefined;
+  const advancedTable = advancedTableId ? workbook.dataModel.tables.get(advancedTableId) : undefined;
+
+  const resolveModelCell = (row: number, column: number): { cell?: CellData; owner: WorksheetModel; row: number; column: number } => {
+    const local = cellResolver.resolve(sheet, row, column)?.cell;
+    if (local || row === 0 || !advancedTable?.sourceRange) return { cell: local, owner: sheet, row, column };
+    const field = advancedTable.fields[column];
+    const sourceSheet = workbook.sheets.get(advancedTable.sourceRange.sheetId);
+    const sourceRow = advancedTable.sourceRange.startRow + row;
+    if (!field || !sourceSheet || sourceRow > advancedTable.sourceRange.endRow) return { owner: sheet, row, column };
+    const sourceColumn = advancedTable.sourceRange.startColumn + field.ordinal;
+    return { cell: cellResolver.resolve(sourceSheet, sourceRow, sourceColumn)?.cell, owner: sourceSheet, row: sourceRow, column: sourceColumn };
+  };
 
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
-    const resolved = cellResolver.resolve(sheet, row, column);
-    const modelCell = resolved?.cell;
-    const value = formatDisplayValue(modelCell, formula, sheet, sheet.id, row, column);
+    const resolved = resolveModelCell(row, column);
+    const modelCell = resolved.cell;
+    const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
     const key = `${row}:${column}`;
     const overlay = overlays.get(key);
     const table = findSheetTableAt(sheet, row, column);
@@ -264,6 +283,8 @@ export function buildCanvasSheetSnapshot(
       address: cellAddress(row, column),
       formula: modelCell?.formula,
       style,
+      editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
+      presentation: modelCell?.presentation ? structuredClone(modelCell.presentation) : undefined,
       value,
       displayValue: value,
       hasComment: Boolean(comment || note),
@@ -291,7 +312,15 @@ export function buildCanvasSheetSnapshot(
   const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
     const sourceState = pivotSourceState(pivot, dataContent);
-    let cachedResult = cachedPivotResults[pivot.id] ?? getLastValidPivotResult(workbook, pivot.id);
+    const runtimeResult = cachedPivotResults[pivot.id];
+    const retainedResult = getLastValidPivotResult(workbook, pivot.id);
+    const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result)
+      || (pivot.refreshPolicy.mode === 'manual' && pivotResultMatchesLayoutAndFilter(workbook, pivot, result));
+    let cachedResult = reusable(runtimeResult)
+      ? runtimeResult
+      : reusable(retainedResult)
+        ? retainedResult
+        : undefined;
     if (!cachedResult && pivot.source.kind !== 'data-source') {
       try {
         cachedResult = computePivotResult(workbook, pivot);
@@ -304,7 +333,7 @@ export function buildCanvasSheetSnapshot(
     try {
       pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState });
       const retained = getLastValidPivotResult(workbook, pivot.id);
-      if (!pivotResults[pivot.id] && retained) pivotResults[pivot.id] = retained;
+      if (!pivotResults[pivot.id] && reusable(retained)) pivotResults[pivot.id] = retained;
     } catch {
       // Invalid target/source is surfaced by command validation. The snapshot
       // remains renderable for the rest of the worksheet.

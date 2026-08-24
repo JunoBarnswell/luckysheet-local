@@ -157,13 +157,35 @@ function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): un
 }
 
 export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel): PivotRevisionKey {
-  const definition = normalizePivotDefinition(workbook, pivot);
   return {
-    pivotId: definition.id,
+    pivotId: pivot.id,
     sourceRevision: sourceRevision(workbook, pivot),
-    layoutRevision: fingerprint({ source: definition.source, fieldCatalog: definition.fieldCatalog, layout: definition.layout }),
-    filterRevision: fingerprint({ filters: definition.layout.filters, linked: linkedFilterDefinitions(workbook, pivot) }),
+    // Live member values belong exclusively to sourceRevision. Including them
+    // here made an ordinary source edit look like a layout mutation and caused
+    // manual-refresh PivotTables to discard their last refreshed result.
+    layoutRevision: fingerprint({
+      source: pivot.source,
+      fieldCatalog: pivot.fieldCatalog.fields.map(({ fieldId, name, dataType, ordinal }) => ({ fieldId, name, dataType, ordinal })),
+      layout: pivot.layout,
+    }),
+    filterRevision: fingerprint({ filters: pivot.layout.filters, linked: linkedFilterDefinitions(workbook, pivot) }),
   };
+}
+
+/** A derived result is reusable only when every canonical Pivot revision matches. */
+export function pivotResultMatchesRevision(workbook: WorkbookModel, pivot: PivotModel, result: PivotResultTree | undefined): result is PivotResultTree {
+  if (!result || result.pivotId !== pivot.id) return false;
+  const revision = getPivotRevisionKey(workbook, pivot);
+  return result.sourceRevision === revision.sourceRevision
+    && result.layoutRevision === revision.layoutRevision
+    && result.filterRevision === revision.filterRevision;
+}
+
+/** Manual-refresh PivotTables may reuse source-stale data only when their layout and filters still match. */
+export function pivotResultMatchesLayoutAndFilter(workbook: WorkbookModel, pivot: PivotModel, result: PivotResultTree | undefined): result is PivotResultTree {
+  if (!result || result.pivotId !== pivot.id) return false;
+  const revision = getPivotRevisionKey(workbook, pivot);
+  return result.layoutRevision === revision.layoutRevision && result.filterRevision === revision.filterRevision;
 }
 
 export function getLastValidPivotResult(workbook: WorkbookModel, pivotId: string): PivotResultTree | undefined {
@@ -226,7 +248,7 @@ function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
   range: RangeRef;
   fields: Array<{ id: string; name: string }>;
 } {
-  const workbookTable = workbook.tables.get(tableId);
+  const workbookTable = workbook.dataModel.tables.get(tableId);
   if (workbookTable?.sourceRange) {
     return {
       range: workbookTable.sourceRange,
@@ -397,7 +419,7 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
   const fieldId = resolveFieldId(filter.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId}`);
   if (filter.kind === 'manual') {
-    return { kind: 'manual', fieldId, mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
+    return { kind: 'manual', fieldId, scope: filter.scope ?? 'report', mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
   }
   if (filter.kind === 'top-items') {
     const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
@@ -1006,11 +1028,14 @@ function buildPivotGridProjectionCandidate(
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
-  for (const filter of definition.layout.filters) {
-    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`));
+  for (const filter of definition.layout.filters.filter((entry) => entry.scope !== 'field')) {
+    const selected = filter.kind === 'manual' && filter.mode !== 'all';
+    const count = selected ? filter.memberKeys.length : 0;
+    const filterText = selected ? `${fieldName(filter.fieldId, definition.fieldCatalog)}: ${count} selected` : `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`;
+    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, filterText, { fieldId: filter.fieldId, filterSummary: { fieldName: fieldName(filter.fieldId, definition.fieldCatalog), mode: selected ? 'selected' : 'all', count } }));
     row += 1;
   }
-  for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : ''));
+  for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
   const columnPaths = tree?.columnPaths ?? [];
   const values = definition.layout.values;
   for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
@@ -1018,8 +1043,9 @@ function buildPivotGridProjectionCandidate(
     for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
       const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
       const valueField = values[valueIndex];
-      const label = path.length ? `${path.map(display).join(' / ')} ${valueField ? (valueField.displayName ?? valueField.fieldId) : ''}`.trim() : valueField ? (valueField.displayName ?? valueField.fieldId) : '';
-      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path }));
+      const valueCaption = valueField ? (valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)) : '';
+      const label = path.length ? `${path.map(display).join(' / ')} ${valueCaption}`.trim() : valueCaption;
+      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId }));
     }
   }
   row += 1;
@@ -1044,12 +1070,12 @@ function buildPivotGridProjectionCandidate(
       row += 1;
     }
     if (tree.grandTotal) {
-      cells.push(projectionCell(definition.id, row, 0, 'grand-total', null, 'Grand Total', { resultCellId: tree.grandTotal.id, sourceRowPaths: tree.grandTotal.sourceRowPaths }));
+      cells.push(projectionCell(definition.id, row, 0, 'grand-total', null, 'Grand Total', { captionKey: 'grand-total', resultCellId: tree.grandTotal.id, sourceRowPaths: tree.grandTotal.sourceRowPaths }));
       tree.grandTotal.values.forEach((value, index) => cells.push(projectionCell(definition.id, row, rowHeaderCount + index, 'grand-total', value, textForValue(value), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths })));
       row += 1;
     }
   } else {
-    cells.push(projectionCell(definition.id, row, 0, error ? 'error' : 'loading', null, error ?? 'Loading PivotTable'));
+    cells.push(projectionCell(definition.id, row, 0, error ? 'error' : 'loading', null, error ?? 'Loading PivotTable', error ? {} : { captionKey: 'loading' }));
     row += 1;
   }
   const occupiedRange = projectionRange(target, Math.max(row, 1), Math.max(valueColumnCount + rowHeaderCount, 1));
@@ -1091,7 +1117,14 @@ export function buildPivotGridProjection(
   cachedResult?: PivotResultTree,
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
-  let effectiveResult = cachedResult;
+  const revision = getPivotRevisionKey(workbook, pivot);
+  const blockResultReady = pivot.source.kind === 'data-source'
+    && options.sourceState?.availability === 'ready'
+    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult);
+  const staleManualResult = pivot.refreshPolicy.mode === 'manual'
+    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult)
+    && cachedResult.sourceRevision !== revision.sourceRevision;
+  let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult) || staleManualResult || blockResultReady ? cachedResult : undefined;
   if (!effectiveResult && pivot.source.kind !== 'data-source') {
     try {
       effectiveResult = computePivotResult(workbook, pivot);
@@ -1103,6 +1136,11 @@ export function buildPivotGridProjection(
   const cache = lastValidPivotProjections.get(workbook);
   const last = cache?.get(pivot.id);
   const candidateTree = effectiveResult;
+
+  if (staleManualResult && candidate.collision.status === 'clear') {
+    candidate.refresh = refreshState(workbook, pivot, candidate.collision, 'stale');
+    return candidate;
+  }
 
   if (candidate.collision.status === 'clear' && candidateTree && candidate.refresh.status === 'ready') {
     const nextCache = cache ?? new Map<string, LastValidPivotProjection>();

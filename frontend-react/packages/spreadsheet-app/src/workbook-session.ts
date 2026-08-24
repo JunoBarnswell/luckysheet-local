@@ -1,6 +1,10 @@
 import type {
   CellData,
+  CellEditorConfig,
   CellStyle,
+  CellStyleTemplate,
+  BarcodeSymbology,
+  CameraDrawingPayload,
   ChartDrawingPayload,
   ConditionalFormatRule,
   DataBlockRef,
@@ -10,6 +14,9 @@ import type {
   FilterCriterion,
   DrawingObject,
   DrawingTransform,
+  DataChartDrawingPayload,
+  FormControlDrawingPayload,
+  FormControlType,
   ImageDrawingPayload,
   PivotFieldDefinition,
   PivotLayout,
@@ -21,6 +28,8 @@ import type {
   RangeRef,
   ShapeDrawingPayload,
   SheetTableModel,
+  SheetKind,
+  SheetSnapshot,
   SheetDataRegion,
   SparklineModel,
   SparklineGroup,
@@ -247,6 +256,7 @@ export interface UiSnapshot extends DesignerState {
   tables: readonly WorkbookTableModel[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
+  cellStyleTemplates: readonly CellStyleTemplate[];
   dialogs: DialogState;
   inputMode: InputMode;
   focus: FocusState;
@@ -284,6 +294,7 @@ const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'background',
   'horizontalAlignment',
   'verticalAlignment',
+  'indent',
   'wrapText',
   'numberFormat',
   'borders',
@@ -745,9 +756,10 @@ export class WorkbookSession {
       hasPendingOperations: this.hasPendingOperations,
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
-      tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
-      dataSources: [...this.runtime.model.dataSources.values()].map((source) => structuredClone(source)),
+      tables: [...this.runtime.model.dataModel.tables.values()].map((table) => structuredClone(table)),
+      dataSources: [...this.runtime.model.dataModel.sources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
+      cellStyleTemplates: this.runtime.model.listCellStyleTemplates(),
       dialogs: { ...this.dialogs },
       backstage: { ...this.backstage },
       inputMode: this.inputMode,
@@ -902,6 +914,8 @@ export class WorkbookSession {
       || commandId === 'sheet.style.setMulti'
       || commandId === 'sheet.style.setMultiRange'
       || commandId === 'sheet.style.preset.apply'
+      || commandId === 'sheet.cellTemplate.apply'
+      || commandId === 'sheet.cellEditor.set'
       || commandId === 'sheet.format.set'
       || commandId === 'sheet.merge.set'
       || commandId === 'sheet.merge.remove'
@@ -1039,6 +1053,7 @@ export class WorkbookSession {
     }
     this.assertPermission(commandId, resolvedParams);
     const result = this.runtime.commands.execute(commandId, resolvedParams);
+    if (commandId.startsWith('pivot.')) this.recomputeAllPivotResults();
     if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh') {
       this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
     }
@@ -1586,7 +1601,7 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
     this.dialogs = { ...this.dialogs, active, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
@@ -1959,22 +1974,34 @@ export class WorkbookSession {
     this.refresh();
   }
 
+  private resolveCanonicalCellTarget(sheetId: string, row: number, column: number): { sheetId: string; row: number; column: number } {
+    const sheet = this.runtime.model.getSheet(sheetId);
+    const tableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : undefined;
+    const table = tableId ? this.runtime.model.dataModel.tables.get(tableId) : undefined;
+    const field = table?.fields[column];
+    if (!table?.sourceRange || !field || row <= 0) return { sheetId, row, column };
+    const sourceRow = table.sourceRange.startRow + row;
+    if (sourceRow > table.sourceRange.endRow) return { sheetId, row, column };
+    return { sheetId: table.sourceRange.sheetId, row: sourceRow, column: table.sourceRange.startColumn + field.ordinal };
+  }
+
   beginEdit(initialText?: string): boolean {
     const sel = this.selectionService.getState();
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const target = { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, text: initialText ?? '' };
-    const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', target, this.actorId, this.activeSheetId);
+    const canonicalTarget = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
+    const canonicalSheet = this.runtime.model.getSheet(canonicalTarget.sheetId);
+    const target = { ...canonicalTarget, text: initialText ?? '' };
+    const permission = canExecuteCommand(this.permission, this.runtime.model, 'sheet.cell.commitText', target, this.actorId, target.sheetId);
     if (!permission.allowed) {
       this.notify(permission.reason ?? 'This cell is not editable');
       return false;
     }
-    for (const spill of sheet.spillRanges) {
-      if (isSpillChild(spill, sel.activeCell.row, sel.activeCell.column)) {
+    for (const spill of canonicalSheet.spillRanges) {
+      if (isSpillChild(spill, canonicalTarget.row, canonicalTarget.column)) {
         this.notify('Spill cells are read-only');
         return false;
       }
     }
-    const cell = this.readResolvedCell(sheet, sel.activeCell.row, sel.activeCell.column);
+    const cell = this.readResolvedCell(canonicalSheet, canonicalTarget.row, canonicalTarget.column);
     this.editSession.begin({
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
@@ -1998,13 +2025,16 @@ export class WorkbookSession {
   commitFormula(overrideValue?: string): boolean {
     if (this.phase !== 'ready') return false;
     const sel = this.selectionService.getState();
-    const row = this.overrideTarget?.row ?? sel.activeCell.row;
-    const column = this.overrideTarget?.column ?? sel.activeCell.column;
+    const displayRow = this.overrideTarget?.row ?? sel.activeCell.row;
+    const displayColumn = this.overrideTarget?.column ?? sel.activeCell.column;
+    const target = this.resolveCanonicalCellTarget(this.activeSheetId, displayRow, displayColumn);
+    const row = target.row;
+    const column = target.column;
     const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
-    const style = this.runtime.model.getSheet(this.activeSheetId).cells.get(row, column)?.style;
+    const style = this.runtime.model.getSheet(target.sheetId).cells.get(row, column)?.style;
     try {
       this.runCommand('sheet.cell.commitText', {
-        sheetId: this.activeSheetId,
+        sheetId: target.sheetId,
         row,
         column,
         text,
@@ -2065,6 +2095,110 @@ export class WorkbookSession {
 
   // ---- Pro / data features ----
 
+  private buildSelectionWorkbookTable(prefix: string): WorkbookTableModel {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const selected = normalizeRangeRef(this.getPrimaryRange());
+    const sourceRange = selected.startRow === selected.endRow && selected.startColumn === selected.endColumn && !sheet.cells.has(selected.startRow, selected.startColumn)
+      ? undefined
+      : { ...selected, sheetId: this.activeSheetId };
+    const defaults = prefix === 'gantt'
+      ? ['Task ID', 'Task', 'Start', 'End', 'Progress', 'Parent ID', 'Dependencies']
+      : ['Name', 'Value'];
+    const fields: WorkbookTableModel['fields'] = [];
+    const count = sourceRange ? sourceRange.endColumn - sourceRange.startColumn + 1 : defaults.length;
+    const names = new Set<string>();
+    for (let offset = 0; offset < count; offset += 1) {
+      const column = (sourceRange?.startColumn ?? 0) + offset;
+      const raw = sourceRange ? String(this.readResolvedCell(sheet, sourceRange.startRow, column)?.value ?? '').trim() : defaults[offset] ?? `Column ${offset + 1}`;
+      let name = raw || defaults[offset] || `Column ${offset + 1}`;
+      let suffix = 2;
+      while (names.has(name)) name = `${raw || 'Column'} ${suffix++}`;
+      names.add(name);
+      const values: CellData['value'][] = [];
+      if (sourceRange) for (let row = sourceRange.startRow + 1; row <= Math.min(sourceRange.endRow, sourceRange.startRow + 1000); row += 1) values.push(this.readResolvedCell(sheet, row, column)?.value ?? null);
+      fields.push({ id: `${prefix}-field-${offset + 1}`, name, ordinal: offset, type: inferTableFieldType(values) });
+    }
+    return {
+      id: nextId(`${prefix}-table`), name: `${sheet.name} ${prefix} data`, sourceSheetId: sourceRange ? this.activeSheetId : undefined,
+      sourceRange, rowCount: sourceRange ? Math.max(0, sourceRange.endRow - sourceRange.startRow) : 0,
+      fields, blockSize: 4096, blocks: [], revision: 0,
+    };
+  }
+
+  createAdvancedSheet(kind: Exclude<SheetKind, 'worksheet'>): void {
+    const table = this.buildSelectionWorkbookTable(kind === 'gantt-sheet' ? 'gantt' : kind === 'report-sheet' ? 'report' : 'table');
+    const id = nextId('sheet');
+    const name = kind === 'table-sheet' ? '集算表' : kind === 'gantt-sheet' ? '甘特表' : '报表';
+    const cells: SheetSnapshot['cells'] = {};
+    const setCell = (row: number, column: number, value: CellData['value'], style?: CellStyle) => {
+      cells[String(row)] ??= {};
+      cells[String(row)]![String(column)] = { value, ...(style ? { style } : {}) };
+    };
+    table.fields.forEach((field, column) => setCell(0, column, field.name, { bold: true, background: '#eaf2f8', verticalAlignment: 'middle' }));
+    if (kind === 'report-sheet') setCell(0, 0, '报表', { bold: true, fontSizePx: 24, textColor: '#1f2937' });
+    const sheet: SheetSnapshot = {
+      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+      defaultRowHeightPx: 20, defaultColumnWidthPx: 80,
+      ...(kind === 'table-sheet' ? { tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } } : {}),
+      ...(kind === 'gantt-sheet' ? { ganttSheet: { viewId: table.id, fieldMap: { id: table.fields[0]!.id, title: table.fields[1]!.id, start: table.fields[2]!.id, end: table.fields[3]!.id, progress: table.fields[4]!.id, parentId: table.fields[5]?.id, dependencies: table.fields[6]?.id }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' }, dependencyStyle: { color: '#64748b', width: 1 } } } : {}),
+      ...(kind === 'report-sheet' ? { reportSheet: { templateSheetId: this.activeSheetId, tableId: table.id, bindings: [], pagination: { enabled: true, rowsPerPage: 50 } } } : {}),
+    };
+    this.runCommand('sheet.create.advanced', { sheet, table, index: this.runtime.model.sheetOrder.length });
+    this.selectSheet(id);
+    this.notify(`${name}已创建`);
+  }
+
+  applyBarcode(symbology: BarcodeSymbology = 'qr'): void {
+    const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
+    this.runCommand('cell.barcode.apply', { sheetId: this.activeSheetId, ranges, presentation: { kind: 'barcode', symbology, source: { kind: 'cell-value' }, options: { foreground: '#111827', background: '#ffffff', showText: symbology !== 'qr' && symbology !== 'data-matrix', quietZone: 2 } } });
+    this.notify('条形码已应用');
+    this.refresh();
+  }
+
+  insertDataChart(type: DataChartDrawingPayload['plots'][number]['type'] = 'column'): void {
+    const table = this.buildSelectionWorkbookTable('data-chart');
+    const numeric = table.fields.find((field) => field.type === 'number') ?? table.fields[1] ?? table.fields[0]!;
+    const category = table.fields.find((field) => field.id !== numeric.id);
+    const payloadId = nextId('data-chart');
+    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'data-chart', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 }, zIndex: 0, payloadId };
+    const payload: DataChartDrawingPayload = { kind: 'data-chart', tableId: table.id, plots: [{ type, valueFieldId: numeric.id, aggregate: 'sum', categoryFieldId: category?.id }], config: { title: '数据图表', legendPosition: 'bottom', showDataLabels: false } };
+    this.runCommand('dataChart.create', { sheetId: this.activeSheetId, drawing, payload, table });
+    this.setDrawingSelection([drawing.id]);
+    this.notify('数据图表已插入');
+    this.refresh();
+  }
+
+  insertCamera(): void {
+    const range = { ...normalizeRangeRef(this.getPrimaryRange()), sheetId: this.activeSheetId };
+    const payloadId = nextId('camera');
+    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'camera', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 360, height: 220, rotation: 0 }, zIndex: 0, payloadId };
+    const payload: CameraDrawingPayload = { kind: 'camera', sourceRange: range, refreshPolicy: 'live' };
+    this.runCommand('drawing.add.camera', { sheetId: this.activeSheetId, drawing, payload });
+    this.setDrawingSelection([drawing.id]);
+    this.notify('区域快照已插入');
+    this.refresh();
+  }
+
+  insertFormControl(controlType: FormControlType = 'button'): void {
+    const active = this.selectionService.getState().activeCell;
+    const payloadId = nextId('form-control');
+    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'form-control', anchor: { kind: 'one-cell', row: active.row, column: active.column }, transform: { x: 96, y: 96, width: 140, height: 32, rotation: 0 }, zIndex: 0, payloadId };
+    const payload: FormControlDrawingPayload = { kind: 'form-control', controlType, text: controlType === 'button' ? '按钮' : controlType, cellLink: { sheetId: this.activeSheetId, row: active.row, column: active.column }, value: false, enabled: true, style: { fill: '#ffffff', border: '#7b8794', textColor: '#1f2937', fontSize: 12 } };
+    this.runCommand('drawing.add.form-control', { sheetId: this.activeSheetId, drawing, payload });
+    this.setDrawingSelection([drawing.id]);
+    this.notify('控件已插入');
+    this.refresh();
+  }
+
+  insertTextBox(): void {
+    const payloadId = nextId('textbox');
+    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'textbox', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 220, height: 72, rotation: 0 }, zIndex: 0, payloadId };
+    this.runCommand('drawing.add.textbox', { sheetId: this.activeSheetId, drawing, payload: { kind: 'textbox', text: '文本框', textColor: '#1f2937', fontSize: 14 } });
+    this.setDrawingSelection([drawing.id]);
+    this.notify('文本框已插入');
+    this.refresh();
+  }
+
   addChart(drawing: DrawingObject, payload: ChartDrawingPayload): void {
     if (drawing.kind !== 'chart' || payload.kind !== 'chart' || drawing.payloadId !== payload.chartId) {
       throw new Error(`Chart drawing and payload identity mismatch: ${drawing.id}`);
@@ -2074,7 +2208,7 @@ export class WorkbookSession {
     this.notify(payload.title ? `Added chart "${payload.title}"` : `Added ${payload.chartType} chart`);
     this.refresh();
   }
-  insertQuickChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
+  insertChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
     const range = normalizeRangeRef(this.getPrimaryRange());
     const payloadId = nextId('chart');
     const drawing: DrawingObject = {
@@ -2143,12 +2277,11 @@ export class WorkbookSession {
   }
   addPivot(pivot: PivotModel): void {
     this.runCommand('pivot.add', pivot);
-    this.recomputePivotResult(pivot.id);
     this.notify(`Pivot ${pivot.id} added`);
     this.refresh();
   }
-  insertQuickPivot(): string | undefined {
-    const descriptor = this.buildQuickPivotDescriptor();
+  insertPivotFromSelection(): string | undefined {
+    const descriptor = this.buildPivotFromSelectionDescriptor();
     const pivot = descriptor?.params as PivotModel | undefined;
     if (!pivot) {
       this.notify('Select a data range with category and value fields');
@@ -2158,7 +2291,7 @@ export class WorkbookSession {
     return pivot.id;
   }
 
-  buildQuickPivotDescriptor(): CommandDescriptor | undefined {
+  buildPivotFromSelectionDescriptor(): CommandDescriptor | undefined {
     const range = normalizeRangeRef(this.getCurrentRegion());
     const pivot = buildPivotModel(this.runtime.model, this.activeSheetId, nextId('pivot'), range);
     return pivot ? { commandId: 'pivot.add', params: pivot } : undefined;
@@ -2213,7 +2346,7 @@ export class WorkbookSession {
       source,
       target: { sheetId: targetSheetId, anchor: targetPosition },
       fieldCatalog: { fields: [] },
-      refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+       refreshPolicy: { mode: 'manual' as const, preserveFormatting: true, refreshOnLoad: false },
       layout: {
         rows: [],
         columns: [],
@@ -2240,7 +2373,6 @@ export class WorkbookSession {
       this.activeSheetId = targetSheetId;
       this.selectionService.resetForSheet(targetSheetId);
       this.panels = { ...this.panels, active: 'pivot', open: true };
-      this.notify('Blank PivotTable created. Drag fields into the Field List to build the report.');
       this.refresh();
       return pivotId;
     } catch (error) {
@@ -2253,8 +2385,6 @@ export class WorkbookSession {
   }
   updatePivotLayout(pivotId: string, layout: PivotLayout): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, layout });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
   updatePivotConfiguration(
     pivotId: string,
@@ -2263,13 +2393,9 @@ export class WorkbookSession {
       : never,
   ): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
   setPivotAggregate(pivotId: string, fieldId: string, summarizeBy: PivotAggregateFunction): void {
     this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, fieldId, summarizeBy });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
 
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {
@@ -2348,8 +2474,6 @@ export class WorkbookSession {
     const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
     if (!pivot) return;
     this.runCommand('pivot.refresh', { sheetId: this.activeSheetId, pivotId });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
   removePivot(id: string): void {
     this.runCommand('pivot.remove', id);
@@ -2418,6 +2542,12 @@ export class WorkbookSession {
       delete this.runtime.pivotResults[pivotId];
     }
   }
+  private recomputeAllPivotResults(): void {
+    const pivots = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots);
+    const activeIds = new Set(pivots.map((pivot) => pivot.id));
+    for (const pivotId of Object.keys(this.runtime.pivotResults)) if (!activeIds.has(pivotId)) delete this.runtime.pivotResults[pivotId];
+    for (const pivot of pivots) this.recomputePivotResult(pivot.id);
+  }
   addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
     if (drawing.kind !== 'shape' || payload.kind !== 'shape') {
       throw new Error(`Shape drawing and payload kind mismatch: ${drawing.id}`);
@@ -2427,7 +2557,7 @@ export class WorkbookSession {
     this.notify(`Added ${payload.type} shape`);
     this.refresh();
   }
-  insertQuickShape(type: ShapeDrawingPayload['type'] = 'rounded-rectangle'): void {
+  insertShape(type: ShapeDrawingPayload['type'] = 'rounded-rectangle'): void {
     const payloadId = nextId('shape');
     const drawing: DrawingObject = {
       id: nextId('draw'),
@@ -2481,6 +2611,24 @@ export class WorkbookSession {
     this.setDrawingSelection([drawing.id]);
     this.notify('Image placed on canvas');
     this.refresh();
+  }
+  async insertImageFile(file: File, placement: 'cell' | 'floating' = 'floating'): Promise<void> {
+    if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
+    const src = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
+      reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片读取失败'));
+      reader.readAsDataURL(file);
+    });
+    if (placement === 'cell') {
+      const active = this.selectionService.getState().activeCell;
+      this.runCommand('cell.image.apply', { sheetId: this.activeSheetId, row: active.row, column: active.column, presentation: { kind: 'image', src, altText: file.name, fit: 'contain' } });
+      this.notify('图片已嵌入单元格');
+      this.refresh();
+      return;
+    }
+    const payloadId = nextId('image');
+    this.addImage({ id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'image', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 320, height: 200, rotation: 0 }, zIndex: 0, payloadId }, { kind: 'image', src, name: file.name, altText: file.name });
   }
   updateImageBounds(id: string, bounds: DrawingTransform): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -2625,7 +2773,7 @@ export class WorkbookSession {
     this.refresh();
     return sparklineId;
   }
-  insertQuickSparkline(type: SparklineModel['type'] = 'line'): string | undefined {
+  insertSparkline(type: SparklineModel['type'] = 'line'): string | undefined {
     const range = normalizeRangeRef(this.getPrimaryRange());
     if (range.endColumn <= range.startColumn && range.endRow <= range.startRow) {
       this.notify('Select a data range for the sparkline source');
@@ -2674,6 +2822,20 @@ export class WorkbookSession {
   }
   removeDataValidation(ruleId: string): void {
     this.dispatch({ commandId: 'sheet.dv.remove', params: { sheetId: this.activeSheetId, ruleId } });
+  }
+  setCellStyleTemplate(template: CellStyleTemplate): void {
+    this.dispatch({ commandId: 'workbook.cellTemplate.set', params: { sheetId: this.activeSheetId, template } });
+  }
+  removeCellStyleTemplate(templateId: string): void {
+    this.dispatch({ commandId: 'workbook.cellTemplate.remove', params: { sheetId: this.activeSheetId, templateId } });
+  }
+  applyCellStyleTemplate(templateId: string): void {
+    const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
+    this.dispatch({ commandId: 'sheet.cellTemplate.apply', params: { sheetId: this.activeSheetId, ranges, templateId } });
+  }
+  setCellEditor(editor?: CellEditorConfig): void {
+    const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
+    this.dispatch({ commandId: 'sheet.cellEditor.set', params: { sheetId: this.activeSheetId, ranges, editor } });
   }
 
   addComment(text: string): void {
@@ -3115,7 +3277,7 @@ export class WorkbookSession {
   }
 
   readDataTable(tableId: string, offset = 0, limit = 100): Promise<TableRowsResponse> {
-    const table = this.runtime.model.tables.get(tableId);
+    const table = this.runtime.model.dataModel.tables.get(tableId);
     if (!table || !table.sourceSheetId || !table.sourceRange) return Promise.reject(new Error('Data table not found'));
     const sheet = this.runtime.model.getSheet(table.sourceSheetId);
     const start = Math.max(0, offset);
@@ -3134,7 +3296,7 @@ export class WorkbookSession {
     });
   }
   removeDataTable(tableId: string): Promise<void> {
-    const table = this.runtime.model.tables.get(tableId);
+    const table = this.runtime.model.dataModel.tables.get(tableId);
     if (!table) return Promise.reject(new Error('Data table not found'));
     this.runCommand('table.remove', { tableId, sheetId: table.sourceSheetId ?? this.activeSheetId });
     return Promise.resolve();

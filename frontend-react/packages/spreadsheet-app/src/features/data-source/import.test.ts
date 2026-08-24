@@ -14,6 +14,7 @@ function makeSheet(
   cells: Record<string, Record<string, CellData>>,
 ): SheetSnapshot {
   return {
+    kind: 'worksheet',
     id: 'sheet-source',
     name: 'Orders',
     rowCount,

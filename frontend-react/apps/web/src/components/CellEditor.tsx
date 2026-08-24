@@ -1,8 +1,10 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { Stack, Textarea } from '@react-sheets/ui-system';
+import type { CellStyle } from '@react-sheets/core-model';
 
 export interface CellEditorProps {
   initialText: string;
+  cellStyle?: CellStyle;
   onChange: (value: string) => void;
   onCommit: (moveAfter?: 'down' | 'up' | 'left' | 'right' | 'none') => void;
   onCancel: () => void;
@@ -14,9 +16,17 @@ export interface CellEditorProps {
  * 行内浮动编辑器。多行受控输入,回车提交(Shift+Enter 反向),
  * Tab 横向提交,Escape 取消。
  */
-export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEditorProps): React.ReactElement {
+export function CellEditor({ cellStyle, initialText, onChange, onCommit, onCancel }: CellEditorProps): React.ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composingRef = useRef(false);
+  const editorStyle = useMemo<CSSProperties>(() => ({
+    color: cellStyle?.textColor,
+    fontFamily: cellStyle?.fontFamily,
+    fontSize: cellStyle?.fontSizePx,
+    fontStyle: cellStyle?.italic ? 'italic' : undefined,
+    fontWeight: cellStyle?.bold ? 700 : undefined,
+    textAlign: cellStyle?.horizontalAlignment === 'center' ? 'center' : cellStyle?.horizontalAlignment === 'right' ? 'right' : 'left',
+  }), [cellStyle]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -30,26 +40,18 @@ export function CellEditor({ initialText, onChange, onCommit, onCancel }: CellEd
     textarea.setSelectionRange(end, end);
   }, []);
 
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = '0px';
-    textarea.style.height = Math.max(28, textarea.scrollHeight + 2) + 'px';
-  }, [initialText]);
-
   return (
-    <Stack gap="none" className="w-full">
+    <Stack gap="none" className="h-full w-full">
       <Textarea
         ref={textareaRef}
+        style={editorStyle}
         aria-label="Cell editor"
-        className="w-full resize-none border-0 bg-transparent px-1 py-0.5 text-[13px] leading-5 text-slate-800 outline-none"
+        className="h-full min-h-0 w-full resize-none overflow-hidden rounded-none border-0 bg-transparent px-1 py-0 text-[13px] leading-[inherit] text-slate-800 outline-none focus:border-0 focus:ring-0"
         value={initialText}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
         onChange={(event) => {
           onChange(event.target.value);
-          event.currentTarget.style.height = '0px';
-          event.currentTarget.style.height = Math.max(28, event.currentTarget.scrollHeight + 2) + 'px';
         }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || composingRef.current) {

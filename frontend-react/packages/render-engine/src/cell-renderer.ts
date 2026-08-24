@@ -1,4 +1,5 @@
 import { formatValue } from "@react-sheets/number-format";
+import * as bwipjs from "@bwip-js/browser";
 import {
   type CellAddress,
   type CellProvider,
@@ -182,11 +183,113 @@ export function drawCellLayer(options: PaneDrawOptions): void {
       if (cell?.invalid) drawInvalidRing(context, spanRect, theme);
 
       if (cell) {
-        drawCellValue(context, skeleton, options, address, cell, spanRect);
+        if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, spanRect, resolveDisplayText(cell), cell.presentation);
+        else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, spanRect, cell.presentation);
+        else drawCellValue(context, skeleton, options, address, cell, spanRect);
+        if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, cell.value === true || String(cell.value).toUpperCase() === 'TRUE');
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
     }
   }
+}
+
+const barcodeCanvasCache = new Map<string, HTMLCanvasElement | OffscreenCanvas>();
+const cellImageCache = new Map<string, HTMLImageElement>();
+const BARCODE_ENCODERS: Record<Extract<NonNullable<CellRenderData['presentation']>, { kind: 'barcode' }>['symbology'], string> = {
+  qr: 'qrcode', code128: 'code128', code39: 'code39', ean13: 'ean13', ean8: 'ean8', upca: 'upca', pdf417: 'pdf417', 'data-matrix': 'datamatrix',
+};
+
+function drawBarcodePresentation(
+  context: CanvasRenderingContext2D,
+  rect: Rect,
+  value: string,
+  presentation: Extract<NonNullable<CellRenderData['presentation']>, { kind: 'barcode' }>,
+): void {
+  const quiet = Math.max(1, presentation.options.quietZone);
+  const width = Math.max(8, Math.floor(rect.width - quiet * 2));
+  const height = Math.max(8, Math.floor(rect.height - quiet * 2));
+  const cacheKey = `${presentation.symbology}|${value}|${width}|${height}|${presentation.options.foreground}|${presentation.options.background}|${presentation.options.showText}`;
+  context.save();
+  context.fillStyle = presentation.options.background;
+  context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  try {
+    let canvas = barcodeCanvasCache.get(cacheKey);
+    if (!canvas) {
+      canvas = typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(width, height)
+        : document.createElement('canvas');
+      bwipjs.toCanvas(canvas, {
+        bcid: BARCODE_ENCODERS[presentation.symbology],
+        text: value,
+        scale: 1,
+        height: Math.max(4, Math.floor(height / 3)),
+        includetext: presentation.options.showText,
+        textxalign: 'center',
+        backgroundcolor: presentation.options.background.replace('#', ''),
+        barcolor: presentation.options.foreground.replace('#', ''),
+      });
+      barcodeCanvasCache.set(cacheKey, canvas);
+      if (barcodeCanvasCache.size > 256) barcodeCanvasCache.delete(barcodeCanvasCache.keys().next().value!);
+    }
+    context.drawImage(canvas, rect.x + quiet, rect.y + quiet, width, height);
+  } catch {
+    context.fillStyle = '#b91c1c';
+    context.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('Invalid barcode', rect.x + rect.width / 2, rect.y + rect.height / 2, width);
+  }
+  context.restore();
+}
+
+function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect, presentation: Extract<NonNullable<CellRenderData['presentation']>, { kind: 'image' }>): void {
+  if (typeof Image === 'undefined') return;
+  let image = cellImageCache.get(presentation.src);
+  if (!image) {
+    image = new Image();
+    image.src = presentation.src;
+    cellImageCache.set(presentation.src, image);
+  }
+  if (!image.complete || image.naturalWidth <= 0) return;
+  let x = rect.x;
+  let y = rect.y;
+  let width = rect.width;
+  let height = rect.height;
+  if (presentation.fit !== 'stretch') {
+    const scale = presentation.fit === 'cover' ? Math.max(width / image.naturalWidth, height / image.naturalHeight) : Math.min(width / image.naturalWidth, height / image.naturalHeight);
+    width = image.naturalWidth * scale;
+    height = image.naturalHeight * scale;
+    x += (rect.width - width) / 2;
+    y += (rect.height - height) / 2;
+  }
+  context.save();
+  context.beginPath();
+  context.rect(rect.x, rect.y, rect.width, rect.height);
+  context.clip();
+  context.drawImage(image, x, y, width, height);
+  context.restore();
+}
+
+function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, checked: boolean): void {
+  const size = Math.min(14, Math.max(10, rect.height - 8));
+  const x = rect.x + 4;
+  const y = rect.y + (rect.height - size) / 2;
+  context.save();
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = checked ? '#217345' : '#94a3b8';
+  context.lineWidth = 1;
+  context.fillRect(x, y, size, size);
+  context.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+  if (checked) {
+    context.strokeStyle = '#217345';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(x + 2.5, y + size / 2);
+    context.lineTo(x + size / 2 - 1, y + size - 3);
+    context.lineTo(x + size - 2, y + 3);
+    context.stroke();
+  }
+  context.restore();
 }
 
 function sumWidth(skeleton: SheetSkeleton, startColumn: number, endColumn: number): number {
@@ -318,7 +421,8 @@ export function measureCellAutoFit(
   const rawWidth = Math.max(0, ...lines.map((line) => context.measureText(line).width));
   const fontSizePx = style?.fontSizePx ?? 13;
   const lineHeight = Math.max(fontSizePx * 1.25, 16);
-  let width = rawWidth + padding * 2 + (reserveFilterButton ? 18 : 0) + (style?.borders?.left ? 1 : 0) + (style?.borders?.right ? 1 : 0);
+  const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
+  let width = rawWidth + padding * 2 + indent + (reserveFilterButton ? 18 : 0) + (style?.borders?.left ? 1 : 0) + (style?.borders?.right ? 1 : 0);
   let lineCount = Math.max(1, lines.length);
   if (style?.wrapText && availableWidthPx && availableWidthPx > padding * 2) {
     lineCount = lines.reduce((count, line) => count + Math.max(1, Math.ceil(context.measureText(line).width / Math.max(1, availableWidthPx - padding * 2))), 0);
@@ -350,6 +454,7 @@ function drawCellValue(
   if (!text) return;
 
   const padding = style?.padding ?? theme.cellPadding;
+  const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
   const hAlign = style?.horizontalAlignment ?? "left";
   const vAlign = style?.verticalAlignment ?? "middle";
 
@@ -359,11 +464,11 @@ function drawCellValue(
   context.textBaseline = "middle";
 
   const wrap = Boolean(style?.wrapText);
-  const maxWidth = rect.width - padding * 2;
+  const maxWidth = rect.width - padding * 2 - indent;
   const measured = context.measureText(text).width;
 
   if (wrap) {
-    drawWrapped(context, text, rect, padding, hAlign, vAlign, maxWidth);
+    drawWrapped(context, text, rect, padding + indent, hAlign, vAlign, maxWidth);
     context.restore();
     return;
   }
@@ -377,10 +482,15 @@ function drawCellValue(
 
   let x: number;
   if (hAlign === "center") x = rect.x + rect.width / 2;
-  else if (hAlign === "right") x = rect.x + rect.width - padding;
-  else x = rect.x + padding;
+  else if (hAlign === "right") x = rect.x + rect.width - padding - indent;
+  else x = rect.x + padding + indent;
 
-  let y = rect.y + rect.height / 2;
+  const fontSize = style?.fontSizePx ?? 13;
+  let y = vAlign === 'top'
+    ? rect.y + padding + fontSize / 2
+    : vAlign === 'bottom'
+      ? rect.y + rect.height - padding - fontSize / 2
+      : rect.y + rect.height / 2;
   const rotate = style?.textRotate ?? 0;
   if (rotate !== 0) {
     const radians = (rotate * Math.PI) / 180;

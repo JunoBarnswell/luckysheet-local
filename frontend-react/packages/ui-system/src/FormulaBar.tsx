@@ -5,6 +5,7 @@ import { TextInput } from './TextInput';
 
 export interface FormulaBarLabels {
   selectedCell: string;
+  nameBoxOptions: string;
   formulaInput: string;
   insertFunction: string;
   cancel: string;
@@ -23,6 +24,7 @@ export interface FormulaBarProps {
   onChange: (value: string) => void;
   onCommit: () => void;
   onNameBoxCommit?: (value: string) => void;
+  onOpenNameManager?: () => void;
   onOpenWizard?: () => void;
 }
 
@@ -36,6 +38,7 @@ export function FormulaBar({
   onCommit,
   onFocusFormula,
   onNameBoxCommit,
+  onOpenNameManager,
   onOpenWizard,
 }: FormulaBarProps) {
   const [nameDraft, setNameDraft] = useState(cellName);
@@ -80,13 +83,14 @@ export function FormulaBar({
     <Box
       as="form"
       aria-label="Formula bar"
-      className="flex h-[37px] items-center gap-1 border-y border-[#d9d9d9] border-t-[#eeeeee] bg-white px-2"
+      className="flex h-[37px] items-center gap-0 border-y border-[#d9d9d9] border-t-[#eeeeee] bg-white px-1"
       data-testid="formula-bar"
       onSubmit={handleSubmit}
     >
       <TextInput
         aria-label={labels.selectedCell}
-        className="!h-[26px] !min-h-0 !w-[100px] flex-none rounded-[2px] border-[#d9d9d9] bg-white text-center font-mono text-xs font-bold text-slate-800"
+        containerClassName="w-[132px] flex-none"
+        className="!h-[30px] !min-h-0 !w-full flex-none rounded-[3px] border-[#d9d9d9] bg-white text-center font-sans text-[13px] text-slate-900"
         data-testid="name-box"
         disabled={disabled}
         readOnly={!onNameBoxCommit}
@@ -94,6 +98,15 @@ export function FormulaBar({
         onBlur={commitNameBox}
         onChange={(event: ChangeEvent<HTMLInputElement>) => setNameDraft(event.target.value)}
         onKeyDown={handleNameKeyDown}
+      />
+      <Button
+        aria-label={labels.nameBoxOptions}
+        icon="more-vertical"
+        iconOnly
+        size="xs"
+        variant="ghost"
+        className="!h-[30px] !min-h-0 !w-7 rounded-none text-[#6b6b6b]"
+        onClick={onOpenNameManager}
       />
       <Button
         aria-label={labels.cancel}
@@ -104,7 +117,7 @@ export function FormulaBar({
         onClick={onCancel}
         size="xs"
         variant="ghost"
-        className="!h-[26px] !min-h-0 !w-7 rounded-[2px] text-slate-500"
+        className="!h-[30px] !min-h-0 !w-7 rounded-none text-slate-500"
       />
       <Button
         aria-label={labels.apply}
@@ -115,13 +128,14 @@ export function FormulaBar({
         onClick={onCommit}
         size="xs"
         variant="ghost"
-        className="!h-[26px] !min-h-0 !w-7 rounded-[2px] text-slate-500"
+        className="!h-[30px] !min-h-0 !w-7 rounded-none text-slate-500"
       />
-      <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="xs" variant="ghost" className="!h-[26px] !min-h-0 !w-8 rounded-[2px] text-[#6c9ac0]">fx</Button>
+      <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="xs" variant="ghost" className="!h-[30px] !min-h-0 !w-8 rounded-none text-[#2572bc]">fx</Button>
       <Inline gap="none" className="min-w-0 flex-1">
         <TextInput
           aria-label={labels.formulaInput}
-          className="!h-[26px] !min-h-0 flex-1 rounded-[2px] border-[#d9d9d9] font-mono text-xs"
+          containerClassName="min-w-0 flex-1"
+          className="!h-[30px] !min-h-0 !w-full rounded-[3px] border-[#d9d9d9] px-2 font-sans text-[13px]"
           data-testid="formula-input"
           disabled={disabled}
           onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}

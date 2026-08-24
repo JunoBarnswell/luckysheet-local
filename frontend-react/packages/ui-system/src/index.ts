@@ -4,6 +4,7 @@ export { CheckToggle, type CheckToggleProps } from './CheckToggle';
 export { cn, type ClassValue } from './cn';
 export { FieldDropZone, type FieldDropZoneProps } from './FieldDropZone';
 export { FileButton, type FileButtonProps } from './FileButton';
+export { RadioOption, type RadioOptionProps } from './RadioOption';
 export { Icon, type IconName, type IconSize } from './Icon';
 export { FileIcon, type FileIconKind, type FileIconProps } from './FileIcon';
 export { LocationPicker, type LocationOption, type LocationPickerProps } from './LocationPicker';

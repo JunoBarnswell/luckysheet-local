@@ -111,6 +111,12 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     color: '#10b981',
   });
   workbook.setDefinedName({ name: 'TaxRate', formula: '0.15', scope: 'workbook' });
+  workbook.setCellStyleTemplate({
+    id: 'status-template',
+    name: 'Status',
+    style: { background: '#e2f0d9', indent: 2 },
+    editor: { kind: 'list', values: ['Open', 'Closed'] },
+  });
 
   const snapshot = workbook.snapshot();
   assert.equal(snapshot.schema, 'WorkbookSnapshot');
@@ -132,6 +138,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restoredSheet.drawings.find((drawing) => drawing.id === 'shape-1')?.visible, false);
   assert.equal(restoredSheet.sparklines.length, 1);
   assert.equal(restored.definedNames['TaxRate'], '0.15');
+  assert.equal(restored.listCellStyleTemplates()[0]?.style.indent, 2);
+  assert.deepEqual(restored.listCellStyleTemplates()[0]?.editor?.values, ['Open', 'Closed']);
 });
 
 test('persists print documents and redacted query definitions in the workbook snapshot', () => {

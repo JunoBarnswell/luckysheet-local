@@ -44,7 +44,7 @@ export function FeaturePanelHost({
   title,
 }: FeaturePanelHostProps): ReactNode {
   return (
-    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title}>
+    <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
         <FeatureSidebar
           activeCell={state.activeCell}
@@ -60,6 +60,7 @@ export function FeaturePanelHost({
             if (panel === "selectionPane") session.setDrawingSelectionMode(true);
             dispatchSessionIntent({ type: "panel.open", panel });
           }}
+          onClosePanel={() => onSidebarOpenChange(false)}
           onRetry={session.retry.bind(session)}
           phase={state.phase}
           sheet={state.selectedSheet}

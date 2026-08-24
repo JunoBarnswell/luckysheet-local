@@ -186,7 +186,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private void validatePayloadPair(ObjectNode drawing, ObjectNode payload) {
         String drawingKind = SnapshotMutationSupport.text(drawing, "kind");
         String payloadKind = SnapshotMutationSupport.text(payload, "kind");
-        if (!Set.of("image", "shape", "textbox", "chart").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
+        if (!Set.of("image", "shape", "textbox", "chart", "data-chart", "camera", "form-control", "slicer", "timeline").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
             throw ServiceException.validation("Drawing and payload kinds must match");
         }
         if (payloadKind.equals("chart") && !SnapshotMutationSupport.text(drawing, "payloadId").equals(SnapshotMutationSupport.text(payload, "chartId"))) {

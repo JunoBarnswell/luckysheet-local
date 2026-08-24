@@ -42,8 +42,10 @@ public final class WorkbookSnapshotValidator {
         if (sheets == null || !sheets.isArray() || sheets.isEmpty()) {
             throw ServiceException.validation("Workbook snapshot requires at least one sheet");
         }
-        if (!snapshot.path("dataSources").isArray()) {
-            throw ServiceException.validation("Workbook snapshot dataSources must be an array");
+        JsonNode dataModel = snapshot.get("dataModel");
+        if (dataModel == null || !dataModel.isObject() || !dataModel.path("sources").isArray()
+                || !dataModel.path("tables").isArray() || !dataModel.path("relationships").isArray() || !dataModel.path("views").isArray()) {
+            throw ServiceException.validation("Workbook snapshot dataModel is invalid");
         }
         java.util.Set<String> sheetIds = new java.util.HashSet<>();
         for (JsonNode sheet : sheets) {
@@ -53,6 +55,11 @@ public final class WorkbookSnapshotValidator {
             if (sheetId.isBlank() || sheetName.isBlank() || !sheetIds.add(sheetId)) {
                 throw ServiceException.validation("Workbook snapshot sheet identity is invalid");
             }
+            String sheetKind = sheet.path("kind").asText();
+            if (!java.util.Set.of("worksheet", "table-sheet", "gantt-sheet", "report-sheet").contains(sheetKind)) throw ServiceException.validation("Workbook snapshot sheet kind is invalid");
+            if ("table-sheet".equals(sheetKind) && !sheet.path("tableSheet").isObject()) throw ServiceException.validation("TableSheet definition is required");
+            if ("gantt-sheet".equals(sheetKind) && !sheet.path("ganttSheet").isObject()) throw ServiceException.validation("GanttSheet definition is required");
+            if ("report-sheet".equals(sheetKind) && !sheet.path("reportSheet").isObject()) throw ServiceException.validation("ReportSheet definition is required");
             if (!sheet.path("rowCount").canConvertToInt() || sheet.path("rowCount").intValue() < 1
                     || !sheet.path("columnCount").canConvertToInt() || sheet.path("columnCount").intValue() < 1
                     || !sheet.path("cells").isObject() || !sheet.path("merges").isArray()
@@ -108,8 +115,19 @@ public final class WorkbookSnapshotValidator {
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
-        if (snapshot.path("version").asInt(-1) == 3 && snapshot.path("sheets").isArray()) {
+        if (snapshot.path("version").asInt(-1) == 4 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            ObjectNode dataModel = snapshot.putObject("dataModel");
+            dataModel.set("sources", snapshot.path("dataSources").isArray() ? snapshot.path("dataSources").deepCopy() : snapshot.arrayNode());
+            dataModel.set("tables", snapshot.path("tables").isArray() ? snapshot.path("tables").deepCopy() : snapshot.arrayNode());
+            dataModel.set("relationships", snapshot.arrayNode());
+            dataModel.set("views", snapshot.arrayNode());
+            snapshot.remove(java.util.List.of("dataSources", "tables"));
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) if (raw.isObject() && !raw.has("kind")) ((ObjectNode) raw).put("kind", "worksheet");
+            return requireCanonical(snapshot, expectedUnitId);
+        }
+        if (snapshot.path("version").asInt(-1) == 3 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", 4);
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
                 if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
                 ObjectNode sheet = (ObjectNode) raw;
@@ -150,12 +168,12 @@ public final class WorkbookSnapshotValidator {
                 sheet.set("autoFilter", autoFilter);
                 sheet.remove("filter");
             }
-            return requireCanonical(snapshot, expectedUnitId);
+            return migrateStored(snapshot, expectedUnitId);
         }
         if (snapshot.path("version").asInt(-1) != 2 || !snapshot.path("sheets").isArray()) {
             throw ServiceException.validation("Stored workbook snapshot version is invalid");
         }
-        snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+        snapshot.put("version", 4);
         snapshot.putObject("dimensionMetrics").put("normalFontFamily", "Calibri").put("normalFontSizePx", 14.6666666667).put("maximumDigitWidthPx", 7);
         for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
             if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
@@ -176,7 +194,7 @@ public final class WorkbookSnapshotValidator {
             migrateFontSizes(sheet);
             sheet.remove(java.util.List.of("defaultRowHeight", "defaultColumnWidth", "rowHeights", "columnWidths", "freeze"));
         }
-        return requireCanonical(snapshot, expectedUnitId);
+        return migrateStored(snapshot, expectedUnitId);
     }
 
     private static double positiveOr(JsonNode value, double fallback) {

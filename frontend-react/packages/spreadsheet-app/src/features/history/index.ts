@@ -117,14 +117,20 @@ function isServerRestoreMutationParams(value: unknown): value is ServerRestoreMu
 function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot): void {
   const restored = WorkbookModel.fromSnapshot(snapshot);
   target.sheets.clear();
-  target.tables.clear();
+  target.dataModel.tables.clear();
+  target.dataModel.sources.clear();
+  target.dataModel.relationships.clear();
+  target.dataModel.views.clear();
   target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
   target.name = restored.name;
   target.sheetOrder = [...restored.sheetOrder];
   // `definedNameModels` is the canonical store; the workbook-scoped formula
   // map is a derived read-only projection and must never be assigned.
   for (const [id, sheet] of restored.sheets) target.sheets.set(id, sheet);
-  for (const [id, table] of restored.tables) target.tables.set(id, table);
+  for (const [id, table] of restored.dataModel.tables) target.dataModel.tables.set(id, table);
+  for (const [id, source] of restored.dataModel.sources) target.dataModel.sources.set(id, source);
+  for (const [id, relationship] of restored.dataModel.relationships) target.dataModel.relationships.set(id, relationship);
+  for (const [id, view] of restored.dataModel.views) target.dataModel.views.set(id, view);
 }
 
 /**

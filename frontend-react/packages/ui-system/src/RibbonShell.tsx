@@ -9,8 +9,8 @@ export type { RibbonLayoutMode, RibbonLayoutState, RibbonTabId } from './shell-t
 export { RIBBON_TAB_ORDER } from './shell-types';
 
 export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
-  if (width >= 1120) return 'wide';
-  if (width >= 760) return 'compact';
+  if (width >= 1280) return 'wide';
+  if (width >= 1024) return 'compact';
   return 'narrow';
 }
 
@@ -20,7 +20,6 @@ export interface RibbonShellProps {
   /** Context tabs are session state supplied by the host, never workbook data. */
   contextualTabs?: readonly RibbonTabId[];
   disabled?: boolean;
-  licenseEntry?: ReactNode;
   onFileEntry?: () => void;
   onTabChange: (tab: RibbonTabId) => void;
   status?: ReactNode;
@@ -32,7 +31,6 @@ export function RibbonShell({
   children,
   contextualTabs = [],
   disabled = false,
-  licenseEntry,
   onFileEntry,
   onTabChange,
   status,
@@ -67,7 +65,7 @@ export function RibbonShell({
 
   return (
     <Tabs ref={rootRef} className="h-[142px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
-      <Inline gap="none" className="h-[39px] flex-nowrap px-2">
+      <Inline gap="none" className="h-[36px] flex-nowrap px-2">
         {onFileEntry ? (
           <DropdownMenu
             disabled={disabled}
@@ -103,14 +101,13 @@ export function RibbonShell({
             </Tab>
           ))}
         </TabList>
-        {licenseEntry ? <Box className="ml-2 flex h-full items-center">{licenseEntry}</Box> : null}
         {status ? (
           <Inline gap="xs" className="ml-auto shrink-0 border-l border-slate-100 pl-3">
             {status}
           </Inline>
         ) : null}
       </Inline>
-      <Box className="h-[103px] overflow-hidden border-t-0 bg-white px-2 py-0">
+      <Box className="h-[106px] overflow-hidden border-t-0 bg-white px-2 py-0">
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>

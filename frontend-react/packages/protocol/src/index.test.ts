@@ -68,13 +68,13 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 4,
+          version: 5,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-          dataSources: [],
+          dataModel: { sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
-            id: 'sheet-1',
+            kind: 'worksheet', id: 'sheet-1',
             name: 'Sheet1',
             rowCount: 100,
             columnCount: 26,
@@ -110,13 +110,13 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 4,
+          version: 5,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-          dataSources: [],
+          dataModel: { sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
-            id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
+            kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
             cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
             pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
           }],
@@ -216,13 +216,13 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 4,
+    version: 5,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
-    dataSources: [],
+    dataModel: { sources: [], tables: [], relationships: [], views: [] },
     sheets: [{
-      id: 'sheet-1',
+      kind: 'worksheet', id: 'sheet-1',
       name: 'Sheet1',
       rowCount: 10,
       columnCount: 10,

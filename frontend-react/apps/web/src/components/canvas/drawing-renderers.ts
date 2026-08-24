@@ -1,5 +1,8 @@
 import type {
   ChartDrawingPayload,
+  DataChartDrawingPayload,
+  CameraDrawingPayload,
+  FormControlDrawingPayload,
   DrawingObject,
   DrawingPayload,
   PivotResultTree,
@@ -7,6 +10,7 @@ import type {
   PivotTimelineDrawingPayload,
   RangeRef,
   SparklineModel,
+  WorkbookTableModel,
 } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
 import type { FloatingDrawable, Rect } from "@react-sheets/render-engine";
@@ -203,6 +207,87 @@ function drawCanonicalShapeOnCanvas(options: {
     context.textBaseline = "middle";
     context.fillText(payload.text, width / 2, height / 2, Math.max(10, width - 8));
   }
+  context.restore();
+}
+
+function dataChartSeries(
+  payload: DataChartDrawingPayload,
+  tables: readonly WorkbookTableModel[],
+  getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined,
+): { categories: string[]; series: CanvasChartSeries[] } {
+  const table = tables.find((entry) => entry.id === payload.tableId);
+  if (!table?.sourceRange) return { categories: [], series: [] };
+  const sheet = getSheet(table.sourceRange.sheetId);
+  if (!sheet) return { categories: [], series: [] };
+  const plot = payload.plots[0];
+  if (!plot) return { categories: [], series: [] };
+  const valueField = table.fields.find((field) => field.id === plot.valueFieldId);
+  const categoryField = table.fields.find((field) => field.id === plot.categoryFieldId);
+  if (!valueField) return { categories: [], series: [] };
+  const buckets = new Map<string, number[]>();
+  for (let row = table.sourceRange.startRow + 1; row <= table.sourceRange.endRow; row += 1) {
+    const category = categoryField ? sheet.getCell(row, table.sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : String(row - table.sourceRange.startRow);
+    const raw = sheet.getCell(row, table.sourceRange.startColumn + valueField.ordinal)?.value ?? '';
+    const value = numericCellValue(raw);
+    if (value === undefined) continue;
+    const values = buckets.get(category) ?? [];
+    values.push(value);
+    buckets.set(category, values);
+  }
+  const aggregate = (values: number[]): number => {
+    if (plot.aggregate === 'count') return values.length;
+    if (plot.aggregate === 'min') return Math.min(...values);
+    if (plot.aggregate === 'max') return Math.max(...values);
+    if (plot.aggregate === 'average') return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+    return values.reduce((sum, value) => sum + value, 0);
+  };
+  return { categories: [...buckets.keys()], series: [{ name: valueField.name, values: [...buckets.values()].map(aggregate) }] };
+}
+
+function drawCameraOnCanvas(context: CanvasRenderingContext2D, payload: CameraDrawingPayload, bounds: Rect, getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined): void {
+  const source = getSheet(payload.sourceRange.sheetId);
+  context.save();
+  context.fillStyle = '#ffffff';
+  context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  if (!source) {
+    context.fillStyle = '#b91c1c';
+    context.fillText('Missing source range', bounds.x + 8, bounds.y + 18);
+    context.restore();
+    return;
+  }
+  const rows = Math.max(1, payload.sourceRange.endRow - payload.sourceRange.startRow + 1);
+  const columns = Math.max(1, payload.sourceRange.endColumn - payload.sourceRange.startColumn + 1);
+  const rowHeight = bounds.height / rows;
+  const columnWidth = bounds.width / columns;
+  context.strokeStyle = '#d9e0e6';
+  context.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+  context.textBaseline = 'middle';
+  context.fillStyle = '#1f2937';
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const x = bounds.x + column * columnWidth;
+      const y = bounds.y + row * rowHeight;
+      context.strokeRect(x + 0.5, y + 0.5, columnWidth, rowHeight);
+      const value = source.getCell(payload.sourceRange.startRow + row, payload.sourceRange.startColumn + column)?.value ?? '';
+      context.fillText(value, x + 4, y + rowHeight / 2, Math.max(2, columnWidth - 8));
+    }
+  }
+  context.restore();
+}
+
+function drawFormControlOnCanvas(context: CanvasRenderingContext2D, payload: FormControlDrawingPayload, bounds: Rect): void {
+  context.save();
+  context.fillStyle = payload.style.fill;
+  context.strokeStyle = payload.enabled ? payload.style.border : '#b7bdc4';
+  context.lineWidth = 1;
+  context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  context.strokeRect(bounds.x + 0.5, bounds.y + 0.5, bounds.width - 1, bounds.height - 1);
+  context.fillStyle = payload.enabled ? payload.style.textColor : '#8a9097';
+  context.font = `${payload.style.fontSize ?? 12}px "Microsoft YaHei", "Segoe UI", sans-serif`;
+  context.textAlign = payload.controlType === 'label' ? 'left' : 'center';
+  context.textBaseline = 'middle';
+  const prefix = payload.controlType === 'checkbox' ? (payload.value ? '☑ ' : '☐ ') : payload.controlType === 'option-button' ? (payload.value ? '◉ ' : '○ ') : '';
+  context.fillText(`${prefix}${payload.text ?? payload.controlType}`, payload.controlType === 'label' ? bounds.x + 5 : bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(4, bounds.width - 10));
   context.restore();
 }
 
@@ -546,11 +631,12 @@ export interface CanvasFloatingRendererInput {
   skeleton: SheetSkeleton;
   imageCache: Map<string, HTMLImageElement>;
   requestRender: () => void;
+  tables: readonly WorkbookTableModel[];
 }
 
 /** Build the render-engine floating scene without coupling it to SheetCanvas state. */
 export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput): FloatingDrawable[] {
-  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines } = input;
+  const { allSheets, drawingPayloads, drawings, imageCache, pivotResults, requestRender, sheet, skeleton, sparklines, tables } = input;
   const drawables: FloatingDrawable[] = [];
   const sheets = allSheets.length > 0 ? allSheets : [sheet];
   const getSheet = (sheetId: string): CanvasSheetSnapshot | undefined =>
@@ -569,6 +655,23 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
         bounds,
         draw: (context, rect) => drawCanonicalChartOnCanvas({ context, payload, bounds: rect, categories: data.categories, series }),
       });
+      continue;
+    }
+    if (payload.kind === 'data-chart') {
+      const data = dataChartSeries(payload, tables, getSheet);
+      const chartPayload: ChartDrawingPayload = {
+        kind: 'chart', chartId: drawing.payloadId, chartType: payload.plots[0]?.type === 'radar' || payload.plots[0]?.type === 'treemap' || payload.plots[0]?.type === 'funnel' ? 'column' : payload.plots[0]?.type ?? 'column',
+        title: payload.config.title, sourceRanges: [], legendPosition: payload.config.legendPosition, showDataLabels: payload.config.showDataLabels,
+      };
+      drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawCanonicalChartOnCanvas({ context, payload: chartPayload, bounds: rect, categories: data.categories, series: data.series }) });
+      continue;
+    }
+    if (payload.kind === 'camera') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawCameraOnCanvas(context, payload, rect, getSheet) });
+      continue;
+    }
+    if (payload.kind === 'form-control') {
+      drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawFormControlOnCanvas(context, payload, rect) });
       continue;
     }
     if (payload.kind === "shape" || payload.kind === "textbox") {
@@ -635,4 +738,3 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
   }
   return drawables;
 }
-

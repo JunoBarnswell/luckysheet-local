@@ -15,7 +15,6 @@ import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
 import { ColumnDimensionController } from './column-dimension-controller';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
-import { DesignerHelpRail } from '../components/DesignerHelpRail';
 
 const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
@@ -91,11 +90,11 @@ export function EditorShell({
             onChange={session.setFormulaDraft.bind(session)}
             onCommit={() => { if (state.editSession) session.commitEdit("down"); else session.commitFormula(); }}
             onNameBoxCommit={(value) => session.selectAddress(value)}
+            onOpenNameManager={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
             onOpenWizard={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
             phase={state.phase}
           />
         )}
-        floatingOverlay={<DesignerHelpRail />}
         isBusy={isBusy}
         ribbon={(
           <RibbonHost
@@ -156,6 +155,7 @@ export function EditorShell({
           <Box className="h-full min-h-0 min-w-0 flex-1">
             <Suspense fallback={<Box className="h-full min-h-0 w-full bg-canvas" />}>
               <SheetCanvas
+                locale={locale}
                 sheet={state.selectedSheet}
                 sheetId={state.activeSheetId}
                 selection={state.selection}
@@ -186,11 +186,13 @@ export function EditorShell({
                   ];
                 }}
                 onPivotShowDetails={({ pivotId, sourceRowPaths }) => session.showPivotDetails(pivotId, sourceRowPaths)}
+                onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}
                 allSheets={state.sheets}
                 pivotResults={state.selectedSheet.pivotResults}
                 sparklines={state.selectedSheet.sparklines}
+                tables={state.tables}
                 onSelectionChange={handleSelectionChange}
                 onExtendSelection={(row, column) => session.extendSelectionTo(row, column)}
                 onMovePrimary={(rowDelta, columnDelta, opts) => session.movePrimary(rowDelta, columnDelta, opts)}
@@ -210,7 +212,17 @@ export function EditorShell({
                 onFillRange={session.fillRange.bind(session)}
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
-                onFloatingSelect={(hit, mode) => session.setDrawingSelection(hit ? [hit.id] : [], mode)}
+                onFloatingSelect={(hit, mode) => {
+                  if (hit && !state.drawingSelectionMode) {
+                    const drawing = state.selectedSheet.drawings.find((entry) => entry.id === hit.id);
+                    const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
+                    if (payload?.kind === 'form-control') {
+                      dispatchCommand({ commandId: 'formControl.activate', params: { sheetId: state.activeSheetId, drawingId: hit.id } });
+                      return;
+                    }
+                  }
+                  session.setDrawingSelection(hit ? [hit.id] : [], mode);
+                }}
                 onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({ commandId: "drawing.move", params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } } })}
                 onFloatingRemove={(drawingId) => dispatchCommand({ commandId: "drawing.remove", params: { sheetId: state.activeSheetId, drawingId } })}
                 onCommand={dispatchCommand}

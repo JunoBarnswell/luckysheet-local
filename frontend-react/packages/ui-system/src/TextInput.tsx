@@ -3,17 +3,19 @@ import { cn } from './cn';
 import { Icon, type IconName } from './Icon';
 
 export interface TextInputProps extends InputHTMLAttributes<HTMLInputElement> {
+  /** Layout classes for the shared input wrapper. */
+  containerClassName?: string;
   error?: boolean;
   leadingIcon?: IconName;
   trailing?: ReactNode;
 }
 
 export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(function TextInput(
-  { className, error = false, leadingIcon, trailing, ...props },
+  { className, containerClassName, error = false, leadingIcon, trailing, ...props },
   ref,
 ) {
   return (
-    <span className="relative flex min-w-0 items-center">
+    <span className={cn('relative flex min-w-0 items-center', containerClassName)}>
       {leadingIcon ? <Icon name={leadingIcon} size="sm" className="pointer-events-none absolute left-3 text-slate-400" /> : null}
       <input
         ref={ref}

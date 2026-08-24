@@ -110,6 +110,8 @@ export interface PivotFieldPlacement {
 export type PivotManualFilter = {
   kind: 'manual';
   fieldId: string;
+  /** Report filters occupy the Filters area; field filters stay attached to a row/column field. */
+  scope?: 'report' | 'field';
   mode: 'all' | 'include' | 'exclude';
   memberKeys: PivotMemberKey[];
 };
@@ -119,12 +121,14 @@ export type PivotFilter =
   | {
     kind: 'condition';
     fieldId: string;
+    scope?: 'report' | 'field';
     operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
     value: PivotScalar;
   }
   | {
     kind: 'top-items';
     fieldId: string;
+    scope?: 'report' | 'field';
     count: number;
     valueFieldId: string;
     direction: 'top' | 'bottom';
@@ -284,6 +288,11 @@ export interface PivotProjectionCell {
   kind: PivotProjectionCellKind;
   value: PivotScalar;
   text: string;
+  /** Canonical field identity for header/filter interactions. */
+  fieldId?: string;
+  /** Locale-independent caption owned by the presentation layer. */
+  captionKey?: 'row-labels' | 'grand-total' | 'loading';
+  filterSummary?: { fieldName: string; mode: 'all' | 'selected'; count: number };
   nodeId?: string;
   resultCellId?: string;
   columnPath?: PivotScalar[];
@@ -352,5 +361,11 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     || input.layout.filters.some((entry) => !entry.fieldId)) {
     throw new Error(`Pivot ${input.id} has non-canonical field references`);
   }
-  return structuredClone(input);
+  const canonical = structuredClone(input);
+  const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
+  canonical.layout.filters = canonical.layout.filters.map((filter) => ({
+    ...filter,
+    scope: filter.scope ?? (axisFields.has(filter.fieldId) ? 'field' : 'report'),
+  }));
+  return canonical;
 }

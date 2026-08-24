@@ -54,6 +54,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   if (nativeStatus.timeline) editableFeatures.add('timeline');
   for (const feature of ['slicer', 'timeline'] as const) if (detectedFeatures.includes(feature) && !editableFeatures.has(feature)) preservedFeatures.add(feature);
   const unsupportedFeatures = detectedFeatures.filter((feature) => !editableFeatures.has(feature) && !preservedFeatures.has(feature));
+  const projectedFeatures = new Set(['table-sheet', 'gantt-sheet', 'report-sheet', 'data-chart', 'barcode', 'camera', 'form-control'].filter((feature) => detectedFeatures.includes(feature)));
   const report = createCompatibilityReport({
     fileName: request.fileName,
     importLevel: request.options.compatibilityTarget,
@@ -63,6 +64,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures,
+    projectedFeatures,
   });
   const completedReport = refreshCompatibilitySummary({ ...report, issues: [...report.issues, ...scanFormulaPreserveIssues(request.snapshot)] });
 

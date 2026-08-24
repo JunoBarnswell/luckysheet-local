@@ -55,11 +55,23 @@ export interface CellStyle {
   horizontalAlignment?: 'left' | 'center' | 'right';
   verticalAlignment?: 'top' | 'middle' | 'bottom';
   wrapText?: boolean;
+  /** Excel alignment indentation level. One level maps to three rendered spaces. */
+  indent?: number;
   numberFormat?: string;
   borders?: CellBorders;
   padding?: number;
   locked?: boolean;
   formulaHidden?: boolean;
+}
+
+/** Editable cell behavior that can be expressed through the canonical workbook model. */
+export type CellEditorKind = 'text' | 'number' | 'date' | 'list' | 'checkbox';
+
+export interface CellEditorConfig {
+  kind: CellEditorKind;
+  /** List editors use an explicit canonical value list; range/formula lists belong to validation. */
+  values?: string[];
+  placeholder?: string;
 }
 
 export interface CellComment {
@@ -86,6 +98,9 @@ export interface CellData {
   displayValue?: string;
   styleId?: string;
   style?: CellStyle;
+  /** Workbook-owned editor configuration. It is never a React component payload. */
+  editor?: CellEditorConfig;
+  presentation?: CellPresentation;
   numberFormat?: string;
   /** Canonical rich text. `value` remains the plain-text projection used by formulas and search. */
   richText?: RichTextRun[];
@@ -104,6 +119,24 @@ export interface CellData {
     icon?: { iconSet: string; iconId: number };
   };
 }
+
+export type BarcodeSymbology = 'qr' | 'code128' | 'code39' | 'ean13' | 'ean8' | 'upca' | 'pdf417' | 'data-matrix';
+
+export interface BarcodeCellPresentation {
+  kind: 'barcode';
+  symbology: BarcodeSymbology;
+  source: { kind: 'cell-value' } | { kind: 'formula'; formula: string };
+  options: { foreground: string; background: string; showText: boolean; quietZone: number };
+}
+
+export interface ImageCellPresentation {
+  kind: 'image';
+  src: string;
+  altText?: string;
+  fit: 'contain' | 'cover' | 'stretch';
+}
+
+export type CellPresentation = BarcodeCellPresentation | ImageCellPresentation;
 
 export interface RichTextRun {
   text: string;
@@ -181,6 +214,10 @@ export type {
   ShapeDrawingPayload,
   TextBoxDrawingPayload,
   ChartDrawingPayload,
+  DataChartDrawingPayload,
+  CameraDrawingPayload,
+  FormControlDrawingPayload,
+  FormControlType,
   PivotControlFilter,
   PivotTimelinePeriod,
   PivotControlStyle,
@@ -233,10 +270,12 @@ export {
 
 import { canonicalizePivotDefinition, type PivotModel } from './pivot';
 export * from './pivot';
-import type { WorkbookTableModel } from './data-model';
+import type { GanttSheetDefinition, ReportSheetDefinition, TableSheetDefinition, WorkbookDataModel, WorkbookTableModel } from './data-model';
 import { normalizeDataSourceManifest, type DataSourceManifest, type SheetDataRegion } from './data-source';
 export * from './data-model';
 export * from './data-source';
+
+export type SheetKind = 'worksheet' | 'table-sheet' | 'gantt-sheet' | 'report-sheet';
 
 export interface SparklineModel {
   id: string;
@@ -338,6 +377,18 @@ export interface DataValidationRule {
   errorMessage?: string;
 }
 
+/** A range-free validation shape stored by a workbook template. */
+export type CellValidationTemplate = Omit<DataValidationRule, 'id' | 'sheetId' | 'ranges'>;
+
+/** Persisted workbook-native template, reusable across sheets and collaboration revisions. */
+export interface CellStyleTemplate {
+  id: string;
+  name: string;
+  style: CellStyle;
+  dataValidation?: CellValidationTemplate;
+  editor?: CellEditorConfig;
+}
+
 export type FilterScalar = string | number | boolean | null;
 
 export interface DateGroupItem {
@@ -409,6 +460,12 @@ export interface SortCriterion {
 
 export class CellMatrix {
   private readonly rows = new Map<Row, Map<Column, CellData>>();
+  private revisionCounter = 0;
+
+  /** Monotonic content revision used by derived caches; it is not persisted. */
+  get revision(): number {
+    return this.revisionCounter;
+  }
 
   get(row: Row, column: Column): CellData | undefined {
     return this.rows.get(row)?.get(column);
@@ -421,12 +478,15 @@ export class CellMatrix {
       this.rows.set(row, rowMap);
     }
     rowMap.set(column, cell);
+    this.revisionCounter += 1;
   }
 
   delete(row: Row, column: Column): void {
     const rowMap = this.rows.get(row);
+    const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
     if (rowMap?.size === 0) this.rows.delete(row);
+    if (existed) this.revisionCounter += 1;
   }
 
   has(row: Row, column: Column): boolean {
@@ -434,6 +494,7 @@ export class CellMatrix {
   }
 
   clear(): void {
+    if (this.rows.size > 0) this.revisionCounter += 1;
     this.rows.clear();
   }
 
@@ -528,6 +589,10 @@ export class CellMatrix {
 }
 
 export class WorksheetModel {
+  kind: SheetKind = 'worksheet';
+  tableSheet?: TableSheetDefinition;
+  ganttSheet?: GanttSheetDefinition;
+  reportSheet?: ReportSheetDefinition;
   readonly cells = new CellMatrix();
   /** Block-backed regions are metadata only; their bytes never enter CellMatrix. */
   readonly dataRegions: SheetDataRegion[] = [];
@@ -569,6 +634,10 @@ export class WorksheetModel {
 
   cloneWithIdentity(id: SheetId, name: string): WorksheetModel {
     const copy = new WorksheetModel(id, name, this.rowCount, this.columnCount);
+    copy.kind = this.kind;
+    copy.tableSheet = this.tableSheet ? structuredClone(this.tableSheet) : undefined;
+    copy.ganttSheet = this.ganttSheet ? structuredClone(this.ganttSheet) : undefined;
+    copy.reportSheet = this.reportSheet ? structuredClone(this.reportSheet) : undefined;
     this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
     copy.dataRegions.push(...structuredClone(this.dataRegions));
     copy.merges.push(...structuredClone(this.merges));
@@ -639,6 +708,7 @@ export function getCellNote(sheet: WorksheetModel, row: Row, column: Column): Ce
 }
 
 export interface SheetSnapshot {
+  kind: SheetKind;
   id: SheetId;
   name: string;
   rowCount: number;
@@ -675,17 +745,26 @@ export interface SheetSnapshot {
   zoom?: number;
   hidden?: boolean;
   outline?: OutlineModel;
+  tableSheet?: TableSheetDefinition;
+  ganttSheet?: GanttSheetDefinition;
+  reportSheet?: ReportSheetDefinition;
 }
 
 export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
-  readonly tables = new Map<string, WorkbookTableModel>();
-  /** Canonical data-source manifests; bytes live in the local block store. */
-  readonly dataSources = new Map<string, DataSourceManifest>();
+  /** Sole canonical structured-data owner; bytes referenced by sources remain in the block store. */
+  readonly dataModel = {
+    sources: new Map<string, DataSourceManifest>(),
+    tables: new Map<string, WorkbookTableModel>(),
+    relationships: new Map<string, import('./data-model').DataRelationship>(),
+    views: new Map<string, import('./data-model').DataViewDefinition>(),
+  };
   /** Canonical workbook-owned print state; no host-side cache is authoritative. */
   readonly printDocuments = new Map<SheetId, PrintDocumentSnapshot>();
   /** Persistence-safe query definitions; connector credentials are redacted. */
   readonly queryDefinitions = new Map<string, QueryDefinitionSnapshot>();
+  /** Canonical workbook-owned style/template library. */
+  readonly cellStyleTemplates = new Map<string, CellStyleTemplate>();
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
   /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
@@ -710,6 +789,33 @@ export class WorkbookModel {
     const sheet = new WorksheetModel('sheet-1', 'Sheet1');
     this.sheets.set(sheet.id, sheet);
     this.sheetOrder = [sheet.id];
+  }
+
+  listCellStyleTemplates(): CellStyleTemplate[] {
+    return [...this.cellStyleTemplates.values()].map((template) => structuredClone(template));
+  }
+
+  setCellStyleTemplate(template: CellStyleTemplate): void {
+    const id = template.id.trim();
+    const name = template.name.trim();
+    if (!id) throw new Error('Cell style template id is required');
+    if (!name) throw new Error('Cell style template name is required');
+    if (template.style.indent !== undefined && (!Number.isInteger(template.style.indent) || template.style.indent < 0 || template.style.indent > 250)) {
+      throw new Error('Cell style template indent is invalid');
+    }
+    if (template.editor && !['text', 'number', 'date', 'list', 'checkbox'].includes(template.editor.kind)) {
+      throw new Error('Cell style template editor is invalid');
+    }
+    if (template.editor?.kind === 'list' && (!Array.isArray(template.editor.values) || template.editor.values.some((value) => !value.trim()))) {
+      throw new Error('Cell style template list editor values are invalid');
+    }
+    this.cellStyleTemplates.set(id, structuredClone({ ...template, id, name }));
+  }
+
+  removeCellStyleTemplate(templateId: string): CellStyleTemplate | undefined {
+    const previous = this.cellStyleTemplates.get(templateId);
+    this.cellStyleTemplates.delete(templateId);
+    return previous ? structuredClone(previous) : undefined;
   }
 
   /** Stable workbook default. UI selection belongs exclusively to WorkbookSession. */
@@ -743,15 +849,24 @@ export class WorkbookModel {
   }
 
   getTable(tableId: string): WorkbookTableModel {
-    const table = this.tables.get(tableId);
+    const table = this.dataModel.tables.get(tableId);
     if (!table) throw new Error(`Unknown table: ${tableId}`);
     return table;
   }
 
   getDataSource(dataSourceId: string): DataSourceManifest {
-    const source = this.dataSources.get(dataSourceId);
+    const source = this.dataModel.sources.get(dataSourceId);
     if (!source) throw new Error(`Unknown data source: ${dataSourceId}`);
     return structuredClone(source);
+  }
+
+  getDataModel(): WorkbookDataModel {
+    return {
+      sources: [...this.dataModel.sources.values()].map((source) => structuredClone(source)),
+      tables: [...this.dataModel.tables.values()].map((table) => structuredClone(table)),
+      relationships: [...this.dataModel.relationships.values()].map((relationship) => structuredClone(relationship)),
+      views: [...this.dataModel.views.values()].map((view) => structuredClone(view)),
+    };
   }
 
   getPrintDocument(sheetId: SheetId): PrintDocumentSnapshot | undefined {
@@ -853,20 +968,20 @@ export class WorkbookModel {
   }
 
   addTable(table: WorkbookTableModel): void {
-    if (this.tables.has(table.id)) throw new Error(`Table already exists: ${table.id}`);
-    this.tables.set(table.id, structuredClone(table));
+    if (this.dataModel.tables.has(table.id)) throw new Error(`Table already exists: ${table.id}`);
+    this.dataModel.tables.set(table.id, structuredClone(table));
   }
 
   addDataSource(source: DataSourceManifest): void {
     const normalized = normalizeDataSourceManifest(source);
-    if (this.dataSources.has(normalized.id)) throw new Error(`Data source already exists: ${normalized.id}`);
-    this.dataSources.set(normalized.id, structuredClone(normalized));
+    if (this.dataModel.sources.has(normalized.id)) throw new Error(`Data source already exists: ${normalized.id}`);
+    this.dataModel.sources.set(normalized.id, structuredClone(normalized));
   }
 
   updateDataSource(source: DataSourceManifest): void {
     const normalized = normalizeDataSourceManifest(source);
-    if (!this.dataSources.has(normalized.id)) throw new Error(`Unknown data source: ${normalized.id}`);
-    this.dataSources.set(normalized.id, structuredClone(normalized));
+    if (!this.dataModel.sources.has(normalized.id)) throw new Error(`Unknown data source: ${normalized.id}`);
+    this.dataModel.sources.set(normalized.id, structuredClone(normalized));
   }
 
   removeDataSource(dataSourceId: string): DataSourceManifest {
@@ -874,13 +989,13 @@ export class WorkbookModel {
     if (this.getSheets().some((sheet) => sheet.dataRegions.some((region) => region.sourceId === dataSourceId))) {
       throw new Error(`Data source is still referenced by a sheet region: ${dataSourceId}`);
     }
-    this.dataSources.delete(dataSourceId);
+    this.dataModel.sources.delete(dataSourceId);
     return source;
   }
 
   removeTable(tableId: string): WorkbookTableModel {
     const table = this.getTable(tableId);
-    this.tables.delete(tableId);
+    this.dataModel.tables.delete(tableId);
     return table;
   }
 
@@ -889,6 +1004,24 @@ export class WorkbookModel {
     const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);
     this.sheetOrder.push(id);
+    return sheet;
+  }
+
+  addAdvancedSheet(input: {
+    id: SheetId;
+    name: string;
+    kind: Exclude<SheetKind, 'worksheet'>;
+    rowCount?: number;
+    columnCount?: number;
+    tableSheet?: TableSheetDefinition;
+    ganttSheet?: GanttSheetDefinition;
+    reportSheet?: ReportSheetDefinition;
+  }): WorksheetModel {
+    const sheet = this.addSheet(input.id, input.name, input.rowCount, input.columnCount);
+    sheet.kind = input.kind;
+    sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
+    sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
+    sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
     return sheet;
   }
 
@@ -957,7 +1090,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 4,
+      version: 5,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -965,11 +1098,12 @@ export class WorkbookModel {
       // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
       definedNameModels: structuredClone(this.definedNameModels),
-      tables: [...this.tables.values()].map((table) => structuredClone(table)),
-      dataSources: [...this.dataSources.values()].map((source) => structuredClone(source)),
+      dataModel: this.getDataModel(),
       printDocuments: this.listPrintDocuments(),
       queryDefinitions: this.listQueryDefinitions(),
+      cellStyleTemplates: this.listCellStyleTemplates(),
       sheets: this.getSheets().map((sheet) => ({
+        kind: sheet.kind,
         id: sheet.id,
         name: sheet.name,
         rowCount: sheet.rowCount,
@@ -1011,13 +1145,16 @@ export class WorkbookModel {
         zoom: sheet.zoom,
         hidden: sheet.hidden,
         outline: sheet.outline ? structuredClone(sheet.outline) : undefined,
+        tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
+        ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,
+        reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
       })),
     };
   }
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 4) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 5) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
@@ -1028,10 +1165,16 @@ export class WorkbookModel {
     const definedNameModels = snapshot.definedNameModels
       ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }));
     for (const entry of definedNameModels) workbook.setDefinedName(entry);
-    for (const table of snapshot.tables ?? []) workbook.tables.set(table.id, structuredClone(table));
-    for (const source of snapshot.dataSources) workbook.addDataSource(source);
+    for (const table of snapshot.dataModel.tables) workbook.dataModel.tables.set(table.id, structuredClone(table));
+    for (const source of snapshot.dataModel.sources) workbook.addDataSource(source);
+    for (const relationship of snapshot.dataModel.relationships) workbook.dataModel.relationships.set(relationship.id, structuredClone(relationship));
+    for (const view of snapshot.dataModel.views) workbook.dataModel.views.set(view.id, structuredClone(view));
     for (const input of snapshot.sheets) {
       const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
+      sheet.kind = input.kind;
+      sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
+      sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
+      sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
       const matrix = CellMatrix.fromJSON(input.cells);
       matrix.forEach((cell, row, column) => {
         const normalized = structuredClone(cell);
@@ -1085,6 +1228,7 @@ export class WorkbookModel {
     }
     for (const document of snapshot.printDocuments ?? []) workbook.setPrintDocument(document);
     for (const definition of snapshot.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
+    for (const template of snapshot.cellStyleTemplates ?? []) workbook.setCellStyleTemplate(template);
     workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
     return workbook;
   }

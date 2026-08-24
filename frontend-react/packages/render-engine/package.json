@@ -4,6 +4,8 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@bwip-js/browser": "^4.11.4",
+    "@react-sheets/core-model": "file:../core-model",
     "@react-sheets/number-format": "file:../number-format"
   }
 }

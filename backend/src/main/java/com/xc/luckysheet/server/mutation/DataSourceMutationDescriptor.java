@@ -71,7 +71,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     private void addSource(ObjectNode root, OperationMutation mutation, ObjectNode params) {
         ObjectNode source = validateSourceMutation(root, mutation, params);
-        ArrayNode sources = SnapshotMutationSupport.array(root, "dataSources");
+        ArrayNode sources = SnapshotMutationSupport.dataModelArray(root, "sources");
         if (SnapshotMutationSupport.findById(sources, source.path("id").asText()) != null) {
             throw ServiceException.conflict("Data source already exists: " + source.path("id").asText());
         }
@@ -80,7 +80,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     private void updateSource(ObjectNode root, OperationMutation mutation, ObjectNode params) {
         ObjectNode source = validateSourceMutation(root, mutation, params);
-        ArrayNode sources = SnapshotMutationSupport.array(root, "dataSources");
+        ArrayNode sources = SnapshotMutationSupport.dataModelArray(root, "sources");
         String sourceId = source.path("id").asText();
         int index = SnapshotMutationSupport.indexById(sources, sourceId);
         if (index < 0) throw ServiceException.notFound("Data source not found: " + sourceId);
@@ -90,7 +90,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private void removeSource(ObjectNode root, ObjectNode params) {
         requireKeys(params, Set.of("sourceId"), "dataSource.remove");
         String sourceId = identity(SnapshotMutationSupport.text(params, "sourceId"), "sourceId");
-        ArrayNode sources = SnapshotMutationSupport.array(root, "dataSources");
+        ArrayNode sources = SnapshotMutationSupport.dataModelArray(root, "sources");
         SnapshotMutationSupport.requireById(sources, sourceId, "Data source");
         for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
             if (!rawSheet.isObject()) continue;
@@ -132,7 +132,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private ObjectNode currentSource(ObjectNode root, ObjectNode params) {
         requireKeys(params, Set.of("sourceId"), "dataSource.remove");
         String sourceId = identity(SnapshotMutationSupport.text(params, "sourceId"), "sourceId");
-        return SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(root, "dataSources"), sourceId, "Data source");
+        return SnapshotMutationSupport.requireById(SnapshotMutationSupport.dataModelArray(root, "sources"), sourceId, "Data source");
     }
 
     private ObjectNode validateSource(ObjectNode root, String mutationSheetId, ObjectNode source) {
@@ -236,7 +236,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
         SnapshotMutationSupport.validateKnownKeys(region, Set.of("id", "sourceId", "range", "headerRow", "revision"), "Sheet data region");
         identity(SnapshotMutationSupport.text(region, "id"), "Sheet data region id");
         String sourceId = identity(SnapshotMutationSupport.text(region, "sourceId"), "Sheet data region sourceId");
-        SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(root, "dataSources"), sourceId, "Data source");
+        SnapshotMutationSupport.requireById(SnapshotMutationSupport.dataModelArray(root, "sources"), sourceId, "Data source");
         RangeRef range = SnapshotMutationSupport.range(root, region.get("range"));
         if (!sheetId.equals(range.sheetId())) throw ServiceException.validation("Sheet data region targets another sheet");
         long headerRow = nonNegative(region, "headerRow");
@@ -261,7 +261,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private RangeRef validateExistingRegion(ObjectNode root, String sheetId, ObjectNode region) {
         SnapshotMutationSupport.validateKnownKeys(region, Set.of("id", "sourceId", "range", "headerRow", "revision"), "Sheet data region");
         SnapshotMutationSupport.text(region, "id");
-        SnapshotMutationSupport.requireById(SnapshotMutationSupport.array(root, "dataSources"), SnapshotMutationSupport.text(region, "sourceId"), "Data source");
+        SnapshotMutationSupport.requireById(SnapshotMutationSupport.dataModelArray(root, "sources"), SnapshotMutationSupport.text(region, "sourceId"), "Data source");
         RangeRef range = SnapshotMutationSupport.range(root, region.get("range"));
         if (!sheetId.equals(range.sheetId())) throw ServiceException.validation("Sheet data region targets another sheet");
         return range;

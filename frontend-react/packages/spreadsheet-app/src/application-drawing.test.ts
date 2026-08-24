@@ -44,9 +44,9 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal(snapshot.selectedFloatingId, null);
   });
 
-  it('insertQuickShape creates a drawable rectangle', () => {
+  it('insertShape creates a drawable rectangle', () => {
     const app = new WorkbookSession();
-    app.insertQuickShape('rectangle');
+    app.insertShape('rectangle');
     const snapshot = app.getUiSnapshot();
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'shape');

@@ -67,6 +67,7 @@ export interface FeatureSidebarProps {
   /** 主选区(供面板默认范围) */
   selectedRange?: { startRow: number; endRow: number; startColumn: number; endColumn: number };
   onPanelChange: (panel: SidebarPanelId) => void;
+  onClosePanel?: () => void;
   onRetry: () => void;
   phase: AppPhase;
   sheet: CanvasSheetSnapshot;
@@ -284,6 +285,7 @@ export function FeatureSidebar({
   activeCell,
   selectedRange,
   onPanelChange,
+  onClosePanel,
   onRetry,
   phase,
   sheet,
@@ -385,6 +387,14 @@ export function FeatureSidebar({
       + columnLabelOf(selectedRange.endColumn) + (selectedRange.endRow + 1)
     : undefined;
 
+  if (activePanel === 'pivot' && phase === 'ready') {
+    return (
+      <Box as="aside" aria-label="Feature sidebar" className="flex h-full min-h-0 flex-1 flex-col bg-white">
+        <PivotPanel locale={locale} pivot={pivot} pivotList={pivotList} activePivotId={activePivotId} fieldCatalog={pivotFieldCatalog} slicerControls={pivotSlicerControls} timelineControls={pivotTimelineControls} state={pivotPanelState} callbacks={pivotCallbacks} onClose={onClosePanel} />
+      </Box>
+    );
+  }
+
   return (
     <Box
       as="aside"
@@ -465,18 +475,6 @@ export function FeatureSidebar({
             drawingPayloads={drawingPayloads}
             defaultRange={selectionText}
             onCommand={onCommand}
-          />
-        ) : null}
-        {phase === 'ready' && activePanel === 'pivot' ? (
-          <PivotPanel
-            pivot={pivot}
-            pivotList={pivotList}
-            activePivotId={activePivotId}
-            fieldCatalog={pivotFieldCatalog}
-            slicerControls={pivotSlicerControls}
-            timelineControls={pivotTimelineControls}
-            state={pivotPanelState}
-            callbacks={pivotCallbacks}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'formulaAudit' ? (

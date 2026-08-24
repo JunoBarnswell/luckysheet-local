@@ -68,6 +68,10 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.range.paste': 'edit-cell',
   'sheet.style.set': 'format',
   'sheet.style.toggle': 'format',
+  'sheet.cellTemplate.apply': 'format',
+  'sheet.cellEditor.set': 'format',
+  'workbook.cellTemplate.set': 'format',
+  'workbook.cellTemplate.remove': 'format',
   'sheet.merge.set': 'format',
   'sheet.merge.remove': 'format',
   'sheet.cf.add': 'format',
@@ -105,13 +109,11 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'extended.whatIf.goalSeek': 'script',
   'extended.whatIf.scenario': 'script',
   'extended.whatIf.dataTable': 'script',
-  'drawing.insert.rectangle': 'drawing',
-  'drawing.zorder.forward': 'drawing',
-  'drawing.zorder.backward': 'drawing',
-  'drawing.remove.selected': 'drawing',
-  'chart.insert.column': 'drawing',
-  'pivot.insert.quick': 'structure',
-  'sparkline.insert.quick': 'drawing',
+  'sheet.create.advanced': 'structure',
+  'cell.barcode.apply': 'format',
+  'cell.image.apply': 'format',
+  'dataChart.create': 'drawing',
+  'formControl.activate': 'drawing',
 };
 
 const ROLE_CAPABILITIES: Readonly<Record<ShareRole, ReadonlySet<PermissionAction>>> = {
@@ -130,7 +132,7 @@ export function resolveCommandAction(commandId: string): PermissionAction {
   if (COMMAND_ACTION_MAP[commandId]) return COMMAND_ACTION_MAP[commandId]!;
   if (commandId.startsWith('comment.') || commandId.startsWith('note.')) return 'comment';
   if (commandId.startsWith('hyperlink.')) return 'edit-cell';
-  if (commandId.startsWith('drawing.') || commandId.startsWith('chart.') || commandId.startsWith('shape.')) return 'drawing';
+  if (commandId.startsWith('drawing.') || commandId.startsWith('chart.') || commandId.startsWith('dataChart.') || commandId.startsWith('shape.')) return 'drawing';
   if (commandId.startsWith('sparkline.')) return 'drawing';
   if (commandId.startsWith('pivot.')) return 'structure';
   if (commandId.startsWith('sheet.style') || commandId.startsWith('sheet.merge') || commandId.startsWith('sheet.cf')) return 'format';

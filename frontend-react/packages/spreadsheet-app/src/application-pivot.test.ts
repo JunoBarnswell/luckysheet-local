@@ -56,7 +56,7 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.ok(snapshot.selectedSheet.pivotResults[pivot.id]!.rows.length > 0);
   });
 
-  it('insertQuickPivot builds a PivotTable from the current selection', () => {
+  it('insertPivotFromSelection builds a PivotTable from the current selection', () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
     app.runCommand('selection.set', {
@@ -66,7 +66,7 @@ describe('WorkbookSession PivotTable integration', () => {
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
     });
-    const pivotId = app.insertQuickPivot();
+    const pivotId = app.insertPivotFromSelection();
     assert.ok(pivotId);
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivotId!]);
   });
@@ -92,5 +92,17 @@ describe('WorkbookSession PivotTable integration', () => {
     app.refreshPivot(pivot.id);
     assert.equal(app.listPivotControls(pivot.id).length, 1);
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]);
+  });
+
+  it('recomputes the Pivot projection when pivot.update enters through the public dispatch path', () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-dispatch';
+    app.addPivot(pivot);
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+    const nextLayout = structuredClone(pivot.layout);
+    nextLayout.values = [{ fieldId: amount.fieldId, summarizeBy: 'count' }];
+    assert.equal(app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } }), true);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
   });
 });

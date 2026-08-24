@@ -42,6 +42,11 @@ describe('native PivotGridProjection contract', () => {
     pivot.layout.filters = [{ kind: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notDeepEqual({ type: 'text', value: '1' }, { type: 'number', value: 1 });
+    pivot.layout.filters = [{ kind: 'manual', scope: 'field', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
+    const fieldFiltered = buildPivotGridProjection(workbook, pivot);
+    assert.equal(fieldFiltered.cells.some((cell) => cell.kind === 'filter'), false);
+    assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
   });
 
   it('implements each aggregate independently', () => {
@@ -75,6 +80,32 @@ describe('native PivotGridProjection contract', () => {
     const hit = hitTestPivotProjection(projection, 0, 0);
     assert.equal(hit.pivotId, pivot.id);
     assert.equal(hit.kind, 'cell');
+  });
+
+  it('rejects a stale layout result, localizes field captions, and preserves source-stale manual results', () => {
+    const workbook = workbookWithData();
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-revision', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
+    pivot.refreshPolicy.mode = 'manual';
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const firstResult = computePivotResult(workbook, pivot);
+    const firstProjection = buildPivotGridProjection(workbook, pivot, firstResult);
+    assert.equal(firstProjection.cells.some((cell) => cell.text === 'Amount'), true);
+
+    workbook.getSheet('sheet-1').cells.set(1, 1, { value: 100 });
+    const stale = buildPivotGridProjection(workbook, pivot, firstResult);
+    assert.equal(stale.refresh.status, 'stale');
+    assert.equal(stale.cells.some((cell) => cell.value === 35), true);
+
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'count' }];
+    const refreshedLayout = buildPivotGridProjection(workbook, pivot, firstResult);
+    assert.notEqual(refreshedLayout.refresh.status, 'stale');
+    assert.equal(refreshedLayout.cells.some((cell) => cell.value === 3), true);
   });
 
   it('retains a cached block Pivot result across loading and source failure states', () => {

@@ -130,7 +130,7 @@ function validateAxisMetadataPreservation(
       throw new Error(`Cannot delete ${axis} ${at}: table ${table.id} requires an explicit table operation`);
     }
   }
-  for (const table of workbook.tables.values()) {
+  for (const table of workbook.dataModel.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id && intersectsAxisRange(table.sourceRange, axis, at, count)) {
       throw new Error(`Cannot delete ${axis} ${at}: workbook table ${table.id} requires an explicit table operation`);
     }
@@ -183,7 +183,7 @@ function shiftDataRegionAxis(
       region.range.startColumn += delta;
       region.range.endColumn += delta;
     }
-    const source = workbook.dataSources.get(region.sourceId);
+    const source = workbook.dataModel.sources.get(region.sourceId);
     if (source?.sourceRange?.sheetId !== sheet.id) continue;
     if (axis === 'row') {
       source.sourceRange.startRow += delta;
@@ -246,7 +246,7 @@ function validateShiftPreservation(
       throw new Error(`Cannot shift ${selection.sheetId}: comment thread ${thread.id} would leave the selected range`);
     }
   }
-  for (const table of workbook.tables.values()) {
+  for (const table of workbook.dataModel.tables.values()) {
     const range = table.sourceRange;
     if (!range || range.sheetId !== sheet.id) continue;
     const contained = rangeContains(selection, range);
@@ -440,7 +440,7 @@ function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, se
     shiftContainedRange(table.range, selection, rowDelta, columnDelta);
     if (table.autoFilter) shiftContainedRange(table.autoFilter.range, selection, rowDelta, columnDelta);
   }
-  for (const table of workbook.tables.values()) {
+  for (const table of workbook.dataModel.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id) shiftContainedRange(table.sourceRange, selection, rowDelta, columnDelta);
   }
   for (const payload of sheet.drawingPayloads.values()) {
@@ -848,7 +848,7 @@ function shiftWorkbookTables(
   count: number,
   direction: 1 | -1,
 ): void {
-  for (const table of workbook.tables.values()) {
+  for (const table of workbook.dataModel.tables.values()) {
     if (table.sourceRange?.sheetId !== sheetId) continue;
     if (!shiftRangeRef(table.sourceRange, axis, at, count, direction)) {
       throw new Error(`Workbook table ${table.id} lost its source range`);
@@ -1049,7 +1049,7 @@ function applyMoveRange(
     relocate(table.range);
     if (table.autoFilter) relocate(table.autoFilter.range);
   }
-  for (const table of workbook.tables.values()) {
+  for (const table of workbook.dataModel.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
   }
   for (const payload of sheet.drawingPayloads.values()) {
@@ -1150,7 +1150,7 @@ function relocateDataRegions(
     region.range.startColumn += columnDelta;
     region.range.endColumn += columnDelta;
     region.headerRow += rowDelta;
-    const manifest = workbook.dataSources.get(region.sourceId);
+    const manifest = workbook.dataModel.sources.get(region.sourceId);
     if (!manifest?.sourceRange || manifest.sourceRange.sheetId !== sheet.id || !rangeContains(source, manifest.sourceRange)) continue;
     manifest.sourceRange.startRow += rowDelta;
     manifest.sourceRange.endRow += rowDelta;
@@ -1198,7 +1198,7 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
     validateRange(table.range, `table ${table.id}`);
     if (table.autoFilter) validateRange(table.autoFilter.range, `table ${table.id} autoFilter`);
   }
-  for (const table of workbook.tables.values()) {
+  for (const table of workbook.dataModel.tables.values()) {
     if (table.sourceRange?.sheetId === sheet.id) validateRange(table.sourceRange, `workbook table ${table.id}`);
   }
   for (const pivot of sheet.pivots) {

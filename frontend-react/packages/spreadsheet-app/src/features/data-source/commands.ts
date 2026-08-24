@@ -432,7 +432,7 @@ export function registerDataSourceCommands(runtime: CommandRuntime): string[] {
     execute(input, context): CommandResult {
       const params = sourceCommandParams(input, 'dataSource.add');
       const source = normalizeDataSourceForCommand(context.workbook, params.sheetId, params.source);
-      if (context.workbook.dataSources.has(source.id)) throw new Error(`Data source already exists: ${source.id}`);
+      if (context.workbook.dataModel.sources.has(source.id)) throw new Error(`Data source already exists: ${source.id}`);
       const affectedRanges = sourceRanges(context.workbook, source, params.sheetId);
       applyDataSourceAdd(context, params.sheetId, source, affectedRanges);
       return result(context, affectedRanges);

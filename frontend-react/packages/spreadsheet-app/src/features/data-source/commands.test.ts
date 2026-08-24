@@ -48,16 +48,16 @@ test('data-source commands mutate canonical metadata and undo as one transaction
 
   runtime.execute('dataSource.add', { sheetId: 'sheet-1', source: source() });
   runtime.execute('dataRegion.add', { sheetId: 'sheet-1', region: region() });
-  assert.equal(workbook.dataSources.size, 1);
+  assert.equal(workbook.dataModel.sources.size, 1);
   assert.equal(workbook.getSheet('sheet-1').dataRegions.length, 1);
 
   assert.equal(runtime.undo(), true);
   assert.equal(workbook.getSheet('sheet-1').dataRegions.length, 0);
   assert.equal(runtime.undo(), true);
-  assert.equal(workbook.dataSources.size, 0);
+  assert.equal(workbook.dataModel.sources.size, 0);
   assert.equal(runtime.redo(), true);
   assert.equal(runtime.redo(), true);
-  assert.equal(workbook.dataSources.size, 1);
+  assert.equal(workbook.dataModel.sources.size, 1);
   assert.equal(workbook.getSheet('sheet-1').dataRegions.length, 1);
 });
 

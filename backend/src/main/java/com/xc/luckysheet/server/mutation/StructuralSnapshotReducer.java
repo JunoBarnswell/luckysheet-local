@@ -213,7 +213,7 @@ final class StructuralSnapshotReducer {
             if (intersectsAxis(table.get("range"), axis, at, count)) throw ServiceException.validation("Structural delete intersects a sheet table");
         }
         String targetSheetId = target.path("id").asText();
-        for (JsonNode table : SnapshotMutationSupport.array(root, "tables")) {
+        for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
             JsonNode range = table.get("sourceRange");
             if (range != null && targetSheetId.equals(range.path("sheetId").asText()) && intersectsAxis(range, axis, at, count)) {
                 throw ServiceException.validation("Structural delete intersects a workbook table");
@@ -525,7 +525,7 @@ final class StructuralSnapshotReducer {
     }
 
     private static void shiftWorkbookTables(ObjectNode root, String targetSheetId, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        for (JsonNode raw : SnapshotMutationSupport.array(root, "tables")) {
+        for (JsonNode raw : SnapshotMutationSupport.dataModelArray(root, "tables")) {
             ObjectNode table = requireObject(raw, "Workbook table");
             if (table.has("sourceRange")) shiftRange(root, table.get("sourceRange"), targetSheetId, axis, at, count, direction);
         }
@@ -608,7 +608,7 @@ final class StructuralSnapshotReducer {
         for (JsonNode note : SnapshotMutationSupport.array(sheet, "notes")) validateBoundedPoint(note.path("row").asInt(-1), note.path("column").asInt(-1), selection, rowDelta, columnDelta, "note");
         for (JsonNode comment : SnapshotMutationSupport.array(sheet, "commentThreads")) validateBoundedPoint(comment.path("row").asInt(-1), comment.path("column").asInt(-1), selection, rowDelta, columnDelta, "comment");
         String sheetId = sheet.path("id").asText();
-        for (JsonNode table : SnapshotMutationSupport.array(root, "tables")) {
+        for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
             JsonNode range = table.get("sourceRange");
             if (range == null || !sheetId.equals(range.path("sheetId").asText())) continue;
             RangeRef ref = SnapshotMutationSupport.range(root, range);
@@ -649,7 +649,7 @@ final class StructuralSnapshotReducer {
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) moveContainedRange(filter.get("range"), selection, rowDelta, columnDelta);
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) moveContainedRange(requireObject(table, "Sheet table").get("range"), selection, rowDelta, columnDelta);
-        for (JsonNode table : SnapshotMutationSupport.array(root, "tables")) {
+        for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
             JsonNode range = table.get("sourceRange");
             if (range != null && sheetId.equals(range.path("sheetId").asText())) moveContainedRange(range, selection, rowDelta, columnDelta);
         }

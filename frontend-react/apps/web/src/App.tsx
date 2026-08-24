@@ -62,7 +62,7 @@ function EditorRoute({ unitId, onOpenHub }: { unitId: string; onOpenHub: () => v
     session.dispatchUiSessionIntent(intent);
   };
 
-  const controller = useEditorCommandController({ session, state, dispatchCommand, dispatchSessionIntent });
+  const controller = useEditorCommandController({ session, state, locale, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
   const saveWorkbook = () => { void session.saveWorkbook("Ribbon save"); };
   const exportXlsx = async () => {

@@ -100,9 +100,11 @@ const DEFAULT_WORKSPACE_USER_STATE: WorkspaceUserState = {
 };
 
 export function normalizeWorkspaceRecord(record: WorkspaceRecord): WorkspaceRecord {
+  const snapshot = migrateStoredWorkbookSnapshot(record.snapshot);
   return {
     ...clone(record),
-    snapshot: migrateStoredWorkbookSnapshot(record.snapshot),
+    snapshot,
+    checksum: computeChecksum(snapshotPayload(snapshot)),
     metadata: {
       ...DEFAULT_WORKSPACE_METADATA,
       ...(record.metadata ?? {}),
@@ -281,7 +283,8 @@ export class IndexedDbWorkspaceStore {
     const database = await this.database();
     if (!database) {
       const value = memoryWorkspaceRecords(this.databaseName).get(unitId);
-      return value ? normalizeWorkspaceRecord(value) : null;
+      if (!value) return null;
+      try { return normalizeWorkspaceRecord(value); } catch { return null; }
     }
     const transaction = database.transaction(WORKSPACE_STORE_NAME, 'readonly');
     const complete = transactionComplete(transaction);
@@ -289,10 +292,9 @@ export class IndexedDbWorkspaceStore {
     await complete;
     if (!value) return null;
     if (!verifyWorkspaceRecord(value)) {
-      await this.clear(unitId);
       return null;
     }
-    return normalizeWorkspaceRecord(value);
+    try { return normalizeWorkspaceRecord(value); } catch { return null; }
   }
 
   async save(record: WorkspaceRecord): Promise<void> {
@@ -330,8 +332,8 @@ export class IndexedDbWorkspaceStore {
     await complete;
     const valid: WorkspaceRecord[] = [];
     for (const value of values) {
-      if (verifyWorkspaceRecord(value)) valid.push(normalizeWorkspaceRecord(value));
-      else await this.clear(value.unitId);
+      if (!verifyWorkspaceRecord(value)) continue;
+      try { valid.push(normalizeWorkspaceRecord(value)); } catch { /* Leave unreadable records intact for explicit recovery. */ }
     }
     return valid;
   }
@@ -575,7 +577,7 @@ export class WorkspacePersistence {
 
   async purge(unitId: string, cleanup?: { removeSparseSource?: (sourceId: string) => Promise<void> }): Promise<void> {
     const record = await this.store.open(unitId);
-    for (const source of record?.snapshot.dataSources ?? []) {
+    for (const source of record?.snapshot.dataModel.sources ?? []) {
       await this.dataBlocks.removeSource(source.id);
       await this.sparseOverlays.removeSource(source.id);
       await cleanup?.removeSparseSource?.(source.id);

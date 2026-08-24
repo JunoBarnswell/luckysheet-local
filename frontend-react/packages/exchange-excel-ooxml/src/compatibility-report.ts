@@ -7,7 +7,7 @@ const LEVEL_A_FEATURES = new Set([
 ]);
 
 const LEVEL_B_FEATURES = new Set([
-  'charts', 'sparklines', 'pivot', 'slicer', 'timeline', 'print-setup', 'theme', 'protection', 'extended-validation', 'extended-conditional-format',
+  'charts', 'sparklines', 'pivot', 'slicer', 'timeline', 'print-setup', 'theme', 'protection', 'extended-validation', 'extended-conditional-format', 'cell-style-template',
 ]);
 
 const LEVEL_C_FEATURES = new Set([
@@ -45,10 +45,13 @@ export function createCompatibilityReport(input: {
   preservedFeatures?: Iterable<string>;
   /** Features serialized by the editable snapshot writer. */
   editableFeatures?: Iterable<string>;
+  /** Canonical features exported through a deterministic Excel-readable projection. */
+  projectedFeatures?: Iterable<string>;
 }): CompatibilityReport {
   const preserved = new Set(input.preservedFeatures ?? []);
   const editable = new Set(input.editableFeatures ?? LEVEL_A_FEATURES);
   const unsupported = new Set(input.unsupportedFeatures ?? []);
+  const projected = new Set(input.projectedFeatures ?? []);
   const detections = new Map<string, CompatibilityFeatureDetection>();
 
   for (const value of input.detectedFeatures) {
@@ -89,6 +92,7 @@ export function createCompatibilityReport(input: {
       preserved: status === 'preserved-only',
       status,
       reason,
+      projection: unsupported.has(feature) ? 'unsupported' : projected.has(feature) ? 'projected' : status === 'editable' ? 'native' : status === 'preserved-only' ? 'preserved' : 'unsupported',
     });
   }
 
