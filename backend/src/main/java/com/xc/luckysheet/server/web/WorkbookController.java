@@ -32,6 +32,7 @@ import com.xc.luckysheet.server.service.QueryExecutionService;
 import com.xc.luckysheet.server.service.GuestShareService;
 import com.xc.luckysheet.server.service.ServiceException;
 import com.xc.luckysheet.server.service.CursorPageRequest;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpHeaders;
@@ -274,10 +275,11 @@ public class WorkbookController {
             @PathVariable String sourceId,
             @PathVariable String blockId,
             @RequestHeader("X-Content-SHA256") String checksum,
-            @RequestBody byte[] content,
+            HttpServletRequest request,
             Authentication authentication
     ) {
-        return dataBlocks.put(unitId, sourceId, blockId, checksum, content, ActorIdentity.subject(authentication));
+        return dataBlocks.put(unitId, sourceId, blockId, checksum, request.getContentLengthLong(), request::getInputStream,
+                ActorIdentity.subject(authentication));
     }
 
     @GetMapping(value = "/{unitId}/data-sources/{sourceId}/blocks/{blockId}", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
