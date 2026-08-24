@@ -41,6 +41,9 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Stored workbook snapshot must be an object');
   const input = structuredClone(value) as Record<string, any>;
   if (input.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
+  if (input.version === undefined && Array.isArray(input.sheets)) {
+    input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
+  }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   if (input.version === 4 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;

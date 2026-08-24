@@ -485,7 +485,12 @@ function drawCellValue(
   else if (hAlign === "right") x = rect.x + rect.width - padding - indent;
   else x = rect.x + padding + indent;
 
-  let y = rect.y + rect.height / 2;
+  const fontSize = style?.fontSizePx ?? 13;
+  let y = vAlign === 'top'
+    ? rect.y + padding + fontSize / 2
+    : vAlign === 'bottom'
+      ? rect.y + rect.height - padding - fontSize / 2
+      : rect.y + rect.height / 2;
   const rotate = style?.textRotate ?? 0;
   if (rotate !== 0) {
     const radians = (rotate * Math.PI) / 180;
