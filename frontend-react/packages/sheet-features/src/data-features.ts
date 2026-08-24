@@ -11,7 +11,7 @@ import type {
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
 import { StructuralTransform, applyRowPermutation, columnLabel, validatePermutationMetadata } from "@react-sheets/core-model";
-import { resolveActiveAutoFilter } from './sheet-table-features';
+import { resolveAutoFilters } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
   evaluateFormula,
@@ -572,6 +572,7 @@ export function normalizeAutoFilterModel(filter: AutoFilterModel): AutoFilterMod
 }
 
 export type FilterCellReader = (row: number, column: number) => CellData | undefined;
+export type FilterDateSystem = '1900' | '1904';
 
 function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
   if (criterion.kind === 'values') return { ...structuredClone(criterion), values: [...new Set(criterion.values)] };
@@ -583,36 +584,34 @@ function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
   return structuredClone(criterion);
 }
 
-export function computeFilterHiddenRows(sheet: WorksheetModel, readCell: FilterCellReader = (row, column) => sheet.cells.get(row, column)): Set<number> {
+export function computeFilterHiddenRows(sheet: WorksheetModel, readCell: FilterCellReader = (row, column) => sheet.cells.get(row, column), dateSystem: FilterDateSystem = '1900'): Set<number> {
   const hidden = new Set<number>();
-  let filter: import('@react-sheets/core-model').AutoFilterModel | undefined;
+  let filters: import('@react-sheets/core-model').AutoFilterModel[] = [];
   try {
-    const source = resolveActiveAutoFilter(sheet);
-    filter = source ? normalizeAutoFilterModel(source) : undefined;
+    filters = resolveAutoFilters(sheet).map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter));
   }
   catch {
     // Malformed filter state must not expose unfiltered data accidentally.
     for (let row = 0; row < sheet.rowCount; row += 1) hidden.add(row);
     return hidden;
   }
-  if (!filter) return hidden;
-  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
-    && entry.range.startRow === filter.range.startRow
-    && entry.range.endRow === filter.range.endRow
-    && entry.range.startColumn === filter.range.startColumn
-    && entry.range.endColumn === filter.range.endColumn);
-  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
-  const rows = Array.from({ length: Math.max(0, endRow - filter.range.startRow) }, (_, index) => filter.range.startRow + 1 + index);
-  const top10Matches = buildTop10Matches(filter, rows, readCell);
-  for (const row of rows) {
-    const visible = Object.values(filter.columns).every((entry) => {
-      const criterion = entry.criterion;
-      if (!criterion) return true;
-      const cell = readCell(row, entry.column);
-      if (criterion.kind === 'top10') return top10Matches.get(entry.column)?.has(row) ?? false;
-      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), criterion, cell);
-    });
-    if (!visible) hidden.add(row);
+  for (const filter of filters) {
+    const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+      && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
+      && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
+    const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+    const rows = Array.from({ length: Math.max(0, endRow - filter.range.startRow) }, (_, index) => filter.range.startRow + 1 + index);
+    const top10Matches = buildTop10Matches(filter, rows, readCell, dateSystem);
+    for (const row of rows) {
+      const visible = Object.values(filter.columns).every((entry) => {
+        const criterion = entry.criterion;
+        if (!criterion) return true;
+        const cell = readCell(row, entry.column);
+        if (criterion.kind === 'top10') return top10Matches.get(entry.column)?.has(row) ?? false;
+        return matchesFilterCriterion(cell?.value ?? null, cellText(cell), criterion, cell, dateSystem);
+      });
+      if (!visible) hidden.add(row);
+    }
   }
   return hidden;
 }
@@ -622,16 +621,21 @@ export function computeFilterHiddenRows(sheet: WorksheetModel, readCell: FilterC
  * criterion is deliberately ignored while all other column criteria remain
  * active, matching Excel's filter menu recovery semantics.
  */
-export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number, readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn)): string[] {
-  const source = resolveActiveAutoFilter(sheet);
-  const filter = source ? normalizeAutoFilterModel(source) : undefined;
+export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number, readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn), dateSystem: FilterDateSystem = '1900'): string[] {
+  const filter = resolveAutoFilters(sheet)
+    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
+    .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
   if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) return [];
   const values = new Set<string>();
-  for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row += 1) {
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+    && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
+    && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
+  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+  for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
       const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell);
+      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell, dateSystem);
     });
     if (!otherColumnsMatch) continue;
     const cell = readCell(row, column);
@@ -640,8 +644,12 @@ export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number, 
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
-function matchesFilterCriterion(value: unknown, text: string, criterion: FilterCriterion, cell?: CellData): boolean {
+function matchesFilterCriterion(value: unknown, text: string, criterion: FilterCriterion, cell?: CellData, dateSystem: FilterDateSystem = '1900'): boolean {
   if (criterion.kind === 'values') {
+    if (criterion.dateGroups?.length) {
+      const date = toFilterDate(value, text, dateSystem);
+      if (date && criterion.dateGroups.some((group) => dateMatchesGroup(date, group))) return true;
+    }
     if (text === '' && criterion.includeBlank) return true;
     return criterion.values.some((candidate) => String(candidate ?? '').toLocaleLowerCase() === text.toLocaleLowerCase());
   }
@@ -650,7 +658,7 @@ function matchesFilterCriterion(value: unknown, text: string, criterion: FilterC
       .map((condition) => evaluateFilterCondition(text, condition.operator, String(condition.value ?? '')));
     return criterion.join === 'and' ? results.every(Boolean) : results.some(Boolean);
   }
-  if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type);
+  if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem);
   if (criterion.kind === 'top10') return true;
   if (criterion.kind === 'color' || criterion.kind === 'icon') {
     // Visual criteria are resolved against native cell metadata when present.
@@ -666,10 +674,20 @@ function matchesFilterCriterion(value: unknown, text: string, criterion: FilterC
   return true;
 }
 
+function dateMatchesGroup(date: Date, group: import('@react-sheets/core-model').DateGroupItem): boolean {
+  return date.getFullYear() === group.year
+    && (group.month === undefined || date.getMonth() + 1 === group.month)
+    && (group.day === undefined || date.getDate() === group.day)
+    && (group.hour === undefined || date.getHours() === group.hour)
+    && (group.minute === undefined || date.getMinutes() === group.minute)
+    && (group.second === undefined || date.getSeconds() === group.second);
+}
+
 function buildTop10Matches(
   filter: import('@react-sheets/core-model').AutoFilterModel,
   rows: number[],
   readCell: FilterCellReader,
+  dateSystem: FilterDateSystem,
 ): Map<number, Set<number>> {
   const result = new Map<number, Set<number>>();
   for (const entry of Object.values(filter.columns)) {
@@ -680,7 +698,7 @@ function buildTop10Matches(
       const cell = readCell(row, other.column);
       return other.criterion.kind === 'top10'
         ? true
-        : matchesFilterCriterion(cell?.value ?? null, cellText(cell), other.criterion, cell);
+        : matchesFilterCriterion(cell?.value ?? null, cellText(cell), other.criterion, cell, dateSystem);
     }));
     const numeric = eligible
       .map((row) => ({ row, value: numericFilterValue(readCell(row, entry.column)?.value, cellText(readCell(row, entry.column))) }))
@@ -703,8 +721,8 @@ function numericFilterValue(value: unknown, text: string): number | null {
   return Number.isFinite(parsed) && text.trim() !== '' ? parsed : null;
 }
 
-function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType): boolean {
-  const date = toFilterDate(value, text);
+function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: FilterDateSystem): boolean {
+  const date = toFilterDate(value, text, dateSystem);
   if (!date) return false;
   const now = new Date();
   const startOfDay = (candidate: Date): Date => new Date(candidate.getFullYear(), candidate.getMonth(), candidate.getDate());
@@ -737,9 +755,10 @@ function matchesDynamicDateFilter(value: unknown, text: string, type: import('@r
   return date >= start && date < end;
 }
 
-function toFilterDate(value: unknown, text: string): Date | null {
+function toFilterDate(value: unknown, text: string, dateSystem: FilterDateSystem): Date | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
-    const date = new Date(Date.UTC(1899, 11, 30) + value * 24 * 60 * 60 * 1000);
+    const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
+    const date = new Date(epoch + value * 24 * 60 * 60 * 1000);
     return Number.isNaN(date.getTime()) ? null : date;
   }
   const timestamp = Date.parse(String(value ?? text));

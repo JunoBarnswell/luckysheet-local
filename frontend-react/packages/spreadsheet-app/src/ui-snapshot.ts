@@ -9,6 +9,7 @@ import type {
   DrawingPayload,
   WorksheetPane,
   AutoFilterModel,
+  FilterCriterion,
   MergeSpan,
   OutlineGroup,
   PivotModel,
@@ -37,6 +38,7 @@ import {
   resolveFilterOwner,
   resolveOutlineControls,
   validateDataInput,
+  type FilterDateSystem,
   type ConditionalOverlay,
   type FilterButtonCell,
   type OutlineControl,
@@ -122,6 +124,7 @@ export interface CanvasSheetSnapshot {
   activeFilterColumns: number[];
   filterButtons: FilterButtonCell[];
   getFilterValueDomain: (column: number) => string[];
+  getFilterCriterion: (column: number) => FilterCriterion | undefined;
   getFilterColorDomain: (column: number) => Array<{ target: 'cell' | 'font'; color: string }>;
   getFilterIconDomain: (column: number) => Array<{ iconSet: string; iconId: number }>;
   sheetTables: SheetTableModel[];
@@ -213,11 +216,12 @@ export function buildCanvasSheetSnapshot(
   showInvalid: boolean,
   cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
+  dateSystem: FilterDateSystem = '1900',
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
   const readFilterCell = (row: number, column: number) => cellResolver.resolve(sheet, row, column)?.cell;
-  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell);
+  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
@@ -340,9 +344,10 @@ export function buildCanvasSheetSnapshot(
     filterRangeColumns,
     activeFilterColumns,
     filterButtons,
-    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell),
+    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem),
+    getFilterCriterion: (column) => resolveActiveAutoFilter(sheet, column)?.columns[column]?.criterion,
     getFilterColorDomain: (column) => {
-      const range = resolveActiveAutoFilter(sheet)?.range;
+      const range = resolveActiveAutoFilter(sheet, column)?.range;
       if (!range || column < range.startColumn || column > range.endColumn) return [];
       const options = new Map<string, { target: 'cell' | 'font'; color: string }>();
       for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
@@ -353,7 +358,7 @@ export function buildCanvasSheetSnapshot(
       return [...options.values()].sort((left, right) => `${left.target}:${left.color}`.localeCompare(`${right.target}:${right.color}`));
     },
     getFilterIconDomain: (column) => {
-      const range = resolveActiveAutoFilter(sheet)?.range;
+      const range = resolveActiveAutoFilter(sheet, column)?.range;
       if (!range || column < range.startColumn || column > range.endColumn) return [];
       const options = new Map<string, { iconSet: string; iconId: number }>();
       for (let row = range.startRow + 1; row <= range.endRow; row += 1) {

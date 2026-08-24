@@ -11,6 +11,7 @@ import {
   mergePresentationStyles,
   planTotalRowToggle,
   resolveFilterButtonCells,
+  resolveAutoFilters,
   resolveActiveAutoFilter,
   resolveFilterOwner,
   subtotalCodeForTotalsFunction,
@@ -98,4 +99,22 @@ test('Worksheet and Table AutoFilter ownership is singular for overlapping range
   assert.deepEqual(resolveFilterOwner(sheet), { kind: 'table', tableId: table.id });
   sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
   assert.throws(() => resolveActiveAutoFilter(sheet), /cannot overlap/);
+});
+
+test('multiple non-overlapping Table AutoFilters retain independent owners and buttons', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const first = { ...sampleTable, autoFilter: createAutoFilterModelForTable(sampleTable) };
+  const second = {
+    ...sampleTable,
+    id: 't2',
+    name: 'Other',
+    range: { sheetId: 's1', startRow: 10, endRow: 13, startColumn: 0, endColumn: 1 },
+  };
+  second.autoFilter = createAutoFilterModelForTable(second);
+  sheet.sheetTables.push(first, second);
+  assert.equal(resolveAutoFilters(sheet).length, 2);
+  assert.deepEqual(resolveFilterButtonCells(sheet), [
+    { row: 0, column: 0 }, { row: 0, column: 1 },
+    { row: 10, column: 0 }, { row: 10, column: 1 },
+  ]);
 });

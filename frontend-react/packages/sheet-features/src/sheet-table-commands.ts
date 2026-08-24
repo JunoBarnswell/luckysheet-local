@@ -1,7 +1,6 @@
 import type { AutoFilterModel, RangeRef, SheetTableModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
-  findSheetTableForFilter,
   planTotalRowToggle,
   snapshotTotalRowCells,
   validateFilterOwnership,

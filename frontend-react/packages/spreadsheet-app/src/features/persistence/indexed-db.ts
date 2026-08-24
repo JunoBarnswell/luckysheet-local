@@ -90,7 +90,6 @@ function createOverlayStore(database: IDBDatabase): void {
 
 /** Creates every store and index in one upgrade callback. */
 export function ensureWorkspaceStores(database: IDBDatabase): void {
-  if (database.objectStoreNames.contains('xlsxArtifacts')) database.deleteObjectStore('xlsxArtifacts');
   if (!database.objectStoreNames.contains(WORKSPACE_STORE_NAME)) {
     database.createObjectStore(WORKSPACE_STORE_NAME, { keyPath: 'unitId' });
   }

@@ -30,7 +30,7 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
   const values = useMemo(() => sheet.getFilterValueDomain(column), [column, sheet]);
   const colors = useMemo(() => sheet.getFilterColorDomain(column), [column, sheet]);
   const icons = useMemo(() => sheet.getFilterIconDomain(column), [column, sheet]);
-  const currentCriterion = sheet.autoFilter?.columns[column]?.criterion;
+  const currentCriterion = sheet.getFilterCriterion(column);
   const [mode, setMode] = useState<FilterMode>(currentCriterion?.kind === 'custom' ? 'text' : currentCriterion?.kind === 'dynamic' ? 'date' : currentCriterion?.kind === 'top10' ? 'number' : currentCriterion?.kind === 'color' ? 'color' : currentCriterion?.kind === 'icon' ? 'icon' : 'values');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(criterionValues(currentCriterion).length > 0 ? criterionValues(currentCriterion) : values));
   const [search, setSearch] = useState('');

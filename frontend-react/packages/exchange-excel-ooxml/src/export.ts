@@ -26,6 +26,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   // native Pivot/Slicer/Timeline from being reported as preserved merely
   // because its source package contained the old opaque part.
   const emittedPackage = loadOpcPackageGraph(buffer, {}, request.fileName).packageGraph;
+  const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
   const snapshotFeatures = scanSnapshotFeatures(request.snapshot);
   const packageFeatures = detectPackageFeatures(emittedPackage);
   const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
@@ -69,7 +70,7 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
     taskId: `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     report: completedReport,
     buffer,
-    fileName: request.fileName.includes('.') ? request.fileName : `${request.fileName}.${sourcePackage?.format.variant ?? 'xlsx'}`,
+    fileName: emittedFileName,
     nativePackage: await createNativePackageState({
       fileName: request.fileName,
       buffer,
@@ -80,4 +81,11 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
       compatibility: completedReport,
     }),
   };
+}
+
+function fileNameForFormat(input: string, variant: string): string {
+  const expected = `.${variant}`;
+  const known = /\.(xlsx|xlsm|xltx|xltm|xlam|xlsb|xls|csv|txt|ods)$/i;
+  if (input.toLowerCase().endsWith(expected)) return input;
+  return `${input.replace(known, '')}${expected}`;
 }

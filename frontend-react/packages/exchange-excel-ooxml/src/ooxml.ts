@@ -321,10 +321,11 @@ export function exportSnapshotToOpcPackageGraph(
       '_rels/.rels',
       '[Content_Types].xml',
       ...Object.keys(sheetRelationships).map(relationshipPartName),
+      ...Object.keys(nativeUpdate.relationships).map(relationshipPartName),
     ]);
     for (const name of strictParts) {
       const data = files.get(name);
-      if (!data || !name.endsWith('.xml')) continue;
+      if (!data) continue;
       files.set(name, strToU8(strFromU8(data)
         .replaceAll(NS_MAIN, 'http://purl.oclc.org/ooxml/spreadsheetml/main')
         .replaceAll(NS_DOC_REL, 'http://purl.oclc.org/ooxml/officeDocument/relationships')));
@@ -449,6 +450,10 @@ function parseSheet(
   const conditionalFormats = parseConditionalFormats(root, descriptor, styles);
   const dataValidations = parseDataValidations(root, descriptor);
   const autoFilter = parseAutoFilter(root, descriptor, styles);
+  materializeFilterMetadata(cells, descriptor.id, [
+    ...(autoFilter ? [autoFilter] : []),
+    ...sheetTables.flatMap((table) => table.autoFilter ? [table.autoFilter] : []),
+  ], conditionalFormats);
   const outline = parseOutline(root);
   const protectionRules = parseProtection(root, descriptor);
   const sheetView = child(child(root, 'sheetViews'), 'sheetView');
@@ -486,6 +491,38 @@ function parseSheet(
     ...(sheetTables.length ? { sheetTables } : {}),
     hidden: descriptor.hidden,
   };
+}
+
+function materializeFilterMetadata(
+  cells: Record<string, Record<string, CellData>>,
+  sheetId: string,
+  filters: AutoFilterModel[],
+  conditionalFormats: ConditionalFormatRule[],
+): void {
+  const inRange = (range: RangeRef, row: number, column: number): boolean => range.sheetId === sheetId
+    && row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn;
+  for (const filter of filters) {
+    for (const column of Object.values(filter.columns)) {
+      const criterion = column.criterion;
+      if (!criterion || (criterion.kind !== 'color' && criterion.kind !== 'icon')) continue;
+      for (let row = filter.range.startRow + 1; row <= filter.range.endRow; row += 1) {
+        const cell = cells[String(row)]?.[String(column.column)];
+        if (!cell) continue;
+        if (criterion.kind === 'color' && criterion.style) {
+          const matches = criterion.target === 'cell'
+            ? criterion.style.background !== undefined && cell.style?.background === criterion.style.background
+            : criterion.style.textColor !== undefined && cell.style?.textColor === criterion.style.textColor;
+          if (matches) cell.filterMetadata = { ...cell.filterMetadata, color: { target: criterion.target, dxfId: criterion.dxfId, value: criterion.target === 'cell' ? criterion.style.background : criterion.style.textColor } };
+        }
+        if (criterion.kind === 'icon' && conditionalFormats.some((rule) => rule.type === 'iconSet' && rule.ranges.some((range) => inRange(range, row, column.column)))) {
+          const numeric = typeof cell.value === 'number' ? cell.value : Number(cell.value);
+          if (Number.isFinite(numeric)) {
+            cell.filterMetadata = { ...cell.filterMetadata, icon: { iconSet: criterion.iconSet, iconId: numeric >= 0 ? 2 : numeric >= -1 ? 1 : 0 } };
+          }
+        }
+      }
+    }
+  }
 }
 
 function attachNativePivots(snapshot: WorkbookSnapshot, graph: NativePivotGraph | undefined, sheetPartById: Record<string, string>): void {
@@ -1213,28 +1250,39 @@ function serializeAutoFilter(filter: AutoFilterModel, differentialStyleIndexes?:
     const preserved = isRecord(column.preservedXml) && Array.isArray(column.preservedXml.children)
       ? column.preservedXml.children.filter((value): value is string => typeof value === 'string').join('')
       : '';
-    if (!criterion && !column.hiddenButton && !preserved) return '';
-    if (!criterion) return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}>${preserved}</filterColumn>`;
+    const buttonAttrs = `${column.showButton === false ? ' showButton="0"' : ''}${column.hiddenButton ? ' hiddenButton="1"' : ''}`;
+    if (!criterion && column.showButton !== false && !column.hiddenButton && !preserved) return '';
+    if (!criterion) return `<filterColumn colId="${colId}"${buttonAttrs}>${preserved}</filterColumn>`;
     if (criterion.kind === 'values') {
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}</filters>${preserved}</filterColumn>`;
+      const dateGroups = (criterion.dateGroups ?? []).map((group) => {
+        const grouping = group.second !== undefined ? 'second' : group.minute !== undefined ? 'minute' : group.hour !== undefined ? 'hour' : group.day !== undefined ? 'day' : group.month !== undefined ? 'month' : 'year';
+        const attrs = [`dateTimeGrouping="${grouping}"`, `year="${group.year}"`];
+        if (group.month !== undefined) attrs.push(`month="${group.month}"`);
+        if (group.day !== undefined) attrs.push(`day="${group.day}"`);
+        if (group.hour !== undefined) attrs.push(`hour="${group.hour}"`);
+        if (group.minute !== undefined) attrs.push(`minute="${group.minute}"`);
+        if (group.second !== undefined) attrs.push(`second="${group.second}"`);
+        return `<dateGroupItem ${attrs.join(' ')}/>`;
+      }).join('');
+      return `<filterColumn colId="${colId}"${buttonAttrs}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}${dateGroups}</filters>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'custom') {
       const conditions = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><customFilters${criterion.join === 'or' ? ' and="0"' : ''}>${conditions.map((condition) => `<customFilter operator="${encodeXml(condition.operator)}" val="${encodeXml(String(condition.value ?? ''))}"/>`).join('')}</customFilters>${preserved}</filterColumn>`;
+      return `<filterColumn colId="${colId}"${buttonAttrs}><customFilters${criterion.join === 'or' ? ' and="0"' : ''}>${conditions.map((condition) => `<customFilter operator="${encodeXml(condition.operator)}" val="${encodeXml(String(condition.value ?? ''))}"/>`).join('')}</customFilters>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'dynamic') {
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><dynamicFilter type="${encodeXml(criterion.type)}"${criterion.value === undefined ? '' : ` val="${criterion.value}"`}${criterion.maxValue === undefined ? '' : ` maxVal="${criterion.maxValue}"`}/>${preserved}</filterColumn>`;
+      return `<filterColumn colId="${colId}"${buttonAttrs}><dynamicFilter type="${encodeXml(criterion.type)}"${criterion.value === undefined ? '' : ` val="${criterion.value}"`}${criterion.maxValue === undefined ? '' : ` maxVal="${criterion.maxValue}"`}/>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'top10') {
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><top10 top="${criterion.top ? '1' : '0'}"${criterion.percent ? ' percent="1"' : ''} rank="${criterion.rank}"${criterion.filterValue === undefined ? '' : ` filterVal="${criterion.filterValue}"`}/>${preserved}</filterColumn>`;
+      return `<filterColumn colId="${colId}"${buttonAttrs}><top10 top="${criterion.top ? '1' : '0'}"${criterion.percent ? ' percent="1"' : ''} rank="${criterion.rank}"${criterion.filterValue === undefined ? '' : ` filterVal="${criterion.filterValue}"`}/>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'color') {
       const styleKey = criterion.style ? JSON.stringify(criterion.style) : undefined;
       const dxfId = criterion.dxfId >= 0 ? criterion.dxfId : styleKey && differentialStyleIndexes?.get(styleKey);
       if (dxfId === undefined) throw new Error('Color AutoFilter requires a differential style identity');
-      return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><colorFilter dxfId="${dxfId}" cellColor="${criterion.target === 'cell' ? '1' : '0'}"/>${preserved}</filterColumn>`;
+      return `<filterColumn colId="${colId}"${buttonAttrs}><colorFilter dxfId="${dxfId}" cellColor="${criterion.target === 'cell' ? '1' : '0'}"/>${preserved}</filterColumn>`;
     }
-    return `<filterColumn colId="${colId}"${column.hiddenButton ? ' hiddenButton="1"' : ''}><iconFilter iconSet="${encodeXml(criterion.iconSet)}" iconId="${criterion.iconId}"/>${preserved}</filterColumn>`;
+    return `<filterColumn colId="${colId}"${buttonAttrs}><iconFilter iconSet="${encodeXml(criterion.iconSet)}" iconId="${criterion.iconId}"/>${preserved}</filterColumn>`;
   }).join('');
   const sortState = filter.sortState
     ? `<sortState ref="${rangeToA1(filter.sortState.ref)}">${filter.sortState.conditions.map((condition) => `<sortCondition ref="${rangeToA1(condition.ref)}" descending="${condition.descending ? '1' : '0'}"/>`).join('')}</sortState>`
@@ -1732,9 +1780,21 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
     const relative = Number(column.attrs.colId);
     if (!Number.isSafeInteger(relative) || relative < 0) continue;
     const absolute = range.startColumn + relative;
-    const filters = children(child(column, 'filters'), 'filter').map((filter) => filter.attrs.val ?? '');
     const filtersNode = child(column, 'filters');
+    const filters = children(filtersNode, 'filter').map((filter) => filter.attrs.val ?? '');
+    const dateGroups = children(filtersNode, 'dateGroupItem').flatMap((item) => {
+      if (!item.attrs.dateTimeGrouping) return [];
+      return [{
+        year: Number(item.attrs.year ?? 0),
+        ...(item.attrs.month === undefined ? {} : { month: Number(item.attrs.month) }),
+        ...(item.attrs.day === undefined ? {} : { day: Number(item.attrs.day) }),
+        ...(item.attrs.hour === undefined ? {} : { hour: Number(item.attrs.hour) }),
+        ...(item.attrs.minute === undefined ? {} : { minute: Number(item.attrs.minute) }),
+        ...(item.attrs.second === undefined ? {} : { second: Number(item.attrs.second) }),
+      }];
+    });
     const custom = children(child(column, 'customFilters'), 'customFilter');
+    const customFiltersNode = child(column, 'customFilters');
     const dynamic = child(column, 'dynamicFilter');
     const top10 = child(column, 'top10');
     const color = child(column, 'colorFilter');
@@ -1743,15 +1803,15 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
     const preservedChildren = column.children.filter((candidate) => !known.has(localName(candidate.name))).map(serializeXml);
     columns[absolute] = {
       column: absolute,
-      showButton: column.attrs.hiddenButton !== '1',
+      showButton: column.attrs.showButton !== '0',
       hiddenButton: column.attrs.hiddenButton === '1',
       ...(preservedChildren.length ? { preservedXml: { children: preservedChildren } } : {}),
-      criterion: filters.length || filtersNode?.attrs.blank !== undefined
-        ? { kind: 'values', values: filters, includeBlank: filtersNode?.attrs.blank === '1' }
+      criterion: filters.length || dateGroups.length || filtersNode?.attrs.blank !== undefined
+        ? { kind: 'values', values: filters, includeBlank: filtersNode?.attrs.blank === '1', ...(dateGroups.length ? { dateGroups } : {}) }
         : custom.length
           ? {
             kind: 'custom',
-            join: custom[0]?.attrs.and === '0' ? 'or' : 'and',
+            join: customFiltersNode?.attrs.and === '0' ? 'or' : 'and',
             conditions: [
               { operator: (custom[0]?.attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[0]?.attrs.val ?? null },
               custom[1] ? { operator: (custom[1].attrs.operator ?? 'equals') as import('@react-sheets/core-model').FilterComparisonOperator, value: custom[1].attrs.val ?? null } : undefined,
@@ -1768,7 +1828,7 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
                   : undefined,
     };
   }
-  const sort = child(root, 'sortState');
+  const sort = child(node, 'sortState');
   const sortState = sort ? {
     ref: { ...requireSheetRange(sort.attrs.ref ?? node.attrs.ref, descriptor, 'sort state'), sheetId: descriptor.id },
     conditions: children(sort, 'sortCondition').map((condition) => ({
@@ -1776,7 +1836,7 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
       descending: xmlBoolean(condition.attrs.descending ?? '0'),
     })),
   } : undefined;
-  const preserved = root.children.filter((candidate) => localName(candidate.name) === 'extLst').map(serializeXml);
+  const preserved = node.children.filter((candidate) => localName(candidate.name) === 'extLst').map(serializeXml);
   return {
     sheetId: descriptor.id,
     range: { ...range, sheetId: descriptor.id },

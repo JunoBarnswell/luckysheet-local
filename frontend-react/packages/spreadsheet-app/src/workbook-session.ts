@@ -689,6 +689,7 @@ export class WorkbookSession {
         true,
         this.runtime.pivotResults,
         this.runtime.dataContent,
+        this.nativePackage?.dateSystem ?? '1900',
       );
       this.sheetProjectionCache.set(sheet.id, { generation: this.projectionGeneration, snapshot });
       return snapshot;
@@ -2600,8 +2601,8 @@ export class WorkbookSession {
 
   applyFilter(column: number, patch: { criterion?: FilterCriterion }): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const activeFilter = resolveActiveAutoFilter(sheet);
-    const owner = resolveFilterOwner(sheet);
+    const activeFilter = resolveActiveAutoFilter(sheet, column);
+    const owner = resolveFilterOwner(sheet, column);
     const tableOwner = owner?.kind === 'table'
       ? sheet.sheetTables.find((table) => table.id === owner.tableId)
       : undefined;

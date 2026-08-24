@@ -671,6 +671,7 @@ function shiftFilter(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
     sheet.autoFilter = undefined;
     return;
   }
+  shiftAutoFilterSortState(sheet.autoFilter, axis, at, count, direction);
   if (axis === 'column') {
     const next: typeof sheet.autoFilter.columns = {};
     for (const [key, columnDefinition] of Object.entries(sheet.autoFilter.columns)) {
@@ -690,6 +691,7 @@ function shiftTableAutoFilter(table: SheetTableModel, axis: 'row' | 'column', at
     table.autoFilter = undefined;
     return;
   }
+  shiftAutoFilterSortState(autoFilter, axis, at, count, direction);
   if (axis !== 'column') return;
   const next: typeof autoFilter.columns = {};
   for (const [key, column] of Object.entries(autoFilter.columns)) {
@@ -698,6 +700,17 @@ function shiftTableAutoFilter(table: SheetTableModel, axis: 'row' | 'column', at
     next[shifted] = { ...column, column: shifted };
   }
   autoFilter.columns = next;
+}
+
+function shiftAutoFilterSortState(autoFilter: NonNullable<WorksheetModel['autoFilter']>, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
+  const sortState = autoFilter.sortState;
+  if (!sortState) return;
+  if (!shiftRangeRef(sortState.ref, axis, at, count, direction)) {
+    delete autoFilter.sortState;
+    return;
+  }
+  sortState.conditions = sortState.conditions.filter((condition) => shiftRangeRef(condition.ref, axis, at, count, direction));
+  if (sortState.conditions.length === 0) delete autoFilter.sortState;
 }
 
 function shiftFreeze(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {

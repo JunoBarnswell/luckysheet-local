@@ -67,7 +67,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
             showButton: true,
             hiddenButton: false,
             criterion: item.selectedValues
-              ? { kind: 'values', values: item.selectedValues, includeBlank: !item.excludeBlanks }
+              ? { kind: 'values', values: item.selectedValues, includeBlank: item.selectedValues.some((value: unknown) => value === '' || value === null) }
               : item.conditionOperator
                 ? { kind: 'custom', join: 'and', conditions: [{ operator: item.conditionOperator, value: item.conditionValue ?? null }] }
                 : undefined,
@@ -160,10 +160,21 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       }
     }
     const tableFilters = (sheet.sheetTables ?? []).filter((table) => Boolean(table.autoFilter));
+    for (const table of tableFilters) {
+      const filter = table.autoFilter!;
+      if (filter.sheetId !== sheet.id || filter.range.sheetId !== sheet.id || !sameRange(filter.range, table.range)) {
+        throw new Error('Table AutoFilter must equal its Table range');
+      }
+      for (const [key, column] of Object.entries(filter.columns)) {
+        if (!Number.isSafeInteger(Number(key)) || column.column !== Number(key)
+          || column.column < filter.range.startColumn || column.column > filter.range.endColumn) {
+          throw new Error('Table AutoFilter column identity is invalid');
+        }
+      }
+    }
     if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
       throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
     }
-    if (tableFilters.length > 1) throw new Error('A worksheet cannot have multiple Table AutoFilter owners');
   }
   return structuredClone(snapshot);
 }
@@ -172,6 +183,11 @@ function rangesOverlap(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId
     && left.startRow <= right.endRow && right.startRow <= left.endRow
     && left.startColumn <= right.endColumn && right.startColumn <= left.endColumn;
+}
+
+function sameRange(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId && left.startRow === right.startRow && left.endRow === right.endRow
+    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
 }
 
 export function loadWorkbookFromSnapshot(snapshot: WorkbookSnapshot): WorkbookModelClass {

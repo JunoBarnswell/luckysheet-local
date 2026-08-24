@@ -58,6 +58,7 @@ function sheet(pivot: PivotGridProjection): CanvasSheetSnapshot {
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],
     getFilterValueDomain: () => [],
+    getFilterCriterion: () => undefined,
     filterOwner: undefined,
     sheetTables: [],
     previewRows: [],

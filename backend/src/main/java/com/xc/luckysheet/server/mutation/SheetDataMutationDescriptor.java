@@ -22,7 +22,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             "autoFilter.set", "autoFilter.remove",
             "cf.add", "cf.remove", "cf.clear",
             "dv.add", "dv.remove", "banded.set", "outline.set",
-            "sheetTable.add", "sheetTable.remove", "sheetTable.update"
+            "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set"
     );
 
     SheetDataMutationDescriptor(String id) {
@@ -49,7 +49,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "banded.set" -> bandedRange(root, mutation.sheetId(), params);
             case "outline.set" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.add", "sheetTable.update" -> List.of(tableRange(root, mutation.sheetId(), params));
-            case "sheetTable.remove" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
+            case "sheetTable.remove", "sheetTable.autoFilter.set" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         };
     }
@@ -87,6 +87,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "outline.set" -> setOutline(root, sheet, mutation.sheetId(), params);
             case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params);
             case "sheetTable.remove" -> removeSheetTable(sheet, params);
+            case "sheetTable.autoFilter.set" -> setTableAutoFilter(root, sheet, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         }
     }
@@ -139,7 +140,71 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         SnapshotMutationSupport.requireSheet(range, sheetId);
         JsonNode columns = filter.get("columns");
         if (columns == null || !columns.isObject()) throw ServiceException.validation("AutoFilter columns must be an object");
+        validateFilterColumns(columns, range);
         return filter;
+    }
+
+    private void setTableAutoFilter(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+        String tableId = SnapshotMutationSupport.text(params, "tableId");
+        ObjectNode table = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(sheet, "sheetTables"), tableId);
+        if (table == null) throw ServiceException.notFound("Sheet Table not found: " + tableId);
+        JsonNode value = params.get("autoFilter");
+        if (value == null || value.isNull()) {
+            table.remove("autoFilter");
+            return;
+        }
+        if (!value.isObject()) throw ServiceException.validation("Table AutoFilter must be an object");
+        ObjectNode filter = (ObjectNode) value;
+        RangeRef filterRange = SnapshotMutationSupport.range(root, filter.get("range"));
+        RangeRef tableRange = SnapshotMutationSupport.range(root, table.get("range"));
+        if (!sameRange(filterRange, tableRange)) throw ServiceException.validation("Table AutoFilter range must equal the Table range");
+        filter(root, sheetId, params);
+        JsonNode worksheetFilter = sheet.get("autoFilter");
+        if (worksheetFilter != null && worksheetFilter.isObject()
+                && rangesOverlap(filterRange, SnapshotMutationSupport.range(root, worksheetFilter.get("range")))) {
+            throw ServiceException.validation("Table AutoFilter cannot overlap a Worksheet AutoFilter");
+        }
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sheetTables")) {
+            if (!raw.isObject() || tableId.equals(raw.path("id").asText())) continue;
+            JsonNode other = raw.get("autoFilter");
+            if (other != null && other.isObject() && rangesOverlap(filterRange, SnapshotMutationSupport.range(root, other.get("range")))) {
+                throw ServiceException.validation("Table AutoFilter ranges cannot overlap");
+            }
+        }
+        table.set("autoFilter", filter.deepCopy());
+    }
+
+    private void validateFilterColumns(JsonNode columns, RangeRef range) {
+        columns.fields().forEachRemaining(entry -> {
+            int key;
+            try {
+                key = Integer.parseInt(entry.getKey());
+            } catch (NumberFormatException error) {
+                throw ServiceException.validation("AutoFilter column key is invalid");
+            }
+            if (!entry.getValue().isObject()) throw ServiceException.validation("AutoFilter column is invalid");
+            JsonNode column = entry.getValue();
+            if (!column.path("column").canConvertToInt() || column.path("column").intValue() != key
+                    || key < range.startColumn() || key > range.endColumn()
+                    || !column.path("showButton").isBoolean() || !column.path("hiddenButton").isBoolean()) {
+                throw ServiceException.validation("AutoFilter column identity is invalid");
+            }
+            JsonNode criterion = column.get("criterion");
+            if (criterion == null || criterion.isNull()) return;
+            if (!criterion.isObject() || !Set.of("values", "custom", "dynamic", "top10", "color", "icon").contains(criterion.path("kind").asText())) {
+                throw ServiceException.validation("AutoFilter criterion kind is invalid");
+            }
+        });
+    }
+
+    private static boolean sameRange(RangeRef left, RangeRef right) {
+        return left.sheetId().equals(right.sheetId()) && left.startRow() == right.startRow() && left.endRow() == right.endRow()
+                && left.startColumn() == right.startColumn() && left.endColumn() == right.endColumn();
+    }
+
+    private static boolean rangesOverlap(RangeRef left, RangeRef right) {
+        return left.startRow() <= right.endRow() && right.startRow() <= left.endRow()
+                && left.startColumn() <= right.endColumn() && right.startColumn() <= left.endColumn();
     }
 
     private RangeRef filterRange(ObjectNode root, String sheetId, ObjectNode params) {

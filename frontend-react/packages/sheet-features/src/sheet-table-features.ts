@@ -132,24 +132,36 @@ export function createAutoFilterModelForTable(table: SheetTableModel): AutoFilte
 
 export type FilterOwner = { kind: 'worksheet' } | { kind: 'table'; tableId: string };
 
-export function resolveActiveAutoFilter(sheet: WorksheetModel): AutoFilterModel | undefined {
-  const tableFilters = sheet.sheetTables.filter((table) => table.sheetId === sheet.id && table.autoFilter);
-  if (tableFilters.length > 1) throw new Error('A worksheet cannot have multiple Table AutoFilter owners');
-  const tableFilter = tableFilters[0]?.autoFilter;
-  if (tableFilter) {
-    validateFilterModelOwnership(tableFilter, sheet.id, tableFilters[0]!.range, 'Table AutoFilter');
-  }
-  if (sheet.autoFilter && tableFilter && rangesOverlap(sheet.autoFilter.range, tableFilter.range)) {
-    throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
-  }
-  return sheet.autoFilter ?? tableFilter;
+export interface ResolvedAutoFilter {
+  owner: FilterOwner;
+  autoFilter: AutoFilterModel;
 }
 
-export function resolveFilterOwner(sheet: WorksheetModel): FilterOwner | undefined {
-  resolveActiveAutoFilter(sheet);
-  if (sheet.autoFilter) return { kind: 'worksheet' };
-  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id && entry.autoFilter);
-  return table ? { kind: 'table', tableId: table.id } : undefined;
+export function resolveAutoFilters(sheet: WorksheetModel): ResolvedAutoFilter[] {
+  const resolved: ResolvedAutoFilter[] = sheet.autoFilter
+    ? [{ owner: { kind: 'worksheet' }, autoFilter: sheet.autoFilter }]
+    : [];
+  for (const table of sheet.sheetTables.filter((entry) => entry.sheetId === sheet.id && entry.autoFilter)) {
+    const autoFilter = table.autoFilter!;
+    validateFilterModelOwnership(autoFilter, sheet.id, table.range, 'Table AutoFilter');
+    if (resolved.some((entry) => rangesOverlap(entry.autoFilter.range, autoFilter.range))) {
+      throw new Error('AutoFilter ranges cannot overlap');
+    }
+    resolved.push({ owner: { kind: 'table', tableId: table.id }, autoFilter });
+  }
+  return resolved;
+}
+
+export function resolveActiveAutoFilter(sheet: WorksheetModel, column?: number): AutoFilterModel | undefined {
+  return (column === undefined
+    ? resolveAutoFilters(sheet)[0]
+    : resolveAutoFilters(sheet).find((entry) => column >= entry.autoFilter.range.startColumn && column <= entry.autoFilter.range.endColumn))?.autoFilter;
+}
+
+export function resolveFilterOwner(sheet: WorksheetModel, column?: number): FilterOwner | undefined {
+  return (column === undefined
+    ? resolveAutoFilters(sheet)[0]
+    : resolveAutoFilters(sheet).find((entry) => column >= entry.autoFilter.range.startColumn && column <= entry.autoFilter.range.endColumn))?.owner;
 }
 
 export function validateFilterModelOwnership(
@@ -203,24 +215,21 @@ export function tableFilterColumns(table: SheetTableModel): number[] {
 }
 
 export function resolveActiveFilterColumns(sheet: WorksheetModel): number[] {
-  const autoFilter = resolveActiveAutoFilter(sheet);
-  if (!autoFilter) return [];
-  const fromCriteria = Object.values(autoFilter.columns)
+  const fromCriteria = resolveAutoFilters(sheet).flatMap(({ autoFilter }) => Object.values(autoFilter.columns)
     .filter((column) => Boolean(column.criterion))
     .map((column) => column.column)
     .map(Number)
-    .filter((column) => Number.isFinite(column));
-  return fromCriteria.sort((left, right) => left - right);
+    .filter((column) => Number.isFinite(column)));
+  return [...new Set(fromCriteria)].sort((left, right) => left - right);
 }
 
 export function resolveFilterRangeColumns(sheet: WorksheetModel): number[] {
-  const autoFilter = resolveActiveAutoFilter(sheet);
-  if (!autoFilter) return [];
-
-  const range = normalizeRangeRef(autoFilter.range);
-  const columns: number[] = [];
-  for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
-  return columns;
+  const columns = new Set<number>();
+  for (const { autoFilter } of resolveAutoFilters(sheet)) {
+    const range = normalizeRangeRef(autoFilter.range);
+    for (let column = range.startColumn; column <= range.endColumn; column++) columns.add(column);
+  }
+  return [...columns].sort((left, right) => left - right);
 }
 
 export interface FilterButtonState {
@@ -233,24 +242,20 @@ export interface FilterButtonState {
 }
 
 export function resolveFilterButtonStates(sheet: WorksheetModel): FilterButtonState[] {
-  const autoFilter = resolveActiveAutoFilter(sheet);
-  if (!autoFilter) return [];
-  const sorted = new Set(autoFilter.sortState?.conditions.flatMap((condition) => {
-    const result: number[] = [];
-    for (let column = condition.ref.startColumn; column <= condition.ref.endColumn; column += 1) result.push(column);
-    return result;
-  }) ?? []);
-  return resolveFilterRangeColumns(sheet).map((column) => {
-    const entry = autoFilter.columns[column] ?? { column, showButton: true, hiddenButton: false };
-    return {
-      column,
-      available: true,
-      active: Boolean(entry.criterion),
-      sorted: sorted.has(column),
-      hiddenButton: entry.hiddenButton,
-      showButton: entry.showButton,
-    };
-  });
+  const states = new Map<number, FilterButtonState>();
+  for (const { autoFilter } of resolveAutoFilters(sheet)) {
+    const sorted = new Set(autoFilter.sortState?.conditions.flatMap((condition) => {
+      const result: number[] = [];
+      for (let column = condition.ref.startColumn; column <= condition.ref.endColumn; column += 1) result.push(column);
+      return result;
+    }) ?? []);
+    const range = normalizeRangeRef(autoFilter.range);
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const entry = autoFilter.columns[column] ?? { column, showButton: true, hiddenButton: false };
+      states.set(column, { column, available: true, active: Boolean(entry.criterion), sorted: sorted.has(column), hiddenButton: entry.hiddenButton, showButton: entry.showButton });
+    }
+  }
+  return [...states.values()].sort((left, right) => left.column - right.column);
 }
 
 export interface FilterButtonCell {
@@ -287,16 +292,15 @@ export function findSheetTableForFilter(sheet: WorksheetModel): SheetTableModel 
 
 /** 表筛选漏斗绘制在表头行；普通区域筛选仍走列头字母条 */
 export function resolveFilterButtonCells(sheet: WorksheetModel): FilterButtonCell[] {
-  const table = findSheetTableForFilter(sheet);
-  const autoFilter = resolveActiveAutoFilter(sheet);
-  const range = normalizeRangeRef(autoFilter?.range ?? { sheetId: sheet.id, startRow: 0, endRow: -1, startColumn: 0, endColumn: -1 });
-  if (range.endRow < range.startRow || range.endColumn < range.startColumn) return [];
-  const headerRow = table?.hasHeaderRow ? range.startRow : range.startRow;
   const buttons: FilterButtonCell[] = [];
-  for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-    const entry = autoFilter?.columns[column];
-    if (entry?.showButton === false || entry?.hiddenButton === true) continue;
-    buttons.push({ row: headerRow, column });
+  for (const { owner, autoFilter } of resolveAutoFilters(sheet)) {
+    const range = normalizeRangeRef(autoFilter.range);
+    const table = owner.kind === 'table' ? sheet.sheetTables.find((entry) => entry.id === owner.tableId) : undefined;
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const entry = autoFilter.columns[column];
+      if (entry?.showButton === false || entry?.hiddenButton === true) continue;
+      buttons.push({ row: table?.hasHeaderRow ? range.startRow : range.startRow, column });
+    }
   }
   return buttons;
 }
