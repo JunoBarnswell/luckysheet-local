@@ -96,6 +96,7 @@ export function EditorDialogHost({
         sourceRegion={session.getCurrentRegion()}
         sourceOptions={pivotSourceOptions.map(({ id, label }) => ({ id, label }))}
         activeSheetName={state.selectedSheet.name}
+        locale={locale}
         onClose={session.closeCreatePivotDialog.bind(session)}
         onCreate={createPivotFromDialog}
       />

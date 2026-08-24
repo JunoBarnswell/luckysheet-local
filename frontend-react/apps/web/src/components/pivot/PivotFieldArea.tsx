@@ -12,6 +12,8 @@ import {
   type PivotScalar,
 } from '@react-sheets/core-model';
 import type { PivotFieldArea as Area, PivotManualFilterState } from './pivot-contract';
+import type { Locale } from '../../i18n';
+import { pivotText } from './pivot-localization';
 
 interface AreaItem extends PivotFieldDefinition {
   id: string;
@@ -33,6 +35,7 @@ export interface PivotFieldAreaProps {
   onFilter?: (fieldId: string, filter: PivotManualFilterState) => void;
   onSort?: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroup?: (fieldId: string, group: PivotGroup | undefined) => void;
+  locale: Locale;
 }
 
 const labels: Record<Area, string> = { filters: 'FILTERS', columns: 'COLUMNS', rows: 'ROWS', values: 'VALUES' };
@@ -101,7 +104,7 @@ function groupOptions(field: AreaItem, onGroup?: PivotFieldAreaProps['onGroup'])
     : null;
 }
 
-export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filterStates = {}, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, placements }: PivotFieldAreaProps) {
+export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, placements }: PivotFieldAreaProps) {
   const items: AreaItem[] = fieldIds.map((fieldId, index) => {
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     return {
@@ -113,15 +116,15 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
     };
   });
   return (
-    <Box as="section" aria-label={`${labels[area]} field area`} className="min-w-0">
-      <Inline gap="xs" className="mb-1.5">
+    <Box as="section" aria-label={`${labels[area]} field area`} className="min-w-0 border-[#bdbdbd] bg-white">
+      <Inline gap="xs" className="h-8 px-2">
         <Icon name={icons[area]} size="xs" className="text-accent" />
-        <Text size="xs" weight="semibold" tone="muted">{labels[area]}</Text>
-        <Text size="xs" tone="subtle">{items.length}</Text>
+        <Text size="sm" weight="medium">{pivotText(locale, area)}</Text>
       </Inline>
       <FieldDropZone<AreaItem>
         disabled={disabled}
-        emptyLabel={`Drop fields here for ${labels[area].toLowerCase()}`}
+        emptyLabel=""
+        className="h-[92px] overflow-auto rounded-none border-0 bg-white p-1"
         items={items}
         onDropItem={onDrop}
         renderItem={(field) => (

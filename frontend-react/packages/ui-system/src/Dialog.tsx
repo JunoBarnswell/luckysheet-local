@@ -11,7 +11,7 @@ export interface DialogProps {
   children: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
-  maxWidth?: 'sm' | 'md' | 'lg' | 'xl';
+  maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | 'pivot';
   /** Localized accessible label for the close affordance. */
   closeLabel?: string;
   /** Stable hook for browser-level interaction tests. */
@@ -24,6 +24,7 @@ const maxWidths = {
   md: 'max-w-md',
   lg: 'max-w-lg',
   xl: 'max-w-xl',
+  pivot: 'max-w-[430px]',
 };
 
 export function Dialog({

@@ -15,6 +15,7 @@ export interface SidebarShellProps {
   open: boolean;
   title?: string;
   width?: number;
+  showHeader?: boolean;
 }
 
 export function SidebarShell({
@@ -26,6 +27,7 @@ export function SidebarShell({
   open,
   title,
   width = DEFAULT_WIDTH,
+  showHeader = true,
 }: SidebarShellProps) {
   const [localWidth, setLocalWidth] = useState(width);
   const dragging = useRef(false);
@@ -78,7 +80,7 @@ export function SidebarShell({
         variant="ghost"
       />
       <Stack gap="none" className="min-h-0 flex-1">
-        <Inline gap="sm" className="shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 py-2">
+        {showHeader ? <Inline gap="sm" className="shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 py-2">
           <Heading as="h2" size="sm">{title ?? 'Properties'}</Heading>
           <Button
             aria-label="Close sidebar"
@@ -89,7 +91,7 @@ export function SidebarShell({
             size="sm"
             variant="ghost"
           />
-        </Inline>
+        </Inline> : null}
         <Box className="min-h-0 flex-1 overflow-auto">{children}</Box>
       </Stack>
     </Box>

@@ -76,6 +76,7 @@ export interface PivotPanelCallbacks {
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
   onRefresh: () => void;
   onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
+  onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;
   onSlicerChange: (fieldId: string, enabled: boolean) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
   onTimelineChange: (fieldId: string | undefined) => void;
