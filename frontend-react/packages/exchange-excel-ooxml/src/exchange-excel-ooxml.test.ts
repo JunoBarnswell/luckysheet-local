@@ -256,7 +256,7 @@ describe('exchange-excel-ooxml', () => {
     const sheet = workbook.getSheet(workbook.primarySheetId);
     sheet.cells.set(0, 0, {
       value: 45292,
-      style: { bold: true, background: '#ff0000', horizontalAlignment: 'center' },
+      style: { bold: true, background: '#ff0000', horizontalAlignment: 'center', indent: 2 },
       numberFormat: 'm/d/yy',
     });
     sheet.cells.set(1, 1, { value: 'merged' });
@@ -265,6 +265,7 @@ describe('exchange-excel-ooxml', () => {
       anchor: { row: 1, column: 1 },
     });
     sheet.pane = { kind: 'frozen', xSplit: 1, ySplit: 1, startRow: 1, startColumn: 1, state: 'frozen' };
+    workbook.setCellStyleTemplate({ id: 'input-style', name: 'Input Style', style: { background: '#e3f1ff', indent: 2, numberFormat: '#,##0.00' } });
     workbook.setDefinedName({ name: 'LocalValue', formula: `=${sheet.name}!$A$1`, scope: 'sheet', sheetId: sheet.id });
     const original = workbook.snapshot();
     const buffer = exportSnapshotToXlsxBuffer(original, undefined, { dateSystem: '1904' });
@@ -275,6 +276,8 @@ describe('exchange-excel-ooxml', () => {
     assert.deepEqual(restored.pane, original.sheets[0]!.pane);
     assert.equal(restored.cells['0']?.['0']?.numberFormat, 'm/d/yy');
     assert.equal(restored.cells['0']?.['0']?.style?.bold, true);
+    assert.equal(restored.cells['0']?.['0']?.style?.indent, 2);
+    assert.equal(imported.snapshot.cellStyleTemplates?.find((template) => template.name === 'Input Style')?.style.indent, 2);
     assert.equal(imported.snapshot.definedNameModels?.[0]?.scope, 'sheet');
   });
 

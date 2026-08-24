@@ -25,6 +25,7 @@ import { registerSheetTableCommands } from './sheet-table-commands';
 import { validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
+import { registerCellTemplateCommands } from './cell-template-commands';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -55,6 +56,7 @@ export * from './outline-commands';
 export * from './outline-features';
 export * from './text-input';
 export * from './home-commands';
+export * from './cell-template-commands';
 
 
 export interface SetCellValueParams {
@@ -459,6 +461,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   registerSheetTableCommands(runtime);
   registerOutlineCommands(runtime);
   registerHomeCommands(runtime);
+  registerCellTemplateCommands(runtime);
 
   runtime.registry.registerMutation<RenameWorkbookParams>({
     id: 'workbook.renamed',

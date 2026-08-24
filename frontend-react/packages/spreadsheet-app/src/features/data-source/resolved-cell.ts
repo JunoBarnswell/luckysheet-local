@@ -32,6 +32,7 @@ export interface CellPatch {
   displayValue?: CellPatchField<NonNullable<CellData['displayValue']>>;
   styleId?: CellPatchField<NonNullable<CellData['styleId']>>;
   style?: CellPatchField<CellStyle>;
+  editor?: CellPatchField<NonNullable<CellData['editor']>>;
   numberFormat?: CellPatchField<NonNullable<CellData['numberFormat']>>;
   richText?: CellPatchField<NonNullable<CellData['richText']>>;
   formulaMetadata?: CellPatchField<NonNullable<CellData['formulaMetadata']>>;
@@ -105,6 +106,7 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'displayValue',
   'styleId',
   'style',
+  'editor',
   'numberFormat',
   'formulaValue',
   'note',

@@ -374,6 +374,7 @@ export function SheetCanvas({
       formula: cell.formula,
       displayValue: cell.value,
       style: cell.style,
+      editor: cell.editor,
       overlay: cell.overlay
         ? {
             dataBar: cell.overlay.dataBar,

@@ -13,6 +13,8 @@ const ShiftCellsDialog = lazy(() => import("../components/dialogs/ShiftCellsDial
 const MergeConfirmDialog = lazy(() => import("../components/dialogs/MergeConfirmDialog").then((module) => ({ default: module.MergeConfirmDialog })));
 const CreatePivotTableDialog = lazy(() => import("../components/dialogs/CreatePivotTableDialog").then((module) => ({ default: module.CreatePivotTableDialog })));
 const PrintPreviewDialog = lazy(() => import("../components/dialogs/PrintPreviewDialog").then((module) => ({ default: module.PrintPreviewDialog })));
+const CellTemplateDialog = lazy(() => import('../components/dialogs/CellTemplateDialog').then((module) => ({ default: module.CellTemplateDialog })));
+const CellEditorDialog = lazy(() => import('../components/dialogs/CellEditorDialog').then((module) => ({ default: module.CellEditorDialog })));
 
 export interface EditorDialogHostProps {
   state: UiSnapshot;
@@ -110,6 +112,19 @@ export function EditorDialogHost({
           rowNumber: row + 1,
           cells: Array.from({ length: state.selectedSheet.columnCount }, (_, column) => ({ value: state.selectedSheet.getCell(row, column)?.value ?? "" })),
         }}
+      />
+      <CellTemplateDialog
+        open={state.dialogs.active === 'cell-template'}
+        templates={state.cellStyleTemplates}
+        onClose={session.closeActiveDialog.bind(session)}
+        onApply={(templateId) => { session.applyCellStyleTemplate(templateId); session.closeActiveDialog(); }}
+        onRemove={(templateId) => session.removeCellStyleTemplate(templateId)}
+        onSave={(template) => session.setCellStyleTemplate(template)}
+      />
+      <CellEditorDialog
+        open={state.dialogs.active === 'cell-editor'}
+        onClose={session.closeActiveDialog.bind(session)}
+        onApply={(editor) => { session.setCellEditor(editor); session.closeActiveDialog(); }}
       />
     </Suspense>
   );

@@ -20,6 +20,7 @@ export const XLSX_CAPABILITY_MANIFEST = {
   cells: capability('cells', 'full', 'full', 'full', 'full', 'full'),
   formulas: capability('formulas', 'full', 'partial', 'full', 'partial', 'full'),
   styles: capability('styles', 'full', 'full', 'full', 'full', 'full'),
+  'cell-style-template': capability('cell-style-template', 'full', 'full', 'partial', 'partial', 'partial', 'OOXML named cell styles retain template names and styles; editor metadata remains workbook-native.'),
   'rich-text': capability('rich-text', 'full', 'full', 'full', 'partial', 'full', 'Unsupported run properties remain source-package metadata.'),
   merges: capability('merges', 'full', 'full', 'full', 'full', 'full'),
   freeze: capability('freeze', 'full', 'full', 'full', 'full', 'full'),

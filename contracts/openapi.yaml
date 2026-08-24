@@ -134,6 +134,7 @@ components:
             maximumDigitWidthPx: { type: number, exclusiveMinimum: 0 }
         sheets: { type: array, minItems: 1, items: { $ref: '#/components/schemas/WorksheetSnapshot' } }
         dataSources: { type: array, items: { type: object } }
+        cellStyleTemplates: { type: array, items: { type: object } }
     WorksheetPane:
       oneOf:
         - type: object

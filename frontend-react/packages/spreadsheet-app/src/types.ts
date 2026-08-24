@@ -70,7 +70,7 @@ export interface PanelState {
   dock: 'left' | 'right';
 }
 
-export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'merge-confirm' | 'column-width' | 'command-palette' | 'sheet-dialog';
+export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'merge-confirm' | 'column-width' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor';
 
 export type SheetDialogKind = 'rename' | 'tab-color' | 'delete';
 
@@ -132,7 +132,7 @@ export type ActiveContext =
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =
   | { type: 'panel.open'; panel: SidebarPanelId; notice?: string }
-  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete'; findQuery?: string; columnWidth?: { columns: number[]; defaultMode: boolean }; sheet?: SheetDialogState }
+  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor'; findQuery?: string; columnWidth?: { columns: number[]; defaultMode: boolean }; sheet?: SheetDialogState }
   | { type: 'dialog.close' }
   | { type: 'dialog.update'; value: string }
   | { type: 'command-palette.open' }
@@ -169,6 +169,7 @@ export type HomeStyleKey = keyof Pick<
   | 'background'
   | 'horizontalAlignment'
   | 'verticalAlignment'
+  | 'indent'
   | 'wrapText'
   | 'numberFormat'
   | 'borders'

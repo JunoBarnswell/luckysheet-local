@@ -55,11 +55,23 @@ export interface CellStyle {
   horizontalAlignment?: 'left' | 'center' | 'right';
   verticalAlignment?: 'top' | 'middle' | 'bottom';
   wrapText?: boolean;
+  /** Excel alignment indentation level. One level maps to three rendered spaces. */
+  indent?: number;
   numberFormat?: string;
   borders?: CellBorders;
   padding?: number;
   locked?: boolean;
   formulaHidden?: boolean;
+}
+
+/** Editable cell behavior that can be expressed through the canonical workbook model. */
+export type CellEditorKind = 'text' | 'number' | 'date' | 'list' | 'checkbox';
+
+export interface CellEditorConfig {
+  kind: CellEditorKind;
+  /** List editors use an explicit canonical value list; range/formula lists belong to validation. */
+  values?: string[];
+  placeholder?: string;
 }
 
 export interface CellComment {
@@ -86,6 +98,8 @@ export interface CellData {
   displayValue?: string;
   styleId?: string;
   style?: CellStyle;
+  /** Workbook-owned editor configuration. It is never a React component payload. */
+  editor?: CellEditorConfig;
   numberFormat?: string;
   /** Canonical rich text. `value` remains the plain-text projection used by formulas and search. */
   richText?: RichTextRun[];
@@ -336,6 +350,18 @@ export interface DataValidationRule {
   promptMessage?: string;
   errorTitle?: string;
   errorMessage?: string;
+}
+
+/** A range-free validation shape stored by a workbook template. */
+export type CellValidationTemplate = Omit<DataValidationRule, 'id' | 'sheetId' | 'ranges'>;
+
+/** Persisted workbook-native template, reusable across sheets and collaboration revisions. */
+export interface CellStyleTemplate {
+  id: string;
+  name: string;
+  style: CellStyle;
+  dataValidation?: CellValidationTemplate;
+  editor?: CellEditorConfig;
 }
 
 export type FilterScalar = string | number | boolean | null;
@@ -686,6 +712,8 @@ export class WorkbookModel {
   readonly printDocuments = new Map<SheetId, PrintDocumentSnapshot>();
   /** Persistence-safe query definitions; connector credentials are redacted. */
   readonly queryDefinitions = new Map<string, QueryDefinitionSnapshot>();
+  /** Canonical workbook-owned style/template library. */
+  readonly cellStyleTemplates = new Map<string, CellStyleTemplate>();
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
   /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
@@ -710,6 +738,27 @@ export class WorkbookModel {
     const sheet = new WorksheetModel('sheet-1', 'Sheet1');
     this.sheets.set(sheet.id, sheet);
     this.sheetOrder = [sheet.id];
+  }
+
+  listCellStyleTemplates(): CellStyleTemplate[] {
+    return [...this.cellStyleTemplates.values()].map((template) => structuredClone(template));
+  }
+
+  setCellStyleTemplate(template: CellStyleTemplate): void {
+    const id = template.id.trim();
+    const name = template.name.trim();
+    if (!id) throw new Error('Cell style template id is required');
+    if (!name) throw new Error('Cell style template name is required');
+    if (template.style.indent !== undefined && (!Number.isInteger(template.style.indent) || template.style.indent < 0 || template.style.indent > 250)) {
+      throw new Error('Cell style template indent is invalid');
+    }
+    this.cellStyleTemplates.set(id, structuredClone({ ...template, id, name }));
+  }
+
+  removeCellStyleTemplate(templateId: string): CellStyleTemplate | undefined {
+    const previous = this.cellStyleTemplates.get(templateId);
+    this.cellStyleTemplates.delete(templateId);
+    return previous ? structuredClone(previous) : undefined;
   }
 
   /** Stable workbook default. UI selection belongs exclusively to WorkbookSession. */
@@ -969,6 +1018,7 @@ export class WorkbookModel {
       dataSources: [...this.dataSources.values()].map((source) => structuredClone(source)),
       printDocuments: this.listPrintDocuments(),
       queryDefinitions: this.listQueryDefinitions(),
+      cellStyleTemplates: this.listCellStyleTemplates(),
       sheets: this.getSheets().map((sheet) => ({
         id: sheet.id,
         name: sheet.name,
@@ -1085,6 +1135,7 @@ export class WorkbookModel {
     }
     for (const document of snapshot.printDocuments ?? []) workbook.setPrintDocument(document);
     for (const definition of snapshot.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
+    for (const template of snapshot.cellStyleTemplates ?? []) workbook.setCellStyleTemplate(template);
     workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
     return workbook;
   }

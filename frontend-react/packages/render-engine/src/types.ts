@@ -56,6 +56,7 @@ export interface CellRenderStyle {
   font?: string;
   horizontalAlignment?: HorizontalAlignment;
   verticalAlignment?: VerticalAlignment;
+  indent?: number;
   padding?: number;
   wrapText?: boolean;
   borders?: CellBorders;
@@ -84,6 +85,7 @@ export interface CellRenderData {
   formula?: string;
   displayValue?: string;
   style?: CellRenderStyle;
+  editor?: { kind: 'text' | 'number' | 'date' | 'list' | 'checkbox'; values?: string[] };
   error?: string;
   merge?: MergeInfo;
   overlay?: ConditionalRenderOverlay;

@@ -20,6 +20,7 @@
       "additionalProperties": false
     },
     "dataSources": { "type": "array" },
+    "cellStyleTemplates": { "type": "array" },
     "sheets": {
       "type": "array",
       "minItems": 1,

@@ -1,6 +1,8 @@
 import type {
   CellData,
+  CellEditorConfig,
   CellStyle,
+  CellStyleTemplate,
   ChartDrawingPayload,
   ConditionalFormatRule,
   DataBlockRef,
@@ -247,6 +249,7 @@ export interface UiSnapshot extends DesignerState {
   tables: readonly WorkbookTableModel[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
+  cellStyleTemplates: readonly CellStyleTemplate[];
   dialogs: DialogState;
   inputMode: InputMode;
   focus: FocusState;
@@ -284,6 +287,7 @@ const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'background',
   'horizontalAlignment',
   'verticalAlignment',
+  'indent',
   'wrapText',
   'numberFormat',
   'borders',
@@ -748,6 +752,7 @@ export class WorkbookSession {
       tables: [...this.runtime.model.tables.values()].map((table) => structuredClone(table)),
       dataSources: [...this.runtime.model.dataSources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
+      cellStyleTemplates: this.runtime.model.listCellStyleTemplates(),
       dialogs: { ...this.dialogs },
       backstage: { ...this.backstage },
       inputMode: this.inputMode,
@@ -902,6 +907,8 @@ export class WorkbookSession {
       || commandId === 'sheet.style.setMulti'
       || commandId === 'sheet.style.setMultiRange'
       || commandId === 'sheet.style.preset.apply'
+      || commandId === 'sheet.cellTemplate.apply'
+      || commandId === 'sheet.cellEditor.set'
       || commandId === 'sheet.format.set'
       || commandId === 'sheet.merge.set'
       || commandId === 'sheet.merge.remove'
@@ -1586,7 +1593,7 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
     this.dialogs = { ...this.dialogs, active, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
@@ -2674,6 +2681,20 @@ export class WorkbookSession {
   }
   removeDataValidation(ruleId: string): void {
     this.dispatch({ commandId: 'sheet.dv.remove', params: { sheetId: this.activeSheetId, ruleId } });
+  }
+  setCellStyleTemplate(template: CellStyleTemplate): void {
+    this.dispatch({ commandId: 'workbook.cellTemplate.set', params: { sheetId: this.activeSheetId, template } });
+  }
+  removeCellStyleTemplate(templateId: string): void {
+    this.dispatch({ commandId: 'workbook.cellTemplate.remove', params: { sheetId: this.activeSheetId, templateId } });
+  }
+  applyCellStyleTemplate(templateId: string): void {
+    const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
+    this.dispatch({ commandId: 'sheet.cellTemplate.apply', params: { sheetId: this.activeSheetId, ranges, templateId } });
+  }
+  setCellEditor(editor?: CellEditorConfig): void {
+    const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
+    this.dispatch({ commandId: 'sheet.cellEditor.set', params: { sheetId: this.activeSheetId, ranges, editor } });
   }
 
   addComment(text: string): void {

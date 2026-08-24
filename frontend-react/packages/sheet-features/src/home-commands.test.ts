@@ -106,6 +106,29 @@ test('range move and style preset are atomic and reversible', () => {
   assert.equal(sheet.cells.get(0, 0)?.styleId, undefined);
 });
 
+test('workbook cell templates apply style, editor and validation through one command transaction', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const range = { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 1, endColumn: 1 };
+  runtime.execute('workbook.cellTemplate.set', {
+    sheetId: sheet.id,
+    template: {
+      id: 'status',
+      name: 'Status',
+      style: { background: '#e2f0d9', indent: 1 },
+      editor: { kind: 'list', values: ['Open', 'Closed'] },
+    },
+  });
+  runtime.execute('sheet.cellTemplate.apply', { sheetId: sheet.id, ranges: [range], templateId: 'status' });
+  assert.equal(sheet.cells.get(1, 1)?.style?.indent, 1);
+  assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'list');
+  assert.deepEqual(sheet.dataValidations[0]?.listSource, { kind: 'values', values: ['Open', 'Closed'] });
+  runtime.undo();
+  assert.equal(sheet.cells.get(1, 1), undefined);
+  runtime.redo();
+  assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'list');
+});
+
 test('Home cell commands fail closed on block-backed data regions', () => {
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);

@@ -30,7 +30,7 @@ public class MutationDescriptorRegistry {
     private static final Set<String> CLEAR_MODES = Set.of("all", "contents", "formats", "notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
             "automation.recording.changed", "banded.set",
-            "cell.restore", "cell.set", "cells.shifted", "cells.shifted.restore",
+            "cell.editor.set", "cell.restore", "cell.set", "cells.shifted", "cells.shifted.restore", "cellTemplate.remove", "cellTemplate.set",
             "cf.add", "cf.clear", "cf.remove",
             "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
             "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve",
@@ -72,6 +72,9 @@ public class MutationDescriptorRegistry {
         register(new CellDescriptor("range.clear"));
         register(new CellDescriptor("range.clear.restore"));
         register(new PresentationDescriptor("style.set"));
+        register(new CellTemplateDescriptor("cellTemplate.set"));
+        register(new CellTemplateDescriptor("cellTemplate.remove"));
+        register(new CellTemplateDescriptor("cell.editor.set"));
         register(new PresentationDescriptor("merge.set"));
         register(new PresentationDescriptor("merge.remove"));
         register(new PresentationDescriptor("freeze.set"));
@@ -569,6 +572,75 @@ public class MutationDescriptorRegistry {
             RangeRef range = SnapshotMutationSupport.range(root, params.get("range"));
             SnapshotMutationSupport.requireSheet(range, sheetId);
             return range;
+        }
+    }
+
+    /** Workbook-native cell template and editor state. Template library writes
+     * are workbook scoped; editor writes are range-scoped presentation changes. */
+    private static final class CellTemplateDescriptor extends BaseDescriptor {
+        private CellTemplateDescriptor(String id) {
+            super(id, WorkbookAclRole.EDITOR, "cell.editor.set".equals(id), "format");
+        }
+
+        @Override
+        public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot);
+            ObjectNode params = SnapshotMutationSupport.params(mutation);
+            return switch (id()) {
+                case "cell.editor.set" -> SnapshotMutationSupport.styleRanges(root, mutation.sheetId(), params);
+                case "cellTemplate.set", "cellTemplate.remove" -> List.of();
+                default -> throw ServiceException.validation("Unsupported cell template mutation: " + id());
+            };
+        }
+
+        @Override
+        public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+            ObjectNode params = SnapshotMutationSupport.params(mutation);
+            switch (id()) {
+                case "cellTemplate.set" -> setTemplate(root, params);
+                case "cellTemplate.remove" -> removeTemplate(root, params);
+                case "cell.editor.set" -> setEditor(root, mutation.sheetId(), params);
+                default -> throw ServiceException.validation("Unsupported cell template mutation: " + id());
+            }
+            return root;
+        }
+
+        private void setTemplate(ObjectNode root, ObjectNode params) {
+            JsonNode raw = params.get("template");
+            if (raw == null || !raw.isObject()) throw ServiceException.validation("cellTemplate.set requires template");
+            String id = raw.path("id").asText();
+            String name = raw.path("name").asText();
+            if (id.isBlank() || name.isBlank() || !raw.path("style").isObject()) throw ServiceException.validation("Cell template is invalid");
+            ArrayNode templates = SnapshotMutationSupport.array(root, "cellStyleTemplates");
+            for (int index = templates.size() - 1; index >= 0; index--) {
+                if (id.equals(templates.get(index).path("id").asText())) templates.remove(index);
+            }
+            templates.add(raw.deepCopy());
+        }
+
+        private void removeTemplate(ObjectNode root, ObjectNode params) {
+            String id = params.path("templateId").asText();
+            if (id.isBlank()) throw ServiceException.validation("cellTemplate.remove requires templateId");
+            ArrayNode templates = SnapshotMutationSupport.array(root, "cellStyleTemplates");
+            for (int index = templates.size() - 1; index >= 0; index--) {
+                if (id.equals(templates.get(index).path("id").asText())) templates.remove(index);
+            }
+        }
+
+        private void setEditor(ObjectNode root, String sheetId, ObjectNode params) {
+            ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+            JsonNode editor = params.get("editor");
+            if (editor != null && !editor.isNull() && !editor.isObject()) throw ServiceException.validation("cell.editor.set editor must be an object or null");
+            for (RangeRef range : SnapshotMutationSupport.styleRanges(root, sheetId, params)) {
+                for (int row = range.startRow(); row <= range.endRow(); row++) {
+                    for (int column = range.startColumn(); column <= range.endColumn(); column++) {
+                        ObjectNode cell = SnapshotMutationSupport.cell(sheet, new SnapshotMutationSupport.CellCoordinate(row, column), true);
+                        if (editor == null || editor.isNull()) cell.remove("editor");
+                        else cell.set("editor", editor.deepCopy());
+                    }
+                }
+            }
         }
     }
 

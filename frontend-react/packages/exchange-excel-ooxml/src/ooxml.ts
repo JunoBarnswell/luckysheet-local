@@ -1,5 +1,6 @@
 import type {
   CellData,
+  CellStyleTemplate,
   CellStyle,
   CellHyperlink,
   ConditionalFormatRule,
@@ -93,6 +94,7 @@ interface SharedStringRecord {
 
 interface StyleContext {
   records: StyleRecord[];
+  namedCellStyles: CellStyleTemplate[];
   differentialStyles: Array<CellStyle | undefined>;
   normalFont: OoxmlNormalFont;
   maximumDigitWidthPx: number;
@@ -222,6 +224,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
     definedNames,
     definedNameModels,
     dataSources: [],
+    cellStyleTemplates: styles.namedCellStyles,
     printDocuments: sheets.flatMap((sheet, index) => parsePrintDocument(
       firstElement(parseXml(strFromU8(files[descriptors[index]!.part]!)), 'worksheet'),
       unitId,
@@ -814,7 +817,7 @@ function parseStyles(
 ): StyleContext {
   const fallbackFont = { family: DEFAULT_EXCEL_FONT_FAMILY, sizePt: DEFAULT_EXCEL_FONT_SIZE_PT };
   if (!bytes) {
-    return { records: [{}], differentialStyles: [], normalFont: fallbackFont, maximumDigitWidthPx: measurer.maximumDigitWidthPx(fallbackFont), themeColors: [] };
+    return { records: [{}], namedCellStyles: [], differentialStyles: [], normalFont: fallbackFont, maximumDigitWidthPx: measurer.maximumDigitWidthPx(fallbackFont), themeColors: [] };
   }
   const root = firstElement(parseXml(strFromU8(bytes)), 'styleSheet');
   const themeColors = parseThemeColors(themeBytes);
@@ -856,6 +859,7 @@ function parseStyles(
       ...(cellBorders ? { borders: cellBorders } : {}),
       ...(alignment?.attrs.horizontal ? { horizontalAlignment: normalizeHorizontal(alignment.attrs.horizontal) } : {}),
       ...(alignment?.attrs.vertical ? { verticalAlignment: normalizeVertical(alignment.attrs.vertical) } : {}),
+      ...(Number.isInteger(Number(alignment?.attrs.indent)) && Number(alignment?.attrs.indent) >= 0 ? { indent: Number(alignment?.attrs.indent) } : {}),
       ...(alignment?.attrs.wrapText !== undefined ? { wrapText: xmlBoolean(alignment.attrs.wrapText) } : {}),
       ...(Number.isFinite(rotation) ? { textRotate: rotation } : {}),
       ...(protection?.attrs.locked !== undefined ? { locked: xmlBoolean(protection.attrs.locked) } : {}),
@@ -863,6 +867,28 @@ function parseStyles(
     };
     const numberFormat = customFormats.get(numberFormatId) ?? builtInNumberFormat(numberFormatId);
     return { numberFormat, style: Object.keys(style).length ? style : undefined };
+  });
+  const namedCellStyles = children(child(root, 'cellStyles'), 'cellStyle').flatMap((named, index) => {
+    const name = named.attrs.name?.trim() ?? '';
+    if (!name || name.toLocaleLowerCase() === 'normal') return [];
+    const xf = baseXfs[Number(named.attrs.xfId ?? 0)];
+    if (!xf) return [];
+    const fontId = Number(xf.attrs.fontId ?? 0) || 0;
+    const fillId = Number(xf.attrs.fillId ?? 0) || 0;
+    const borderId = Number(xf.attrs.borderId ?? 0) || 0;
+    const numberFormatId = Number(xf.attrs.numFmtId ?? 0) || 0;
+    const alignment = child(xf, 'alignment');
+    const style: CellStyle = {
+      ...parseFontStyle(fonts[fontId], themeColors),
+      ...(parseFillColor(fills[fillId], themeColors) ? { background: parseFillColor(fills[fillId], themeColors)! } : {}),
+      ...(parseBorders(borders[borderId], themeColors) ? { borders: parseBorders(borders[borderId], themeColors)! } : {}),
+      ...(alignment?.attrs.horizontal ? { horizontalAlignment: normalizeHorizontal(alignment.attrs.horizontal) } : {}),
+      ...(alignment?.attrs.vertical ? { verticalAlignment: normalizeVertical(alignment.attrs.vertical) } : {}),
+      ...(Number.isInteger(Number(alignment?.attrs.indent)) && Number(alignment?.attrs.indent) >= 0 ? { indent: Number(alignment?.attrs.indent) } : {}),
+      ...(alignment?.attrs.wrapText !== undefined ? { wrapText: xmlBoolean(alignment.attrs.wrapText) } : {}),
+    };
+    const numberFormat = customFormats.get(numberFormatId) ?? builtInNumberFormat(numberFormatId);
+    return [{ id: `ooxml-cell-style-${index + 1}`, name, style: { ...style, ...(numberFormat ? { numberFormat } : {}) } } satisfies CellStyleTemplate];
   });
   const differentialStyles = children(child(root, 'dxfs'), 'dxf').map((dxf) => {
     const style: CellStyle = {
@@ -874,6 +900,7 @@ function parseStyles(
   });
   return {
     records: records.length ? records : [{}],
+    namedCellStyles,
     differentialStyles,
     normalFont,
     maximumDigitWidthPx: measurer.maximumDigitWidthPx(normalFont),
@@ -1042,6 +1069,7 @@ function buildSharedStrings(snapshot: WorkbookSnapshot): string {
 
 function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): string {
   const records: StyleRecord[] = [{}];
+  const templateRecords: StyleRecord[] = (snapshot.cellStyleTemplates ?? []).map((template) => ({ style: structuredClone(template.style), numberFormat: template.style.numberFormat }));
   const indexes = new Map<string, number>();
   for (const sheet of snapshot.sheets) {
     for (const row of Object.values(sheet.cells)) {
@@ -1057,7 +1085,7 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
   }
   const custom = new Map<string, number>();
   let nextFormat = 164;
-  for (const record of records) {
+  for (const record of [...records, ...templateRecords]) {
     if (record.numberFormat && !builtInNumberFormatId(record.numberFormat)) {
       if (!custom.has(record.numberFormat)) custom.set(record.numberFormat, nextFormat++);
     }
@@ -1069,7 +1097,7 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
   const fontRecords = ['<font><sz val="11"/><name val="Calibri"/></font>'];
   const fillRecords = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
   const borderRecords = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
-  for (const record of records) {
+  for (const record of [...records, ...templateRecords]) {
     const style = record.style;
     const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, strikethrough: style?.strikethrough, textColor: style?.textColor });
     if (!fontIndexes.has(fontKey) && style) {
@@ -1090,27 +1118,31 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
       borderRecords.push(serializeBorders(style.borders));
     }
   }
-  const xfs = records.map((record) => {
+  const serializeXf = (record: StyleRecord, xfId = 0) => {
     const style = record.style;
     const numFmtId = record.numberFormat ? (builtInNumberFormatId(record.numberFormat) ?? custom.get(record.numberFormat) ?? 0) : 0;
     const fontKey = JSON.stringify({ fontFamily: style?.fontFamily, fontSizePx: style?.fontSizePx, bold: style?.bold, italic: style?.italic, underline: style?.underline, strikethrough: style?.strikethrough, textColor: style?.textColor });
     const fontId = style ? (fontIndexes.get(fontKey) ?? 0) : 0;
     const fillId = style?.background ? (fillIndexes.get(style.background) ?? 0) : 0;
     const borderId = style?.borders ? (borderIndexes.get(JSON.stringify(style.borders)) ?? 0) : 0;
-    const attrs = [`numFmtId="${numFmtId}"`, `fontId="${fontId}"`, `fillId="${fillId}"`, `borderId="${borderId}"`, 'xfId="0"', 'applyFont="1"', 'applyFill="1"', 'applyBorder="1"', 'applyNumberFormat="1"'];
-    const alignment = style && (style.horizontalAlignment || style.verticalAlignment || style.wrapText || style.textRotate !== undefined)
-      ? `<alignment${style.horizontalAlignment ? ` horizontal="${style.horizontalAlignment}"` : ''}${style.verticalAlignment ? ` vertical="${style.verticalAlignment}"` : ''}${style.wrapText ? ' wrapText="1"' : ''}${style.textRotate !== undefined ? ` textRotation="${style.textRotate}"` : ''}/>`
+    const attrs = [`numFmtId="${numFmtId}"`, `fontId="${fontId}"`, `fillId="${fillId}"`, `borderId="${borderId}"`, `xfId="${xfId}"`, 'applyFont="1"', 'applyFill="1"', 'applyBorder="1"', 'applyNumberFormat="1"'];
+    const alignment = style && (style.horizontalAlignment || style.verticalAlignment || style.wrapText || style.indent !== undefined || style.textRotate !== undefined)
+      ? `<alignment${style.horizontalAlignment ? ` horizontal="${style.horizontalAlignment}"` : ''}${style.verticalAlignment ? ` vertical="${style.verticalAlignment}"` : ''}${style.wrapText ? ' wrapText="1"' : ''}${style.indent !== undefined ? ` indent="${style.indent}"` : ''}${style.textRotate !== undefined ? ` textRotation="${style.textRotate}"` : ''}/>`
       : '';
     const protection = style && (style.locked !== undefined || style.formulaHidden !== undefined)
       ? `<protection${style.locked !== undefined ? ` locked="${style.locked ? '1' : '0'}"` : ''}${style.formulaHidden !== undefined ? ` hidden="${style.formulaHidden ? '1' : '0'}"` : ''}/>`
       : '';
     return `<xf ${attrs.join(' ')}${alignment || protection ? ` applyAlignment="${alignment ? '1' : '0'}" applyProtection="${protection ? '1' : '0'}">${alignment}${protection}</xf>` : '/>'}`;
-  }).join('');
+  };
+  const xfs = records.map((record) => serializeXf(record)).join('');
+  const templateXfs = templateRecords.map((record) => serializeXf(record)).join('');
   const differentialStyles = [...collectDifferentialStyleIndexes(snapshot).keys()].map((key) => `<dxf>${serializeDifferentialStyle(JSON.parse(key) as CellStyle)}</dxf>`).join('');
   const originalRoot = originalStylesXml ? firstElement(parseXml(originalStylesXml), 'styleSheet') : undefined;
   const originalTableStyles = originalRoot ? child(originalRoot, 'tableStyles') : undefined;
   const tableStyles = originalTableStyles ? serializeXml(originalTableStyles) : '';
-  return `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="1"><cellStyle name="Normal" builtinId="0"/></cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs>${tableStyles}</styleSheet>`;
+  const cellStyleXfs = `<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>${templateXfs}`;
+  const cellStyles = `<cellStyle name="Normal" builtinId="0"/>${(snapshot.cellStyleTemplates ?? []).map((template, index) => `<cellStyle name="${encodeXml(template.name)}" xfId="${index + 1}"/>`).join('')}`;
+  return `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${NS_MAIN}"><numFmts count="${custom.size}">${numFmts}</numFmts><fonts count="${fontRecords.length}">${fontRecords.join('')}</fonts><fills count="${fillRecords.length}">${fillRecords.join('')}</fills><borders count="${borderRecords.length}">${borderRecords.join('')}</borders><cellStyleXfs count="${templateRecords.length + 1}">${cellStyleXfs}</cellStyleXfs><cellXfs count="${records.length}">${xfs}</cellXfs><cellStyles count="${templateRecords.length + 1}">${cellStyles}</cellStyles><dxfs count="${collectDifferentialStyleIndexes(snapshot).size}">${differentialStyles}</dxfs>${tableStyles}</styleSheet>`;
 }
 
 function prepareTableParts(

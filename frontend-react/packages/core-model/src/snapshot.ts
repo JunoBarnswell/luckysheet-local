@@ -6,6 +6,7 @@ import type {
   RangeRef,
   WorkbookModel,
   WorkbookTableModel,
+  CellStyleTemplate,
   UnitId,
 } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
@@ -30,6 +31,8 @@ export interface WorkbookSnapshot {
   dataSources: DataSourceManifest[];
   printDocuments?: PrintDocumentSnapshot[];
   queryDefinitions?: QueryDefinitionSnapshot[];
+  /** Workbook-owned reusable styles and cell editor definitions. */
+  cellStyleTemplates?: CellStyleTemplate[];
   sheets: SheetSnapshot[];
 }
 
@@ -181,7 +184,17 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
     }
   }
-  return structuredClone(snapshot);
+  const canonical = structuredClone(snapshot);
+  canonical.cellStyleTemplates ??= [];
+  const templateIds = new Set<string>();
+  for (const template of canonical.cellStyleTemplates) {
+    if (!template.id.trim() || !template.name.trim() || templateIds.has(template.id)) throw new Error('Cell style template identity is invalid');
+    if (template.style.indent !== undefined && (!Number.isInteger(template.style.indent) || template.style.indent < 0 || template.style.indent > 250)) {
+      throw new Error('Cell style template indent is invalid');
+    }
+    templateIds.add(template.id);
+  }
+  return canonical;
 }
 
 function rangesOverlap(left: RangeRef, right: RangeRef): boolean {

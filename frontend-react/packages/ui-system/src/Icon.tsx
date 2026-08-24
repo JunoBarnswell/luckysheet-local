@@ -22,14 +22,19 @@ export type IconName =
   | 'chevron-right'
   | 'chevron-up'
   | 'clipboard'
+  | 'comma'
   | 'cloud-check'
   | 'comment'
   | 'columns'
   | 'copy'
   | 'dollar-sign'
+  | 'decimal-decrease'
+  | 'decimal-increase'
   | 'download'
   | 'external-link'
   | 'eye'
+  | 'fill-down'
+  | 'fill-right'
   | 'file-plus'
   | 'file-spreadsheet'
   | 'file-text'
@@ -44,6 +49,8 @@ export type IconName =
   | 'history'
   | 'info'
   | 'italic'
+  | 'indent-decrease'
+  | 'indent-increase'
   | 'keyboard'
   | 'layout'
   | 'loader'
@@ -147,6 +154,8 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <path d="m18 15-6-6-6 6" />;
     case 'clipboard':
       return <><rect x="8" y="2" width="8" height="4" rx="1" /><rect x="4" y="6" width="16" height="15" rx="2" /></>;
+    case 'comma':
+      return <><path d="M5 7h3M11 7h3M17 7h2M5 13h3M11 13h3M17 13h2" /><path d="M17 18h2l-2 3" /></>;
     case 'cloud-check':
       return <><path d="M7.5 18.5h8.75a4.75 4.75 0 0 0 .84-9.43A6 6 0 0 0 5.38 10.8 4 4 0 0 0 7.5 18.5Z" /><path d="m9 14 2 2 4-4" /></>;
     case 'comment':
@@ -157,12 +166,20 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>;
     case 'dollar-sign':
       return <><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></>;
+    case 'decimal-decrease':
+      return <><path d="M4 7h2M10 7h2M4 12h2M10 12h2M16 8h4M18 6v4" /><path d="M16 16h4" /></>;
+    case 'decimal-increase':
+      return <><path d="M4 7h2M10 7h2M4 12h2M10 12h2M16 6v4M14 8h4" /><path d="M16 16h4" /></>;
     case 'download':
       return <><path d="M12 4v10" /><path d="m8 10 4 4 4-4" /><path d="M5 19h14" /></>;
     case 'external-link':
       return <><path d="M14 5h5v5" /><path d="m19 5-8 8" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>;
     case 'eye':
       return <><path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5Z" /><circle cx="12" cy="12" r="2" /></>;
+    case 'fill-down':
+      return <><rect x="5" y="4" width="14" height="11" rx="1" /><path d="M12 8v10M8 14l4 4 4-4" /></>;
+    case 'fill-right':
+      return <><rect x="4" y="5" width="11" height="14" rx="1" /><path d="M8 12h10M14 8l4 4-4 4" /></>;
     case 'file-plus':
       return <><path d="M7 3.5h6l4 4V20H7a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" /><path d="M13 3.5v4h4" /><path d="M12 11v5M9.5 13.5h5" /></>;
     case 'file-spreadsheet':
@@ -191,6 +208,10 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></>;
     case 'italic':
       return <><path d="M10 5h7" /><path d="M7 19h7" /><path d="m14 5-4 14" /></>;
+    case 'indent-decrease':
+      return <><path d="M10 6h9M10 10h7M10 14h9M10 18h7" /><path d="m7 9-3 3 3 3" /></>;
+    case 'indent-increase':
+      return <><path d="M10 6h9M10 10h7M10 14h9M10 18h7" /><path d="m4 9 3 3-3 3" /></>;
     case 'keyboard':
       return <><rect x="3.5" y="6.5" width="17" height="11" rx="2" /><path d="M6.5 10h.01M9.5 10h.01M12.5 10h.01M15.5 10h.01M18.5 10h.01M6.5 14h9M17.5 14h1" /></>;
     case 'layout':

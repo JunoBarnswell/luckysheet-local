@@ -1,5 +1,6 @@
 import type {
   CellComment,
+  CellEditorConfig,
   CellNote,
   CellData,
   CellStyle,
@@ -70,6 +71,7 @@ export interface CanvasCellSnapshot {
   displayValue?: string;
   formula?: string;
   style?: CellStyle;
+  editor?: CellEditorConfig;
   value: string;
   hasComment?: boolean;
   commentText?: string;
@@ -264,6 +266,7 @@ export function buildCanvasSheetSnapshot(
       address: cellAddress(row, column),
       formula: modelCell?.formula,
       style,
+      editor: modelCell?.editor ? structuredClone(modelCell.editor) : undefined,
       value,
       displayValue: value,
       hasComment: Boolean(comment || note),

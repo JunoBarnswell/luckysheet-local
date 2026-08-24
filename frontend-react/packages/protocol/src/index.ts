@@ -485,6 +485,18 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
   if (!Array.isArray(input.dataSources)) throw new Error('WorkbookSnapshot dataSources must be an array');
+  if (input.cellStyleTemplates !== undefined) {
+    if (!Array.isArray(input.cellStyleTemplates)) throw new Error('WorkbookSnapshot cellStyleTemplates must be an array');
+    const templateIds = new Set<string>();
+    for (const template of input.cellStyleTemplates) {
+      if (!template || typeof template !== 'object' || Array.isArray(template)) throw new Error('WorkbookSnapshot cell style template is invalid');
+      const value = template as Record<string, unknown>;
+      if (!isNonEmptyString(value.id) || !isNonEmptyString(value.name) || !value.style || typeof value.style !== 'object' || Array.isArray(value.style) || templateIds.has(value.id)) {
+        throw new Error('WorkbookSnapshot cell style template identity is invalid');
+      }
+      templateIds.add(value.id);
+    }
+  }
   const sourceIds = new Set<string>();
   for (const source of input.dataSources) {
     validateDataSourceManifest(source);

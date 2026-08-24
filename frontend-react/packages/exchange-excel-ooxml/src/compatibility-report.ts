@@ -7,7 +7,7 @@ const LEVEL_A_FEATURES = new Set([
 ]);
 
 const LEVEL_B_FEATURES = new Set([
-  'charts', 'sparklines', 'pivot', 'slicer', 'timeline', 'print-setup', 'theme', 'protection', 'extended-validation', 'extended-conditional-format',
+  'charts', 'sparklines', 'pivot', 'slicer', 'timeline', 'print-setup', 'theme', 'protection', 'extended-validation', 'extended-conditional-format', 'cell-style-template',
 ]);
 
 const LEVEL_C_FEATURES = new Set([

@@ -763,6 +763,12 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     const cell = resolveMergedCell(sheet, hitCell);
+    const editor = sheet.getCell(cell.row, cell.column)?.editor;
+    if (editor?.kind === 'checkbox') {
+      const current = sheet.getCell(cell.row, cell.column)?.value;
+      onCommitCell(String(current).toUpperCase() === 'TRUE' ? 'FALSE' : 'TRUE');
+      return;
+    }
     const validationList = getValidationList(cell.row, cell.column);
     if (validationList && validationList.length > 0) {
       setValidationDropdown({ row: cell.row, column: cell.column, options: validationList });

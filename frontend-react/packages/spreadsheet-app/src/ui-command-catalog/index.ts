@@ -29,6 +29,7 @@ export type RibbonGroupId =
   | 'font'
   | 'alignment'
   | 'number'
+  | 'styles'
   | 'cells'
   | 'insertCells'
   | 'editing'
@@ -97,6 +98,11 @@ export type RibbonCommandId =
   | 'alignLeft'
   | 'alignCenter'
   | 'alignRight'
+  | 'alignTop'
+  | 'alignMiddle'
+  | 'alignBottom'
+  | 'indentIncrease'
+  | 'indentDecrease'
   | 'wrapText'
   | 'mergeCells'
   | 'formatCells'
@@ -105,6 +111,8 @@ export type RibbonCommandId =
   | 'numberFormatPercent'
   | 'numberFormatComma'
   | 'numberFormatDecimal'
+  | 'numberFormatDecimalIncrease'
+  | 'numberFormatDecimalDecrease'
   | 'insertRow'
   | 'insertColumn'
   | 'insertRowHome'
@@ -114,8 +122,12 @@ export type RibbonCommandId =
   | 'clearFormats'
   | 'clearAll'
   | 'autoSum'
+  | 'fillDown'
+  | 'fillRight'
   | 'sortRange'
   | 'conditionalFormat'
+  | 'cellTemplate'
+  | 'cellEditor'
   | 'pivotTable'
   | 'quickPivot'
   | 'chartBuilder'
@@ -192,20 +204,29 @@ export type RibbonIconName =
   | 'chart'
   | 'check-circle'
   | 'clipboard'
+  | 'comma'
   | 'columns'
   | 'comment'
   | 'copy'
   | 'dollar-sign'
+  | 'decimal-decrease'
+  | 'decimal-increase'
   | 'filter'
+  | 'fill-down'
+  | 'fill-right'
   | 'freeze'
   | 'function'
   | 'history'
   | 'italic'
+  | 'indent-decrease'
+  | 'indent-increase'
   | 'layout'
   | 'lock'
   | 'merge-cells'
+  | 'minimize'
   | 'more-horizontal'
   | 'percent'
+  | 'plus'
   | 'printer'
   | 'redo'
   | 'rows'
@@ -217,6 +238,7 @@ export type RibbonIconName =
   | 'sort'
   | 'sparkles'
   | 'sparkline'
+  | 'star'
   | 'strikethrough'
   | 'table'
   | 'table-pivot'
@@ -235,6 +257,8 @@ export interface RibbonCellStyleContext {
   underline?: boolean;
   strikethrough?: boolean;
   align?: 'left' | 'center' | 'right';
+  verticalAlignment?: 'top' | 'middle' | 'bottom';
+  indent?: number;
   wrapText?: boolean;
   numberFormat?: string;
 }
@@ -266,6 +290,7 @@ export interface RibbonCommandActions {
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
+  onFill: (direction: 'down' | 'right') => void;
   onFreezeAtPrimary: () => void;
   onCreatePivot: () => CommandDescriptor | undefined;
   onCreateChart: () => CommandDescriptor | undefined;
@@ -344,6 +369,45 @@ export interface RibbonGroupDefinition {
   readonly priority: number;
 }
 
+/** A command's visual placement. The same command can appear on several
+ * surfaces without duplicating its build, permission or history contract. */
+export type RibbonSurfaceAppearance = 'large' | 'tile' | 'small' | 'split' | 'menu';
+export type RibbonSurfaceBreakpoint = 'wide' | 'compact' | 'narrow';
+
+export interface RibbonSurfaceDefinition {
+  readonly id: string;
+  readonly tab: RibbonCatalogTabId;
+  readonly group: RibbonGroupId;
+  readonly commandId?: RibbonCommandId;
+  readonly controlId?: RibbonControlId;
+  readonly order: number;
+  readonly appearance: RibbonSurfaceAppearance;
+  readonly breakpoints: readonly RibbonSurfaceBreakpoint[];
+  readonly overflowTarget?: RibbonGroupId;
+  readonly ariaLabel?: string;
+}
+
+/** Stateful controls use this same catalog but emit canonical commands. */
+export type RibbonControlId =
+  | 'format-painter'
+  | 'font-family'
+  | 'font-size'
+  | 'font-increase'
+  | 'font-decrease'
+  | 'font-color'
+  | 'fill-color'
+  | 'borders'
+  | 'vertical-alignment'
+  | 'number-format';
+
+export interface RibbonControlDefinition {
+  readonly id: RibbonControlId;
+  readonly tab: RibbonCatalogTabId;
+  readonly group: RibbonGroupId;
+  readonly order: number;
+  readonly breakpoints: readonly RibbonSurfaceBreakpoint[];
+}
+
 export const RIBBON_TEXT = {
   groups: {
     workbook: 'groups.workbook',
@@ -359,6 +423,7 @@ export const RIBBON_TEXT = {
     font: 'groups.font',
     alignment: 'groups.alignment',
     number: 'groups.number',
+    styles: 'groups.styles',
     cells: 'groups.cells',
     insertCells: 'groups.insertCells',
     editing: 'groups.editing',
@@ -427,6 +492,11 @@ export const RIBBON_TEXT = {
     alignLeft: 'commands.alignLeft',
     alignCenter: 'commands.alignCenter',
     alignRight: 'commands.alignRight',
+    alignTop: 'commands.alignTop',
+    alignMiddle: 'commands.alignMiddle',
+    alignBottom: 'commands.alignBottom',
+    indentIncrease: 'commands.indentIncrease',
+    indentDecrease: 'commands.indentDecrease',
     wrapText: 'commands.wrapText',
     mergeCells: 'commands.mergeCells',
     formatCells: 'commands.formatCells',
@@ -435,6 +505,8 @@ export const RIBBON_TEXT = {
     numberFormatPercent: 'commands.numberFormatPercent',
     numberFormatComma: 'commands.numberFormatComma',
     numberFormatDecimal: 'commands.numberFormatDecimal',
+    numberFormatDecimalIncrease: 'commands.numberFormatDecimalIncrease',
+    numberFormatDecimalDecrease: 'commands.numberFormatDecimalDecrease',
     insertRow: 'commands.insertRow',
     insertColumn: 'commands.insertColumn',
     insertRowHome: 'commands.insertRowHome',
@@ -444,8 +516,12 @@ export const RIBBON_TEXT = {
     clearFormats: 'commands.clearFormats',
     clearAll: 'commands.clearAll',
     autoSum: 'commands.autoSum',
+    fillDown: 'commands.fillDown',
+    fillRight: 'commands.fillRight',
     sortRange: 'commands.sortRange',
     conditionalFormat: 'commands.conditionalFormat',
+    cellTemplate: 'commands.cellTemplate',
+    cellEditor: 'commands.cellEditor',
     pivotTable: 'commands.pivotTable',
     quickPivot: 'commands.quickPivot',
     pivotRefresh: 'commands.pivotRefresh',
@@ -533,6 +609,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('font', 'home', 20),
   group('alignment', 'home', 30),
   group('number', 'home', 30),
+  group('styles', 'home', 35),
   group('cells', 'home', 40),
   group('editing', 'home', 50),
   group('tablesPivots', 'insert', 10),
@@ -556,6 +633,90 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('pivotAnalyze', 'pivotAnalyze', 10),
   group('pivotDesign', 'pivotDesign', 10),
 ] as const;
+
+const homeSurface = (
+  id: string,
+  group: RibbonGroupId,
+  order: number,
+  appearance: RibbonSurfaceAppearance,
+  commandId: RibbonCommandId | undefined,
+  breakpoints: readonly RibbonSurfaceBreakpoint[] = ['wide', 'compact', 'narrow'],
+  overflowTarget?: RibbonGroupId,
+): RibbonSurfaceDefinition => ({ id, tab: 'home', group, order, appearance, commandId, breakpoints, overflowTarget });
+
+const homeControl = (
+  id: RibbonControlId,
+  group: RibbonGroupId,
+  order: number,
+  breakpoints: readonly RibbonSurfaceBreakpoint[] = ['wide', 'compact', 'narrow'],
+): RibbonSurfaceDefinition => ({ id: `control.${id}`, tab: 'home', group, controlId: id, order, appearance: 'small', breakpoints });
+
+/** Single render catalogue for the Home tab. Components must not invent
+ * command placements independently from this declaration. */
+export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
+  homeSurface('history.undo', 'history', 10, 'large', 'undo', ['wide', 'compact']),
+  homeSurface('history.redo', 'history', 20, 'large', 'redo', ['wide', 'compact']),
+  homeSurface('clipboard.paste', 'clipboard', 10, 'large', 'paste', ['wide', 'compact']),
+  homeSurface('clipboard.cut', 'clipboard', 20, 'small', 'cut'),
+  homeSurface('clipboard.copy', 'clipboard', 30, 'small', 'copy'),
+  homeControl('format-painter', 'clipboard', 40),
+  homeSurface('clipboard.paste-special', 'clipboard', 50, 'small', 'pasteSpecial'),
+  homeControl('font-family', 'font', 10),
+  homeControl('font-size', 'font', 20),
+  homeControl('font-increase', 'font', 30),
+  homeControl('font-decrease', 'font', 40),
+  homeSurface('font.bold', 'font', 50, 'small', 'bold'),
+  homeSurface('font.italic', 'font', 60, 'small', 'italic'),
+  homeSurface('font.underline', 'font', 70, 'small', 'underline'),
+  homeSurface('font.strikethrough', 'font', 80, 'small', 'strikethrough'),
+  homeSurface('font.borders', 'font', 85, 'small', 'allBorders'),
+  homeControl('borders', 'font', 90),
+  homeControl('fill-color', 'font', 100),
+  homeControl('vertical-alignment', 'alignment', 10),
+  homeSurface('alignment.left', 'alignment', 20, 'small', 'alignLeft'),
+  homeSurface('alignment.center', 'alignment', 30, 'small', 'alignCenter'),
+  homeSurface('alignment.right', 'alignment', 40, 'small', 'alignRight'),
+  homeSurface('alignment.top', 'alignment', 45, 'small', 'alignTop'),
+  homeSurface('alignment.middle', 'alignment', 46, 'small', 'alignMiddle'),
+  homeSurface('alignment.bottom', 'alignment', 47, 'small', 'alignBottom'),
+  homeSurface('alignment.indent-increase', 'alignment', 48, 'small', 'indentIncrease'),
+  homeSurface('alignment.indent-decrease', 'alignment', 49, 'small', 'indentDecrease'),
+  homeSurface('alignment.wrap', 'alignment', 50, 'small', 'wrapText'),
+  homeSurface('alignment.merge', 'alignment', 60, 'split', 'mergeCells'),
+  homeControl('number-format', 'number', 10),
+  homeSurface('number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
+  homeSurface('number.percent', 'number', 30, 'small', 'numberFormatPercent'),
+  homeSurface('number.comma', 'number', 40, 'small', 'numberFormatComma'),
+  homeSurface('number.decimal', 'number', 50, 'small', 'numberFormatDecimal'),
+  homeSurface('number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
+  homeSurface('number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
+  homeSurface('styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat', ['wide', 'compact']),
+  homeSurface('styles.table', 'styles', 20, 'tile', 'formatAsTable', ['wide', 'compact']),
+  homeSurface('styles.format-cells', 'styles', 30, 'tile', 'formatCells', ['wide', 'compact']),
+  homeSurface('styles.validation', 'styles', 40, 'tile', 'dataValidation', ['wide', 'compact']),
+  homeSurface('styles.template', 'styles', 50, 'tile', 'cellTemplate', ['wide', 'compact']),
+  homeSurface('styles.editor', 'styles', 60, 'tile', 'cellEditor', ['wide', 'compact']),
+  homeSurface('cells.insert', 'cells', 10, 'split', 'insertRowHome'),
+  homeSurface('cells.delete', 'cells', 20, 'split', 'deleteRow'),
+  homeSurface('cells.format', 'cells', 30, 'split', 'shiftCells'),
+  homeSurface('editing.autosum', 'editing', 60, 'small', 'autoSum'),
+  homeSurface('editing.fill-down', 'editing', 65, 'small', 'fillDown'),
+  homeSurface('editing.fill-right', 'editing', 66, 'small', 'fillRight'),
+  homeSurface('editing.sort', 'editing', 70, 'small', 'sortRange'),
+  homeSurface('editing.filter', 'editing', 80, 'small', 'filterSelection'),
+  homeSurface('editing.clear', 'editing', 90, 'small', 'clearContents'),
+  homeSurface('editing.find', 'editing', 100, 'small', 'findReplace'),
+] as const;
+
+export function getRibbonSurfaces(
+  tab: RibbonCatalogTabId,
+  groupId: RibbonGroupId,
+  breakpoint: RibbonSurfaceBreakpoint,
+): readonly RibbonSurfaceDefinition[] {
+  return HOME_RIBBON_SURFACES
+    .filter((surface) => surface.tab === tab && surface.group === groupId && surface.breakpoints.includes(breakpoint))
+    .sort((left, right) => left.order - right.order);
+}
 
 const command = (
   id: RibbonCommandId,
@@ -644,8 +805,9 @@ const styleCommand = (
   icon: RibbonIconName,
   style: (context: RibbonCommandContext) => Record<string, unknown>,
   active?: (context: RibbonCommandContext) => boolean,
+  groupId: RibbonGroupId = 'font',
 ): CommandDefinition => ({
-  ...command(id, 'home', 'font', 'sheet.style.set', labelKey, icon),
+  ...command(id, 'home', groupId, 'sheet.style.set', labelKey, icon),
   build: (context) => ({
     type: 'command',
     descriptor: { commandId: 'sheet.style.set', params: { style: style(context) } },
@@ -653,6 +815,18 @@ const styleCommand = (
   enabled: (context) => (!context.canExecute || context.canExecute('sheet.style.set', { style: style(context) })) && !context.disabled,
   active,
 });
+
+/** Structured number-format adjustment used by the Ribbon decimal controls. */
+export function adjustRibbonDecimalPlaces(current: string | undefined, delta: number): string {
+  const source = current && current !== 'general' ? current : '0';
+  const percent = source.includes('%');
+  const currency = source.includes('$');
+  const comma = source.includes(',');
+  const match = source.match(/\.([0#?]+)/);
+  const decimals = Math.max(0, Math.min(30, (match?.[1]?.length ?? 0) + delta));
+  const integer = currency ? '$#,##0' : comma ? '#,##0' : '0';
+  return `${integer}${decimals > 0 ? `.${'0'.repeat(decimals)}` : ''}${percent ? '%' : ''}`;
+}
 
 export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('save', 'file', 'workbook', RIBBON_TEXT.commands.save, (context) => context.actions.onSave()),
@@ -700,14 +874,21 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   command('alignLeft', 'home', 'alignment', 'sheet.style.set', RIBBON_TEXT.commands.alignLeft, 'align-left', { style: { horizontalAlignment: 'left' } }),
   command('alignCenter', 'home', 'alignment', 'sheet.style.set', RIBBON_TEXT.commands.alignCenter, 'align-center', { style: { horizontalAlignment: 'center' } }),
   command('alignRight', 'home', 'alignment', 'sheet.style.set', RIBBON_TEXT.commands.alignRight, 'align-right', { style: { horizontalAlignment: 'right' } }),
+  styleCommand('alignTop', RIBBON_TEXT.commands.alignTop, 'align-left', () => ({ verticalAlignment: 'top' }), (context) => context.cellStyle.verticalAlignment === 'top', 'alignment'),
+  styleCommand('alignMiddle', RIBBON_TEXT.commands.alignMiddle, 'align-center', () => ({ verticalAlignment: 'middle' }), (context) => context.cellStyle.verticalAlignment === 'middle', 'alignment'),
+  styleCommand('alignBottom', RIBBON_TEXT.commands.alignBottom, 'align-right', () => ({ verticalAlignment: 'bottom' }), (context) => context.cellStyle.verticalAlignment === 'bottom', 'alignment'),
+  styleCommand('indentIncrease', RIBBON_TEXT.commands.indentIncrease, 'indent-increase', (context) => ({ indent: Math.min(250, Number(context.cellStyle.indent ?? 0) + 1) }), undefined, 'alignment'),
+  styleCommand('indentDecrease', RIBBON_TEXT.commands.indentDecrease, 'indent-decrease', (context) => ({ indent: Math.max(0, Number(context.cellStyle.indent ?? 0) - 1) }), undefined, 'alignment'),
   styleCommand('wrapText', RIBBON_TEXT.commands.wrapText, 'wrap-text', (context) => ({ wrapText: !context.cellStyle.wrapText }), (context) => Boolean(context.cellStyle.wrapText)),
   command('mergeCells', 'home', 'alignment', 'sheet.merge.set', RIBBON_TEXT.commands.mergeCells, 'merge-cells'),
   intent('formatCells', 'home', 'number', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' }), 'table'),
   command('numberFormatGeneral', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatGeneral, undefined, { style: { numberFormat: 'general' } }),
   command('numberFormatCurrency', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatCurrency, 'dollar-sign', { style: { numberFormat: '$#,##0' } }),
   command('numberFormatPercent', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatPercent, 'percent', { style: { numberFormat: '0%' } }),
-  command('numberFormatComma', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatComma, undefined, { style: { numberFormat: '#,##0' } }),
-  command('numberFormatDecimal', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatDecimal, undefined, { style: { numberFormat: '0.00' } }),
+  command('numberFormatComma', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatComma, 'comma', { style: { numberFormat: '#,##0' } }),
+  command('numberFormatDecimal', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatDecimal, 'decimal-increase', { style: { numberFormat: '0.00' } }),
+  styleCommand('numberFormatDecimalIncrease', RIBBON_TEXT.commands.numberFormatDecimalIncrease, 'decimal-increase', (context) => ({ numberFormat: adjustRibbonDecimalPlaces(context.cellStyle.numberFormat, 1) }), undefined, 'number'),
+  styleCommand('numberFormatDecimalDecrease', RIBBON_TEXT.commands.numberFormatDecimalDecrease, 'decimal-decrease', (context) => ({ numberFormat: adjustRibbonDecimalPlaces(context.cellStyle.numberFormat, -1) }), undefined, 'number'),
   command('insertRowHome', 'home', 'cells', 'sheet.rows.insert', RIBBON_TEXT.commands.insertRowHome, 'rows', { count: 1 }),
   command('insertColumnHome', 'home', 'cells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumnHome, 'columns', { count: 1 }),
   intent('shiftCells', 'home', 'cells', RIBBON_TEXT.commands.shiftCells, () => ({ type: 'dialog.open', dialog: 'shift-cells' })),
@@ -718,8 +899,12 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   command('clearFormats', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearFormats, undefined, { mode: 'formats' }),
   command('clearAll', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearAll, undefined, { mode: 'all' }),
   callback('autoSum', 'home', 'editing', RIBBON_TEXT.commands.autoSum, (context) => context.actions.onAutoSum(), 'calculator'),
+  callback('fillDown', 'home', 'editing', RIBBON_TEXT.commands.fillDown, (context) => context.actions.onFill('down'), 'fill-down'),
+  callback('fillRight', 'home', 'editing', RIBBON_TEXT.commands.fillRight, (context) => context.actions.onFill('right'), 'fill-right'),
   intent('sortRange', 'home', 'editing', RIBBON_TEXT.commands.sortRange, () => ({ type: 'dialog.open', dialog: 'sort-dialog' }), 'sort'),
   intent('conditionalFormat', 'home', 'editing', RIBBON_TEXT.commands.conditionalFormat, () => ({ type: 'panel.open', panel: 'conditionalFormat' }), 'sparkles'),
+  intent('cellTemplate', 'home', 'styles', RIBBON_TEXT.commands.cellTemplate, () => ({ type: 'dialog.open', dialog: 'cell-template' }), 'star'),
+  intent('cellEditor', 'home', 'styles', RIBBON_TEXT.commands.cellEditor, () => ({ type: 'dialog.open', dialog: 'cell-editor' }), 'sliders'),
 
   {
     ...callback('pivotTable', 'insert', 'tablesPivots', RIBBON_TEXT.commands.pivotTable, (context) => context.openCreatePivotDialog?.(), 'table-pivot'),

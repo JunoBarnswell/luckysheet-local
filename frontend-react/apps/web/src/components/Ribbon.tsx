@@ -37,6 +37,7 @@ import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import { localizeText, translate, translateRibbonTab, translateRibbonText, type Locale } from '../i18n';
 import { homeText } from './home/home-localization';
 import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
+import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -72,6 +73,7 @@ export interface RibbonProps {
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
+  onFill: (direction: 'down' | 'right') => void;
   onFreezeAtPrimary: () => void;
   onOpenColumnWidth: () => void;
   onAutoFitColumns: () => void;
@@ -260,6 +262,7 @@ export function Ribbon({
   onToggleViewHeadings,
   onTogglePrintHeadings,
   onAutoSum,
+  onFill,
   onFreezeAtPrimary,
   onOpenColumnWidth,
   onAutoFitColumns,
@@ -340,6 +343,7 @@ export function Ribbon({
     onToggleViewHeadings,
     onTogglePrintHeadings,
     onAutoSum,
+    onFill,
     onFreezeAtPrimary,
     onCreatePivot,
     onCreateChart,
@@ -388,6 +392,18 @@ export function Ribbon({
     else if (result.type === 'intent') onSessionIntent(result.intent);
     else result.invoke();
   };
+  const renderHomeCommand = (id: RibbonCommandId, options: HomeRibbonCommandOptions = {}) => (
+    <CatalogButton
+      key={id}
+      id={id}
+      context={catalogContext}
+      onExecute={executeCatalogResult}
+      iconOnly={options.iconOnly}
+      textBelow={options.tile}
+      className={options.className}
+      testId={options.testId}
+    />
+  );
 
   const commandPaletteEntries: CommandPaletteEntry[] = RIBBON_COMMAND_CATALOG.map((definition) => {
     const result = isRibbonCommandEnabled(definition, catalogContext) ? buildRibbonCommand(definition.id, catalogContext) : undefined;
@@ -410,16 +426,6 @@ export function Ribbon({
         activeTab={activeTab}
         contextualTabs={activePivot ? ['pivotAnalyze', 'pivotDesign'] : []}
         disabled={disabled}
-        licenseEntry={(
-          <Button
-            className="h-full rounded-none px-2 text-[11px] font-normal text-slate-600 hover:bg-[#f3f8f4] hover:text-[#217345]"
-            onClick={() => onSessionIntent({ type: 'backstage.open', panel: 'options' })}
-            size="sm"
-            variant="ghost"
-          >
-            在线表格编辑器授权信息
-          </Button>
-        )}
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}
         onTabChange={onTabChange}
         tabLabel={(tab) => translateRibbonTab(locale, tab)}
@@ -525,295 +531,24 @@ export function Ribbon({
         ) : null}
 
         {activeTab === 'home' ? (
-          <Inline gap="none" className="flex-nowrap items-start overflow-hidden" data-testid="home-ribbon-groups">
-            <RibbonGroup className="!w-[141px] overflow-hidden" group="clipboard">
-              <Stack gap="none" className="w-full">
-                <Inline gap="none" className="h-[68px] flex-nowrap items-start">
-                  <Stack gap="none" className="w-[58px] shrink-0">
-                    <Inline gap="none" className="h-8 flex-nowrap items-start">
-                      <CatalogButton id="undo" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-                      <CatalogButton id="redo" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-                    </Inline>
-                    <Inline gap="none" className="h-8 flex-nowrap items-start">
-                      <CatalogButton id="cut" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-                      <CatalogButton id="copy" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-                    </Inline>
-                  </Stack>
-                  <CatalogButton id="paste" context={catalogContext} onExecute={executeCatalogResult} textBelow labelOverride={homeText(locale, 'pasteAll')} className="!w-[58px]" />
-                  <Button
-                    size="sm"
-                    variant={formatPainterActive ? 'secondary' : 'ghost'}
-                    icon="palette"
-                    iconOnly
-                    disabled={disabled || !homeState.canFormat}
-                    data-testid="home-format-painter"
-                    aria-pressed={formatPainterActive}
-                    title={homeText(locale, 'formatPainterHint')}
-                    onClick={() => onBeginFormatPainter(false)}
-                    onDoubleClick={() => onBeginFormatPainter(true)}
-                  />
-                  <CatalogButton id="pasteSpecial" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-                </Inline>
-              </Stack>
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-
-            <RibbonGroup className="!w-[216px] overflow-hidden" group="font">
-              <Stack gap="xs" className="w-[205px] pt-3">
-              <Inline gap="xs" className="h-8 flex-nowrap items-start">
-              <Box className="w-[96px] shrink-0">
-                <Select
-                  aria-label={homeText(locale, 'fontFamily')}
-                  className="w-full"
-                  disabled={!homeState.canFormat || disabled}
-                  sizeVariant="sm"
-                  value={isMixed('fontFamily') ? '__mixed__' : cellStyle.fontFamily ?? 'Microsoft YaHei'}
-                  onChange={(event) => {
-                    if (event.target.value !== '__mixed__') emitStyle({ fontFamily: event.target.value });
-                  }}
-                >
-                  {isMixed('fontFamily') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
-                  <option value="Microsoft YaHei">微软雅黑</option>
-                  <option value="Arial">Arial</option>
-                  <option value="Calibri">Calibri</option>
-                  <option value="Segoe UI">Segoe UI</option>
-                  <option value="Times New Roman">Times New Roman</option>
-                </Select>
-              </Box>
-              <TextInput
-                aria-label={homeText(locale, 'fontSize')}
-                className="!w-[42px]"
-                disabled={!homeState.canFormat || disabled}
-                inputMode="decimal"
-                value={isMixed('fontSizePx') ? '' : String(Math.round(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11))))}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  if (Number.isFinite(value) && value >= 1 && value <= 409) emitStyle({ fontSizePx: pointsToPixels(value) });
-                }}
-              />
-              <Button
-                aria-label="Increase font size"
-                disabled={!homeState.canFormat || disabled}
-                onClick={() => emitStyle({ fontSizePx: Math.min(pointsToPixels(409), (cellStyle.fontSizePx ?? pointsToPixels(11)) + pointsToPixels(1)) })}
-                size="sm"
-                variant="ghost"
-                className="!h-8 !min-h-0 !w-7 rounded-none px-0 text-base font-semibold text-[#4e82ab]"
-              >A</Button>
-              <Button
-                aria-label="Decrease font size"
-                disabled={!homeState.canFormat || disabled}
-                onClick={() => emitStyle({ fontSizePx: Math.max(pointsToPixels(1), (cellStyle.fontSizePx ?? pointsToPixels(11)) - pointsToPixels(1)) })}
-                size="sm"
-                variant="ghost"
-                className="!h-8 !min-h-0 !w-7 rounded-none px-0 text-xs font-semibold text-[#4e82ab]"
-              >A</Button>
-              </Inline>
-              <Inline gap="xs" className="h-8 flex-nowrap items-start">
-              <CatalogButton id="bold" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('bold')} />
-              <CatalogButton id="italic" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('italic')} />
-              <CatalogButton id="underline" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('underline')} />
-              <CatalogButton id="strikethrough" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('strikethrough')} />
-              <DropdownMenu
-                disabled={!canFormat({ textColor: '#1e293b' })}
-                trigger={(
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="type"
-                    iconOnly
-                    title={`${homeText(locale, 'textColor')}${isMixed('textColor') ? ` (${homeText(locale, 'mixed')})` : ''}`}
-                    aria-label={homeText(locale, 'textColor')}
-                    disabled={!canFormat({ textColor: '#1e293b' })}
-                    className={isMixed('textColor') ? 'border border-dashed border-slate-400' : undefined}
-                  />
-                )}
-              >
-                {({ close }) => (
-                  <ColorPicker
-                    color={cellStyle.textColor || '#1e293b'}
-                    onChange={(color) => {
-                      emitStyle({ textColor: color });
-                      close();
-                    }}
-                  />
-                )}
-              </DropdownMenu>
-              <DropdownMenu
-                disabled={!canFormat({ background: '#ffffff' })}
-                trigger={(
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="paint-bucket"
-                    iconOnly
-                    title={`${homeText(locale, 'fillBackground')}${isMixed('background') ? ` (${homeText(locale, 'mixed')})` : ''}`}
-                    aria-label={homeText(locale, 'fillBackground')}
-                    disabled={!canFormat({ background: '#ffffff' })}
-                    className={isMixed('background') ? 'border border-dashed border-slate-400' : undefined}
-                  />
-                )}
-              >
-                {({ close }) => (
-                  <ColorPicker
-                    color={cellStyle.background || '#ffffff'}
-                    onChange={(color) => {
-                      emitStyle({ background: color });
-                      close();
-                    }}
-                  />
-                )}
-              </DropdownMenu>
-              <CatalogButton id="allBorders" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              </Inline>
-              </Stack>
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-
-            <RibbonGroup className="!w-[260px] overflow-hidden" group="alignment">
-              <CatalogButton id="alignLeft" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('horizontalAlignment')} />
-              <CatalogButton id="alignCenter" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('horizontalAlignment')} />
-              <CatalogButton id="alignRight" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('horizontalAlignment')} />
-              <DropdownMenu
-                disabled={!canFormat({ verticalAlignment: 'middle' })}
-                trigger={(
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="layout"
-                    iconOnly
-                    title={`${homeText(locale, 'vertical')}${isMixed('verticalAlignment') ? ` (${homeText(locale, 'mixed')})` : ''}`}
-                    aria-label={homeText(locale, 'vertical')}
-                    disabled={!canFormat({ verticalAlignment: 'middle' })}
-                    className={isMixed('verticalAlignment') ? 'border border-dashed border-slate-400' : undefined}
-                  />
-                )}
-              >
-                {({ close }) => (
-                  <Stack gap="xs" className="min-w-32 p-1">
-                    {(['top', 'middle', 'bottom'] as const).map((verticalAlignment) => (
-                      <Button
-                        key={verticalAlignment}
-                        size="sm"
-                        variant={cellStyle.verticalAlignment === verticalAlignment ? 'secondary' : 'ghost'}
-                        className="justify-start"
-                        onClick={() => {
-                          emitStyle({ verticalAlignment });
-                          close();
-                        }}
-                      >
-                        {homeText(locale, verticalAlignment)}
-                      </Button>
-                    ))}
-                  </Stack>
-                )}
-              </DropdownMenu>
-              <CatalogButton id="wrapText" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('wrapText')} />
-              <Button
-                size="sm"
-                variant={homeState.merge === 'full' ? 'secondary' : 'ghost'}
-                icon="merge-cells"
-                iconOnly
-                disabled={disabled || !homeState.canFormat}
-                aria-label={translateRibbonText(locale, RIBBON_TEXT.commands.mergeCells)}
-                title={translateRibbonText(locale, RIBBON_TEXT.commands.mergeCells)}
-                data-mixed={homeState.merge === 'mixed' || undefined}
-                className={homeState.merge === 'mixed' ? 'border border-dashed border-slate-400' : undefined}
-                onClick={onMergeCells}
-              />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-
-            <RibbonGroup className="!w-[123px] overflow-hidden" group="number">
-              <Box className="w-28 pt-3">
-                <Select
-                  aria-label={translateRibbonText(locale, RIBBON_TEXT.groups.number)}
-                  title={isMixed('numberFormat') ? homeText(locale, 'mixed') : undefined}
-                  sizeVariant="sm"
-                  disabled={!canFormat({ numberFormat: 'general' })}
-                  value={isMixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'}
-                  onChange={(event) => {
-                    if (event.target.value !== '__mixed__') emitStyle({ numberFormat: event.target.value });
-                  }}
-                >
-                  {isMixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
-                  <option value="general">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatGeneral)}</option>
-                  <option value="$#,##0">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatCurrency)}</option>
-                  <option value="0%">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatPercent)}</option>
-                  <option value="#,##0">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatComma)}</option>
-                  <option value="0.00">{translateRibbonText(locale, RIBBON_TEXT.commands.numberFormatDecimal)}</option>
-                </Select>
-              </Box>
-              <CatalogButton id="numberFormatCurrency" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('numberFormat')} />
-              <CatalogButton id="numberFormatPercent" context={catalogContext} onExecute={executeCatalogResult} iconOnly mixed={isMixed('numberFormat')} />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-
-            <RibbonGroup className="!w-[353px] overflow-hidden" label={homeText(locale, 'styles')}>
-              <CatalogButton id="conditionalFormat" context={catalogContext} onExecute={executeCatalogResult} textBelow />
-              <CatalogButton id="formatAsTable" context={catalogContext} onExecute={executeCatalogResult} textBelow />
-              <CatalogButton id="formatCells" context={catalogContext} onExecute={executeCatalogResult} textBelow testId="ribbon-format-cells" />
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-
-            <RibbonGroup className="!w-[54px] overflow-hidden" group="cells">
-              <CatalogButton id="insertRowHome" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="insertColumnHome" context={catalogContext} onExecute={executeCatalogResult} iconOnly />
-              <CatalogButton id="shiftCells" context={catalogContext} onExecute={executeCatalogResult} />
-              <DropdownMenu
-                disabled={disabled}
-                trigger={(
-                  <Button size="sm" variant="ghost" disabled={disabled} icon="trash" title={homeText(locale, 'clear')}>
-                    {homeText(locale, 'clear')}
-                  </Button>
-                )}
-              >
-                {({ close }) => (
-                  <Stack gap="xs" className="p-1">
-                    <CatalogButton id="clearContents" context={catalogContext} onExecute={(result) => { close(); executeCatalogResult(result); }} className="w-full justify-start" />
-                    <CatalogButton id="clearFormats" context={catalogContext} onExecute={(result) => { close(); executeCatalogResult(result); }} className="w-full justify-start" />
-                    <CatalogButton id="clearAll" context={catalogContext} onExecute={(result) => { close(); executeCatalogResult(result); }} className="w-full justify-start" />
-                  </Stack>
-                )}
-              </DropdownMenu>
-              <DropdownMenu
-                disabled={disabled}
-                trigger={<Button size="sm" variant="ghost" disabled={disabled} icon="columns" title="Format">Format</Button>}
-              >
-                {({ close }) => (
-                  <Stack gap="xs" className="min-w-48 p-1">
-                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onOpenColumnWidth(); }}>Column Width…</Button>
-                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onAutoFitColumns(); }}>AutoFit Column Width</Button>
-                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onOpenDefaultColumnWidth(); }}>Default Column Width…</Button>
-                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onHideColumns(); }}>Hide Columns</Button>
-                    <Button size="sm" variant="ghost" className="justify-start" onClick={() => { close(); onUnhideColumns(); }}>Unhide Columns</Button>
-                  </Stack>
-                )}
-              </DropdownMenu>
-            </RibbonGroup>
-            <Divider orientation="vertical" className="h-[96px]" />
-
-            <RibbonGroup className="!w-[111px] overflow-hidden" group="editing">
-              <CatalogButton id="autoSum" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="sortRange" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="filterSelection" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="clearFilter" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="findReplace" context={catalogContext} onExecute={executeCatalogResult} />
-              <CatalogButton id="goTo" context={catalogContext} onExecute={executeCatalogResult} />
-              <Button
-                size="sm"
-                variant="ghost"
-                icon="shape-square"
-                disabled={disabled}
-                data-testid="home-selection-pane"
-                title={homeText(locale, 'selectionPane')}
-                onClick={() => onSessionIntent({ type: 'panel.open', panel: 'selectionPane' })}
-              >
-                {homeText(locale, 'selectionPane')}
-              </Button>
-            </RibbonGroup>
-          </Inline>
+          <HomeRibbon
+            context={catalogContext}
+            disabled={disabled}
+            homeState={homeState}
+            formatPainterActive={formatPainterActive}
+            layout={layout}
+            locale={locale}
+            onAutoFitColumns={onAutoFitColumns}
+            onBeginFormatPainter={onBeginFormatPainter}
+            onEmitStyle={emitStyle}
+            onHideColumns={onHideColumns}
+            onMergeCells={onMergeCells}
+            onOpenColumnWidth={onOpenColumnWidth}
+            onOpenDefaultColumnWidth={onOpenDefaultColumnWidth}
+            onUnhideColumns={onUnhideColumns}
+            renderCommand={renderHomeCommand}
+          />
         ) : null}
-
         {activeTab === 'insert' ? (
           <Inline gap="md" className="flex-wrap items-start">
             <RibbonGroup group="tablesPivots">

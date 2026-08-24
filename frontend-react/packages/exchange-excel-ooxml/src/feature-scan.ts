@@ -50,6 +50,7 @@ export function scanSnapshotFeatures(snapshot: WorkbookSnapshot): string[] {
   if (snapshot.definedNames && Object.keys(snapshot.definedNames).length > 0) {
     features.add('defined-names');
   }
+  if ((snapshot.cellStyleTemplates?.length ?? 0) > 0) features.add('cell-style-template');
 
   return [...features];
 }

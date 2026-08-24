@@ -20,7 +20,6 @@ export interface RibbonShellProps {
   /** Context tabs are session state supplied by the host, never workbook data. */
   contextualTabs?: readonly RibbonTabId[];
   disabled?: boolean;
-  licenseEntry?: ReactNode;
   onFileEntry?: () => void;
   onTabChange: (tab: RibbonTabId) => void;
   status?: ReactNode;
@@ -32,7 +31,6 @@ export function RibbonShell({
   children,
   contextualTabs = [],
   disabled = false,
-  licenseEntry,
   onFileEntry,
   onTabChange,
   status,
@@ -103,7 +101,6 @@ export function RibbonShell({
             </Tab>
           ))}
         </TabList>
-        {licenseEntry ? <Box className="ml-2 flex h-full items-center">{licenseEntry}</Box> : null}
         {status ? (
           <Inline gap="xs" className="ml-auto shrink-0 border-l border-slate-100 pl-3">
             {status}
