@@ -1053,6 +1053,7 @@ export class WorkbookSession {
     }
     this.assertPermission(commandId, resolvedParams);
     const result = this.runtime.commands.execute(commandId, resolvedParams);
+    if (commandId.startsWith('pivot.')) this.recomputeAllPivotResults();
     if (result.mutationCount > 0 && !commandId.startsWith('history.') && commandId !== 'pivot.refresh') {
       this.lastRepeatableCommand = { commandId, ...(resolvedParams === undefined ? {} : { params: structuredClone(resolvedParams) }) };
     }
@@ -2276,7 +2277,6 @@ export class WorkbookSession {
   }
   addPivot(pivot: PivotModel): void {
     this.runCommand('pivot.add', pivot);
-    this.recomputePivotResult(pivot.id);
     this.notify(`Pivot ${pivot.id} added`);
     this.refresh();
   }
@@ -2346,7 +2346,7 @@ export class WorkbookSession {
       source,
       target: { sheetId: targetSheetId, anchor: targetPosition },
       fieldCatalog: { fields: [] },
-      refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+       refreshPolicy: { mode: 'manual' as const, preserveFormatting: true, refreshOnLoad: false },
       layout: {
         rows: [],
         columns: [],
@@ -2373,7 +2373,6 @@ export class WorkbookSession {
       this.activeSheetId = targetSheetId;
       this.selectionService.resetForSheet(targetSheetId);
       this.panels = { ...this.panels, active: 'pivot', open: true };
-      this.notify('Blank PivotTable created. Drag fields into the Field List to build the report.');
       this.refresh();
       return pivotId;
     } catch (error) {
@@ -2386,8 +2385,6 @@ export class WorkbookSession {
   }
   updatePivotLayout(pivotId: string, layout: PivotLayout): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, layout });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
   updatePivotConfiguration(
     pivotId: string,
@@ -2396,13 +2393,9 @@ export class WorkbookSession {
       : never,
   ): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
   setPivotAggregate(pivotId: string, fieldId: string, summarizeBy: PivotAggregateFunction): void {
     this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, fieldId, summarizeBy });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
 
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {
@@ -2481,8 +2474,6 @@ export class WorkbookSession {
     const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
     if (!pivot) return;
     this.runCommand('pivot.refresh', { sheetId: this.activeSheetId, pivotId });
-    this.recomputePivotResult(pivotId);
-    this.refresh();
   }
   removePivot(id: string): void {
     this.runCommand('pivot.remove', id);
@@ -2550,6 +2541,12 @@ export class WorkbookSession {
     } catch {
       delete this.runtime.pivotResults[pivotId];
     }
+  }
+  private recomputeAllPivotResults(): void {
+    const pivots = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots);
+    const activeIds = new Set(pivots.map((pivot) => pivot.id));
+    for (const pivotId of Object.keys(this.runtime.pivotResults)) if (!activeIds.has(pivotId)) delete this.runtime.pivotResults[pivotId];
+    for (const pivot of pivots) this.recomputePivotResult(pivot.id);
   }
   addShape(drawing: DrawingObject, payload: ShapeDrawingPayload): void {
     if (drawing.kind !== 'shape' || payload.kind !== 'shape') {

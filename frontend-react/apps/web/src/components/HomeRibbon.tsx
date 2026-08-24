@@ -108,7 +108,7 @@ export function HomeRibbon({
     return id ? renderCommand(id, options) : null;
   };
   const compact = breakpoint === 'compact';
-  const dense = layout.width < 1600;
+  const dense = layout.width < 1800;
   const narrow = breakpoint === 'narrow';
 
   if (narrow) {
@@ -149,6 +149,7 @@ export function HomeRibbon({
               <Button
                 aria-label={homeText(locale, 'formatPainter')}
                 aria-pressed={formatPainterActive}
+                data-testid="home-format-painter"
                 disabled={!canFormat}
                 icon="palette"
                 iconOnly
@@ -164,7 +165,7 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[205px]' : 'w-[260px]'} group="font">
+        <HomeGroup className={dense ? 'w-[230px]' : 'w-[260px]'} group="font">
           <Stack gap="xs" className="px-1 pt-2">
             <Inline gap="xs" className="h-8 flex-nowrap items-start">
               <Box className={dense ? 'w-[96px] shrink-0' : 'w-[124px] shrink-0'}>
@@ -174,8 +175,8 @@ export function HomeRibbon({
                 </Select>
               </Box>
               <TextInput aria-label={homeText(locale, 'fontSize')} className={dense ? '!w-[42px]' : '!w-[48px]'} disabled={!canFormat} inputMode="decimal" value={mixed('fontSizePx') ? '' : String(Math.round(pixelsToPoints(cellStyle.fontSizePx ?? pointsToPixels(11))))} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 1 && value <= 409) onEmitStyle({ fontSizePx: pointsToPixels(value) }); }} />
-              <Button aria-label="Increase font size" disabled={!canFormat} onClick={() => onEmitStyle({ fontSizePx: Math.min(pointsToPixels(409), (cellStyle.fontSizePx ?? pointsToPixels(11)) + pointsToPixels(1)) })} size="sm" variant="ghost" className={`${dense ? '!w-5 text-sm' : '!w-7 text-base'} !h-8 !min-h-0 rounded-none px-0 font-semibold text-[#2572bc]`}>A</Button>
-              <Button aria-label="Decrease font size" disabled={!canFormat} onClick={() => onEmitStyle({ fontSizePx: Math.max(pointsToPixels(1), (cellStyle.fontSizePx ?? pointsToPixels(11)) - pointsToPixels(1)) })} size="sm" variant="ghost" className={`${dense ? '!w-5 text-[10px]' : '!w-7 text-xs'} !h-8 !min-h-0 rounded-none px-0 font-semibold text-[#2572bc]`}>A</Button>
+              <Button aria-label={homeText(locale, 'increaseFontSize')} disabled={!canFormat} onClick={() => onEmitStyle({ fontSizePx: Math.min(pointsToPixels(409), (cellStyle.fontSizePx ?? pointsToPixels(11)) + pointsToPixels(1)) })} size="sm" variant="ghost" className={`${dense ? '!w-5 text-sm' : '!w-7 text-base'} !h-8 !min-h-0 rounded-none px-0 font-semibold text-[#2572bc]`}>A</Button>
+              <Button aria-label={homeText(locale, 'decreaseFontSize')} disabled={!canFormat} onClick={() => onEmitStyle({ fontSizePx: Math.max(pointsToPixels(1), (cellStyle.fontSizePx ?? pointsToPixels(11)) - pointsToPixels(1)) })} size="sm" variant="ghost" className={`${dense ? '!w-5 text-[10px]' : '!w-7 text-xs'} !h-8 !min-h-0 rounded-none px-0 font-semibold text-[#2572bc]`}>A</Button>
             </Inline>
             <Inline gap="none" className="h-8 flex-nowrap items-start">
               {command('font.bold', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}
@@ -206,7 +207,7 @@ export function HomeRibbon({
             </Stack>
             <Stack gap="none" className={dense ? 'w-[100px]' : compact ? 'w-[128px]' : 'w-[190px]'}>
               <Button aria-label={homeText(locale, 'wrapText')} disabled={!canFormat} icon="wrap-text" size="sm" variant="ghost" className="!h-8 !min-h-0 justify-start rounded-none" onClick={() => onEmitStyle({ wrapText: !cellStyle.wrapText })}>{homeText(locale, 'wrapText')}</Button>
-              <Button aria-label="Merge and center" disabled={!canFormat} icon="merge-cells" size="sm" variant="ghost" className="!h-8 !min-h-0 justify-start rounded-none" onClick={onMergeCells}>合并后居中</Button>
+              <Button aria-label={homeText(locale, 'mergeCenter')} disabled={!canFormat} icon="merge-cells" size="sm" variant="ghost" className="!h-8 !min-h-0 justify-start rounded-none" onClick={onMergeCells}>{homeText(locale, 'mergeCenter')}</Button>
               <Inline gap="none" className="h-7">{command('alignment.indent-decrease', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}{command('alignment.indent-increase', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}{command('alignment.orientation', { iconOnly: true, className: '!h-7 !min-h-0 !w-8 !rounded-none' })}</Inline>
             </Stack>
           </Inline>
@@ -223,7 +224,7 @@ export function HomeRibbon({
               {command('number.currency', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}
               {command('number.percent', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}
               {command('number.comma', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none px-0 text-[#2572bc]' })}
-              <DropdownMenu align="left" trigger={<Button aria-label="Decimal formats" icon="more-horizontal" iconOnly size="sm" variant="ghost" className="!h-8 !min-h-0 !w-8 !rounded-none" />}>
+              <DropdownMenu align="left" trigger={<Button aria-label={homeText(locale, 'decimalFormats')} icon="more-horizontal" iconOnly size="sm" variant="ghost" className="!h-8 !min-h-0 !w-8 !rounded-none" />}>
                 <Stack gap="none" className="min-w-[12rem] p-1">{command('number.decimal', { className: 'w-full justify-start' })}{command('number.decimal-decrease', { className: 'w-full justify-start' })}{command('number.decimal-increase', { className: 'w-full justify-start' })}</Stack>
               </DropdownMenu>
             </Inline>
@@ -231,18 +232,16 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={dense ? 'w-[220px]' : compact ? 'w-[290px]' : 'w-[435px]'} group="styles">
+        <HomeGroup className={dense ? 'w-[365px]' : compact ? 'w-[290px]' : 'w-[365px]'} group="styles">
           <Inline gap="none" className="h-[78px] items-start px-1 pt-1">
             {command('styles.conditional-format', { tile: true })}
             {command('styles.table', { tile: true })}
             {command('styles.format-cells', { tile: true, testId: 'ribbon-format-cells' })}
-            {!compact && !dense ? command('styles.validation', { tile: true }) : null}
-            {!compact && !dense ? command('styles.template', { tile: true }) : null}
-            {!compact && !dense ? command('styles.editor', { tile: true }) : null}
-            {compact || dense ? (
-              <DropdownMenu align="left" trigger={<Tile aria-label="More styles" disabled={disabled} icon="more-horizontal" type="button">更多</Tile>}>
+            {!compact ? command('styles.template', { tile: true }) : null}
+            {!compact ? command('styles.editor', { tile: true }) : null}
+            {compact ? (
+              <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'moreStyles')} disabled={disabled} icon="more-horizontal" type="button">{homeText(locale, 'moreStyles')}</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">
-                  {command('styles.validation', { className: 'w-full justify-start' })}
                   {command('styles.template', { className: 'w-full justify-start' })}
                   {command('styles.editor', { className: 'w-full justify-start' })}
                 </Stack>
@@ -252,8 +251,8 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={compact || dense ? 'w-[72px]' : 'w-[210px]'} group="cells">
-          {compact || dense ? (
+        <HomeGroup className={compact ? 'w-[72px]' : 'w-[220px]'} group="cells">
+          {compact ? (
             <DropdownMenu align="left" trigger={<Button aria-label="Cells" icon="columns" iconOnly size="sm" variant="ghost" className="m-5 !h-10 !w-10 rounded-none" />}>
               <Stack gap="none" className="min-w-[13rem] p-1">
                 {command('cells.insert', { className: 'w-full justify-start' })}
@@ -269,15 +268,15 @@ export function HomeRibbon({
             </DropdownMenu>
           ) : (
             <Inline gap="none" className="h-[78px] px-1 pt-1">
-              <DropdownMenu align="left" trigger={<Tile aria-label="插入" icon="plus" type="button">插入</Tile>}>
+              <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'insert')} icon="plus" type="button">{homeText(locale, 'insert')}</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('insertRowHome', { className: 'w-full justify-start' })}{renderCommand('insertColumnHome', { className: 'w-full justify-start' })}{renderCommand('shiftCells', { className: 'w-full justify-start' })}</Stack>
               </DropdownMenu>
-              <DropdownMenu align="left" trigger={<Tile aria-label="删除" icon="trash" type="button">删除</Tile>}>
+              <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'delete')} icon="trash" type="button">{homeText(locale, 'delete')}</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('deleteRow', { className: 'w-full justify-start' })}{renderCommand('deleteColumn', { className: 'w-full justify-start' })}{renderCommand('shiftCells', { className: 'w-full justify-start' })}</Stack>
               </DropdownMenu>
-              <DropdownMenu align="left" trigger={<Tile aria-label="Format cells" icon="columns" type="button">格式</Tile>}>
+              <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'format')} icon="columns" type="button">{homeText(locale, 'format')}</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">
-                  <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>列宽…</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onAutoFitColumns}>自动调整列宽</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onHideColumns}>隐藏列</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onUnhideColumns}>取消隐藏列</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onOpenDefaultColumnWidth}>默认列宽…</Button>
+                  <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>{homeText(locale, 'columnWidth')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onAutoFitColumns}>{homeText(locale, 'autoFitColumnWidth')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onHideColumns}>{homeText(locale, 'hideColumns')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onUnhideColumns}>{homeText(locale, 'unhideColumns')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onOpenDefaultColumnWidth}>{homeText(locale, 'defaultColumnWidth')}</Button>
                 </Stack>
               </DropdownMenu>
             </Inline>
@@ -285,8 +284,8 @@ export function HomeRibbon({
         </HomeGroup>
         <Divider orientation="vertical" className="h-[96px]" />
 
-        <HomeGroup className={compact || dense ? 'w-[118px]' : 'w-[235px]'} group="editing">
-          {compact || dense ? (
+        <HomeGroup className={compact ? 'w-[118px]' : 'w-[235px]'} group="editing">
+          {compact ? (
             <Inline gap="none" className="h-[78px] flex-wrap px-1 pt-1">
               {command('editing.autosum', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none' })}
               {command('editing.fill-down', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none' })}
@@ -296,12 +295,13 @@ export function HomeRibbon({
               {command('editing.find', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none' })}
             </Inline>
           ) : (
-            <Inline gap="none" className="h-[78px] px-1 pt-1">
-              {command('editing.autosum', { tile: true })}
-              {command('editing.fill-down', { tile: true })}
-              <DropdownMenu align="left" trigger={<Tile aria-label="More editing commands" disabled={disabled} icon="more-horizontal" type="button">编辑</Tile>}>
-                <Stack gap="none" className="min-w-[13rem] p-1">{command('editing.clear', { className: 'w-full justify-start' })}{command('editing.sort', { className: 'w-full justify-start' })}{command('editing.filter', { className: 'w-full justify-start' })}{command('editing.find', { className: 'w-full justify-start' })}</Stack>
-              </DropdownMenu>
+            <Inline gap="none" className="h-[78px] flex-wrap content-start px-1 pt-1">
+              {command('editing.autosum', { className: '!h-[34px] !min-h-0 !w-[72px] justify-start rounded-none px-1 text-[10px]' })}
+              {command('editing.fill-down', { className: '!h-[34px] !min-h-0 !w-[72px] justify-start rounded-none px-1 text-[10px]' })}
+              {command('editing.clear', { className: '!h-[34px] !min-h-0 !w-[72px] justify-start rounded-none px-1 text-[10px]' })}
+              {command('editing.sort', { className: '!h-[34px] !min-h-0 !w-[72px] justify-start rounded-none px-1 text-[10px]' })}
+              {command('editing.filter', { className: '!h-[34px] !min-h-0 !w-[72px] justify-start rounded-none px-1 text-[10px]' })}
+              {command('editing.find', { className: '!h-[34px] !min-h-0 !w-[72px] justify-start rounded-none px-1 text-[10px]' })}
             </Inline>
           )}
         </HomeGroup>

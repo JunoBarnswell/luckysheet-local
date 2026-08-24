@@ -17,10 +17,13 @@ import {
 } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
+import type { Locale } from '../i18n';
+import { pivotText } from '../components/pivot/pivot-localization';
 
 export interface EditorCommandControllerOptions {
   session: WorkbookSession;
   state: UiSnapshot;
+  locale: Locale;
   dispatchCommand: (descriptor: CommandDescriptor) => void;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
 }
@@ -84,6 +87,7 @@ function removePivotField(layout: PivotLayout, fieldId: string): PivotLayout {
 export function useEditorCommandController({
   session,
   state,
+  locale,
   dispatchCommand,
   dispatchSessionIntent,
 }: EditorCommandControllerOptions): EditorCommandController {
@@ -160,20 +164,18 @@ export function useEditorCommandController({
   const pivotSourceOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; source: PivotSource }> = [{
       id: "current-region",
-      label: `Current region · ${state.selectedSheet.name}`,
+      label: `${pivotText(locale, 'currentRegion')} · ${state.selectedSheet.name}`,
       source: { kind: "worksheet-range", range: currentDataRange },
     }];
-    for (const table of state.selectedSheet.sheetTables) options.push({ id: `sheet-table:${table.id}`, label: `Table · ${table.name}`, source: { kind: "table", tableId: table.id } });
-    for (const table of state.tables) options.push({ id: `data-table:${table.id}`, label: `Data table · ${table.name}`, source: { kind: "table", tableId: table.id } });
-    for (const name of state.definedNameModels) options.push({ id: `name:${name.name}`, label: `Named range · ${name.name}`, source: { kind: "named-range", name: name.name } });
-    for (const source of state.dataSources) options.push({ id: `source:${source.id}`, label: `Data source · ${source.name}`, source: { kind: "data-source", dataSourceId: source.id } });
+    for (const table of state.selectedSheet.sheetTables) options.push({ id: `sheet-table:${table.id}`, label: `${pivotText(locale, 'tableSource')} · ${table.name}`, source: { kind: "table", tableId: table.id } });
+    for (const name of state.definedNameModels) options.push({ id: `name:${name.name}`, label: `${pivotText(locale, 'namedRange')} · ${name.name}`, source: { kind: "named-range", name: name.name } });
     return options;
-  }, [currentDataRange, state.dataSources, state.definedNameModels, state.selectedSheet.name, state.selectedSheet.sheetTables, state.tables, state.version]);
+  }, [currentDataRange, locale, state.definedNameModels, state.selectedSheet.name, state.selectedSheet.sheetTables, state.version]);
 
   const createPivotFromDialog = (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => {
     const source = pivotSourceOptions.find((option) => option.id === request.sourceId)?.source;
     if (!source) {
-      session.notify("Select a valid PivotTable source");
+      session.notify(pivotText(locale, 'invalidSource'));
       return;
     }
     if (request.destination === "new-sheet") {
@@ -182,7 +184,7 @@ export function useEditorCommandController({
     }
     const target = parseRangeInput(request.targetReference ?? "", state.activeSheetId);
     if (!target) {
-      session.notify("Enter a valid PivotTable destination such as A1");
+      session.notify(pivotText(locale, 'invalidDestination'));
       return;
     }
     if (session.createPivotTable({ source, destination: { kind: "existing-sheet", sheetId: state.activeSheetId, anchor: { row: target.startRow, column: target.startColumn } } })) session.closeCreatePivotDialog();
@@ -191,7 +193,7 @@ export function useEditorCommandController({
   const updatePivotLayout = (nextLayout: PivotLayout) => {
     if (!activePivot) return;
     dispatchCommand({ commandId: "pivot.update", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, layout: nextLayout } });
-    session.notify("Pivot layout updated");
+    session.notify(pivotText(locale, 'layoutUpdated'));
   };
   const pivotCallbacks: PivotPanelCallbacks = {
     onCreate: () => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" }),
@@ -235,11 +237,11 @@ export function useEditorCommandController({
         existing.memberKeys = [...filter.memberKeys];
       } else next.filters.push({ kind: "manual", fieldId, mode: filter.mode, memberKeys: [...filter.memberKeys] });
       updatePivotLayout(next);
-      session.notify("Pivot filter updated");
+      session.notify(pivotText(locale, 'filterUpdated'));
     },
     onSortChange: (fieldId, sort) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, sort } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, sort } : field) }); },
     onGroupChange: (fieldId, group) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, group } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, group } : field) }); },
-    onRefresh: () => { if (activePivot) dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: activePivotSheetId, pivotId: activePivot.id } }); },
+    onRefresh: () => { if (activePivot) session.refreshPivot(activePivot.id); },
     onLayoutChange: (layout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), compact: layout === "compact", repeatLabels: layout === "tabular" }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
     onSlicerChange: (fieldId, enabled) => {
@@ -267,7 +269,7 @@ export function useEditorCommandController({
     },
   };
 
-  const pivotPanelState: PivotPanelState = { disabled: state.phase !== "ready", loading: state.phase === "loading", error: state.phase === "error" ? "Pivot data could not be loaded" : undefined, empty: pivotFields.length === 0 };
+  const pivotPanelState: PivotPanelState = { disabled: state.phase !== "ready", loading: state.phase === "loading", error: state.phase === "error" ? pivotText(locale, 'error') : undefined, empty: pivotFields.length === 0 };
 
   const executeShortcut = (id: string): boolean => {
     switch (id) {

@@ -8,7 +8,6 @@ import { PivotFieldArea } from '../pivot/PivotFieldArea';
 import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
 import { PivotSlicer } from '../pivot/PivotSlicer';
 import { PivotTimeline } from '../pivot/PivotTimeline';
-import { PivotValueEditor } from '../pivot/PivotValueEditor';
 import { pivotText } from '../pivot/pivot-localization';
 import type { PivotFieldArea as Area, PivotManualFilterState, PivotPanelCallbacks, PivotPanelSlots, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from '../pivot/pivot-contract';
 
@@ -43,6 +42,11 @@ function moveField(layout: PivotLayout, field: PivotFieldDefinition, area: Area,
   else if (area === 'rows') next.rows.splice(index, 0, { fieldId: field.fieldId });
   else next.values.splice(index, 0, { fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
   return next;
+}
+function defaultArea(field: PivotFieldDefinition): Area {
+  if (field.dataType === 'number') return 'values';
+  if (field.dataType === 'date') return 'columns';
+  return 'rows';
 }
 function filterStates(layout: PivotLayout): Record<string, PivotManualFilterState> {
   const result: Record<string, PivotManualFilterState> = {};
@@ -85,7 +89,26 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   };
   const removeFromArea = (fieldId: string) => applyLayout(removeField(layout, fieldId));
   const drop = (area: Area) => (event: DragEvent<HTMLElement>, index?: number) => { event.preventDefault(); const fieldId = event.dataTransfer.getData('application/x-pivot-field'); if (fieldId) changeArea(fieldId, area, index ?? idsFor(area).length); };
-  const toggle = (fieldId: string, checked: boolean) => checked ? changeArea(fieldId, 'rows', rows.length) : removeFromArea(fieldId);
+  const toggle = (fieldId: string, checked: boolean) => {
+    if (!checked) { removeFromArea(fieldId); return; }
+    const field = fields.find((candidate) => candidate.fieldId === fieldId);
+    if (!field) return;
+    const area = defaultArea(field);
+    changeArea(fieldId, area, idsFor(area).length);
+  };
+  const toggleVisible = (fieldIds: readonly string[], checked: boolean) => {
+    let next = cloneLayout(layout);
+    for (const fieldId of fieldIds) {
+      next = removeField(next, fieldId);
+      if (!checked) continue;
+      const field = fields.find((candidate) => candidate.fieldId === fieldId);
+      if (!field) continue;
+      const area = defaultArea(field);
+      const index = area === 'filters' ? next.filters.length : area === 'columns' ? next.columns.length : area === 'rows' ? next.rows.length : next.values.length;
+      next = moveField(next, field, area, index);
+    }
+    applyLayout(next);
+  };
   const filter = (fieldId: string, nextFilter: PivotManualFilterState) => applyLayout({ ...cloneLayout(layout), filters: layout.filters.map((entry) => entry.fieldId === fieldId ? { kind: 'manual' as const, fieldId, mode: nextFilter.mode, memberKeys: [...nextFilter.memberKeys] } : entry) });
   const sort = (fieldId: string, nextSort: Parameters<NonNullable<PivotPanelCallbacks['onSortChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry) });
   const group = (fieldId: string, nextGroup: Parameters<NonNullable<PivotPanelCallbacks['onGroupChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry) });
@@ -99,10 +122,10 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
       </Inline>
       <Stack gap="sm" className="min-h-0 flex-1 px-4 pb-2">
         <Text size="sm">{pivotText(locale, 'addFields')}</Text>
-        <PivotFieldCatalog locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(fieldId, area) => changeArea(fieldId, area, idsFor(area).length)} />
+        <PivotFieldCatalog locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(fieldId, area) => changeArea(fieldId, area, idsFor(area).length)} />
         <Text size="sm">{pivotText(locale, 'dragFields')}</Text>
         <Box className="grid min-h-[260px] flex-1 grid-cols-2 grid-rows-2 border border-[#bdbdbd]">
-          {(['filters', 'columns', 'rows', 'values'] as const).map((area, index) => <Box key={area} className={`${index % 2 === 0 ? 'border-r border-[#bdbdbd]' : ''}${index < 2 ? ' border-b border-[#bdbdbd]' : ''}`}><PivotFieldArea locale={locale} area={area} fields={fields} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onRemove={(fieldId) => removeFromArea(fieldId)} onMoveByKeyboard={(fieldId, itemIndex, direction) => changeArea(fieldId, area, itemIndex + direction)} onSort={sort} />{area === 'values' ? values.map((value) => <PivotValueEditor key={value.fieldId} fields={fields} value={value} disabled={disabled} onChange={valueChange} />) : null}</Box>)}
+          {(['filters', 'columns', 'rows', 'values'] as const).map((area, index) => <Box key={area} className={`${index % 2 === 0 ? 'border-r border-[#bdbdbd]' : ''}${index < 2 ? ' border-b border-[#bdbdbd]' : ''}`}><PivotFieldArea locale={locale} area={area} fields={fields} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onRemove={(fieldId) => removeFromArea(fieldId)} onMoveByKeyboard={(fieldId, itemIndex, direction) => changeArea(fieldId, area, itemIndex + direction)} onSort={sort} onValueChange={valueChange} /></Box>)}
         </Box>
         <Inline gap="sm" className="h-9 justify-between">
           <CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => { setDelayUpdate(event.target.checked); setDraft(cloneLayout(pivot.layout)); setDirty(false); }} />
@@ -110,9 +133,9 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
         </Inline>
       </Stack>
       <Inline gap="sm" className="h-12 shrink-0 border-t border-[#d0d0d0] px-4">
-        <DropdownMenu align="left" trigger={<Button size="sm" variant="ghost">{pivotText(locale, 'view')}</Button>}><Stack gap="sm" className="w-[19rem] p-2">{callbacks ? <PivotActions locale={locale} callbacks={callbacks} layout={layoutMode(layout)} slicerFieldIds={slicerControls.map((control) => control.fieldId)} fields={fields} disabled={disabled} /> : null}{slicerControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); return field ? <PivotSlicer key={control.id} field={field} mode={control.mode} memberKeys={control.memberKeys} disabled={disabled} onChange={(next) => callbacks?.onSlicerFilterChange?.(control.id, next)} /> : null; })}{timelineControls.map((control) => <PivotTimeline key={control.id} fieldLabel={fields.find((field) => field.fieldId === control.fieldId)?.name ?? control.fieldId} start={control.start} end={control.end} disabled={disabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(control.id, start, end)} onClear={() => callbacks?.onTimelineChange(undefined)} />)}</Stack></DropdownMenu>
+        <DropdownMenu align="left" trigger={<Button size="sm" variant="ghost">{pivotText(locale, 'view')}</Button>}><Stack gap="sm" className="w-[19rem] p-2">{callbacks ? <PivotActions locale={locale} callbacks={callbacks} layout={layoutMode(layout)} slicerFieldIds={slicerControls.map((control) => control.fieldId)} fields={fields} disabled={disabled} /> : null}{slicerControls.map((control) => { const field = fields.find((candidate) => candidate.fieldId === control.fieldId); return field ? <PivotSlicer key={control.id} locale={locale} field={field} mode={control.mode} memberKeys={control.memberKeys} disabled={disabled} onChange={(next) => callbacks?.onSlicerFilterChange?.(control.id, next)} /> : null; })}{timelineControls.map((control) => <PivotTimeline key={control.id} locale={locale} fieldLabel={fields.find((field) => field.fieldId === control.fieldId)?.name ?? control.fieldId} start={control.start} end={control.end} disabled={disabled} onChange={(start, end) => callbacks?.onTimelineRangeChange?.(control.id, start, end)} onClear={() => callbacks?.onTimelineChange(undefined)} />)}</Stack></DropdownMenu>
         <Select aria-label={pivotText(locale, 'view')} sizeVariant="sm" value={layoutMode(layout)} onChange={(event) => callbacks?.onLayoutChange(event.target.value as 'compact' | 'outline' | 'tabular')}><option value="compact">{pivotText(locale, 'compact')}</option><option value="outline">{pivotText(locale, 'outline')}</option><option value="tabular">{pivotText(locale, 'tabular')}</option></Select>
-        <DropdownMenu align="right" trigger={<Button aria-label="Advanced PivotTable fields" icon="plus" iconOnly size="sm" variant="ghost" className="ml-auto" />}><Box className="w-[22rem] p-3"><PivotCalculatedEditor fields={fields} calculatedFields={layout.calculatedFields ?? []} calculatedItems={layout.calculatedItems ?? []} disabled={disabled} onFieldsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedFields: next })} onItemsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedItems: next })} /></Box></DropdownMenu>
+        <DropdownMenu align="right" trigger={<Button aria-label={pivotText(locale, 'advancedFields')} icon="plus" iconOnly size="sm" variant="ghost" className="ml-auto" />}><Box className="w-[22rem] p-3"><PivotCalculatedEditor locale={locale} fields={fields} calculatedFields={layout.calculatedFields ?? []} calculatedItems={layout.calculatedItems ?? []} disabled={disabled} onFieldsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedFields: next })} onItemsChange={(next) => applyLayout({ ...cloneLayout(layout), calculatedItems: next })} /></Box></DropdownMenu>
         {slots?.statusSummary ? <Text size="xs" tone="subtle">{slots.statusSummary}</Text> : null}
       </Inline>
     </Panel>

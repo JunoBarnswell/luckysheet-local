@@ -40,8 +40,11 @@ import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
 import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
 import type { ColumnDimensionController } from '../editor/column-dimension-controller';
+import type { Locale } from '../i18n';
+import { pivotText } from './pivot/pivot-localization';
 
 export interface SheetCanvasProps {
+  locale: Locale;
   sheet: CanvasSheetSnapshot;
   sheetId: string;
   selection: SelectionState;
@@ -215,10 +218,17 @@ export function isPivotValueCell(cell: PivotProjectionCell): boolean {
 }
 
 /** Convert a derived projection cell to the render-engine cell contract. */
-export function pivotProjectionCellRenderData(cell: PivotProjectionCell): CellRenderData {
+export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US'): CellRenderData {
+  const localizedText = cell.captionKey === 'row-labels'
+    ? pivotText(locale, 'rowLabels')
+    : cell.captionKey === 'grand-total'
+      ? pivotText(locale, 'grandTotal')
+      : cell.captionKey === 'loading'
+        ? pivotText(locale, 'loadingPivot')
+        : cell.text;
   const text = cell.kind === "expand-toggle"
-    ? `${cell.expanded ? "▾" : "▸"} ${cell.text}`
-    : cell.text;
+    ? `${cell.expanded ? "▾" : "▸"} ${localizedText}`
+    : localizedText;
   const style: NonNullable<CellRenderData["style"]> = {
     background: cell.kind === "title"
       ? "#dbeafe"
@@ -255,6 +265,7 @@ export interface PivotShowDetailsRequest {
 }
 
 export function SheetCanvas({
+  locale,
   sheet,
   sheetId,
   selection,
@@ -349,7 +360,7 @@ export function SheetCanvas({
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
     const pivotCell = findPivotProjectionCell(sheet, row, column);
-    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell);
+    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale);
 
     const cell = sheet.getCell(row, column);
     const merge = sheet.merges.find((span) =>
@@ -398,7 +409,7 @@ export function SheetCanvas({
           }
         : undefined,
     };
-  }, [sheet, showFormulas]);
+  }, [locale, sheet, showFormulas]);
 
   const pivotStatusProjections = useMemo(
     () => Object.values(sheet.pivotProjections).filter((projection) =>
@@ -833,6 +844,7 @@ export function SheetCanvas({
                 key={`${projection.pivotId}:${projection.refresh.status}:${projection.refresh.error ?? ""}`}
                 engine={engineRef.current}
                 projection={projection}
+                locale={locale}
                 scrollTick={scrollTick}
               />
             )) : null}
@@ -840,10 +852,11 @@ export function SheetCanvas({
 
           {editorRect && editingCell ? (
             <Box
-              className="absolute z-20 border-2 border-blue-600 bg-white shadow-lg"
-              style={{ left: editorRect.x - 1, top: editorRect.y - 1, minWidth: Math.max(editorRect.width + 2, 120) }}
+              className="absolute z-20 overflow-hidden rounded-none border border-[#5292f7] bg-white"
+              style={{ left: editorRect.x, top: editorRect.y, width: editorRect.width, height: editorRect.height }}
             >
               <CellEditor
+                cellStyle={sheet.getCell(editingCell.row, editingCell.column)?.style}
                 initialText={formulaDraft}
                 onCancel={onCancelEdit}
                 onChange={onFormulaDraftChange}
@@ -907,32 +920,34 @@ function parseCellValue(cell: CanvasCellSnapshot): string | number | boolean | n
   return cell.value;
 }
 
-function pivotProjectionStatusMessage(projection: PivotGridProjection): string | null {
+function pivotProjectionStatusMessage(projection: PivotGridProjection, locale: Locale): string | null {
   if (projection.collision.status === "collision") {
     const reason = projection.collision.reasons.length > 0
       ? projection.collision.reasons.join(", ")
       : "target range is occupied";
-    return `PivotTable ${projection.pivotId} cannot expand: ${reason}`;
+    return `${pivotText(locale, 'pivotCollision')}: ${reason}`;
   }
   if (projection.refresh.status === "error") {
-    return `PivotTable ${projection.pivotId} error: ${projection.refresh.error ?? "refresh failed"}`;
+    return `${pivotText(locale, 'pivotRefreshFailed')}: ${projection.refresh.error ?? ''}`;
   }
-  if (projection.refresh.status === "refreshing") return `PivotTable ${projection.pivotId}: Loading PivotTable…`;
-  if (projection.refresh.status === "stale") return `PivotTable ${projection.pivotId}: Refresh required`;
+  if (projection.refresh.status === "refreshing") return pivotText(locale, 'loadingPivot');
+  if (projection.refresh.status === "stale") return pivotText(locale, 'pivotRefreshRequired');
   return null;
 }
 
 function PivotProjectionStatusNotice({
   engine,
+  locale,
   projection,
   scrollTick,
 }: {
   engine: CanvasRenderEngine | null;
+  locale: Locale;
   projection: PivotGridProjection;
   scrollTick: number;
 }): React.ReactElement | null {
   void scrollTick;
-  const message = pivotProjectionStatusMessage(projection);
+  const message = pivotProjectionStatusMessage(projection, locale);
   if (!engine || !message) return null;
   const rect = engine.contentRangeToScreenRects(projection.occupiedRange)[0];
   if (!rect) return null;

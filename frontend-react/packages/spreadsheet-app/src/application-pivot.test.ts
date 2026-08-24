@@ -93,4 +93,16 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(app.listPivotControls(pivot.id).length, 1);
     assert.ok(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]);
   });
+
+  it('recomputes the Pivot projection when pivot.update enters through the public dispatch path', () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-dispatch';
+    app.addPivot(pivot);
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+    const nextLayout = structuredClone(pivot.layout);
+    nextLayout.values = [{ fieldId: amount.fieldId, summarizeBy: 'count' }];
+    assert.equal(app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } }), true);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
+  });
 });

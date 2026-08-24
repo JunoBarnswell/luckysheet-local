@@ -1,9 +1,12 @@
 import { Button, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { useState } from 'react';
 import type { PivotCalculatedField, PivotCalculatedItem, PivotFieldDefinition } from '@react-sheets/core-model';
+import type { Locale } from '../../i18n';
+import { pivotText } from './pivot-localization';
 
 export interface PivotCalculatedEditorProps {
   fields: readonly PivotFieldDefinition[];
+  locale: Locale;
   calculatedFields: readonly PivotCalculatedField[];
   calculatedItems: readonly PivotCalculatedItem[];
   disabled?: boolean;
@@ -11,7 +14,7 @@ export interface PivotCalculatedEditorProps {
   onItemsChange: (items: PivotCalculatedItem[]) => void;
 }
 
-export function PivotCalculatedEditor({ calculatedFields, calculatedItems, disabled = false, fields, onFieldsChange, onItemsChange }: PivotCalculatedEditorProps) {
+export function PivotCalculatedEditor({ calculatedFields, calculatedItems, disabled = false, fields, locale, onFieldsChange, onItemsChange }: PivotCalculatedEditorProps) {
   const [fieldName, setFieldName] = useState('');
   const [fieldFormula, setFieldFormula] = useState('');
   const [itemField, setItemField] = useState(fields[0]?.fieldId ?? '');
@@ -19,16 +22,16 @@ export function PivotCalculatedEditor({ calculatedFields, calculatedItems, disab
   const [itemFormula, setItemFormula] = useState('');
   return (
     <Stack gap="sm" className="border-t border-line/80 pt-3">
-      <Text size="xs" weight="semibold" tone="muted">CALCULATED FIELDS / ITEMS</Text>
+      <Text size="xs" weight="semibold" tone="muted">{pivotText(locale, 'calculatedFieldsItems')}</Text>
       <Stack gap="xs" className="rounded-lg border border-slate-200 p-2">
-        <Text size="xs" weight="semibold">Calculated field</Text>
-        <Inline gap="xs"><TextInput aria-label="Calculated field name" disabled={disabled} placeholder="Name" value={fieldName} onChange={(event) => setFieldName(event.target.value)} /><TextInput aria-label="Calculated field formula" disabled={disabled} placeholder="=Amount*1.15" value={fieldFormula} onChange={(event) => setFieldFormula(event.target.value)} /><Button disabled={disabled || !fieldName.trim() || !fieldFormula.trim()} size="xs" variant="primary" onClick={() => { const name = fieldName.trim(); const fieldId = `calculated:${name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-') || 'field'}`; if (calculatedFields.some((entry) => entry.fieldId === fieldId)) return; onFieldsChange([...calculatedFields, { fieldId, name, formula: fieldFormula.trim() }]); setFieldName(''); setFieldFormula(''); }}>Add</Button></Inline>
-        {calculatedFields.map((field) => <Inline key={field.name} gap="xs" className="items-center"><Text size="xs" className="min-w-0 flex-1 truncate">{field.name} · {field.formula}</Text><Button disabled={disabled} size="xs" variant="ghost" onClick={() => onFieldsChange(calculatedFields.filter((item) => item.name !== field.name))}>Remove</Button></Inline>)}
+        <Text size="xs" weight="semibold">{pivotText(locale, 'calculatedField')}</Text>
+        <Inline gap="xs"><TextInput aria-label={pivotText(locale, 'calculatedName')} disabled={disabled} placeholder={pivotText(locale, 'calculatedName')} value={fieldName} onChange={(event) => setFieldName(event.target.value)} /><TextInput aria-label={pivotText(locale, 'calculatedFormula')} disabled={disabled} placeholder="=Amount*1.15" value={fieldFormula} onChange={(event) => setFieldFormula(event.target.value)} /><Button disabled={disabled || !fieldName.trim() || !fieldFormula.trim()} size="xs" variant="primary" onClick={() => { const name = fieldName.trim(); const fieldId = `calculated:${name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-') || 'field'}`; if (calculatedFields.some((entry) => entry.fieldId === fieldId)) return; onFieldsChange([...calculatedFields, { fieldId, name, formula: fieldFormula.trim() }]); setFieldName(''); setFieldFormula(''); }}>{pivotText(locale, 'add')}</Button></Inline>
+        {calculatedFields.map((field) => <Inline key={field.name} gap="xs" className="items-center"><Text size="xs" className="min-w-0 flex-1 truncate">{field.name} · {field.formula}</Text><Button disabled={disabled} size="xs" variant="ghost" onClick={() => onFieldsChange(calculatedFields.filter((item) => item.name !== field.name))}>{pivotText(locale, 'remove')}</Button></Inline>)}
       </Stack>
       <Stack gap="xs" className="rounded-lg border border-slate-200 p-2">
-        <Text size="xs" weight="semibold">Calculated item</Text>
-        <Inline gap="xs"><Select aria-label="Calculated item field" disabled={disabled || fields.length === 0} sizeVariant="sm" value={itemField} onChange={(event) => setItemField(event.target.value)}>{fields.map((field) => <option key={field.fieldId} value={field.fieldId}>{field.name}</option>)}</Select><TextInput aria-label="Calculated item name" disabled={disabled} placeholder="Item name" value={itemName} onChange={(event) => setItemName(event.target.value)} /><TextInput aria-label="Calculated item formula" disabled={disabled} placeholder="=Amount*3" value={itemFormula} onChange={(event) => setItemFormula(event.target.value)} /><Button disabled={disabled || !itemField || !itemName.trim() || !itemFormula.trim()} size="xs" variant="primary" onClick={() => { const name = itemName.trim(); const fieldId = `calculated-item:${itemField}:${name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-') || 'item'}`; if (calculatedItems.some((entry) => entry.fieldId === fieldId)) return; onItemsChange([...calculatedItems, { fieldId, targetFieldId: itemField, name, formula: itemFormula.trim() }]); setItemName(''); setItemFormula(''); }}>Add</Button></Inline>
-        {calculatedItems.map((item) => <Inline key={`${item.fieldId}-${item.name}`} gap="xs" className="items-center"><Text size="xs" className="min-w-0 flex-1 truncate">{item.fieldId}:{item.name} · {item.formula}</Text><Button disabled={disabled} size="xs" variant="ghost" onClick={() => onItemsChange(calculatedItems.filter((entry) => entry !== item))}>Remove</Button></Inline>)}
+        <Text size="xs" weight="semibold">{pivotText(locale, 'calculatedItem')}</Text>
+        <Inline gap="xs"><Select aria-label={pivotText(locale, 'calculatedItem')} disabled={disabled || fields.length === 0} sizeVariant="sm" value={itemField} onChange={(event) => setItemField(event.target.value)}>{fields.map((field) => <option key={field.fieldId} value={field.fieldId}>{field.name}</option>)}</Select><TextInput aria-label={pivotText(locale, 'calculatedItemName')} disabled={disabled} placeholder={pivotText(locale, 'calculatedItemName')} value={itemName} onChange={(event) => setItemName(event.target.value)} /><TextInput aria-label={pivotText(locale, 'calculatedFormula')} disabled={disabled} placeholder="=Amount*3" value={itemFormula} onChange={(event) => setItemFormula(event.target.value)} /><Button disabled={disabled || !itemField || !itemName.trim() || !itemFormula.trim()} size="xs" variant="primary" onClick={() => { const name = itemName.trim(); const fieldId = `calculated-item:${itemField}:${name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-') || 'item'}`; if (calculatedItems.some((entry) => entry.fieldId === fieldId)) return; onItemsChange([...calculatedItems, { fieldId, targetFieldId: itemField, name, formula: itemFormula.trim() }]); setItemName(''); setItemFormula(''); }}>{pivotText(locale, 'add')}</Button></Inline>
+        {calculatedItems.map((item) => <Inline key={`${item.fieldId}-${item.name}`} gap="xs" className="items-center"><Text size="xs" className="min-w-0 flex-1 truncate">{item.name} · {item.formula}</Text><Button disabled={disabled} size="xs" variant="ghost" onClick={() => onItemsChange(calculatedItems.filter((entry) => entry !== item))}>{pivotText(locale, 'remove')}</Button></Inline>)}
       </Stack>
     </Stack>
   );

@@ -53,6 +53,8 @@ import {
   buildPivotGridProjection,
   computePivotResult,
   getLastValidPivotResult,
+  pivotResultMatchesLayoutAndFilter,
+  pivotResultMatchesRevision,
   type PivotProjectionSourceState,
 } from './features/pivot/engine';
 import { cellAddress, columnLabel } from './address';
@@ -310,7 +312,15 @@ export function buildCanvasSheetSnapshot(
   const pivotProjections: Record<string, PivotGridProjection> = {};
   for (const pivot of sheet.pivots) {
     const sourceState = pivotSourceState(pivot, dataContent);
-    let cachedResult = cachedPivotResults[pivot.id] ?? getLastValidPivotResult(workbook, pivot.id);
+    const runtimeResult = cachedPivotResults[pivot.id];
+    const retainedResult = getLastValidPivotResult(workbook, pivot.id);
+    const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result)
+      || (pivot.refreshPolicy.mode === 'manual' && pivotResultMatchesLayoutAndFilter(workbook, pivot, result));
+    let cachedResult = reusable(runtimeResult)
+      ? runtimeResult
+      : reusable(retainedResult)
+        ? retainedResult
+        : undefined;
     if (!cachedResult && pivot.source.kind !== 'data-source') {
       try {
         cachedResult = computePivotResult(workbook, pivot);
@@ -323,7 +333,7 @@ export function buildCanvasSheetSnapshot(
     try {
       pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState });
       const retained = getLastValidPivotResult(workbook, pivot.id);
-      if (!pivotResults[pivot.id] && retained) pivotResults[pivot.id] = retained;
+      if (!pivotResults[pivot.id] && reusable(retained)) pivotResults[pivot.id] = retained;
     } catch {
       // Invalid target/source is surfaced by command validation. The snapshot
       // remains renderable for the rest of the worksheet.

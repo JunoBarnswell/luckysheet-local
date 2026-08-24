@@ -2,9 +2,12 @@ import { Button, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { useMemo, useState } from 'react';
 import { createPivotMemberKey, pivotMemberKey, pivotMemberKeyEquals, type PivotFieldDefinition, type PivotMemberKey, type PivotScalar } from '@react-sheets/core-model';
 import type { PivotFilterMode } from './pivot-contract';
+import type { Locale } from '../../i18n';
+import { pivotText } from './pivot-localization';
 
 export interface PivotSlicerProps {
   field: PivotFieldDefinition;
+  locale: Locale;
   mode: PivotFilterMode;
   memberKeys: readonly PivotMemberKey[];
   disabled?: boolean;
@@ -15,7 +18,7 @@ function keyFor(value: PivotScalar): PivotMemberKey {
   return createPivotMemberKey(value);
 }
 
-export function PivotSlicer({ disabled = false, field, memberKeys, mode, onChange }: PivotSlicerProps) {
+export function PivotSlicer({ disabled = false, field, locale, memberKeys, mode, onChange }: PivotSlicerProps) {
   const [search, setSearch] = useState('');
   const values = (field.values ?? []).map(String);
   const visibleValues = useMemo(() => values.filter((value) => value.toLowerCase().includes(search.toLowerCase())), [search, values]);
@@ -31,11 +34,11 @@ export function PivotSlicer({ disabled = false, field, memberKeys, mode, onChang
   const setAll = (next: boolean) => onChange(next ? { mode: 'all', memberKeys: [] } : { mode: 'include', memberKeys: [] });
   return (
     <Stack gap="xs" className="rounded-lg border border-blue-100 bg-blue-50/30 p-2">
-      <Text size="xs" weight="semibold">Slicer · {field.name}</Text>
+      <Text size="xs" weight="semibold">{pivotText(locale, 'slicerTitle')} · {field.name}</Text>
       <Button disabled={disabled} size="xs" variant="ghost" className="justify-start" onClick={() => setAll(!allSelected)}>
-        {allSelected ? 'Clear filter' : 'Select all'}
+        {pivotText(locale, allSelected ? 'clearFilter' : 'selectAll')}
       </Button>
-      <TextInput aria-label={`Search ${field.name}`} placeholder="Search items" value={search} onChange={(event) => setSearch(event.target.value)} />
+      <TextInput aria-label={`${pivotText(locale, 'searchItems')} ${field.name}`} placeholder={pivotText(locale, 'searchItems')} value={search} onChange={(event) => setSearch(event.target.value)} />
       <Stack gap="xs" className="max-h-40 overflow-auto">
         {visibleValues.map((value) => {
           const rawValue = (field.values ?? []).find((candidate) => String(candidate) === value) ?? value;

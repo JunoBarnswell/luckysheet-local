@@ -19,7 +19,7 @@ export function PivotActions({ callbacks, disabled = false, fields, layout, loca
   const dateFields = fields.filter((field) => field.dataType === 'date');
   const timelineField = dateFields.find((field) => field.fieldId === controlField)?.fieldId ?? dateFields[0]?.fieldId;
   return (
-    <Box as="section" aria-label="Pivot configuration actions" className="border-t border-line/80 pt-3">
+    <Box as="section" aria-label={pivotText(locale, 'configurationActions')} className="border-t border-line/80 pt-3">
       <Text size="xs" weight="semibold" tone="muted" className="mb-2 block">{pivotText(locale, 'configure')}</Text>
       <Inline gap="xs" className="flex-wrap">
         <Button disabled={disabled} icon="refresh" size="xs" variant="outline" onClick={callbacks.onRefresh}>{pivotText(locale, 'refresh')}</Button>

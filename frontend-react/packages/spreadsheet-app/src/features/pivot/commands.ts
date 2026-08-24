@@ -187,6 +187,10 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
     ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
   };
   assertPivotDefinition(context.workbook, next);
+  const projection = buildPivotGridProjection(context.workbook, next);
+  if (projection.collision.status === 'collision') {
+    throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
+  }
   Object.assign(pivot, next);
 }
 

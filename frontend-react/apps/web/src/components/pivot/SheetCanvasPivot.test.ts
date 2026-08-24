@@ -92,4 +92,10 @@ describe("SheetCanvas Pivot projection boundary", () => {
     assert.equal(isPivotValueCell(cell), true);
     assert.equal(pivotProjectionCellRenderData(cell).displayValue, "42");
   });
+
+  it("localizes semantic Pivot captions without changing the projection model", () => {
+    const cell = { id: 'pivot-1|caption', pivotId: 'pivot-1', row: 0, column: 0, kind: 'column-header' as const, value: null, text: 'Row Labels', captionKey: 'row-labels' as const };
+    assert.equal(pivotProjectionCellRenderData(cell, 'zh-CN').displayValue, '行标签');
+    assert.equal(pivotProjectionCellRenderData(cell, 'en-US').displayValue, 'Row Labels');
+  });
 });

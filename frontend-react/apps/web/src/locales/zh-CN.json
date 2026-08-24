@@ -29,6 +29,7 @@
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
     "selectedCell": "选中单元格",
+    "nameBoxOptions": "打开名称管理器",
     "formulaInput": "公式输入",
     "insertFunction": "插入函数向导",
     "cancel": "取消公式编辑",
@@ -168,7 +169,20 @@
     "shiftUpHint": "删除选区单元格并将后续内容上移。",
     "shiftRightHint": "插入空白单元格并将选区内容右移。",
     "shiftLeftHint": "删除选区单元格并将后续内容左移。",
-    "noColumns": "请先选择至少包含一列的区域再排序。"
+    "noColumns": "请先选择至少包含一列的区域再排序。",
+    "increaseFontSize": "增大字号",
+    "decreaseFontSize": "减小字号",
+    "mergeCenter": "合并后居中",
+    "decimalFormats": "小数位格式",
+    "moreStyles": "更多样式",
+    "insert": "插入",
+    "delete": "删除",
+    "format": "格式",
+    "columnWidth": "列宽…",
+    "autoFitColumnWidth": "自动调整列宽",
+    "hideColumns": "隐藏列",
+    "unhideColumns": "取消隐藏列",
+    "defaultColumnWidth": "默认列宽…"
   },
   "ribbon": {
     "comingSoon": "此选项卡的命令将在此显示。",
@@ -289,7 +303,7 @@
       "sortRange": "排序区域",
       "conditionalFormat": "条件格式",
       "cellTemplate": "单元格样式模板",
-      "cellEditor": "单元格编辑器",
+      "cellEditor": "单元格编辑器设置",
       "tableSheet": "集算表",
       "ganttSheet": "甘特表",
       "reportSheet": "报表",

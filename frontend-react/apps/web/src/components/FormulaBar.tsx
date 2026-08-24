@@ -12,6 +12,7 @@ export interface FormulaBarProps {
   onChange: (value: string) => void;
   onCommit: () => void;
   onNameBoxCommit?: (value: string) => void;
+  onOpenNameManager?: () => void;
   onOpenWizard?: () => void;
   phase: AppPhase;
 }

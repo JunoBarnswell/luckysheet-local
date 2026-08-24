@@ -15,7 +15,6 @@ import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
 import { ColumnDimensionController } from './column-dimension-controller';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
-import { DesignerHelpRail } from '../components/DesignerHelpRail';
 
 const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
@@ -91,11 +90,11 @@ export function EditorShell({
             onChange={session.setFormulaDraft.bind(session)}
             onCommit={() => { if (state.editSession) session.commitEdit("down"); else session.commitFormula(); }}
             onNameBoxCommit={(value) => session.selectAddress(value)}
+            onOpenNameManager={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
             onOpenWizard={() => dispatchSessionIntent({ type: "dialog.open", dialog: "function-wizard" })}
             phase={state.phase}
           />
         )}
-        floatingOverlay={<DesignerHelpRail />}
         isBusy={isBusy}
         ribbon={(
           <RibbonHost
@@ -156,6 +155,7 @@ export function EditorShell({
           <Box className="h-full min-h-0 min-w-0 flex-1">
             <Suspense fallback={<Box className="h-full min-h-0 w-full bg-canvas" />}>
               <SheetCanvas
+                locale={locale}
                 sheet={state.selectedSheet}
                 sheetId={state.activeSheetId}
                 selection={state.selection}

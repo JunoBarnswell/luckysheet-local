@@ -284,6 +284,8 @@ export interface PivotProjectionCell {
   kind: PivotProjectionCellKind;
   value: PivotScalar;
   text: string;
+  /** Locale-independent caption owned by the presentation layer. */
+  captionKey?: 'row-labels' | 'grand-total' | 'loading';
   nodeId?: string;
   resultCellId?: string;
   columnPath?: PivotScalar[];

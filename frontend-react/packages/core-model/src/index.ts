@@ -460,6 +460,12 @@ export interface SortCriterion {
 
 export class CellMatrix {
   private readonly rows = new Map<Row, Map<Column, CellData>>();
+  private revisionCounter = 0;
+
+  /** Monotonic content revision used by derived caches; it is not persisted. */
+  get revision(): number {
+    return this.revisionCounter;
+  }
 
   get(row: Row, column: Column): CellData | undefined {
     return this.rows.get(row)?.get(column);
@@ -472,12 +478,15 @@ export class CellMatrix {
       this.rows.set(row, rowMap);
     }
     rowMap.set(column, cell);
+    this.revisionCounter += 1;
   }
 
   delete(row: Row, column: Column): void {
     const rowMap = this.rows.get(row);
+    const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
     if (rowMap?.size === 0) this.rows.delete(row);
+    if (existed) this.revisionCounter += 1;
   }
 
   has(row: Row, column: Column): boolean {
@@ -485,6 +494,7 @@ export class CellMatrix {
   }
 
   clear(): void {
+    if (this.rows.size > 0) this.revisionCounter += 1;
     this.rows.clear();
   }
 

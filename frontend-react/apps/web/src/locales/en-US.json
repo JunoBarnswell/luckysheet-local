@@ -29,6 +29,7 @@
   "searchWorkbook": "Search workbook",
   "formulaBar": {
     "selectedCell": "Selected cell",
+    "nameBoxOptions": "Open Name Manager",
     "formulaInput": "Formula input",
     "insertFunction": "Insert Function Wizard",
     "cancel": "Cancel formula edit",
@@ -168,7 +169,20 @@
     "shiftUpHint": "Delete the selected cells and move cells up.",
     "shiftRightHint": "Insert blank cells and move the selected cells right.",
     "shiftLeftHint": "Delete the selected cells and move cells left.",
-    "noColumns": "Select a range with at least one column before sorting."
+    "noColumns": "Select a range with at least one column before sorting.",
+    "increaseFontSize": "Increase font size",
+    "decreaseFontSize": "Decrease font size",
+    "mergeCenter": "Merge & Center",
+    "decimalFormats": "Decimal formats",
+    "moreStyles": "More styles",
+    "insert": "Insert",
+    "delete": "Delete",
+    "format": "Format",
+    "columnWidth": "Column Width…",
+    "autoFitColumnWidth": "AutoFit Column Width",
+    "hideColumns": "Hide Columns",
+    "unhideColumns": "Unhide Columns",
+    "defaultColumnWidth": "Default Width…"
   },
   "ribbon": {
     "comingSoon": "Commands for this tab will appear here.",
@@ -289,7 +303,7 @@
       "sortRange": "Sort Range",
       "conditionalFormat": "Conditional Format",
       "cellTemplate": "Cell Style Template",
-      "cellEditor": "Cell Editor",
+      "cellEditor": "Cell Editor Settings",
       "tableSheet": "TableSheet",
       "ganttSheet": "GanttSheet",
       "reportSheet": "ReportSheet",

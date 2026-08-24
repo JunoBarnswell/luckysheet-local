@@ -114,6 +114,7 @@ export function formulaBarLabels(locale: Locale, phase: 'empty' | 'error' | 'loa
   const bundle = localeBundles[locale].formulaBar;
   return {
     selectedCell: bundle.selectedCell,
+    nameBoxOptions: bundle.nameBoxOptions,
     formulaInput: bundle.formulaInput,
     insertFunction: bundle.insertFunction,
     cancel: bundle.cancel,
