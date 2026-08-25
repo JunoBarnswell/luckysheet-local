@@ -117,8 +117,15 @@ describe('Ribbon UI command catalog', () => {
     });
     assert.deepEqual(buildRibbonCommand('clearContents', current), {
       type: 'command',
-      descriptor: { commandId: 'sheet.range.clear', params: { mode: 'contents' } },
+      descriptor: { commandId: 'sheet.range.clear', params: { family: 'contents' } },
     });
+    assert.deepEqual(buildRibbonCommand('clearCommentsNotes', current), {
+      type: 'command',
+      descriptor: { commandId: 'sheet.range.clear', params: { family: 'comments-and-notes' } },
+    });
+    assert.deepEqual(getRibbonSurfaces('home', 'editing', 'wide').filter((surface) => surface.menuId === 'control.clear-menu').map((surface) => surface.commandId), [
+      'clearContents', 'clearFormats', 'clearAll', 'clearCommentsNotes', 'clearHyperlinks',
+    ]);
     const pivotAction = buildRibbonCommand('pivotTable', current);
     assert.equal(pivotAction?.type, 'callback');
     if (pivotAction?.type === 'callback') pivotAction.invoke();

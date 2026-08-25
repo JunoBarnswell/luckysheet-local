@@ -876,7 +876,7 @@ export class WorkbookSession {
       mixedStyleKeys,
       merge: exactMerge ? 'full' : intersectsMerge ? 'mixed' : 'none',
       canFormat: this.canExecute('sheet.style.set', { style: {} }),
-      canEdit: this.canExecute('sheet.range.clear', { mode: 'contents' }),
+      canEdit: this.canExecute('sheet.range.clear', { family: 'contents' }),
       canStructure: this.canExecute('sheet.rows.insert', { count: 1 }),
       hasFilter: Boolean(activeAutoFilter),
       hasFilterCriteria: Object.values(activeAutoFilter?.columns ?? {}).some((column) => Boolean(column.criterion)),
@@ -1233,7 +1233,7 @@ export class WorkbookSession {
       return { ...input, sheetId, range: input.range ?? range };
     }
     if (commandId === 'sheet.range.clear') {
-      return { ...input, sheetId, range: input.range ?? range, mode: input.mode ?? 'contents' };
+      return { ...input, sheetId, range: input.range ?? range, family: input.family ?? 'contents' };
     }
     if (commandId === 'sheet.rows.insert' || commandId === 'sheet.rows.delete') {
       return { ...input, sheetId, at: input.at ?? range.startRow, count: input.count ?? 1 };
@@ -3771,11 +3771,11 @@ export class WorkbookSession {
     return outcome;
   }
   clearFormats(): void {
-    this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), mode: 'formats' } });
+    this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), family: 'formats' } });
   }
 
-  clearSelection(mode: 'contents' | 'formats' = 'contents'): void {
-    this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), mode } });
+  clearSelection(family: 'contents' | 'formats' = 'contents'): void {
+    this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), family } });
     this.syncDraftFromPrimary();
   }
 

@@ -29,6 +29,7 @@ import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-ta
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
+import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -61,6 +62,7 @@ export * from './text-input';
 export * from './home-commands';
 export * from './find-replace';
 export * from './cell-template-commands';
+export * from './clear-planner';
 
 
 export interface SetCellValueParams {
@@ -104,19 +106,10 @@ export interface SetRangeValuesParams {
   values: CellData[][];
 }
 
-export interface ClearRangeParams {
-  sheetId: string;
-  range: RangeRef;
-  mode?: 'all' | 'contents' | 'formats' | 'notes' | 'hyperlinks';
-}
-
 interface ClearRangeRestoreParams {
   sheetId: string;
   range: RangeRef;
-  cells: Array<{ row: number; column: number; value?: CellData }>;
-  notes: Array<{ row: number; column: number; note: import('@react-sheets/core-model').CellNote }>;
-  hyperlinks: Array<{ row: number; column: number; hyperlink: import('@react-sheets/core-model').CellHyperlink }>;
-  comments: import('@react-sheets/core-model').CommentThread[];
+  snapshot: ClearRangeSnapshot;
 }
 
 export interface AddSheetParams {
@@ -348,13 +341,15 @@ function setRangeAffectedRanges(value: SetRangeValuesParams): RangeRef[] {
 
 function isClearRangeMutation(value: unknown): value is ClearRangeParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
-    && (value.mode === undefined || value.mode === 'all' || value.mode === 'contents' || value.mode === 'formats' || value.mode === 'notes' || value.mode === 'hyperlinks');
+    && (value.family === 'all' || value.family === 'contents' || value.family === 'formats' || value.family === 'comments-and-notes' || value.family === 'hyperlinks');
 }
 
 function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestoreParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
-    && Array.isArray(value.cells) && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
-    && Array.isArray(value.notes) && Array.isArray(value.hyperlinks) && Array.isArray(value.comments);
+    && isRecord(value.snapshot)
+    && Array.isArray(value.snapshot.cells) && value.snapshot.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
+    && Array.isArray(value.snapshot.notes) && Array.isArray(value.snapshot.hyperlinks) && Array.isArray(value.snapshot.comments)
+    && (value.snapshot.conditionalFormats === undefined || Array.isArray(value.snapshot.conditionalFormats));
 }
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {
@@ -1197,64 +1192,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ClearRangeParams>({
     id: 'range.clear',
     handler: (item, context) => {
-    if (!isClearRangeMutation(item.params)) throw new Error('Invalid range.clear mutation payload');
-    const params = item.params;
-    const sheet = context.workbook.getSheet(params.sheetId);
-    for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-      for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
-        const current = sheet.cells.get(row, column);
-        if (params.mode === 'notes') {
-          if (current?.note || current?.comment) {
-            const next = { ...current };
-            delete next.note;
-            delete next.comment;
-            sheet.cells.set(row, column, next);
-          }
-          sheet.notes.delete(`${row}:${column}`);
-          continue;
-        }
-        if (params.mode === 'hyperlinks') {
-          sheet.hyperlinks.delete(`${row}:${column}`);
-          if (current?.hyperlink !== undefined || current?.hyperlinkDetail !== undefined) {
-            const next = { ...current };
-            delete next.hyperlink;
-            delete next.hyperlinkDetail;
-            sheet.cells.set(row, column, next);
-          }
-          continue;
-        }
-        if (params.mode === undefined || params.mode === 'all') sheet.hyperlinks.delete(`${row}:${column}`);
-        if (!current) continue;
-        if (params.mode === 'formats') {
-          const next = { ...current };
-          delete next.style;
-          delete next.styleId;
-          delete next.numberFormat;
-          delete next.displayValue;
-          sheet.cells.set(row, column, next);
-        } else if (params.mode === 'contents') {
-          const next = { ...current };
-          next.value = null;
-          delete next.formula;
-          delete next.displayValue;
-          sheet.cells.set(row, column, next);
-        } else {
-          sheet.cells.delete(row, column);
-        }
-      }
-    }
-    if (params.mode === undefined || params.mode === 'all') {
-      sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) =>
-        thread.row < params.range.startRow
-        || thread.row > params.range.endRow
-        || thread.column < params.range.startColumn
-        || thread.column > params.range.endColumn));
-      for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-        for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
-          sheet.notes.delete(`${row}:${column}`);
-        }
-      }
-    }
+      if (!isClearRangeMutation(item.params)) throw new Error('Invalid range.clear mutation payload');
+      const params = item.params;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      applyClearRangePlan(sheet, createClearRangePlan(sheet, params));
     },
     metadata: {
       schema: { name: 'ClearRange', validate: isClearRangeMutation },
@@ -1267,27 +1208,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ClearRangeRestoreParams>({
     id: 'range.clear.restore',
     handler: (item, context) => {
-    if (!isClearRangeRestoreMutation(item.params)) throw new Error('Invalid range.clear.restore mutation payload');
-    const params = item.params;
-    const sheet = context.workbook.getSheet(params.sheetId);
-    for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-      for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) {
-        sheet.cells.delete(row, column);
-        sheet.notes.delete(`${row}:${column}`);
-        sheet.hyperlinks.delete(`${row}:${column}`);
-      }
-    }
-    sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.filter((thread) =>
-      thread.row < params.range.startRow
-      || thread.row > params.range.endRow
-      || thread.column < params.range.startColumn
-      || thread.column > params.range.endColumn));
-    for (const item of params.cells) {
-      if (item.value) sheet.cells.set(item.row, item.column, structuredClone(item.value));
-    }
-    for (const item of params.notes) sheet.notes.set(`${item.row}:${item.column}`, structuredClone(item.note));
-    for (const item of params.hyperlinks) sheet.hyperlinks.set(`${item.row}:${item.column}`, structuredClone(item.hyperlink));
-    sheet.commentThreads.push(...structuredClone(params.comments));
+      if (!isClearRangeRestoreMutation(item.params)) throw new Error('Invalid range.clear.restore mutation payload');
+      const params = item.params;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      restoreClearRangeSnapshot(sheet, params.range, params.snapshot);
     },
     metadata: {
       schema: { name: 'ClearRangeRestore', validate: isClearRangeRestoreMutation },
@@ -1331,33 +1255,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.range.clear',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const previous: Array<{ row: number; column: number; value?: CellData }> = [];
-      const notes: ClearRangeRestoreParams['notes'] = [];
-      const hyperlinks: ClearRangeRestoreParams['hyperlinks'] = [];
-      const comments: ClearRangeRestoreParams['comments'] = [];
-      const range = {
-        ...params.range,
-        startRow: Math.min(params.range.startRow, params.range.endRow),
-        endRow: Math.max(params.range.startRow, params.range.endRow),
-        startColumn: Math.min(params.range.startColumn, params.range.endColumn),
-        endColumn: Math.max(params.range.startColumn, params.range.endColumn),
-      };
+      if (!isClearRangeMutation(params)) throw new Error('Invalid sheet.range.clear command payload');
+      const plan = createClearRangePlan(sheet, params);
+      const { range } = plan;
       const affectedRanges: RangeRef[] = [range];
-
-      for (let r = range.startRow; r <= range.endRow; r++) {
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          previous.push({ row: r, column: c, value: structuredClone(sheet.cells.get(r, c)) });
-          const note = sheet.notes.get(`${r}:${c}`);
-          if (note) notes.push({ row: r, column: c, note: structuredClone(note) });
-          const hyperlink = sheet.hyperlinks.get(`${r}:${c}`);
-          if (hyperlink) hyperlinks.push({ row: r, column: c, hyperlink: structuredClone(hyperlink) });
-        }
-      }
-      comments.push(...structuredClone(sheet.commentThreads.filter((thread) =>
-        thread.row >= range.startRow
-        && thread.row <= range.endRow
-        && thread.column >= range.startColumn
-        && thread.column <= range.endColumn)));
 
       context.applyMutation({
         id: 'range.clear',
@@ -1369,7 +1270,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           id: 'range.clear.restore',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, range, cells: previous, notes, hyperlinks, comments },
+          params: { sheetId: params.sheetId, range, snapshot: plan.snapshot },
           affectedRanges,
         }],
         apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, range }, affectedRanges }, context),

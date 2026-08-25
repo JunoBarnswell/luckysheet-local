@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class MutationDescriptorRegistry {
-    private static final Set<String> CLEAR_MODES = Set.of("all", "contents", "formats", "notes", "hyperlinks");
+    private static final Set<String> CLEAR_FAMILIES = Set.of("all", "contents", "formats", "comments-and-notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
             "automation.recording.changed", "banded.set",
             "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set",
@@ -587,13 +587,14 @@ public class MutationDescriptorRegistry {
 
         private void clearRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
             RangeRef range = requireOwnRange(root, sheetId, params);
-            String mode = params.path("mode").asText("all");
-            if (!CLEAR_MODES.contains(mode)) throw ServiceException.validation("Unsupported clear mode: " + mode);
-            if ("notes".equals(mode)) {
+            String family = params.path("family").asText(null);
+            if (!CLEAR_FAMILIES.contains(family)) throw ServiceException.validation("Unsupported clear family: " + family);
+            if ("comments-and-notes".equals(family)) {
                 SnapshotMutationSupport.removeNotes(sheet, range);
+                SnapshotMutationSupport.removeThreads(sheet, range);
                 return;
             }
-            if ("hyperlinks".equals(mode)) {
+            if ("hyperlinks".equals(family)) {
                 SnapshotMutationSupport.removeHyperlinks(sheet, range);
                 return;
             }
@@ -605,10 +606,10 @@ public class MutationDescriptorRegistry {
                     String key = Integer.toString(column);
                     JsonNode existing = cellRow.get(key);
                     if (existing == null || !existing.isObject()) continue;
-                    if ("all".equals(mode)) cellRow.remove(key);
+                    if ("all".equals(family)) cellRow.remove(key);
                     else {
                         ObjectNode next = ((ObjectNode) existing).deepCopy();
-                        if ("contents".equals(mode)) {
+                        if ("contents".equals(family)) {
                             next.putNull("value");
                             next.remove("formula");
                             next.remove("displayValue");
@@ -623,11 +624,12 @@ public class MutationDescriptorRegistry {
                 }
                 if (cellRow.isEmpty()) cells.remove(Integer.toString(row));
             }
-            if ("all".equals(mode)) {
+            if ("all".equals(family)) {
                 SnapshotMutationSupport.removeNotes(sheet, range);
                 SnapshotMutationSupport.removeThreads(sheet, range);
                 SnapshotMutationSupport.removeHyperlinks(sheet, range);
             }
+            if ("formats".equals(family) || "all".equals(family)) cropConditionalFormats(root, sheet, sheetId, range);
         }
 
         private void restoreRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
@@ -635,7 +637,8 @@ public class MutationDescriptorRegistry {
             SnapshotMutationSupport.clearCells(sheet, range);
             SnapshotMutationSupport.removeNotes(sheet, range);
             SnapshotMutationSupport.removeThreads(sheet, range);
-            JsonNode cells = params.get("cells");
+            ObjectNode snapshot = SnapshotMutationSupport.requiredObject(params, "snapshot");
+            JsonNode cells = snapshot.get("cells");
             if (cells == null || !cells.isArray()) throw ServiceException.validation("range.clear.restore cells must be an array");
             if (cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore is too large");
             for (JsonNode entry : cells) {
@@ -648,8 +651,83 @@ public class MutationDescriptorRegistry {
                     SnapshotMutationSupport.putCell(sheet, coordinate, value);
                 }
             }
-            SnapshotMutationSupport.restoreNotes(root, sheet, sheetId, range, params.get("notes"));
-            SnapshotMutationSupport.restoreThreads(root, sheet, sheetId, range, params.get("comments"));
+            SnapshotMutationSupport.restoreNotes(root, sheet, sheetId, range, snapshot.get("notes"));
+            SnapshotMutationSupport.restoreThreads(root, sheet, sheetId, range, snapshot.get("comments"));
+            restoreHyperlinks(root, sheet, sheetId, range, snapshot.get("hyperlinks"));
+            if (snapshot.has("conditionalFormats")) {
+                JsonNode rules = snapshot.get("conditionalFormats");
+                if (!rules.isArray()) throw ServiceException.validation("Range restore conditionalFormats must be an array");
+                sheet.set("conditionalFormats", rules.deepCopy());
+            }
+        }
+
+        private void restoreHyperlinks(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef range, JsonNode value) {
+            if (value == null || value.isNull()) return;
+            if (!value.isArray()) throw ServiceException.validation("Range restore hyperlinks must be an array");
+            ArrayNode hyperlinks = SnapshotMutationSupport.array(sheet, "hyperlinks");
+            SnapshotMutationSupport.removeHyperlinks(sheet, range);
+            for (JsonNode entry : value) {
+                if (!entry.isObject()) throw ServiceException.validation("Range restore hyperlink must be an object");
+                ObjectNode object = (ObjectNode) entry;
+                SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, object);
+                if (!SnapshotMutationSupport.contains(range, coordinate)) throw ServiceException.validation("Range restore hyperlink is outside its range");
+                JsonNode hyperlink = object.get("hyperlink");
+                if (hyperlink == null || !hyperlink.isObject()) throw ServiceException.validation("Range restore hyperlink payload is invalid");
+                ObjectNode next = hyperlinks.objectNode();
+                next.put("row", coordinate.row());
+                next.put("column", coordinate.column());
+                next.set("hyperlink", hyperlink.deepCopy());
+                hyperlinks.add(next);
+            }
+        }
+
+        private void cropConditionalFormats(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef clear) {
+            JsonNode existing = sheet.get("conditionalFormats");
+            if (existing == null || existing.isNull()) return;
+            if (!existing.isArray()) throw ServiceException.validation("conditionalFormats must be an array");
+            ArrayNode nextRules = JsonNodeFactory.instance.arrayNode();
+            for (JsonNode rule : existing) {
+                if (!rule.isObject()) throw ServiceException.validation("conditionalFormats rule must be an object");
+                ObjectNode copy = ((ObjectNode) rule).deepCopy();
+                JsonNode ranges = copy.get("ranges");
+                if (ranges == null || !ranges.isArray()) throw ServiceException.validation("conditionalFormats rule ranges must be an array");
+                ArrayNode remaining = JsonNodeFactory.instance.arrayNode();
+                for (JsonNode candidate : ranges) {
+                    RangeRef source = SnapshotMutationSupport.range(root, candidate);
+                    if (!sheetId.equals(source.sheetId())) throw ServiceException.validation("conditionalFormats rule targets another sheet");
+                    for (RangeRef part : subtractRange(source, clear)) remaining.add(rangeNode(part));
+                }
+                if (!remaining.isEmpty()) {
+                    copy.set("ranges", remaining);
+                    nextRules.add(copy);
+                }
+            }
+            sheet.set("conditionalFormats", nextRules);
+        }
+
+        private List<RangeRef> subtractRange(RangeRef source, RangeRef clear) {
+            if (source.startRow() > clear.endRow() || clear.startRow() > source.endRow()
+                    || source.startColumn() > clear.endColumn() || clear.startColumn() > source.endColumn()) return List.of(source);
+            int top = Math.max(source.startRow(), clear.startRow());
+            int bottom = Math.min(source.endRow(), clear.endRow());
+            int left = Math.max(source.startColumn(), clear.startColumn());
+            int right = Math.min(source.endColumn(), clear.endColumn());
+            List<RangeRef> result = new ArrayList<>();
+            if (source.startRow() < top) result.add(new RangeRef(source.sheetId(), source.startRow(), top - 1, source.startColumn(), source.endColumn()));
+            if (bottom < source.endRow()) result.add(new RangeRef(source.sheetId(), bottom + 1, source.endRow(), source.startColumn(), source.endColumn()));
+            if (source.startColumn() < left) result.add(new RangeRef(source.sheetId(), top, bottom, source.startColumn(), left - 1));
+            if (right < source.endColumn()) result.add(new RangeRef(source.sheetId(), top, bottom, right + 1, source.endColumn()));
+            return result;
+        }
+
+        private ObjectNode rangeNode(RangeRef range) {
+            ObjectNode node = JsonNodeFactory.instance.objectNode();
+            node.put("sheetId", range.sheetId());
+            node.put("startRow", range.startRow());
+            node.put("endRow", range.endRow());
+            node.put("startColumn", range.startColumn());
+            node.put("endColumn", range.endColumn());
+            return node;
         }
 
         private RangeRef requireOwnRange(ObjectNode root, String sheetId, ObjectNode params) {

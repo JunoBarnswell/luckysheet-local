@@ -164,7 +164,7 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
     id: 'range.clear',
     unitId: context.workbook.unitId,
     sheetId: range.sheetId,
-    params: { sheetId: range.sheetId, range, mode: 'contents' as const },
+    params: { sheetId: range.sheetId, range, family: 'contents' as const },
     affectedRanges,
     inverse: previous.map((entry) => ({
       id: 'cell.restore' as const,
