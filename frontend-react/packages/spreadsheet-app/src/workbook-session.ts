@@ -2907,7 +2907,7 @@ export class WorkbookSession {
       }
       const taskRevision = (this.pivotTaskGeneration.get(pivotId) ?? 0) + 1;
       this.pivotTaskGeneration.set(pivotId, taskRevision);
-      void readPivotBlockSource(normalizePivotDefinition(this.runtime.model, pivot), query, {
+      void readPivotBlockSource(normalizePivotDefinition(this.runtime.model, pivot, this.runtime.formula), query, {
         sourceSheetId: region.sheet.id,
         sourceRowStart: region.entry.headerRow + 1,
       }).then((result) => {
@@ -2928,7 +2928,7 @@ export class WorkbookSession {
       return;
     }
     try {
-      this.runtime.pivotResults[pivotId] = computePivotResult(this.runtime.model, pivot);
+      this.runtime.pivotResults[pivotId] = computePivotResult(this.runtime.model, pivot, this.runtime.formula);
     } catch {
       delete this.runtime.pivotResults[pivotId];
     }

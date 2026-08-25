@@ -196,6 +196,11 @@ export class FormulaEngine {
     return this.recalculationMode;
   }
 
+  /** Monotonic input/calculation generation used by derived consumers. */
+  getCalculationGeneration(): number {
+    return this.calculationGeneration;
+  }
+
   /**
    * Creates the actual browser Worker transport when one is available. Node
    * and other non-browser hosts retain the explicit inline implementation.

@@ -323,8 +323,8 @@ export function buildCanvasSheetSnapshot(
     const sourceState = pivotSourceState(pivot, dataContent);
     const runtimeResult = cachedPivotResults[pivot.id];
     const retainedResult = getLastValidPivotResult(workbook, pivot.id);
-    const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result)
-      || (pivot.refreshPolicy.mode === 'manual' && pivotResultMatchesLayoutAndFilter(workbook, pivot, result));
+    const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result, formula)
+      || (pivot.refreshPolicy.mode === 'manual' && pivotResultMatchesLayoutAndFilter(workbook, pivot, result, formula));
     let cachedResult = reusable(runtimeResult)
       ? runtimeResult
       : reusable(retainedResult)
@@ -332,7 +332,7 @@ export function buildCanvasSheetSnapshot(
         : undefined;
     if (!cachedResult && pivot.source.kind !== 'data-source') {
       try {
-        cachedResult = computePivotResult(workbook, pivot);
+        cachedResult = computePivotResult(workbook, pivot, formula);
       } catch {
         // The projection builder emits an explicit error state for malformed
         // synchronous definitions; it must not replace a retained result.
@@ -340,7 +340,7 @@ export function buildCanvasSheetSnapshot(
     }
     if (cachedResult) pivotResults[pivot.id] = cachedResult;
     try {
-      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState });
+      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula });
       const retained = getLastValidPivotResult(workbook, pivot.id);
       if (!pivotResults[pivot.id] && reusable(retained)) pivotResults[pivot.id] = retained;
     } catch {
