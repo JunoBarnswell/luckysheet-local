@@ -498,6 +498,11 @@ public class MutationDescriptorRegistry {
             String kind = pane.path("kind").asText();
             if (!Set.of("none", "frozen", "split").contains(kind)) throw ServiceException.validation("pane.kind is invalid");
             if ("none".equals(kind)) { sheet.set("pane", pane.deepCopy()); return; }
+            String state = pane.path("state").asText();
+            if (("frozen".equals(kind) && !Set.of("frozen", "frozenSplit").contains(state))
+                    || ("split".equals(kind) && !"split".equals(state))) {
+                throw ServiceException.validation("pane.state is invalid for pane.kind");
+            }
             for (String field : List.of("xSplit", "ySplit", "startRow", "startColumn")) {
                 if (!pane.path(field).isNumber() || pane.path(field).asDouble() < 0) throw ServiceException.validation("pane." + field + " must be non-negative");
             }
