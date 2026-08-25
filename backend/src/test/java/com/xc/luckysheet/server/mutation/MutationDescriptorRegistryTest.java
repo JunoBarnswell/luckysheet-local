@@ -601,7 +601,7 @@ class MutationDescriptorRegistryTest {
                  "layout":{"rows":[{"fieldId":"%s"}],"columns":[],"filters":[
                    {"kind":"manual","family":"manual","fieldId":"%s","mode":"all","memberKeys":[]},
                    {"kind":"condition","family":"label","fieldId":"%s","scope":"report","operator":"begins-with","value":"E"},
-                   {"kind":"top-items","family":"top-items","fieldId":"%s","scope":"field","count":1,"valueId":"%s","direction":"top"},
+                   {"kind":"top-items","family":"top-items","fieldId":"%s","scope":"field","valueId":"%s","direction":"top","mode":"items","threshold":1},
                    {"kind":"condition","family":"value","fieldId":"%s","operator":"between","value":10,"value2":50,"valueId":"%s"}],
                    "allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},
                    "values":[{"valueId":"%s","fieldId":"%s","summarizeBy":"sum"},{"valueId":"%s","fieldId":"%s","summarizeBy":"count"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},
@@ -623,6 +623,20 @@ class MutationDescriptorRegistryTest {
         duplicateValues.add(duplicateValues.get(0).deepCopy());
         OperationMutation duplicateValuesMutation = new OperationMutation("pivot.add", "sheet-1", duplicateValuesPivot);
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicateValuesMutation, WorkbookAclRole.EDITOR));
+
+        ObjectNode legacyTopItems = (ObjectNode) pivot.deepCopy();
+        ObjectNode legacyFilter = (ObjectNode) legacyTopItems.path("layout").path("filters").get(2);
+        legacyFilter.remove("mode");
+        legacyFilter.remove("threshold");
+        legacyFilter.put("count", 1);
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", legacyTopItems), WorkbookAclRole.EDITOR));
+
+        ObjectNode invalidTopMode = (ObjectNode) pivot.deepCopy();
+        ObjectNode invalidModeFilter = (ObjectNode) invalidTopMode.path("layout").path("filters").get(2);
+        invalidModeFilter.put("mode", "average");
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", invalidTopMode), WorkbookAclRole.EDITOR));
 
         ObjectNode invalidScopePivot = (ObjectNode) pivot.deepCopy();
         ((ObjectNode) invalidScopePivot.path("layout").path("filters").get(0)).put("scope", "workspace");

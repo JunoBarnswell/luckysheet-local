@@ -24,6 +24,7 @@ import type {
   PivotResultValueField,
   PivotScalar,
   PivotSort,
+  PivotTopBottomMode,
   PivotSource,
   PivotSourceRowPath,
   PivotTarget,
@@ -681,7 +682,8 @@ export function summarizePivotReportFilters(
         kind: 'top-items',
         family: 'top-items',
         active: true,
-        count: filter.count,
+        mode: filter.mode,
+        threshold: filter.threshold,
         direction: filter.direction,
         valueFieldName: valueName(filter.valueId),
       };
@@ -721,6 +723,18 @@ function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldC
   return { fieldId, sort, group: placement.group, subtotal: placement.subtotal ? structuredClone(placement.subtotal) : undefined };
 }
 
+function validateTopBottomThreshold(mode: PivotTopBottomMode, threshold: number): void {
+  if (!['items', 'percent', 'sum'].includes(mode) || !Number.isFinite(threshold) || threshold <= 0
+    || (mode === 'items' && (!Number.isSafeInteger(threshold) || threshold < 1))
+    || (mode === 'percent' && threshold > 100)) {
+    throw new Error('Pivot top-items threshold is invalid');
+  }
+}
+
+function validateTopBottomDirection(direction: 'top' | 'bottom'): void {
+  if (direction !== 'top' && direction !== 'bottom') throw new Error('Pivot top-items direction is invalid');
+}
+
 function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog, valueIds: ReadonlySet<string>): PivotFilter {
   const fieldId = resolveFieldId(filter.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId}`);
@@ -731,6 +745,9 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog, valueI
   if (filter.kind === 'top-items') {
     if (filter.family !== 'top-items') throw new Error(`Pivot top-items filter family is invalid: ${fieldId}`);
     if (!valueIds.has(filter.valueId)) throw new Error(`Unknown Pivot Values placement: ${filter.valueId}`);
+    if (Object.prototype.hasOwnProperty.call(filter, 'count')) throw new Error('Pivot top-items count is no longer supported; use threshold');
+    validateTopBottomDirection(filter.direction);
+    validateTopBottomThreshold(filter.mode, filter.threshold);
     return { ...filter, fieldId, valueId: filter.valueId };
   }
   if (!['label', 'date', 'value'].includes(filter.family)) throw new Error(`Pivot condition filter family is invalid: ${fieldId}`);
@@ -1349,23 +1366,63 @@ function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Colla
   }
 }
 
-function topItems(rows: SourceRow[], filters: PivotFilter[], values: readonly Pick<PivotValueField, 'valueId' | 'fieldId'>[]): SourceRow[] {
+function topItems(
+  rows: SourceRow[],
+  filters: PivotFilter[],
+  values: readonly PivotValueField[],
+  calculatedFields?: CalculatedFieldEvaluator,
+  definition?: PivotDefinition,
+): SourceRow[] {
   let result = rows;
   for (const filter of filters) {
     if (filter.kind !== 'top-items') continue;
     const fieldId = filter.fieldId;
-    const sourceFieldId = valueSourceFieldId(filter.valueId, values);
-    if (!Number.isInteger(filter.count) || filter.count < 1) throw new Error('Pivot top-items count must be a positive integer');
+    const valueField = values.find((value) => value.valueId === filter.valueId);
+    if (!valueField) throw new Error(`Pivot top-items references an unknown Values placement: ${filter.valueId}`);
+    validateTopBottomDirection(filter.direction);
+    validateTopBottomThreshold(filter.mode, filter.threshold);
+    const groupedField = definition
+      ? [...definition.layout.rows, ...definition.layout.columns].find((placement) => placement.fieldId === fieldId)?.group
+      : undefined;
     const buckets = new Map<string, SourceRow[]>();
     for (const row of result) {
-      const key = pivotMemberKey(createPivotMemberKey(row.values[fieldId] ?? null));
+      const member = groupedField ? grouped(row.values[fieldId] ?? null, groupedField) : row.values[fieldId] ?? null;
+      const key = pivotMemberKey(createPivotMemberKey(member));
       const bucket = buckets.get(key) ?? [];
       bucket.push(row);
       buckets.set(key, bucket);
     }
-    const ranked = [...buckets.values()].sort((left, right) => (pivotNumericValue(aggregatePivotValues(left, sourceFieldId, 'sum')) ?? 0) - (pivotNumericValue(aggregatePivotValues(right, sourceFieldId, 'sum')) ?? 0));
-    if (filter.direction === 'top') ranked.reverse();
-    result = ranked.slice(0, filter.count).flat();
+    const ranked = [...buckets.entries()].map(([key, bucket]) => ({
+      key,
+      bucket,
+      aggregate: pivotNumericValue(resultValue(bucket, { ...valueField, sourceFieldId: valueField.fieldId }, valueField.summarizeBy, calculatedFields)),
+    }));
+    ranked.sort((left, right) => {
+      const leftValue = left.aggregate ?? 0;
+      const rightValue = right.aggregate ?? 0;
+      const valueOrder = filter.direction === 'top' ? rightValue - leftValue : leftValue - rightValue;
+      return valueOrder || left.key.localeCompare(right.key);
+    });
+    let selected: typeof ranked;
+    if (filter.mode === 'items') {
+      selected = ranked.slice(0, filter.threshold);
+    } else {
+      // Excel's Percent and Sum modes select the ranked prefix whose
+      // aggregate reaches the requested target; they do not compare every
+      // member independently with the threshold.  This is also what keeps a
+      // selected Average/Count/Min/Max Values placement authoritative.
+      const target = filter.mode === 'percent'
+        ? ranked.reduce((total, entry) => total + (entry.aggregate ?? 0), 0) * filter.threshold / 100
+        : filter.threshold;
+      let accumulated = 0;
+      selected = [];
+      for (const entry of ranked) {
+        selected.push(entry);
+        accumulated += entry.aggregate ?? 0;
+        if (accumulated >= target) break;
+      }
+    }
+    result = selected.flatMap((entry) => entry.bucket);
   }
   return result;
 }
@@ -1430,7 +1487,8 @@ function slicerItemProjection(
   }
   const filteredRows = matchesControls(workbook, rows, pivot, drawingId)
     .filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator, definition)));
-  const availableRows = topItems(filteredRows, definition.layout.filters, definition.layout.values);
+  const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
+  const availableRows = topItems(filteredRows, definition.layout.filters, definition.layout.values, createCalculatedFieldEvaluator(calculatedPlan), definition);
   const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(row.values[payload.fieldId] ?? null))));
   for (const item of members.values()) {
     item.hasData = available.has(pivotMemberKey(item.key));
@@ -1729,7 +1787,7 @@ function computePivotResultFromTable(
   if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
   let filtered = matchesControls(workbook, rows, pivot);
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator, definition)));
-  filtered = topItems(filtered, definition.layout.filters, definition.layout.values);
+  filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition);
   const resultFields = resultValueFields(definition.layout);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields) : [{ values: [], rows: filtered }];
   const grandTotal: PivotResultCell = {

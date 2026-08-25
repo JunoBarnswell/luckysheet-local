@@ -317,6 +317,19 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     ...base.layout,
     rows: [{ fieldId: 'region', sort: { direction: 'ascending', by: 'value', valueId: 'amount' } }],
   } }), /placement identity is invalid/);
+  const topItems = {
+    ...base,
+    layout: {
+      ...base.layout,
+      rows: [{ fieldId: 'region' }],
+      filters: [{ kind: 'top-items', family: 'top-items', fieldId: 'region', valueId: 'value:amount', direction: 'top', mode: 'items', threshold: 2 }],
+    },
+  };
+  validatePivotDefinition(topItems);
+  assert.throws(() => validatePivotDefinition({ ...topItems, layout: { ...topItems.layout, filters: [{ ...topItems.layout.filters[0], count: 2 }] } } as never), /unsupported field/);
+  assert.throws(() => validatePivotDefinition({ ...topItems, layout: { ...topItems.layout, filters: [{ ...topItems.layout.filters[0], valueId: undefined }] } } as never), /top-items filter is invalid|placement identity is invalid/);
+  assert.throws(() => validatePivotDefinition({ ...topItems, layout: { ...topItems.layout, filters: [{ ...topItems.layout.filters[0], mode: 'average' }] } } as never), /top-items filter is invalid/);
+  assert.throws(() => validatePivotDefinition({ ...topItems, layout: { ...topItems.layout, filters: [{ ...topItems.layout.filters[0], mode: 'percent', threshold: 101 }] } } as never), /top-items filter is invalid/);
 });
 
 test('Pivot calculated definitions extend the effective field set without catalog duplication', () => {

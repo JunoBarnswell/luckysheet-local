@@ -13,12 +13,13 @@ import {
   type PivotMemberKey,
   type PivotScalar,
   type PivotSort,
+  type PivotTopBottomMode,
 } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { pivotTemplate, pivotText } from './pivot-localization';
 import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-member-filter';
 
-type FilterMode = 'values' | 'label' | 'date' | 'value';
+type FilterMode = 'values' | 'label' | 'date' | 'value' | 'top-items';
 
 export interface PivotValueSortOption {
   valueId: string;
@@ -52,8 +53,9 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
   const options = useMemo(() => memberOptions ?? values.map((value) => ({ key: member(value), value, label: formatPivotMember(value) })), [memberOptions, values]);
   const manualFilter = currentFilters.find((filter) => filter.kind === 'manual' && filter.family === 'manual');
   const conditionFilter = currentFilters.find((filter) => filter.kind === 'condition');
+  const topBottomFilter = currentFilters.find((filter) => filter.kind === 'top-items');
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<FilterMode>(conditionFilter?.family === 'value' || field.dataType === 'number' && conditionFilter ? 'value' : conditionFilter?.family === 'date' || field.dataType === 'date' && conditionFilter ? 'date' : conditionFilter ? 'label' : 'values');
+  const [mode, setMode] = useState<FilterMode>(topBottomFilter?.kind === 'top-items' ? 'top-items' : conditionFilter?.family === 'value' || field.dataType === 'number' && conditionFilter ? 'value' : conditionFilter?.family === 'date' || field.dataType === 'date' && conditionFilter ? 'date' : conditionFilter ? 'label' : 'values');
   const [operator, setOperator] = useState<Extract<PivotFilter, { kind: 'condition' }>['operator']>(conditionFilter?.kind === 'condition' ? conditionFilter.operator : 'equals');
   const [conditionValue, setConditionValue] = useState<PivotScalar>(conditionFilter?.kind === 'condition' ? conditionFilter.value : '');
   const [conditionValue2, setConditionValue2] = useState<PivotScalar>(conditionFilter?.kind === 'condition' ? conditionFilter.value2 ?? '' : '');
@@ -62,6 +64,10 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
   const [showSortOptions, setShowSortOptions] = useState(false);
   const [manualMode, setManualMode] = useState<'all' | 'include' | 'exclude'>(() => manualFilter?.mode ?? 'all');
   const [selected, setSelected] = useState<PivotMemberKey[]>(() => [...(manualFilter?.mode === 'all' ? [] : manualFilter?.memberKeys ?? [])]);
+  const [topDirection, setTopDirection] = useState<'top' | 'bottom'>(() => topBottomFilter?.kind === 'top-items' ? topBottomFilter.direction : 'top');
+  const [topMode, setTopMode] = useState<PivotTopBottomMode>(() => topBottomFilter?.kind === 'top-items' ? topBottomFilter.mode : 'items');
+  const [topValueId, setTopValueId] = useState(() => topBottomFilter?.kind === 'top-items' ? topBottomFilter.valueId : valueFields[0]?.valueId ?? '');
+  const [topThreshold, setTopThreshold] = useState<number>(() => topBottomFilter?.kind === 'top-items' ? topBottomFilter.threshold : 10);
   const visibleValues = useMemo(() => options.filter((option) => option.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, PIVOT_MEMBER_DISPLAY_LIMIT), [query, options]);
   const manualState = { mode: manualMode, memberKeys: selected };
   const selectedHas = (option: PivotFilterMemberOption) => pivotManualMemberSelected(manualState, option.key);
@@ -73,7 +79,12 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
   };
   const apply = () => {
     if (sort?.by === 'value' && !sort.valueId) return;
-    if (mode === 'values') {
+    if (mode === 'top-items') {
+      if (!topValueId || !Number.isFinite(topThreshold) || topThreshold <= 0
+        || (topMode === 'items' && (!Number.isSafeInteger(topThreshold) || topThreshold < 1))
+        || (topMode === 'percent' && topThreshold > 100)) return;
+      onApply({ kind: 'top-items', family: 'top-items', scope, fieldId: field.fieldId, valueId: topValueId, direction: topDirection, mode: topMode, threshold: topThreshold }, sort, 'top-items');
+    } else if (mode === 'values') {
       const filter: PivotFilter | undefined = manualMode === 'all'
         ? undefined
         : { kind: 'manual', family: 'manual', scope, fieldId: field.fieldId, mode: manualMode, memberKeys: [...selected] };
@@ -97,7 +108,17 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
         <Button icon="filter" disabled={currentFilters.length === 0} size="sm" variant="ghost" className="!h-9 !justify-start rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => onApply(undefined, sort, 'all')}>{pivotTemplate(locale, 'clearFieldFilter', { field: field.name })}</Button>
         {field.dataType === 'date' ? <Button size="sm" variant={mode === 'date' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none px-4 text-[13px]" onClick={() => setMode('date')}><Text as="span" size="sm">{pivotText(locale, 'dateFilter')}</Text><Icon name="chevron-right" size="xs" /></Button> : <Button size="sm" variant={mode === 'label' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none px-4 text-[13px]" onClick={() => setMode('label')}><Text as="span" size="sm">{pivotText(locale, 'labelFilter')}</Text><Icon name="chevron-right" size="xs" /></Button>}
         {field.dataType === 'number' ? <Button size="sm" variant={mode === 'value' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => setMode('value')}><Text as="span" size="sm">{pivotText(locale, 'valueFilter')}</Text><Icon name="chevron-right" size="xs" /></Button> : null}
-        {mode !== 'values' ? (
+        <Button size="sm" disabled={valueFields.length === 0} variant={mode === 'top-items' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => setMode('top-items')}><Text as="span" size="sm">{pivotText(locale, 'topBottomFilter')}</Text><Icon name="chevron-right" size="xs" /></Button>
+        {mode === 'top-items' ? (
+          <Stack gap="xs" className="border-b border-[#d7d7d7] p-3">
+            <Inline gap="xs">
+              <Select aria-label={pivotText(locale, 'topBottomFilter')} sizeVariant="sm" value={topDirection} onChange={(event) => setTopDirection(event.target.value as typeof topDirection)}><option value="top">{pivotText(locale, 'top')}</option><option value="bottom">{pivotText(locale, 'bottom')}</option></Select>
+              <Select aria-label={pivotText(locale, 'topBottomMode')} sizeVariant="sm" value={topMode} onChange={(event) => setTopMode(event.target.value as PivotTopBottomMode)}><option value="items">{pivotText(locale, 'items')}</option><option value="percent">{pivotText(locale, 'percent')}</option><option value="sum">{pivotText(locale, 'sum')}</option></Select>
+            </Inline>
+            <Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={topValueId} onChange={(event) => setTopValueId(event.target.value)}>{valueFields.map((value) => <option key={value.valueId} value={value.valueId}>{value.label}</option>)}</Select>
+            <TextInput aria-label={pivotText(locale, 'threshold')} type="number" min={topMode === 'items' ? 1 : 0.000001} max={topMode === 'percent' ? 100 : undefined} step={topMode === 'items' ? 1 : 'any'} value={String(topThreshold)} onChange={(event) => setTopThreshold(Number(event.target.value))} />
+          </Stack>
+        ) : mode !== 'values' ? (
           <Stack gap="xs" className="border-b border-[#d7d7d7] p-3">
             <Select aria-label={pivotText(locale, 'filterMode')} sizeVariant="sm" value={operator} onChange={(event) => { const next = event.target.value as typeof operator; setOperator(next); if (mode === 'date' && next !== 'equals' && next !== 'between') setDynamicDate(undefined); }}>
               {mode === 'label' ? <><option value="equals">=</option><option value="not-equals">≠</option><option value="begins-with">{pivotText(locale, 'beginsWith')}</option><option value="not-begins-with">{pivotText(locale, 'notBeginsWith')}</option><option value="ends-with">{pivotText(locale, 'endsWith')}</option><option value="not-ends-with">{pivotText(locale, 'notEndsWith')}</option><option value="contains">{locale === 'zh-CN' ? '包含' : 'Contains'}</option><option value="not-contains">{pivotText(locale, 'notContains')}</option><option value="between">{pivotText(locale, 'between')}</option><option value="not-between">{pivotText(locale, 'notBetween')}</option><option value="greater-than">&gt;</option><option value="greater-or-equal">≥</option><option value="less-than">&lt;</option><option value="less-or-equal">≤</option></> : mode === 'date' ? <><option value="equals">=</option><option value="not-equals">≠</option><option value="before">{locale === 'zh-CN' ? '之前' : 'Before'}</option><option value="after">{locale === 'zh-CN' ? '之后' : 'After'}</option><option value="between">{pivotText(locale, 'between')}</option><option value="not-between">{pivotText(locale, 'notBetween')}</option></> : <><option value="equals">=</option><option value="not-equals">≠</option><option value="greater-than">&gt;</option><option value="greater-or-equal">≥</option><option value="less-than">&lt;</option><option value="less-or-equal">≤</option><option value="between">{pivotText(locale, 'between')}</option><option value="not-between">{pivotText(locale, 'notBetween')}</option></>}

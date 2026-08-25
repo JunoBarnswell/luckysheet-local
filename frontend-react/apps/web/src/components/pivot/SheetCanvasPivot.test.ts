@@ -110,14 +110,14 @@ describe("SheetCanvas Pivot projection boundary", () => {
         { kind: 'manual', family: 'manual', active: false, mode: 'all', count: 0, memberValues: [] },
         { kind: 'condition', family: 'label', active: true, operator: 'begins-with', value: 'N' },
         { kind: 'condition', family: 'date', active: true, operator: 'between', value: '2024-01-01', value2: '2024-12-31' },
-        { kind: 'top-items', family: 'top-items', active: true, direction: 'top', count: 3, valueFieldName: 'Amount' },
+        { kind: 'top-items', family: 'top-items', active: true, direction: 'top', mode: 'items', threshold: 3, valueFieldName: 'Amount' },
       ],
     };
     const text = pivotFilterSummaryText(active, 'en-US');
     assert.match(text, /Region:/);
     assert.match(text, /Begins With/);
     assert.match(text, /Between/);
-    assert.match(text, /Top 3 by Amount/);
+    assert.match(text, /Top Items 3 by Amount/);
     assert.doesNotMatch(text, /Region: All/);
     assert.match(pivotFilterSummaryText(active, 'zh-CN'), /标签筛选/);
   });

@@ -56,6 +56,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Set<String> FILTER_KINDS = Set.of("manual", "condition", "top-items");
     private static final Set<String> FILTER_SCOPES = Set.of("report", "field");
     private static final Set<String> MANUAL_MODES = Set.of("all", "include", "exclude");
+    private static final Set<String> TOP_BOTTOM_MODES = Set.of("items", "percent", "sum");
     private static final Set<String> LABEL_FILTER_OPERATORS = Set.of(
             "equals", "not-equals", "begins-with", "not-begins-with", "ends-with", "not-ends-with",
             "contains", "not-contains", "between", "not-between", "greater-than", "greater-or-equal",
@@ -666,12 +667,19 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 if (filter.has("wholeDay") && !filter.get("wholeDay").isBoolean()) throw ServiceException.validation("Pivot condition filter wholeDay is invalid");
             }
             case "top-items" -> {
-                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "scope", "count", "valueId", "direction"), "Pivot top-items filter");
+                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "scope", "valueId", "direction", "mode", "threshold"), "Pivot top-items filter");
                 if (!"top-items".equals(SnapshotMutationSupport.text(filter, "family"))) throw ServiceException.validation("Pivot top-items filter family is invalid");
                 requireField(fieldIds, filter);
                 if (filter.has("scope") && !FILTER_SCOPES.contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot top-items filter scope is invalid");
-                JsonNode count = filter.get("count");
-                if (count == null || !count.isIntegralNumber() || count.intValue() < 1) throw ServiceException.validation("Pivot top-items count is invalid");
+                String mode = SnapshotMutationSupport.text(filter, "mode");
+                if (!TOP_BOTTOM_MODES.contains(mode)) throw ServiceException.validation("Pivot top-items mode is invalid");
+                JsonNode threshold = filter.get("threshold");
+                double numericThreshold = threshold == null || !threshold.isNumber() ? Double.NaN : threshold.asDouble();
+                if (!Double.isFinite(numericThreshold) || numericThreshold <= 0
+                        || ("items".equals(mode) && (threshold == null || !threshold.isIntegralNumber() || threshold.asLong() < 1))
+                        || ("percent".equals(mode) && numericThreshold > 100)) {
+                    throw ServiceException.validation("Pivot top-items threshold is invalid");
+                }
                 if (!Set.of("top", "bottom").contains(SnapshotMutationSupport.text(filter, "direction"))) throw ServiceException.validation("Pivot top-items direction is invalid");
                 requireValue(valueIds, filter, "valueId");
             }

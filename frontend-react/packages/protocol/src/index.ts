@@ -580,10 +580,14 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       if (filter.family === 'date' && filter.dynamic !== undefined && !['equals', 'between'].includes(String(filter.operator))) throw new Error('Pivot dynamic date operator is invalid');
       if (filter.wholeDay !== undefined && (filter.family !== 'date' || typeof filter.wholeDay !== 'boolean')) throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
-      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueId', 'direction'], 'Pivot top-items filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'valueId', 'direction', 'mode', 'threshold'], 'Pivot top-items filter');
       if (filter.family !== 'top-items') throw new Error('Pivot top-items filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
-      if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
+      if (!isNonEmptyString(filter.valueId) || !['top', 'bottom'].includes(String(filter.direction))
+        || !['items', 'percent', 'sum'].includes(String(filter.mode))
+        || typeof filter.threshold !== 'number' || !Number.isFinite(filter.threshold) || filter.threshold <= 0
+        || (filter.mode === 'items' && (!Number.isSafeInteger(filter.threshold) || filter.threshold < 1))
+        || (filter.mode === 'percent' && filter.threshold > 100)) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
     const scope = filter.scope ?? (axisFieldIds.has(filter.fieldId) ? 'field' : 'report');
     if (scope === 'field' && !axisFieldIds.has(filter.fieldId)) throw new Error('Pivot field filter must target a row or column field');

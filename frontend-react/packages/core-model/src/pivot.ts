@@ -320,6 +320,9 @@ export interface PivotFieldPlacement {
 /** The independent predicate family used to identify a Pivot filter slot. */
 export type PivotFilterFamily = 'manual' | 'label' | 'date' | 'value' | 'top-items';
 
+/** The selection unit used by a native Pivot top/bottom value filter. */
+export type PivotTopBottomMode = 'items' | 'percent' | 'sum';
+
 export type PivotLabelFilterOperator = 'equals' | 'not-equals' | 'begins-with' | 'not-begins-with' | 'ends-with' | 'not-ends-with' | 'contains' | 'not-contains' | 'between' | 'not-between' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
 export type PivotDateFilterOperator = 'equals' | 'not-equals' | 'before' | 'after' | 'between' | 'not-between';
 export type PivotValueFilterOperator = 'equals' | 'not-equals' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal' | 'between' | 'not-between';
@@ -398,9 +401,12 @@ export type PivotFilter =
     family: 'top-items';
     fieldId: string;
     scope?: 'report' | 'field';
-    count: number;
+    /** A concrete Values placement, not the source field identity. */
     valueId: string;
     direction: 'top' | 'bottom';
+    mode: PivotTopBottomMode;
+    /** Positive item count, percentage, or aggregate threshold according to mode. */
+    threshold: number;
   };
 
 /**
@@ -431,7 +437,8 @@ export type PivotReportFilterSummaryEntry =
     kind: 'top-items';
     family: 'top-items';
     active: true;
-    count: number;
+    mode: PivotTopBottomMode;
+    threshold: number;
     direction: 'top' | 'bottom';
     valueFieldName: string;
   };
@@ -947,7 +954,15 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     if (filter.scope === 'field' && !axisFields.has(filter.fieldId)) {
       throw new Error(`Pivot ${input.id} field filter must target a row or column field`);
     }
-    if (filter.kind === 'top-items' && !valueIds.has(filter.valueId)) throw new Error(`Pivot ${input.id} top-items filter references an unknown Values placement`);
+    if (filter.kind === 'top-items') {
+      if (!valueIds.has(filter.valueId)) throw new Error(`Pivot ${input.id} top-items filter references an unknown Values placement`);
+      if (Object.prototype.hasOwnProperty.call(filter, 'count')) throw new Error(`Pivot ${input.id} uses the removed top-items count field`);
+      if (!['top', 'bottom'].includes(filter.direction) || !['items', 'percent', 'sum'].includes(filter.mode) || !Number.isFinite(filter.threshold) || filter.threshold <= 0
+        || (filter.mode === 'items' && (!Number.isSafeInteger(filter.threshold) || filter.threshold < 1))
+        || (filter.mode === 'percent' && filter.threshold > 100)) {
+        throw new Error(`Pivot ${input.id} top-items filter threshold is invalid`);
+      }
+    }
     if (filter.kind === 'condition' && filter.valueId !== undefined && (!valueIds.has(filter.valueId) || filter.family !== 'value')) {
       throw new Error(`Pivot ${input.id} condition filter references an invalid Values placement`);
     }
