@@ -930,9 +930,9 @@ describe('native PivotGridProjection contract', () => {
     const category = catalog.fields.find((field) => field.name === 'Category')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     first.layout.rows = [{ fieldId: region.fieldId }];
-    first.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    first.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     second.layout.rows = [{ fieldId: region.fieldId }];
-    second.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    second.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     first.target = { sheetId: sheet.id, anchor: { row: 5, column: 0 } };
     sheet.pivots.push(first);
     const initial = buildPivotGridProjection(workbook, first);
