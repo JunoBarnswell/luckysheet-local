@@ -306,7 +306,7 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel, formula?: Form
     if (!manifest.sourceRange) throw new Error(`Pivot data source ${source.dataSourceId} has no worksheet range`);
     return [manifest.sourceRange];
   }
-  return [resolveNamedRange(workbook, source.name, source.sheetId ?? pivot.target.sheetId, formula ?? createPivotFormulaEngine(workbook))];
+  return [resolveNamedRange(workbook, source.name, source.sheetId, formula ?? createPivotFormulaEngine(workbook))];
 }
 
 function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
