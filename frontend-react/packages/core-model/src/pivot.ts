@@ -1,4 +1,5 @@
 import type { Column, RangeRef, Row, SheetId } from './index';
+import type { FormulaErrorCode } from './domain';
 
 /**
  * Pivot is a derived view over workbook data. The definition below is the
@@ -9,9 +10,21 @@ export const PIVOT_DEFINITION_SCHEMA = 'PivotDefinition' as const;
 export const PIVOT_RESULT_TREE_SCHEMA = 'PivotResultTree' as const;
 export const PIVOT_GRID_PROJECTION_SCHEMA = 'PivotGridProjection' as const;
 
-export type PivotScalar = string | number | boolean | null;
-export type PivotScalarType = 'text' | 'number' | 'boolean' | 'blank';
+/** A formula error remains a first-class Pivot member/value and never becomes blank. */
+export interface PivotErrorValue {
+  kind: 'error';
+  code: FormulaErrorCode;
+  message?: string;
+}
+
+export type PivotScalar = string | number | boolean | null | PivotErrorValue;
+export type PivotScalarType = 'text' | 'number' | 'boolean' | 'blank' | 'error';
 export const PIVOT_BLANK_LABEL = '(blank)' as const;
+
+export function isPivotError(value: unknown): value is PivotErrorValue {
+  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'error'
+    && typeof (value as { code?: unknown }).code === 'string';
+}
 
 /** One civil day in the canonical UTC calendar used by Pivot timelines. */
 export const PIVOT_DAY_MS = 86_400_000;
@@ -87,6 +100,7 @@ export function normalizePivotTimelinePeriod(period: { start?: string; end?: str
 
 /** One presentation rule for Pivot members across grid, filters, and controls. */
 export function formatPivotMember(value: PivotScalar): string {
+  if (isPivotError(value)) return value.code;
   return value === null || value === '' ? PIVOT_BLANK_LABEL : String(value);
 }
 
@@ -98,6 +112,7 @@ export interface PivotMemberKey {
 
 export function createPivotMemberKey(value: PivotScalar): PivotMemberKey {
   if (value === null || value === '') return { type: 'blank', value: null };
+  if (isPivotError(value)) return { type: 'error', value: value.code };
   if (typeof value === 'number') return { type: 'number', value };
   if (typeof value === 'boolean') return { type: 'boolean', value };
   return { type: 'text', value };
@@ -112,7 +127,9 @@ export function pivotMemberKeyEquals(left: PivotMemberKey, right: PivotMemberKey
 }
 
 export function pivotScalarFromMemberKey(value: PivotMemberKey): PivotScalar {
-  return value.type === 'blank' ? null : value.value as Exclude<PivotScalar, null>;
+  if (value.type === 'blank') return null;
+  if (value.type === 'error') return { kind: 'error', code: value.value as FormulaErrorCode };
+  return value.value as Exclude<PivotScalar, null | PivotErrorValue>;
 }
 
 export type PivotAggregateFunction =
@@ -159,7 +176,7 @@ export type PivotSource = PivotWorksheetDataSource
   | { kind: 'named-range'; name: string; sheetId?: SheetId }
   | { kind: 'data-source'; dataSourceId: string };
 
-export type PivotFieldDataType = 'text' | 'number' | 'date' | 'boolean' | 'mixed';
+export type PivotFieldDataType = 'text' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
 
 export interface PivotFieldDefinition {
   /** Stable identity. It is derived from the source column, never from a row value. */

@@ -1,5 +1,5 @@
 /** XLSX 兼容级别 */
-import type { PivotStyleOptions } from '@react-sheets/core-model';
+import type { PivotErrorValue, PivotStyleOptions } from '@react-sheets/core-model';
 
 export type CompatibilityLevel = 'A' | 'B' | 'C';
 export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
@@ -81,7 +81,7 @@ export type NativePivotSource =
   | { kind: 'worksheet-range'; sheetName: string; sheetPart?: string; ref: string }
   | { kind: 'table'; tableName: string; sheetName?: string; sheetPart?: string };
 
-export type NativePivotScalar = string | number | boolean | null;
+export type NativePivotScalar = string | number | boolean | null | PivotErrorValue;
 
 export interface NativePivotFieldRange {
   groupBy?: string;
@@ -104,7 +104,7 @@ export interface NativePivotCacheField {
   index: number;
   name: string;
   dataType?: 'string' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
-  sharedItems?: Array<string | number | boolean | null>;
+  sharedItems?: NativePivotScalar[];
   fieldGroup?: NativePivotFieldGroup;
 }
 

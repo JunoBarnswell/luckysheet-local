@@ -3,6 +3,7 @@ import type {
   CellData,
   PivotAggregateFunction,
   PivotDefinition,
+  PivotErrorValue,
   PivotFieldDataType,
   PivotFieldPlacement,
   PivotGroup,
@@ -13,13 +14,14 @@ import type {
   PivotNativeFilterMetadata,
   PivotRefreshPolicy,
   PivotScalar,
+  PivotSlicerDrawingPayload,
   PivotSource,
   PivotValueField,
   RangeRef,
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -784,7 +786,7 @@ function synchronizeNativeControls(input: NativeControlSyncInput): NativeControl
   return { files, relationships, controls };
 }
 
-function buildSlicerCacheXml(control: NativePivotControlDefinition, payload: { kind: 'slicer'; pivotId: string; fieldId: string; filter: { mode: 'all' | 'include' | 'exclude'; memberKeys: Array<{ type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null }> }; connectedPivotIds?: string[] }, pivot: PivotModel, cache: NativePivotCacheDefinition, tables: NativePivotTableDefinition[]): string {
+function buildSlicerCacheXml(control: NativePivotControlDefinition, payload: PivotSlicerDrawingPayload, pivot: PivotModel, cache: NativePivotCacheDefinition, tables: NativePivotTableDefinition[]): string {
   const field = cache.fields[control.fieldIndex ?? -1];
   const values = field?.sharedItems ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId)?.values ?? [];
   const selected = new Set(payload.filter.memberKeys.map((value) => `${value.type}:${JSON.stringify(value.value)}`));
@@ -923,13 +925,18 @@ function pivotGroupingKey(pivot: PivotDefinition): string {
 function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefinition, tableName?: string): { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] } {
   const fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }> = [];
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-    const value = sheet.cells[String(range.startRow)]?.[String(column)]?.value;
+    const cell = sheet.cells[String(range.startRow)]?.[String(column)];
+    const value = cell?.formulaValue ?? cell?.value;
     const catalog = pivot.fieldCatalog.fields[column - range.startColumn];
     fields.push({ name: catalog?.name ?? (typeof value === 'string' && value ? value : `${tableName ?? 'Field'}${column - range.startColumn + 1}`), dataType: nativeDataType(catalog?.dataType ?? inferDataType(sheet, range, column)) });
   }
   const rows: PivotScalar[][] = [];
   for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-    const values = fields.map((_, offset) => { const value = sheet.cells[String(row)]?.[String(range.startColumn + offset)]?.value; return isScalar(value) ? value : null; });
+    const values = fields.map((_, offset) => {
+      const cell = sheet.cells[String(row)]?.[String(range.startColumn + offset)];
+      const value = cell?.formulaValue ?? cell?.value;
+      return isScalar(value) ? value : null;
+    });
     if (values.some((value) => value !== null)) rows.push(values);
   }
   return { fields, rows };
@@ -1063,8 +1070,8 @@ function buildCacheDefinitionXml(cache: NativePivotCacheDefinition): string {
   const source = cache.source.kind === 'worksheet-range' ? `<worksheetSource ref="${encodeXml(cache.source.ref)}" sheet="${encodeXml(cache.source.sheetName)}"/>` : cache.source.kind === 'table' ? `<worksheetSource name="${encodeXml(cache.source.tableName)}"${cache.source.sheetName ? ` sheet="${encodeXml(cache.source.sheetName)}"` : ''}/>` : '';
   const fields = cache.fields.map((field) => {
     const values = field.sharedItems ?? [];
-    const contains = field.dataType === 'string' ? ' containsString="1"' : field.dataType === 'date' ? ' containsDate="1"' : field.dataType === 'number' ? ' containsNumber="1"' : field.dataType === 'boolean' ? ' containsBoolean="1"' : '';
-    const shared = values.map((value) => value === null ? '<m/>' : typeof value === 'string' ? `<s v="${encodeXml(value)}"/>` : typeof value === 'boolean' ? `<b v="${value ? '1' : '0'}"/>` : field.dataType === 'date' ? `<d v="${value}"/>` : `<n v="${value}"/>`).join('');
+    const contains = field.dataType === 'string' ? ' containsString="1"' : field.dataType === 'date' ? ' containsDate="1"' : field.dataType === 'number' ? ' containsNumber="1"' : field.dataType === 'boolean' ? ' containsBoolean="1"' : field.dataType === 'error' ? ' containsError="1"' : '';
+    const shared = values.map((value) => nativePivotScalarXml(value)).join('');
     const fieldGroup = field.fieldGroup ? buildNativeFieldGroupXml(field.fieldGroup) : '';
     return `<cacheField name="${encodeXml(field.name)}"><sharedItems count="${values.length}"${contains}>${shared}</sharedItems>${fieldGroup}</cacheField>`;
   }).join('');
@@ -1103,6 +1110,7 @@ function rangeBoundAttr(value: NativePivotScalar | undefined, name: 'start' | 'e
 
 function nativePivotScalarXml(value: NativePivotScalar): string {
   if (value === null) return '<m/>';
+  if (isPivotError(value)) return `<e v="${encodeXml(value.code)}"/>`;
   if (typeof value === 'string') return `<s v="${encodeXml(value)}"/>`;
   if (typeof value === 'boolean') return `<b v="${value ? '1' : '0'}"/>`;
   return `<n v="${encodeXml(String(value))}"/>`;
@@ -1110,7 +1118,14 @@ function nativePivotScalarXml(value: NativePivotScalar): string {
 
 function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScalar[][]): string {
   const indexes = cache.fields.map((field) => new Map((field.sharedItems ?? []).map((value, index) => [scalarKey(value), index])));
-  const records = rows.map((row) => `<r>${cache.fields.map((_, index) => { const value = row[index] ?? null; if (value === null) return '<m/>'; if (typeof value === 'string') return `<s v="${indexes[index]?.get(scalarKey(value)) ?? 0}"/>`; if (typeof value === 'boolean') return `<b v="${value ? '1' : '0'}"/>`; return `<n v="${encodeXml(String(value))}"/>`; }).join('')}</r>`).join('');
+  const records = rows.map((row) => `<r>${cache.fields.map((_, index) => {
+    const value = row[index] ?? null;
+    if (value === null) return '<m/>';
+    if (isPivotError(value)) return `<e v="${encodeXml(value.code)}"/>`;
+    if (typeof value === 'string') return `<s v="${indexes[index]?.get(scalarKey(value)) ?? 0}"/>`;
+    if (typeof value === 'boolean') return `<b v="${value ? '1' : '0'}"/>`;
+    return `<n v="${encodeXml(String(value))}"/>`;
+  }).join('')}</r>`).join('');
   return withXmlDeclaration(`<pivotCacheRecords xmlns="${NS_MAIN}" count="${rows.length}">${records}</pivotCacheRecords>`);
 }
 
@@ -1205,11 +1220,11 @@ function buildDisplayCells(pivot: PivotDefinition, table: NativePivotTableDefini
   const columnGroups = uniqueTuples(source.rows, table.columnFields);
   const rows = rowGroups.length ? rowGroups : [[]];
   const columns = columnGroups.length ? columnGroups : [[]];
-  const put = (row: number, column: number, value: PivotScalar): void => { if (value === null) return; output[String(row)] ??= {}; output[String(row)]![String(column)] = { value }; };
+  const put = (row: number, column: number, value: PivotScalar): void => { if (value === null) return; output[String(row)] ??= {}; output[String(row)]![String(column)] = { value: isPivotError(value) ? value.code : value }; };
   put(start.row, start.column, table.name);
   table.rowFields.forEach((index, position) => put(start.row + 1, start.column + position, source.fields[index]?.name ?? `Field${index + 1}`));
   const headerRow = start.row + 1 + Math.max(1, table.rowFields.length);
-  columns.forEach((tuple, index) => put(headerRow, start.column + table.rowFields.length + index, tuple.map((value) => value === null ? '' : String(value)).join(' / ') || 'Values'));
+  columns.forEach((tuple, index) => put(headerRow, start.column + table.rowFields.length + index, tuple.map((value) => value === null ? '' : formatPivotMember(value)).join(' / ') || 'Values'));
   rows.forEach((tuple, rowIndex) => {
     tuple.forEach((value, position) => put(headerRow + 1 + rowIndex, start.column + position, value));
     columns.forEach((columnTuple, columnIndex) => table.dataFields.forEach((field, valueIndex) => {
@@ -1277,7 +1292,7 @@ function parsePivotScalars(node: XmlNode | undefined): NativePivotScalar[] {
       case 'n': return [numberOrNull(item.attrs.v)];
       case 'd': return [item.attrs.v ?? null];
       case 'b': return [item.attrs.v === '1' || item.attrs.v?.toLowerCase() === 'true'];
-      case 'e': return [item.attrs.v ?? null];
+      case 'e': return [nativePivotError(item.attrs.v)];
       case 'm': return [null];
       case 'groupItem': return [parseGroupItemValue(item)];
       default: return [];
@@ -1507,6 +1522,7 @@ function optionalInteger(value: string | undefined, label: string): Record<strin
 
 function nativeFilterScalar(value: string): NativePivotScalar {
   if (value === '') return '';
+  if (value.startsWith('#')) return nativePivotError(value);
   if (value === '0' || value === '1') return Number(value);
   const number = Number(value);
   return Number.isFinite(number) && value.trim() !== '' ? number : value;
@@ -1528,8 +1544,12 @@ function isNativeControlPart(name: string): boolean { return /^xl\/(slicers\/|sl
 function nextPartNumbers(files: Record<string, Uint8Array>): { cacheDefinition: number; records: number; table: number } { const max = (pattern: RegExp): number => Object.keys(files).reduce((value, name) => Math.max(value, Number(name.match(pattern)?.[1] ?? 0)), 0); return { cacheDefinition: max(/pivotCacheDefinition(\d+)\.xml$/i) + 1, records: max(/pivotCacheRecords(\d+)\.xml$/i) + 1, table: max(/pivotTable(\d+)\.xml$/i) + 1 }; }
 function nativeFieldId(cacheId: number, index: number): string { return `native:cache:${cacheId}:field:${index}`; }
 function nativePivotId(table: NativePivotTableDefinition): string { return `native:pivot:${table.part}`; }
-function mapFieldType(value: NativePivotCacheField['dataType']): PivotFieldDataType { return value === 'string' ? 'text' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : 'mixed'; }
-function nativeDataType(value: PivotFieldDataType): NativePivotCacheField['dataType'] { return value === 'text' ? 'string' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : 'mixed'; }
+function mapFieldType(value: NativePivotCacheField['dataType']): PivotFieldDataType {
+  return value === 'string' ? 'text' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : value === 'error' ? 'error' : 'mixed';
+}
+function nativeDataType(value: PivotFieldDataType): NativePivotCacheField['dataType'] {
+  return value === 'text' ? 'string' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : value === 'error' ? 'error' : 'mixed';
+}
 function nativePivotGroup(field: NativePivotCacheField | undefined, cache: NativePivotCacheDefinition, fieldId: string): PivotGroup | undefined {
   const grouping = field?.fieldGroup;
   if (!grouping) return undefined;
@@ -1572,7 +1592,19 @@ function nativePivotGroup(field: NativePivotCacheField | undefined, cache: Nativ
   }
   return undefined;
 }
-function inferDataType(sheet: SheetSnapshot, range: RangeRef, column: number): PivotFieldDataType { const values: unknown[] = []; for (let row = range.startRow + 1; row <= range.endRow; row += 1) values.push(sheet.cells[String(row)]?.[String(column)]?.value); if (values.filter((value) => value !== null).every((value) => typeof value === 'number')) return 'number'; if (values.filter((value) => value !== null).every((value) => typeof value === 'boolean')) return 'boolean'; return 'text'; }
+function inferDataType(sheet: SheetSnapshot, range: RangeRef, column: number): PivotFieldDataType {
+  const values: unknown[] = [];
+  for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+    const cell = sheet.cells[String(row)]?.[String(column)];
+    values.push(cell?.formulaValue ?? cell?.value);
+  }
+  const present = values.filter((value) => value !== null && value !== undefined);
+  if (present.length && present.every(isPivotError)) return 'error';
+  if (present.some(isPivotError)) return 'mixed';
+  if (present.length && present.every((value) => typeof value === 'number')) return 'number';
+  if (present.length && present.every((value) => typeof value === 'boolean')) return 'boolean';
+  return 'text';
+}
 function mapAggregate(value: string | undefined): PivotAggregateFunction { switch ((value ?? 'sum').toLowerCase()) { case 'count': return 'count'; case 'countnums': case 'count-numbers': return 'count-numbers'; case 'average': case 'avg': return 'average'; case 'min': return 'min'; case 'max': return 'max'; case 'product': return 'product'; case 'stddev': case 'stdev': return 'stdev'; case 'stddevp': case 'stdevp': return 'stdevp'; case 'var': return 'var'; case 'varp': return 'varp'; case 'distinctcount': case 'distinct-count': return 'distinct-count'; default: return 'sum'; } }
 function nativeAggregate(value: string | undefined): string { switch (value) { case 'count-numbers': return 'countNums'; case 'stdev': return 'stdDev'; case 'stdevp': return 'stdDevp'; case 'distinct-count': return 'distinctCount'; default: return value ?? 'sum'; } }
 function mapShowAs(value: string): NonNullable<PivotValueField['showAs']> { return value === 'percentOfTotal' ? { kind: 'grand-percentage' } : value === 'percentOfRow' ? { kind: 'row-percentage' } : value === 'percentOfCol' ? { kind: 'column-percentage' } : value === 'runningTotal' ? { kind: 'running-total', axis: 'row' } : { kind: 'normal' }; }
@@ -1584,12 +1616,30 @@ function parseA1(value: string): { row: number; column: number } | undefined { c
 function a1(row: number, column: number): string { return `${columnToLetter(column)}${row + 1}`; }
 function columnFromLetter(value: string): number { let result = 0; for (const character of value.toUpperCase()) result = result * 26 + character.charCodeAt(0) - 64; return result - 1; }
 function columnToLetter(index: number): string { let value = index + 1; let result = ''; while (value > 0) { const remainder = (value - 1) % 26; result = String.fromCharCode(65 + remainder) + result; value = Math.floor((value - 1) / 26); } return result; }
-function isScalar(value: unknown): value is PivotScalar { return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'; }
-function scalarKey(value: PivotScalar): string { return `${value === null ? 'blank' : typeof value}:${JSON.stringify(value)}`; }
+function isScalar(value: unknown): value is PivotScalar { return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || isPivotError(value); }
+function nativePivotError(code: string | undefined): PivotErrorValue {
+  const allowed = new Set(['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!']);
+  if (!code || !allowed.has(code)) throw new Error(`Unsupported native Pivot error value: ${code ?? '<missing>'}`);
+  return { kind: 'error', code: code as PivotErrorValue['code'] };
+}
+function scalarKey(value: PivotScalar): string { return pivotMemberKey(createPivotMemberKey(value)); }
 function uniqueScalars(values: PivotScalar[]): PivotScalar[] { const result: PivotScalar[] = []; const seen = new Set<string>(); for (const value of values) { const key = scalarKey(value); if (!seen.has(key)) { seen.add(key); result.push(value); } } return result; }
 function uniqueTuples(rows: PivotScalar[][], indexes: number[]): PivotScalar[][] { if (!indexes.length) return [[]]; const seen = new Set<string>(); const result: PivotScalar[][] = []; for (const row of rows) { const tuple = indexes.map((index) => row[index] ?? null); const key = tuple.map(scalarKey).join('|'); if (!seen.has(key)) { seen.add(key); result.push(tuple); } } return result; }
 function matchesTuple(row: PivotScalar[], indexes: number[], tuple: PivotScalar[]): boolean { return indexes.every((index, position) => scalarKey(row[index] ?? null) === scalarKey(tuple[position] ?? null)); }
-function aggregate(values: PivotScalar[], operation: string | undefined): PivotScalar { const numbers = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)); switch (mapAggregate(operation)) { case 'count': return values.filter((value) => value !== null).length; case 'count-numbers': return numbers.length; case 'average': return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null; case 'min': return numbers.length ? Math.min(...numbers) : null; case 'max': return numbers.length ? Math.max(...numbers) : null; case 'product': return numbers.length ? numbers.reduce((product, value) => product * value, 1) : null; case 'distinct-count': return new Set(values.filter((value) => value !== null).map(scalarKey)).size; default: return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) : values.filter((value) => value !== null).length || null; } }
+function aggregate(values: PivotScalar[], operation: string | undefined): PivotScalar {
+  const numbers = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const firstError = values.find(isPivotError);
+  switch (mapAggregate(operation)) {
+    case 'count': return values.filter((value) => value !== null).length;
+    case 'count-numbers': return numbers.length;
+    case 'average': return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null);
+    case 'min': return firstError ?? (numbers.length ? Math.min(...numbers) : null);
+    case 'max': return firstError ?? (numbers.length ? Math.max(...numbers) : null);
+    case 'product': return firstError ?? (numbers.length ? numbers.reduce((product, value) => product * value, 1) : null);
+    case 'distinct-count': return new Set(values.filter((value) => value !== null).map(scalarKey)).size;
+    default: return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) : values.filter((value) => value !== null).length || null);
+  }
+}
 function inferCacheType(node: XmlNode | undefined): NativePivotCacheField['dataType'] | undefined { if (!node) return undefined; if (node.attrs.containsString === '1' || node.attrs.containsString === 'true') return 'string'; if (node.attrs.containsDate === '1' || node.attrs.containsDate === 'true') return 'date'; if (node.attrs.containsNumber === '1' || node.attrs.containsNumber === 'true') return 'number'; if (node.attrs.containsBoolean === '1' || node.attrs.containsBoolean === 'true') return 'boolean'; if (node.attrs.containsError === '1' || node.attrs.containsError === 'true') return 'error'; return undefined; }
 function numberOrNull(value: string | undefined): number | null { const number = Number(value); return Number.isFinite(number) ? number : null; }
 function optionalBoolean(value: string | undefined, key: string): Record<string, boolean> { return value === undefined ? {} : { [key]: value === '1' || value.toLowerCase() === 'true' }; }

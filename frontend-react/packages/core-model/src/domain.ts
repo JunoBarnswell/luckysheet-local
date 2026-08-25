@@ -628,10 +628,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isPivotMemberKey(value: unknown): value is PivotMemberKey {
-  if (!isRecord(value) || !['text', 'number', 'boolean', 'blank'].includes(String(value.type))) return false;
+  if (!isRecord(value) || !['text', 'number', 'boolean', 'blank', 'error'].includes(String(value.type))) return false;
   if (value.type === 'blank') return value.value === null;
   if (value.type === 'text') return typeof value.value === 'string';
   if (value.type === 'number') return typeof value.value === 'number' && Number.isFinite(value.value);
+  if (value.type === 'error') return typeof value.value === 'string'
+    && ['#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!'].includes(value.value);
   return typeof value.value === 'boolean';
 }
 

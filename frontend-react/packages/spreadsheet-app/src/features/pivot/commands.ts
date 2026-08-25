@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, createPivotCollator, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
+import { WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
 import type {
   PivotAggregateFunction,
   PivotDefinition,
@@ -10,6 +10,7 @@ import type {
   PivotPresentation,
   PivotShowAs,
   PivotSourceRowPath,
+  PivotScalar,
   ChartDrawingPayload,
   DrawingObject,
   DrawingPayload,
@@ -164,9 +165,11 @@ interface DrillDownColumn {
   label: string;
 }
 
-function sourceCellValue(cell: { value: unknown; formulaValue?: unknown } | undefined): string | number | boolean | null {
+function sourceCellValue(cell: { value: unknown; formulaValue?: unknown } | undefined): PivotScalar {
   const value = cell?.formulaValue ?? cell?.value ?? null;
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
+  if (isPivotError(value)) return value;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  throw new Error(`Unsupported Pivot drill-down source value: ${typeof value}`);
 }
 
 interface PivotDrillDownRecord {
@@ -301,7 +304,7 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
       const path = record.paths.get(sourceKey);
       const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
       const value = source && path ? sourceCellValue(source.cells.get(path.row, column.column)) : null;
-      target.cells.set(params.target.row + rowOffset + 1, params.target.column + columnOffset, { value });
+      target.cells.set(params.target.row + rowOffset + 1, params.target.column + columnOffset, { value: isPivotError(value) ? value.code : value });
     });
   });
 }

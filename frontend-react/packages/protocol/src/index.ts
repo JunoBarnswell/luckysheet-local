@@ -239,14 +239,29 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+const PIVOT_FORMULA_ERROR_CODES = new Set([
+  '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
+  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!',
+]);
+
+function validatePivotScalar(value: unknown, label: string): void {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean'
+    || (typeof value === 'number' && Number.isFinite(value))) return;
+  const error = requireRecord(value, label);
+  validateExactKeys(error, ['kind', 'code', 'message'], label);
+  if (error.kind !== 'error' || typeof error.code !== 'string' || !PIVOT_FORMULA_ERROR_CODES.has(error.code)
+    || (error.message !== undefined && typeof error.message !== 'string')) throw new Error(`${label} is invalid`);
+}
+
 function validatePivotMemberKey(value: unknown, label: string): void {
   const member = requireRecord(value, label);
   validateExactKeys(member, ['type', 'value'], label);
-  if (!['text', 'number', 'boolean', 'blank'].includes(String(member.type))) throw new Error(`${label}.type is invalid`);
+  if (!['text', 'number', 'boolean', 'blank', 'error'].includes(String(member.type))) throw new Error(`${label}.type is invalid`);
   if (member.type === 'blank' && member.value !== null) throw new Error(`${label}.value must be null for blank`);
   if (member.type === 'text' && typeof member.value !== 'string') throw new Error(`${label}.value must be text`);
   if (member.type === 'number' && (typeof member.value !== 'number' || !Number.isFinite(member.value))) throw new Error(`${label}.value must be a finite number`);
   if (member.type === 'boolean' && typeof member.value !== 'boolean') throw new Error(`${label}.value must be boolean`);
+  if (member.type === 'error' && (typeof member.value !== 'string' || !PIVOT_FORMULA_ERROR_CODES.has(member.value))) throw new Error(`${label}.value must be a formula error code`);
 }
 
 function validatePivotSource(value: unknown): void {
@@ -439,10 +454,11 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     const field = requireRecord(rawField, 'Pivot field');
     validateExactKeys(field, ['fieldId', 'name', 'dataType', 'ordinal', 'values'], 'Pivot field');
     if (!isNonEmptyString(field.fieldId) || fieldIds.has(field.fieldId) || !isNonEmptyString(field.name)
-      || field.ordinal !== ordinal || !['text', 'number', 'date', 'boolean', 'mixed'].includes(String(field.dataType))) {
+      || field.ordinal !== ordinal || !['text', 'number', 'date', 'boolean', 'error', 'mixed'].includes(String(field.dataType))) {
       throw new Error('Pivot field is invalid');
     }
-    if (field.values !== undefined && (!Array.isArray(field.values) || !field.values.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item)))) throw new Error('Pivot field values are invalid');
+    if (field.values !== undefined && !Array.isArray(field.values)) throw new Error('Pivot field values are invalid');
+    field.values?.forEach((item, index) => validatePivotScalar(item, `Pivot field value ${String(index)}`));
     fieldIds.add(field.fieldId);
   }
   const layout = requireRecord(pivot.layout, 'Pivot layout');
@@ -491,7 +507,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
       if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
       if (!['equals', 'not-equals', 'contains', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'].includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid');
-      if (!(filter.value === null || ['string', 'number', 'boolean'].includes(typeof filter.value))) throw new Error('Pivot condition value is invalid');
+      validatePivotScalar(filter.value, 'Pivot condition value');
       if (filter.wholeDay !== undefined && typeof filter.wholeDay !== 'boolean') throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
       validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');

@@ -37,7 +37,7 @@ import type {
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
-import { DEFAULT_PIVOT_STYLE_OPTIONS } from "@react-sheets/core-model";
+import { DEFAULT_PIVOT_STYLE_OPTIONS, isPivotError } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
@@ -299,7 +299,7 @@ export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale:
     },
   };
   return {
-    value: cell.value,
+    value: isPivotError(cell.value) ? cell.value.code : cell.value,
     displayValue: text,
     style,
     error: cell.kind === "error" ? text : undefined,
