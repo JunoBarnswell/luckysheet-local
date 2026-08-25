@@ -210,6 +210,7 @@ import type {
   SheetDialogState,
   UiSessionIntent,
   DialogState,
+  MergeOperation,
   UndoRedoState,
 } from './types';
 
@@ -418,8 +419,8 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', mergeDiscardCount: 0, columnWidth: null, sheet: null, cellShiftOperation: 'insert' };
-  private pendingMergeRange: RangeRef | null = null;
+  private dialogs: DialogState = { active: null, findQuery: '', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, sheet: null, cellShiftOperation: 'insert' };
+  private pendingMerge: { range: RangeRef; operation: MergeOperation } | null = null;
   private inputMode: InputMode = 'grid';
   private focus: FocusState = { mode: 'grid', target: 'grid' };
   private formatPainter: { mode: 'once' | 'locked'; sourceRange: RangeRef } | null = null;
@@ -1089,7 +1090,9 @@ export class WorkbookSession {
       || commandId === 'sheet.merge.set'
       || commandId === 'sheet.merge.remove'
       || commandId === 'sheet.merge.center'
+      || commandId === 'sheet.merge.cells'
       || commandId === 'sheet.merge.across'
+      || commandId === 'sheet.merge.unmerge'
       || commandId === 'sheet.autoFilter.toggle'
       || commandId === 'sheet.autoFilter.set'
       || commandId === 'sheet.autoFilter.sort'
@@ -1128,6 +1131,10 @@ export class WorkbookSession {
       'sheet.style.set',
       'sheet.merge.set',
       'sheet.merge.remove',
+      'sheet.merge.center',
+      'sheet.merge.cells',
+      'sheet.merge.across',
+      'sheet.merge.unmerge',
       'sheet.range.clear',
       'sheet.rows.insert',
       'sheet.rows.delete',
@@ -1140,7 +1147,8 @@ export class WorkbookSession {
     const input = (params ?? {}) as Record<string, unknown>;
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const sheetId = typeof input.sheetId === 'string' && input.sheetId.trim() ? input.sheetId : this.activeSheetId;
-    if (commandId === 'sheet.style.set' || commandId === 'sheet.merge.set' || commandId === 'sheet.merge.remove') {
+    if (commandId === 'sheet.style.set' || commandId === 'sheet.merge.set' || commandId === 'sheet.merge.remove'
+      || commandId === 'sheet.merge.center' || commandId === 'sheet.merge.cells' || commandId === 'sheet.merge.across' || commandId === 'sheet.merge.unmerge') {
       return { ...input, sheetId, range: input.range ?? range };
     }
     if (commandId === 'sheet.range.clear') {
@@ -1992,16 +2000,20 @@ export class WorkbookSession {
     this.emit();
   }
 
-  requestMergeCells(): void {
+  requestMergeAction(operation: MergeOperation): void {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
-    if (range.startRow === range.endRow && range.startColumn === range.endColumn) {
+    if (operation !== 'unmerge' && range.startRow === range.endRow && range.startColumn === range.endColumn) {
       this.notify('Select at least two cells before merging');
+      return;
+    }
+    if (operation === 'unmerge') {
+      this.dispatch({ commandId: 'sheet.merge.unmerge', params: { sheetId: this.activeSheetId, range } });
       return;
     }
     const regions = this.dataRegionsIntersectingRanges(this.activeSheetId, [range]);
     if (regions.length > 0) {
       void this.materializeDataRegions(regions)
-        .then(() => this.requestMergeCells())
+        .then(() => this.requestMergeAction(operation))
         .catch((error) => this.notify(error instanceof Error ? error.message : 'Data region could not be prepared for merging'));
       return;
     }
@@ -2009,34 +2021,34 @@ export class WorkbookSession {
     let discardCount = 0;
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        if (row === range.startRow && column === range.startColumn) continue;
+        if (operation === 'across' ? column === range.startColumn : (row === range.startRow && column === range.startColumn)) continue;
         const cell = this.readResolvedCell(sheet, row, column);
         if (cell && (cell.formula || (cell.value !== null && cell.value !== undefined && cell.value !== ''))) discardCount += 1;
       }
     }
     if (discardCount > 0) {
-      this.pendingMergeRange = range;
-      this.dialogs = { ...this.dialogs, active: 'merge-confirm', mergeDiscardCount: discardCount };
+      this.pendingMerge = { range, operation };
+      this.dialogs = { ...this.dialogs, active: 'merge-confirm', mergeDiscardCount: discardCount, mergeOperation: operation };
       this.setFocusState('dialog', 'dialog');
       this.emit();
       return;
     }
-    this.dispatch({ commandId: 'sheet.merge.center', params: { sheetId: this.activeSheetId, range, confirmDataLoss: true } });
+    this.dispatch({ commandId: operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: this.activeSheetId, range, confirmDataLoss: true } });
   }
 
-  confirmMergeCells(): void {
-    const range = this.pendingMergeRange;
+  confirmMergeAction(): void {
+    const pending = this.pendingMerge;
     this.dialogs = { ...this.dialogs, active: null, mergeDiscardCount: 0 };
     this.setFocusState('grid', 'grid');
-    this.pendingMergeRange = null;
-    if (range) this.dispatch({ commandId: 'sheet.merge.center', params: { sheetId: range.sheetId, range, confirmDataLoss: true } });
+    this.pendingMerge = null;
+    if (pending) this.dispatch({ commandId: pending.operation === 'center' ? 'sheet.merge.center' : pending.operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: pending.range.sheetId, range: pending.range, confirmDataLoss: true } });
     this.emit();
   }
 
-  cancelMergeCells(): void {
+  cancelMergeAction(): void {
     this.dialogs = { ...this.dialogs, active: null, mergeDiscardCount: 0 };
     this.setFocusState('grid', 'grid');
-    this.pendingMergeRange = null;
+    this.pendingMerge = null;
     this.emit();
   }
 

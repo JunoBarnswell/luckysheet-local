@@ -131,7 +131,10 @@ export type RibbonCommandId =
   | 'indentDecrease'
   | 'wrapText'
   | 'textOrientation'
+  | 'mergeCenter'
   | 'mergeCells'
+  | 'mergeAcross'
+  | 'unmergeCells'
   | 'formatCells'
   | 'numberFormatGeneral'
   | 'numberFormatCurrency'
@@ -364,7 +367,7 @@ export interface RibbonCommandActions {
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
-  onMergeCells: () => void;
+  onMerge: (operation: RibbonMergeOperation) => void;
   onFill: (direction: 'down' | 'right') => void;
   onFreezeAtPrimary: () => void;
   onCreateSheetTable: () => void;
@@ -422,6 +425,8 @@ export interface RibbonCommandContext {
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
 }
+
+export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 
 export type RibbonCommandResult =
   | { type: 'command'; descriptor: CommandDescriptor }
@@ -484,6 +489,7 @@ export type RibbonControlId =
   | 'font-color'
   | 'fill-color'
   | 'number-format'
+  | 'merge-menu'
   | 'cells-insert-menu'
   | 'cells-delete-menu'
   | 'cells-format-menu'
@@ -605,7 +611,10 @@ export const RIBBON_TEXT = {
     indentDecrease: 'commands.indentDecrease',
     wrapText: 'commands.wrapText',
     textOrientation: 'commands.textOrientation',
+    mergeCenter: 'commands.mergeCenter',
     mergeCells: 'commands.mergeCells',
+    mergeAcross: 'commands.mergeAcross',
+    unmergeCells: 'commands.unmergeCells',
     formatCells: 'commands.formatCells',
     numberFormatGeneral: 'commands.numberFormatGeneral',
     numberFormatCurrency: 'commands.numberFormatCurrency',
@@ -836,7 +845,11 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'alignment.indent-decrease', 'alignment', 49, 'small', 'indentDecrease'),
   ribbonSurface('home', 'alignment.wrap', 'alignment', 50, 'small', 'wrapText'),
   ribbonSurface('home', 'alignment.orientation', 'alignment', 55, 'small', 'textOrientation'),
-  ribbonSurface('home', 'alignment.merge', 'alignment', 60, 'split', 'mergeCells'),
+  homeControl('merge-menu', 'alignment', 60),
+  ribbonSurface('home', 'alignment.merge-center', 'alignment', 61, 'menu', 'mergeCenter', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.merge-cells', 'alignment', 62, 'menu', 'mergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.merge-across', 'alignment', 63, 'menu', 'mergeAcross', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.unmerge', 'alignment', 64, 'menu', 'unmergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
   homeControl('number-format', 'number', 10),
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
@@ -1073,7 +1086,10 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   styleCommand('indentDecrease', RIBBON_TEXT.commands.indentDecrease, 'indent-decrease', (context) => ({ indent: Math.max(0, Number(context.cellStyle.indent ?? 0) - 1) }), undefined, 'alignment'),
   styleCommand('wrapText', RIBBON_TEXT.commands.wrapText, 'wrap-text', (context) => ({ wrapText: !context.cellStyle.wrapText }), (context) => Boolean(context.cellStyle.wrapText)),
   styleCommand('textOrientation', RIBBON_TEXT.commands.textOrientation, 'type', (context) => ({ textRotate: context.cellStyle.textRotate === 45 ? 0 : 45 }), (context) => Boolean(context.cellStyle.textRotate), 'alignment'),
-  callback('mergeCells', 'home', 'alignment', RIBBON_TEXT.commands.mergeCells, (context) => context.actions.onMergeCells(), 'merge-cells'),
+  callback('mergeCenter', 'home', 'alignment', RIBBON_TEXT.commands.mergeCenter, (context) => context.actions.onMerge('center'), 'merge-cells'),
+  callback('mergeCells', 'home', 'alignment', RIBBON_TEXT.commands.mergeCells, (context) => context.actions.onMerge('cells'), 'merge-cells'),
+  callback('mergeAcross', 'home', 'alignment', RIBBON_TEXT.commands.mergeAcross, (context) => context.actions.onMerge('across'), 'merge-cells'),
+  callback('unmergeCells', 'home', 'alignment', RIBBON_TEXT.commands.unmergeCells, (context) => context.actions.onMerge('unmerge'), 'merge-cells'),
   intent('formatCells', 'home', 'number', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' }), 'table'),
   command('numberFormatGeneral', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatGeneral, undefined, { style: { numberFormat: 'general' } }),
   command('numberFormatCurrency', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatCurrency, 'dollar-sign', { style: { numberFormat: '$#,##0' } }),

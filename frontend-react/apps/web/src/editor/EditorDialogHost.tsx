@@ -89,9 +89,10 @@ export function EditorDialogHost({
       <MergeConfirmDialog
         open={state.dialogs.active === 'merge-confirm'}
         discardedCellCount={state.dialogs.mergeDiscardCount}
+        operation={state.dialogs.mergeOperation}
         locale={locale}
-        onCancel={() => session.cancelMergeCells()}
-        onConfirm={() => session.confirmMergeCells()}
+        onCancel={() => session.cancelMergeAction()}
+        onConfirm={() => session.confirmMergeAction()}
       />
       <CreatePivotTableDialog
         open={state.dialogs.active === 'create-pivot'}

@@ -296,11 +296,11 @@ describe('WorkbookSession core editing integration', () => {
     });
 
     const before = app['runtime'].commands.getHistoryDepth().undo;
-    app.requestMergeCells();
+    app.requestMergeAction('center');
   assert.equal(app.getUiSnapshot().dialogs.active, 'merge-confirm');
   assert.equal(app.getUiSnapshot().dialogs.mergeDiscardCount, 1);
 
-    app.confirmMergeCells();
+    app.confirmMergeAction();
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.merges.length, 1);
     assert.equal(sheet.cells.get(0, 0)?.value, 'anchor');

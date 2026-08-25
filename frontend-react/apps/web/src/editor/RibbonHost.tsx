@@ -162,7 +162,7 @@ export function RibbonHost({
       onCloseCommandPalette={session.closeCommandPalette}
       formatPainterActive={state.formatPainter !== null}
       onBeginFormatPainter={(locked) => session.beginFormatPainter(Boolean(locked))}
-      onMergeCells={() => session.requestMergeCells()}
+      onMergeCells={(operation) => session.requestMergeAction(operation)}
       canExecute={session.canExecute.bind(session)}
     />
   );

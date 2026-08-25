@@ -22,6 +22,7 @@ import {
   type RibbonCommandContext,
   type RibbonCommandId,
   type RibbonCommandResult,
+  type RibbonMergeOperation,
   type UiSessionIntent,
 } from '@react-sheets/spreadsheet-app';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
@@ -43,7 +44,7 @@ export interface RibbonProps {
   onPaste: () => void;
   onBeginFormatPainter: (locked?: boolean) => void;
   formatPainterActive?: boolean;
-  onMergeCells: () => void;
+  onMergeCells: (operation: RibbonMergeOperation) => void;
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
@@ -320,7 +321,7 @@ export function Ribbon({
     onToggleViewHeadings,
     onTogglePrintHeadings,
     onAutoSum,
-    onMergeCells,
+    onMerge: onMergeCells,
     onFill,
     onFreezeAtPrimary,
     onCreateSheetTable,
