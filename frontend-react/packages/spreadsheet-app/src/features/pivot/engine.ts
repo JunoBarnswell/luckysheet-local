@@ -1337,50 +1337,134 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
   });
 }
 
+interface PivotShowAsCellContext {
+  cell: PivotResultCell;
+  node?: PivotResultNode;
+  parent?: PivotResultNode;
+  columnIndex: number;
+  kind: 'detail' | 'subtotal' | 'grand-total';
+}
+
+/**
+ * Apply Show Values As from one immutable result matrix.
+ *
+ * The result tree contains three different calculation domains: detail rows,
+ * subtotal rows and the grand-total row.  Keeping those contexts explicit is
+ * important because subtotal values are valid Pivot members in their own
+ * right; they must never be looked up in a leaf-only sequence.
+ */
 function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
-  const leaves: PivotResultNode[] = [];
-  const collectLeaves = (nodes: PivotResultNode[]) => nodes.forEach((node) => node.children.length ? collectLeaves(node.children) : leaves.push(node));
-  collectLeaves(tree.rows);
   const raw = new Map<PivotResultCell, PivotScalar[]>();
-  const snapshot = (nodes: PivotResultNode[]) => nodes.forEach((node) => { node.values.forEach((cell) => raw.set(cell, [...cell.values])); snapshot(node.children); });
-  snapshot(tree.rows);
-  const rawValue = (cell: PivotResultCell | undefined, index: number): PivotScalar | null => cell ? raw.get(cell)?.[index] ?? null : null;
-  const grandValues = tree.grandTotal?.values.map((value) => value) ?? [];
+  const contexts: PivotShowAsCellContext[] = [];
   const visit = (nodes: PivotResultNode[], parent?: PivotResultNode) => nodes.forEach((node) => {
-    node.values.forEach((cell, columnIndex) => fields.forEach((field, valueIndex) => {
-      const spec = field.showAs ?? { kind: 'normal' as const };
-      const current = toNumber(rawValue(cell, valueIndex));
-      if (current == null || spec.kind === 'normal') return;
-      const grand = toNumber(grandValues[valueIndex] ?? null);
-      const rowTotal = node.values.reduce((sum, item) => sum + (toNumber(rawValue(item, valueIndex)) ?? 0), 0);
-      const columnTotal = leaves.reduce((sum, item) => sum + (toNumber(rawValue(item.values[columnIndex], valueIndex)) ?? 0), 0);
-      const parentTotal = parent ? toNumber(rawValue(parent.values[columnIndex], valueIndex)) : null;
-      if (spec.kind === 'grand-percentage') cell.values[valueIndex] = grand ? current / grand : null;
-      else if (spec.kind === 'row-percentage') cell.values[valueIndex] = rowTotal ? current / rowTotal : null;
-      else if (spec.kind === 'column-percentage') cell.values[valueIndex] = columnTotal ? current / columnTotal : null;
-      else if (spec.kind === 'parent-percentage') cell.values[valueIndex] = parentTotal ? current / parentTotal : null;
-      else if (spec.kind === 'difference' || spec.kind === 'percentage-difference') {
-        const base = spec.base === 'grand' ? grand : spec.base === 'row' ? rowTotal : spec.base === 'column' ? columnTotal : parentTotal;
-        cell.values[valueIndex] = base == null ? null : spec.kind === 'difference' ? current - base : base ? (current - base) / base : null;
-      } else if (spec.kind === 'running-total') {
-        if (spec.axis === 'row') {
-          const end = leaves.indexOf(node);
-          cell.values[valueIndex] = leaves.slice(0, end + 1).reduce((sum, item) => sum + (toNumber(rawValue(item.values[columnIndex], valueIndex)) ?? 0), 0);
-        } else {
-          const end = columnIndex;
-          cell.values[valueIndex] = node.values.slice(0, end + 1).reduce((sum, item) => sum + (toNumber(rawValue(item, valueIndex)) ?? 0), 0);
-        }
-      } else if (spec.kind === 'rank') {
-        const series = spec.axis === 'row' ? leaves.map((item) => toNumber(rawValue(item.values[columnIndex], valueIndex))) : node.values.map((item) => toNumber(rawValue(item, valueIndex)));
-        const ranked = series.filter((value): value is number => value != null).sort((left, right) => spec.direction === 'ascending' ? left - right : right - left);
-        cell.values[valueIndex] = ranked.indexOf(current) + 1;
-      } else if (spec.kind === 'index') {
-        cell.values[valueIndex] = grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
-      }
-    }));
+    node.values.forEach((cell, columnIndex) => {
+      raw.set(cell, [...cell.values]);
+      contexts.push({ cell, node, parent, columnIndex, kind: node.subtotal ? 'subtotal' : 'detail' });
+    });
     visit(node.children, node);
   });
   visit(tree.rows);
+  if (tree.grandTotal) {
+    raw.set(tree.grandTotal, [...tree.grandTotal.values]);
+    contexts.push({ cell: tree.grandTotal, columnIndex: 0, kind: 'grand-total' });
+  }
+
+  const rawValue = (cell: PivotResultCell | undefined, index: number): PivotScalar | null => cell ? raw.get(cell)?.[index] ?? null : null;
+  const grandValues = tree.grandTotal ? raw.get(tree.grandTotal) ?? [] : [];
+  const rowContexts = contexts.filter((context) => context.kind !== 'grand-total');
+  const leafContexts = rowContexts.filter((context) => context.node?.children.length === 0);
+  const subtotalContexts = rowContexts.filter((context) => context.kind === 'subtotal');
+
+  const parentKey = (context: PivotShowAsCellContext): string => context.parent?.path?.join('\u001f') ?? '';
+  const rowSeries = (context: PivotShowAsCellContext): PivotShowAsCellContext[] => {
+    if (context.kind === 'subtotal' && context.node) {
+      // Subtotals are ranked/accumulated against subtotal peers of the same
+      // hierarchy field and parent context, never against leaf aggregates.
+      return subtotalContexts.filter((candidate) => candidate.node?.depth === context.node?.depth && parentKey(candidate) === parentKey(context));
+    }
+    return leafContexts;
+  };
+
+  const numericSum = (cells: PivotShowAsCellContext[], valueIndex: number, columnIndex: number): number => cells.reduce((sum, context) => {
+    const cell = context.node?.values[columnIndex];
+    return sum + (toNumber(rawValue(cell, valueIndex)) ?? 0);
+  }, 0);
+
+  const transform = (
+    spec: NonNullable<PivotValueField['showAs']>,
+    current: number,
+    grand: number | null,
+    rowTotal: number,
+    columnTotal: number,
+    parentTotal: number | null,
+    context: PivotShowAsCellContext,
+    valueIndex: number,
+  ): number | null => {
+    if (spec.kind === 'normal') return current;
+    if (context.kind === 'grand-total') {
+      // A grand total has no row/column member coordinate. It is nevertheless
+      // part of the calculation domain: total-relative modes resolve to the
+      // identity, differences to zero, running totals to the final aggregate,
+      // and rank/index to the sole total member.
+      if (spec.kind === 'grand-percentage' || spec.kind === 'row-percentage' || spec.kind === 'column-percentage' || spec.kind === 'parent-percentage') return grand ? current / grand : null;
+      if (spec.kind === 'difference') return spec.base === 'grand' ? current - (grand ?? current) : 0;
+      if (spec.kind === 'percentage-difference') {
+        const base = spec.base === 'grand' ? grand : rowTotal || columnTotal || parentTotal;
+        return base ? (current - base) / base : null;
+      }
+      if (spec.kind === 'running-total') return current;
+      if (spec.kind === 'rank') return 1;
+      if (spec.kind === 'index') return grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
+    }
+    if (spec.kind === 'grand-percentage') return grand ? current / grand : null;
+    if (spec.kind === 'row-percentage') return rowTotal ? current / rowTotal : null;
+    if (spec.kind === 'column-percentage') return columnTotal ? current / columnTotal : null;
+    if (spec.kind === 'parent-percentage') return parentTotal == null ? null : parentTotal ? current / parentTotal : null;
+    if (spec.kind === 'difference' || spec.kind === 'percentage-difference') {
+      const base = spec.base === 'grand' ? grand : spec.base === 'row' ? rowTotal : spec.base === 'column' ? columnTotal : parentTotal;
+      return base == null ? null : spec.kind === 'difference' ? current - base : base ? (current - base) / base : null;
+    }
+    if (spec.kind === 'running-total') {
+      if (spec.axis === 'column') {
+        const values = context.node?.values.slice(0, context.columnIndex + 1) ?? [];
+        return values.reduce((sum, cell) => sum + (toNumber(rawValue(cell, valueIndex)) ?? 0), 0);
+      }
+      const series = rowSeries(context);
+      const end = series.indexOf(context);
+      return end < 0 ? null : series.slice(0, end + 1).reduce((sum, candidate) => sum + (toNumber(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)) ?? 0), 0);
+    }
+    if (spec.kind === 'rank') {
+      const series = spec.axis === 'column'
+        ? (context.node?.values ?? []).map((cell) => toNumber(rawValue(cell, valueIndex)))
+        : rowSeries(context).map((candidate) => toNumber(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)));
+      const ranked = series.filter((value): value is number => value != null).sort((left, right) => spec.direction === 'ascending' ? left - right : right - left);
+      const rank = ranked.findIndex((value) => value === current);
+      return rank < 0 ? null : rank + 1;
+    }
+    if (spec.kind === 'index') return grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
+    return null;
+  };
+
+  for (const context of contexts) {
+    for (const [valueIndex, field] of fields.entries()) {
+      const spec = field.showAs ?? { kind: 'normal' as const };
+      const current = toNumber(rawValue(context.cell, valueIndex));
+      if (current == null || spec.kind === 'normal') continue;
+      const grand = toNumber(grandValues[valueIndex] ?? null);
+      const rowTotal = context.kind === 'grand-total'
+        ? (grand ?? current)
+        : context.node?.values.reduce((sum, cell) => sum + (toNumber(rawValue(cell, valueIndex)) ?? 0), 0) ?? 0;
+      const columnTotal = context.kind === 'grand-total'
+        ? (grand ?? current)
+        : numericSum(leafContexts, valueIndex, context.columnIndex);
+      // Top-level members have the grand total as their parent context. This
+      // is the only deterministic parent for a Pivot root member.
+      const parentTotal = context.kind === 'grand-total'
+        ? grand
+        : context.parent ? toNumber(rawValue(context.parent.values[context.columnIndex], valueIndex)) : grand;
+      context.cell.values[valueIndex] = transform(spec, current, grand, rowTotal, columnTotal, parentTotal, context, valueIndex);
+    }
+  }
 }
 
 function computePivotResultFromTable(
