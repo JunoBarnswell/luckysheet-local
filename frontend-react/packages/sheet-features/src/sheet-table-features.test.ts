@@ -16,6 +16,7 @@ import {
   resolveAutoFilters,
   resolveActiveAutoFilter,
   resolveFilterOwner,
+  validateFilterOwnership,
   subtotalCodeForTotalsFunction,
   tableBodyBounds,
 } from './sheet-table-features';
@@ -140,6 +141,33 @@ test('Worksheet and Table AutoFilter ownership is singular for overlapping range
   assert.deepEqual(resolveFilterOwner(sheet), { kind: 'table', tableId: table.id });
   sheet.autoFilter = createAutoFilterModelForTable(sampleTable);
   assert.throws(() => resolveActiveAutoFilter(sheet), /cannot overlap/);
+});
+
+test('frontend owner validation rejects same, contained, and partial overlaps while allowing disjoint ranges', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const table = { ...sampleTable, autoFilter: createAutoFilterModelForTable(sampleTable) };
+  sheet.sheetTables.push(table);
+  for (const range of [
+    { sheetId: 's1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+    { sheetId: 's1', startRow: 1, endRow: 2, startColumn: 1, endColumn: 1 },
+    { sheetId: 's1', startRow: 2, endRow: 5, startColumn: 1, endColumn: 2 },
+  ]) {
+    const candidate = createAutoFilterModelForTable({ ...sampleTable, range });
+    assert.throws(() => validateFilterOwnership(sheet, candidate, { kind: 'worksheet' }), /overlap/);
+  }
+  const disjointRange = { sheetId: 's1', startRow: 10, endRow: 13, startColumn: 0, endColumn: 1 };
+  const disjoint = createAutoFilterModelForTable({ ...sampleTable, range: disjointRange });
+  assert.doesNotThrow(() => validateFilterOwnership(sheet, disjoint, { kind: 'worksheet' }));
+});
+
+test('frontend table owner validation rejects a worksheet overlap before table filter commit', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const worksheetRange = { sheetId: 's1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 };
+  sheet.autoFilter = createAutoFilterModelForTable({ ...sampleTable, range: worksheetRange });
+  const table = { ...sampleTable, id: 't2', range: { sheetId: 's1', startRow: 2, endRow: 6, startColumn: 0, endColumn: 1 } };
+  sheet.sheetTables.push(table);
+  const candidate = createAutoFilterModelForTable(table);
+  assert.throws(() => validateFilterOwnership(sheet, candidate, { kind: 'table', tableId: table.id }), /overlap/);
 });
 
 test('multiple non-overlapping Table AutoFilters retain independent owners and buttons', () => {

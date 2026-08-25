@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
@@ -49,9 +50,10 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "dv.remove" -> existingRuleRanges(root, mutation.sheetId(), "dataValidations", SnapshotMutationSupport.text(params, "ruleId"));
             case "banded.set" -> bandedRange(root, mutation.sheetId(), params);
             case "outline.set" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
-            case "sheetTable.add", "sheetTable.update" -> List.of(tableRange(root, mutation.sheetId(), params));
+            case "sheetTable.add", "sheetTable.update" -> List.of(validatedTableRange(root, mutation.sheetId(), params));
             case "tableSheet.update", "ganttSheet.update", "reportSheet.update" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
-            case "sheetTable.remove", "sheetTable.autoFilter.set" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
+            case "sheetTable.remove" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
+            case "sheetTable.autoFilter.set" -> List.of(tableFilterRange(root, mutation.sheetId(), params));
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         };
     }
@@ -78,7 +80,12 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "column.unhidden" -> setHidden(root, sheet, mutation.sheetId(), params, "hiddenColumns", "index", false, false);
             case "columns.unhidden.all" -> sheet.set("hiddenColumns", JsonNodeFactory.instance.arrayNode());
             case "columns.hidden.restore" -> restoreHidden(root, sheet, mutation.sheetId(), params, "hiddenColumns", false);
-            case "autoFilter.set" -> sheet.set("autoFilter", filter(root, mutation.sheetId(), params).deepCopy());
+            case "autoFilter.set" -> {
+                ObjectNode filter = filter(root, mutation.sheetId(), params);
+                RangeRef candidateRange = SnapshotMutationSupport.range(root, filter.get("range"));
+                AutoFilterOwnershipValidator.validateCandidate(sheet, mutation.sheetId(), "worksheet", null, candidateRange);
+                sheet.set("autoFilter", filter.deepCopy());
+            }
             case "autoFilter.remove" -> sheet.remove("autoFilter");
             case "cf.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
             case "cf.remove" -> removeRule(sheet, params, "conditionalFormats");
@@ -139,7 +146,10 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     }
 
     private ObjectNode filter(ObjectNode root, String sheetId, ObjectNode params) {
-        ObjectNode filter = SnapshotMutationSupport.requiredObject(params, "autoFilter");
+        return validateFilter(root, sheetId, SnapshotMutationSupport.requiredObject(params, "autoFilter"));
+    }
+
+    private ObjectNode validateFilter(ObjectNode root, String sheetId, ObjectNode filter) {
         SnapshotMutationSupport.requireEntitySheet(filter, sheetId);
         RangeRef range = SnapshotMutationSupport.range(root, filter.get("range"));
         SnapshotMutationSupport.requireSheet(range, sheetId);
@@ -155,6 +165,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         if (table == null) throw ServiceException.notFound("Sheet Table not found: " + tableId);
         JsonNode value = params.get("autoFilter");
         if (value == null || value.isNull()) {
+            AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
             table.remove("autoFilter");
             return;
         }
@@ -163,19 +174,8 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         RangeRef filterRange = SnapshotMutationSupport.range(root, filter.get("range"));
         RangeRef tableRange = SnapshotMutationSupport.range(root, table.get("range"));
         if (!sameRange(filterRange, tableRange)) throw ServiceException.validation("Table AutoFilter range must equal the Table range");
-        filter(root, sheetId, params);
-        JsonNode worksheetFilter = sheet.get("autoFilter");
-        if (worksheetFilter != null && worksheetFilter.isObject()
-                && rangesOverlap(filterRange, SnapshotMutationSupport.range(root, worksheetFilter.get("range")))) {
-            throw ServiceException.validation("Table AutoFilter cannot overlap a Worksheet AutoFilter");
-        }
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sheetTables")) {
-            if (!raw.isObject() || tableId.equals(raw.path("id").asText())) continue;
-            JsonNode other = raw.get("autoFilter");
-            if (other != null && other.isObject() && rangesOverlap(filterRange, SnapshotMutationSupport.range(root, other.get("range")))) {
-                throw ServiceException.validation("Table AutoFilter ranges cannot overlap");
-            }
-        }
+        validateFilter(root, sheetId, filter);
+        AutoFilterOwnershipValidator.validateCandidate(sheet, sheetId, "table", tableId, filterRange);
         table.set("autoFilter", filter.deepCopy());
     }
 
@@ -240,20 +240,47 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
                 && left.startColumn() == right.startColumn() && left.endColumn() == right.endColumn();
     }
 
-    private static boolean rangesOverlap(RangeRef left, RangeRef right) {
-        return left.startRow() <= right.endRow() && right.startRow() <= left.endRow()
-                && left.startColumn() <= right.endColumn() && right.startColumn() <= left.endColumn();
-    }
-
     private RangeRef filterRange(ObjectNode root, String sheetId, ObjectNode params) {
-        return SnapshotMutationSupport.range(root, filter(root, sheetId, params).get("range"));
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        ObjectNode filter = filter(root, sheetId, params);
+        RangeRef range = SnapshotMutationSupport.range(root, filter.get("range"));
+        AutoFilterOwnershipValidator.validateCandidate(sheet, sheetId, "worksheet", null, range);
+        return range;
     }
 
     private List<RangeRef> existingFilterRange(ObjectNode root, String sheetId) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         JsonNode filter = sheet.get("autoFilter");
         if (filter == null || filter.isNull()) return List.of();
         return List.of(SnapshotMutationSupport.range(root, SnapshotMutationSupport.requiredObject(sheet, "autoFilter").get("range")));
+    }
+
+    private RangeRef validatedTableRange(ObjectNode root, String sheetId, ObjectNode params) {
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        RangeRef range = tableRange(root, sheetId, params);
+        validateSheetTable(root, sheet, sheetId, params, range);
+        return range;
+    }
+
+    private RangeRef tableFilterRange(ObjectNode root, String sheetId, ObjectNode params) {
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        String tableId = SnapshotMutationSupport.text(params, "tableId");
+        ObjectNode table = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(sheet, "sheetTables"), tableId);
+        if (table == null) throw ServiceException.notFound("Sheet Table not found: " + tableId);
+        JsonNode value = params.get("autoFilter");
+        if (value == null || value.isNull()) {
+            AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
+            return SnapshotMutationSupport.range(root, table.get("range"));
+        }
+        if (!value.isObject()) throw ServiceException.validation("Table AutoFilter must be an object");
+        ObjectNode filter = (ObjectNode) value;
+        validateFilter(root, sheetId, filter);
+        RangeRef filterRange = SnapshotMutationSupport.range(root, filter.get("range"));
+        RangeRef tableRange = SnapshotMutationSupport.range(root, table.get("range"));
+        if (!sameRange(filterRange, tableRange)) throw ServiceException.validation("Table AutoFilter range must equal the Table range");
+        AutoFilterOwnershipValidator.validateCandidate(sheet, sheetId, "table", tableId, filterRange);
+        return tableRange;
     }
 
     private void upsertRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {
@@ -347,11 +374,12 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     private void upsertSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
         RangeRef range = tableRange(root, sheetId, params);
-        validateSheetTable(params, range);
+        validateSheetTable(root, sheet, sheetId, params, range);
         SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, "sheetTables"), params);
     }
 
-    private void validateSheetTable(ObjectNode table, RangeRef range) {
+    private void validateSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode table, RangeRef range) {
+        AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         for (String key : List.of("hasHeaderRow", "hasTotalRow", "showBandedRows", "showBandedColumns", "showFirstColumn", "showLastColumn", "showFilterButton")) {
             if (!table.path(key).isBoolean()) throw ServiceException.validation("Sheet Table " + key + " must be boolean");
         }
@@ -368,6 +396,15 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             if (id.isBlank() || !ids.add(id) || !names.add(name.toLowerCase(java.util.Locale.ROOT))) throw ServiceException.validation("Sheet Table columns must be unique");
         }
         if (!table.path("hasHeaderRow").asBoolean() && table.path("showFilterButton").asBoolean()) throw ServiceException.validation("A Table without headers cannot expose a filter button");
+        JsonNode tableFilter = table.get("autoFilter");
+        if (tableFilter != null && !tableFilter.isNull()) {
+            if (!tableFilter.isObject()) throw ServiceException.validation("Table AutoFilter is invalid");
+            ObjectNode filter = (ObjectNode) tableFilter;
+            validateFilter(root, sheetId, filter);
+            RangeRef filterRange = SnapshotMutationSupport.range(root, filter.get("range"));
+            if (!sameRange(filterRange, range)) throw ServiceException.validation("Table AutoFilter range must equal the Table range");
+            AutoFilterOwnershipValidator.validateCandidate(sheet, sheetId, "table", SnapshotMutationSupport.text(table, "id"), filterRange);
+        }
     }
 
     private void updateTableSheet(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {

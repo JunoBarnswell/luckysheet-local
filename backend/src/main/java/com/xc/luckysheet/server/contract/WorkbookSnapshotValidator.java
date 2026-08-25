@@ -105,8 +105,7 @@ public final class WorkbookSnapshotValidator {
                 }
             }
             JsonNode autoFilter = sheet.get("autoFilter");
-            RangeRef worksheetFilterRange = autoFilter == null || autoFilter.isNull() ? null : validateAutoFilter(autoFilter, sheetId, null);
-            java.util.List<RangeRef> tableFilterRanges = new java.util.ArrayList<>();
+            if (autoFilter != null && !autoFilter.isNull()) validateAutoFilter(autoFilter, sheetId, null);
             JsonNode tables = sheet.get("sheetTables");
             if (tables != null && !tables.isNull()) {
                 if (!tables.isArray()) throw ServiceException.validation("Workbook snapshot sheetTables is invalid");
@@ -115,16 +114,10 @@ public final class WorkbookSnapshotValidator {
                     JsonNode tableFilter = table.get("autoFilter");
                     if (tableFilter == null || tableFilter.isNull()) continue;
                     RangeRef tableRange = rangeOf(table.get("range"), sheetId);
-                    RangeRef filterRange = validateAutoFilter(tableFilter, sheetId, tableRange);
-                    if (worksheetFilterRange != null && overlaps(worksheetFilterRange, filterRange)) {
-                        throw ServiceException.validation("Worksheet and Table AutoFilter ranges cannot overlap");
-                    }
-                    if (tableFilterRanges.stream().anyMatch(existing -> overlaps(existing, filterRange))) {
-                        throw ServiceException.validation("Table AutoFilter ranges cannot overlap");
-                    }
-                    tableFilterRanges.add(filterRange);
+                    validateAutoFilter(tableFilter, sheetId, tableRange);
                 }
             }
+            AutoFilterOwnershipValidator.resolveOwners((ObjectNode) sheet, sheetId);
         }
         for (JsonNode sheet : sheets) {
             ObjectNode sheetObject = (ObjectNode) sheet;
@@ -393,11 +386,6 @@ public final class WorkbookSnapshotValidator {
     private static boolean sameRange(RangeRef left, RangeRef right) {
         return left.sheetId().equals(right.sheetId()) && left.startRow() == right.startRow() && left.endRow() == right.endRow()
                 && left.startColumn() == right.startColumn() && left.endColumn() == right.endColumn();
-    }
-
-    private static boolean overlaps(RangeRef left, RangeRef right) {
-        return left.startRow() <= right.endRow() && right.startRow() <= left.endRow()
-                && left.startColumn() <= right.endColumn() && right.startColumn() <= left.endColumn();
     }
 
     private static ObjectNode copyObjectOrEmpty(JsonNode value) {
