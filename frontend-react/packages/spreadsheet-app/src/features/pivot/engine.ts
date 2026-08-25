@@ -724,9 +724,12 @@ function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldC
       const valueId = placement.sort.valueId;
       if (!valueId) throw new Error(`Pivot value sort requires a valueId for ${fieldId}`);
       if (!valueIds.has(valueId)) throw new Error(`Pivot value sort placement is not in Values: ${valueId}`);
-      sort = { ...placement.sort, valueId };
-    } else {
+      sort = { direction: placement.sort.direction, by: 'value', valueId };
+    } else if (placement.sort.by === 'label') {
+      if (Object.prototype.hasOwnProperty.call(placement.sort, 'valueId')) throw new Error(`Pivot label sort cannot carry a Values placement identity for ${fieldId}`);
       sort = { direction: placement.sort.direction, by: 'label' };
+    } else {
+      throw new Error(`Pivot sort mode is invalid for ${fieldId}`);
     }
   }
   return { fieldId, sort, group: placement.group, subtotal: placement.subtotal ? structuredClone(placement.subtotal) : undefined };
@@ -1213,7 +1216,7 @@ function valueSourceFieldId(valueId: string, values: readonly Pick<PivotValueFie
   return value.fieldId;
 }
 
-function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, values: readonly Pick<PivotValueField, 'valueId' | 'fieldId'>[] = []): AxisGroup[] {
+function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, values: readonly PivotResultValueField[] = [], calculatedFields?: CalculatedFieldEvaluator): AxisGroup[] {
   const map = new Map<string, AxisGroup>();
   for (const row of rows) {
     const values = placements.map((placement) => grouped(row.values[placement.fieldId] ?? null, placement.group));
@@ -1224,19 +1227,29 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   }
   const placement = placements[placements.length - 1];
   const dataType = placement ? fieldCatalog.fields.find((field) => field.fieldId === placement.fieldId)?.dataType : undefined;
-  const result = [...map.values()].sort((left, right) => {
-    if (placement?.sort?.by === 'value' && placement.sort.valueId) {
-      const sourceFieldId = valueSourceFieldId(placement.sort.valueId, values);
-      return (pivotNumericValue(aggregatePivotValues(left.rows, sourceFieldId, 'sum')) ?? 0) - (pivotNumericValue(aggregatePivotValues(right.rows, sourceFieldId, 'sum')) ?? 0);
-    }
+  const valueSort = placement?.sort?.by === 'value' ? placement.sort : undefined;
+  const compareLabels = (left: AxisGroup, right: AxisGroup): number => {
     for (let index = 0; index < left.values.length; index += 1) {
       const fieldType = fieldCatalog.fields.find((field) => field.fieldId === placements[index]?.fieldId)?.dataType ?? dataType;
       const order = compare(left.values[index] ?? null, right.values[index] ?? null, fieldType, collator);
       if (order) return order;
     }
     return 0;
+  };
+  const result = [...map.values()].sort((left, right) => {
+    if (valueSort) {
+      const valueField = values.find((value) => value.valueId === valueSort.valueId);
+      if (!valueField) throw new Error(`Pivot value sort placement is not in Values: ${valueSort.valueId}`);
+      const leftValue = pivotNumericValue(resultValue(left.rows, valueField, valueField.summarizeBy, calculatedFields)) ?? 0;
+      const rightValue = pivotNumericValue(resultValue(right.rows, valueField, valueField.summarizeBy, calculatedFields)) ?? 0;
+      const valueOrder = leftValue - rightValue;
+      if (valueOrder) return valueSort.direction === 'descending' ? -valueOrder : valueOrder;
+      const labelOrder = compareLabels(left, right);
+      return valueSort.direction === 'descending' ? -labelOrder : labelOrder;
+    }
+    return compareLabels(left, right);
   });
-  if (placement?.sort?.direction === 'descending') result.reverse();
+  if (!valueSort && placement?.sort?.direction === 'descending') result.reverse();
   return result;
 }
 
@@ -1651,7 +1664,7 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
     }];
   }
   const placement = placements[depth]!;
-  return axisGroups(rows, [placement], fieldCatalog, collator, values).map((group) => {
+  return axisGroups(rows, [placement], fieldCatalog, collator, values, calculatedFields).map((group) => {
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
@@ -1864,7 +1877,7 @@ function computePivotResultFromTable(
   filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition);
   const resultFields = resultValueFields(definition.layout);
-  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields) : [{ values: [], rows: filtered }];
+  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields) : [{ values: [], rows: filtered }];
   const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
