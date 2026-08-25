@@ -168,6 +168,104 @@ function sourceCellValue(cell: { value: unknown; formulaValue?: unknown } | unde
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
 }
 
+interface PivotDrillDownRecord {
+  paths: Map<string, PivotSourceRowPath>;
+}
+
+interface PivotDrillDownPlan {
+  columns: DrillDownColumn[];
+  records: PivotDrillDownRecord[];
+}
+
+function drillDownRootSourceId(pivot: PivotModel, nodes: Array<{ sourceId?: string; range: RangeRef }>): string | undefined {
+  if (pivot.source.kind !== 'worksheet-ranges') return nodes[0]?.sourceId;
+  const leftJoins = pivot.source.relationships.filter((relationship) => relationship.join === 'left');
+  const candidates = leftJoins.length
+    ? nodes.filter((node) => node.sourceId && !leftJoins.some((relationship) => relationship.right.sourceId === node.sourceId))
+    : [...nodes].sort((left, right) => (left.sourceId ?? '').localeCompare(right.sourceId ?? '')).slice(0, 1);
+  if (candidates.length !== 1 || !candidates[0]?.sourceId) throw new Error('Pivot drill-down source graph has no deterministic root');
+  return candidates[0].sourceId;
+}
+
+function optionalDrillDownSourceIds(pivot: PivotModel): Set<string> {
+  if (pivot.source.kind !== 'worksheet-ranges') return new Set();
+  const optional = new Set<string>();
+  for (const relationship of pivot.source.relationships) {
+    if (relationship.join === 'left') optional.add(relationship.right.sourceId);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const relationship of pivot.source.relationships) {
+      if (relationship.join === 'left' && optional.has(relationship.left.sourceId)) {
+        if (!optional.has(relationship.right.sourceId)) {
+          optional.add(relationship.right.sourceId);
+          changed = true;
+        }
+      }
+    }
+  }
+  return optional;
+}
+
+function planPivotDrillDown(context: CommandContext, params: PivotDrillDownParams): PivotDrillDownPlan {
+  const sourceSheet = context.workbook.getSheet(params.sheetId);
+  const pivot = sourceSheet.pivots.find((entry) => entry.id === params.pivotId);
+  if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
+  if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
+  const nodes = pivotSourceNodes(pivot, context.workbook);
+  const sourceIds = new Set<string>();
+  for (const node of nodes) {
+    const sheet = context.workbook.getSheet(node.range.sheetId);
+    if (node.range.startRow < 0 || node.range.endRow >= sheet.rowCount || node.range.startColumn < 0 || node.range.endColumn >= sheet.columnCount) {
+      throw new Error('Pivot source range exceeds worksheet bounds');
+    }
+    if (node.sourceId !== undefined && (!isNonEmptyString(node.sourceId) || sourceIds.has(node.sourceId))) {
+      throw new Error('Pivot drill-down source identity is invalid or duplicated');
+    }
+    if (node.sourceId !== undefined) sourceIds.add(node.sourceId);
+  }
+  const multiSource = nodes.length > 1;
+  const rootSourceId = drillDownRootSourceId(pivot, nodes);
+  const optionalSourceIds = optionalDrillDownSourceIds(pivot);
+  const requiredSourceIds = multiSource
+    ? [...sourceIds].filter((sourceId) => !optionalSourceIds.has(sourceId))
+    : [];
+  const records = new Map<string, PivotDrillDownRecord>();
+  for (const path of params.sourceRowPaths) {
+    const sheet = context.workbook.getSheet(path.sheetId);
+    if (path.row < 0 || path.row >= sheet.rowCount) throw new Error(`Pivot drill-down source row is invalid: ${path.row}`);
+    const node = multiSource
+      ? nodes.find((candidate) => candidate.sourceId === path.sourceId)
+      : nodes.length === 1
+        ? nodes[0]
+        : nodes.find((candidate) => candidate.sourceId === path.sourceId || (candidate.sourceId === undefined && candidate.range.sheetId === path.sheetId));
+    if (!node) throw new Error(`Pivot drill-down provenance references an unknown source: ${path.sourceId ?? path.sheetId}`);
+    if (path.sheetId !== node.range.sheetId || path.row <= node.range.startRow || path.row > node.range.endRow) {
+      throw new Error(`Pivot drill-down provenance is outside source range: ${path.sourceId ?? path.sheetId}:${path.row}`);
+    }
+    if (multiSource && (!path.sourceId || !path.recordId)) {
+      throw new Error('Pivot drill-down provenance requires sourceId and recordId for joined sources');
+    }
+    const sourceKey = multiSource ? path.sourceId! : (node.sourceId ?? '__single-source__');
+    const recordId = path.recordId ?? `${path.sheetId}:${path.row}`;
+    const record = records.get(recordId) ?? { paths: new Map<string, PivotSourceRowPath>() };
+    if (record.paths.has(sourceKey)) throw new Error(`Pivot drill-down provenance repeats source ${sourceKey} in record ${recordId}`);
+    record.paths.set(sourceKey, structuredClone(path));
+    records.set(recordId, record);
+  }
+  if (multiSource) {
+    if (!rootSourceId) throw new Error('Pivot drill-down source graph root is missing');
+    for (const [recordId, record] of records) {
+      for (const sourceId of requiredSourceIds) {
+        if (!record.paths.has(sourceId)) throw new Error(`Pivot drill-down provenance is incomplete for record ${recordId}: ${sourceId}`);
+      }
+      if (!record.paths.has(rootSourceId)) throw new Error(`Pivot drill-down provenance is missing root source for record ${recordId}`);
+    }
+  }
+  return { columns: drillDownColumns(context, pivot), records: [...records.values()] };
+}
+
 function drillDownColumns(context: CommandContext, pivot: PivotModel): DrillDownColumn[] {
   const columns: DrillDownColumn[] = [];
   const labels = new Set<string>();
@@ -193,38 +291,18 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
   const sourceSheet = context.workbook.getSheet(params.sheetId);
   const pivot = sourceSheet.pivots.find((entry) => entry.id === params.pivotId);
   if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-  if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
-  for (const range of pivotSourceRanges(pivot, context.workbook)) {
-    const sheet = context.workbook.getSheet(range.sheetId);
-    if (range.startRow < 0 || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn >= sheet.columnCount) {
-      throw new Error('Pivot source range exceeds worksheet bounds');
-    }
-  }
-  for (const path of params.sourceRowPaths) {
-    const sheet = context.workbook.getSheet(path.sheetId);
-    if (path.row < 0 || path.row >= sheet.rowCount) throw new Error(`Pivot drill-down source row is invalid: ${path.row}`);
-  }
-
-  const columns = drillDownColumns(context, pivot);
+  const plan = planPivotDrillDown(context, params);
   const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
-  columns.forEach((column, index) => target.cells.set(params.target.row, params.target.column + index, { value: column.label }));
-
-  const nodes = pivotSourceNodes(pivot, context.workbook);
-  const rowsPerResult = Math.max(nodes.length, 1);
-  const resultRowCount = Math.ceil(params.sourceRowPaths.length / rowsPerResult);
-  for (let rowOffset = 0; rowOffset < resultRowCount; rowOffset += 1) {
-    // Joined pivots flatten one path per source range into the result tree.
-    // Re-group those paths deterministically before reading detail values.
-    const paths = params.sourceRowPaths.slice(rowOffset * rowsPerResult, (rowOffset + 1) * rowsPerResult);
-    columns.forEach((column, columnOffset) => {
-      const path = paths.find((entry) => column.sourceId !== undefined && entry.sourceId !== undefined
-        ? entry.sourceId === column.sourceId
-        : entry.sheetId === column.range.sheetId);
+  plan.columns.forEach((column, index) => target.cells.set(params.target.row, params.target.column + index, { value: column.label }));
+  plan.records.forEach((record, rowOffset) => {
+    plan.columns.forEach((column, columnOffset) => {
+      const sourceKey = column.sourceId ?? '__single-source__';
+      const path = record.paths.get(sourceKey);
       const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
       const value = source && path ? sourceCellValue(source.cells.get(path.row, column.column)) : null;
       target.cells.set(params.target.row + rowOffset + 1, params.target.column + columnOffset, { value });
     });
-  }
+  });
 }
 
 function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): void {
@@ -361,7 +439,7 @@ const isPivotDrillDown = (value: unknown): value is PivotDrillDownParams => isRe
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
   && typeof value.label === 'string' && isNonEmptyString(value.targetSheetId)
   && Array.isArray(value.sourceRowPaths)
-  && value.sourceRowPaths.every((entry) => isRecord(entry) && (entry.sourceId === undefined || isNonEmptyString(entry.sourceId)) && isNonEmptyString(entry.sheetId) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0)
+  && value.sourceRowPaths.every((entry) => isRecord(entry) && (entry.sourceId === undefined || isNonEmptyString(entry.sourceId)) && (entry.recordId === undefined || isNonEmptyString(entry.recordId)) && isNonEmptyString(entry.sheetId) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0)
   && isRecord(value.target)
   && Number.isSafeInteger(value.target.row) && Number.isSafeInteger(value.target.column)
   && Number(value.target.row) >= 0 && Number(value.target.column) >= 0;
@@ -814,12 +892,9 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<PivotDrillDownParams>({
     id: 'pivot.drillDown',
     execute: (params, context) => {
-      const pivot = pivotFor(context, params.sheetId, params.pivotId);
-      if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-      if (context.workbook.sheets.has(params.targetSheetId)) throw new Error(`Drill-down target already exists: ${params.targetSheetId}`);
-      const columns = drillDownColumns(context, pivot).length;
-      const sourceRangeCount = Math.max(pivotSourceRanges(pivot, context.workbook).length, 1);
-      const detailRows = Math.ceil(params.sourceRowPaths.length / sourceRangeCount);
+      const plan = planPivotDrillDown(context, params);
+      const columns = plan.columns.length;
+      const detailRows = plan.records.length;
       const affectedRanges: RangeRef[] = [
         { sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
         { sheetId: params.targetSheetId, startRow: params.target.row, endRow: params.target.row + detailRows, startColumn: params.target.column, endColumn: params.target.column + Math.max(columns - 1, 0) },
