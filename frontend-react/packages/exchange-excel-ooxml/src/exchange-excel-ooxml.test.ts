@@ -275,6 +275,25 @@ describe('exchange-excel-ooxml', () => {
     assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /unterminated/);
   });
 
+  it('round-trips native Difference From base field and typed base item coordinates', () => {
+    const workbook = new WorkbookModel('wb-pivot-difference', 'Pivot Difference');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Category', 'Amount'], ['A', 10], ['B', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'pivot-difference', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } }, target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0, values: ['A', 'B'] }, { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 }] },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ valueId: 'value:amount', fieldId: 'amount', summarizeBy: 'sum', showAs: { kind: 'difference', baseFieldId: 'category', baseItem: { type: 'text', value: 'A' } } }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const tableXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(tableXml, /showDataAs="difference"/);
+    assert.match(tableXml, /baseField="0"/);
+    assert.match(tableXml, /baseItem="0"/);
+    const imported = parseLoadedXlsx(output).snapshot;
+    assert.deepEqual(imported.sheets[0]?.pivots[0]?.layout.values[0]?.showAs, { kind: 'difference', baseFieldId: 'native:cache:1:field:0', baseItem: { type: 'text', value: 'A' } });
+  });
+
   it('round-trips date, numeric and manual Pivot cache grouping through native fieldGroup metadata', () => {
     const workbook = new WorkbookModel('wb-pivot-groups', 'Pivot Groups');
     const sheet = workbook.getSheet(workbook.primarySheetId);

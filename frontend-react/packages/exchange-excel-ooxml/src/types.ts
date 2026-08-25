@@ -171,6 +171,10 @@ export interface NativePivotDataField {
   name?: string;
   subtotal?: string;
   showDataAs?: string;
+  /** Native dataField base coordinate used by Difference/Running Total. */
+  baseField?: number;
+  /** Native shared-item index, or the explicit previous/next sentinel. */
+  baseItem?: number;
   /** Canonical Excel format code represented by OOXML dataField@numFmtId. */
   numberFormat?: string;
 }

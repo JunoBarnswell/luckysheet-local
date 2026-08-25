@@ -25,6 +25,7 @@ import type {
   PivotResultValueField,
   PivotScalar,
   PivotSort,
+  PivotShowAsBaseItem,
   PivotTopBottomMode,
   PivotSource,
   PivotSourceRowPath,
@@ -779,21 +780,68 @@ function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog)
   const fieldId = resolveFieldId(field.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot value field: ${field.fieldId}`);
   const numberFormat = normalizePivotNumberFormat(field.numberFormat);
-  return { ...field, fieldId, ...(field.baseFieldId ? { baseFieldId: resolveFieldId(field.baseFieldId, catalog) } : {}), ...(numberFormat === undefined ? {} : { numberFormat }) };
+  if (Object.prototype.hasOwnProperty.call(field as object, 'baseFieldId') || Object.prototype.hasOwnProperty.call(field as object, 'baseItem')) {
+    throw new Error('Pivot value field baseFieldId/baseItem are no longer accepted; configure them inside showAs');
+  }
+  return { ...field, fieldId, ...(numberFormat === undefined ? {} : { numberFormat }) };
+}
+
+function normalizeShowAsBaseItem(value: unknown): PivotShowAsBaseItem {
+  if (value === 'previous' || value === 'next') return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Pivot showAs baseItem is invalid');
+  const member = value as Record<string, unknown>;
+  if (!['text', 'number', 'boolean', 'blank', 'error'].includes(String(member.type))) throw new Error('Pivot showAs baseItem type is invalid');
+  if (member.type === 'blank' && member.value !== null) throw new Error('Pivot showAs blank baseItem must have null value');
+  if (member.type === 'text' && typeof member.value !== 'string') throw new Error('Pivot showAs text baseItem is invalid');
+  if (member.type === 'number' && (typeof member.value !== 'number' || !Number.isFinite(member.value))) throw new Error('Pivot showAs number baseItem is invalid');
+  if (member.type === 'boolean' && typeof member.value !== 'boolean') throw new Error('Pivot showAs boolean baseItem is invalid');
+  if (member.type === 'error' && typeof member.value !== 'string') throw new Error('Pivot showAs error baseItem is invalid');
+  return { type: member.type as 'text' | 'number' | 'boolean' | 'blank' | 'error', value: member.value as string | number | boolean | null };
+}
+
+function normalizeValueShowAs(field: PivotValueField, catalog: PivotFieldCatalog, axisFieldIds: ReadonlySet<string>): PivotValueField {
+  const raw = field.showAs;
+  if (raw === undefined) return field;
+  const showAs = raw as unknown as Record<string, unknown>;
+  const kind = showAs.kind;
+  const totalKinds = new Set(['normal', 'grand-percentage', 'row-percentage', 'column-percentage', 'parent-percentage', 'index']);
+  if (typeof kind !== 'string') throw new Error('Pivot showAs kind is invalid');
+  if (totalKinds.has(kind)) {
+    if (Object.keys(showAs).some((key) => key !== 'kind')) throw new Error('Pivot showAs contains unknown fields');
+    return { ...field, showAs: { kind } as PivotValueField['showAs'] };
+  }
+  const baseFieldId = showAs.baseFieldId;
+  if (typeof baseFieldId !== 'string' || !baseFieldId.trim()) throw new Error(`Pivot ${kind} showAs requires baseFieldId`);
+  const resolvedBaseFieldId = resolveFieldId(baseFieldId, catalog);
+  if (!resolvedBaseFieldId || !axisFieldIds.has(resolvedBaseFieldId)) throw new Error(`Pivot ${kind} showAs baseFieldId must target a row or column field: ${baseFieldId}`);
+  if (kind === 'difference' || kind === 'percentage-difference') {
+    if (!Object.prototype.hasOwnProperty.call(showAs, 'baseItem')) throw new Error(`Pivot ${kind} showAs requires baseItem`);
+    return { ...field, showAs: { kind, baseFieldId: resolvedBaseFieldId, baseItem: normalizeShowAsBaseItem(showAs.baseItem) } as PivotValueField['showAs'] };
+  }
+  if (kind === 'running-total' || kind === 'percentage-running-total') {
+    if (Object.keys(showAs).some((key) => key !== 'kind' && key !== 'baseFieldId')) throw new Error('Pivot running-total showAs contains unknown fields');
+    return { ...field, showAs: { kind, baseFieldId: resolvedBaseFieldId } as PivotValueField['showAs'] };
+  }
+  if (kind === 'rank') {
+    if (!['ascending', 'descending'].includes(String(showAs.direction)) || Object.keys(showAs).some((key) => !['kind', 'baseFieldId', 'direction'].includes(key))) throw new Error('Pivot rank showAs is invalid');
+    return { ...field, showAs: { kind, baseFieldId: resolvedBaseFieldId, direction: showAs.direction as 'ascending' | 'descending' } };
+  }
+  throw new Error(`Pivot showAs kind is unsupported: ${String(kind)}`);
 }
 
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
   if (!['compact', 'outline', 'tabular'].includes(layout.reportLayout)) throw new Error('Pivot report layout is invalid');
-  const values = layout.values.map((entry) => normalizeValueField(entry, catalog));
+  const rawValues = layout.values.map((entry) => normalizeValueField(entry, catalog));
   const valueIds = new Set<string>();
-  for (const entry of values) {
+  for (const entry of rawValues) {
     if (valueIds.has(entry.valueId)) throw new Error(`Duplicate Pivot Values placement identity: ${entry.valueId}`);
     valueIds.add(entry.valueId);
   }
-  const filters = layout.filters.map((entry) => normalizeFilter(entry, catalog, valueIds));
   const normalizedRows = layout.rows.map((entry) => normalizePlacement(entry, catalog, valueIds));
   const normalizedColumns = layout.columns.map((entry) => normalizePlacement(entry, catalog, valueIds));
   const axisFieldIds = new Set([...normalizedRows, ...normalizedColumns].map((entry) => entry.fieldId));
+  const values = rawValues.map((entry) => normalizeValueShowAs(entry, catalog, axisFieldIds));
+  const filters = layout.filters.map((entry) => normalizeFilter(entry, catalog, valueIds));
   const scopedFilters = filters.map((filter) => {
     const scope = filter.scope ?? (axisFieldIds.has(filter.fieldId) ? 'field' : 'report');
     if (scope === 'field' && !axisFieldIds.has(filter.fieldId)) {
@@ -1943,6 +1991,13 @@ interface PivotShowAsCellContext {
   kind: 'detail' | 'subtotal' | 'grand-total';
 }
 
+interface PivotShowAsAxisResolution {
+  base: number | null;
+  same: boolean;
+  series: number[];
+  position: number;
+}
+
 /**
  * Apply Show Values As from one immutable result matrix.
  *
@@ -1951,7 +2006,7 @@ interface PivotShowAsCellContext {
  * important because subtotal values are valid Pivot members in their own
  * right; they must never be looked up in a leaf-only sequence.
  */
-function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
+function applyShowAs(tree: PivotResultTree, fields: PivotValueField[], layout: PivotLayout): void {
   const raw = new Map<PivotResultCell, PivotScalar[]>();
   const contexts: PivotShowAsCellContext[] = [];
   const visit = (nodes: PivotResultNode[], parent?: PivotResultNode) => nodes.forEach((node) => {
@@ -1983,22 +2038,71 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
   const grandValues = tree.grandTotal ? raw.get(tree.grandTotal) ?? [] : [];
   const rowContexts = contexts.filter((context) => context.kind !== 'grand-total');
   const leafContexts = rowContexts.filter((context) => context.node?.children.length === 0);
-  const subtotalContexts = rowContexts.filter((context) => context.kind === 'subtotal');
-
-  const parentKey = (context: PivotShowAsCellContext): string => context.parent?.path?.join('\u001f') ?? '';
-  const rowSeries = (context: PivotShowAsCellContext): PivotShowAsCellContext[] => {
-    if (context.kind === 'subtotal' && context.node) {
-      // Subtotals are ranked/accumulated against subtotal peers of the same
-      // hierarchy field and parent context, never against leaf aggregates.
-      return subtotalContexts.filter((candidate) => candidate.node?.depth === context.node?.depth && parentKey(candidate) === parentKey(context));
-    }
-    return leafContexts;
-  };
 
   const numericSum = (cells: PivotShowAsCellContext[], valueIndex: number, columnIndex: number): number => cells.reduce((sum, context) => {
     const cell = context.node?.values[columnIndex];
     return sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0);
   }, 0);
+
+  const rowFieldIds = layout.rows.map((placement) => placement.fieldId);
+  const columnFieldIds = layout.columns.map((placement) => placement.fieldId);
+  const nodeContexts = new Map<string, PivotShowAsCellContext>();
+  for (const context of rowContexts) {
+    const id = context.node?.nodeId ?? context.node?.path?.join('/') ?? '';
+    if (id && context.node && !nodeContexts.has(id)) nodeContexts.set(id, context);
+  }
+  const sameScalar = (left: PivotScalar | undefined, right: PivotScalar): boolean => same(left ?? null, right);
+  const baseItemMatches = (value: PivotScalar | undefined, item: PivotShowAsBaseItem): boolean => {
+    if (item === 'previous' || item === 'next') return false;
+    return sameScalar(value, pivotScalarFromMemberKey(item));
+  };
+
+  const rowResolution = (context: PivotShowAsCellContext, spec: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, valueIndex: number): PivotShowAsAxisResolution | undefined => {
+    if (context.kind === 'grand-total' || !context.node?.path) return undefined;
+    const depth = rowFieldIds.indexOf(spec.baseFieldId);
+    if (depth < 0 || context.node.depth < depth) return undefined;
+    const currentPath = context.node.path[depth];
+    const prefix = context.node.path.slice(0, depth).join('\u001f');
+    const candidates = [...nodeContexts.values()].filter((candidate) => candidate.node?.fieldId === spec.baseFieldId
+      && candidate.node.path?.slice(0, depth).join('\u001f') === prefix);
+    if (candidates.length === 0) return undefined;
+    const currentIndex = candidates.findIndex((candidate) => candidate.node?.path?.[depth] === currentPath);
+    let position = currentIndex;
+    let target = currentIndex;
+    if ('baseItem' in spec) {
+      if (spec.baseItem === 'previous' || spec.baseItem === 'next') target = currentIndex + (spec.baseItem === 'previous' ? -1 : 1);
+      else target = candidates.findIndex((candidate) => baseItemMatches(candidate.node?.memberKey?.value, spec.baseItem));
+    }
+    if (target < 0 || target >= candidates.length) return undefined;
+    const series = candidates.map((candidate) => pivotNumericValue(rawValue(candidate.node?.values[context.columnIndex], valueIndex)) ?? 0);
+    return { base: pivotNumericValue(rawValue(candidates[target]?.node?.values[context.columnIndex], valueIndex)), same: target === currentIndex, series, position };
+  };
+
+  const columnResolution = (context: PivotShowAsCellContext, spec: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, valueIndex: number): PivotShowAsAxisResolution | undefined => {
+    if (context.kind === 'grand-total' || !context.node) return undefined;
+    const depth = columnFieldIds.indexOf(spec.baseFieldId);
+    if (depth < 0) return undefined;
+    const currentPath = tree.columnPaths[context.columnIndex];
+    if (!currentPath) return undefined;
+    const candidateIndexes = tree.columnPaths.map((path, index) => ({ path, index })).filter(({ path }) => path.length > depth
+      && columnFieldIds.every((fieldId, index) => index === depth || same(path[index] ?? null, currentPath[index] ?? null)));
+    const currentIndex = candidateIndexes.findIndex(({ index }) => index === context.columnIndex);
+    let target = currentIndex;
+    if ('baseItem' in spec) {
+      if (spec.baseItem === 'previous' || spec.baseItem === 'next') target = currentIndex + (spec.baseItem === 'previous' ? -1 : 1);
+      else target = candidateIndexes.findIndex(({ path }) => baseItemMatches(path[depth], spec.baseItem));
+    }
+    if (target < 0 || target >= candidateIndexes.length) return undefined;
+    const series = candidateIndexes.map(({ index }) => pivotNumericValue(rawValue(context.node?.values[index], valueIndex)) ?? 0);
+    const targetColumn = candidateIndexes[target]?.index;
+    return { base: targetColumn === undefined ? null : pivotNumericValue(rawValue(context.node.values[targetColumn], valueIndex)), same: targetColumn === context.columnIndex, series, position: currentIndex };
+  };
+
+  const resolveAxis = (context: PivotShowAsCellContext, spec: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, valueIndex: number): PivotShowAsAxisResolution | undefined => {
+    if (rowFieldIds.includes(spec.baseFieldId)) return rowResolution(context, spec, valueIndex);
+    if (columnFieldIds.includes(spec.baseFieldId)) return columnResolution(context, spec, valueIndex);
+    return undefined;
+  };
 
   const transform = (
     spec: NonNullable<PivotValueField['showAs']>,
@@ -2017,12 +2121,9 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
       // identity, differences to zero, running totals to the final aggregate,
       // and rank/index to the sole total member.
       if (spec.kind === 'grand-percentage' || spec.kind === 'row-percentage' || spec.kind === 'column-percentage' || spec.kind === 'parent-percentage') return grand ? current / grand : null;
-      if (spec.kind === 'difference') return spec.base === 'grand' ? current - (grand ?? current) : 0;
-      if (spec.kind === 'percentage-difference') {
-        const base = spec.base === 'grand' ? grand : rowTotal || columnTotal || parentTotal;
-        return base ? (current - base) / base : null;
-      }
+      if (spec.kind === 'difference' || spec.kind === 'percentage-difference') return null;
       if (spec.kind === 'running-total') return current;
+      if (spec.kind === 'percentage-running-total') return grand ? current / grand : null;
       if (spec.kind === 'rank') return 1;
       if (spec.kind === 'index') return grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
     }
@@ -2031,24 +2132,24 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
     if (spec.kind === 'column-percentage') return columnTotal ? current / columnTotal : null;
     if (spec.kind === 'parent-percentage') return parentTotal == null ? null : parentTotal ? current / parentTotal : null;
     if (spec.kind === 'difference' || spec.kind === 'percentage-difference') {
-      const base = spec.base === 'grand' ? grand : spec.base === 'row' ? rowTotal : spec.base === 'column' ? columnTotal : parentTotal;
-      return base == null ? null : spec.kind === 'difference' ? current - base : base ? (current - base) / base : null;
+      const resolved = resolveAxis(context, spec, valueIndex);
+      if (!resolved || resolved.same || resolved.base == null) return null;
+      return spec.kind === 'difference' ? current - resolved.base : resolved.base ? (current - resolved.base) / resolved.base : null;
     }
-    if (spec.kind === 'running-total') {
-      if (spec.axis === 'column') {
-        const values = context.node?.values.slice(0, context.columnIndex + 1) ?? [];
-        return values.reduce((sum, cell) => sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0), 0);
-      }
-      const series = rowSeries(context);
-      const end = series.indexOf(context);
-      return end < 0 ? null : series.slice(0, end + 1).reduce((sum, candidate) => sum + (pivotNumericValue(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)) ?? 0), 0);
+    if (spec.kind === 'running-total' || spec.kind === 'percentage-running-total') {
+      const resolved = resolveAxis(context, spec, valueIndex);
+      if (!resolved || resolved.position < 0) return null;
+      const cumulative = resolved.series.slice(0, resolved.position + 1).reduce((sum, value) => sum + value, 0);
+      if (spec.kind === 'running-total') return cumulative;
+      const total = resolved.series.reduce((sum, value) => sum + value, 0);
+      return total ? cumulative / total : null;
     }
     if (spec.kind === 'rank') {
-      const series = spec.axis === 'column'
-        ? (context.node?.values ?? []).map((cell) => pivotNumericValue(rawValue(cell, valueIndex)))
-        : rowSeries(context).map((candidate) => pivotNumericValue(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)));
+      const resolved = resolveAxis(context, spec, valueIndex);
+      if (!resolved || resolved.base == null) return null;
+      const series = resolved.series;
       const ranked = series.filter((value): value is number => value != null).sort((left, right) => spec.direction === 'ascending' ? left - right : right - left);
-      const rank = ranked.findIndex((value) => value === current);
+      const rank = ranked.findIndex((value) => value === resolved.base);
       return rank < 0 ? null : rank + 1;
     }
     if (spec.kind === 'index') return grand != null && rowTotal && columnTotal ? current * grand / rowTotal / columnTotal : null;
@@ -2148,7 +2249,7 @@ function computePivotResultFromTable(
     slicerItems[control.drawingId] = slicerItemProjection(workbook, pivot, definition, rows, control.drawingId, control.payload, collator, calculatedFields);
   }
   if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
-  applyShowAs(tree, resultFields);
+  applyShowAs(tree, resultFields, definition.layout);
   const revisions = getPivotRevisionKey(workbook, pivot, formula);
   tree.sourceRevision = sourceRevisionOverride ?? revisions.sourceRevision;
   tree.layoutRevision = revisions.layoutRevision;

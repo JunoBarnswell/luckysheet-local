@@ -254,6 +254,10 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
+  validatePivotDefinition({ ...base, layout: { ...base.layout, values: [{ ...base.layout.values[0], showAs: { kind: 'difference', baseFieldId: 'region', baseItem: { type: 'text', value: 'East' } } }] } });
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, values: [{ ...base.layout.values[0], baseFieldId: 'region', baseItem: 'East' }] } } as never), /unsupported field/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, values: [{ ...base.layout.values[0], showAs: { kind: 'difference', baseFieldId: 'amount', baseItem: { type: 'number', value: 1 } } }] } }), /row or column/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, values: [{ ...base.layout.values[0], showAs: { kind: 'percentage-difference', baseFieldId: 'region' } }] } }), /requires|baseItem/);
   const highCardinality = {
     ...base,
     fieldCatalog: {
@@ -384,7 +388,7 @@ test('Pivot calculated definitions extend the effective field set without catalo
   assert.throws(() => validatePivotDefinition({
     ...calculated,
     layout: { ...calculated.layout, calculatedItems: [{ ...calculated.layout.calculatedItems![0]!, formula: '=North&1' }] },
-  }), /unsupported syntax/);
+  }), /unsupported syntax|operand is missing/);
 });
 
 test('Pivot calculated item protocol rejects unknown, ambiguous, and cyclic item formulas', () => {
