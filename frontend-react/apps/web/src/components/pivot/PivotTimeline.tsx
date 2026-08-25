@@ -15,32 +15,31 @@ export interface PivotTimelineProps {
   showTimeLevel: boolean;
   showHorizontalScrollbar: boolean;
   bounds: PivotTimelinePeriod;
+  scrollPosition?: string;
   caption?: string;
   styleName?: string;
   disabled?: boolean;
   onChange: (start: string, end: string) => void;
   onClear: () => void;
   onLevelChange: (level: PivotTimelineLevel) => void;
-  onWindowChange: (bounds: PivotTimelinePeriod) => void;
+  onWindowChange: (scrollPosition: string) => void;
   onDisplayChange: (display: Pick<PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>) => void;
   onCaptionChange: (caption: string) => void;
   onStyleChange: (styleName: string) => void;
 }
 
-export function PivotTimeline({ bounds, caption, disabled = false, end = '', fieldLabel, level, locale, onCaptionChange, onChange, onClear, onDisplayChange, onLevelChange, onStyleChange, onWindowChange, showHeader, showHorizontalScrollbar, showSelectionLabel, showTimeLevel, start = '', styleName = 'TimelineStyleLight2', values = [] }: PivotTimelineProps) {
+export function PivotTimeline({ bounds, caption, disabled = false, end = '', fieldLabel, level, locale, onCaptionChange, onChange, onClear, onDisplayChange, onLevelChange, onStyleChange, onWindowChange, scrollPosition, showHeader, showHorizontalScrollbar, showSelectionLabel, showTimeLevel, start = '', styleName = 'TimelineStyleLight2', values = [] }: PivotTimelineProps) {
   const tiles = buildPivotTimelineTiles(values, level);
-  const windowStart = bounds.start;
-  const windowEnd = bounds.end;
-  const visibleTiles = tiles.filter((tile) => (!windowStart || tile.end >= windowStart) && (!windowEnd || tile.start <= windowEnd));
+  const boundedTiles = tiles.filter((tile) => (!bounds.start || tile.end >= bounds.start) && (!bounds.end || tile.start <= bounds.end));
+  const windowStartIndex = scrollPosition ? Math.max(0, boundedTiles.findIndex((tile) => tile.start >= scrollPosition)) : 0;
+  const visibleTiles = boundedTiles.slice(windowStartIndex, windowStartIndex + 8);
   const selected = (tile: { start: string; end: string }) => (!start || tile.end >= start) && (!end || tile.start <= end);
   const shiftWindow = (direction: -1 | 1) => {
-    if (tiles.length === 0) return;
-    const currentStart = windowStart ? Math.max(0, tiles.findIndex((tile) => tile.start >= windowStart)) : 0;
-    const currentEnd = windowEnd ? Math.max(currentStart, tiles.findIndex((tile) => tile.end >= windowEnd)) : Math.min(tiles.length - 1, currentStart + 7);
-    const width = Math.max(0, currentEnd - currentStart);
-    const nextStart = Math.max(0, Math.min(tiles.length - 1 - width, currentStart + direction * Math.max(1, width)));
-    const nextEnd = Math.min(tiles.length - 1, nextStart + width);
-    onWindowChange({ start: tiles[nextStart]?.start, end: tiles[nextEnd]?.end });
+    if (boundedTiles.length === 0) return;
+    const width = Math.min(8, boundedTiles.length);
+    const nextStart = Math.max(0, Math.min(boundedTiles.length - width, windowStartIndex + direction * width));
+    const nextPosition = boundedTiles[nextStart]?.start;
+    if (nextPosition) onWindowChange(nextPosition);
   };
   return (
     <Stack gap="xs" className="rounded-lg border border-violet-100 bg-violet-50/30 p-2">

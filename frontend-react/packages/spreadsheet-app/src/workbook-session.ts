@@ -2867,9 +2867,9 @@ export class WorkbookSession {
     this.runCommand('pivot.control.timeline.level.set', { sheetId: sheet.id, drawingId, level });
     this.refresh();
   }
-  setPivotTimelineWindow(drawingId: string, bounds: import('@react-sheets/core-model').PivotTimelinePeriod): void {
+  setPivotTimelineWindow(drawingId: string, scrollPosition: string): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    this.runCommand('pivot.control.timeline.window.set', { sheetId: sheet.id, drawingId, bounds, scrollPosition: bounds.start });
+    this.runCommand('pivot.control.timeline.window.set', { sheetId: sheet.id, drawingId, scrollPosition });
     this.refresh();
   }
   setPivotTimelineDisplay(drawingId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>): void {

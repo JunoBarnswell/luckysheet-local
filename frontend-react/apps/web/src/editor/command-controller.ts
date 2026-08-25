@@ -290,7 +290,7 @@ export function useEditorCommandController({
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),
     onTimelineLevelChange: (timelineId, level) => session.setPivotTimelineLevel(timelineId, level),
-    onTimelineWindowChange: (timelineId, bounds) => session.setPivotTimelineWindow(timelineId, bounds),
+    onTimelineWindowChange: (timelineId, scrollPosition) => session.setPivotTimelineWindow(timelineId, scrollPosition),
     onTimelineDisplayChange: (timelineId, display) => session.setPivotTimelineDisplay(timelineId, display),
     onTimelineCaptionChange: (timelineId, caption) => session.setPivotTimelineCaption(timelineId, caption),
     onTimelineStyleChange: (timelineId, styleName) => session.setPivotTimelineStyle(timelineId, styleName),

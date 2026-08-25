@@ -859,7 +859,9 @@ function pivotControlMembers(drawingId: string, payload: PivotSlicerDrawingPaylo
 function pivotTimelinePeriods(payload: PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): ReturnType<typeof buildPivotTimelineTiles> {
   const values = pivotControlMembers('', payload, pivotResults).map((entry) => entry.value);
   const tiles = buildPivotTimelineTiles(values, payload.level);
-  return tiles.filter((tile) => (!payload.bounds.start || tile.end >= payload.bounds.start) && (!payload.bounds.end || tile.start <= payload.bounds.end));
+  const boundedTiles = tiles.filter((tile) => (!payload.bounds.start || tile.end >= payload.bounds.start) && (!payload.bounds.end || tile.start <= payload.bounds.end));
+  const startIndex = payload.scrollPosition ? Math.max(0, boundedTiles.findIndex((tile) => tile.start >= payload.scrollPosition!)) : 0;
+  return boundedTiles.slice(startIndex);
 }
 
 function pivotControlHitTest(

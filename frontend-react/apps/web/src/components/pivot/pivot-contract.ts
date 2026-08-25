@@ -128,7 +128,7 @@ export interface PivotPanelCallbacks {
   onTimelineChange: (fieldId: string | undefined) => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;
   onTimelineLevelChange?: (timelineId: string, level: PivotTimelineLevel) => void;
-  onTimelineWindowChange?: (timelineId: string, bounds: PivotTimelinePeriod) => void;
+  onTimelineWindowChange?: (timelineId: string, scrollPosition: string) => void;
   onTimelineDisplayChange?: (timelineId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>) => void;
   onTimelineCaptionChange?: (timelineId: string, caption: string) => void;
   onTimelineStyleChange?: (timelineId: string, styleName: string) => void;

@@ -209,25 +209,28 @@ export function EditorShell({
                   if (payload?.kind !== 'timeline') return;
                   const tree = state.selectedSheet.pivotResults[payload.pivotId];
                   const values = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId)?.values ?? [];
-                  const periods = buildPivotTimelineTiles(values, payload.level);
+                  const periods = buildPivotTimelineTiles(values, payload.level)
+                    .filter((period) => (!payload.bounds.start || period.end >= payload.bounds.start) && (!payload.bounds.end || period.start <= payload.bounds.end));
                   if (action.kind === 'timeline-period') {
                     session.setPivotTimelinePeriod(drawingId, action.start, action.end);
                   } else if (action.kind === 'timeline-level') {
                     session.setPivotTimelineLevel(drawingId, action.level);
                   } else if (periods.length > 0 && (action.kind === 'timeline-scroll' || action.kind === 'timeline-handle')) {
-                    const currentStart = payload.bounds.start ? Math.max(0, periods.findIndex((period) => period.start >= payload.bounds.start!)) : 0;
-                    const currentEnd = payload.bounds.end ? Math.max(currentStart, periods.findIndex((period) => period.end >= payload.bounds.end!)) : currentStart;
                     if (action.kind === 'timeline-scroll') {
-                      const width = Math.max(0, currentEnd - currentStart);
-                      const nextStart = Math.max(0, Math.min(periods.length - 1 - width, currentStart + action.direction * Math.max(1, width)));
-                      const nextEnd = Math.min(periods.length - 1, nextStart + width);
-                      session.setPivotTimelineWindow(drawingId, { start: periods[nextStart]?.start, end: periods[nextEnd]?.end });
+                      const currentStart = payload.scrollPosition ? Math.max(0, periods.findIndex((period) => period.start >= payload.scrollPosition!)) : 0;
+                      const width = Math.min(8, periods.length);
+                      const nextStart = Math.max(0, Math.min(periods.length - width, currentStart + action.direction * width));
+                      const nextPosition = periods[nextStart]?.start;
+                      if (nextPosition) session.setPivotTimelineWindow(drawingId, nextPosition);
                     } else if (action.edge === 'start') {
-                      const nextStart = Math.max(0, Math.min(currentEnd < 0 ? periods.length - 1 : currentEnd, (currentStart < 0 ? 0 : currentStart) - 1));
-                      session.setPivotTimelinePeriod(drawingId, periods[nextStart]?.start, periods[Math.max(nextStart, currentEnd < 0 ? nextStart : currentEnd)]?.end);
+                      const currentStart = payload.period.start ? Math.max(0, periods.findIndex((period) => period.start >= payload.period.start!)) : 0;
+                      const currentEnd = payload.period.end ? Math.max(currentStart, periods.findIndex((period) => period.end >= payload.period.end!)) : currentStart;
+                      const nextStart = Math.max(0, Math.min(currentEnd, currentStart - 1));
+                      session.setPivotTimelinePeriod(drawingId, periods[nextStart]?.start, periods[Math.max(nextStart, currentEnd)]?.end);
                     } else {
-                      const startIndex = Math.max(0, currentStart < 0 ? 0 : currentStart);
-                      const nextEnd = Math.min(periods.length - 1, (currentEnd < 0 ? startIndex : currentEnd) + 1);
+                      const startIndex = payload.period.start ? Math.max(0, periods.findIndex((period) => period.start >= payload.period.start!)) : 0;
+                      const currentEnd = payload.period.end ? Math.max(startIndex, periods.findIndex((period) => period.end >= payload.period.end!)) : startIndex;
+                      const nextEnd = Math.min(periods.length - 1, currentEnd + 1);
                       session.setPivotTimelinePeriod(drawingId, periods[startIndex]?.start, periods[nextEnd]?.end);
                     }
                   }

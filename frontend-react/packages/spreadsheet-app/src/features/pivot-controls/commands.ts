@@ -14,6 +14,7 @@ import type {
 import {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
+  normalizePivotTimelinePeriod,
 } from '@react-sheets/core-model';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
 import type { DrawingAddParams, DrawingPayloadUpdateParams } from '../drawing/commands';
@@ -62,8 +63,7 @@ export interface PivotTimelineLevelSetParams {
 export interface PivotTimelineWindowSetParams {
   sheetId: string;
   drawingId: string;
-  bounds: PivotTimelinePeriod;
-  scrollPosition?: string;
+  scrollPosition: string;
 }
 
 export interface PivotTimelineDisplaySetParams {
@@ -272,9 +272,18 @@ export function registerPivotControlCommands(runtime: CommandRuntime): string[] 
     id: 'pivot.control.timeline.window.set',
     execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
       if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
-      const bounds = createPivotTimelinePeriod(params.bounds);
-      if (params.scrollPosition !== undefined) createPivotTimelinePeriod({ start: params.scrollPosition });
-      return { ...payload, bounds, ...(params.scrollPosition === undefined ? {} : { scrollPosition: params.scrollPosition }) };
+      if (typeof params.scrollPosition !== 'string' || !params.scrollPosition.trim()) throw new Error(`Invalid timeline scroll position: ${params.drawingId}`);
+      const scrollPosition = createPivotTimelinePeriod({ start: params.scrollPosition }).start;
+      if (!scrollPosition) throw new Error(`Invalid timeline scroll position: ${params.drawingId}`);
+      const scrollBounds = normalizePivotTimelinePeriod({ start: scrollPosition });
+      const cacheBounds = normalizePivotTimelinePeriod(payload.bounds);
+      if (cacheBounds.start !== undefined && scrollBounds.start !== undefined && scrollBounds.start < cacheBounds.start) {
+        throw new Error(`Timeline scroll position is before cache bounds: ${params.drawingId}`);
+      }
+      if (cacheBounds.endExclusive !== undefined && scrollBounds.start !== undefined && scrollBounds.start >= cacheBounds.endExclusive) {
+        throw new Error(`Timeline scroll position is after cache bounds: ${params.drawingId}`);
+      }
+      return { ...payload, scrollPosition };
     }),
   });
   runtime.registry.registerCommand<PivotTimelineDisplaySetParams>({
