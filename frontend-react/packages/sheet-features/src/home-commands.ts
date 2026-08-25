@@ -806,7 +806,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     if (hasNonAnchorContent && params.confirmDataLoss === false) throw new Error('Merge would discard non-anchor cell contents');
     const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
     if (rangeArea(range) > 1) {
-      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, mode: 'contents' });
+      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
       if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
     }
     if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });

@@ -479,6 +479,8 @@
       "clearContents": "Clear Contents",
       "clearFormats": "Clear Formats",
       "clearAll": "Clear All",
+      "clearCommentsNotes": "Clear Comments and Notes",
+      "clearHyperlinks": "Clear Hyperlinks",
       "autoSum": "AutoSum =SUM()",
       "fillDown": "Fill Down",
       "fillRight": "Fill Right",

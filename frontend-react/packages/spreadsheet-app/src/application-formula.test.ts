@@ -186,7 +186,7 @@ describe('WorkbookSession formula integration', () => {
     app.runCommand('sheet.range.clear', {
       sheetId,
       range: { sheetId, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
-      mode: 'contents',
+      family: 'contents',
     });
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.formula, '=A2*2');
 

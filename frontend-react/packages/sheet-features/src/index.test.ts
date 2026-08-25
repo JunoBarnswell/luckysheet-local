@@ -303,7 +303,7 @@ test('sheet commands: range.clear, style.set, and merges', () => {
   runtime.execute('sheet.range.clear', {
     sheetId: 'sheet-1',
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
-    mode: 'all',
+    family: 'all',
   });
   assert.equal(sheet.cells.get(0, 0), undefined);
   assert.equal(sheet.cells.get(0, 1), undefined);
@@ -705,21 +705,59 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
   });
   sheet.notes.set('0:0', { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
   const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
-  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'formats' });
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'formats' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(0, 0)?.style, undefined);
   assert.equal(sheet.cells.get(0, 0)?.hyperlink, 'https://example.com');
-  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'notes' });
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'comments-and-notes' });
   assert.equal(sheet.cells.get(0, 0)?.note, undefined);
   assert.equal(sheet.notes.has('0:0'), false);
-  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'hyperlinks' });
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
   assert.equal(sheet.cells.get(0, 0)?.hyperlink, undefined);
-  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, mode: 'all' });
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'all' });
   assert.equal(sheet.cells.get(0, 0), undefined);
   runtime.undo();
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
+});
+
+test('clear formats/all crop conditional-format intersections and restore atomically', () => {
+  const workbook = new WorkbookModel('unit-clear-conditional-format', 'Clear Conditional Format');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  const rule = {
+    id: 'cf-clear-1',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 }],
+    type: 'highlight' as const,
+    style: { background: '#ffeeaa' },
+  };
+  sheet.conditionalFormats.push(rule);
+  sheet.cells.set(2, 2, { value: 'preserve', style: { bold: true } });
+  const clearRange = { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 3 };
+
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range: clearRange, family: 'formats' });
+  assert.equal(sheet.cells.get(2, 2)?.value, 'preserve');
+  assert.equal(sheet.cells.get(2, 2)?.style, undefined);
+  assert.deepEqual(sheet.conditionalFormats[0]?.ranges, [
+    { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 4 },
+    { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 4 },
+    { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
+    { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 4, endColumn: 4 },
+  ]);
+
+  runtime.undo();
+  assert.deepEqual(sheet.conditionalFormats, [rule]);
+  assert.deepEqual(sheet.cells.get(2, 2)?.style, { bold: true });
+
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range: clearRange, family: 'all' });
+  assert.equal(sheet.cells.get(2, 2), undefined);
+  assert.equal(sheet.conditionalFormats.length, 1);
+  runtime.undo();
+  assert.equal(sheet.cells.get(2, 2)?.value, 'preserve');
+  assert.deepEqual(sheet.conditionalFormats, [rule]);
 });
 
 function sheetId(workbook: WorkbookModel): string {

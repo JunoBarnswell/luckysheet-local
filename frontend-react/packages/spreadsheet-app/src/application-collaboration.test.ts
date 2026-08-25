@@ -59,6 +59,31 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.undo(), false);
   });
 
+  it('replays canonical clear families and conditional-format cropping remotely', () => {
+    const workbook = new WorkbookModel('wb-clear-replay', 'Clear Replay');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.conditionalFormats.push({
+      id: 'cf-replay',
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 }],
+      type: 'highlight',
+    });
+    const session = new CollaborationSession(runtime);
+    session.applyRemote({
+      schema: 'OperationEnvelope', operationId: 'remote-clear', unitId: 'wb-clear-replay', actorId: 'actor-2', origin: 'client',
+      clientSequence: 1, baseRevision: 0, revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{
+        id: 'range.clear', sheetId: sheet.id,
+        params: { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 3 }, family: 'formats' },
+        affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 3 }],
+      }],
+    });
+    assert.equal(sheet.conditionalFormats[0]?.ranges.length, 4);
+    assert.equal(runtime.undo(), false);
+  });
+
   it('turns local undo into a durable compensating operation', () => {
     const runtime = createSpreadsheetRuntime();
     const sheetId = runtime.model.primarySheetId;

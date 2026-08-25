@@ -152,6 +152,8 @@ export type RibbonCommandId =
   | 'clearContents'
   | 'clearFormats'
   | 'clearAll'
+  | 'clearCommentsNotes'
+  | 'clearHyperlinks'
   | 'autoSum'
   | 'fillDown'
   | 'fillRight'
@@ -493,6 +495,7 @@ export type RibbonControlId =
   | 'cells-insert-menu'
   | 'cells-delete-menu'
   | 'cells-format-menu'
+  | 'clear-menu'
   | 'column-width'
   | 'auto-fit-column-width'
   | 'hide-columns'
@@ -632,6 +635,8 @@ export const RIBBON_TEXT = {
     clearContents: 'commands.clearContents',
     clearFormats: 'commands.clearFormats',
     clearAll: 'commands.clearAll',
+    clearCommentsNotes: 'commands.clearCommentsNotes',
+    clearHyperlinks: 'commands.clearHyperlinks',
     autoSum: 'commands.autoSum',
     fillDown: 'commands.fillDown',
     fillRight: 'commands.fillRight',
@@ -882,7 +887,12 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.fill-right', 'editing', 66, 'small', 'fillRight'),
   ribbonSurface('home', 'editing.sort', 'editing', 70, 'small', 'sortRange'),
   ribbonSurface('home', 'editing.filter', 'editing', 80, 'small', 'filterSelection'),
-  ribbonSurface('home', 'editing.clear', 'editing', 90, 'small', 'clearContents'),
+  homeControl('clear-menu', 'editing', 90),
+  ribbonSurface('home', 'editing.clear-contents', 'editing', 91, 'menu', 'clearContents', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
+  ribbonSurface('home', 'editing.clear-formats', 'editing', 92, 'menu', 'clearFormats', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
+  ribbonSurface('home', 'editing.clear-all', 'editing', 93, 'menu', 'clearAll', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
+  ribbonSurface('home', 'editing.clear-comments-notes', 'editing', 94, 'menu', 'clearCommentsNotes', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
+  ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.find', 'editing', 100, 'small', 'findReplace'),
 ] as const;
 
@@ -1105,11 +1115,13 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('insertCells', 'home', 'cells', RIBBON_TEXT.commands.insertCells, () => ({ type: 'dialog.open', dialog: 'shift-cells', operation: 'insert' })),
   intent('deleteCells', 'home', 'cells', RIBBON_TEXT.commands.deleteCells, () => ({ type: 'dialog.open', dialog: 'shift-cells', operation: 'delete' })),
   // Delete/Clear Contents must never fall through to the range command's
-  // historical default (`all`). The Home entry declares the semantic mode so
+  // historical default (`all`). The Home entry declares the semantic family so
   // keyboard, Ribbon and context-menu builders share the same contract.
-  command('clearContents', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearContents, 'trash', { mode: 'contents' }),
-  command('clearFormats', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearFormats, undefined, { mode: 'formats' }),
-  command('clearAll', 'home', 'cells', 'sheet.range.clear', RIBBON_TEXT.commands.clearAll, undefined, { mode: 'all' }),
+  command('clearContents', 'home', 'editing', 'sheet.range.clear', RIBBON_TEXT.commands.clearContents, 'trash', { family: 'contents' }),
+  command('clearFormats', 'home', 'editing', 'sheet.range.clear', RIBBON_TEXT.commands.clearFormats, undefined, { family: 'formats' }),
+  command('clearAll', 'home', 'editing', 'sheet.range.clear', RIBBON_TEXT.commands.clearAll, undefined, { family: 'all' }),
+  command('clearCommentsNotes', 'home', 'editing', 'sheet.range.clear', RIBBON_TEXT.commands.clearCommentsNotes, undefined, { family: 'comments-and-notes' }),
+  command('clearHyperlinks', 'home', 'editing', 'sheet.range.clear', RIBBON_TEXT.commands.clearHyperlinks, undefined, { family: 'hyperlinks' }),
   callback('autoSum', 'home', 'editing', RIBBON_TEXT.commands.autoSum, (context) => context.actions.onAutoSum(), 'calculator'),
   callback('fillDown', 'home', 'editing', RIBBON_TEXT.commands.fillDown, (context) => context.actions.onFill('down'), 'fill-down'),
   callback('fillRight', 'home', 'editing', RIBBON_TEXT.commands.fillRight, (context) => context.actions.onFill('right'), 'fill-right'),

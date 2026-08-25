@@ -84,6 +84,27 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void clearFormatsUsesFamilyAndCropsConditionalFormatRangesExactly() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{"2":{"2":{"value":"keep","style":{"bold":true}}}},
+                  "conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":4}],"type":"highlight"}]}]}
+                """);
+        var mutation = new OperationMutation("range.clear", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":1,"endColumn":3},"family":"formats"}
+                """));
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+        assertEquals(4, next.path("sheets").get(0).path("conditionalFormats").get(0).path("ranges").size());
+        assertEquals("keep", next.path("sheets").get(0).path("cells").path("2").path("2").path("value").asText());
+        assertEquals(true, next.path("sheets").get(0).path("cells").path("2").path("2").path("style").isMissingNode());
+
+        var legacy = new OperationMutation("range.clear", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"mode":"formats"}
+                """));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
+    }
+
+    @Test
     void rangePasteAcceptsMetadataWhoseEveryOwnedRangeIsInsideTheTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""

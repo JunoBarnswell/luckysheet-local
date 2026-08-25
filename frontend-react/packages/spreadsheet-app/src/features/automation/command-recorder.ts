@@ -77,7 +77,7 @@ export class CommandRecorder {
       }
       case 'sheet.range.clear': {
         const range = p?.range as { startRow?: number; startColumn?: number; endRow?: number; endColumn?: number } | undefined;
-        if (p?.mode !== undefined) throw new Error('Cannot serialize sheet.range.clear with a mode');
+        if (p?.family !== undefined && p.family !== 'contents') throw new Error('Cannot serialize non-content sheet.range.clear');
         const startRow = range?.startRow as number | undefined;
         const startCol = range?.startColumn as number | undefined;
         const endRow = (range?.endRow as number | undefined) ?? startRow;

@@ -479,6 +479,8 @@
       "clearContents": "清除内容",
       "clearFormats": "清除格式",
       "clearAll": "全部清除",
+      "clearCommentsNotes": "清除批注和备注",
+      "clearHyperlinks": "清除超链接",
       "autoSum": "自动求和 =SUM()",
       "fillDown": "向下填充",
       "fillRight": "向右填充",
