@@ -462,6 +462,49 @@ export class WorkbookSession {
     this.formulaDraft = '';
   }
 
+  /**
+   * Reconcile every transient drawing projection after a canonical workbook
+   * change. Worksheet drawing collections are the sole existence authority;
+   * selection, active context, and pointer gestures must never outlive them.
+   */
+  private reconcileDrawingSessionState(): void {
+    const sheets = this.runtime.model.getSheets();
+    const liveSheetIds = sheets.map((sheet) => sheet.id);
+    for (const sheet of sheets) {
+      this.runtime.drawing.reconcile(sheet.id, sheet.drawings.map((drawing) => drawing.id));
+    }
+    this.runtime.drawing.clearMissingSheets(liveSheetIds);
+
+    const previousContext = this.activeContext;
+    const activeSelection = this.runtime.drawing.getSelection(this.activeSheetId);
+    let contextRemoved = false;
+    let nextContext = this.activeContext;
+    const context = this.activeContext;
+    if (context.kind === 'drawing') {
+      const contextSheet = sheets.find((sheet) => sheet.id === context.sheetId);
+      const contextExists = contextSheet?.drawings.some((drawing) => drawing.id === context.drawingId) ?? false;
+      if (!contextExists) {
+        contextRemoved = true;
+        const fallbackId = context.sheetId === this.activeSheetId ? activeSelection[0] : undefined;
+        nextContext = fallbackId
+          ? { kind: 'drawing', sheetId: this.activeSheetId, drawingId: fallbackId }
+          : { kind: 'none' };
+      }
+    }
+
+    if (activeSelection.length === 0 && this.drawingSelectionMode) {
+      this.drawingSelectionMode = false;
+      this.inputMode = 'grid';
+      this.focus = { mode: 'grid', target: 'grid' };
+    }
+    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'shape')) {
+      this.panels = { ...this.panels, open: false };
+    }
+    if (JSON.stringify(nextContext) !== JSON.stringify(previousContext)) {
+      this.activeContext = nextContext;
+    }
+  }
+
   private wireRuntimeHandlers(): void {
     this.runtime.handlers.onSaveState = (state) => {
       this.saveState = state;
@@ -476,6 +519,7 @@ export class WorkbookSession {
       this.persistenceMetaDirty = true;
       this.restorePersistedQuerySessions();
       this.ensureActiveSheetSession();
+      this.reconcileDrawingSessionState();
       this.runtime.formulaAudit.refresh();
       this.refresh();
     };
@@ -485,6 +529,7 @@ export class WorkbookSession {
     };
     this.runtime.handlers.onActiveSheetChange = (sheetId) => {
       this.activeSheetId = sheetId;
+      this.reconcileDrawingSessionState();
       this.emit();
     };
     this.runtime.handlers.onRemoteRevisions = (revisions) => {
@@ -1396,6 +1441,9 @@ export class WorkbookSession {
       }
       if (!this.runtime.commands.undo()) break;
     }
+    this.ensureActiveSheetSession();
+    this.projectionGeneration += 1;
+    this.reconcileDrawingSessionState();
     this.syncDraftFromPrimary();
     this.notify(`Restored session history to step ${index + 1}`);
     this.refresh();
@@ -1420,6 +1468,8 @@ export class WorkbookSession {
     hydrateRuntime(this.runtime, response.snapshot);
     this.activeSheetId = this.runtime.model.primarySheetId;
     this.selectionService.resetForSheet(this.activeSheetId);
+    this.projectionGeneration += 1;
+    this.reconcileDrawingSessionState();
     this.clearHistoryPreview();
     this.notify(`Restored workbook to revision ${revision}`);
     this.refresh();
@@ -1532,6 +1582,8 @@ export class WorkbookSession {
     }
     if (this.runtime.commands.undo()) {
       this.ensureActiveSheetSession();
+      this.projectionGeneration += 1;
+      this.reconcileDrawingSessionState();
       this.syncDraftFromPrimary();
       this.notify('Undo applied');
       this.refresh();
@@ -1546,6 +1598,8 @@ export class WorkbookSession {
     }
     if (this.runtime.commands.redo()) {
       this.ensureActiveSheetSession();
+      this.projectionGeneration += 1;
+      this.reconcileDrawingSessionState();
       this.syncDraftFromPrimary();
       this.notify('Redo applied');
       this.refresh();
@@ -2093,6 +2147,7 @@ export class WorkbookSession {
     this.activeContext = { kind: 'none' };
     this.runtime.drawing.deselect(sheetId);
     this.drawingSelectionMode = false;
+    this.reconcileDrawingSessionState();
     this.refresh();
   }
 
@@ -2274,8 +2329,6 @@ export class WorkbookSession {
       return;
     }
     this.runCommand('chart.remove', { sheetId: this.activeSheetId, chartId: id });
-    if (drawing) this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
-    this.removeDrawingFromSelection(drawing.id);
     this.refresh();
   }
   addPivot(pivot: PivotModel): void {
@@ -2598,12 +2651,10 @@ export class WorkbookSession {
     const drawing = findDrawingByPayloadId(sheet, id);
     if (drawing) {
       this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
-      this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
     } else {
       this.notify('Shape is not registered as a drawing object');
       return;
     }
-    this.removeDrawingFromSelection(drawing.id);
     this.refresh();
   }
   addImage(drawing: DrawingObject, payload: ImageDrawingPayload): void {
@@ -2648,12 +2699,10 @@ export class WorkbookSession {
     const drawing = findDrawingByPayloadId(sheet, id);
     if (drawing) {
       this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
-      this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
     } else {
       this.notify('Image is not registered as a drawing object');
       return;
     }
-    this.removeDrawingFromSelection(drawing.id);
     this.refresh();
   }
   bringSelectedDrawingForward(): void {
@@ -2722,8 +2771,6 @@ export class WorkbookSession {
       return;
     }
     this.runCommand('drawing.remove', { sheetId: this.activeSheetId, drawingId: drawing.id });
-    this.runtime.drawing.deselect(this.activeSheetId, [drawing.id]);
-    this.removeDrawingFromSelection(drawing.id);
     this.refresh();
   }
   private resolveSelectedDrawingId(): string | undefined {
@@ -3249,7 +3296,6 @@ export class WorkbookSession {
       return;
     }
     this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: valid, mode });
-    const next = this.runtime.drawing.getSelection(this.activeSheetId);
     this.activeContext = this.selectedFloatingId
       ? { kind: 'drawing', sheetId: this.activeSheetId, drawingId: this.selectedFloatingId }
       : { kind: 'none' };
@@ -3264,10 +3310,6 @@ export class WorkbookSession {
     this.runCommand('drawing.rename', { sheetId: this.activeSheetId, drawingId, name });
   }
 
-  private removeDrawingFromSelection(drawingId: string): void {
-    this.runtime.drawing.deselect(this.activeSheetId, [drawingId]);
-    if (!this.selectedFloatingId) this.activeContext = { kind: 'none' };
-  }
   removeFloatingObject(kind: 'chart' | 'shape' | 'image', id: string): void {
     if (kind === 'chart') this.removeChart(id);
     else if (kind === 'image') this.removeImage(id);

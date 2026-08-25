@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { StructuralTransform, WorkbookModel } from '@react-sheets/core-model';
+import { StructuralTransform, WorkbookModel, type DrawingObject, type DrawingPayload } from '@react-sheets/core-model';
 import { DrawingRuntime, registerDrawingFeature } from '../../index';
 
 describe('drawing feature', () => {
@@ -147,6 +147,76 @@ describe('drawing feature', () => {
     assert.equal(runtime.undo(), true);
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.transform, { x: 10, y: 10, width: 40, height: 30, rotation: 0 });
     assert.equal(runtime.redo(), true);
+  });
+
+  it('reconciles selections and cancels pointer gestures for removed drawings', () => {
+    const workbook = new WorkbookModel('drawing-reconcile-test', 'Drawing Reconcile');
+    const runtime = new CommandRuntime(workbook);
+    const drawingRuntime = new DrawingRuntime();
+    registerDrawingFeature(runtime, drawingRuntime);
+    runtime.execute('drawing.add', {
+      sheetId: 'sheet-1',
+      drawing: {
+        id: 'draw-reconcile',
+        sheetId: 'sheet-1',
+        kind: 'shape',
+        payloadId: 'shape-reconcile',
+        anchor: { kind: 'absolute' },
+        transform: { x: 10, y: 10, width: 40, height: 30, rotation: 0 },
+        zIndex: 1,
+      },
+      payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' },
+    });
+    drawingRuntime.select('sheet-1', ['draw-reconcile']);
+    const transaction = drawingRuntime.beginPointerTransform(workbook.getSheet('sheet-1'), 'draw-reconcile');
+
+    const result = drawingRuntime.reconcile('sheet-1', []);
+
+    assert.deepEqual(result.selection, []);
+    assert.deepEqual(result.cancelledPointerTransactionIds, [transaction.id]);
+    assert.deepEqual(drawingRuntime.getSelection('sheet-1'), []);
+    assert.throws(() => drawingRuntime.finishPointerTransform(transaction.id), /Unknown drawing pointer transaction/);
+  });
+
+  it('applies the same existence reconciliation to every canonical drawing kind', () => {
+    const workbook = new WorkbookModel('drawing-kinds-reconcile-test', 'Drawing Kinds Reconcile');
+    const runtime = new CommandRuntime(workbook);
+    const drawingRuntime = new DrawingRuntime();
+    registerDrawingFeature(runtime, drawingRuntime);
+    const sheetId = 'sheet-1';
+    const style = { theme: 'light' as const, fill: '#fff', border: '#000', textColor: '#000', accentColor: '#2563eb' };
+    const payloads: Array<{ kind: DrawingObject['kind']; payload: DrawingPayload }> = [
+      { kind: 'image', payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Image' } },
+      { kind: 'shape', payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' } },
+      { kind: 'textbox', payload: { kind: 'textbox', text: 'Text' } },
+      { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [] } },
+      { kind: 'data-chart', payload: { kind: 'data-chart', tableId: 'table-kind', plots: [{ type: 'column', valueFieldId: 'value', aggregate: 'sum' }], config: {} } },
+      { kind: 'camera', payload: { kind: 'camera', sourceRange: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, refreshPolicy: 'live' } },
+      { kind: 'form-control', payload: { kind: 'form-control', controlType: 'button', value: false, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } } },
+      { kind: 'slicer', payload: { kind: 'slicer', pivotId: 'pivot-kind', fieldId: 'field-kind', filter: { mode: 'all', memberKeys: [] }, style } },
+      { kind: 'timeline', payload: { kind: 'timeline', pivotId: 'pivot-kind', fieldId: 'field-kind', period: {}, style } },
+    ];
+    const drawings = payloads.map(({ kind, payload }, index) => ({
+      id: `drawing-kind-${index}`,
+      sheetId,
+      kind,
+      payloadId: `payload-kind-${index}`,
+      anchor: { kind: 'absolute' as const },
+      transform: { x: index * 20, y: 0, width: 20, height: 20, rotation: 0 },
+      zIndex: index,
+      payload,
+    }));
+    for (const entry of drawings) {
+      runtime.execute('drawing.add', { sheetId, drawing: entry, payload: entry.payload });
+    }
+    drawingRuntime.select(sheetId, drawings.map((drawing) => drawing.id));
+
+    for (const drawing of drawings) {
+      runtime.execute('drawing.remove', { sheetId, drawingId: drawing.id });
+      const result = drawingRuntime.reconcile(sheetId, workbook.getSheet(sheetId).drawings.map((entry) => entry.id));
+      assert.equal(result.selection.includes(drawing.id), false);
+    }
+    assert.deepEqual(drawingRuntime.getSelection(sheetId), []);
   });
 
   it('supports crop and alt text as payload mutations with inverse and remote replay', () => {
