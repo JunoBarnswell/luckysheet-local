@@ -20,6 +20,7 @@ import java.util.function.Consumer;
 
 /** Reducers for the persisted PivotDefinition contract; result trees remain derived. */
 final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
+    private static final int MAX_MEMBER_COUNT = 1_048_576;
     private static final String SCHEMA = "PivotDefinition";
     private static final String FIELD_CATALOG_SCHEMA = "PivotFieldCatalog";
     private static final Set<String> PIVOT_KEYS = Set.of(
@@ -451,7 +452,13 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             if (!FIELD_TYPES.contains(SnapshotMutationSupport.text(field, "dataType"))) throw ServiceException.validation("Pivot field dataType is invalid");
             JsonNode ordinal = field.get("ordinal");
             if (ordinal == null || !ordinal.isIntegralNumber() || ordinal.intValue() != fieldIndex) throw ServiceException.validation("Pivot field ordinal is invalid");
-            if (field.has("values")) validateScalars(field.get("values"), "Pivot field values");
+            if (field.has("values")) {
+                JsonNode values = field.get("values");
+                if (!values.isArray() || values.size() > MAX_MEMBER_COUNT) {
+                    throw ServiceException.validation("Pivot field values are invalid");
+                }
+                validateScalars(values, "Pivot field values");
+            }
         }
         return ids;
     }
@@ -861,7 +868,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void validateMemberValues(JsonNode raw, String label) {
-        if (raw == null || !raw.isArray() || raw.size() > 10_000) throw ServiceException.validation(label + " must be an array");
+        if (raw == null || !raw.isArray() || raw.size() > MAX_MEMBER_COUNT) throw ServiceException.validation(label + " must be an array");
         for (JsonNode value : raw) {
             if (!value.isObject()) throw ServiceException.validation(label + " entries must be typed member keys");
             ObjectNode key = (ObjectNode) value;
@@ -878,7 +885,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void validateScalars(JsonNode raw, String label) {
-        if (raw == null || !raw.isArray() || raw.size() > 10_000) throw ServiceException.validation(label + " must be an array");
+        if (raw == null || !raw.isArray() || raw.size() > MAX_MEMBER_COUNT) throw ServiceException.validation(label + " must be an array");
         for (JsonNode value : raw) if (!isScalar(value)) throw ServiceException.validation(label + " entries must be scalar values");
     }
 

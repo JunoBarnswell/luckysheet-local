@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPivotMemberKey, WorkbookModel, type PivotModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT, WorkbookModel, type PivotModel } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
   aggregatePivotValues,
   buildPivotGroupedFilterMembers,
   buildPivotGridProjection,
+  canonicalPivotMembers,
   computePivotResult,
   computePivotResultFromBlockSource,
   getPivotFieldCatalog,
@@ -72,6 +73,18 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
 }
 
 describe('native PivotGridProjection contract', () => {
+  it('keeps the complete typed member domain separate from the bounded display limit', () => {
+    const values = Array.from({ length: PIVOT_MEMBER_DISPLAY_LIMIT + 1 }, (_, index) => `Member ${index}`);
+    const members = canonicalPivotMembers(values);
+    assert.equal(members.length, PIVOT_MEMBER_DISPLAY_LIMIT + 1);
+    assert.equal(members.at(-1), `Member ${PIVOT_MEMBER_DISPLAY_LIMIT}`);
+
+    assert.throws(
+      () => canonicalPivotMembers(Array.from({ length: PIVOT_MAX_MEMBER_COUNT + 1 }, (_, index) => index)),
+      /member domain exceeds/,
+    );
+  });
+
   it('renders compact, outline, and tabular report layouts with distinct canonical row semantics', () => {
     const workbook = new WorkbookModel('pivot-report-layouts', 'Pivot Report Layouts');
     const sheet = workbook.getSheet('sheet-1');

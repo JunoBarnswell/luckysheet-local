@@ -3,8 +3,8 @@ import { Box, Button, CheckToggle, Icon, Inline, Panel, ScrollArea, Select, Stac
 import {
   createPivotMemberKey,
   formatPivotMember,
+  PIVOT_MEMBER_DISPLAY_LIMIT,
   pivotMemberKey,
-  pivotMemberKeyEquals,
   type PivotFieldDefinition,
   type PivotDateFilterOperator,
   type PivotFilter,
@@ -16,6 +16,7 @@ import {
 } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { pivotTemplate, pivotText } from './pivot-localization';
+import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-member-filter';
 
 type FilterMode = 'values' | 'label' | 'date' | 'value';
 
@@ -59,26 +60,23 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
   const [dynamicDate, setDynamicDate] = useState<Extract<PivotFilter, { kind: 'condition' }>['dynamic']>(conditionFilter?.kind === 'condition' ? conditionFilter.dynamic : undefined);
   const [sort, setSort] = useState<PivotSort | undefined>(currentSort);
   const [showSortOptions, setShowSortOptions] = useState(false);
-  const initialSelected = useMemo(() => {
-    if (!manualFilter || manualFilter.mode === 'all') return options.map((option) => option.key);
-    if (manualFilter.mode === 'include') return manualFilter.memberKeys;
-    return options.map((option) => option.key).filter((candidate) => !manualFilter.memberKeys.some((item) => pivotMemberKeyEquals(candidate, item)));
-  }, [manualFilter, options]);
-  const [selected, setSelected] = useState<PivotMemberKey[]>(() => [...initialSelected]);
-  const visibleValues = useMemo(() => options.filter((option) => option.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, options]);
-  const selectedHas = (option: PivotFilterMemberOption) => selected.some((candidate) => pivotMemberKeyEquals(candidate, option.key));
+  const [manualMode, setManualMode] = useState<'all' | 'include' | 'exclude'>(() => manualFilter?.mode ?? 'all');
+  const [selected, setSelected] = useState<PivotMemberKey[]>(() => [...(manualFilter?.mode === 'all' ? [] : manualFilter?.memberKeys ?? [])]);
+  const visibleValues = useMemo(() => options.filter((option) => option.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, PIVOT_MEMBER_DISPLAY_LIMIT), [query, options]);
+  const manualState = { mode: manualMode, memberKeys: selected };
+  const selectedHas = (option: PivotFilterMemberOption) => pivotManualMemberSelected(manualState, option.key);
   const setVisible = (checked: boolean) => {
     const visible = visibleValues.map((option) => option.key);
-    setSelected((current) => checked
-      ? [...current, ...visible].filter((candidate, index, entries) => entries.findIndex((entry) => pivotMemberKeyEquals(candidate, entry)) === index)
-      : current.filter((candidate) => !visible.some((entry) => pivotMemberKeyEquals(candidate, entry))));
+    const next = applyPivotManualMemberDelta(manualState, visible, checked);
+    setManualMode(next.mode);
+    setSelected([...next.memberKeys]);
   };
   const apply = () => {
     if (sort?.by === 'value' && !sort.valueFieldId) return;
     if (mode === 'values') {
-      const filter: PivotFilter | undefined = selected.length === options.length
+      const filter: PivotFilter | undefined = manualMode === 'all'
         ? undefined
-        : { kind: 'manual', family: 'manual', scope, fieldId: field.fieldId, mode: 'include', memberKeys: [...selected] };
+        : { kind: 'manual', family: 'manual', scope, fieldId: field.fieldId, mode: manualMode, memberKeys: [...selected] };
       onApply(filter, sort, 'manual');
     } else {
       const family = mode === 'value' ? 'value' : mode === 'date' ? 'date' : 'label';
@@ -117,7 +115,7 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
             </Inline>
             <ScrollArea className="h-[210px] border border-[#c8c8c8] p-2">
               <Stack gap="none">
-                {visibleValues.map((option) => <Box key={pivotMemberKey(option.key)} className="py-1"><CheckToggle checkedTone="dark" className="text-[13px]" label={option.label} checked={selectedHas(option)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, option.key] : current.filter((candidate) => !pivotMemberKeyEquals(candidate, option.key)))} /></Box>)}
+                {visibleValues.map((option) => <Box key={pivotMemberKey(option.key)} className="py-1"><CheckToggle checkedTone="dark" className="text-[13px]" label={option.label} checked={selectedHas(option)} onChange={(event) => { const next = applyPivotManualMemberDelta(manualState, [option.key], event.target.checked); setManualMode(next.mode); setSelected([...next.memberKeys]); }} /></Box>)}
               </Stack>
             </ScrollArea>
           </Stack>

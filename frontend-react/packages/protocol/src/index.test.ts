@@ -13,6 +13,7 @@ import {
   validatePivotDefinition,
   validateWorkbookSnapshot,
 } from './index';
+import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT } from '@react-sheets/core-model';
 
 test('WebSocket presence messages round-trip without becoming a mutation transport', () => {
   const message = { type: 'cursor.updated' as const, unitId: 'unit-1', state: { row: 2, column: 4, sheetId: 'sheet-1' } };
@@ -252,6 +253,24 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
+  const highCardinality = {
+    ...base,
+    fieldCatalog: {
+      ...base.fieldCatalog,
+      fields: base.fieldCatalog.fields.map((field, index) => ({
+        ...field,
+        ...(index === 0 ? { values: Array.from({ length: PIVOT_MEMBER_DISPLAY_LIMIT + 1 }, (_, member) => `Member ${member}`) } : {}),
+      })),
+    },
+  };
+  validatePivotDefinition(highCardinality);
+  assert.throws(() => validatePivotDefinition({
+    ...base,
+    fieldCatalog: {
+      ...base.fieldCatalog,
+      fields: [{ ...base.fieldCatalog.fields[0], values: new Array(PIVOT_MAX_MEMBER_COUNT + 1).fill(null) }, base.fieldCatalog.fields[1]],
+    },
+  }), /Pivot field values are invalid/);
   validatePivotDefinition({ ...base, source: { kind: 'named-range', name: 'SharedName', sheetId: 'sheet-1' } });
   assert.throws(() => validatePivotDefinition({ ...base, source: { kind: 'named-range', name: 'SharedName', sheetId: '' } }), /Pivot named source is invalid/);
   assert.throws(() => validatePivotDefinition({ ...base, source: { kind: 'named-range', name: 'SharedName', sheetId: 'sheet-1', extra: true } }), /unsupported field: extra/);

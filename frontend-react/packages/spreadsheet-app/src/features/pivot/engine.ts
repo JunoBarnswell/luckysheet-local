@@ -51,6 +51,7 @@ import {
   normalizePivotDisplayOptions,
   normalizePivotNumberFormat,
   pivotNumericValue,
+  PIVOT_MAX_MEMBER_COUNT,
   pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
@@ -614,21 +615,26 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   return table;
 }
 
+export function canonicalPivotMembers(values: readonly PivotScalar[]): PivotScalar[] {
+  const members = [...new Map(values.map((value) => {
+    // Empty text and null are one semantic blank member. Keep typed values
+    // distinct so number 1 and text "1" remain independently filterable.
+    const canonical = value === '' ? null : value;
+    return [pivotMemberKey(createPivotMemberKey(canonical)), canonical] as const;
+  })).values()];
+  if (members.length > PIVOT_MAX_MEMBER_COUNT) {
+    throw new Error(`Pivot field member domain exceeds ${PIVOT_MAX_MEMBER_COUNT} unique members`);
+  }
+  return members;
+}
+
 function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotFieldCatalog): PivotFieldCatalog {
   const fields = sourceTableValue.fields.map((field, ordinal) => {
     const values = sourceTableValue.rows.map((row) => row.values[field.fieldId] ?? null);
     const persistedField = persisted?.fields.find((candidate) => candidate.fieldId === field.fieldId);
     const fieldId = persistedField?.fieldId ?? field.fieldId ?? `field:${ordinal}`;
-    const members = [...new Map(values.map((value) => {
-      // Empty text and null are one semantic blank member. Keep that identity
-      // in the catalogue even when the UI preview reaches its display bound.
-      const canonical = value === '' ? null : value;
-      return [pivotMemberKey(createPivotMemberKey(canonical)), canonical] as const;
-    })).values()];
-    const preview = members.slice(0, 10_000);
-    const blank = members.find((value) => createPivotMemberKey(value).type === 'blank');
-    if (blank !== undefined && !preview.some((value) => pivotMemberKey(createPivotMemberKey(value)) === pivotMemberKey(createPivotMemberKey(blank)))) preview.push(blank);
-    return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: preview };
+    const members = canonicalPivotMembers(values);
+    return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: members };
   });
   return { schema: 'PivotFieldCatalog', fields };
 }

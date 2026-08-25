@@ -1,9 +1,10 @@
 import { Box, Button, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import { useMemo, useState } from 'react';
-import { createPivotMemberKey, formatPivotMember, pivotMemberKey, pivotMemberKeyEquals, type PivotFieldDefinition, type PivotMemberKey, type PivotScalar, type PivotSlicerItemProjection, type PivotSlicerSettings } from '@react-sheets/core-model';
+import { createPivotMemberKey, formatPivotMember, PIVOT_MEMBER_DISPLAY_LIMIT, pivotMemberKey, type PivotFieldDefinition, type PivotMemberKey, type PivotScalar, type PivotSlicerItemProjection, type PivotSlicerSettings } from '@react-sheets/core-model';
 import type { PivotFilterMode } from './pivot-contract';
 import type { Locale } from '../../i18n';
 import { pivotText } from './pivot-localization';
+import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-member-filter';
 
 export interface PivotSlicerProps {
   field: PivotFieldDefinition;
@@ -48,15 +49,11 @@ export function PivotSlicer({ disabled = false, field, itemProjection, locale, m
     if (settings?.noDataItemsLast) ordered.sort((left, right) => Number(right.hasData !== false) - Number(left.hasData !== false));
     return ordered;
   }, [items, settings?.noDataItemsLast, settings?.sort]);
-  const visibleItems = useMemo(() => sortedItems.filter((item) => (settings?.showNoDataItems !== false || item.hasData !== false) && item.label.toLocaleLowerCase().includes(search.toLocaleLowerCase())), [search, settings?.showNoDataItems, sortedItems]);
+  const visibleItems = useMemo(() => sortedItems.filter((item) => (settings?.showNoDataItems !== false || item.hasData !== false) && item.label.toLocaleLowerCase().includes(search.toLocaleLowerCase())).slice(0, PIVOT_MEMBER_DISPLAY_LIMIT), [search, settings?.showNoDataItems, sortedItems]);
   const allMembers = items.map((item) => item.key);
-  const selected = (member: PivotMemberKey): boolean => {
-    if (mode === 'all') return true;
-    const matched = memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, member));
-    return mode === 'include' ? matched : !matched;
-  };
+  const filterState = { mode, memberKeys };
+  const selected = (member: PivotMemberKey): boolean => pivotManualMemberSelected(filterState, member);
   const allSelected = mode === 'all' || (allMembers.length > 0 && allMembers.every((member) => selected(member)));
-  const currentSelection = (): PivotMemberKey[] => allMembers.filter((member) => selected(member));
   const setAll = (next: boolean) => onChange(next ? { mode: 'all', memberKeys: [] } : { mode: 'include', memberKeys: [] });
   const columns = settings?.columnCount ?? 1;
   return (
@@ -72,8 +69,8 @@ export function PivotSlicer({ disabled = false, field, itemProjection, locale, m
           const isSelected = selected(item.key);
           return <Button key={pivotMemberKey(item.key)} disabled={disabled} aria-pressed={isSelected} size="xs" variant={isSelected ? 'soft' : 'ghost'} className={`justify-start ${item.hasData === false && settings?.showNoDataStyle !== false ? 'opacity-50' : ''}`} onClick={() => {
             if (settings?.multiSelect === false) { onChange({ mode: 'include', memberKeys: [item.key] }); return; }
-            const next = isSelected ? currentSelection().filter((candidate) => !pivotMemberKeyEquals(candidate, item.key)) : [...currentSelection(), item.key];
-            onChange(next.length === allMembers.length ? { mode: 'all', memberKeys: [] } : { mode: 'include', memberKeys: next });
+            const next = applyPivotManualMemberDelta(filterState, [item.key], !isSelected);
+            onChange({ mode: next.mode, memberKeys: [...next.memberKeys] });
           }}>{item.label}</Button>;
         })}
         </Box>

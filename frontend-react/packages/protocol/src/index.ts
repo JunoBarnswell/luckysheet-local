@@ -1,4 +1,4 @@
-import { createPivotCollator, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
+import { createPivotCollator, normalizePivotRefreshPolicy, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   PivotDefinition,
@@ -515,7 +515,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       || field.ordinal !== ordinal || !['text', 'number', 'date', 'boolean', 'error', 'mixed'].includes(String(field.dataType))) {
       throw new Error('Pivot field is invalid');
     }
-    if (field.values !== undefined && !Array.isArray(field.values)) throw new Error('Pivot field values are invalid');
+    if (field.values !== undefined && (!Array.isArray(field.values) || field.values.length > PIVOT_MAX_MEMBER_COUNT)) throw new Error('Pivot field values are invalid');
     field.values?.forEach((item, index) => validatePivotScalar(item, `Pivot field value ${String(index)}`));
     fieldIds.add(field.fieldId);
   }
