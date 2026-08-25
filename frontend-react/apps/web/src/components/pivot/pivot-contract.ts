@@ -26,6 +26,10 @@ export type {
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
+export type PivotExpansionCommand =
+  | { kind: 'expand-field'; fieldId: string }
+  | { kind: 'collapse-field'; fieldId: string }
+  | { kind: 'toggle-buttons'; showButtons: boolean };
 export type PivotFieldPaneLayout = 'stacked' | 'side-by-side' | 'areas-2x2' | 'areas-1x4' | 'fields-only' | 'areas-only';
 export const PIVOT_FIELD_PANE_LAYOUTS: readonly PivotFieldPaneLayout[] = ['stacked', 'side-by-side', 'areas-2x2', 'areas-1x4', 'fields-only', 'areas-only'];
 export function defaultPivotFieldArea(field: Pick<PivotFieldDefinition, 'dataType'>): PivotFieldArea {
@@ -87,6 +91,7 @@ export interface PivotPanelCallbacks {
   onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
   onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;
   onPresentationChange?: (presentation: PivotPresentation) => void;
+  onExpansionCommand?: (command: PivotExpansionCommand) => void;
   onSlicerChange: (fieldId: string, enabled: boolean) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
   onTimelineChange: (fieldId: string | undefined) => void;

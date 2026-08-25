@@ -99,6 +99,7 @@ export interface CanvasInteractionOptions {
     sourceRowPaths: readonly PivotSourceRowPath[];
     hit: ResolvedContextHit;
   }) => void;
+  onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onBeginEdit: (initialText?: string) => void;
@@ -257,6 +258,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onPivotContextHit,
     onPivotResolve,
     onPivotShowDetails,
+    onPivotExpansionToggle,
     onResizeColumn,
     onAutoFitColumn,
     onAutoFitRow,
@@ -595,9 +597,16 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     }
 
     const hitCell = engine.cellAtLocalPoint(local);
-    const pivotContextHit = hitCell ? onPivotResolve(sheet, hitCell.row, hitCell.column) : null;
-    if (pivotContextHit) onPivotContextHit?.(pivotContextHit);
     if (!hitCell) return;
+    const pivotContextHit = hitCell ? onPivotResolve(sheet, hitCell.row, hitCell.column) : null;
+    if (pivotContextHit) {
+      onPivotContextHit?.(pivotContextHit);
+      const pivotTarget = findPivotProjectionCell(sheet, hitCell.row, hitCell.column);
+      if (pivotTarget?.cell.kind === 'expand-toggle' && pivotTarget.cell.nodeId) {
+        onPivotExpansionToggle(pivotTarget.projection.pivotId, pivotTarget.cell.nodeId);
+        return;
+      }
+    }
     const cell = resolveMergedCell(sheet, hitCell);
     const checkboxRect = skeleton.getCellRect(cell.row, cell.column);
     const contentPoint = engine.localToContent(local);
@@ -659,7 +668,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange({ ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [containerRef, drawingSelectionMode, drawings, drawingPayloads, editingCell, engineRef, filterPopoverAnchor, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
+  }, [containerRef, drawingSelectionMode, drawings, drawingPayloads, editingCell, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;
@@ -842,6 +851,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     if (pivotContextHit) {
       onPivotContextHit?.(pivotContextHit);
       const pivotTarget = findPivotProjectionCell(sheet, hitCell.row, hitCell.column);
+      if (pivotTarget?.cell.kind === 'expand-toggle' && pivotTarget.cell.nodeId) return;
       if (pivotTarget && isPivotValueCell(pivotTarget.cell) && pivotTarget.cell.sourceRowPaths && pivotTarget.cell.sourceRowPaths.length > 0) {
         onPivotShowDetails({ pivotId: pivotTarget.projection.pivotId, sourceRowPaths: pivotTarget.cell.sourceRowPaths, hit: pivotContextHit });
       }
@@ -860,7 +870,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     onBeginEdit();
-  }, [drawingPayloads, drawings, engineRef, findPivotProjectionCell, getValidationList, isPivotValueCell, localPointOf, onAutoFitColumn, onAutoFitRow, onBeginEdit, onBeginTextBoxEdit, onPivotContextHit, onPivotResolve, onPivotShowDetails, setValidationDropdown, sheet]);
+  }, [drawingPayloads, drawings, engineRef, findPivotProjectionCell, getValidationList, isPivotValueCell, localPointOf, onAutoFitColumn, onAutoFitRow, onBeginEdit, onBeginTextBoxEdit, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onPivotShowDetails, setValidationDropdown, sheet]);
 
   const handleWheel = useCallback((event: React.WheelEvent) => {
     const engine = engineRef.current;
@@ -940,7 +950,10 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
         const payload = drawing ? drawingPayloads.get(drawing.payloadId) : undefined;
         if (payload?.kind === 'textbox') { onBeginTextBoxEdit(selectedFloatingId); return; }
       }
-      if (checkboxSelection) onMovePrimary(1, 0);
+      const activePivotCell = activePivotContextHit ? findPivotProjectionCell(sheet, selection.activeCell.row, selection.activeCell.column)?.cell : undefined;
+      const activePivotProjection = activePivotContextHit ? findPivotProjectionCell(sheet, selection.activeCell.row, selection.activeCell.column)?.projection : undefined;
+      if (activePivotCell?.kind === 'expand-toggle' && activePivotCell.nodeId && activePivotProjection) onPivotExpansionToggle(activePivotProjection.pivotId, activePivotCell.nodeId);
+      else if (checkboxSelection) onMovePrimary(1, 0);
       else if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
       else onBeginEdit();
       return;
@@ -967,7 +980,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       else if (editingCell || editingActiveRef.current) onAppendFormulaDraft?.(key);
       else { editingActiveRef.current = true; onBeginEdit(key); }
     }
-  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editingCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
+  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
 
   return {
     clearTransientSelection,

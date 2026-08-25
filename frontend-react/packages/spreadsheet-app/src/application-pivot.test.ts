@@ -175,4 +175,29 @@ describe('WorkbookSession PivotTable integration', () => {
     app.redo();
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation?.styleOptions.showRowStripes, true);
   });
+
+  it('toggles Pivot expansion through one reversible command while keeping the parent row', async () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-expansion';
+    const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: amount.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    app.addPivot(pivot);
+    const tree = app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]!;
+    const parent = tree.rows[0]!;
+    assert.ok(parent.nodeId);
+    const beforeHistory = app.getUiSnapshot().historyEntries.length;
+    const collapsed = await app.dispatch({ commandId: 'pivot.expansion.toggle', params: { sheetId, pivotId: pivot.id, nodeId: parent.nodeId } });
+    assert.equal(collapsed.status, 'committed');
+    const collapsedProjection = app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]!;
+    assert.equal(collapsedProjection.cells.some((cell) => cell.nodeId === parent.nodeId && cell.expanded === false), true);
+    assert.equal(collapsedProjection.cells.filter((cell) => cell.nodeId && cell.nodeId.startsWith(`${parent.nodeId}/`)).length, 0);
+    assert.equal(app.getUiSnapshot().historyEntries.length, beforeHistory + 1);
+    app.undo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]!.cells.some((cell) => cell.nodeId?.startsWith(`${parent.nodeId}/`)), true);
+    app.redo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]!.cells.some((cell) => cell.nodeId === parent.nodeId && cell.expanded === false), true);
+  });
 });

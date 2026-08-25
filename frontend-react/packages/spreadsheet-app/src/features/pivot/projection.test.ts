@@ -78,6 +78,32 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(projection.cells.some((cell) => cell.text === 'Grand Total'), true);
   });
 
+  it('keeps a collapsed parent visible while hiding only its descendants', () => {
+    const workbook = new WorkbookModel('pivot-expansion', 'Pivot Expansion');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'City', 'Amount'], ['East', 'Boston', 10], ['East', 'Austin', 20], ['West', 'Seattle', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 };
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-expansion', sourceRange);
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const city = catalog.fields.find((field) => field.name === 'City')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
+    const tree = computePivotResult(workbook, pivot);
+    const parent = tree.rows.find((node) => node.label === 'East')!;
+    const child = parent.children.find((node) => node.label === 'Boston')!;
+    pivot.layout.expansion = { expandedNodeIds: [], collapsedNodeIds: [parent.nodeId!], showButtons: true };
+    const collapsed = buildPivotGridProjection(workbook, pivot, tree);
+    assert.equal(collapsed.cells.some((cell) => cell.nodeId === parent.nodeId && cell.kind === 'expand-toggle' && cell.expanded === false), true);
+    assert.equal(collapsed.cells.some((cell) => cell.nodeId === child.nodeId), false);
+    pivot.layout.expansion = { expandedNodeIds: [parent.nodeId!], collapsedNodeIds: [], showButtons: true };
+    const expanded = buildPivotGridProjection(workbook, pivot, tree);
+    assert.equal(expanded.cells.some((cell) => cell.nodeId === child.nodeId), true);
+  });
+
   it('implements each aggregate independently', () => {
     const rows = [{ values: { value: 2 } }, { values: { value: 4 } }, { values: { value: 4 } }, { values: { value: null } }];
     assert.equal(aggregatePivotValues(rows, 'value', 'sum'), 10);

@@ -14,7 +14,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { DEFAULT_PIVOT_STYLE_OPTIONS } from '@react-sheets/core-model';
+import { createPivotMemberKey, DEFAULT_PIVOT_STYLE_OPTIONS, pivotMemberKey } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -138,6 +138,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         ...optionalBoolean(definition.attrs.colGrandTotals ?? definition.attrs.showColumnGrandTotals, 'showColumnGrandTotals'),
         ...optionalBoolean(definition.attrs.compactData, 'compactData'),
         ...optionalBoolean(definition.attrs.repeatAllLabels, 'repeatLabels'),
+        ...optionalBoolean(definition.attrs.showDrill, 'showButtons'),
         ...(style?.attrs.name ? { styleName: style.attrs.name } : {}),
         ...(style ? { styleOptions: {
           showRowHeaders: style.attrs.showRowHeaders === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showRowHeaders : style.attrs.showRowHeaders !== '0',
@@ -371,7 +372,16 @@ export function mapNativePivotDefinition(
     showGrandTotals: (table.showRowGrandTotals ?? true) || (table.showColumnGrandTotals ?? true),
     compact: table.compactData ?? table.fields.some((field) => field.compact === true),
     repeatLabels: table.repeatLabels ?? false,
-    expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+    expansion: {
+      expandedNodeIds: [],
+      collapsedNodeIds: table.fields.flatMap((field) => field.axis === 'row'
+        ? (field.collapsedItemIndexes ?? []).flatMap((index) => {
+          const value = cache.fields[field.index]?.sharedItems?.[index];
+          return value === undefined ? [] : [`${fieldId(field.index)}=${pivotMemberKey(createPivotMemberKey(value))}`];
+        })
+        : []),
+      showButtons: table.showButtons ?? true,
+    },
   };
   const fieldBindings: Record<string, { cacheFieldIndex: number; sourceName?: string }> = {};
   for (const field of fields) fieldBindings[field.fieldId] = { cacheFieldIndex: field.ordinal, sourceName: field.name };
@@ -789,15 +799,28 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     : deriveLocation(pivot, source.rows.length, rows.length, columns.length, dataFields.length);
   const styleName = pivot.presentation?.styleName ?? old?.styleName;
   const styleOptions = pivot.presentation?.styleOptions ?? old?.styleOptions;
+  const collapsedItemIndexes = new Map<number, number[]>();
+  for (const nodeId of pivot.layout.expansion?.collapsedNodeIds ?? []) {
+    const separator = nodeId.indexOf('=');
+    if (separator <= 0) continue;
+    const fieldIdValue = nodeId.slice(0, separator);
+    const member = nodeId.slice(separator + 1);
+    const fieldIndexValue = pivot.fieldCatalog.fields.find((field) => field.fieldId === fieldIdValue || field.name === fieldIdValue)?.ordinal ?? -1;
+    if (fieldIndexValue < 0) continue;
+    const sharedItems = cache.fields[fieldIndexValue]?.sharedItems ?? [];
+    const index = sharedItems.findIndex((value) => pivotMemberKey(createPivotMemberKey(value)) === member);
+    if (index >= 0) collapsedItemIndexes.set(fieldIndexValue, [...(collapsedItemIndexes.get(fieldIndexValue) ?? []), index]);
+  }
   return {
     name: old?.name ?? (pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable'),
     part, sheetPart, relationshipId: old?.relationshipId ?? '', cacheId: cache.cacheId, pivotId: pivot.id,
     locationRef,
-    fields: source.fields.map((_, index) => ({ index, ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}), ...(pivot.layout.compact ? { compact: true } : {}) })),
+    fields: source.fields.map((_, index) => ({ index, ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}), ...(pivot.layout.compact ? { compact: true } : {}), ...((collapsedItemIndexes.get(index)?.length ?? 0) > 0 ? { collapsedItemIndexes: [...new Set(collapsedItemIndexes.get(index))] } : {}) })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
     showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, showSubtotals: pivot.layout.showSubtotals, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
     ...(styleName ? { styleName } : {}),
     ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
+    showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,
   };
 }
 
@@ -820,14 +843,14 @@ function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScal
 }
 
 function buildPivotTableXml(table: NativePivotTableDefinition): string {
-  const fields = table.fields.map((field) => `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}/>`).join('');
+  const fields = table.fields.map((field) => { const items = field.collapsedItemIndexes?.length ? `<items count="${field.collapsedItemIndexes.length}">${field.collapsedItemIndexes.map((index) => `<item x="${index}" sd="0"/>`).join('')}</items>` : ''; return `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}>${items}</pivotField>`; }).join('');
   const rows = table.rowFields.map((field) => `<field x="${field}"/>`).join('');
   const columns = table.columnFields.map((field) => `<field x="${field}"/>`).join('');
   const pages = table.pageFields.map((field) => `<pageField fld="${field}"/>`).join('');
   const data = table.dataFields.map((field) => `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}/>`).join('');
   const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
   const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
-  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}"><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${style}</pivotTableDefinition>`);
+  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${style}</pivotTableDefinition>`);
 }
 
 function buildDisplayCells(pivot: PivotDefinition, table: NativePivotTableDefinition, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): Record<string, Record<string, CellData>> {
@@ -888,7 +911,7 @@ function parseCacheSource(node: XmlNode | undefined, sheets: Map<string, { name:
 
 function parseCacheFields(node: XmlNode | undefined): NativePivotCacheField[] { return children(node, 'cacheField').map((field, index) => { const shared = child(field, 'sharedItems'); const values: Array<string | number | boolean | null> = []; for (const item of children(shared, 's')) values.push(item.attrs.v ?? null); for (const item of children(shared, 'n')) values.push(numberOrNull(item.attrs.v)); for (const item of children(shared, 'd')) values.push(item.attrs.v ?? null); for (const item of children(shared, 'b')) values.push(item.attrs.v === '1' || item.attrs.v === 'true'); for (const item of children(shared, 'e')) values.push(item.attrs.v ?? null); const dataType = inferCacheType(shared); return { index, name: field.attrs.name ?? `Field${index + 1}`, ...(dataType ? { dataType } : {}), ...(values.length ? { sharedItems: values } : {}) }; }); }
 
-function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] { return children(node, 'pivotField').map((field, index) => ({ index, ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}), ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}), ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}) })); }
+function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] { return children(node, 'pivotField').map((field, index) => ({ index, ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}), ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}), ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}), ...((() => { const indexes = children(child(field, 'items'), 'item').flatMap((item) => item.attrs.sd === '0' && item.attrs.x !== undefined ? [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)] : []); return indexes.length ? { collapsedItemIndexes: indexes } : {}; })()) })); }
 function parseFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'field').map((field) => requiredInteger(field.attrs.x, `${label}.field.x`)); }
 function parseDataFields(node: XmlNode | undefined): NativePivotDataField[] { return children(node, 'dataField').map((field) => ({ field: requiredInteger(field.attrs.fld, 'dataField.fld'), ...(field.attrs.name ? { name: field.attrs.name } : {}), ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}), ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}) })); }
 function readSheetNames(workbook: XmlNode, rels: XlsxRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }

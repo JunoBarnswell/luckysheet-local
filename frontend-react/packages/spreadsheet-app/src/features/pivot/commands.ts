@@ -14,7 +14,7 @@ import type {
   RangeRef,
 } from '@react-sheets/core-model';
 import { assertPivotDefinition, assertPivotField, createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs } from './panel-state';
-import { buildPivotGridProjection, getPivotSourceRanges, normalizePivotDefinition } from './engine';
+import { buildPivotGridProjection, computePivotResult, getPivotSourceRanges, normalizePivotDefinition } from './engine';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
@@ -66,6 +66,25 @@ export interface PivotLayoutCommandParams {
   sheetId: string;
   pivotId: string;
   layout: PivotLayout;
+}
+
+export interface PivotExpansionToggleParams {
+  sheetId: string;
+  pivotId: string;
+  nodeId: string;
+}
+
+export interface PivotExpansionFieldParams {
+  sheetId: string;
+  pivotId: string;
+  fieldId: string;
+  expanded: boolean;
+}
+
+export interface PivotExpansionButtonsParams {
+  sheetId: string;
+  pivotId: string;
+  showButtons: boolean;
 }
 
 export interface PivotAggregateParams {
@@ -237,6 +256,26 @@ function previousPivotUpdate(pivot: PivotModel): PivotUpdateParams {
   };
 }
 
+function pivotNodeIds(nodes: readonly import('@react-sheets/core-model').PivotResultNode[], target = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    if (node.nodeId) target.add(node.nodeId);
+    pivotNodeIds(node.children, target);
+  }
+  return target;
+}
+
+function pivotExpansion(pivot: PivotModel): NonNullable<PivotLayout['expansion']> {
+  return structuredClone(pivot.layout.expansion ?? { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true });
+}
+
+function applyPivotExpansionMutation(
+  context: CommandContext,
+  pivot: PivotModel,
+  nextLayout: PivotLayout,
+): void {
+  applyPivotUpdate(context, { sheetId: pivot.target.sheetId, pivotId: pivot.id, layout: nextLayout });
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const isRange = (value: unknown): value is RangeRef => isRecord(value)
@@ -245,11 +284,17 @@ const isRange = (value: unknown): value is RangeRef => isRecord(value)
   && Number.isSafeInteger(value.startColumn) && Number.isSafeInteger(value.endColumn)
   && Number(value.startRow) >= 0 && Number(value.endRow) >= Number(value.startRow)
   && Number(value.startColumn) >= 0 && Number(value.endColumn) >= Number(value.startColumn);
+const isPivotExpansion = (value: unknown): boolean => isRecord(value)
+  && Object.keys(value).every((key) => ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'].includes(key))
+  && Array.isArray(value.expandedNodeIds) && value.expandedNodeIds.every(isNonEmptyString)
+  && Array.isArray(value.collapsedNodeIds) && value.collapsedNodeIds.every(isNonEmptyString)
+  && typeof value.showButtons === 'boolean';
 const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && Array.isArray(value.rows) && Array.isArray(value.columns) && Array.isArray(value.filters)
   && Array.isArray(value.values)
   && typeof value.showSubtotals === 'boolean' && typeof value.showGrandTotals === 'boolean'
-  && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean';
+  && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean'
+  && (value.expansion === undefined || isPivotExpansion(value.expansion));
 const isPivotPresentation = (value: unknown): value is PivotPresentation => isRecord(value)
   && Object.keys(value).every((key) => key === 'styleName' || key === 'styleOptions')
   && (value.styleName === undefined || typeof value.styleName === 'string')
@@ -573,6 +618,75 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     },
   });
   commandIds.push('pivot.update');
+
+  const registerExpansionCommand = <P extends { sheetId: string; pivotId: string }>(
+    commandId: string,
+    update: (pivot: PivotModel, params: P, tree: import('@react-sheets/core-model').PivotResultTree | undefined) => PivotLayout,
+    requiresTree = true,
+  ): void => {
+    runtime.registry.registerCommand<P>({
+      id: commandId,
+      execute: (params, context) => {
+        const pivot = pivotFor(context, params.sheetId, params.pivotId);
+        if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
+        const tree = requiresTree ? computePivotResult(context.workbook, pivot) : undefined;
+        const nextLayout = update(pivot, params, tree);
+        const affectedRanges = sheetRange(params.sheetId);
+        const previousLayout = structuredClone(pivot.layout);
+        context.applyMutation({
+          id: 'pivot.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, pivotId: params.pivotId, layout: structuredClone(nextLayout) },
+          affectedRanges,
+          inverse: [{ id: 'pivot.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, pivotId: params.pivotId, layout: previousLayout }, affectedRanges }],
+          apply: () => applyPivotExpansionMutation(context, pivot, structuredClone(nextLayout)),
+        });
+        return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      },
+    });
+    commandIds.push(commandId);
+  };
+
+  registerExpansionCommand<PivotExpansionToggleParams>('pivot.expansion.toggle', (pivot, params, tree) => {
+    if (!params.nodeId.trim()) throw new Error('Pivot expansion node id is required');
+    if (!tree) throw new Error('Pivot expansion result is unavailable');
+    const known = pivotNodeIds(tree.rows);
+    if (!known.has(params.nodeId)) throw new Error(`Unknown Pivot expansion node: ${params.nodeId}`);
+    const expansion = pivotExpansion(pivot);
+    const collapsed = new Set(expansion.collapsedNodeIds);
+    const expanded = new Set(expansion.expandedNodeIds);
+    if (collapsed.has(params.nodeId)) {
+      collapsed.delete(params.nodeId);
+      expanded.add(params.nodeId);
+    } else {
+      collapsed.add(params.nodeId);
+      expanded.delete(params.nodeId);
+    }
+    return { ...structuredClone(pivot.layout), expansion: { ...expansion, expandedNodeIds: [...expanded], collapsedNodeIds: [...collapsed] } };
+  });
+
+  registerExpansionCommand<PivotExpansionFieldParams>('pivot.expansion.field', (pivot, params, tree) => {
+    if (!params.fieldId.trim()) throw new Error('Pivot expansion field id is required');
+    if (!tree) throw new Error('Pivot expansion result is unavailable');
+    const nodes: import('@react-sheets/core-model').PivotResultNode[] = [];
+    const collect = (entries: readonly import('@react-sheets/core-model').PivotResultNode[]) => entries.forEach((node) => { if (node.fieldId === params.fieldId && node.children.length) nodes.push(node); collect(node.children); });
+    collect(tree.rows);
+    if (nodes.length === 0) throw new Error(`Unknown Pivot expansion field: ${params.fieldId}`);
+    const expansion = pivotExpansion(pivot);
+    const collapsed = new Set(expansion.collapsedNodeIds);
+    const expanded = new Set(expansion.expandedNodeIds);
+    for (const node of nodes) {
+      if (params.expanded) { collapsed.delete(node.nodeId ?? ''); expanded.add(node.nodeId ?? ''); }
+      else { collapsed.add(node.nodeId ?? ''); expanded.delete(node.nodeId ?? ''); }
+    }
+    return { ...structuredClone(pivot.layout), expansion: { ...expansion, expandedNodeIds: [...expanded], collapsedNodeIds: [...collapsed] } };
+  });
+
+  registerExpansionCommand<PivotExpansionButtonsParams>('pivot.expansion.buttons', (pivot, params) => ({
+    ...structuredClone(pivot.layout),
+    expansion: { ...pivotExpansion(pivot), showButtons: params.showButtons },
+  }), false);
 
   // Refresh is intentionally a derived operation: it validates and rebuilds
   // the projection without persisting a stale result cache or a fake counter.
