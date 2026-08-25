@@ -1522,7 +1522,8 @@ function buildNativePivotFilters(pivot: PivotDefinition, dataFields: NativePivot
     if (filter.kind === 'top-items') {
       const measure = dataFieldIndex(filter.valueId);
       if (measure < 0) throw new Error(`Pivot top-items filter references missing value field ${filter.valueId}`);
-      return [{ field, type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', measureField: measure, value1: filter.count, top: filter.direction === 'top', attributes: { fld: String(field), type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', iMeasureFld: String(measure), val: String(filter.count), top: filter.direction === 'top' ? '1' : '0' } }];
+      const type = filter.direction === 'top' ? 'valueTop10' : 'valueBottom10';
+      return [{ field, type, measureField: measure, value1: filter.threshold, top: filter.direction === 'top', percent: filter.mode === 'percent', attributes: { fld: String(field), type, iMeasureFld: String(measure), val: String(filter.threshold), top: filter.direction === 'top' ? '1' : '0', mode: filter.mode } }];
     }
     if (filter.family === 'date' && filter.dynamic) {
       const dynamicTypes: Record<string, string> = { today: 'dateToday', yesterday: 'dateYesterday', tomorrow: 'dateTomorrow', 'this-week': 'dateThisWeek', 'last-week': 'dateLastWeek', 'next-week': 'dateNextWeek', 'this-month': 'dateThisMonth', 'last-month': 'dateLastMonth', 'next-month': 'dateNextMonth', 'this-quarter': 'dateThisQuarter', 'last-quarter': 'dateLastQuarter', 'next-quarter': 'dateNextQuarter', 'this-year': 'dateThisYear', 'last-year': 'dateLastYear', 'next-year': 'dateNextYear', 'year-to-date': 'dateYearToDate' };
@@ -1786,9 +1787,16 @@ function mapNativePivotFilters(
     else if (type === 'valuebetween') condition('between', value ?? null, true);
     else if (type === 'valuenotbetween') condition('not-between', value ?? null, true);
     else if (type === 'valuetop10' || type === 'top10' || type === 'valuebottom10' || type === 'bottom10') {
-      const count = typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
-      if (!targetFieldId || !measureFieldId || !count || count < 1 || filter.percent) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
-      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope });
+      const threshold = typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+      const rawMode = filter.attributes.mode;
+      const mode = rawMode === undefined ? (filter.percent ? 'percent' : 'items')
+        : rawMode === 'items' || rawMode === 'percent' || rawMode === 'sum' ? rawMode : undefined;
+      const validThreshold = mode !== undefined && threshold !== undefined && threshold > 0
+        && (filter.percent === undefined || filter.percent === (mode === 'percent'))
+        && (mode !== 'items' || Number.isSafeInteger(threshold))
+        && (mode !== 'percent' || threshold <= 100);
+      if (!targetFieldId || !measureFieldId || !validThreshold) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
+      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueId: measureFieldId, mode, threshold, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope });
     } else preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
   }
   return { filters: mapped, preserved };

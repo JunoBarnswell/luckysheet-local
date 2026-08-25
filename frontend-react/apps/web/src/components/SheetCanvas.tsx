@@ -293,9 +293,10 @@ function pivotReportFilterEntryText(locale: Locale, entry: PivotReportFilterSumm
     return pivotTemplate(locale, 'selectedItems', { count: entry.count });
   }
   if (entry.kind === 'top-items') {
-    return pivotTemplate(locale, 'topItemsSummary', {
+    return pivotTemplate(locale, 'topBottomSummary', {
       direction: pivotText(locale, entry.direction === 'top' ? 'top' : 'bottom'),
-      count: entry.count,
+      mode: entry.mode === 'items' ? pivotText(locale, 'items') : entry.mode === 'percent' ? pivotText(locale, 'percent') : pivotText(locale, 'sum'),
+      threshold: entry.threshold,
       field: entry.valueFieldName,
     });
   }

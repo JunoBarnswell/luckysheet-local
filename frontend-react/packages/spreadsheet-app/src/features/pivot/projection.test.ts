@@ -516,9 +516,9 @@ describe('native PivotGridProjection contract', () => {
     pivot.layout.filters = [
       { kind: 'manual', family: 'manual', scope: 'report', fieldId: region.fieldId, mode: 'all', memberKeys: [] },
       { kind: 'condition', family: 'label', fieldId: region.fieldId, scope: 'report', operator: 'begins-with', value: 'E' },
-      { kind: 'top-items', family: 'top-items', scope: 'report', fieldId: region.fieldId, count: 1, valueId: `value:${amount.fieldId}`, direction: 'top' },
+      { kind: 'top-items', family: 'top-items', scope: 'report', fieldId: region.fieldId, valueId: `value:${amount.fieldId}`, direction: 'top', mode: 'items', threshold: 1 },
     ];
-    const summary = summarizePivotReportFilters(pivot.layout.filters, catalog, region.fieldId);
+    const summary = summarizePivotReportFilters(pivot.layout.filters, catalog, region.fieldId, pivot.layout.values);
     assert.equal(summary.fieldName, 'Region');
     assert.equal(summary.active, true);
     assert.equal(summary.entries.length, 3);
@@ -530,6 +530,50 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(filterCells.length, 1);
     assert.equal(filterCells[0]?.filterSummary?.active, true);
     assert.equal(filterCells[0]?.filterSummary?.entries.length, 3);
+  });
+
+  it('ranks top/bottom filters by the selected Values placement and explicit mode', () => {
+    const workbook = new WorkbookModel('pivot-top-bottom', 'Pivot Top Bottom');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Amount'], ['East', 100], ['East', 100], ['West', 150], ['South', 40]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-top-bottom', { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    const filter = (valueId: string, mode: 'items' | 'percent' | 'sum', threshold: number, direction: 'top' | 'bottom' = 'top') => ({
+      kind: 'top-items' as const, family: 'top-items' as const, fieldId: region.fieldId, scope: 'field' as const, valueId, mode, threshold, direction,
+    });
+    const names = (summarizeBy: 'sum' | 'count' | 'average' | 'min' | 'max', valueId = 'amount:value') => {
+      pivot.layout.values = [{ valueId, fieldId: amount.fieldId, summarizeBy }];
+      pivot.layout.filters = [filter(valueId, 'items', 1)];
+      return computePivotResult(workbook, pivot).rows.map((node) => node.label);
+    };
+    assert.deepEqual(names('sum'), ['East']);
+    assert.deepEqual(names('average'), ['West']);
+    assert.deepEqual(names('count', 'amount:count'), ['East']);
+    assert.deepEqual(names('min'), ['West']);
+    assert.deepEqual(names('max'), ['West']);
+
+    pivot.layout.values = [{ valueId: 'amount:value', fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.filters = [filter('amount:value', 'percent', 50)];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['East']);
+    pivot.layout.filters = [filter('amount:value', 'sum', 300)];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['East', 'West']);
+    pivot.layout.filters = [filter('amount:value', 'sum', 100, 'bottom')];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['South', 'West']);
+
+    pivot.layout.values = [
+      { valueId: 'amount:sum', fieldId: amount.fieldId, summarizeBy: 'sum' },
+      { valueId: 'amount:count', fieldId: amount.fieldId, summarizeBy: 'count' },
+    ];
+    pivot.layout.filters = [filter('amount:count', 'items', 1)];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['East']);
+
+    const invalidLegacy = { ...filter('amount:sum', 'items', 1), count: 1, valueFieldId: amount.fieldId } as unknown as PivotModel['layout']['filters'][number];
+    pivot.layout.filters = [invalidLegacy];
+    assert.throws(() => computePivotResult(workbook, pivot), /removed top-items count|unknown Values placement|threshold/i);
   });
 
   it('projects each value field with its canonical number format', () => {

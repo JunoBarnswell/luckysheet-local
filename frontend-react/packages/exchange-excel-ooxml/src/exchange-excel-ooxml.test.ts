@@ -684,7 +684,7 @@ describe('exchange-excel-ooxml', () => {
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.filters, [
       { kind: 'condition', family: 'label', fieldId: 'native:cache:1:field:0', operator: 'equals', value: 'A', scope: 'field' },
       { kind: 'condition', family: 'value', fieldId: 'native:cache:1:field:0', valueId: 'native:cache:1:value:0', operator: 'greater-than', value: 10, scope: 'field' },
-      { kind: 'top-items', family: 'top-items', fieldId: 'native:cache:1:field:0', valueId: 'native:cache:1:value:0', count: 3, direction: 'top', scope: 'field' },
+      { kind: 'top-items', family: 'top-items', fieldId: 'native:cache:1:field:0', valueId: 'native:cache:1:value:0', mode: 'items', threshold: 3, direction: 'top', scope: 'field' },
     ]);
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.preservedPivotFilters, [{ fieldIndex: 1, type: 'futureFilter', attributes: { fld: '1', type: 'futureFilter', id: '7', stringValue1: 'preserve' } }]);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.subtotalLocation, 'top');
@@ -774,7 +774,10 @@ describe('exchange-excel-ooxml', () => {
       fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 }, { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 }] },
       layout: {
         rows: [{ fieldId: 'category', sort: { direction: 'ascending', by: 'value', valueId: `value:${'amount'}` } }], columns: [],
-        filters: [{ kind: 'condition', family: 'value', fieldId: 'category', valueId: `value:${'amount'}`, operator: 'greater-than', value: 5 }],
+        filters: [
+          { kind: 'condition', family: 'value', fieldId: 'category', valueId: `value:${'amount'}`, operator: 'greater-than', value: 5 },
+          { kind: 'top-items', family: 'top-items', fieldId: 'category', valueId: `value:${'amount'}`, direction: 'top', mode: 'sum', threshold: 25 },
+        ],
         allowMultipleFiltersPerField: true,
         collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
         values: [{ valueId: `value:${'amount'}`, fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact',
@@ -787,6 +790,12 @@ describe('exchange-excel-ooxml', () => {
     assert.match(xml, /<autoSortScope><pivotArea[^>]*dataOnly="1"[^>]*fieldPosition="0"/);
     assert.match(xml, /<reference field="1"/);
     assert.match(xml, /type="valueGreaterThan"[^>]*iMeasureFld="0"[^>]*val="5"/);
+    assert.match(xml, /type="valueTop10"[^>]*iMeasureFld="0"[^>]*val="25"[^>]*mode="sum"/);
+    const pivot = sheet.pivots[0]!;
+    pivot.layout.filters = pivot.layout.filters.map((filter) => filter.kind === 'top-items' ? { ...filter, mode: 'percent', threshold: 50 } : filter);
+    const percentXml = strFromU8(loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot())).files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(percentXml, /type="valueTop10"[^>]*val="50"[^>]*mode="percent"/);
+    assert.match(percentXml, /type="valueTop10"[^>]*percent="1"/);
   });
 
   it('round-trips repeated source fields as distinct native Values placements', async () => {
