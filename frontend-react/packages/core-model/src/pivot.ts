@@ -228,14 +228,35 @@ export const DEFAULT_PIVOT_STYLE_OPTIONS: PivotStyleOptions = {
 export interface PivotRefreshPolicy {
   mode: 'manual' | 'on-open' | 'on-change';
   preserveFormatting: boolean;
+  /**
+   * Derived wire projection of `mode`.  It remains on the public contract for
+   * the current protocol revision, but canonicalization rejects a value that
+   * disagrees with the mode, so there is only one refresh decision.
+   */
   refreshOnLoad: boolean;
 }
 
+export interface PivotNativeCacheFlags {
+  /** Native attributes belong to the shared PivotCache, not one PivotTable. */
+  refreshOnLoad?: boolean;
+  refreshOnSave?: boolean;
+  saveData?: boolean;
+  enableRefresh?: boolean;
+}
+
 export interface PivotNativeMetadata {
+  /** Stable native/cache identity used when several PivotTables share a cache. */
+  cacheKey?: string;
   cacheId?: number;
   cacheDefinitionPart?: string;
   cacheRecordsPart?: string;
   pivotTablePart?: string;
+  /**
+   * The original cache-level flags are preserved at the OOXML boundary. They
+   * are not a second runtime refresh policy; edited canonical mode owns the
+   * refreshOnLoad/refreshOnSave values when the package is regenerated.
+   */
+  cacheFlags?: PivotNativeCacheFlags;
   fieldBindings?: Record<string, { cacheFieldIndex: number; sourceName?: string }>;
   /** Only identifiers and style/display attributes may cross the model boundary. */
   preservedFeatures?: Array<'external-connection' | 'olap' | 'consolidation' | 'macro' | 'custom-xml' | 'slicer' | 'timeline'>;
@@ -404,6 +425,7 @@ export interface ContextHit extends PivotHitTest {
 export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefinition {
   if (input.schema !== PIVOT_DEFINITION_SCHEMA) throw new Error(`Pivot ${input.id} is not a canonical definition`);
   if (!input.source || !input.target || !input.fieldCatalog || !input.refreshPolicy) throw new Error(`Pivot ${input.id} is missing canonical fields`);
+  const refreshPolicy = normalizePivotRefreshPolicy(input.refreshPolicy);
   if (input.layout.rows.some((entry) => !entry.fieldId)
     || input.layout.columns.some((entry) => !entry.fieldId)
     || input.layout.values.some((entry) => !entry.fieldId)
@@ -411,6 +433,7 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     throw new Error(`Pivot ${input.id} has non-canonical field references`);
   }
   const canonical = structuredClone(input);
+  canonical.refreshPolicy = refreshPolicy;
   canonical.presentation = {
     ...(canonical.presentation?.styleName ? { styleName: canonical.presentation.styleName } : {}),
     styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(canonical.presentation?.styleOptions ?? {}) },
@@ -421,4 +444,24 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     scope: filter.scope ?? (axisFields.has(filter.fieldId) ? 'field' : 'report'),
   }));
   return canonical;
+}
+
+/**
+ * Normalize the one canonical refresh decision. `on-change` includes opening
+ * refresh because a cache that is refreshed from source changes must also be
+ * current when the workbook is opened; manual is the only non-opening mode.
+ */
+export function normalizePivotRefreshPolicy(input: PivotRefreshPolicy): PivotRefreshPolicy {
+  if (!input || !['manual', 'on-open', 'on-change'].includes(input.mode) || typeof input.preserveFormatting !== 'boolean' || typeof input.refreshOnLoad !== 'boolean') {
+    throw new Error('Pivot refresh policy is invalid');
+  }
+  const expectedRefreshOnLoad = input.mode !== 'manual';
+  if (input.refreshOnLoad !== expectedRefreshOnLoad) {
+    throw new Error(`Pivot refresh policy is contradictory for mode ${input.mode}`);
+  }
+  return { mode: input.mode, preserveFormatting: input.preserveFormatting, refreshOnLoad: expectedRefreshOnLoad };
+}
+
+export function refreshOnSaveForPivotMode(mode: PivotRefreshPolicy['mode']): boolean {
+  return mode === 'on-change';
 }

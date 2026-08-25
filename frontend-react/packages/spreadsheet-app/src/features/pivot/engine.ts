@@ -36,6 +36,7 @@ import {
   DEFAULT_PIVOT_STYLE_OPTIONS,
   createPivotMemberKey,
   pivotMemberKey,
+  normalizePivotRefreshPolicy,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
 } from '@react-sheets/core-model';
@@ -613,7 +614,7 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
     target: getPivotTarget(pivot),
     fieldCatalog,
     layout: normalizeLayout(pivot.layout, fieldCatalog),
-    refreshPolicy: structuredClone(pivot.refreshPolicy),
+    refreshPolicy: normalizePivotRefreshPolicy(pivot.refreshPolicy),
     presentation: {
       ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
       styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },

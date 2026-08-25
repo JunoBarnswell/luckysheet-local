@@ -252,6 +252,7 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
+  assert.throws(() => validatePivotDefinition({ ...base, refreshPolicy: { ...base.refreshPolicy, mode: 'manual', refreshOnLoad: true } }), /contradictory/);
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'region', subtotal: { mode: 'custom', functions: [] } }] } }), /custom subtotal functions/);
 });
 

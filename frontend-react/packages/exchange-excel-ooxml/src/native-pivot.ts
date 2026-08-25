@@ -8,6 +8,8 @@ import type {
   PivotGroup,
   PivotLayout,
   PivotModel,
+  PivotNativeCacheFlags,
+  PivotRefreshPolicy,
   PivotScalar,
   PivotSource,
   PivotValueField,
@@ -15,7 +17,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { createPivotMemberKey, DEFAULT_PIVOT_STYLE_OPTIONS, pivotMemberKey } from '@react-sheets/core-model';
+import { createPivotMemberKey, DEFAULT_PIVOT_STYLE_OPTIONS, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -306,6 +308,48 @@ function readControlDrawingAnchor(bytes: Uint8Array, name: string): { row: numbe
   return undefined;
 }
 
+function nativeCacheIdentity(cacheId: number): string { return `native-cache:${cacheId}`; }
+
+function nativeRefreshMode(flags: PivotNativeCacheFlags | NativePivotCacheDefinition): PivotRefreshPolicy['mode'] {
+  if (flags.refreshOnSave === true) return 'on-change';
+  if (flags.refreshOnLoad === true) return 'on-open';
+  return 'manual';
+}
+
+function cacheFlagsSnapshot(cache: NativePivotCacheDefinition): PivotNativeCacheFlags {
+  return {
+    ...(cache.refreshOnLoad === undefined ? {} : { refreshOnLoad: cache.refreshOnLoad }),
+    ...(cache.refreshOnSave === undefined ? {} : { refreshOnSave: cache.refreshOnSave }),
+    ...(cache.saveData === undefined ? {} : { saveData: cache.saveData }),
+    ...(cache.enableRefresh === undefined ? {} : { enableRefresh: cache.enableRefresh }),
+  };
+}
+
+function refreshPolicyForNativeCache(cache: NativePivotCacheDefinition): PivotRefreshPolicy {
+  const mode = nativeRefreshMode(cache);
+  return normalizePivotRefreshPolicy({ mode, preserveFormatting: true, refreshOnLoad: mode !== 'manual' });
+}
+
+function cacheRefreshPolicyChanged(pivot: PivotDefinition): boolean {
+  const flags = pivot.nativeMetadata?.cacheFlags;
+  if (!flags) return true;
+  return normalizePivotRefreshPolicy(pivot.refreshPolicy).mode !== nativeRefreshMode(flags);
+}
+
+/**
+ * Apply the canonical mode to a native cache only when a Pivot policy was
+ * edited. This preserves omitted XML attributes on an import→export no-op,
+ * while ensuring edits reach both new and reused cache definitions.
+ */
+function synchronizeCacheRefreshPolicy(cache: NativePivotCacheDefinition, entries: readonly PivotDefinition[]): void {
+  const policy = normalizePivotRefreshPolicy(entries[0]!.refreshPolicy);
+  if (entries.some(cacheRefreshPolicyChanged)) {
+    cache.refreshOnLoad = policy.mode !== 'manual';
+    cache.refreshOnSave = refreshOnSaveForPivotMode(policy.mode);
+    if (policy.mode !== 'manual') cache.enableRefresh = true;
+  }
+}
+
 function isSlicerCacheRelation(relation: XlsxRelationship): boolean { return relation.type === REL_SLICER_CACHE_MODERN || relation.type === REL_SLICER_CACHE || relation.type.endsWith('/slicerCache'); }
 function isSlicerRelation(relation: XlsxRelationship): boolean { return relation.type === REL_SLICER || relation.type.endsWith('/slicer'); }
 function isTimelineCacheRelation(relation: XlsxRelationship): boolean { return relation.type === REL_TIMELINE_CACHE || relation.type === REL_TIMELINE_CACHE_ALT || relation.type.endsWith('/timelineCache') || relation.type.endsWith('/TimelineCache'); }
@@ -395,6 +439,7 @@ export function mapNativePivotDefinition(
   };
   const fieldBindings: Record<string, { cacheFieldIndex: number; sourceName?: string }> = {};
   for (const field of fields) fieldBindings[field.fieldId] = { cacheFieldIndex: field.ordinal, sourceName: field.name };
+  const refreshPolicy = refreshPolicyForNativeCache(cache);
   return {
     schema: 'PivotDefinition',
     id: nativePivotId(table),
@@ -402,14 +447,22 @@ export function mapNativePivotDefinition(
     target: { sheetId: target.id, anchor: { row: location.startRow, column: location.startColumn } },
     fieldCatalog: { schema: 'PivotFieldCatalog', fields },
     layout,
-    refreshPolicy: { mode: cache.refreshOnLoad ? 'on-open' : 'manual', preserveFormatting: true, refreshOnLoad: cache.refreshOnLoad ?? true },
+    refreshPolicy,
     ...(table.styleName || table.styleOptions ? {
       presentation: {
         ...(table.styleName ? { styleName: table.styleName } : {}),
         styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) },
       },
     } : {}),
-    nativeMetadata: { cacheId: cache.cacheId, cacheDefinitionPart: cache.part, ...(cache.recordsPart ? { cacheRecordsPart: cache.recordsPart } : {}), pivotTablePart: table.part, fieldBindings },
+    nativeMetadata: {
+      cacheKey: nativeCacheIdentity(cache.cacheId),
+      cacheId: cache.cacheId,
+      cacheDefinitionPart: cache.part,
+      ...(cache.recordsPart ? { cacheRecordsPart: cache.recordsPart } : {}),
+      pivotTablePart: table.part,
+      cacheFlags: cacheFlagsSnapshot(cache),
+      fieldBindings,
+    },
   };
 }
 
@@ -460,8 +513,20 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
   const partNumbers = nextPartNumbers(files);
   let nextCacheId = Math.max(0, ...existing.caches.map((cache) => cache.cacheId)) + 1;
   const cacheBySource = new Map<string, NativePivotCacheDefinition>();
+  const cacheByIdentity = new Map<string, NativePivotCacheDefinition>();
   const pivotEntries = input.snapshot.sheets.flatMap((sheet) => sheet.pivots.map((pivot) => ({ sheet, pivot })));
+  type PlannedPivotEntry = {
+    targetSheet: typeof pivotEntries[number]['sheet'];
+    pivot: PivotDefinition;
+    targetPart: string;
+    sourceInfo: { key: string; source: NativePivotSource; sheet: SheetSnapshot; range: RangeRef; tableName?: string };
+    oldTable?: NativePivotTableDefinition;
+    cache: NativePivotCacheDefinition;
+  };
+  const plannedEntries: PlannedPivotEntry[] = [];
 
+  // First resolve every cache assignment. Policy validation happens before any
+  // OOXML part is rebuilt, so a shared-cache conflict fails atomically.
   for (const { sheet: targetSheet, pivot: inputPivot } of pivotEntries) {
     const pivot = normalizePivot(inputPivot);
     if (!pivot) continue;
@@ -479,13 +544,47 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
       continue;
     }
     const cacheKey = `${sourceInfo.key}|${pivotGroupingKey(pivot)}`;
+    const requestedIdentity = pivot.nativeMetadata?.cacheKey ?? cacheKey;
     let cache = pivot.nativeMetadata?.cacheId === undefined ? undefined : existingCaches.get(pivot.nativeMetadata.cacheId);
+    if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheByIdentity.get(requestedIdentity);
     if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheBySource.get(cacheKey);
     if (!cache) {
-      cache = { cacheId: nextCacheId++, part: `xl/pivotCache/pivotCacheDefinition${partNumbers.cacheDefinition++}.xml`, recordsPart: `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`, source: sourceInfo.source, fields: [], refreshOnLoad: pivot.refreshPolicy.refreshOnLoad, refreshOnSave: pivot.refreshPolicy.mode === 'on-change', saveData: true, enableRefresh: true };
+      const policy = normalizePivotRefreshPolicy(pivot.refreshPolicy);
+      cache = {
+        cacheId: nextCacheId++,
+        part: `xl/pivotCache/pivotCacheDefinition${partNumbers.cacheDefinition++}.xml`,
+        recordsPart: `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`,
+        source: sourceInfo.source,
+        fields: [],
+        refreshOnLoad: policy.mode !== 'manual',
+        refreshOnSave: refreshOnSaveForPivotMode(policy.mode),
+        saveData: true,
+        enableRefresh: true,
+      };
     }
-    usedCaches.add(cache.cacheId);
     cacheBySource.set(cacheKey, cache);
+    cacheByIdentity.set(requestedIdentity, cache);
+    cacheByIdentity.set(cacheKey, cache);
+    plannedEntries.push({ targetSheet, pivot, targetPart: targetPart!, sourceInfo, ...(oldTable ? { oldTable } : {}), cache });
+  }
+
+  const policyByCache = new Map<number, { mode: PivotRefreshPolicy['mode']; pivots: PivotDefinition[] }>();
+  for (const entry of plannedEntries) {
+    const policy = normalizePivotRefreshPolicy(entry.pivot.refreshPolicy);
+    const current = policyByCache.get(entry.cache.cacheId);
+    if (current && current.mode !== policy.mode) {
+      throw new Error(`Pivot cache ${entry.cache.cacheId} has conflicting refresh policies: ${current.mode} and ${policy.mode}`);
+    }
+    if (current) current.pivots.push(entry.pivot);
+    else policyByCache.set(entry.cache.cacheId, { mode: policy.mode, pivots: [entry.pivot] });
+  }
+  for (const entry of plannedEntries) {
+    const policy = policyByCache.get(entry.cache.cacheId);
+    if (policy) synchronizeCacheRefreshPolicy(entry.cache, policy.pivots);
+  }
+
+  for (const { targetSheet, pivot, targetPart, sourceInfo, oldTable, cache } of plannedEntries) {
+    usedCaches.add(cache.cacheId);
     const sourceRows = readSourceRows(sourceInfo.sheet, sourceInfo.range, pivot, sourceInfo.tableName);
     cache.source = sourceInfo.source;
     const previousFields = cache.fields;
