@@ -3,6 +3,7 @@ package com.xc.luckysheet.server.mutation;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -479,6 +480,18 @@ class MutationDescriptorRegistryTest {
                 """));
         JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
+
+        ObjectNode highCardinality = (ObjectNode) pivot.params().deepCopy();
+        ArrayNode members = mapper.createArrayNode();
+        for (int index = 0; index < 10_001; index++) members.add("Member " + index);
+        ((ObjectNode) highCardinality.path("fieldCatalog").path("fields").get(0)).set("values", members);
+        OperationMutation highCardinalityMutation = new OperationMutation("pivot.add", "sheet-1", highCardinality);
+        JsonNode highCardinalitySnapshot = registry.prepare(snapshot, highCardinalityMutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, highCardinalityMutation);
+        assertEquals(10_001, highCardinalitySnapshot.path("sheets").get(0).path("pivots").get(0).path("fieldCatalog").path("fields").get(0).path("values").size());
+
+        ObjectNode malformedValues = (ObjectNode) pivot.params().deepCopy();
+        ((ObjectNode) malformedValues.path("fieldCatalog").path("fields").get(0)).set("values", mapper.createObjectNode());
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", malformedValues), WorkbookAclRole.EDITOR));
 
         OperationMutation sparkline = new OperationMutation("sparkline.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","sparkline":{"id":"spark-1","sheetId":"sheet-1","anchor":{"row":3,"column":0},"sourceRange":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":1,"endColumn":1},"type":"line","color":"#2563eb"}}

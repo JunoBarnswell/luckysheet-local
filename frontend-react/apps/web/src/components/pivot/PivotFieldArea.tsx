@@ -4,6 +4,7 @@ import { useState } from 'react';
 import {
   createPivotMemberKey,
   formatPivotMember,
+  PIVOT_MEMBER_DISPLAY_LIMIT,
   type PivotAggregateFunction,
   pivotMemberKey,
   pivotMemberKeyEquals,
@@ -22,6 +23,7 @@ import type { Locale } from '../../i18n';
 import { pivotText, type PivotMessageKey } from './pivot-localization';
 import { PivotValueEditor } from './PivotValueEditor';
 import { buildPivotGroupedFilterMembers, type PivotGroupedFilterMember } from '@react-sheets/spreadsheet-app';
+import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-member-filter';
 
 interface AreaItem extends PivotFieldDefinition {
   id: string;
@@ -68,14 +70,8 @@ function selectedMembers(field: AreaItem, state: PivotManualFilterState): PivotM
   return all.filter((key) => !state.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, key)));
 }
 
-function filterWithValue(field: AreaItem, state: PivotManualFilterState, target: PivotMemberKey, checked: boolean): PivotManualFilterState {
-  const all = filterMembers(field).map((item) => item.key);
-  const selected = selectedMembers(field, state);
-  const nextSelected = checked
-    ? [...selected, target].filter((key, index, keys) => keys.findIndex((candidate) => pivotMemberKeyEquals(candidate, key)) === index)
-    : selected.filter((key) => !pivotMemberKeyEquals(key, target));
-  if (nextSelected.length >= all.length) return { mode: 'all', memberKeys: [] };
-  return { mode: 'include', memberKeys: nextSelected };
+function filterWithValue(_field: AreaItem, state: PivotManualFilterState, target: PivotMemberKey, checked: boolean): PivotManualFilterState {
+  return applyPivotManualMemberDelta(state, [target], checked);
 }
 
 function filterForMode(field: AreaItem, state: PivotManualFilterState, mode: PivotManualFilterState['mode']): PivotManualFilterState {
@@ -86,7 +82,10 @@ function filterForMode(field: AreaItem, state: PivotManualFilterState, mode: Piv
   return { mode, memberKeys: all.filter((key) => !selected.some((candidate) => pivotMemberKeyEquals(candidate, key))) };
 }
 
-function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state: PivotManualFilterState, onFilter: NonNullable<PivotFieldAreaProps['onFilter']>): ReactNode {
+function FilterOptions({ locale, field, disabled, state, onFilter }: { locale: Locale; field: AreaItem; disabled: boolean; state: PivotManualFilterState; onFilter: NonNullable<PivotFieldAreaProps['onFilter']> }): ReactNode {
+  const [query, setQuery] = useState('');
+  const members = filterMembers(field);
+  const visibleMembers = members.filter((item) => item.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, PIVOT_MEMBER_DISPLAY_LIMIT);
   return (
     <Stack gap="xs" className="max-h-[18rem] min-w-[13rem] overflow-auto p-2">
       <Text size="xs" weight="semibold">{pivotText(locale, 'filterValues')}</Text>
@@ -95,8 +94,9 @@ function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state
         <option value="include">{pivotText(locale, 'includeSelected')}</option>
         <option value="exclude">{pivotText(locale, 'excludeSelected')}</option>
       </Select>
-      {filterMembers(field).map((item) => {
-        const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, item.key));
+      <TextInput aria-label={`${field.name} ${pivotText(locale, 'search')}`} placeholder={pivotText(locale, 'search')} value={query} onChange={(event) => setQuery(event.target.value)} />
+      {visibleMembers.map((item) => {
+        const selected = pivotManualMemberSelected(state, item.key);
         return <CheckToggle key={pivotMemberKey(item.key)} label={item.label} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, item.key, event.target.checked))} />;
       })}
     </Stack>
@@ -146,7 +146,9 @@ function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: 
       <Inline gap="xs"><Button size="xs" variant="soft" onClick={apply}>{pivotText(locale, 'applyGroup')}</Button><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button></Inline>
     </Stack>;
   }
-  const values = (field.values ?? []).map(keyFor);
+  const allValues = field.values ?? [];
+  const [query, setQuery] = useState('');
+  const values = allValues.filter((item) => formatPivotMember(item).toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, PIVOT_MEMBER_DISPLAY_LIMIT).map(keyFor);
   const manual = current?.kind === 'manual' ? current : undefined;
   const [selected, setSelected] = useState<PivotMemberKey[]>([]);
   const [name, setName] = useState(pivotText(locale, 'groupOne'));
@@ -160,9 +162,10 @@ function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: 
     setSelected([]);
   };
   return <Stack gap="xs" className="border-t border-slate-100 pt-1">
-    <Text size="xs" weight="semibold">{pivotText(locale, 'manualGrouping')}</Text>
-    <Text size="xs" tone="muted">{pivotText(locale, 'selectItemsToGroup')}</Text>
-    <Stack gap="xs" className="max-h-32 overflow-auto">{values.map((item) => <CheckToggle key={pivotMemberKey(item)} label={String(item.value ?? '')} checked={selected.some((candidate) => pivotMemberKeyEquals(candidate, item))} onChange={(event) => setSelected((currentItems) => event.target.checked ? [...currentItems, item] : currentItems.filter((candidate) => !pivotMemberKeyEquals(candidate, item)))} />)}</Stack>
+      <Text size="xs" weight="semibold">{pivotText(locale, 'manualGrouping')}</Text>
+      <Text size="xs" tone="muted">{pivotText(locale, 'selectItemsToGroup')}</Text>
+      <TextInput aria-label={`${field.name} ${pivotText(locale, 'search')}`} placeholder={pivotText(locale, 'search')} value={query} onChange={(event) => setQuery(event.target.value)} />
+      <Stack gap="xs" className="max-h-32 overflow-auto">{values.map((item) => <CheckToggle key={pivotMemberKey(item)} label={String(item.value ?? '')} checked={selected.some((candidate) => pivotMemberKeyEquals(candidate, item))} onChange={(event) => setSelected((currentItems) => event.target.checked ? [...currentItems, item] : currentItems.filter((candidate) => !pivotMemberKeyEquals(candidate, item)))} />)}</Stack>
     <TextInput aria-label={pivotText(locale, 'groupName')} value={name} onChange={(event) => setName(event.target.value)} />
     <Button size="xs" variant="soft" disabled={selected.length < 2} onClick={create}>{pivotText(locale, 'createGroup')}</Button>
     {manual?.groups.map((group) => <Inline key={group.groupId} gap="xs"><Text size="xs" className="min-w-0 flex-1 truncate">{group.name}</Text><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'manual', groups: manual.groups.filter((candidate) => candidate.groupId !== group.groupId) })}>{pivotText(locale, 'ungroup')}</Button></Inline>)}
@@ -237,7 +240,7 @@ export function PivotFieldArea({ area, className, disabled = false, fieldIds, fi
                 align="right"
                 trigger={<Button aria-label={`${pivotText(locale, 'filterValues')}: ${field.name}`} icon="filter" iconOnly size="xs" variant={filterStates[field.fieldId]?.mode && filterStates[field.fieldId]?.mode !== 'all' ? 'soft' : 'ghost'} />}
               >
-                {filterOptions(locale, field, disabled, filterStates[field.fieldId] ?? { mode: 'all', memberKeys: [] }, onFilter)}
+                <FilterOptions locale={locale} field={field} disabled={disabled} state={filterStates[field.fieldId] ?? { mode: 'all', memberKeys: [] }} onFilter={onFilter} />
               </DropdownMenu>
             ) : null}
             <DropdownMenu

@@ -255,6 +255,15 @@ export type PivotSource = PivotWorksheetDataSource
 
 export type PivotFieldDataType = 'text' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
 
+/**
+ * Presentation-only bound for member lists rendered by filter controls.
+ * This never limits the canonical field member domain.
+ */
+export const PIVOT_MEMBER_DISPLAY_LIMIT = 10_000;
+
+/** Maximum number of unique typed members accepted in one canonical field domain. */
+export const PIVOT_MAX_MEMBER_COUNT = 1_048_576;
+
 export interface PivotFieldDefinition {
   /** Stable identity. It is derived from the source column, never from a row value. */
   fieldId: string;
