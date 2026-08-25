@@ -1061,7 +1061,7 @@ describe('exchange-excel-ooxml', () => {
       'xl/worksheets/sheet1.xml': strToU8(worksheet.replace('</worksheet>', `<autoFilter ref="A1:A2"><filterColumn colId="0"><dynamicFilter type="${type}"/></filterColumn></autoFilter></worksheet>`)),
     } as Record<string, Uint8Array>);
 
-    const supported = parseLoadedXlsx(loadOpcPackageGraph(withType('today'))).snapshot;
+    const supported = parseLoadedXlsx(loadOpcPackageGraph(withType('today')), { canonicalReferenceDate: { year: 2026, month: 8, day: 26, hour: 12, minute: 0, second: 0, millisecond: 0 } }).snapshot;
     assert.deepEqual(supported.sheets[0]?.autoFilter?.columns[0]?.criterion, { kind: 'dynamic', type: 'today' });
     assert.throws(
       () => parseLoadedXlsx(loadOpcPackageGraph(withType('attackerUnknown'))),

@@ -6,6 +6,7 @@ import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
 import { createFormulaError, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
+import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
@@ -24,6 +25,10 @@ export interface FormulaEvaluationContext {
     columnName?: string;
     thisRow: boolean;
   }): FormulaValue | EvaluationRange | undefined;
+  /** Workbook calendar used by serial/date functions. */
+  readonly dateSystem?: ExcelDateSystem;
+  /** Host-owned deterministic clock; missing means TODAY/NOW fail-close. */
+  readonly canonicalReferenceDate?: CanonicalExcelDateParts;
 }
 
 /** A data-only evaluation step used by Formula Auditing's Evaluate Formula view. */
@@ -274,7 +279,7 @@ function evaluateFunction(
 
   if (fn) {
     try {
-      return fn(evaluatedArgs);
+      return fn(evaluatedArgs, context);
     } catch (err) {
       return createFormulaError('#VALUE!', err instanceof Error ? err.message : 'Function evaluation error');
     }

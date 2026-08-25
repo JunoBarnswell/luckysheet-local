@@ -306,6 +306,23 @@ export {
   isFormControlDrawingPayload,
 } from './domain';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export {
+  canonicalExcelDateDayOfWeek,
+  canonicalExcelDateFromParts,
+  canonicalExcelDateFromSerial,
+  canonicalExcelDateFromUtcDate,
+  canonicalExcelDateFromValue,
+  canonicalExcelDatePartsFromSerial,
+  canonicalExcelDateToIso,
+  canonicalExcelDateToSerial,
+  canonicalExcelDateToUtcDate,
+  compareCanonicalExcelDates,
+  shiftCanonicalExcelDate,
+  type CanonicalExcelDate,
+  type CanonicalExcelDateParts,
+  type ExcelDateEvaluationContext,
+  type ExcelDateSystem,
+} from '@react-sheets/formula-engine';
 export { applyRowPermutation, createRowPermutationPlan, validatePermutationMetadata, type RowPermutationPlan } from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
 export {

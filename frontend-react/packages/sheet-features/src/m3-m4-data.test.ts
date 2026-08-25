@@ -314,8 +314,7 @@ test('AutoFilter date domain remains typed instead of parsing display strings', 
   const numericDomain = getAutoFilterDateDomain(sheet, 0);
   assert.equal(numericDomain.length, 1);
   assert.equal(numericDomain[0]?.value, 46249.5515625);
-  const expected = new Date(Date.UTC(1899, 11, 30) + 46249.5515625 * 86_400_000);
-  assert.deepEqual(numericDomain[0]?.group, { year: expected.getFullYear(), month: expected.getMonth() + 1, day: expected.getDate(), hour: expected.getHours(), minute: expected.getMinutes(), second: expected.getSeconds() });
+  assert.deepEqual(numericDomain[0]?.group, { year: 2026, month: 8, day: 15, hour: 13, minute: 14, second: 15 });
 });
 
 test('FilterDomainDescriptor uses resolved formula values and exposes only compatible families', () => {
@@ -395,9 +394,8 @@ test('AutoFilter evaluates Top10 and dynamic date criteria against canonical row
   });
   assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [2, 4]);
 
-  const today = new Date();
-  const epoch = Date.UTC(1899, 11, 30);
-  const serialToday = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - epoch) / 86_400_000;
+  const referenceDate = { year: 2026, month: 8, day: 26, hour: 12, minute: 0, second: 0, millisecond: 0 };
+  const serialToday = 46260;
   sheet.cells.set(0, 0, { value: 'Date' });
   sheet.cells.set(1, 0, { value: serialToday, numberFormat: 'yyyy-mm-dd' });
   sheet.cells.set(2, 0, { value: 36526, numberFormat: 'yyyy-mm-dd' });
@@ -406,7 +404,7 @@ test('AutoFilter evaluates Top10 and dynamic date criteria against canonical row
     range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
     columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'dynamic', type: 'today' } } },
   });
-  assert.deepEqual([...computeFilterHiddenRows(sheet)], [2]);
+  assert.deepEqual([...computeFilterHiddenRows(sheet, undefined, '1900', undefined, { referenceDate })], [2]);
 
   assert.throws(() => normalizeAutoFilterModel({
     ...sheet.autoFilter!,

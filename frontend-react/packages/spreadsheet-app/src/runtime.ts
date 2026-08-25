@@ -1,6 +1,6 @@
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
-import { FormulaEngine } from '@react-sheets/formula-engine';
+import { FormulaEngine, type CanonicalExcelDateParts, type ExcelDateSystem } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
   WorkbookApiClient,
@@ -51,6 +51,8 @@ export interface SpreadsheetRuntime {
   api: WorkbookApiClient;
   formula: FormulaEngine;
   formulaAudit: FormulaAuditController;
+  dateSystem: ExcelDateSystem;
+  canonicalReferenceDate?: CanonicalExcelDateParts;
   model: WorkbookModel;
   commands: CommandRuntime;
   drawing: DrawingRuntime;
@@ -117,12 +119,14 @@ export function createSpreadsheetRuntime(options: {
   localOnly?: boolean;
   persistence?: IndexedDbWorkspaceStoreOptions;
   workspacePersistence?: WorkspacePersistence;
+  dateSystem?: ExcelDateSystem;
+  canonicalReferenceDate?: CanonicalExcelDateParts;
 } = {}): SpreadsheetRuntime {
   const model = new WorkbookModel(options.unitId ?? resolveUnitId(), 'Untitled workbook');
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
-  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1' });
+  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem: options.dateSystem, canonicalReferenceDate: options.canonicalReferenceDate });
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
@@ -141,6 +145,8 @@ export function createSpreadsheetRuntime(options: {
     api,
     formula,
     formulaAudit,
+    dateSystem: options.dateSystem ?? '1900',
+    canonicalReferenceDate: options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined,
     model,
     commands,
     drawing,
@@ -593,7 +599,7 @@ function scheduleOperation(
 
 export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revision?: number): void {
   runtime.formula.disposeCalculationTasks();
-  runtime.formula = rebuildFormulaEngine(runtime.model);
+  runtime.formula = rebuildFormulaEngine(runtime.model, runtime.dateSystem, runtime.canonicalReferenceDate);
   runtime.formulaAudit.setFormula(runtime.formula);
   runtime.formulaAudit.refresh();
   if (revision != null) {
@@ -604,8 +610,8 @@ export function rehydrateFormulaAfterRestore(runtime: SpreadsheetRuntime, revisi
   void scheduleFormulaRecalculation(runtime);
 }
 
-function rebuildFormulaEngine(workbook: WorkbookModel): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
+function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate });
   loadFormulaInputs(engine, workbook);
   return engine;
 }
@@ -621,7 +627,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.model = workbook;
   runtime.commands = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
-  runtime.formula = rebuildFormulaEngine(workbook);
+  runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate);
   installCommandCellValueResolver(runtime);
   runtime.formulaAudit.setFormula(runtime.formula);
   registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);
