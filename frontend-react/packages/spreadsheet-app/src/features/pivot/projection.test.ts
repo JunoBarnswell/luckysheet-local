@@ -49,6 +49,35 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
   });
 
+  it('keeps a root data row for Columns plus Values when Rows is empty', () => {
+    const workbook = new WorkbookModel('pivot-columns-only', 'Pivot Columns Only');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Month', 'Sales'], ['Jan', 10], ['Feb', 20], ['Mar', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 };
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-columns-only', sourceRange);
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const month = catalog.fields.find((field) => field.name === 'Month')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [];
+    pivot.layout.columns = [{ fieldId: month.fieldId }];
+    pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.showGrandTotals = true;
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
+
+    const tree = computePivotResult(workbook, pivot);
+    assert.equal(tree.rows.length, 1);
+    assert.equal(tree.rows[0]?.nodeId, '__root__');
+    assert.deepEqual(Object.fromEntries(tree.columnPaths.map((path, index) => [path[0], tree.rows[0]?.values[index]?.values[0]])), { Jan: 10, Feb: 20, Mar: 30 });
+    assert.equal(tree.grandTotal?.values[0], 60);
+
+    const projection = buildPivotGridProjection(workbook, pivot, tree);
+    const values = projection.cells.filter((cell) => cell.kind === 'value');
+    assert.deepEqual(Object.fromEntries(values.map((cell) => [cell.columnPath?.[0], cell.value])), { Jan: 10, Feb: 20, Mar: 30 });
+    assert.equal(projection.cells.some((cell) => cell.text === 'Jan Sales'), true);
+    assert.equal(projection.cells.some((cell) => cell.text === 'Grand Total'), true);
+  });
+
   it('implements each aggregate independently', () => {
     const rows = [{ values: { value: 2 } }, { values: { value: 4 } }, { values: { value: 4 } }, { values: { value: null } }];
     assert.equal(aggregatePivotValues(rows, 'value', 'sum'), 10);
