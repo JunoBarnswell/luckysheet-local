@@ -31,6 +31,7 @@ import {
   computeBandedCellStyle,
   computeConditionalOverlays,
   computeFilterHiddenRows,
+  createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
   computeOutlineHiddenColumns,
   computeOutlineHiddenRows,
@@ -44,6 +45,7 @@ import {
   resolveActiveAutoFilter,
   resolveFilterOwner,
   resolveOutlineControls,
+  resolveEffectiveFilterVisual,
   validateDataInput,
   type FilterDateSystem,
   type ConditionalOverlay,
@@ -240,7 +242,8 @@ export function buildCanvasSheetSnapshot(
   const overlays = computeConditionalOverlays(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
   const readFilterCell = (row: number, column: number) => cellResolver.resolve(sheet, row, column)?.cell;
-  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem);
+  const filterVisual = createEffectiveFilterVisualResolver(overlays);
+  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
@@ -277,11 +280,8 @@ export function buildCanvasSheetSnapshot(
       computeBandedCellStyle(sheet, row, column),
       table ? computeSheetTableCellStyle(table, row, column) : undefined,
     );
-    const style = overlay?.style
-      ? { ...(modelCell?.style ?? {}), ...presentation, ...overlay.style }
-      : presentation
-        ? { ...(modelCell?.style ?? {}), ...presentation }
-        : modelCell?.style;
+    const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
+    const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
     const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
     const thread = sheet.commentThreads.find((entry) => entry.row === row && entry.column === column);
     const note = getCellNote(sheet, row, column) ?? modelCell?.note;
@@ -383,7 +383,7 @@ export function buildCanvasSheetSnapshot(
     activeFilterColumns,
     filterButtons,
     filterButtonStates: resolveFilterButtonStates(sheet),
-    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem),
+    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
     getFilterOwner: (column) => resolveFilterOwner(sheet, column),
     getActiveAutoFilter: (column) => {
       const filter = resolveActiveAutoFilter(sheet, column);
@@ -395,7 +395,7 @@ export function buildCanvasSheetSnapshot(
       if (!range || column < range.startColumn || column > range.endColumn) return [];
       const options = new Map<string, { target: 'cell' | 'font'; color: string }>();
       for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-        const style = readFilterCell(row, column)?.style;
+        const style = filterVisual(row, column, readFilterCell(row, column)).style;
         if (style?.background) options.set(`cell:${style.background}`, { target: 'cell', color: style.background });
         if (style?.textColor) options.set(`font:${style.textColor}`, { target: 'font', color: style.textColor });
       }
@@ -406,7 +406,7 @@ export function buildCanvasSheetSnapshot(
       if (!range || column < range.startColumn || column > range.endColumn) return [];
       const options = new Map<string, { iconSet: string; iconId: number }>();
       for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-        const icon = readFilterCell(row, column)?.filterMetadata?.icon;
+        const icon = filterVisual(row, column, readFilterCell(row, column)).nativeIcon;
         if (icon) options.set(`${icon.iconSet}:${icon.iconId}`, { ...icon });
       }
       return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));

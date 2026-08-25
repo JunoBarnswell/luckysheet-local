@@ -39,6 +39,45 @@ describe('canonical drawing UI projection', () => {
     assert.equal(snapshot.getCell(2, 0)?.value, 'Drop');
   });
 
+  it('exposes conditional-format colors to the filter domain without writing styles into cells', () => {
+    const workbook = new WorkbookModel('snapshot-filter-color', 'Snapshot Filter Color');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 3;
+    sheet.columnCount = 1;
+    sheet.cells.set(0, 0, { value: 'Status' });
+    sheet.cells.set(1, 0, { value: 10 });
+    sheet.cells.set(2, 0, { value: 1, filterMetadata: { color: { target: 'cell', dxfId: 7, value: '#123456' } } });
+    sheet.conditionalFormats.push({
+      id: 'snapshot-filter-color',
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
+      type: 'highlight',
+      operator: 'greaterThan',
+      value1: 5,
+      priority: 1,
+      style: { background: '#ff0000' },
+    });
+    sheet.autoFilter = {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+      columns: {
+        0: {
+          column: 0, showButton: true, hiddenButton: false,
+          criterion: { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#FF0000' } },
+        },
+      },
+    };
+
+    const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
+    assert.deepEqual(snapshot.getFilterColorDomain(0), [
+      { target: 'cell', color: '#123456' },
+      { target: 'cell', color: '#ff0000' },
+    ]);
+    assert.deepEqual(snapshot.hiddenRows, [2]);
+    assert.equal(sheet.cells.get(1, 0)?.style, undefined);
+    assert.equal(snapshot.getCell(1, 0)?.overlay?.style?.background, '#ff0000');
+  });
+
   it('exposes only DrawingObject and DrawingPayload to consumers', () => {
     const workbook = new WorkbookModel('snapshot-drawings', 'Snapshot Drawings');
     const sheet = workbook.getSheet(workbook.getSheets()[0]!.id);
