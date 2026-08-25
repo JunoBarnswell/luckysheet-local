@@ -891,4 +891,27 @@ class MutationDescriptorRegistryTest {
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
     }
+
+    @Test
+    void rowPermutationMovesOnlyExactCellOwnersAndSplitsRangeMetadata() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{"0":{"0":{"value":"a"}},"1":{"0":{"value":"b"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"notes":[],"commentThreads":[{"id":"outside-comment","sheetId":"sheet-1","row":0,"column":5}],"hyperlinks":[{"row":0,"column":1,"hyperlink":{"id":"inside-link"}},{"row":0,"column":5,"hyperlink":{"id":"outside-link"}}],"merges":[],"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}],"type":"highlight"}],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[{"id":"inside-drawing","sheetId":"sheet-1","kind":"shape","anchor":{"kind":"one-cell","row":0,"column":1}},{"id":"outside-drawing","sheetId":"sheet-1","kind":"shape","anchor":{"kind":"one-cell","row":0,"column":5}}],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,0,3,1]}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode sheet = current.path("sheets").get(0);
+        assertEquals("b", sheet.path("cells").path("0").path("0").path("value").asText());
+        assertEquals(1, sheet.path("hyperlinks").get(0).path("row").asInt());
+        assertEquals(0, sheet.path("hyperlinks").get(1).path("row").asInt());
+        assertEquals(0, sheet.path("commentThreads").get(0).path("row").asInt());
+        assertEquals(1, sheet.path("drawings").get(0).path("anchor").path("row").asInt());
+        assertEquals(0, sheet.path("drawings").get(1).path("anchor").path("row").asInt());
+        assertEquals(2, sheet.path("conditionalFormats").get(0).path("ranges").size());
+        assertEquals(1, sheet.path("conditionalFormats").get(0).path("ranges").get(0).path("startRow").asInt());
+        assertEquals(3, sheet.path("conditionalFormats").get(0).path("ranges").get(1).path("startRow").asInt());
+    }
 }

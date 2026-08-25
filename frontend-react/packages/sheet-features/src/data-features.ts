@@ -13,7 +13,7 @@ import type {
   DateGroupItem,
   FilterScalar,
 } from "@react-sheets/core-model";
-import { StructuralTransform, applyRowPermutation, columnLabel, isDynamicFilterType, validatePermutationMetadata } from "@react-sheets/core-model";
+import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType } from "@react-sheets/core-model";
 import { resolveAutoFilters } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
@@ -1522,8 +1522,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
-      validatePermutationMetadata(sheet, range);
-      applyRowPermutation(sheet, { range, sourceRows: params.sourceRows });
+      applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
       setAppliedSortState(sheet, params.sortState);
     },
     metadata: {
@@ -1587,7 +1586,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           },
           affectedRanges,
         }],
-        apply: () => applyRowPermutation(sheet, { range: bodyRange, sourceRows }),
+        apply: () => applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows)),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
