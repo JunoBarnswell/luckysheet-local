@@ -110,6 +110,12 @@ export function translateRibbonText(locale: Locale, key: RibbonTextKey): string 
   return bundle[name] ?? key;
 }
 
+export type InsertUiTextKey = keyof typeof enUS.insertUi;
+
+export function insertText(locale: Locale, key: InsertUiTextKey): string {
+  return localeBundles[locale].insertUi[key];
+}
+
 export function formulaBarLabels(locale: Locale, phase: 'empty' | 'error' | 'loading' | 'ready') {
   const bundle = localeBundles[locale].formulaBar;
   return {
