@@ -47,7 +47,7 @@ import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
 import type { ColumnDimensionController } from '../editor/column-dimension-controller';
 import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
-import { PivotHeaderFilterPopover } from './pivot/PivotHeaderFilterPopover';
+import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
 import { GanttViewOverlay } from './GanttViewOverlay';
 import { ReportViewOverlay } from './ReportViewOverlay';
@@ -1000,8 +1000,11 @@ export function SheetCanvas({
             const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
             const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
             const currentFilter = pivot?.layout.filters.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope);
-            const valueFieldId = pivot?.layout.values[0]?.fieldId;
-            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFieldId={valueFieldId} currentFilter={currentFilter} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope); setPivotFilterPopover(null); }} /> : null;
+            const valueFields: PivotValueSortOption[] = pivot?.layout.values.map((value) => ({
+              fieldId: value.fieldId,
+              label: value.displayName ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === value.fieldId)?.name ?? value.fieldId,
+            })) ?? [];
+            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFields={valueFields} currentFilter={currentFilter} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope); setPivotFilterPopover(null); }} /> : null;
           })() : null}
 
           {fillPreview ? (

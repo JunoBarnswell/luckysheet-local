@@ -19,6 +19,7 @@ import type {
   PivotResultTree,
   PivotResultValueField,
   PivotScalar,
+  PivotSort,
   PivotSource,
   PivotSourceRowPath,
   PivotTarget,
@@ -547,13 +548,20 @@ function fieldName(fieldId: string, catalog: PivotFieldCatalog): string {
   return catalog.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId;
 }
 
-function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldCatalog): PivotFieldPlacement {
+function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldCatalog, valueFieldIds: ReadonlySet<string>): PivotFieldPlacement {
   const fieldId = resolveFieldId(placement.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot field: ${placement.fieldId}`);
-  const sort = placement.sort ? {
-    ...placement.sort,
-    ...(placement.sort.valueFieldId ? { valueFieldId: resolveFieldId(placement.sort.valueFieldId, catalog) } : {}),
-  } : undefined;
+  let sort: PivotSort | undefined;
+  if (placement.sort) {
+    if (placement.sort.by === 'value') {
+      const valueFieldId = resolveFieldId(placement.sort.valueFieldId, catalog);
+      if (!valueFieldId) throw new Error(`Pivot value sort requires a valueFieldId for ${fieldId}`);
+      if (!valueFieldIds.has(valueFieldId)) throw new Error(`Pivot value sort field is not in Values: ${valueFieldId}`);
+      sort = { ...placement.sort, valueFieldId };
+    } else {
+      sort = { direction: placement.sort.direction, by: 'label' };
+    }
+  }
   return { fieldId, sort, group: placement.group, subtotal: placement.subtotal ? structuredClone(placement.subtotal) : undefined };
 }
 
@@ -583,12 +591,14 @@ function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog)
 }
 
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
+  const values = layout.values.map((entry) => normalizeValueField(entry, catalog));
+  const valueFieldIds = new Set(values.map((entry) => entry.fieldId));
   return {
     ...structuredClone(layout),
-    rows: layout.rows.map((entry) => normalizePlacement(entry, catalog)),
-    columns: layout.columns.map((entry) => normalizePlacement(entry, catalog)),
+    rows: layout.rows.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
+    columns: layout.columns.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
     filters: layout.filters.map((entry) => normalizeFilter(entry, catalog)),
-    values: layout.values.map((entry) => normalizeValueField(entry, catalog)),
+    values,
     expansion: layout.expansion ? {
       expandedNodeIds: [...layout.expansion.expandedNodeIds],
       collapsedNodeIds: [...layout.expansion.collapsedNodeIds],
@@ -712,10 +722,17 @@ function toNumber(value: PivotScalar): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function compare(left: PivotScalar, right: PivotScalar): number {
+function compare(left: PivotScalar, right: PivotScalar, dataType?: PivotFieldDataType): number {
   if (same(left, right)) return 0;
   if (left == null || left === '') return -1;
   if (right == null || right === '') return 1;
+  if (dataType === 'boolean' && typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
+  if (dataType === 'date') {
+    const leftDate = pivotTimelineInstant(left);
+    const rightDate = pivotTimelineInstant(right);
+    if (leftDate !== undefined && rightDate !== undefined) return leftDate - rightDate;
+  }
+  if (dataType === 'text') return String(left).localeCompare(String(right));
   const leftNumber = toNumber(left);
   const rightNumber = toNumber(right);
   if (leftNumber != null && rightNumber != null) return leftNumber - rightNumber;
@@ -812,7 +829,7 @@ function dateGroupLabel(date: Date, group: Extract<PivotGroup, { kind: 'date' }>
   return date.toISOString().slice(0, 10);
 }
 
-function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[]): AxisGroup[] {
+function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldCatalog: PivotFieldCatalog): AxisGroup[] {
   const map = new Map<string, AxisGroup>();
   for (const row of rows) {
     const values = placements.map((placement) => grouped(row.values[placement.fieldId] ?? null, placement.group));
@@ -822,12 +839,14 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[]): AxisG
     map.set(key, group);
   }
   const placement = placements[placements.length - 1];
+  const dataType = placement ? fieldCatalog.fields.find((field) => field.fieldId === placement.fieldId)?.dataType : undefined;
   const result = [...map.values()].sort((left, right) => {
     if (placement?.sort?.by === 'value' && placement.sort.valueFieldId) {
       return (aggregatePivotValues(left.rows, placement.sort.valueFieldId, 'sum') ?? 0) - (aggregatePivotValues(right.rows, placement.sort.valueFieldId, 'sum') ?? 0);
     }
     for (let index = 0; index < left.values.length; index += 1) {
-      const order = compare(left.values[index] ?? null, right.values[index] ?? null);
+      const fieldType = fieldCatalog.fields.find((field) => field.fieldId === placements[index]?.fieldId)?.dataType ?? dataType;
+      const order = compare(left.values[index] ?? null, right.values[index] ?? null, fieldType);
       if (order) return order;
     }
     return 0;
@@ -956,7 +975,7 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResul
   });
 }
 
-function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], prefix: string[] = []): PivotResultNode[] {
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], fieldCatalog: PivotFieldCatalog, prefix: string[] = []): PivotResultNode[] {
   // A Pivot with no Row fields still owns one data row: the root aggregation
   // crossing every Column path and Values placement. Grand Total is a
   // separate axis total and must not stand in for this matrix row.
@@ -977,11 +996,11 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
     }];
   }
   const placement = placements[depth]!;
-  return axisGroups(rows, [placement]).map((group) => {
+  return axisGroups(rows, [placement], fieldCatalog).map((group) => {
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
-    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, path);
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, fieldCatalog, path);
     const leaf = children.length === 0;
     const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
     return {
@@ -1067,7 +1086,7 @@ function computePivotResultFromTable(
   let filtered = matchesControls(workbook, rows, pivot);
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter)));
   filtered = topItems(filtered, definition.layout.filters);
-  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns) : [{ values: [], rows: filtered }];
+  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog) : [{ values: [], rows: filtered }];
   const resultFields = resultValueFields(definition.layout);
   const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? {
     id: `${definition.id}|grand-total`,
@@ -1082,7 +1101,7 @@ function computePivotResultFromTable(
     fields: definition.fieldCatalog,
     columnPaths: columns.map((column) => column.values),
     valueFields: resultFields,
-    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation),
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.fieldCatalog),
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
