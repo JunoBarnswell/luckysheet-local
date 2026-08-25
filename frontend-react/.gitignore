@@ -4,3 +4,9 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 .vite/
+
+# Playwright output is published by CI and must never become source evidence.
+test-results/
+playwright-report/
+*.trace.zip
+*.webm
