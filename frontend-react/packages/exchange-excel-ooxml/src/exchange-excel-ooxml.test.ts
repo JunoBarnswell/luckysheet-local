@@ -6,7 +6,7 @@ import { importXlsx } from './import';
 import { scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
-import { readNativePivotGraph } from './native-pivot';
+import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
 import { strFromU8, strToU8 } from 'fflate';
 import { readFile } from 'node:fs/promises';
 
@@ -387,6 +387,90 @@ describe('exchange-excel-ooxml', () => {
     const removedControls = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(withoutControls, output.packageGraph));
     const removedDrawing = removedControls.files['xl/drawings/drawing1.xml'];
     assert.ok(!removedDrawing || !/category[_-]slicer|date[_-]timeline/.test(strFromU8(removedDrawing)));
+  });
+
+  it('round-trips report filters and manual row/column item visibility through native Pivot XML', async () => {
+    const workbook = new WorkbookModel('wb-pivot-visibility', 'Pivot Visibility');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [
+      ['Category', 'Region', 'Country', 'Amount'],
+      ['A', 'East', 'US', 10],
+      ['A', 'West', 'US', 20],
+      ['B', 'East', 'CA', 30],
+      ['B', 'West', 'CA', 40],
+    ].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const member = (value: string) => createPivotMemberKey(value);
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'pivot-visibility',
+      source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 3 } },
+      target: { sheetId: sheet.id, anchor: { row: 7, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
+        { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
+        { fieldId: 'region', name: 'Region', dataType: 'text', ordinal: 1 },
+        { fieldId: 'country', name: 'Country', dataType: 'text', ordinal: 2 },
+        { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 3 },
+      ] },
+      layout: {
+        rows: [{ fieldId: 'category' }], columns: [{ fieldId: 'region' }],
+        filters: [
+          { kind: 'manual', family: 'manual', scope: 'report', fieldId: 'amount', mode: 'include', memberKeys: [createPivotMemberKey(10)] },
+          { kind: 'condition', family: 'label', scope: 'report', fieldId: 'country', operator: 'equals', value: 'US' },
+          { kind: 'manual', family: 'manual', scope: 'field', fieldId: 'category', mode: 'exclude', memberKeys: [member('B')] },
+          { kind: 'manual', family: 'manual', scope: 'field', fieldId: 'region', mode: 'exclude', memberKeys: [member('West')] },
+        ],
+        allowMultipleFiltersPerField: true,
+        collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
+        values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false,
+      },
+      refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+    });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const nativeXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(nativeXml, /<pageFields count="2"><pageField fld="3"\/><pageField fld="2"\/><\/pageFields>/);
+    assert.match(nativeXml, /<pivotField axis="axisRow"[^>]*><items count="1"><item x="1" h="1"\/><\/items>/);
+    assert.match(nativeXml, /<pivotField axis="axisCol"[^>]*><items count="1"><item x="1" h="1"\/><\/items>/);
+    assert.match(nativeXml, /<pivotField axis="axisPage"[^>]*><items count="3"><item x="1" h="1"\/><item x="2" h="1"\/><item x="3" h="1"\/><\/items>/);
+    assert.match(nativeXml, /<pivotFilters count="1"><filter fld="2" type="captionEqual" stringValue1="US"/);
+
+    const imported = await importXlsx({ fileName: 'pivot-visibility.xlsx', buffer: zipXlsxPartsBuffer(output.files), options: { compatibilityTarget: 'B' } });
+    const importedPivot = imported.snapshot.sheets[0]?.pivots[0];
+    assert.ok(importedPivot);
+    assert.deepEqual(importedPivot.layout.filters, [
+      { kind: 'manual', family: 'manual', fieldId: 'native:cache:1:field:0', scope: 'field', mode: 'exclude', memberKeys: [member('B')] },
+      { kind: 'manual', family: 'manual', fieldId: 'native:cache:1:field:1', scope: 'field', mode: 'exclude', memberKeys: [member('West')] },
+      { kind: 'manual', family: 'manual', fieldId: 'native:cache:1:field:3', scope: 'report', mode: 'exclude', memberKeys: [createPivotMemberKey(20), createPivotMemberKey(30), createPivotMemberKey(40)] },
+      { kind: 'condition', family: 'label', fieldId: 'native:cache:1:field:2', scope: 'report', operator: 'equals', value: 'US' },
+    ]);
+    const roundTrip = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'pivot-visibility-roundtrip.xlsx', options: { compatibilityTarget: 'B' } });
+    const roundTripXml = strFromU8(loadOpcPackageGraph(roundTrip.buffer).files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(roundTripXml, /<pageFields count="2"><pageField fld="3"\/><pageField fld="2"\/><\/pageFields>/);
+    assert.equal((roundTripXml.match(/ h="1"/g) ?? []).length, 5);
+  });
+
+  it('rejects native manual visibility indexes outside the cache field range', () => {
+    const workbook = new WorkbookModel('wb-pivot-invalid-visibility', 'Invalid Pivot Visibility');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const cache = {
+      cacheId: 1, part: 'xl/pivotCache/pivotCacheDefinition1.xml',
+      source: { kind: 'worksheet-range' as const, sheetName: sheet.name, sheetPart: 'xl/worksheets/sheet1.xml', ref: 'A1:A2' },
+      fields: [{ index: 0, name: 'Category', dataType: 'string' as const, sharedItems: ['A'] }],
+    };
+    const table = {
+      name: 'PivotTable1', part: 'xl/pivotTables/pivotTable1.xml', sheetPart: 'xl/worksheets/sheet1.xml', relationshipId: 'rIdPivot', cacheId: 1,
+      locationRef: 'C1:C3', fields: [{ index: 0, axis: 'row' as const, hiddenItemIndexes: [1] }], rowFields: [0], columnFields: [], pageFields: [], dataFields: [],
+    };
+    assert.throws(() => mapNativePivotDefinition(table, cache, workbook.snapshot(), { [sheet.id]: 'xl/worksheets/sheet1.xml' }), /hidden item 1 is outside sharedItems bounds/);
+
+    const invalidExport = new WorkbookModel('wb-pivot-invalid-filter', 'Invalid Pivot Filter');
+    const invalidSheet = invalidExport.getSheet(invalidExport.primarySheetId);
+    [['Category'], ['A']].forEach((row, rowIndex) => row.forEach((value, columnIndex) => invalidSheet.cells.set(rowIndex, columnIndex, { value })));
+    invalidSheet.pivots.push({
+      schema: 'PivotDefinition', id: 'invalid-filter', source: { kind: 'worksheet-range', range: { sheetId: invalidSheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 } }, target: { sheetId: invalidSheet.id, anchor: { row: 4, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 }] },
+      layout: { rows: [], columns: [], filters: [{ kind: 'manual', family: 'manual', scope: 'report', fieldId: 'missing', mode: 'all', memberKeys: [] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+    });
+    assert.throws(() => exportSnapshotToXlsxBuffer(invalidExport.snapshot()), /Pivot filter references missing field missing/);
   });
 
   it('fails closed for invalid native Timeline levels and bounds', () => {

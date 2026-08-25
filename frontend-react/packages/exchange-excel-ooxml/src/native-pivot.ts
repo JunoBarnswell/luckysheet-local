@@ -28,7 +28,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotRefreshPolicy, pivotMemberKey, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotRefreshPolicy, pivotMemberKey, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -151,7 +151,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         fields: parsePivotFields(child(definition, 'pivotFields')),
         rowFields: parseFieldIndexes(child(definition, 'rowFields'), 'rowFields'),
         columnFields: parseFieldIndexes(child(definition, 'colFields'), 'colFields'),
-        pageFields: parseFieldIndexes(child(definition, 'pageFields'), 'pageFields'),
+        pageFields: parsePageFieldIndexes(child(definition, 'pageFields'), 'pageFields'),
         dataFields: parseDataFields(child(definition, 'dataFields')),
         ...(child(definition, 'pivotFilters') ? { pivotFilters: parsePivotFilters(child(definition, 'pivotFilters')) } : {}),
         ...optionalBoolean(definition.attrs.rowGrandTotals ?? definition.attrs.showRowGrandTotals, 'showRowGrandTotals'),
@@ -515,7 +515,38 @@ export function mapNativePivotDefinition(
     };
   });
   const fieldId = (index: number): string => fields[index]?.fieldId ?? nativeFieldId(cache.cacheId, index);
-  const mappedFilters = mapNativePivotFilters(table.pivotFilters ?? [], fields, table.dataFields);
+  const mappedFilters = mapNativePivotFilters(table.pivotFilters ?? [], fields, table.dataFields, new Set(table.pageFields));
+  const manualItemFilters = table.fields.flatMap((nativeField) => {
+    const hidden = nativeField.hiddenItemIndexes ?? [];
+    if (hidden.length === 0) return [];
+    const cacheField = cache.fields[nativeField.index];
+    if (!cacheField) throw new Error(`Pivot field ${nativeField.index} is outside cache field bounds`);
+    const sharedItems = cacheField.sharedItems;
+    if (!sharedItems) throw new Error(`Pivot field ${nativeField.index} hides items without cache sharedItems`);
+    const memberKeys = hidden.map((itemIndex) => {
+      if (itemIndex < 0 || itemIndex >= sharedItems.length) throw new Error(`Pivot field ${nativeField.index} hidden item ${itemIndex} is outside sharedItems bounds`);
+      const value = sharedItems[itemIndex];
+      if (value === undefined) throw new Error(`Pivot field ${nativeField.index} hidden item ${itemIndex} is missing`);
+      return createPivotMemberKey(value);
+    });
+    return [{
+      kind: 'manual' as const,
+      family: 'manual' as const,
+      fieldId: fieldId(nativeField.index),
+      scope: table.pageFields.includes(nativeField.index)
+        || (!table.rowFields.includes(nativeField.index) && !table.columnFields.includes(nativeField.index))
+        ? 'report' as const
+        : 'field' as const,
+      mode: 'exclude' as const,
+      memberKeys,
+    }];
+  });
+  const pageFilters = table.pageFields.map((index) => {
+    if (index < 0 || index >= fields.length) throw new Error(`Pivot page field ${index} is outside cache field bounds`);
+    if (manualItemFilters.some((filter) => filter.fieldId === fieldId(index) && filter.scope === 'report')) return undefined;
+    if (mappedFilters.filters.some((filter) => filter.fieldId === fieldId(index) && (filter.scope ?? 'report') === 'report')) return undefined;
+    return { kind: 'manual' as const, family: 'manual' as const, fieldId: fieldId(index), scope: 'report' as const, mode: 'all' as const, memberKeys: [] };
+  }).filter((filter): filter is NonNullable<typeof filter> => filter !== undefined);
   const preservedAutoSortScopes = table.fields.flatMap((field) => {
     if (!field.autoSortScope || nativePivotSort(field, table.dataFields, fieldId) || (field.sortType === undefined && field.nonAutoSortDefault === undefined)) return [];
     return [{
@@ -535,10 +566,7 @@ export function mapNativePivotDefinition(
   const layout: PivotLayout = {
     rows: table.rowFields.map(placement),
     columns: table.columnFields.map(placement),
-    filters: [
-      ...table.pageFields.map((index) => ({ kind: 'manual' as const, family: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
-      ...mappedFilters.filters,
-    ],
+    filters: [...pageFilters, ...manualItemFilters, ...mappedFilters.filters],
     allowMultipleFiltersPerField: table.multipleFieldFilters ?? true,
     collation: { ...DEFAULT_PIVOT_COLLATION },
     values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
@@ -1129,7 +1157,7 @@ function nativeSourceKey(source: NativePivotSource | { kind: 'unsupported'; reas
 
 function normalizePivot(input: PivotModel): PivotDefinition | undefined {
   if (input.schema !== 'PivotDefinition') return undefined;
-  return structuredClone(input);
+  return canonicalizePivotDefinition(structuredClone(input));
 }
 
 function pivotGroupingKey(pivot: PivotDefinition): string {
@@ -1203,12 +1231,15 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     const id = placement.fieldId;
     return pivot.fieldCatalog.fields.find((field) => field.fieldId === id || field.name === id)?.ordinal ?? source.fields.findIndex((field) => field.name === id);
   };
+  for (const filter of pivot.layout.filters) {
+    if (fieldIndex(filter) < 0) throw new Error(`Pivot filter references missing field ${filter.fieldId}`);
+  }
   const rows = pivot.layout.rows.map(fieldIndex).filter((index) => index >= 0);
   const columns = pivot.layout.columns.map(fieldIndex).filter((index) => index >= 0);
-  const pages = pivot.layout.filters
-    .filter((filter) => filter.kind === 'manual' && (filter.scope ?? 'report') === 'report')
-    .map(fieldIndex)
-    .filter((index) => index >= 0);
+  const pages = [...new Set(pivot.layout.filters
+    .filter((filter) => (filter.scope ?? 'report') === 'report')
+    .map((filter) => fieldIndex(filter))
+    .filter((index) => index >= 0))];
   const subtotalForField = (index: number) => pivot.layout.rows.find((placement) => fieldIndex(placement) === index)?.subtotal
     ?? pivot.layout.columns.find((placement) => fieldIndex(placement) === index)?.subtotal;
   const dataFields = pivot.layout.values.map((value) => ({ field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) })).filter((value) => value.field >= 0);
@@ -1260,6 +1291,31 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     const index = sharedItems.findIndex((value) => pivotMemberKey(createPivotMemberKey(value)) === member);
     if (index >= 0) collapsedItemIndexes.set(fieldIndexValue, [...(collapsedItemIndexes.get(fieldIndexValue) ?? []), index]);
   }
+  const hiddenItemIndexes = new Map<number, number[]>();
+  const manualFiltersByField = new Map<number, Extract<PivotLayout['filters'][number], { kind: 'manual' }>[] >();
+  for (const filter of pivot.layout.filters) {
+    if (filter.kind !== 'manual' || filter.mode === 'all') continue;
+    const index = fieldIndex(filter);
+    if (index < 0) throw new Error(`Pivot manual filter references missing field ${filter.fieldId}`);
+    const current = manualFiltersByField.get(index) ?? [];
+    current.push(filter);
+    manualFiltersByField.set(index, current);
+  }
+  for (const [index, filters] of manualFiltersByField) {
+    if (filters.length > 1) throw new Error(`Pivot manual filters cannot target field ${index} in multiple scopes`);
+    const values = cache.fields[index]?.sharedItems;
+    if (!values) throw new Error(`Pivot manual filter field ${index} has no cache sharedItems`);
+    const keys = new Set(values.map((value) => pivotMemberKey(createPivotMemberKey(value))));
+    const requested = new Set(filters[0]!.memberKeys.map((value) => pivotMemberKey(value)));
+    const unknown = [...requested].find((key) => !keys.has(key));
+    if (unknown) throw new Error(`Pivot manual filter field ${index} references an unknown member ${unknown}`);
+    const hidden = values.flatMap((value, valueIndex) => {
+      const selected = requested.has(pivotMemberKey(createPivotMemberKey(value)));
+      const shouldHide = filters[0]!.mode === 'exclude' ? selected : !selected;
+      return shouldHide ? [valueIndex] : [];
+    });
+    if (hidden.length) hiddenItemIndexes.set(index, hidden);
+  }
   return {
     name: old?.name ?? (pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable'),
     part, sheetPart, relationshipId: old?.relationshipId ?? '', cacheId: cache.cacheId, pivotId: pivot.id,
@@ -1270,6 +1326,7 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
       ...nativeSortForField(index),
       ...(pivot.layout.compact ? { compact: true } : {}),
       ...((collapsedItemIndexes.get(index)?.length ?? 0) > 0 ? { collapsedItemIndexes: [...new Set(collapsedItemIndexes.get(index))] } : {}),
+      ...((hiddenItemIndexes.get(index)?.length ?? 0) > 0 ? { hiddenItemIndexes: hiddenItemIndexes.get(index) } : {}),
       ...(subtotalForField(index) ? { subtotal: structuredClone(subtotalForField(index)) } : {}),
     })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
@@ -1352,7 +1409,9 @@ function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScal
 
 function buildPivotTableXml(table: NativePivotTableDefinition): string {
   const fields = table.fields.map((field) => {
-    const items = field.collapsedItemIndexes?.length ? `<items count="${field.collapsedItemIndexes.length}">${field.collapsedItemIndexes.map((index) => `<item x="${index}" sd="0"/>`).join('')}</items>` : '';
+    const itemIndexes = [...new Set([...(field.collapsedItemIndexes ?? []), ...(field.hiddenItemIndexes ?? [])])].sort((left, right) => left - right);
+    const hiddenItems = new Set(field.hiddenItemIndexes ?? []);
+    const items = itemIndexes.length ? `<items count="${itemIndexes.length}">${itemIndexes.map((index) => `<item x="${index}"${hiddenItems.has(index) ? ' h="1"' : ''}${field.collapsedItemIndexes?.includes(index) ? ' sd="0"' : ''}/>`).join('')}</items>` : '';
     const subtotal = nativePivotSubtotalAttrs(field.subtotal);
     const sortType = field.sortType && field.sortType !== 'manual' ? ` sortType="${field.sortType}"` : field.sortType === 'manual' ? ' sortType="manual"' : '';
     const nonAutoSortDefault = field.nonAutoSortDefault === undefined ? '' : ` nonAutoSortDefault="${field.nonAutoSortDefault ? '1' : '0'}"`;
@@ -1630,6 +1689,7 @@ function mapNativePivotFilters(
   filters: NativePivotFilter[],
   fields: Array<{ fieldId: string }>,
   dataFields: NativePivotDataField[],
+  pageFieldIndexes: ReadonlySet<number>,
 ): { filters: PivotLayout['filters']; preserved: PivotNativeFilterMetadata[] } {
   const mapped: PivotLayout['filters'] = [];
   const preserved: PivotNativeFilterMetadata[] = [];
@@ -1640,11 +1700,12 @@ function mapNativePivotFilters(
     const measureFieldId = valueFieldId(filter.measureField);
     const value = filter.value1 ?? filter.stringValue1;
     const type = filter.type.toLowerCase();
+    const scope = pageFieldIndexes.has(filter.field) ? 'report' as const : 'field' as const;
     const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false, upperValue: PivotScalar | undefined = filter.value2, dynamic: PivotDynamicDateFilter | undefined = undefined): void => {
       if (!targetFieldId || (withMeasure && !measureFieldId)) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
-      if (withMeasure) mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, ...(measureFieldId ? { valueFieldId: measureFieldId } : {}), operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope: 'field' });
-      else if (type.startsWith('date')) mapped.push({ kind: 'condition', family: 'date', fieldId: targetFieldId, operator: operator as PivotDateFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), ...(dynamic === undefined ? {} : { dynamic }), scope: 'field', ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
-      else mapped.push({ kind: 'condition', family: 'label', fieldId: targetFieldId, operator: operator as PivotLabelFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope: 'field' });
+      if (withMeasure) mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, ...(measureFieldId ? { valueFieldId: measureFieldId } : {}), operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
+      else if (type.startsWith('date')) mapped.push({ kind: 'condition', family: 'date', fieldId: targetFieldId, operator: operator as PivotDateFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), ...(dynamic === undefined ? {} : { dynamic }), scope, ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
+      else mapped.push({ kind: 'condition', family: 'label', fieldId: targetFieldId, operator: operator as PivotLabelFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
     };
     if (type === 'captionequal' || type === 'dateequal') condition('equals');
     else if (type === 'captionnotequal' || type === 'datenotequal') condition('not-equals');
@@ -1679,7 +1740,7 @@ function mapNativePivotFilters(
     else if (type === 'valuetop10' || type === 'top10' || type === 'valuebottom10' || type === 'bottom10') {
       const count = typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
       if (!targetFieldId || !measureFieldId || !count || count < 1 || filter.percent) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
-      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueFieldId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope: 'field' });
+      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueFieldId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope });
     } else preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
   }
   return { filters: mapped, preserved };
@@ -1706,6 +1767,14 @@ function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] {
     const autoSortScope = parseAutoSortScope(child(field, 'autoSortScope'), `pivotField[${index}].autoSortScope`);
     const collapsedItemIndexes = children(child(field, 'items'), 'item').flatMap((item) => item.attrs.sd === '0' && item.attrs.x !== undefined
       ? [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)] : []);
+    const hiddenItemIndexes = children(child(field, 'items'), 'item').flatMap((item) => {
+      if (item.attrs.h === undefined) return [];
+      const hidden = parseBoolean(item.attrs.h, `pivotField[${index}].items.item.h`);
+      if (!hidden) return [];
+      if (item.attrs.x === undefined) throw new Error(`pivotField[${index}].items.item.x is required for a hidden item`);
+      return [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)];
+    });
+    if (new Set(hiddenItemIndexes).size !== hiddenItemIndexes.length) throw new Error(`pivotField[${index}].items contains duplicate hidden item indexes`);
     const sortType = field.attrs.sortType;
     if (sortType !== undefined && !['manual', 'ascending', 'descending'].includes(sortType)) {
       throw new Error(`pivotField[${index}].sortType is unsupported: ${sortType}`);
@@ -1720,6 +1789,7 @@ function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] {
       ...(autoSortScope ? { autoSortScope } : {}),
       ...(subtotal ? { subtotal } : {}),
       ...(collapsedItemIndexes.length ? { collapsedItemIndexes } : {}),
+      ...(hiddenItemIndexes.length ? { hiddenItemIndexes } : {}),
     };
   });
 }
@@ -1783,6 +1853,7 @@ function nativeFilterScalar(value: string): NativePivotScalar {
   return Number.isFinite(number) && value.trim() !== '' ? number : value;
 }
 function parseFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'field').map((field) => requiredInteger(field.attrs.x, `${label}.field.x`)); }
+function parsePageFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'pageField').map((field) => requiredInteger(field.attrs.fld, `${label}.pageField.fld`)); }
 function parseDataFields(node: XmlNode | undefined): NativePivotDataField[] { return children(node, 'dataField').map((field) => ({ field: requiredInteger(field.attrs.fld, 'dataField.fld'), ...(field.attrs.name ? { name: field.attrs.name } : {}), ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}), ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}) })); }
 function readSheetNames(workbook: XmlNode, rels: XlsxRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }
 function requireRelationship(rels: XlsxRelationship[], id: string, type: string, context: string): XlsxRelationship { const relation = rels.find((candidate) => candidate.id === id); if (!relation) throw new Error(`${context} relation ${id} is missing`); if (relation.type !== type && !relation.type.endsWith(`/${type.split('/').pop()!}`)) throw new Error(`${context} relation ${id} has unexpected type ${relation.type}`); return relation; }
