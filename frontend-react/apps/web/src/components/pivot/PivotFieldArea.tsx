@@ -1,4 +1,4 @@
-import { Box, Button, CheckToggle, DropdownMenu, FieldDropZone, Icon, Inline, Select, Stack, Text } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, DropdownMenu, FieldDropZone, Icon, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import type { DragEvent, ReactNode } from 'react';
 import { useState } from 'react';
 import {
@@ -10,6 +10,7 @@ import {
   type PivotFieldDefinition,
   type PivotFieldPlacement,
   type PivotGroup,
+  type PivotDateGroupUnit,
   type PivotMemberKey,
   type PivotSort,
   type PivotScalar,
@@ -18,7 +19,7 @@ import {
 } from '@react-sheets/core-model';
 import type { PivotFieldArea as Area, PivotManualFilterState } from './pivot-contract';
 import type { Locale } from '../../i18n';
-import { pivotText } from './pivot-localization';
+import { pivotText, type PivotMessageKey } from './pivot-localization';
 import { PivotValueEditor } from './PivotValueEditor';
 
 interface AreaItem extends PivotFieldDefinition {
@@ -97,39 +98,75 @@ function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state
   );
 }
 
-function groupOptions(locale: Locale, field: AreaItem, onGroup?: PivotFieldAreaProps['onGroup']): ReactNode {
-  if (!onGroup) return null;
+const dateUnits: readonly PivotDateGroupUnit[] = ['year', 'quarter', 'month', 'week', 'day'];
+const dateUnitKeys: Record<PivotDateGroupUnit, PivotMessageKey> = { year: 'years', quarter: 'quarters', month: 'months', week: 'weeks', day: 'days' };
+
+function GroupingOptions({ field, locale, onGroup }: { field: AreaItem; locale: Locale; onGroup: NonNullable<PivotFieldAreaProps['onGroup']> }): ReactNode {
+  const current = field.placement?.group;
   if (field.dataType === 'date') {
-    return (
-      <Stack gap="xs" className="border-t border-slate-100 pt-1">
-        <Text size="xs" weight="semibold">{pivotText(locale, 'groupBy')}</Text>
-        <Inline gap="xs" className="flex-wrap">
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'date', unit: 'year' })}>{pivotText(locale, 'years')}</Button>
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'date', unit: 'quarter' })}>{pivotText(locale, 'quarters')}</Button>
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'date', unit: 'month' })}>{pivotText(locale, 'months')}</Button>
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'date', unit: 'week' })}>{pivotText(locale, 'weeks')}</Button>
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'date', unit: 'day' })}>{pivotText(locale, 'days')}</Button>
-        </Inline>
-        <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button>
-      </Stack>
-    );
+    const date = current?.kind === 'date' ? current : undefined;
+    const [units, setUnits] = useState<PivotDateGroupUnit[]>(date?.units?.length ? [...date.units] : date ? [date.unit] : ['year']);
+    const [start, setStart] = useState(date?.start === undefined ? '' : String(date.start));
+    const [end, setEnd] = useState(date?.end === undefined ? '' : String(date.end));
+    const [startOfWeek, setStartOfWeek] = useState(String(date?.startOfWeek ?? 0));
+    const apply = () => {
+      const nextUnits = dateUnits.filter((unit) => units.includes(unit));
+      if (!nextUnits.length) return;
+      onGroup(field.fieldId, { kind: 'date', unit: nextUnits[0]!, units: nextUnits, ...(start === '' ? {} : { start: Number.isNaN(Number(start)) ? start : Number(start) }), ...(end === '' ? {} : { end: Number.isNaN(Number(end)) ? end : Number(end) }), startOfWeek: Number(startOfWeek) as 0 | 1 | 2 | 3 | 4 | 5 | 6 });
+    };
+    return <Stack gap="xs" className="border-t border-slate-100 pt-1">
+      <Text size="xs" weight="semibold">{pivotText(locale, 'groupBy')}</Text>
+      <Inline gap="xs" className="flex-wrap">{dateUnits.map((unit) => <CheckToggle key={unit} label={pivotText(locale, dateUnitKeys[unit])} checked={units.includes(unit)} onChange={(event) => setUnits((currentUnits) => event.target.checked ? [...currentUnits, unit] : currentUnits.filter((candidate) => candidate !== unit))} />)}</Inline>
+      <Inline gap="xs"><TextInput aria-label={pivotText(locale, 'groupStart')} placeholder={pivotText(locale, 'groupStart')} value={start} onChange={(event) => setStart(event.target.value)} /><TextInput aria-label={pivotText(locale, 'groupEnd')} placeholder={pivotText(locale, 'groupEnd')} value={end} onChange={(event) => setEnd(event.target.value)} /></Inline>
+      <Select aria-label={pivotText(locale, 'weekStarts')} sizeVariant="sm" value={startOfWeek} onChange={(event) => setStartOfWeek(event.target.value)}><option value="0">{pivotText(locale, 'sunday')}</option><option value="1">{pivotText(locale, 'monday')}</option><option value="6">{pivotText(locale, 'saturday')}</option></Select>
+      <Inline gap="xs"><Button size="xs" variant="soft" disabled={units.length === 0} onClick={apply}>{pivotText(locale, 'applyGroup')}</Button><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button></Inline>
+    </Stack>;
   }
   if (field.dataType === 'number') {
-    return (
-      <Stack gap="xs" className="border-t border-slate-100 pt-1">
-        <Text size="xs" weight="semibold">{pivotText(locale, 'groupNumbers')}</Text>
-        <Inline gap="xs" className="flex-wrap">
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'number', interval: 10 })}>{pivotText(locale, 'by10')}</Button>
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'number', interval: 100 })}>{pivotText(locale, 'by100')}</Button>
-          <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button>
-        </Inline>
-      </Stack>
-    );
+    const numeric = current?.kind === 'number' ? current : undefined;
+    const [interval, setInterval] = useState(numeric ? String(numeric.interval) : '10');
+    const [start, setStart] = useState(numeric?.start === undefined ? '' : String(numeric.start));
+    const [end, setEnd] = useState(numeric?.end === undefined ? '' : String(numeric.end));
+    const apply = () => {
+      const parsedInterval = Number(interval);
+      const parsedStart = start === '' ? undefined : Number(start);
+      const parsedEnd = end === '' ? undefined : Number(end);
+      if (!Number.isFinite(parsedInterval) || parsedInterval <= 0 || (parsedStart !== undefined && !Number.isFinite(parsedStart)) || (parsedEnd !== undefined && !Number.isFinite(parsedEnd))) return;
+      onGroup(field.fieldId, { kind: 'number', interval: parsedInterval, ...(parsedStart === undefined ? {} : { start: parsedStart }), ...(parsedEnd === undefined ? {} : { end: parsedEnd }) });
+    };
+    return <Stack gap="xs" className="border-t border-slate-100 pt-1">
+      <Text size="xs" weight="semibold">{pivotText(locale, 'groupNumbers')}</Text>
+      <Inline gap="xs"><TextInput type="number" aria-label={pivotText(locale, 'groupStart')} placeholder={pivotText(locale, 'groupStart')} value={start} onChange={(event) => setStart(event.target.value)} /><TextInput type="number" aria-label={pivotText(locale, 'groupEnd')} placeholder={pivotText(locale, 'groupEnd')} value={end} onChange={(event) => setEnd(event.target.value)} /></Inline>
+      <TextInput type="number" aria-label={pivotText(locale, 'groupInterval')} placeholder={pivotText(locale, 'groupInterval')} value={interval} onChange={(event) => setInterval(event.target.value)} />
+      <Inline gap="xs"><Button size="xs" variant="soft" onClick={apply}>{pivotText(locale, 'applyGroup')}</Button><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button></Inline>
+    </Stack>;
   }
   const values = (field.values ?? []).map(keyFor);
-  return values.length > 0
-    ? <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'manual', groups: [{ groupId: `group:${field.fieldId}:all`, name: pivotText(locale, 'groupOne'), items: values }] })}>{pivotText(locale, 'groupAll')}</Button>
-    : null;
+  const manual = current?.kind === 'manual' ? current : undefined;
+  const [selected, setSelected] = useState<PivotMemberKey[]>([]);
+  const [name, setName] = useState(pivotText(locale, 'groupOne'));
+  if (!values.length) return null;
+  const create = () => {
+    if (selected.length < 2) return;
+    const selectedSet = new Set(selected.map(pivotMemberKey));
+    const retained = (manual?.groups ?? []).map((group) => ({ ...group, items: group.items.filter((item) => !selectedSet.has(pivotMemberKey(item))) })).filter((group) => group.items.length > 0);
+    const groupId = `group:${field.fieldId}:${Date.now().toString(36)}`;
+    onGroup(field.fieldId, { kind: 'manual', groups: [...retained, { groupId, name: name.trim() || pivotText(locale, 'groupOne'), items: selected }] });
+    setSelected([]);
+  };
+  return <Stack gap="xs" className="border-t border-slate-100 pt-1">
+    <Text size="xs" weight="semibold">{pivotText(locale, 'manualGrouping')}</Text>
+    <Text size="xs" tone="muted">{pivotText(locale, 'selectItemsToGroup')}</Text>
+    <Stack gap="xs" className="max-h-32 overflow-auto">{values.map((item) => <CheckToggle key={pivotMemberKey(item)} label={String(item.value ?? '')} checked={selected.some((candidate) => pivotMemberKeyEquals(candidate, item))} onChange={(event) => setSelected((currentItems) => event.target.checked ? [...currentItems, item] : currentItems.filter((candidate) => !pivotMemberKeyEquals(candidate, item)))} />)}</Stack>
+    <TextInput aria-label={pivotText(locale, 'groupName')} value={name} onChange={(event) => setName(event.target.value)} />
+    <Button size="xs" variant="soft" disabled={selected.length < 2} onClick={create}>{pivotText(locale, 'createGroup')}</Button>
+    {manual?.groups.map((group) => <Inline key={group.groupId} gap="xs"><Text size="xs" className="min-w-0 flex-1 truncate">{group.name}</Text><Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, { kind: 'manual', groups: manual.groups.filter((candidate) => candidate.groupId !== group.groupId) })}>{pivotText(locale, 'ungroup')}</Button></Inline>)}
+    {manual ? <Button size="xs" variant="ghost" onClick={() => onGroup(field.fieldId, undefined)}>{pivotText(locale, 'clearGroup')}</Button> : null}
+  </Stack>;
+}
+
+function groupOptions(locale: Locale, field: AreaItem, onGroup?: PivotFieldAreaProps['onGroup']): ReactNode {
+  return onGroup ? <GroupingOptions field={field} locale={locale} onGroup={onGroup} /> : null;
 }
 
 const subtotalFunctions: PivotSubtotalDefinition['mode'][] = ['automatic', 'none', 'custom'];

@@ -394,8 +394,11 @@ function validatePivotCollation(value: unknown): void {
 function validatePivotGroup(value: unknown): void {
   const group = requireRecord(value, 'Pivot group');
   if (group.kind === 'date') {
-    validateExactKeys(group, ['kind', 'unit', 'startOfWeek', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot date group');
+    validateExactKeys(group, ['kind', 'unit', 'units', 'startOfWeek', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot date group');
+    const units = group.units === undefined ? [group.unit] : group.units;
     if (!['year', 'quarter', 'month', 'week', 'day'].includes(String(group.unit))
+      || !Array.isArray(units) || units.length === 0 || new Set(units).size !== units.length || !units.every((unit) => ['year', 'quarter', 'month', 'week', 'day'].includes(String(unit)))
+      || !units.includes(String(group.unit) as typeof group.unit)
       || (group.startOfWeek !== undefined && (!Number.isInteger(group.startOfWeek) || Number(group.startOfWeek) < 0 || Number(group.startOfWeek) > 6))
       || (group.start !== undefined && !['string', 'number'].includes(typeof group.start))
       || (group.end !== undefined && !['string', 'number'].includes(typeof group.end))

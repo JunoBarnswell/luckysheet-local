@@ -284,6 +284,8 @@ test('Pivot protocol preserves typed formula-error members and rejects unknown c
     styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
     displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: true, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false },
   } });
+  validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'quarter', 'month'], startOfWeek: 1 } }] } });
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'year'] } }] } }), /date group is invalid/);
   assert.throws(() => validatePivotDefinition({ ...base, presentation: {
     styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
     displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: true, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false, unsupported: true },

@@ -971,8 +971,9 @@ function applyCanonicalPivotGroups(cache: NativePivotCacheDefinition, pivot: Piv
 
 function buildNativeFieldGroup(group: PivotGroup, base: number, sharedItems: NativePivotScalar[]): NativePivotFieldGroup {
   if (group.kind === 'date') {
+    if (group.units && group.units.length > 1) throw new Error('Native Pivot export cannot represent multi-level date grouping without a native hierarchy');
     const range: NativePivotFieldRange = {
-      groupBy: `${group.unit}s`,
+      groupBy: `${group.units?.[0] ?? group.unit}s`,
       ...(group.start === undefined ? {} : { start: group.start }),
       ...(group.end === undefined ? {} : { end: group.end }),
       ...(group.autoStart === undefined ? {} : { autoStart: group.autoStart }),
