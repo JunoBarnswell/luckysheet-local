@@ -69,7 +69,7 @@ export function EditorDialogHost({
         open={state.dialogs.active === 'paste-special'}
         locale={locale}
         onClose={session.closePasteSpecial.bind(session)}
-        onPaste={(mode) => session.pasteSpecial(mode)}
+        onPaste={(spec) => session.pasteSpecial(spec)}
       />
       <FormatCellsDialog
         open={state.dialogs.active === 'format-cells'}

@@ -13,7 +13,7 @@ import type {
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
-import { copyRangeToClipboardData, shiftFormula, type ClipboardPayload } from './clipboard';
+import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { parseFormula } from '@react-sheets/formula-engine';
 
@@ -696,7 +696,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targetOrigin: params.targetOrigin,
         clipboard,
         transfer: 'move',
-        mode: 'all',
+        spec: createPasteSpecialSpec(),
       });
     },
   });

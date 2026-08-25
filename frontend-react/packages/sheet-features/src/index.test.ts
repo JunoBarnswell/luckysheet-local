@@ -10,6 +10,7 @@ import {
   shiftFormula,
   FormulaRelocationError,
   copyRangeToClipboardData,
+  createPasteSpecialSpec,
 } from './index';
 
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
@@ -159,7 +160,7 @@ test('clipboard: TSV format, parse, and formula shifting', () => {
   assert.throws(() => shiftFormula('=A1+', 1, 1), FormulaRelocationError);
 });
 
-test('clipboard payload carries provenance and paste modes preserve their contracts', () => {
+test('clipboard payload carries provenance and PasteSpecialSpec preserves its contracts', () => {
   const workbook = new WorkbookModel('unit-paste-modes', 'Paste Modes');
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
@@ -182,7 +183,7 @@ test('clipboard payload carries provenance and paste modes preserve their contra
     targetOrigin: { row: 0, column: 1 },
     clipboard: payload,
     transfer: 'copy',
-    mode: 'values',
+    spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
   });
   assert.deepEqual(sheet.cells.get(0, 1), { value: 12 });
 
@@ -192,7 +193,7 @@ test('clipboard payload carries provenance and paste modes preserve their contra
     targetOrigin: { row: 0, column: 1 },
     clipboard: payload,
     transfer: 'copy',
-    mode: 'formats',
+    spec: createPasteSpecialSpec({ content: 'none', formatting: 'source-formatting', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
   });
   assert.equal(sheet.cells.get(0, 1)?.value, 'keep');
   assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
@@ -207,11 +208,80 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
     values: [],
     transfer: 'copy' as const,
+    rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
   assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
   assert.equal(parseClipboardPayload(payload)[0]?.[1]?.formula, '=A1+1');
   assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
+});
+
+test('paste special copies range-owned metadata atomically and restores it once', () => {
+  const workbook = new WorkbookModel('unit-paste-metadata', 'Paste Metadata');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const source = workbook.getSheet('sheet-1');
+  source.cells.set(0, 0, { value: 'source', style: { bold: true } });
+  source.columnWidthsPx[0] = 144;
+  source.notes.set('0:0', { id: 'n1', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true });
+  source.hyperlinks.set('0:0', { id: 'h1', target: { kind: 'url', url: 'https://example.com' } });
+  source.commentThreads.push({ id: 'c1', sheetId: source.id, row: 0, column: 0, author: 'u', text: 'comment', createdAt: '2026-01-01', replies: [] });
+  source.dataValidations.push({ id: 'dv1', sheetId: source.id, ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'whole', formula1: '1' });
+  source.conditionalFormats.push({ id: 'cf1', sheetId: source.id, ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'highlight', operator: 'equal', value1: 'source' });
+  const payload = copyRangeToClipboardData(workbook, { sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  const target = { sheetId: source.id, row: 2, column: 2 };
+  const result = runtime.execute('sheet.range.paste', {
+    sheetId: source.id,
+    targetOrigin: { row: target.row, column: target.column },
+    clipboard: payload,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ metadata: { commentsNotes: true, validation: true, columnWidths: true, conditionalFormats: true, hyperlinks: true } }),
+  });
+  assert.equal(result.mutationCount, 1);
+  assert.equal(source.cells.get(2, 2)?.value, 'source');
+  assert.equal(source.notes.get('2:2')?.text, 'note');
+  assert.equal(source.hyperlinks.get('2:2')?.target.kind, 'url');
+  assert.equal(source.commentThreads.some((entry) => entry.row === 2 && entry.column === 2), true);
+  assert.equal(source.dataValidations.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), true);
+  assert.equal(source.conditionalFormats.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), true);
+  assert.equal(source.columnWidthsPx[2], 144);
+  runtime.undo();
+  assert.equal(source.cells.get(2, 2), undefined);
+  assert.equal(source.notes.has('2:2'), false);
+  assert.equal(source.hyperlinks.has('2:2'), false);
+  assert.equal(source.commentThreads.some((entry) => entry.row === 2 && entry.column === 2), false);
+  assert.equal(source.dataValidations.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), false);
+  assert.equal(source.columnWidthsPx[2], undefined);
+  runtime.redo();
+  assert.equal(source.cells.get(2, 2)?.value, 'source');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+});
+
+test('paste special arithmetic, skip blanks and protected rejection are fail-closed', () => {
+  const workbook = new WorkbookModel('unit-paste-arithmetic', 'Paste Arithmetic');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 2 });
+  sheet.cells.set(1, 0, { value: 3 });
+  const payload = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 1, column: 0 },
+    clipboard: payload,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', operation: 'add', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
+  });
+  assert.equal(sheet.cells.get(1, 0)?.value, 5);
+  sheet.cells.set(2, 0, { value: 'keep' });
+  const blankPayload = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 0, endColumn: 0 });
+  runtime.execute('sheet.range.paste', { sheetId: sheet.id, targetOrigin: { row: 2, column: 0 }, clipboard: blankPayload, transfer: 'copy', spec: createPasteSpecialSpec({ skipBlanks: true }) });
+  assert.equal(sheet.cells.get(2, 0)?.value, 'keep');
+  sheet.protectionRules.push({ id: 'locked', scope: 'range', sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 }, locked: true, allow: {} });
+  assert.throws(() => runtime.execute('sheet.range.paste', { sheetId: sheet.id, targetOrigin: { row: 4, column: 0 }, clipboard: payload, transfer: 'copy', spec: createPasteSpecialSpec() }), /protected/);
+  assert.equal(sheet.cells.get(4, 0), undefined);
+  runtime.execute('sheet.range.paste', { sheetId: sheet.id, targetOrigin: { row: 5, column: 0 }, clipboard: payload, transfer: 'copy', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', link: true, metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) });
+  assert.equal(sheet.cells.get(5, 0)?.formula, "='Sheet1'!A1");
 });
 
 test('sheet.cell.commitText is the single raw-text input path', () => {
@@ -314,6 +384,7 @@ test('cut paste is one cross-sheet transaction and preserves formula references'
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
     transfer: 'move',
+    spec: createPasteSpecialSpec(),
   });
   assert.equal(result.mutationCount, 1);
   assert.equal(source.cells.get(1, 1), undefined);
@@ -345,6 +416,7 @@ test('copy paste shifts relative references while preserving mixed and absolute 
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
     transfer: 'copy',
+    spec: createPasteSpecialSpec(),
   });
   assert.equal(sheet.cells.get(4, 4)?.formula, '=D4+$B$1+F$1+$D4');
   assert.equal(sheet.cells.get(1, 1)?.formula, '=A1+$B$1+C$1+$D1');
@@ -373,7 +445,7 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
       targetOrigin: { row: 1, column: 1 },
       clipboard: payload,
       transfer: 'copy',
-      mode: 'all',
+      spec: createPasteSpecialSpec(),
       values: [[{ value: null, formula: '=A1' }]],
       startRow: 1,
       startColumn: 1,
@@ -405,6 +477,7 @@ test('copy paste rejects a malformed formula before creating a mutation', () => 
     targetOrigin: { row: 1, column: 1 },
     clipboard: payload,
     transfer: 'copy',
+    spec: createPasteSpecialSpec(),
   }), FormulaRelocationError);
   assert.equal(sheet.cells.get(1, 1)?.value, 'unchanged');
   assert.equal(runtime.getHistoryDepth().undo, 0);
