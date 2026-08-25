@@ -35,6 +35,7 @@ export type SidebarPanelId =
   | 'formulaAudit'
   | 'definedNames'
   | 'shape'
+  | 'textbox'
   | 'formControl'
   | 'picture'
   | 'sparkline'

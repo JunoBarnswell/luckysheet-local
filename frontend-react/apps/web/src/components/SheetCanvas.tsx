@@ -8,6 +8,7 @@ import {
   StatePanel,
   Button,
   ScrollBar,
+  Textarea,
 } from "@react-sheets/ui-system";
 import {
   CanvasRenderSurface,
@@ -67,6 +68,8 @@ export interface SheetCanvasProps {
   sparklines?: SparklineModel[];
   tables?: readonly WorkbookTableModel[];
   selectedFloatingId: string | null;
+  textBoxPlacementActive?: boolean;
+  textBoxEdit?: { sheetId: string; drawingId: string; draftText: string } | null;
   showFormulas?: boolean;
   /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
@@ -97,6 +100,12 @@ export interface SheetCanvasProps {
   onFloatingSelect: (hit: FloatingHit | null, mode?: 'replace' | 'add' | 'toggle') => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onFloatingRemove: (drawingId: string) => void;
+  onTextBoxPlacementCommit?: (bounds: Rect) => void;
+  onCancelTextBoxPlacement?: () => void;
+  onBeginTextBoxEdit?: (drawingId: string, initialText?: string) => void;
+  onTextBoxDraftChange?: (value: string) => void;
+  onCommitTextBoxEdit?: () => void;
+  onCancelTextBoxEdit?: () => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClearSelection: (mode: "contents" | "formats") => void;
   /** Format painter is a transient session interaction, never canvas-local state. */
@@ -318,6 +327,14 @@ export function SheetCanvas({
   onFloatingSelect,
   onFloatingMove,
   onFloatingRemove,
+  textBoxPlacementActive = false,
+  textBoxEdit = null,
+  onTextBoxPlacementCommit,
+  onCancelTextBoxPlacement,
+  onBeginTextBoxEdit,
+  onTextBoxDraftChange,
+  onCommitTextBoxEdit,
+  onCancelTextBoxEdit,
   onCommand,
   onClearSelection,
   formatPainterActive = false,
@@ -484,6 +501,7 @@ export function SheetCanvas({
     containerRef,
     contextRangeRef,
     drawings,
+    drawingPayloads,
     drawingSelectionMode,
     editingCell,
     engineRef,
@@ -502,6 +520,9 @@ export function SheetCanvas({
     onExtendSelection,
     onFillRange,
     onFloatingMove,
+    onTextBoxPlacementCommit: (bounds) => onTextBoxPlacementCommit?.(bounds),
+    onCancelTextBoxPlacement: () => onCancelTextBoxPlacement?.(),
+    onBeginTextBoxEdit: (drawingId, initialText) => onBeginTextBoxEdit?.(drawingId, initialText),
     onFloatingSelect,
     onToggleCheckbox: (ranges) => onCommand({ commandId: 'checkbox.toggle', params: { sheetId, ranges } }),
     onFormulaDraftChange,
@@ -532,6 +553,7 @@ export function SheetCanvas({
     sheetId,
     skeleton,
     zoom,
+    textBoxPlacementActive: Boolean(textBoxPlacementActive),
   });
 
   useEffect(() => {
@@ -605,6 +627,11 @@ export function SheetCanvas({
       ];
     }
     const getContextRange = () => contextRangeRef.current ?? selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+    const selectedDrawing = selectedFloatingId ? drawings.find((drawing) => drawing.id === selectedFloatingId) : undefined;
+    const selectedPayload = selectedDrawing ? drawingPayloads.get(selectedDrawing.payloadId) : undefined;
+    if (selectedPayload?.kind === 'textbox' && selectedDrawing) {
+      return [{ id: 'textbox-edit', label: 'Edit Text', onSelect: () => onBeginTextBoxEdit?.(selectedDrawing.id) }];
+    }
     if (contextHit?.kind === 'column-header') {
       const columns = columnDimensions.selectedColumns();
       return [
@@ -644,7 +671,7 @@ export function SheetCanvas({
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [columnDimensions, contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
+  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selectedFloatingId, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -661,7 +688,7 @@ export function SheetCanvas({
     if (floatingHit) {
       // Context-menu interaction selects a control/object; activation is only
       // allowed on an unmodified primary pointer click.
-      onFloatingSelect(floatingHit, 'add');
+      onFloatingSelect(floatingHit, 'replace');
       setContextHit(null);
       setContextMenu({ x: event.clientX, y: event.clientY, open: true });
       return;
@@ -779,6 +806,16 @@ export function SheetCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingCell, editingPivotContextHit, skeleton, scrollTick]);
+
+  const textBoxEditorRect = useMemo(() => {
+    void scrollTick;
+    if (!textBoxEdit) return null;
+    const engine = engineRef.current;
+    const drawing = drawings.find((entry) => entry.id === textBoxEdit.drawingId && entry.sheetId === textBoxEdit.sheetId);
+    if (!engine || !drawing || drawing.kind !== 'textbox') return null;
+    const topLeft = engine.contentToScreen({ x: drawing.transform.x, y: drawing.transform.y });
+    return { x: topLeft.x, y: topLeft.y, width: drawing.transform.width, height: drawing.transform.height, rotation: drawing.transform.rotation ?? 0 };
+  }, [drawings, scrollTick, textBoxEdit]);
 
   if (phase === "empty") {
     return (
@@ -902,6 +939,26 @@ export function SheetCanvas({
                 onChange={onFormulaDraftChange}
                 onCommit={onCommitEdit}
                 onInsertRef={onInsertRef}
+              />
+            </Box>
+          ) : null}
+
+          {textBoxEditorRect && textBoxEdit ? (
+            <Box
+              className="absolute z-30 overflow-hidden rounded border-2 border-blue-500 bg-white/95 shadow-lg"
+              style={{ left: textBoxEditorRect.x, top: textBoxEditorRect.y, width: textBoxEditorRect.width, height: textBoxEditorRect.height, transform: textBoxEditorRect.rotation ? `rotate(${textBoxEditorRect.rotation}deg)` : undefined }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <Textarea
+                aria-label="Text box editor"
+                autoFocus
+                value={textBoxEdit.draftText}
+                onChange={(event) => onTextBoxDraftChange?.(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') { event.preventDefault(); onCancelTextBoxEdit?.(); }
+                  else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); onCommitTextBoxEdit?.(); }
+                }}
+                className="h-full resize-none rounded-none border-0 bg-transparent p-2 text-sm shadow-none focus:border-0 focus:ring-0"
               />
             </Box>
           ) : null}

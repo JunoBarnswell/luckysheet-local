@@ -189,11 +189,48 @@ export interface ShapeDrawingPayload {
   fontSize?: number;
 }
 
+export type TextBoxHorizontalAlignment = 'left' | 'center' | 'right';
+export type TextBoxVerticalAlignment = 'top' | 'middle' | 'bottom';
+export type TextBoxTextDirection = 'horizontal' | 'vertical';
+export type TextBoxAutofit = 'none' | 'shrink-text' | 'resize-shape';
+
+/** Canonical OOXML text-frame semantics shared by rendering, commands and export. */
+export interface TextBoxTextFrame {
+  fontFamily: string;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  textColor: string;
+  horizontalAlignment: TextBoxHorizontalAlignment;
+  verticalAlignment: TextBoxVerticalAlignment;
+  direction: TextBoxTextDirection;
+  margin: { top: number; right: number; bottom: number; left: number };
+  wrap: boolean;
+  autofit: TextBoxAutofit;
+}
+
+export function createDefaultTextBoxTextFrame(): TextBoxTextFrame {
+  return {
+    fontFamily: 'Inter',
+    fontSize: 14,
+    bold: false,
+    italic: false,
+    underline: false,
+    textColor: '#1f2937',
+    horizontalAlignment: 'left',
+    verticalAlignment: 'top',
+    direction: 'horizontal',
+    margin: { top: 8, right: 8, bottom: 8, left: 8 },
+    wrap: true,
+    autofit: 'none',
+  };
+}
+
 export interface TextBoxDrawingPayload {
   kind: 'textbox';
   text: string;
-  textColor?: string;
-  fontSize?: number;
+  textFrame: TextBoxTextFrame;
 }
 
 export type DataChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';

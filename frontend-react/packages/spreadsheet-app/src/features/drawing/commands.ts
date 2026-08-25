@@ -6,6 +6,8 @@ import type {
   ImageCrop,
   ImageDrawingPayload,
   ImageEffects,
+  TextBoxDrawingPayload,
+  TextBoxTextFrame,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import {
@@ -78,6 +80,12 @@ export interface DrawingPayloadUpdateParams {
   payloadId: string;
   before: DrawingPayload;
   after: DrawingPayload;
+}
+
+export interface DrawingTextBoxUpdateParams {
+  sheetId: string;
+  drawingId: string;
+  payload: TextBoxDrawingPayload;
 }
 
 export interface DrawingZOrderParams {
@@ -164,8 +172,32 @@ function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (!objectParams(value)) return false;
   if (value.kind === 'image') return isImagePayload(value);
   if (value.kind === 'form-control') return isFormControlDrawingPayload(value);
-  if (['shape', 'chart', 'data-chart', 'camera', 'textbox'].includes(String(value.kind))) return true;
+  if (value.kind === 'textbox') return isTextBoxPayload(value);
+  if (['shape', 'chart', 'data-chart', 'camera'].includes(String(value.kind))) return true;
   return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
+}
+
+function isTextBoxTextFrame(value: unknown): value is TextBoxTextFrame {
+  if (!objectParams(value)) return false;
+  const margin = value.margin;
+  return typeof value.fontFamily === 'string' && value.fontFamily.length > 0
+    && isFiniteNumber(value.fontSize) && value.fontSize > 0
+    && typeof value.bold === 'boolean' && typeof value.italic === 'boolean' && typeof value.underline === 'boolean'
+    && typeof value.textColor === 'string' && value.textColor.length > 0
+    && ['left', 'center', 'right'].includes(String(value.horizontalAlignment))
+    && ['top', 'middle', 'bottom'].includes(String(value.verticalAlignment))
+    && ['horizontal', 'vertical'].includes(String(value.direction))
+    && objectParams(margin)
+    && isFiniteNumber(margin.top) && margin.top >= 0
+    && isFiniteNumber(margin.right) && margin.right >= 0
+    && isFiniteNumber(margin.bottom) && margin.bottom >= 0
+    && isFiniteNumber(margin.left) && margin.left >= 0
+    && typeof value.wrap === 'boolean'
+    && ['none', 'shrink-text', 'resize-shape'].includes(String(value.autofit));
+}
+
+function isTextBoxPayload(value: unknown): value is TextBoxDrawingPayload {
+  return objectParams(value) && value.kind === 'textbox' && typeof value.text === 'string' && isTextBoxTextFrame(value.textFrame);
 }
 
 function isDrawing(value: unknown): value is DrawingObject {
@@ -219,6 +251,12 @@ function isPayloadUpdateParams(value: unknown): value is DrawingPayloadUpdatePar
   if (!hasSheetId(value) || !hasPayloadId(value) || !objectParams(value)) return false;
   const params = value as Record<string, unknown>;
   return isDrawingPayload(params.before) && isDrawingPayload(params.after);
+}
+
+function isTextBoxUpdateParams(value: unknown): value is DrawingTextBoxUpdateParams {
+  if (!hasSheetId(value) || !hasDrawingId(value) || !objectParams(value)) return false;
+  const params = value as Record<string, unknown>;
+  return isTextBoxPayload(params.payload);
 }
 
 function isZOrderParams(value: unknown): value is DrawingZOrderParams {
@@ -604,6 +642,33 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     },
   });
   commandIds.push('drawing.payload.update');
+
+  runtime.registry.registerCommand<DrawingTextBoxUpdateParams>({
+    id: 'drawing.textbox.update',
+    execute: (params, context) => {
+      if (!isTextBoxUpdateParams(params)) throw new Error(`Invalid textbox update payload`);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const drawing = findDrawing(sheet, params.drawingId);
+      if (drawing.kind !== 'textbox') throw new Error(`Drawing is not a textbox: ${params.drawingId}`);
+      const current = sheet.drawingPayloads.get(drawing.payloadId);
+      if (!current || current.kind !== 'textbox') throw new Error(`Missing textbox payload: ${drawing.payloadId}`);
+      isDrawingPairValid(drawing, params.payload);
+      const affectedRanges = sheetRange(params.sheetId);
+      const payloadId = drawing.payloadId;
+      const before = structuredClone(current);
+      context.applyMutation({
+        id: 'drawing.payload.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, payloadId, before, after: structuredClone(params.payload) },
+        affectedRanges,
+        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId, before: structuredClone(params.payload), after: before }, affectedRanges }],
+        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId, before, after: structuredClone(params.payload) }),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('drawing.textbox.update');
 
   runtime.registry.registerCommand<DrawingZOrderParams>({
     id: 'drawing.zorder',

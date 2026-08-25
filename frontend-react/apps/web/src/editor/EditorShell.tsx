@@ -166,6 +166,8 @@ export function EditorShell({
                 zoom={state.zoom}
                 peers={state.peers}
                 selectedFloatingId={state.selectedFloatingId}
+                textBoxPlacementActive={state.textBoxPlacement}
+                textBoxEdit={state.textBoxEdit}
                 showFormulas={state.formulaAudit.showFormulas}
                 onPivotContextHit={(hit) => {
                   const pivotId = hit?.pivot?.pivotId ?? hit?.objectId;
@@ -225,6 +227,12 @@ export function EditorShell({
                 }}
                 onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({ commandId: "drawing.move", params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } } })}
                 onFloatingRemove={(drawingId) => dispatchCommand({ commandId: "drawing.remove", params: { sheetId: state.activeSheetId, drawingId } })}
+                onTextBoxPlacementCommit={(bounds) => session.placeTextBox(bounds)}
+                onCancelTextBoxPlacement={() => session.cancelTextBoxPlacement()}
+                onBeginTextBoxEdit={(drawingId, initialText) => session.beginTextBoxEdit(drawingId, initialText)}
+                onTextBoxDraftChange={(value) => session.setTextBoxDraft(value)}
+                onCommitTextBoxEdit={() => session.commitTextBoxEdit()}
+                onCancelTextBoxEdit={() => session.cancelTextBoxEdit()}
                 onCommand={dispatchCommand}
                 onClearSelection={(mode) => session.clearSelection(mode)}
                 formatPainterActive={state.formatPainter !== null}

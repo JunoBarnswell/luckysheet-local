@@ -229,6 +229,11 @@ export type {
   ImageEffects,
   ShapeDrawingPayload,
   TextBoxDrawingPayload,
+  TextBoxTextFrame,
+  TextBoxHorizontalAlignment,
+  TextBoxVerticalAlignment,
+  TextBoxTextDirection,
+  TextBoxAutofit,
   ChartDrawingPayload,
   ChartSeriesType,
   ChartAxisModel,
@@ -282,6 +287,7 @@ export type {
   CellShiftSpec,
   StructuralTransformParams,
 } from './domain';
+export { createDefaultTextBoxTextFrame } from './domain';
 export {
   createEmptySelection,
   isFormulaError,

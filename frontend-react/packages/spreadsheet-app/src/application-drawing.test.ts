@@ -5,6 +5,30 @@ import { WorkbookSession } from './workbook-session';
 import { hydrateRuntime } from './runtime';
 
 describe('WorkbookSession drawing integration', () => {
+  it('places a text box through the placement session and commits one text-frame mutation', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.insertTextBox();
+    assert.equal(app.getUiSnapshot().textBoxPlacement, true);
+    assert.equal(app['runtime'].model.getSheet(sheetId).drawings.filter((drawing) => drawing.kind === 'textbox').length, 0);
+    app.placeTextBox({ x: 40, y: 50, width: 180, height: 60 });
+    let snapshot = app.getUiSnapshot();
+    const drawing = app['runtime'].model.getSheet(sheetId).drawings.find((entry) => entry.kind === 'textbox');
+    assert.ok(drawing);
+    assert.equal(snapshot.textBoxPlacement, false);
+    assert.deepEqual(snapshot.textBoxEdit, { sheetId, drawingId: drawing.id, draftText: '' });
+    app.setTextBoxDraft('Canonical text');
+    app.commitTextBoxEdit();
+    snapshot = app.getUiSnapshot();
+    const payload = app['runtime'].model.getSheet(sheetId).drawingPayloads.get(drawing.payloadId);
+    assert.equal(payload?.kind === 'textbox' ? payload.text : '', 'Canonical text');
+    assert.equal(snapshot.textBoxEdit, null);
+    assert.equal(snapshot.historyEntries.at(-1)?.redo[0]?.id, 'drawing.payload.update');
+    app.undo();
+    assert.equal((app['runtime'].model.getSheet(sheetId).drawingPayloads.get(drawing.payloadId) as { text?: string } | undefined)?.text, '');
+    app.redo();
+    assert.equal((app['runtime'].model.getSheet(sheetId).drawingPayloads.get(drawing.payloadId) as { text?: string } | undefined)?.text, 'Canonical text');
+  });
   it('addShape routes through the canonical drawing aggregate', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

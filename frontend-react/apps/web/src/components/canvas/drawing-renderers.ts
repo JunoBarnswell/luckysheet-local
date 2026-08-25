@@ -146,11 +146,29 @@ function drawCanonicalShapeOnCanvas(options: {
   if (rotation) context.rotate((rotation * Math.PI) / 180);
   context.translate(-width / 2, -height / 2);
   if (payload.kind === "textbox") {
-    context.fillStyle = payload.textColor ?? "#1e293b";
-    context.font = `${payload.fontSize ?? 13}px Inter, sans-serif`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(payload.text, width / 2, height / 2, Math.max(10, width - 8));
+    const frame = payload.textFrame;
+    context.fillStyle = frame.textColor;
+    context.font = `${frame.italic ? "italic " : ""}${frame.bold ? "bold " : ""}${frame.fontSize}px ${frame.fontFamily}, sans-serif`;
+    context.textAlign = frame.horizontalAlignment === "center" ? "center" : frame.horizontalAlignment === "right" ? "right" : "left";
+    context.textBaseline = frame.verticalAlignment === "middle" ? "middle" : frame.verticalAlignment === "bottom" ? "bottom" : "top";
+    const margin = frame.margin;
+    const textX = frame.horizontalAlignment === "center" ? width / 2 : frame.horizontalAlignment === "right" ? width - margin.right : margin.left;
+    const textY = frame.verticalAlignment === "middle" ? height / 2 : frame.verticalAlignment === "bottom" ? height - margin.bottom : margin.top;
+    const rawLines = frame.wrap ? payload.text.split(/\r?\n/) : [payload.text.replace(/[\r\n]+/g, " ")];
+    const maxWidth = Math.max(10, width - margin.left - margin.right);
+    const lines: string[] = [];
+    for (const rawLine of rawLines) {
+      if (!frame.wrap || rawLine.length === 0) { lines.push(rawLine); continue; }
+      let line = "";
+      for (const word of rawLine.split(/\s+/)) {
+        const candidate = line ? `${line} ${word}` : word;
+        if (line && context.measureText(candidate).width > maxWidth) { lines.push(line); line = word; }
+        else line = candidate;
+      }
+      lines.push(line);
+    }
+    const lineHeight = frame.fontSize * 1.2;
+    lines.forEach((line, index) => context.fillText(line, textX, textY + (frame.verticalAlignment === "bottom" ? -((lines.length - 1 - index) * lineHeight) : index * lineHeight), maxWidth));
     context.restore();
     return;
   }
