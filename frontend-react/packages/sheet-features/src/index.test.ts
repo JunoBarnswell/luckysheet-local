@@ -58,6 +58,126 @@ test('sheet commands: cell.set, range.set, and undo/redo', () => {
   assert.equal(sheet.cells.get(0, 0)?.value, 'Title'); // untouched
 });
 
+test('checkbox editor normalizes supported values atomically and restores exact cells', () => {
+  const workbook = new WorkbookModel('unit-checkbox-editor', 'Checkbox Editor');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: null, style: { bold: true } });
+  sheet.cells.set(0, 1, { value: true });
+  sheet.cells.set(0, 2, { value: false });
+  sheet.cells.set(0, 3, { value: 0 });
+  sheet.cells.set(0, 4, { value: 1 });
+  sheet.cells.set(0, 5, { value: ' TRUE ' });
+  sheet.cells.set(0, 6, { value: 'FALSE' });
+  const before = structuredClone([...Array.from({ length: 7 }, (_, column) => sheet.cells.get(0, column))]);
+
+  runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 6 }],
+    editor: { kind: 'checkbox' },
+  });
+
+  assert.deepEqual(
+    Array.from({ length: 7 }, (_, column) => sheet.cells.get(0, column)?.value),
+    [false, true, false, false, true, true, false],
+  );
+  assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  runtime.undo();
+  assert.deepEqual(Array.from({ length: 7 }, (_, column) => sheet.cells.get(0, column)), before);
+  runtime.redo();
+  assert.equal(sheet.cells.get(0, 4)?.value, true);
+
+  runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 6 }],
+    editor: undefined,
+  });
+  assert.equal(sheet.cells.get(0, 0)?.editor, undefined);
+  assert.equal(sheet.cells.get(0, 0)?.value, false);
+});
+
+test('checkbox editor rejects unsupported and formula values without partial mutation', () => {
+  const workbook = new WorkbookModel('unit-checkbox-reject', 'Checkbox Reject');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(1, 0, { value: 'not-a-boolean' });
+  sheet.cells.set(1, 1, { value: 2 });
+  sheet.cells.set(1, 2, { formula: '=1', value: null });
+  const before = structuredClone([
+    sheet.cells.get(1, 0),
+    sheet.cells.get(1, 1),
+    sheet.cells.get(1, 2),
+  ]);
+
+  assert.throws(() => runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 2 }],
+    editor: { kind: 'checkbox' },
+  }), /Checkbox source value|formula cell/);
+  assert.deepEqual([
+    sheet.cells.get(1, 0),
+    sheet.cells.get(1, 1),
+    sheet.cells.get(1, 2),
+  ], before);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
+test('checkbox.toggle flips canonical ranges as one undoable operation and rejects mixed selections', () => {
+  const workbook = new WorkbookModel('unit-checkbox-toggle', 'Checkbox Toggle');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(2, 0, { value: false, editor: { kind: 'checkbox' } });
+  sheet.cells.set(2, 1, { value: true, editor: { kind: 'checkbox' } });
+  sheet.cells.set(3, 0, { value: true, editor: { kind: 'checkbox' } });
+  sheet.cells.set(3, 1, { value: false, editor: { kind: 'checkbox' } });
+
+  const result = runtime.execute('checkbox.toggle', {
+    sheetId: sheet.id,
+    ranges: [
+      { sheetId: sheet.id, startRow: 2, endRow: 3, startColumn: 0, endColumn: 1 },
+      { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 1, endColumn: 1 },
+    ],
+  });
+  assert.equal(result.mutationCount, 4);
+  assert.deepEqual(
+    Array.from({ length: 4 }, (_, index) => sheet.cells.get(2 + Math.floor(index / 2), index % 2)?.value),
+    [true, false, false, true],
+  );
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  runtime.undo();
+  assert.equal(sheet.cells.get(2, 0)?.value, false);
+  assert.equal(sheet.cells.get(3, 1)?.value, false);
+  runtime.redo();
+  assert.equal(sheet.cells.get(2, 0)?.value, true);
+
+  const before = structuredClone(sheet.cells.get(2, 0));
+  sheet.cells.set(2, 2, { value: 'text' });
+  assert.throws(() => runtime.execute('checkbox.toggle', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 2 }],
+  }), /canonical Boolean checkbox/);
+  assert.deepEqual(sheet.cells.get(2, 0), before);
+});
+
+test('checkbox cell text commits stay Boolean and reject unsupported input', () => {
+  const workbook = new WorkbookModel('unit-checkbox-commit', 'Checkbox Commit');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: false, editor: { kind: 'checkbox' } });
+
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'TRUE' });
+  assert.equal(sheet.cells.get(0, 0)?.value, true);
+  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'maybe' }), /Checkbox source value/);
+  assert.equal(sheet.cells.get(0, 0)?.value, true);
+});
+
 test('TableSheet designer updates the canonical definition and rejects unknown fields', () => {
   const workbook = new WorkbookModel('unit-table-sheet-designer', 'TableSheet Designer');
   const table = {

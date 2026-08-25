@@ -8,6 +8,7 @@ describe('permission policy', () => {
   it('maps review and drawing commands to permission actions', () => {
     assert.equal(resolveCommandAction('comment.add'), 'comment');
     assert.equal(resolveCommandAction('hyperlink.set'), 'edit-cell');
+    assert.equal(resolveCommandAction('checkbox.toggle'), 'edit-cell');
     assert.equal(resolveCommandAction('dataChart.create'), 'drawing');
     assert.equal(resolveCommandAction('ui.panel.open'), 'navigate');
   });

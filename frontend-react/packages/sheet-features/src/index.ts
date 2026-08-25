@@ -28,7 +28,7 @@ import { registerSheetTableCommands } from './sheet-table-commands';
 import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
-import { registerCellTemplateCommands } from './cell-template-commands';
+import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -580,6 +580,11 @@ function restoreCell(
   else sheet.cells.delete(row, column);
 }
 
+function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
+  if (cell?.editor?.kind !== 'checkbox') return;
+  normalizeCheckboxCellValue(cell);
+}
+
 export function registerSheetCommands(runtime: CommandRuntime): void {
   registerEditingCommands(runtime);
   registerDataToolCommands(runtime);
@@ -969,6 +974,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isCellSetMutation(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
+      assertCanonicalCheckboxCell(params.value);
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, { ...params.value });
     },
     metadata: {
@@ -982,6 +988,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'cell.restore',
     handler: (item, context) => {
       if (!isCellRestoreMutation(item.params)) throw new Error('Invalid cell.restore mutation payload');
+      assertCanonicalCheckboxCell(item.params.previous);
       restoreCell(context.workbook, item as MutationInfo<{ row: number; column: number; previous?: CellData }>);
     },
     metadata: {
@@ -1035,6 +1042,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
       const previous = sheet.cells.get(params.row, params.column);
       const next = buildCellFromText(params.text, previous, params.style);
+      if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next);
       // A formula is validated by the FormulaEngine after commit and does not
       // have a scalar value to validate at this boundary. Scalar input must
       // satisfy the target rule before the cell.set mutation is opened.

@@ -89,6 +89,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.style.toggle': 'format',
   'sheet.cellTemplate.apply': 'format',
   'sheet.cellEditor.set': 'format',
+  'checkbox.toggle': 'edit-cell',
   'workbook.cellTemplate.set': 'format',
   'workbook.cellTemplate.remove': 'format',
   'sheet.merge.set': 'format',
