@@ -17,6 +17,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
+import { isDynamicFilterType } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
@@ -2074,6 +2075,9 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
     const custom = children(child(column, 'customFilters'), 'customFilter');
     const customFiltersNode = child(column, 'customFilters');
     const dynamic = child(column, 'dynamicFilter');
+    if (dynamic?.attrs.type && !isDynamicFilterType(dynamic.attrs.type)) {
+      throw new Error(`UNSUPPORTED_FEATURE: dynamic AutoFilter type "${dynamic.attrs.type}" is not supported`);
+    }
     const top10 = child(column, 'top10');
     const color = child(column, 'colorFilter');
     const icon = child(column, 'iconFilter');
@@ -2096,7 +2100,7 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
             ],
           }
           : dynamic?.attrs.type
-            ? { kind: 'dynamic', type: dynamic.attrs.type as import('@react-sheets/core-model').DynamicFilterType, ...(dynamic.attrs.val === undefined ? {} : { value: Number(dynamic.attrs.val) }), ...(dynamic.attrs.maxVal === undefined ? {} : { maxValue: Number(dynamic.attrs.maxVal) }) }
+            ? { kind: 'dynamic', type: dynamic.attrs.type, ...(dynamic.attrs.val === undefined ? {} : { value: Number(dynamic.attrs.val) }), ...(dynamic.attrs.maxVal === undefined ? {} : { maxValue: Number(dynamic.attrs.maxVal) }) }
             : top10
               ? { kind: 'top10', top: top10.attrs.top !== '0', percent: top10.attrs.percent === '1', rank: Number(top10.attrs.rank ?? 10), ...(top10.attrs.filterVal === undefined ? {} : { filterValue: Number(top10.attrs.filterVal) }) }
               : color

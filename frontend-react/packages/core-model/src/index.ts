@@ -424,6 +424,18 @@ export type DynamicFilterType =
   | 'thisQuarter' | 'lastQuarter' | 'nextQuarter'
   | 'thisYear' | 'lastYear' | 'nextYear' | 'yearToDate';
 
+const DYNAMIC_FILTER_TYPES: ReadonlySet<string> = new Set([
+  'today', 'yesterday', 'tomorrow',
+  'thisWeek', 'lastWeek', 'nextWeek',
+  'thisMonth', 'lastMonth', 'nextMonth',
+  'thisQuarter', 'lastQuarter', 'nextQuarter',
+  'thisYear', 'lastYear', 'nextYear', 'yearToDate',
+]);
+
+export function isDynamicFilterType(value: unknown): value is DynamicFilterType {
+  return typeof value === 'string' && DYNAMIC_FILTER_TYPES.has(value);
+}
+
 export type FilterCriterion =
   | { kind: 'values'; values: FilterScalar[]; includeBlank: boolean; dateGroups?: DateGroupItem[] }
   | { kind: 'custom'; join: 'and' | 'or'; conditions: [FilterComparison, FilterComparison?] }
