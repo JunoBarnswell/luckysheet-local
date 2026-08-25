@@ -3,6 +3,7 @@ import type {
   CellEditorConfig,
   CellNote,
   CellData,
+  FilterCellValue,
   CellStyle,
   CellPresentation,
   ConditionalFormatRule,
@@ -60,6 +61,7 @@ import {
   type FilterButtonState,
   type OutlineControl,
 } from '@react-sheets/sheet-features';
+import { resolveFilterCellValue } from '@react-sheets/core-model';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import {
@@ -186,11 +188,12 @@ function formatDisplayValue(
   const spillValue = formula.getSpillValueAt(sheetId, row, column);
   if (spillValue !== undefined) return toFormulaDisplay(spillValue);
   if (!cell) return '';
-  if (cell.value == null) return '';
-  if (typeof cell.value === 'number') {
-    return formatNumberValue(cell.value, cell.numberFormat ?? cell.style?.numberFormat);
+  const resolved = resolveFilterCellValue(cell);
+  if (resolved.value == null) return '';
+  if (typeof resolved.value === 'number') {
+    return formatNumberValue(resolved.value, cell.numberFormat ?? cell.style?.numberFormat);
   }
-  return String(cell.value);
+  return resolved.text;
 }
 
 function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
@@ -252,7 +255,21 @@ export function buildCanvasSheetSnapshot(
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
-  const readFilterCell = (row: number, column: number) => cellResolver.resolve(sheet, row, column)?.cell;
+  const resolveFilterCell = (owner: WorksheetModel, row: number, column: number): FilterCellValue => {
+    const cell = cellResolver.resolve(owner, row, column)?.cell;
+    const spillValue = formula.getSpillValueAt(owner.id, row, column);
+    if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, dateSystem);
+    if (cell?.formula !== undefined) {
+      const result = formula.getCellResult({ sheetId: owner.id, row, column });
+      // A missing calculation result is not permission to read authored
+      // formula text/value.  It is an unresolved filter value until the
+      // FormulaEngine publishes the next result.
+      const evaluated = result ? result.value : cell.formulaValue !== undefined ? cell.formulaValue : null;
+      return resolveFilterCellValue(cell, evaluated, dateSystem);
+    }
+    return resolveFilterCellValue(cell, undefined, dateSystem);
+  };
+  const readFilterCell = (row: number, column: number) => resolveFilterCell(sheet, row, column);
   const filterVisual = createEffectiveFilterVisualResolver(overlays);
   const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
@@ -284,6 +301,7 @@ export function buildCanvasSheetSnapshot(
     const resolved = resolveModelCell(row, column);
     const modelCell = resolved.cell;
     const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
+    const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
     const key = `${row}:${column}`;
     const overlay = overlays.get(key);
     const table = findSheetTableAt(sheet, row, column);
@@ -293,7 +311,7 @@ export function buildCanvasSheetSnapshot(
     );
     const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
     const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
-    const validation = validateDataInput(sheet, row, column, modelCell?.value ?? null);
+    const validation = validateDataInput(sheet, row, column, resolvedFilter.value);
     const thread = sheet.commentThreads.find((entry) => entry.row === row && entry.column === column);
     const note = getCellNote(sheet, row, column) ?? modelCell?.note;
     const comment = thread ? threadToCellComment(thread) : modelCell?.comment;
@@ -311,7 +329,7 @@ export function buildCanvasSheetSnapshot(
       commentText: comment?.text ?? note?.text,
       comment,
       note: note ? structuredClone(note) : undefined,
-      invalid: showInvalid && modelCell?.value != null && !validation.valid,
+      invalid: showInvalid && resolvedFilter.value != null && !validation.valid,
       hyperlink,
       overlay,
     };
@@ -403,7 +421,8 @@ export function buildCanvasSheetSnapshot(
       return filter ? structuredClone(filter) : undefined;
     },
     getFilterCriterion: (column) => resolveActiveAutoFilter(sheet, column)?.columns[column]?.criterion,
-    getFilterColorDomain: (column) => getAutoFilterColorDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
+    getFilterColorDomain: (column) => getAutoFilterColorDomain(sheet, column, readFilterCell, dateSystem, filterVisual)
+      .map(({ target, color }) => ({ target, color })),
     getFilterIconDomain: (column) => getAutoFilterIconDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
     sheetTables: [...sheet.sheetTables],
     tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,

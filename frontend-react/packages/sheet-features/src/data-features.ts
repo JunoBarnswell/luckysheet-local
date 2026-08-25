@@ -1,5 +1,6 @@
 import type {
   CellData,
+  FilterCellValue,
   CellStyle,
   ConditionalFormatRule,
   DataValidationRule,
@@ -12,7 +13,7 @@ import type {
   WorksheetModel,
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
-import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType } from "@react-sheets/core-model";
+import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
@@ -368,21 +369,17 @@ export function createEffectiveFilterVisualResolver(
   return (row, column, cell) => resolveEffectiveFilterVisual(cell, overlays.get(`${row}:${column}`));
 }
 
-function cellText(cell: CellData | undefined): string {
-  const value = cell?.formulaValue ?? cell?.value;
-  if (value == null || typeof value === 'object') return "";
-  return String(value);
+function cellText(resolved: FilterCellValue | undefined): string {
+  return resolved?.text ?? '';
 }
 
-/**
- * The filter domain is built from the evaluated cell result, never from a
- * formula source.  Formula errors intentionally remain outside FilterScalar;
- * they therefore participate as the canonical blank/error bucket instead of
- * leaking an authored formula string into the value menu.
- */
-function resolvedFilterScalar(cell: CellData | undefined): FilterScalar {
-  const value = cell?.formulaValue ?? cell?.value ?? null;
-  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
+function cellStorageText(cell: CellData | undefined): string {
+  return resolveFilterCellValue(cell).text;
+}
+
+/** Formula/spill/data-block results arrive through this typed carrier only. */
+function resolvedFilterScalar(resolved: FilterCellValue | undefined): FilterScalar {
+  return resolved?.value ?? null;
 }
 
 function hasCanonicalDateNumberFormat(cell: CellData | undefined): boolean {
@@ -393,8 +390,9 @@ function hasCanonicalDateNumberFormat(cell: CellData | undefined): boolean {
   return /(^|[^a-z])(?:d{1,4}|m{1,4}|y{2,4}|h{1,2}|s{1,2})(?:[^a-z]|$)/i.test(format);
 }
 
-function canonicalFilterDate(cell: CellData | undefined, dateSystem: FilterDateSystem): import('@react-sheets/formula-engine').CanonicalExcelDate | null {
-  const value = resolvedFilterScalar(cell);
+function canonicalFilterDate(resolved: FilterCellValue | undefined, dateSystem: FilterDateSystem): import('@react-sheets/formula-engine').CanonicalExcelDate | null {
+  const value = resolvedFilterScalar(resolved);
+  const cell = resolved?.cell;
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || !hasCanonicalDateNumberFormat(cell)) return null;
     return canonicalExcelDateFromValue(value, dateSystem);
@@ -403,7 +401,7 @@ function canonicalFilterDate(cell: CellData | undefined, dateSystem: FilterDateS
 }
 
 function numericOf(cell: CellData | undefined): number | undefined {
-  const text = cellText(cell);
+  const text = cellStorageText(cell);
   if (!text) return undefined;
   const cleaned = text.replace(/[$,%\s]/g, "");
   const numeric = Number(cleaned);
@@ -570,7 +568,7 @@ function evaluateHighlight(
   column: number,
   valueCounts: Map<string, number>,
 ): boolean {
-  const text = cellText(cell);
+  const text = cellStorageText(cell);
   const numeric = numericOf(cell);
   const firstValue = rule.value1;
   const firstNumber = typeof firstValue === "number" ? firstValue : Number(firstValue);
@@ -636,7 +634,7 @@ function buildValueCounts(sheet: WorksheetModel, rules: ConditionalFormatRule[])
     for (const range of rule.ranges) {
       for (let r = range.startRow; r <= range.endRow; r++) {
         for (let c = range.startColumn; c <= range.endColumn; c++) {
-          const text = cellText(sheet.cells.get(r, c));
+          const text = cellStorageText(sheet.cells.get(r, c));
           counts.set(text, (counts.get(text) ?? 0) + 1);
         }
       }
@@ -672,7 +670,7 @@ export function normalizeAutoFilterModel(filter: AutoFilterModel): AutoFilterMod
   return { sheetId: filter.sheetId, range, columns, sortState: filter.sortState ? structuredClone(filter.sortState) : undefined, preservedXml: structuredClone(filter.preservedXml) };
 }
 
-export type FilterCellReader = (row: number, column: number) => CellData | undefined;
+export type FilterCellReader = (row: number, column: number) => FilterCellValue | undefined;
 export type FilterDateSystem = '1900' | '1904';
 export interface FilterDateContext { referenceDate: CanonicalExcelDateParts; }
 
@@ -727,7 +725,7 @@ function normalizeDateGroupItem(raw: DateGroupItem): DateGroupItem {
 
 export function computeFilterHiddenRows(
   sheet: WorksheetModel,
-  readCell: FilterCellReader = (row, column) => sheet.cells.get(row, column),
+  readCell: FilterCellReader = (row, column) => resolveFilterCellValue(sheet.cells.get(row, column)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
@@ -754,9 +752,10 @@ export function computeFilterHiddenRows(
       const visible = Object.values(filter.columns).every((entry) => {
         const criterion = entry.criterion;
         if (!criterion) return true;
-        const cell = readCell(row, entry.column);
+        const resolved = readCell(row, entry.column);
+        const cell = resolved?.cell;
         if (criterion.kind === 'top10') return top10Matches.get(entry.column)?.has(row) ?? false;
-        return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
+        return matchesFilterCriterion(resolvedFilterScalar(resolved), cellText(resolved), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
       });
       if (!visible) hidden.add(row);
     }
@@ -772,7 +771,7 @@ export function computeFilterHiddenRows(
 export function getAutoFilterScalarDomain(
   sheet: WorksheetModel,
   column: number,
-  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  readCell: FilterCellReader = (row, currentColumn) => resolveFilterCellValue(sheet.cells.get(row, currentColumn)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
@@ -790,12 +789,14 @@ export function getAutoFilterScalarDomain(
   for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
-      const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
+      const resolved = readCell(row, entry.column);
+      const cell = resolved?.cell;
+      return matchesFilterCriterion(resolvedFilterScalar(resolved), cellText(resolved), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
     });
     if (!otherColumnsMatch) continue;
-    const cell = readCell(row, column);
-    const value = resolvedFilterScalar(cell);
+    const resolved = readCell(row, column);
+    const cell = resolved?.cell;
+    const value = resolvedFilterScalar(resolved);
     values.set(JSON.stringify(value), value);
   }
   return [...values.values()].sort(compareFilterScalars);
@@ -804,7 +805,7 @@ export function getAutoFilterScalarDomain(
 export function getAutoFilterValueDomain(
   sheet: WorksheetModel,
   column: number,
-  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  readCell: FilterCellReader = (row, currentColumn) => resolveFilterCellValue(sheet.cells.get(row, currentColumn)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
@@ -839,7 +840,7 @@ export interface FilterDateDomainEntry {
 export function getAutoFilterDateDomain(
   sheet: WorksheetModel,
   column: number,
-  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  readCell: FilterCellReader = (row, currentColumn) => resolveFilterCellValue(sheet.cells.get(row, currentColumn)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
@@ -857,13 +858,15 @@ export function getAutoFilterDateDomain(
   for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
-      const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
+      const resolved = readCell(row, entry.column);
+      const cell = resolved?.cell;
+      return matchesFilterCriterion(resolvedFilterScalar(resolved), cellText(resolved), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
     });
     if (!otherColumnsMatch) continue;
-    const cell = readCell(row, column);
-    const value = resolvedFilterScalar(cell);
-    const date = canonicalFilterDate(cell, dateSystem);
+    const resolved = readCell(row, column);
+    const cell = resolved?.cell;
+    const value = resolvedFilterScalar(resolved);
+    const date = canonicalFilterDate(resolved, dateSystem);
     if (!date) continue;
     const group = { year: date.year, month: date.month, day: date.day, hour: date.hour, minute: date.minute, second: date.second };
     const key = `${JSON.stringify(value)}|${JSON.stringify(group)}`;
@@ -875,7 +878,7 @@ export function getAutoFilterDateDomain(
 export function getAutoFilterColorDomain(
   sheet: WorksheetModel,
   column: number,
-  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  readCell: FilterCellReader = (row, currentColumn) => resolveFilterCellValue(sheet.cells.get(row, currentColumn)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
 ): Array<{ target: 'cell' | 'font'; color: string; dxfId?: number }> {
@@ -891,7 +894,7 @@ export function getAutoFilterColorDomain(
   const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
   const options = new Map<string, { target: 'cell' | 'font'; color: string; dxfId?: number }>();
   for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
-    const visual = resolveVisual(row, column, readCell(row, column));
+    const visual = resolveVisual(row, column, readCell(row, column)?.cell);
     if (visual.style.background) options.set(`cell:${visual.style.background}:${visual.nativeColor?.dxfId ?? ''}`, { target: 'cell', color: visual.style.background, ...(visual.nativeColor?.target === 'cell' && visual.nativeColor.dxfId !== undefined ? { dxfId: visual.nativeColor.dxfId } : {}) });
     if (visual.style.textColor) options.set(`font:${visual.style.textColor}:${visual.nativeColor?.dxfId ?? ''}`, { target: 'font', color: visual.style.textColor, ...(visual.nativeColor?.target === 'font' && visual.nativeColor.dxfId !== undefined ? { dxfId: visual.nativeColor.dxfId } : {}) });
   }
@@ -901,7 +904,7 @@ export function getAutoFilterColorDomain(
 export function getAutoFilterIconDomain(
   sheet: WorksheetModel,
   column: number,
-  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  readCell: FilterCellReader = (row, currentColumn) => resolveFilterCellValue(sheet.cells.get(row, currentColumn)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
 ): Array<{ iconSet: string; iconId: number }> {
@@ -917,7 +920,7 @@ export function getAutoFilterIconDomain(
   const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
   const options = new Map<string, { iconSet: string; iconId: number }>();
   for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
-    const icon = resolveVisual(row, column, readCell(row, column)).nativeIcon;
+    const icon = resolveVisual(row, column, readCell(row, column)?.cell).nativeIcon;
     if (icon) options.set(`${icon.iconSet}:${icon.iconId}`, { ...icon });
   }
   return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));
@@ -926,7 +929,7 @@ export function getAutoFilterIconDomain(
 export function getAutoFilterDomainDescriptor(
   sheet: WorksheetModel,
   column: number,
-  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  readCell: FilterCellReader = (row, currentColumn) => resolveFilterCellValue(sheet.cells.get(row, currentColumn)),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
@@ -1037,7 +1040,7 @@ function matchesFilterCriterion(
 ): boolean {
   if (criterion.kind === 'values') {
     if (criterion.dateGroups?.length) {
-      const date = canonicalFilterDate(cell, dateSystem);
+      const date = canonicalFilterDate({ cell, value: value as FilterScalar, text }, dateSystem);
       if (date && criterion.dateGroups.some((group) => dateMatchesGroup(date, group))) return true;
     }
     if (text === '' && criterion.includeBlank) return true;
@@ -1045,7 +1048,7 @@ function matchesFilterCriterion(
   }
   if (criterion.kind === 'custom') {
     const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition))
-      .map((condition) => evaluateFilterCondition(text, condition.operator, String(condition.value ?? '')));
+      .map((condition) => evaluateFilterCondition(value as FilterScalar, text, condition.operator, String(condition.value ?? '')));
     return criterion.join === 'and' ? results.every(Boolean) : results.some(Boolean);
   }
   if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem, cell, dateContext);
@@ -1090,15 +1093,16 @@ function buildTop10Matches(
     if (!criterion || criterion.kind !== 'top10') continue;
     const eligible = rows.filter((row) => Object.values(filter.columns).every((other) => {
       if (other.column === entry.column || !other.criterion) return true;
-      const cell = readCell(row, other.column);
+      const resolved = readCell(row, other.column);
+      const cell = resolved?.cell;
       return other.criterion.kind === 'top10'
         ? true
-        : matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell), dateContext);
+        : matchesFilterCriterion(resolvedFilterScalar(resolved), cellText(resolved), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell), dateContext);
     }));
     const numeric = eligible
       .map((row) => {
-        const cell = readCell(row, entry.column);
-        return { row, value: numericFilterValue(resolvedFilterScalar(cell), cellText(cell)) };
+        const resolved = readCell(row, entry.column);
+        return { row, value: numericFilterValue(resolvedFilterScalar(resolved)) };
       })
       .filter((item): item is { row: number; value: number } => item.value !== null)
       .sort((left, right) => criterion.top ? right.value - left.value : left.value - right.value);
@@ -1113,16 +1117,15 @@ function buildTop10Matches(
   return result;
 }
 
-function numericFilterValue(value: unknown, text: string): number | null {
+function numericFilterValue(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const parsed = Number(text.replace(/[$,%\s,]/g, ''));
-  return Number.isFinite(parsed) && text.trim() !== '' ? parsed : null;
+  return null;
 }
 
 function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: FilterDateSystem, cell?: CellData, dateContext?: FilterDateContext): boolean {
   void value;
   void text;
-  const date = canonicalFilterDate(cell, dateSystem);
+  const date = canonicalFilterDate({ cell, value: value as FilterScalar, text }, dateSystem);
   if (!date) return false;
   if (!dateContext) throw new Error('Dynamic date filter requires an explicit canonical workbook reference date');
   const today = canonicalExcelDateFromParts({ ...dateContext.referenceDate, hour: 0, minute: 0, second: 0, millisecond: 0 }, dateSystem);
@@ -1148,10 +1151,10 @@ function monthBoundary(value: CanonicalExcelDate, offset: number, dateSystem: Fi
   return canonicalExcelDateFromUtcDate(date, dateSystem);
 }
 
-function evaluateFilterCondition(text: string, operator: string, operand: string, operand2?: string): boolean {
+function evaluateFilterCondition(value: FilterScalar, text: string, operator: string, operand: string, operand2?: string): boolean {
   const normalizedOperator = operator.trim().toLocaleLowerCase();
   const normalizedText = text.trim().toLocaleLowerCase();
-  const numeric = Number(text.replace(/[$,%\s,]/g, ""));
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
   const operandNumeric = Number(operand.replace(/[$,%\s,]/g, ""));
   const hasNumbers = Number.isFinite(numeric) && Number.isFinite(operandNumeric);
   const leftDate = Date.parse(text);
@@ -1704,9 +1707,9 @@ function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<
   const groups: Array<{ start: number; end: number; key: string }> = [];
   let start = range.startRow + 1;
   if (start > range.endRow) return groups;
-  let key = cellText(sheet.cells.get(start, params.groupColumn));
+  let key = cellStorageText(sheet.cells.get(start, params.groupColumn));
   for (let row = start + 1; row <= range.endRow + 1; row += 1) {
-    const next = row <= range.endRow ? cellText(sheet.cells.get(row, params.groupColumn)) : undefined;
+    const next = row <= range.endRow ? cellStorageText(sheet.cells.get(row, params.groupColumn)) : undefined;
     if (next !== key) {
       groups.push({ start, end: row - 1, key });
       if (next !== undefined) {
@@ -1850,7 +1853,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const seen = new Set<string>();
       const duplicateRows: number[] = [];
       for (let row = startRow; row <= range.endRow; row++) {
-        const key = params.columns.map((column) => cellText(sheet.cells.get(row, column))).join('\u0001');
+        const key = params.columns.map((column) => cellStorageText(sheet.cells.get(row, column))).join('\u0001');
         if (seen.has(key)) { duplicateRows.push(row); continue; }
         seen.add(key);
       }

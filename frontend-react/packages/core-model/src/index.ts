@@ -19,7 +19,8 @@ import type {
   DefinedNameModel,
   DefinedNameScope,
 } from './domain';
-import { normalizeDefinedNameModel } from './domain';
+import { isFormulaError, normalizeDefinedNameModel } from './domain';
+import type { FormulaErrorCode } from './domain';
 import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
 import {
   normalizePrintDocumentSnapshot,
@@ -465,6 +466,36 @@ export interface CellStyleTemplate {
 }
 
 export type FilterScalar = string | number | boolean | null;
+
+/**
+ * The only value projection accepted by filter evaluation.  `CellData.value`
+ * is authored storage; formulas, spills, and data blocks may expose a
+ * different current result.  Callers resolve that result before constructing
+ * this carrier, while the source cell remains available for style/icon/date
+ * metadata.
+ */
+export interface FilterCellValue {
+  cell?: CellData;
+  value: FilterScalar;
+  text: string;
+  dateSystem?: '1900' | '1904';
+  errorCode?: FormulaErrorCode;
+}
+
+export function resolveFilterCellValue(cell?: CellData, evaluated?: unknown, dateSystem?: '1900' | '1904'): FilterCellValue {
+  const candidate = evaluated === undefined
+    ? cell?.formula !== undefined
+      ? cell?.formulaValue ?? null
+      : cell?.formulaValue ?? cell?.value ?? null
+    : evaluated;
+  if (isFormulaError(candidate)) {
+    return { cell, value: null, text: '', ...(dateSystem ? { dateSystem } : {}), errorCode: candidate.code };
+  }
+  if (candidate === null || typeof candidate === 'string' || typeof candidate === 'number' || typeof candidate === 'boolean') {
+    return { cell, value: candidate, text: candidate == null ? '' : String(candidate), ...(dateSystem ? { dateSystem } : {}) };
+  }
+  return { cell, value: null, text: '', ...(dateSystem ? { dateSystem } : {}) };
+}
 
 export interface DateGroupItem {
   year: number;

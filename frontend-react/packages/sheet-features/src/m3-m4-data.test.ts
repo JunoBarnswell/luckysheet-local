@@ -335,6 +335,65 @@ test('FilterDomainDescriptor uses resolved formula values and exposes only compa
   assert.equal(descriptor.values.map(String).includes('=A1+1'), false);
 });
 
+test('AutoFilter does not expose an authored formula string when no result is available', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Amount' });
+  sheet.cells.set(1, 0, { value: '=A1+1', formula: '=A1+1' });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false } },
+  });
+  assert.deepEqual(getAutoFilterValueDomain(sheet, 0), ['']);
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], []);
+});
+
+test('worksheet and table filters share the typed formula scalar for value, custom, date and Top10 criteria', () => {
+  const create = (owner: 'worksheet' | 'table'): { workbook: WorkbookModel; sheet: ReturnType<WorkbookModel['getSheet']> } => {
+    const { workbook } = runtime();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Status' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(0, 2, { value: 'Date' });
+    sheet.cells.set(1, 0, { value: '=\"Open\"', formula: '=\"Open\"', formulaValue: 'Open' });
+    sheet.cells.set(2, 0, { value: '=\"Closed\"', formula: '=\"Closed\"', formulaValue: 'Closed' });
+    sheet.cells.set(3, 0, { value: '=\"Open\"', formula: '=\"Open\"', formulaValue: 'Open' });
+    sheet.cells.set(1, 1, { value: '=20', formula: '=20', formulaValue: 20 });
+    sheet.cells.set(2, 1, { value: '=5', formula: '=5', formulaValue: 5 });
+    sheet.cells.set(3, 1, { value: '=10', formula: '=10', formulaValue: 10 });
+    sheet.cells.set(1, 2, { value: '=46260', formula: '=46260', formulaValue: 46260, numberFormat: 'yyyy-mm-dd' });
+    sheet.cells.set(2, 2, { value: '=46259', formula: '=46259', formulaValue: 46259, numberFormat: 'yyyy-mm-dd' });
+    sheet.cells.set(3, 2, { value: '=46260', formula: '=46260', formulaValue: 46260, numberFormat: 'yyyy-mm-dd' });
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 };
+    const filter = normalizeAutoFilterModel({
+      sheetId: sheet.id,
+      range,
+      columns: {
+        0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'equals', value: 'Open' }] } },
+        1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'top10', top: true, percent: false, rank: 1 } },
+        2: { column: 2, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: [], includeBlank: false, dateGroups: [{ year: 2026, month: 8, day: 26 }] } },
+      },
+    });
+    if (owner === 'worksheet') sheet.autoFilter = filter;
+    else sheet.sheetTables.push({
+      id: 'formula-filter-table', sheetId: sheet.id, name: 'FormulaFilterTable', range,
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both',
+      columns: [{ id: 'status', name: 'Status' }, { id: 'amount', name: 'Amount' }, { id: 'date', name: 'Date' }],
+      autoFilter: filter,
+    });
+    return { workbook, sheet };
+  };
+
+  for (const owner of ['worksheet', 'table'] as const) {
+    const { sheet } = create(owner);
+    assert.deepEqual(getAutoFilterValueDomain(sheet, 0), ['Open']);
+    assert.deepEqual(getAutoFilterDateDomain(sheet, 2).map((entry) => entry.group), [{ year: 2026, month: 8, day: 26, hour: 0, minute: 0, second: 0 }]);
+    assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((left, right) => left - right), [2, 3]);
+  }
+});
+
 test('FilterDomainDescriptor date hierarchy requires numeric values with canonical date format', () => {
   const { workbook } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
