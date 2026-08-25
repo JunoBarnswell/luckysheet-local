@@ -1,11 +1,11 @@
 import React from 'react';
 import { Box, Button, Divider, DropdownMenu, Inline, Stack, Text, type RibbonLayoutState } from '@react-sheets/ui-system';
 import { getRibbonGroupDefinition, type RibbonCommandId } from '@react-sheets/spreadsheet-app';
-import type { ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { Locale } from '../i18n';
 import { insertText, translateRibbonText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
-import { INSERT_CHART_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { INSERT_BARCODE_VARIANTS, INSERT_CHART_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
@@ -14,6 +14,7 @@ export interface InsertRibbonProps {
   renderCommand: (id: RibbonCommandId, options?: HomeRibbonCommandOptions) => React.ReactNode;
   onInsertChart: (type: ChartDrawingPayload['chartType']) => void;
   onInsertDataChart: (type: DataChartPlotType) => void;
+  onInsertBarcode: (symbology: BarcodeSymbology) => void;
   onInsertSparkline: (type: SparklineModel['type']) => void;
   onInsertShape: (type: ShapeDrawingPayload['type']) => void;
   onInsertFormControl: (type: FormControlType) => void;
@@ -38,7 +39,7 @@ function RibbonLarge({ children, icon, onClick, disabled, title }: { children: R
   return <Button aria-label={title} title={title} disabled={disabled} icon={icon} size="sm" variant="ghost" className="!h-[72px] !min-h-0 !w-[64px] flex-col gap-1 rounded-none px-1 text-[12px] leading-4 [&>svg]:!h-7 [&>svg]:!w-7" onClick={onClick}>{children}</Button>;
 }
 
-export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertDataChart, onInsertSparkline, onInsertShape, onInsertFormControl }: InsertRibbonProps) {
+export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertDataChart, onInsertBarcode, onInsertSparkline, onInsertShape, onInsertFormControl }: InsertRibbonProps) {
   const dataChartMenu = (
     <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="data-chart" title={insertText(locale, 'dataChart')}>{insertText(locale, 'dataChart')}</RibbonLarge>}>
       <Stack gap="none" className="min-w-[14rem] p-1">
@@ -46,9 +47,16 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
       </Stack>
     </DropdownMenu>
   );
+  const barcodeMenu = (
+    <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="barcode" title={insertText(locale, 'barcode')}>{insertText(locale, 'barcode')}</RibbonLarge>}>
+      <Stack gap="none" className="min-w-[14rem] p-1">
+        {INSERT_BARCODE_VARIANTS.map((variant) => <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertBarcode(variant.value)}>{insertText(locale, variant.labelKey)}</Button>)}
+      </Stack>
+    </DropdownMenu>
+  );
   if (layout.width < 1024) {
-    const commandIds: RibbonCommandId[] = ['tableSheet', 'ganttSheet', 'reportSheet', 'worksheetTable', 'pivotTable', 'chartBuilder', 'barcode', 'sparkline', 'shapesLines', 'camera', 'formControls', 'hyperlink', 'checkbox', 'textbox'];
-    return <Inline gap="xs" className="h-[96px] items-center overflow-hidden">{commandIds.map((id) => <React.Fragment key={id}>{renderCommand(id, { iconOnly: true, className: '!h-10 !w-10' })}</React.Fragment>)}<Box className="flex h-10 w-10 items-center justify-center">{dataChartMenu}</Box></Inline>;
+    const commandIds: RibbonCommandId[] = ['tableSheet', 'ganttSheet', 'reportSheet', 'worksheetTable', 'pivotTable', 'chartBuilder', 'sparkline', 'shapesLines', 'camera', 'formControls', 'hyperlink', 'checkbox', 'textbox'];
+    return <Inline gap="xs" className="h-[96px] items-center overflow-hidden">{commandIds.map((id) => <React.Fragment key={id}>{renderCommand(id, { iconOnly: true, className: '!h-10 !w-10' })}</React.Fragment>)}<Box className="flex h-10 w-10 items-center justify-center">{barcodeMenu}</Box><Box className="flex h-10 w-10 items-center justify-center">{dataChartMenu}</Box></Inline>;
   }
   return (
     <Inline gap="none" className="h-[102px] min-w-max flex-nowrap items-start overflow-hidden" data-testid="insert-ribbon-groups">
@@ -66,7 +74,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
           <Inline gap="none">{INSERT_CHART_VARIANTS.slice(0, 3).map((variant) => <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} iconOnly size="sm" variant="ghost" onClick={() => onInsertChart(variant.value)} />)}</Inline>
           <Inline gap="none">{INSERT_CHART_VARIANTS.slice(3, 6).map((variant) => <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} iconOnly size="sm" variant="ghost" onClick={() => onInsertChart(variant.value)} />)}</Inline>
         </Stack>
-        {renderCommand('barcode', { tile: true })}
+        {barcodeMenu}
         <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="sparkline" title={insertText(locale, 'sparkline')}>{insertText(locale, 'sparkline')}</RibbonLarge>}>
           <Stack gap="none" className="min-w-[10rem] p-1">{INSERT_SPARKLINE_VARIANTS.map((variant) => { const label = insertText(locale, variant.labelKey); return <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" onClick={() => onInsertSparkline(variant.value)}>{label}</Button>; })}</Stack>
         </DropdownMenu>

@@ -28,6 +28,7 @@ export type SidebarPanelId =
   | 'inspector'
   | 'chart'
   | 'dataChart'
+  | 'barcode'
   | 'pivot'
   | 'formulaAudit'
   | 'definedNames'

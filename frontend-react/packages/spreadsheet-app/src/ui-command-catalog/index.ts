@@ -1,6 +1,6 @@
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { AppPhase, SidebarPanelId, UiSessionIntent } from '../types';
-import type { DataChartPlotType, SheetTableModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, DataChartPlotType, SheetTableModel } from '@react-sheets/core-model';
 
 export type RibbonCatalogTabId =
   | 'file'
@@ -385,7 +385,7 @@ export interface RibbonCommandActions {
   onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
-  onApplyBarcode: () => void;
+  onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateDataChart: (type?: DataChartPlotType) => void;
   onCreateCamera: () => void;
   onCreateFormControl: () => void;

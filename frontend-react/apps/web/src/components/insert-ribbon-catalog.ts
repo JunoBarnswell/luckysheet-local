@@ -1,4 +1,4 @@
-import type { ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { IconName } from '@react-sheets/ui-system';
 import type { InsertUiTextKey } from '../i18n';
 
@@ -33,6 +33,21 @@ export const INSERT_DATA_CHART_VARIANTS = [
   { id: 'data-chart.doughnut', value: 'doughnut', icon: 'chart-pie', labelKey: 'dataChartDoughnut', ariaLabelKey: 'dataChartDoughnut', tooltipKey: 'dataChartDoughnut' },
   { id: 'data-chart.scatter', value: 'scatter', icon: 'chart-scatter', labelKey: 'dataChartScatter', ariaLabelKey: 'dataChartScatter', tooltipKey: 'dataChartScatter' },
 ] as const satisfies readonly InsertVariantDefinition<DataChartPlotType>[];
+
+export const INSERT_BARCODE_VARIANTS = [
+  { id: 'barcode.qr', value: 'qr', icon: 'barcode', labelKey: 'barcodeQr', ariaLabelKey: 'barcodeQr', tooltipKey: 'barcodeQr' },
+  { id: 'barcode.code128', value: 'code128', icon: 'barcode', labelKey: 'barcodeCode128', ariaLabelKey: 'barcodeCode128', tooltipKey: 'barcodeCode128' },
+  { id: 'barcode.code39', value: 'code39', icon: 'barcode', labelKey: 'barcodeCode39', ariaLabelKey: 'barcodeCode39', tooltipKey: 'barcodeCode39' },
+  { id: 'barcode.code93', value: 'code93', icon: 'barcode', labelKey: 'barcodeCode93', ariaLabelKey: 'barcodeCode93', tooltipKey: 'barcodeCode93' },
+  { id: 'barcode.code49', value: 'code49', icon: 'barcode', labelKey: 'barcodeCode49', ariaLabelKey: 'barcodeCode49', tooltipKey: 'barcodeCode49' },
+  { id: 'barcode.codabar', value: 'codabar', icon: 'barcode', labelKey: 'barcodeCodabar', ariaLabelKey: 'barcodeCodabar', tooltipKey: 'barcodeCodabar' },
+  { id: 'barcode.ean13', value: 'ean13', icon: 'barcode', labelKey: 'barcodeEan13', ariaLabelKey: 'barcodeEan13', tooltipKey: 'barcodeEan13' },
+  { id: 'barcode.ean8', value: 'ean8', icon: 'barcode', labelKey: 'barcodeEan8', ariaLabelKey: 'barcodeEan8', tooltipKey: 'barcodeEan8' },
+  { id: 'barcode.upca', value: 'upca', icon: 'barcode', labelKey: 'barcodeUpca', ariaLabelKey: 'barcodeUpca', tooltipKey: 'barcodeUpca' },
+  { id: 'barcode.gs1-128', value: 'gs1-128', icon: 'barcode', labelKey: 'barcodeGs1128', ariaLabelKey: 'barcodeGs1128', tooltipKey: 'barcodeGs1128' },
+  { id: 'barcode.pdf417', value: 'pdf417', icon: 'barcode', labelKey: 'barcodePdf417', ariaLabelKey: 'barcodePdf417', tooltipKey: 'barcodePdf417' },
+  { id: 'barcode.data-matrix', value: 'data-matrix', icon: 'barcode', labelKey: 'barcodeDataMatrix', ariaLabelKey: 'barcodeDataMatrix', tooltipKey: 'barcodeDataMatrix' },
+] as const satisfies readonly InsertVariantDefinition<BarcodeSymbology>[];
 
 export const INSERT_SPARKLINE_VARIANTS = [
   { id: 'sparkline.line', value: 'line', icon: 'chart-line', labelKey: 'sparklineLine', ariaLabelKey: 'sparklineLine', tooltipKey: 'sparklineLine' },

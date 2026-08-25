@@ -45,6 +45,7 @@ import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
 import { DataChartPanel } from './panels/DataChartPanel';
+import { BarcodePanel } from './panels/BarcodePanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
 import { SparklinePanel } from './panels/SparklinePanel';
@@ -86,6 +87,7 @@ export interface FeatureSidebarProps {
   drawings: readonly DrawingObject[];
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   selectedDrawingIds?: readonly string[];
+  initialBarcodeSymbology: import('@react-sheets/core-model').BarcodeSymbology;
   onSelectDrawing: (drawingId: string, mode: DrawingSelectionMode) => void;
   onSetDrawingVisibility: (drawingId: string, visible: boolean) => void;
   onRenameDrawing: (drawingId: string, name: string) => void;
@@ -185,6 +187,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
   { id: 'dataChart', label: 'Data Chart', icon: 'data-chart' },
+  { id: 'barcode', label: 'Barcode', icon: 'barcode' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
@@ -315,6 +318,7 @@ export function FeatureSidebar({
   drawings,
   drawingPayloads,
   selectedDrawingIds = [],
+  initialBarcodeSymbology,
   onSelectDrawing,
   onSetDrawingVisibility,
   onRenameDrawing,
@@ -531,6 +535,16 @@ export function FeatureSidebar({
             drawingPayloads={drawingPayloads}
             selectedDrawingIds={selectedDrawingIds}
             tables={tables}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'barcode' ? (
+          <BarcodePanel
+            sheetId={sheetId}
+            sheet={sheet}
+            activeCell={activeCell}
+            selectedRange={selectedRange}
+            initialSymbology={initialBarcodeSymbology}
             onCommand={onCommand}
           />
         ) : null}

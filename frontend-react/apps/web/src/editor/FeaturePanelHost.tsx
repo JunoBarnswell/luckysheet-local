@@ -69,6 +69,7 @@ export function FeaturePanelHost({
           drawings={state.selectedSheet.drawings}
           drawingPayloads={state.selectedSheet.drawingPayloads}
           selectedDrawingIds={state.selectedDrawingIds}
+          initialBarcodeSymbology={session.getBarcodeDraftSymbology()}
           onSelectDrawing={(drawingId, mode) => session.setDrawingSelection([drawingId], mode === "extend" ? "add" : mode)}
           onSetDrawingVisibility={(drawingId, visible) => session.setDrawingVisibility(drawingId, visible)}
           onRenameDrawing={(drawingId, name) => session.renameDrawing(drawingId, name)}

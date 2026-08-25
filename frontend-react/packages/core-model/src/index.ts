@@ -120,13 +120,23 @@ export interface CellData {
   };
 }
 
-export type BarcodeSymbology = 'qr' | 'code128' | 'code39' | 'ean13' | 'ean8' | 'upca' | 'pdf417' | 'data-matrix';
+export const BARCODE_SYMBOLOGIES = ['qr', 'code128', 'code39', 'code93', 'code49', 'codabar', 'ean13', 'ean8', 'upca', 'gs1-128', 'pdf417', 'data-matrix'] as const;
+export type BarcodeSymbology = typeof BARCODE_SYMBOLOGIES[number];
+
+export type BarcodeLabelPosition = 'above' | 'below' | 'none';
+export type BarcodeParameters =
+  | { symbology: 'qr'; errorCorrection?: 'low' | 'medium' | 'quartile' | 'high' }
+  | { symbology: 'data-matrix' }
+  | { symbology: 'pdf417'; securityLevel?: number }
+  | { symbology: 'ean13' | 'ean8' | 'upca'; addOnText?: string; includeCheckDigit?: boolean }
+  | { symbology: 'code128' | 'code39' | 'code93' | 'code49' | 'codabar' | 'gs1-128'; fullAscii?: boolean; includeCheckDigit?: boolean; wideNarrowRatio?: number };
 
 export interface BarcodeCellPresentation {
   kind: 'barcode';
   symbology: BarcodeSymbology;
   source: { kind: 'cell-value' } | { kind: 'formula'; formula: string };
-  options: { foreground: string; background: string; showText: boolean; quietZone: number };
+  parameters: BarcodeParameters;
+  options: { foreground: string; background: string; showText: boolean; labelPosition: BarcodeLabelPosition; quietZone: number; fontSize?: number };
 }
 
 export interface ImageCellPresentation {

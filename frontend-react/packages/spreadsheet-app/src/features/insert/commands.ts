@@ -1,4 +1,4 @@
-import type { BarcodeCellPresentation, CellData, DataChartBindingArea, DataChartDrawingPayload, DrawingObject, FormControlDrawingPayload, ImageCellPresentation, RangeRef, SheetSnapshot, WorkbookTableModel, WorksheetModel } from '@react-sheets/core-model';
+import { BARCODE_SYMBOLOGIES, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlDrawingPayload, type ImageCellPresentation, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface AdvancedSheetCreateParams {
@@ -137,13 +137,24 @@ function executeDataChartUpdate(params: DataChartUpdateParams, context: CommandC
 }
 
 function executeBarcodeApply(params: BarcodeApplyParams, context: CommandContext) {
+  validateBarcodePresentation(params.presentation);
   const sheet = context.workbook.getSheet(params.sheetId);
+  if (!Array.isArray(params.ranges) || params.ranges.length === 0) throw new Error('Barcode apply requires at least one range');
   let mutationCount = 0;
-  const affectedRanges = params.ranges.map((range) => ({ ...range, sheetId: params.sheetId }));
+  const affectedRanges = params.ranges.map((range) => {
+    if (!range || range.sheetId !== params.sheetId || !Number.isInteger(range.startRow) || !Number.isInteger(range.endRow)
+      || !Number.isInteger(range.startColumn) || !Number.isInteger(range.endColumn)
+      || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn
+      || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) {
+      throw new Error('Barcode apply range is outside the worksheet bounds');
+    }
+    return { ...range, sheetId: params.sheetId };
+  });
   for (const range of affectedRanges) {
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
         const previous = structuredClone(sheet.cells.get(row, column));
+        validateBarcodeValue(params.presentation, previous?.value ?? null);
         const next: CellData = structuredClone(previous ?? { value: null });
         next.presentation = structuredClone(params.presentation);
         const cellRange: RangeRef[] = [{ sheetId: params.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
@@ -158,6 +169,42 @@ function executeBarcodeApply(params: BarcodeApplyParams, context: CommandContext
     }
   }
   return { operationId: context.operationId, mutationCount, affectedRanges };
+}
+
+function validateBarcodePresentation(presentation: BarcodeCellPresentation): void {
+  if (!presentation || presentation.kind !== 'barcode' || !BARCODE_SYMBOLOGIES.includes(presentation.symbology)) throw new Error(`Unsupported barcode symbology: ${presentation?.symbology ?? 'missing'}`);
+  if (!presentation.source || (presentation.source.kind !== 'cell-value' && presentation.source.kind !== 'formula')) throw new Error('Barcode source is invalid');
+  if (presentation.source.kind === 'formula' && !/^\s*=/.test(presentation.source.formula)) throw new Error('Barcode formula source must be a formula');
+  if (!presentation.options || typeof presentation.options.showText !== 'boolean' || !/^#[0-9a-f]{6}$/i.test(presentation.options.foreground) || !/^#[0-9a-f]{6}$/i.test(presentation.options.background)) throw new Error('Barcode options are invalid');
+  if (!Number.isInteger(presentation.options.quietZone) || presentation.options.quietZone < 0 || presentation.options.quietZone > 20) throw new Error('Barcode quiet zone must be an integer from 0 to 20');
+  if (!['above', 'below', 'none'].includes(presentation.options.labelPosition)) throw new Error('Barcode label position is invalid');
+  if (presentation.options.fontSize !== undefined && (!Number.isFinite(presentation.options.fontSize) || presentation.options.fontSize < 6 || presentation.options.fontSize > 48)) throw new Error('Barcode label font size is invalid');
+  if (!presentation.parameters || presentation.parameters.symbology !== presentation.symbology) throw new Error('Barcode parameters do not match the selected symbology');
+  if (presentation.symbology === 'qr') {
+    if ('errorCorrection' in presentation.parameters && presentation.parameters.errorCorrection !== undefined && !['low', 'medium', 'quartile', 'high'].includes(presentation.parameters.errorCorrection)) throw new Error('Barcode error correction is invalid');
+  } else if (presentation.symbology === 'pdf417') {
+    if ('securityLevel' in presentation.parameters && presentation.parameters.securityLevel !== undefined && (!Number.isInteger(presentation.parameters.securityLevel) || presentation.parameters.securityLevel < 0 || presentation.parameters.securityLevel > 8)) throw new Error('PDF417 security level must be an integer from 0 to 8');
+  } else if (presentation.symbology === 'ean13' || presentation.symbology === 'ean8' || presentation.symbology === 'upca') {
+    if ('addOnText' in presentation.parameters && presentation.parameters.addOnText !== undefined && !/^\d{2,5}$/.test(presentation.parameters.addOnText)) throw new Error('Barcode add-on text must contain 2 to 5 digits');
+    if ('includeCheckDigit' in presentation.parameters && presentation.parameters.includeCheckDigit !== undefined && typeof presentation.parameters.includeCheckDigit !== 'boolean') throw new Error('Barcode check-digit option is invalid');
+  } else {
+    if ('wideNarrowRatio' in presentation.parameters && presentation.parameters.wideNarrowRatio !== undefined && (!Number.isFinite(presentation.parameters.wideNarrowRatio) || presentation.parameters.wideNarrowRatio < 1 || presentation.parameters.wideNarrowRatio > 4)) throw new Error('Barcode wide/narrow ratio is invalid');
+    if ('fullAscii' in presentation.parameters && presentation.parameters.fullAscii !== undefined && typeof presentation.parameters.fullAscii !== 'boolean') throw new Error('Barcode full-ASCII option is invalid');
+    if ('includeCheckDigit' in presentation.parameters && presentation.parameters.includeCheckDigit !== undefined && typeof presentation.parameters.includeCheckDigit !== 'boolean') throw new Error('Barcode check-digit option is invalid');
+  }
+}
+
+function validateBarcodeValue(presentation: BarcodeCellPresentation, rawValue: CellData['value']): void {
+  if (presentation.source.kind === 'formula') return;
+  const value = rawValue == null ? '' : String(rawValue);
+  if (!value.trim()) throw new Error(`Barcode source value is empty for ${presentation.symbology}`);
+  const valid = presentation.symbology === 'ean13' ? /^\d{12,13}$/.test(value)
+    : presentation.symbology === 'ean8' ? /^\d{7,8}$/.test(value)
+      : presentation.symbology === 'upca' ? /^\d{11,12}$/.test(value)
+        : presentation.symbology === 'code39' ? /^[0-9A-Z .$/+%\-]+$/.test(value)
+          : presentation.symbology === 'codabar' ? /^[0-9A-D\-\$:/.+]+$/i.test(value)
+            : value.length <= 4096;
+  if (!valid) throw new Error(`Barcode source value is invalid for ${presentation.symbology}`);
 }
 
 export function registerInsertCommands(runtime: CommandRuntime): string[] {

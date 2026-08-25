@@ -196,7 +196,7 @@ export function drawCellLayer(options: PaneDrawOptions): void {
 const barcodeCanvasCache = new Map<string, HTMLCanvasElement | OffscreenCanvas>();
 const cellImageCache = new Map<string, HTMLImageElement>();
 const BARCODE_ENCODERS: Record<Extract<NonNullable<CellRenderData['presentation']>, { kind: 'barcode' }>['symbology'], string> = {
-  qr: 'qrcode', code128: 'code128', code39: 'code39', ean13: 'ean13', ean8: 'ean8', upca: 'upca', pdf417: 'pdf417', 'data-matrix': 'datamatrix',
+  qr: 'qrcode', code128: 'code128', code39: 'code39', code93: 'code93', code49: 'code49', codabar: 'rationalizedCodabar', ean13: 'ean13', ean8: 'ean8', upca: 'upca', 'gs1-128': 'gs1-128', pdf417: 'pdf417', 'data-matrix': 'datamatrix',
 };
 
 function drawBarcodePresentation(
@@ -208,7 +208,7 @@ function drawBarcodePresentation(
   const quiet = Math.max(1, presentation.options.quietZone);
   const width = Math.max(8, Math.floor(rect.width - quiet * 2));
   const height = Math.max(8, Math.floor(rect.height - quiet * 2));
-  const cacheKey = `${presentation.symbology}|${value}|${width}|${height}|${presentation.options.foreground}|${presentation.options.background}|${presentation.options.showText}`;
+  const cacheKey = `${presentation.symbology}|${value}|${width}|${height}|${presentation.options.foreground}|${presentation.options.background}|${presentation.options.showText}|${presentation.options.labelPosition}|${presentation.options.fontSize ?? ''}|${JSON.stringify(presentation.parameters)}`;
   context.save();
   context.fillStyle = presentation.options.background;
   context.fillRect(rect.x, rect.y, rect.width, rect.height);
@@ -218,16 +218,32 @@ function drawBarcodePresentation(
       canvas = typeof OffscreenCanvas !== 'undefined'
         ? new OffscreenCanvas(width, height)
         : document.createElement('canvas');
+      const fullAscii = presentation.parameters.symbology === presentation.symbology
+        && 'fullAscii' in presentation.parameters && presentation.parameters.fullAscii === true;
+      const bcid = presentation.symbology === 'code39' && fullAscii ? 'code39ext'
+        : presentation.symbology === 'code93' && fullAscii ? 'code93ext'
+          : BARCODE_ENCODERS[presentation.symbology];
       bwipjs.toCanvas(canvas, {
-        bcid: BARCODE_ENCODERS[presentation.symbology],
+        bcid,
         text: value,
         scale: 1,
         height: Math.max(4, Math.floor(height / 3)),
-        includetext: presentation.options.showText,
+        includetext: presentation.options.showText && presentation.options.labelPosition !== 'none',
+        textyalign: presentation.options.labelPosition === 'above' ? 'above' : 'below',
+        textsize: presentation.options.fontSize,
+        includecheck: presentation.parameters.symbology === presentation.symbology && 'includeCheckDigit' in presentation.parameters ? presentation.parameters.includeCheckDigit : undefined,
+        addontext: presentation.parameters.symbology === presentation.symbology && 'addOnText' in presentation.parameters ? presentation.parameters.addOnText : undefined,
+        eclevel: presentation.parameters.symbology === 'qr' && presentation.parameters.symbology === presentation.symbology && 'errorCorrection' in presentation.parameters
+          ? ({ low: 'L', medium: 'M', quartile: 'Q', high: 'H' } as const)[presentation.parameters.errorCorrection ?? 'medium']
+          : presentation.parameters.symbology === 'pdf417' && presentation.parameters.symbology === presentation.symbology && 'securityLevel' in presentation.parameters
+            ? presentation.parameters.securityLevel
+            : undefined,
+        ratio: presentation.parameters.symbology === presentation.symbology && 'wideNarrowRatio' in presentation.parameters ? presentation.parameters.wideNarrowRatio : undefined,
+        parse: presentation.parameters.symbology === presentation.symbology && 'fullAscii' in presentation.parameters ? presentation.parameters.fullAscii : undefined,
         textxalign: 'center',
         backgroundcolor: presentation.options.background.replace('#', ''),
         barcolor: presentation.options.foreground.replace('#', ''),
-      });
+      } as Parameters<typeof bwipjs.toCanvas>[1]);
       barcodeCanvasCache.set(cacheKey, canvas);
       if (barcodeCanvasCache.size > 256) barcodeCanvasCache.delete(barcodeCanvasCache.keys().next().value!);
     }
