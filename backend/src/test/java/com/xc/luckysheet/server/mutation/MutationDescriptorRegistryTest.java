@@ -82,6 +82,76 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rangePasteAcceptsMetadataWhoseEveryOwnedRangeIsInsideTheTarget() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[]}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},
+                 "transfer":"copy","clearSource":false,
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[],"validations":[{"id":"dv-1","ranges":[
+                   {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                   {"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}
+                 ]}]}}
+                """));
+
+        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var updated = prepared.descriptor().apply(snapshot, mutation);
+
+        assertEquals("dv-1", updated.path("sheets").get(0).path("dataValidations").get(0).path("id").asText());
+    }
+
+    @Test
+    void rangePasteRejectsMetadataRuleThatMixesTargetAndUnrelatedRanges() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[],"protectionRules":[
+                  {"id":"lock-e5","scope":"range","range":{"sheetId":"sheet-1","startRow":4,"endRow":4,"startColumn":4,"endColumn":4},"locked":true,"allow":{}}
+                ]}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},
+                 "transfer":"copy","clearSource":false,
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[],"validations":[{"id":"dv-attack","ranges":[
+                   {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                   {"sheetId":"sheet-1","startRow":4,"endRow":4,"startColumn":4,"endColumn":4}
+                 ]}]}}
+                """));
+
+        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        ServiceException error = assertThrows(ServiceException.class, () -> prepared.descriptor().apply(snapshot, mutation));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(0, snapshot.path("sheets").get(0).path("dataValidations").size());
+    }
+
+    @Test
+    void rangePasteReportsAndProtectsTheWholeColumnForWidthChanges() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"columnWidthsPx":{},"protectionRules":[
+                  {"id":"lock-a10","scope":"range","range":{"sheetId":"sheet-1","startRow":9,"endRow":9,"startColumn":0,"endColumn":0},"locked":true,"allow":{}}
+                ]}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},
+                 "transfer":"copy","clearSource":false,
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":true,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[],"columnWidths":[{"column":0,"widthPx":120}]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        assertEquals("FORBIDDEN", error.code());
+
+        var owner = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        assertEquals(1_048_575, owner.affectedRanges().get(1).endRow());
+        assertEquals(0, owner.affectedRanges().get(1).startColumn());
+    }
+
+    @Test
     void internalRestoreCannotBeSubmittedByClient() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertThrows(ServiceException.class, () -> registry.require("workbook.restore", false));
