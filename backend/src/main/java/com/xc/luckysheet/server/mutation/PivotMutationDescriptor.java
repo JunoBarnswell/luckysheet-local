@@ -7,6 +7,7 @@ import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
+import com.xc.luckysheet.server.mutation.SnapshotMutationSupport.CellCoordinate;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -76,6 +77,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 String id = pivotId(mutation.params());
                 ObjectNode current = currentPivot(root, mutation.sheetId(), id);
                 validatePivot(root, mutation.sheetId(), current);
+                validateNoPivotDependencies(root, id);
                 yield pivotRanges(root, current);
             }
             case "pivot.update" -> {
@@ -103,7 +105,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode params = mutation.id().equals("pivot.remove") ? null : SnapshotMutationSupport.params(mutation);
         switch (id()) {
             case "pivot.add" -> add(root, mutation.sheetId(), pivots, params);
-            case "pivot.remove" -> remove(pivots, pivotId(mutation.params()));
+            case "pivot.remove" -> remove(root, pivots, pivotId(mutation.params()));
             case "pivot.update" -> update(root, mutation.sheetId(), pivots, params);
             case "pivot.refresh" -> refresh(root, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported pivot mutation: " + id());
@@ -123,8 +125,37 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         pivots.add(pivot.deepCopy());
     }
 
-    private void remove(ArrayNode pivots, String id) {
+    private void remove(ObjectNode root, ArrayNode pivots, String id) {
+        validateNoPivotDependencies(root, id);
         if (!SnapshotMutationSupport.removeById(pivots, id)) throw ServiceException.notFound("Pivot not found: " + id);
+    }
+
+    private void validateNoPivotDependencies(ObjectNode root, String pivotId) {
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            if (!rawSheet.isObject()) continue;
+            ObjectNode sheet = (ObjectNode) rawSheet;
+            ArrayNode drawings = SnapshotMutationSupport.array(sheet, "drawings");
+            ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
+            for (JsonNode rawDrawing : drawings) {
+                if (!rawDrawing.isObject()) throw ServiceException.validation("Drawing dependency record is invalid");
+                String drawingId = rawDrawing.path("id").asText();
+                String payloadId = rawDrawing.path("payloadId").asText();
+                JsonNode payload = payloads.get(payloadId);
+                if (payload == null || !payload.isObject()) throw ServiceException.validation("Drawing payload is missing: " + payloadId);
+                String kind = payload.path("kind").asText();
+                boolean primary = ("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))
+                        && pivotId.equals(payload.path("pivotId").asText());
+                boolean connected = ("slicer".equals(kind) || "timeline".equals(kind))
+                        && arrayContainsText(payload.get("connectedPivotIds"), pivotId);
+                if (primary || connected) throw ServiceException.conflict("Pivot has dependent drawing: " + drawingId);
+            }
+        }
+    }
+
+    private boolean arrayContainsText(JsonNode value, String expected) {
+        if (value == null || !value.isArray()) return false;
+        for (JsonNode entry : value) if (entry.isTextual() && expected.equals(entry.asText())) return true;
+        return false;
     }
 
     private void update(ObjectNode root, String sheetId, ArrayNode pivots, ObjectNode params) {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CellMatrix, WorkbookModel } from './index';
+import { assertCanonicalWorkbookSnapshot } from './snapshot';
 
 test('CellMatrix keeps empty logical space sparse', () => {
   const matrix = new CellMatrix();
@@ -52,6 +53,29 @@ test('WorkbookModel manages multiple sheets with a stable primary sheet', () => 
 
   // Removing the only remaining sheet must throw
   assert.throws(() => workbook.removeSheet('sheet-1'), /must keep at least one worksheet/);
+});
+
+test('canonical snapshots reject drawings whose Pivot reference no longer exists', () => {
+  const workbook = new WorkbookModel('pivot-reference-validation', 'Pivot Reference Validation');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.drawings.push({
+    id: 'broken-pivot-chart',
+    sheetId: sheet.id,
+    kind: 'chart',
+    payloadId: 'broken-pivot-chart-payload',
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 100, height: 80, rotation: 0 },
+    zIndex: 0,
+  });
+  sheet.drawingPayloads.set('broken-pivot-chart-payload', {
+    kind: 'chart',
+    chartId: 'broken-pivot-chart',
+    pivotId: 'missing-pivot',
+    sourceRanges: [],
+    chartType: 'column',
+    elements: { hiddenData: 'show' },
+  });
+  assert.throws(() => assertCanonicalWorkbookSnapshot(workbook.snapshot()), /references missing Pivot/);
 });
 
 test('WorkbookSnapshot round-trips complete model state including canonical drawings and metadata', () => {

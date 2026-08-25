@@ -47,12 +47,13 @@ function getChartSeries(
   getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined,
   pivotResults: Record<string, PivotResultTree>,
   sheets: readonly CanvasSheetSnapshot[],
-): { categories: string[]; series: CanvasChartSeries[] } {
+): { categories: string[]; series: CanvasChartSeries[]; brokenReference?: string } {
   const categories: string[] = [];
   const series: CanvasChartSeries[] = [];
   const pivot = payload.pivotId
     ? pivotResults[payload.pivotId] ?? sheets.map((candidate) => candidate.pivotResults[payload.pivotId!]).find(Boolean)
     : undefined;
+  if (payload.pivotId && !pivot) return { categories, series, brokenReference: `Pivot reference unavailable: ${payload.pivotId}` };
   if (pivot) {
     const leaves: typeof pivot.rows = [];
     const collect = (nodes: typeof pivot.rows): void => {
@@ -855,6 +856,23 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
       const data = getChartSeries(payload, getSheet, pivotResults, sheets);
+      if (data.brokenReference) {
+        drawables.push({
+          kind: 'shape',
+          id: drawing.id,
+          bounds,
+          draw: (context, rect) => {
+            context.save();
+            context.fillStyle = '#b91c1c';
+            context.strokeStyle = '#b91c1c';
+            context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+            context.font = '12px Segoe UI, sans-serif';
+            context.fillText(data.brokenReference!, rect.x + 8, rect.y + Math.min(rect.height / 2, 24), Math.max(10, rect.width - 16));
+            context.restore();
+          },
+        });
+        continue;
+      }
       const series = data.series.map((entry, index) => ({ ...entry, color: entry.color ?? CHART_PALETTE[index % CHART_PALETTE.length]! }));
       drawables.push({
         kind: "chart",

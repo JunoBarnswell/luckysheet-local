@@ -440,6 +440,21 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void pivotRemovalFailsClosedWhenAChartStillReferencesThePivot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{},"drawings":[
+                  {"id":"pivot-chart-1","sheetId":"sheet-1","kind":"chart","payloadId":"pivot-chart-payload-1","anchor":{"kind":"absolute"},"transform":{"x":0,"y":0,"width":120,"height":80,"rotation":0},"zIndex":1}
+                ],"drawingPayloads":{"pivot-chart-payload-1":{"kind":"chart","chartId":"pivot-chart-1","pivotId":"pivot-1","sourceRanges":[],"chartType":"column","elements":{"hiddenData":"show"}}},"pivots":[
+                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"subtotalLocation":"bottom","showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                ]}]}
+                """);
+        OperationMutation remove = new OperationMutation("pivot.remove", "sheet-1", mapper.readTree("\"pivot-1\""));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, remove, WorkbookAclRole.EDITOR));
+        assertEquals("CONFLICT", error.code());
+    }
+
+    @Test
     void structuralTransformsUpdateCanonicalPivotSourceAndTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

@@ -12,6 +12,7 @@ import type {
   PivotSourceRowPath,
   ChartDrawingPayload,
   DrawingObject,
+  DrawingPayload,
   RangeRef,
 } from '@react-sheets/core-model';
 import { assertPivotDefinition, assertPivotField, createPivotDrillDownSheetName, setPivotAggregate, setPivotGroup, setPivotShowAs } from './panel-state';
@@ -546,7 +547,74 @@ function applyPivotAdd(context: CommandContext, params: PivotModel): void {
   context.workbook.getSheet(definition.target.sheetId).pivots.push(canonical);
 }
 
+interface PivotDependentRemoval {
+  sheetId: string;
+  drawing: DrawingObject;
+  payload: DrawingPayload;
+}
+
+interface PivotDependentUpdate {
+  sheetId: string;
+  payloadId: string;
+  before: DrawingPayload;
+  after: DrawingPayload;
+}
+
+interface PivotRemovalPlan {
+  pivot: PivotModel;
+  removals: PivotDependentRemoval[];
+  updates: PivotDependentUpdate[];
+}
+
+function pivotDependentPayload(payload: DrawingPayload, pivotId: string): boolean {
+  if (payload.kind === 'chart') return payload.pivotId === pivotId;
+  if (payload.kind !== 'slicer' && payload.kind !== 'timeline') return false;
+  return payload.pivotId === pivotId || payload.connectedPivotIds?.includes(pivotId) === true;
+}
+
+function planPivotRemoval(context: CommandContext, pivotId: string, sheetId: string): PivotRemovalPlan {
+  const pivot = pivotFor(context, sheetId, pivotId);
+  if (!pivot) throw new Error(`Unknown pivot: ${pivotId}`);
+  const removals: PivotDependentRemoval[] = [];
+  const updates: PivotDependentUpdate[] = [];
+  for (const sheet of context.workbook.getSheets()) {
+    for (const drawing of sheet.drawings) {
+      const payload = sheet.drawingPayloads.get(drawing.payloadId);
+      if (!payload || !pivotDependentPayload(payload, pivotId)) continue;
+      const primary = payload.kind === 'chart' || payload.kind === 'slicer' || payload.kind === 'timeline' ? payload.pivotId : undefined;
+      if (primary === pivotId) {
+        removals.push({ sheetId: sheet.id, drawing: structuredClone(drawing), payload: structuredClone(payload) });
+        continue;
+      }
+      if (payload.kind !== 'slicer' && payload.kind !== 'timeline') continue;
+      const before = structuredClone(payload);
+      const connectedPivotIds = payload.connectedPivotIds?.filter((connectedPivotId) => connectedPivotId !== pivotId);
+      const after = structuredClone(payload);
+      if (connectedPivotIds?.length) after.connectedPivotIds = connectedPivotIds;
+      else delete after.connectedPivotIds;
+      updates.push({ sheetId: sheet.id, payloadId: drawing.payloadId, before, after });
+    }
+  }
+  return { pivot: structuredClone(pivot), removals, updates };
+}
+
+function applyDependentRemoval(context: CommandContext, dependency: PivotDependentRemoval): void {
+  const sheet = context.workbook.getSheet(dependency.sheetId);
+  const drawing = removeById(sheet.drawings, dependency.drawing.id);
+  if (!drawing) throw new Error(`Unknown dependent drawing: ${dependency.drawing.id}`);
+  if (!sheet.drawingPayloads.delete(dependency.drawing.payloadId)) throw new Error(`Missing dependent drawing payload: ${dependency.drawing.payloadId}`);
+}
+
+function applyDependentUpdate(context: CommandContext, update: PivotDependentUpdate): void {
+  const sheet = context.workbook.getSheet(update.sheetId);
+  const current = sheet.drawingPayloads.get(update.payloadId);
+  if (!current || JSON.stringify(current) !== JSON.stringify(update.before)) throw new Error(`Dependent payload changed before update: ${update.payloadId}`);
+  sheet.drawingPayloads.set(update.payloadId, structuredClone(update.after));
+}
+
 function applyPivotRemove(context: CommandContext, params: string, sheetId: string): void {
+  const dependencies = planPivotRemoval(context, params, sheetId);
+  if (dependencies.removals.length > 0 || dependencies.updates.length > 0) throw new Error(`Pivot ${params} still has dependent drawings`);
   const sheet = context.workbook.getSheet(sheetId);
   if (removeById(sheet.pivots, params)) return;
   for (const candidate of context.workbook.getSheets()) if (candidate !== sheet && removeById(candidate.pivots, params)) return;
@@ -671,19 +739,42 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     execute: (input, context) => {
       const sheetId = typeof input === 'string' ? context.workbook.primarySheetId : input.sheetId;
       const pivotId = typeof input === 'string' ? input : input.pivotId;
-      const pivot = pivotFor(context, sheetId, pivotId);
-      if (!pivot) throw new Error(`Unknown pivot: ${pivotId}`);
+      const plan = planPivotRemoval(context, pivotId, sheetId);
       const affectedRanges = sheetRange(sheetId);
+      for (const dependency of plan.removals) {
+        const dependencyRanges = sheetRange(dependency.sheetId);
+        context.applyMutation({
+          id: 'drawing.remove',
+          unitId: context.workbook.unitId,
+          sheetId: dependency.sheetId,
+          params: { sheetId: dependency.sheetId, drawingId: dependency.drawing.id },
+          affectedRanges: dependencyRanges,
+          inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: dependency.sheetId, params: { sheetId: dependency.sheetId, drawing: structuredClone(dependency.drawing), payload: structuredClone(dependency.payload) }, affectedRanges: dependencyRanges }],
+          apply: () => applyDependentRemoval(context, dependency),
+        });
+      }
+      for (const update of plan.updates) {
+        const dependencyRanges = sheetRange(update.sheetId);
+        context.applyMutation({
+          id: 'drawing.payload.update',
+          unitId: context.workbook.unitId,
+          sheetId: update.sheetId,
+          params: structuredClone(update),
+          affectedRanges: dependencyRanges,
+          inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: update.sheetId, params: { ...structuredClone(update), before: structuredClone(update.after), after: structuredClone(update.before) }, affectedRanges: dependencyRanges }],
+          apply: () => applyDependentUpdate(context, update),
+        });
+      }
       context.applyMutation({
         id: 'pivot.remove',
         unitId: context.workbook.unitId,
         sheetId,
         params: pivotId,
         affectedRanges,
-        inverse: [{ id: 'pivot.add', unitId: context.workbook.unitId, sheetId, params: structuredClone(pivot), affectedRanges }],
+        inverse: [{ id: 'pivot.add', unitId: context.workbook.unitId, sheetId, params: structuredClone(plan.pivot), affectedRanges }],
         apply: () => applyPivotRemove(context, pivotId, sheetId),
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      return { operationId: context.operationId, mutationCount: 1 + plan.removals.length + plan.updates.length, affectedRanges };
     },
   });
   commandIds.push('pivot.remove');
