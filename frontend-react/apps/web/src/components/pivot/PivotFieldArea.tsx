@@ -23,7 +23,7 @@ import type { Locale } from '../../i18n';
 import { pivotText, type PivotMessageKey } from './pivot-localization';
 import { PivotValueEditor } from './PivotValueEditor';
 import { buildPivotGroupedFilterMembers, type PivotGroupedFilterMember } from '@react-sheets/spreadsheet-app';
-import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-member-filter';
+import { applyPivotManualMemberDelta, convertPivotManualFilterMode, pivotManualMemberSelected } from './pivot-member-filter';
 
 interface AreaItem extends PivotFieldDefinition {
   id: string;
@@ -63,23 +63,12 @@ function filterMembers(field: AreaItem): readonly PivotGroupedFilterMember[] {
   return field.groupedMembers ?? (field.values ?? []).map((value) => ({ key: keyFor(value), value, label: formatPivotMember(value) }));
 }
 
-function selectedMembers(field: AreaItem, state: PivotManualFilterState): PivotMemberKey[] {
-  const all = filterMembers(field).map((item) => item.key);
-  if (state.mode === 'all') return all;
-  if (state.mode === 'include') return state.memberKeys.filter((key) => all.some((candidate) => pivotMemberKeyEquals(candidate, key)));
-  return all.filter((key) => !state.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, key)));
-}
-
 function filterWithValue(_field: AreaItem, state: PivotManualFilterState, target: PivotMemberKey, checked: boolean): PivotManualFilterState {
   return applyPivotManualMemberDelta(state, [target], checked);
 }
 
 function filterForMode(field: AreaItem, state: PivotManualFilterState, mode: PivotManualFilterState['mode']): PivotManualFilterState {
-  if (mode === 'all') return { mode, memberKeys: [] };
-  const selected = selectedMembers(field, state);
-  if (mode === 'include') return { mode, memberKeys: selected };
-  const all = filterMembers(field).map((item) => item.key);
-  return { mode, memberKeys: all.filter((key) => !selected.some((candidate) => pivotMemberKeyEquals(candidate, key))) };
+  return convertPivotManualFilterMode(state, mode, filterMembers(field).map((item) => item.key));
 }
 
 function FilterOptions({ locale, field, disabled, state, onFilter }: { locale: Locale; field: AreaItem; disabled: boolean; state: PivotManualFilterState; onFilter: NonNullable<PivotFieldAreaProps['onFilter']> }): ReactNode {

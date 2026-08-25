@@ -51,3 +51,21 @@ export function applyPivotManualMemberDelta(
     memberKeys: uniqueKeys(checked ? state.memberKeys.filter((key) => !contains(key)) : [...state.memberKeys, ...changed]),
   };
 }
+
+/**
+ * Convert the explicit mode selector while retaining typed identities.  The
+ * common `all -> exclude` transition is represented by an empty exclusion
+ * delta instead of allocating the complete domain.
+ */
+export function convertPivotManualFilterMode(
+  state: PivotManualFilterState,
+  mode: PivotManualFilterState['mode'],
+  domain: readonly PivotMemberKey[],
+): PivotManualFilterState {
+  if (mode === 'all') return { mode: 'all', memberKeys: [] };
+  if (mode === state.mode) return { mode, memberKeys: [...state.memberKeys] };
+  if (mode === 'exclude' && state.mode === 'all') return { mode: 'exclude', memberKeys: [] };
+  const selected = domain.filter((member) => pivotManualMemberSelected(state, member));
+  if (mode === 'include') return { mode, memberKeys: selected };
+  return { mode, memberKeys: domain.filter((member) => !selected.some((candidate) => pivotMemberKeyEquals(candidate, member))) };
+}
