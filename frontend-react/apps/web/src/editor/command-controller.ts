@@ -301,7 +301,8 @@ export function useEditorCommandController({
       case "format.underline": dispatchCommand({ commandId: "sheet.style.set", params: { style: { underline: !state.homeRibbon.style.underline } } }); return true;
       case "range.fillDown": session.fillSelection("down"); return true;
       case "range.clearContents": session.clearSelection("contents"); return true;
-      case "cells.insert": case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells" }); return true;
+      case "cells.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "insert" }); return true;
+      case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "delete" }); return true;
       case "filter.toggle": session.applyFilterSelection(); return true;
       case "find.open": case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace" }); return true;
       case "commandPalette.open": dispatchSessionIntent({ type: "command-palette.open" }); return true;

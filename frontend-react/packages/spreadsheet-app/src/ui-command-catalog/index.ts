@@ -120,7 +120,8 @@ export type RibbonCommandId =
   | 'insertColumn'
   | 'insertRowHome'
   | 'insertColumnHome'
-  | 'shiftCells'
+  | 'insertCells'
+  | 'deleteCells'
   | 'clearContents'
   | 'clearFormats'
   | 'clearAll'
@@ -537,7 +538,8 @@ export const RIBBON_TEXT = {
     insertColumn: 'commands.insertColumn',
     insertRowHome: 'commands.insertRowHome',
     insertColumnHome: 'commands.insertColumnHome',
-    shiftCells: 'commands.shiftCells',
+    insertCells: 'commands.insertCells',
+    deleteCells: 'commands.deleteCells',
     clearContents: 'commands.clearContents',
     clearFormats: 'commands.clearFormats',
     clearAll: 'commands.clearAll',
@@ -732,7 +734,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'styles.editor', 'styles', 60, 'tile', 'cellEditor', ['wide', 'compact']),
   ribbonSurface('home', 'cells.insert', 'cells', 10, 'split', 'insertRowHome'),
   ribbonSurface('home', 'cells.delete', 'cells', 20, 'split', 'deleteRow'),
-  ribbonSurface('home', 'cells.format', 'cells', 30, 'split', 'shiftCells'),
+  ribbonSurface('home', 'cells.format', 'cells', 30, 'split', 'insertCells'),
   ribbonSurface('home', 'editing.autosum', 'editing', 60, 'small', 'autoSum'),
   ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
   ribbonSurface('home', 'editing.fill-right', 'editing', 66, 'small', 'fillRight'),
@@ -949,7 +951,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   command('insertColumnHome', 'home', 'cells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumnHome, 'columns', { count: 1 }),
   command('deleteRow', 'home', 'cells', 'sheet.rows.delete', RIBBON_TEXT.commands.deleteRow, 'rows', { count: 1 }),
   command('deleteColumn', 'home', 'cells', 'sheet.columns.delete', RIBBON_TEXT.commands.deleteColumn, 'columns', { count: 1 }),
-  intent('shiftCells', 'home', 'cells', RIBBON_TEXT.commands.shiftCells, () => ({ type: 'dialog.open', dialog: 'shift-cells' })),
+  intent('insertCells', 'home', 'cells', RIBBON_TEXT.commands.insertCells, () => ({ type: 'dialog.open', dialog: 'shift-cells', operation: 'insert' })),
+  intent('deleteCells', 'home', 'cells', RIBBON_TEXT.commands.deleteCells, () => ({ type: 'dialog.open', dialog: 'shift-cells', operation: 'delete' })),
   // Delete/Clear Contents must never fall through to the range command's
   // historical default (`all`). The Home entry declares the semantic mode so
   // keyboard, Ribbon and context-menu builders share the same contract.

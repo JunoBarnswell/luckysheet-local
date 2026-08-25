@@ -417,18 +417,19 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
-test('sheet.cells.shift undo clears the shifted edge before restoring the bounded region', () => {
+test('sheet.cells.insert undo restores the complete affected band', () => {
   const workbook = new WorkbookModel('unit-shift-undo', 'Shift Undo');
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
   const sheet = workbook.getSheet(sheetId(workbook));
   sheet.cells.set(0, 0, { value: 'top' });
   sheet.cells.set(1, 0, { value: 'bottom' });
-  const range = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 };
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
 
-  runtime.execute('sheet.cells.shift', { sheetId: sheet.id, range, direction: 'down' });
+  runtime.execute('sheet.cells.insert', { sheetId: sheet.id, range, operation: 'insert', axis: 'row' });
   assert.equal(sheet.cells.get(0, 0), undefined);
   assert.equal(sheet.cells.get(1, 0)?.value, 'top');
+  assert.equal(sheet.cells.get(2, 0)?.value, 'bottom');
   runtime.undo();
   assert.equal(sheet.cells.get(0, 0)?.value, 'top');
   assert.equal(sheet.cells.get(1, 0)?.value, 'bottom');

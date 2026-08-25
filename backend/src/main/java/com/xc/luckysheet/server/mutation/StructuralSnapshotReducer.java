@@ -44,36 +44,47 @@ final class StructuralSnapshotReducer {
         rewriteAxisFormulas(root, target, axis, at, count, direction);
     }
 
-    static void shiftCells(ObjectNode root, String sheetId, RangeRef source, ShiftDirection direction) {
+    static void shiftCells(ObjectNode root, String sheetId, RangeRef source, String operation, String axis, RangeRef affectedBand) {
         PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(source, sheetId);
         RangeRef selection = normalize(source);
-        int rowDelta = direction == ShiftDirection.DOWN ? 1 : direction == ShiftDirection.UP ? -1 : 0;
-        int columnDelta = direction == ShiftDirection.RIGHT ? 1 : direction == ShiftDirection.LEFT ? -1 : 0;
-        validateShiftPreservation(root, sheet, selection, rowDelta, columnDelta);
+        if (!"insert".equals(operation) && !"delete".equals(operation)) throw ServiceException.validation("Cell shift operation is invalid");
+        if (!"row".equals(axis) && !"column".equals(axis)) throw ServiceException.validation("Cell shift axis is invalid");
+        int rowCount = dimension(sheet, FormulaReferenceTransformer.Axis.ROW);
+        int columnCount = dimension(sheet, FormulaReferenceTransformer.Axis.COLUMN);
+        RangeRef expectedBand = "row".equals(axis)
+                ? new RangeRef(sheetId, selection.startRow(), rowCount - 1, selection.startColumn(), selection.endColumn())
+                : new RangeRef(sheetId, selection.startRow(), selection.endRow(), selection.startColumn(), columnCount - 1);
+        if (!expectedBand.equals(normalize(affectedBand))) throw ServiceException.validation("Cell shift affected band is not canonical");
+        int count = "row".equals(axis) ? selection.endRow() - selection.startRow() + 1 : selection.endColumn() - selection.startColumn() + 1;
+        int delta = "insert".equals(operation) ? count : -count;
+        validateCellShiftBounds(sheet, selection, expectedBand, axis, operation, count);
 
-        List<CellEntry> sourceCells = cellsInRange(sheet, selection);
-        SnapshotMutationSupport.clearCells(sheet, selection);
+        List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
+        SnapshotMutationSupport.clearCells(sheet, expectedBand);
         for (CellEntry entry : sourceCells) {
-            int nextRow = entry.row() + rowDelta;
-            int nextColumn = entry.column() + columnDelta;
-            if (!contains(selection, nextRow, nextColumn)) continue;
+            int nextRow = "row".equals(axis) ? mapCellIndex(entry.row(), selection.startRow(), selection.endRow(), delta, operation) : entry.row();
+            int nextColumn = "column".equals(axis) ? mapCellIndex(entry.column(), selection.startColumn(), selection.endColumn(), delta, operation) : entry.column();
+            if (nextRow < 0 || nextColumn < 0 || !contains(expectedBand, nextRow, nextColumn)) continue;
             ObjectNode cell = entry.cell().deepCopy();
-            if (cell.path("formula").isTextual()) {
-                cell.put("formula", FormulaReferenceTransformer.offset(cell.path("formula").asText(), rowDelta, columnDelta));
-                cell.remove("formulaValue");
-            }
             SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), cell);
         }
-        shiftBoundedMetadata(root, sheet, sheetId, selection, rowDelta, columnDelta);
-        rewriteMovedReferences(root, sheet, sheetId, selection, rowDelta, columnDelta);
+        rewriteAxisFormulas(root, sheetId, "row".equals(axis) ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN,
+                "row".equals(axis) ? selection.startRow() : selection.startColumn(), count,
+                "insert".equals(operation) ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE);
     }
 
-    static void restoreShiftedCells(ObjectNode root, String sheetId, RangeRef range, ShiftDirection originalDirection, JsonNode cells) {
-        if (originalDirection != null) shiftCells(root, sheetId, range, originalDirection.reverse());
+    static void restoreShiftedCells(ObjectNode root, String sheetId, JsonNode spec, JsonNode cells) {
+        if (spec == null || !spec.isObject()) throw ServiceException.validation("Structural restore spec must be an object");
+        ObjectNode value = (ObjectNode) spec;
+        RangeRef range = SnapshotMutationSupport.range(root, value.get("range"));
+        RangeRef affectedBand = SnapshotMutationSupport.range(root, value.get("affectedBand"));
+        String operation = value.path("operation").asText(null);
+        String axis = value.path("axis").asText(null);
+        shiftCells(root, sheetId, range, "insert".equals(operation) ? "delete" : "insert", axis, affectedBand);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
-        RangeRef normalized = normalize(range);
+        RangeRef normalized = normalize(affectedBand);
         SnapshotMutationSupport.clearCells(sheet, normalized);
         if (cells == null || !cells.isArray()) throw ServiceException.validation("Structural restore cells must be an array");
         if (cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Structural restore is too large");
@@ -81,7 +92,7 @@ final class StructuralSnapshotReducer {
             if (!raw.isObject()) throw ServiceException.validation("Structural restore cell must be an object");
             ObjectNode entry = (ObjectNode) raw;
             SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, entry);
-            if (!contains(normalized, coordinate.row(), coordinate.column())) throw ServiceException.validation("Structural restore cell is outside range");
+            if (!contains(normalized, coordinate.row(), coordinate.column())) throw ServiceException.validation("Structural restore cell is outside affected band");
             JsonNode cell = entry.get("cell");
             if (cell == null || !cell.isObject()) throw ServiceException.validation("Structural restore cell payload must be an object");
             SnapshotMutationSupport.putCell(sheet, coordinate, cell);
@@ -117,6 +128,22 @@ final class StructuralSnapshotReducer {
         int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW + 1 : SnapshotMutationSupport.MAX_COLUMN + 1;
         if (value == null || !value.isIntegralNumber() || value.intValue() < 1 || value.intValue() > maximum) throw ServiceException.validation(property + " is invalid");
         return value.intValue();
+    }
+
+    private static void validateCellShiftBounds(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
+        cellsInRange(sheet, band).forEach(entry -> {
+            int mapped = "row".equals(axis)
+                    ? mapCellIndex(entry.row(), selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation)
+                    : mapCellIndex(entry.column(), selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation);
+            int limit = "row".equals(axis) ? dimension(sheet, FormulaReferenceTransformer.Axis.ROW) : dimension(sheet, FormulaReferenceTransformer.Axis.COLUMN);
+            if (mapped >= limit || (mapped < 0 && "insert".equals(operation))) throw ServiceException.validation("Cell shift would discard data outside worksheet bounds");
+        });
+    }
+
+    private static int mapCellIndex(int value, int start, int end, int delta, String operation) {
+        if ("delete".equals(operation) && value >= start && value <= end) return -1;
+        if (value < start) return value;
+        return value + delta;
     }
 
     private static void setDimension(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int value) {
@@ -596,191 +623,6 @@ final class StructuralSnapshotReducer {
         return entries;
     }
 
-    private static void validateShiftPreservation(ObjectNode root, ObjectNode sheet, RangeRef selection, int rowDelta, int columnDelta) {
-        for (JsonNode sparkline : SnapshotMutationSupport.array(sheet, "sparklines")) validateBoundedPoint(sparkline.path("anchor").path("row").asInt(-1), sparkline.path("anchor").path("column").asInt(-1), selection, rowDelta, columnDelta, "sparkline");
-        for (JsonNode spill : SnapshotMutationSupport.array(sheet, "spillRanges")) validateBoundedPoint(spill.path("anchor").path("row").asInt(-1), spill.path("anchor").path("column").asInt(-1), selection, rowDelta, columnDelta, "spill");
-        for (JsonNode drawing : SnapshotMutationSupport.array(sheet, "drawings")) {
-            JsonNode anchor = drawing.path("anchor");
-            if ("absolute".equals(anchor.path("kind").asText())) continue;
-            validateBoundedPoint(anchor.path("row").asInt(-1), anchor.path("column").asInt(-1), selection, rowDelta, columnDelta, "drawing");
-            if (anchor.has("endRow") && anchor.has("endColumn")) validateBoundedPoint(anchor.path("endRow").asInt(-1), anchor.path("endColumn").asInt(-1), selection, rowDelta, columnDelta, "drawing extent");
-        }
-        for (JsonNode note : SnapshotMutationSupport.array(sheet, "notes")) validateBoundedPoint(note.path("row").asInt(-1), note.path("column").asInt(-1), selection, rowDelta, columnDelta, "note");
-        for (JsonNode comment : SnapshotMutationSupport.array(sheet, "commentThreads")) validateBoundedPoint(comment.path("row").asInt(-1), comment.path("column").asInt(-1), selection, rowDelta, columnDelta, "comment");
-        String sheetId = sheet.path("id").asText();
-        for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
-            JsonNode range = table.get("sourceRange");
-            if (range == null || !sheetId.equals(range.path("sheetId").asText())) continue;
-            RangeRef ref = SnapshotMutationSupport.range(root, range);
-            boolean contained = contains(selection, ref.startRow(), ref.startColumn()) && contains(selection, ref.endRow(), ref.endColumn());
-            boolean intersects = intersects(selection, ref);
-            if (intersects && !contained) throw ServiceException.validation("Cell shift partially intersects a workbook table");
-            if (contained && (!contains(selection, ref.startRow() + rowDelta, ref.startColumn() + columnDelta) || !contains(selection, ref.endRow() + rowDelta, ref.endColumn() + columnDelta))) {
-                throw ServiceException.validation("Cell shift would move a workbook table outside the selected range");
-            }
-        }
-    }
-
-    private static void validateBoundedPoint(int row, int column, RangeRef selection, int rowDelta, int columnDelta, String name) {
-        if (!contains(selection, row, column)) return;
-        if (!contains(selection, row + rowDelta, column + columnDelta)) throw ServiceException.validation("Cell shift would move " + name + " outside the selected range");
-    }
-
-    private static boolean intersects(RangeRef left, RangeRef right) {
-        return left.sheetId().equals(right.sheetId())
-                && left.startRow() <= right.endRow() && left.endRow() >= right.startRow()
-                && left.startColumn() <= right.endColumn() && left.endColumn() >= right.startColumn();
-    }
-
-    private static void shiftBoundedMetadata(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef selection, int rowDelta, int columnDelta) {
-        for (JsonNode merge : SnapshotMutationSupport.array(sheet, "merges")) {
-            ObjectNode object = requireObject(merge, "Merge");
-            if (moveContainedRange(object.get("range"), selection, rowDelta, columnDelta)) {
-                ObjectNode anchor = SnapshotMutationSupport.requiredObject(object, "anchor");
-                anchor.put("row", anchor.path("row").asInt() + rowDelta);
-                anchor.put("column", anchor.path("column").asInt() + columnDelta);
-            }
-        }
-        for (String property : List.of("conditionalFormats", "dataValidations")) {
-            for (JsonNode rule : SnapshotMutationSupport.array(sheet, property)) {
-                for (JsonNode range : requireObject(rule, "Range rule").path("ranges")) moveContainedRange(range, selection, rowDelta, columnDelta);
-            }
-        }
-        JsonNode filter = sheet.get("autoFilter");
-        if (filter != null && filter.isObject()) moveContainedRange(filter.get("range"), selection, rowDelta, columnDelta);
-        for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) moveContainedRange(requireObject(table, "Sheet table").get("range"), selection, rowDelta, columnDelta);
-        for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
-            JsonNode range = table.get("sourceRange");
-            if (range != null && sheetId.equals(range.path("sheetId").asText())) moveContainedRange(range, selection, rowDelta, columnDelta);
-        }
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) {
-            ObjectNode pivot = requireObject(raw, "Pivot");
-            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
-            PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, range -> moveContainedRange(range, selection, rowDelta, columnDelta));
-            ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
-            JsonNode anchor = target.get("anchor");
-            if (anchor != null && anchor.isObject() && contains(selection, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) {
-                ((ObjectNode) anchor).put("row", anchor.path("row").asInt() + rowDelta).put("column", anchor.path("column").asInt() + columnDelta);
-            }
-        }
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) {
-            ObjectNode sparkline = requireObject(raw, "Sparkline");
-            moveContainedRange(sparkline.get("sourceRange"), selection, rowDelta, columnDelta);
-            ObjectNode anchor = SnapshotMutationSupport.requiredObject(sparkline, "anchor");
-            if (contains(selection, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) anchor.put("row", anchor.path("row").asInt() + rowDelta).put("column", anchor.path("column").asInt() + columnDelta);
-        }
-        for (JsonNode spill : SnapshotMutationSupport.array(sheet, "spillRanges")) {
-            ObjectNode object = requireObject(spill, "Spill range");
-            moveContainedRange(object.get("range"), selection, rowDelta, columnDelta);
-            ObjectNode anchor = SnapshotMutationSupport.requiredObject(object, "anchor");
-            if (contains(selection, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) anchor.put("row", anchor.path("row").asInt() + rowDelta).put("column", anchor.path("column").asInt() + columnDelta);
-        }
-        for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) {
-            JsonNode range = rule.get("range");
-            if (range != null) moveContainedRange(range, selection, rowDelta, columnDelta);
-        }
-        JsonNode banded = sheet.get("bandedRule");
-        if (banded != null && banded.isObject()) moveContainedRange(banded.get("range"), selection, rowDelta, columnDelta);
-        for (JsonNode drawing : SnapshotMutationSupport.array(sheet, "drawings")) {
-            ObjectNode anchor = SnapshotMutationSupport.requiredObject(requireObject(drawing, "Drawing"), "anchor");
-            if ("absolute".equals(anchor.path("kind").asText()) || !contains(selection, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) continue;
-            anchor.put("row", anchor.path("row").asInt() + rowDelta).put("column", anchor.path("column").asInt() + columnDelta);
-            if (anchor.has("endRow")) anchor.put("endRow", anchor.path("endRow").asInt() + rowDelta);
-            if (anchor.has("endColumn")) anchor.put("endColumn", anchor.path("endColumn").asInt() + columnDelta);
-        }
-        moveBoundedNotesAndComments(sheet, selection, rowDelta, columnDelta);
-        if (rowDelta != 0) {
-            remapBoundedIndices(sheet, "hiddenRows", "rowHeightsPx", selection.startRow(), selection.endRow(), rowDelta);
-        }
-        if (columnDelta != 0) {
-            remapBoundedIndices(sheet, "hiddenColumns", "columnWidthsPx", selection.startColumn(), selection.endColumn(), columnDelta);
-        }
-    }
-
-    private static boolean moveContainedRange(JsonNode raw, RangeRef selection, int rowDelta, int columnDelta) {
-        if (raw == null || !raw.isObject()) return false;
-        ObjectNode range = (ObjectNode) raw;
-        if (!selection.sheetId().equals(range.path("sheetId").asText())) return false;
-        if (!contains(selection, range.path("startRow").asInt(-1), range.path("startColumn").asInt(-1)) || !contains(selection, range.path("endRow").asInt(-1), range.path("endColumn").asInt(-1))) return false;
-        range.put("startRow", range.path("startRow").asInt() + rowDelta);
-        range.put("endRow", range.path("endRow").asInt() + rowDelta);
-        range.put("startColumn", range.path("startColumn").asInt() + columnDelta);
-        range.put("endColumn", range.path("endColumn").asInt() + columnDelta);
-        return true;
-    }
-
-    private static void moveBoundedNotesAndComments(ObjectNode sheet, RangeRef selection, int rowDelta, int columnDelta) {
-        for (int index = SnapshotMutationSupport.array(sheet, "notes").size() - 1; index >= 0; index--) {
-            ObjectNode note = requireObject(SnapshotMutationSupport.array(sheet, "notes").get(index), "Note");
-            int row = note.path("row").asInt(-1);
-            int column = note.path("column").asInt(-1);
-            if (!contains(selection, row, column)) continue;
-            if (!contains(selection, row + rowDelta, column + columnDelta)) SnapshotMutationSupport.array(sheet, "notes").remove(index);
-            else note.put("row", row + rowDelta).put("column", column + columnDelta);
-        }
-        for (int index = SnapshotMutationSupport.array(sheet, "commentThreads").size() - 1; index >= 0; index--) {
-            ObjectNode thread = requireObject(SnapshotMutationSupport.array(sheet, "commentThreads").get(index), "Comment thread");
-            int row = thread.path("row").asInt(-1);
-            int column = thread.path("column").asInt(-1);
-            if (!contains(selection, row, column)) continue;
-            if (!contains(selection, row + rowDelta, column + columnDelta)) SnapshotMutationSupport.array(sheet, "commentThreads").remove(index);
-            else thread.put("row", row + rowDelta).put("column", column + columnDelta);
-        }
-    }
-
-    private static void remapBoundedIndices(ObjectNode sheet, String indexCollection, String sizeCollection, int start, int end, int delta) {
-        ArrayNode indexes = SnapshotMutationSupport.array(sheet, indexCollection);
-        ArrayNode nextIndexes = JsonNodeFactory.instance.arrayNode();
-        for (JsonNode raw : indexes) {
-            int value = raw.asInt(-1);
-            if (value >= start && value <= end) value += delta;
-            if (!containsNumber(nextIndexes, value)) nextIndexes.add(value);
-        }
-        sheet.set(indexCollection, nextIndexes);
-        ObjectNode sizes = SnapshotMutationSupport.object(sheet, sizeCollection);
-        ObjectNode nextSizes = JsonNodeFactory.instance.objectNode();
-        sizes.fields().forEachRemaining(entry -> {
-            int value = integerKey(entry.getKey(), SnapshotMutationSupport.MAX_ROW, sizeCollection);
-            if (value >= start && value <= end) value += delta;
-            nextSizes.set(Integer.toString(value), entry.getValue());
-        });
-        sheet.set(sizeCollection, nextSizes);
-    }
-
-    private static void rewriteMovedReferences(ObjectNode root, ObjectNode targetSheet, String targetSheetId, RangeRef selection, int rowDelta, int columnDelta) {
-        FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
-        int destinationStartRow = selection.startRow() + rowDelta;
-        int destinationEndRow = selection.endRow() + rowDelta;
-        int destinationStartColumn = selection.startColumn() + columnDelta;
-        int destinationEndColumn = selection.endColumn() + columnDelta;
-        boolean destinationIsValid = destinationStartRow >= 0 && destinationEndRow <= SnapshotMutationSupport.MAX_ROW
-                && destinationStartColumn >= 0 && destinationEndColumn <= SnapshotMutationSupport.MAX_COLUMN;
-        for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
-            ObjectNode owner = requireObject(raw, "Sheet");
-            FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
-            ObjectNode cells = SnapshotMutationSupport.cells(owner);
-            cells.fields().forEachRemaining(row -> ((ObjectNode) row.getValue()).fields().forEachRemaining(column -> {
-                ObjectNode cell = requireObject(column.getValue(), "Cell");
-                if (!cell.path("formula").isTextual()) return;
-                int rowIndex = integerKey(row.getKey(), SnapshotMutationSupport.MAX_ROW, "Cell row");
-                int columnIndex = integerKey(column.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
-                boolean insideDestination = destinationIsValid
-                        && rowIndex >= destinationStartRow && rowIndex <= destinationEndRow
-                        && columnIndex >= destinationStartColumn && columnIndex <= destinationEndColumn;
-                if (owner.path("id").asText().equals(targetSheetId) && (contains(selection, rowIndex, columnIndex) || insideDestination)) return;
-                String rewritten = FormulaReferenceTransformer.remapMovedRegion(cell.path("formula").asText(), ownerIdentity, target, new FormulaReferenceTransformer.Range(selection.startRow(), selection.endRow(), selection.startColumn(), selection.endColumn()), rowDelta, columnDelta);
-                if (!rewritten.equals(cell.path("formula").asText())) {
-                    cell.put("formula", rewritten);
-                    cell.remove("formulaValue");
-                }
-            }));
-        }
-        ObjectNode names = SnapshotMutationSupport.object(root, "definedNames");
-        names.fields().forEachRemaining(entry -> {
-            if (entry.getValue().isTextual()) names.put(entry.getKey(), FormulaReferenceTransformer.remapMovedRegion(entry.getValue().asText(), target, target, new FormulaReferenceTransformer.Range(selection.startRow(), selection.endRow(), selection.startColumn(), selection.endColumn()), rowDelta, columnDelta));
-        });
-    }
-
     private static int[] validatePermutation(RangeRef range, ArrayNode sourceRows) {
         int[] rows = new int[sourceRows.size()];
         boolean[] seen = new boolean[rows.length];
@@ -947,19 +789,6 @@ final class StructuralSnapshotReducer {
     private static ObjectNode requireObject(JsonNode value, String label) {
         if (value == null || !value.isObject()) throw ServiceException.validation(label + " must be an object");
         return (ObjectNode) value;
-    }
-
-    enum ShiftDirection {
-        DOWN, UP, RIGHT, LEFT;
-
-        ShiftDirection reverse() {
-            return switch (this) {
-                case DOWN -> UP;
-                case UP -> DOWN;
-                case RIGHT -> LEFT;
-                case LEFT -> RIGHT;
-            };
-        }
     }
 
     private record CellEntry(int row, int column, ObjectNode cell) {

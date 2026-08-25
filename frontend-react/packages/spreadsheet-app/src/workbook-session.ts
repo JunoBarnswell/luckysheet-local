@@ -189,6 +189,7 @@ import type {
   BackstagePanel,
   BackstageState,
   ClipboardState,
+  CellShiftOperation,
   DesignerState,
   EditSession as DesignerEditSession,
   FocusState,
@@ -384,7 +385,7 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', mergeDiscardCount: 0, columnWidth: null, sheet: null };
+  private dialogs: DialogState = { active: null, findQuery: '', mergeDiscardCount: 0, columnWidth: null, sheet: null, cellShiftOperation: 'insert' };
   private pendingMergeRange: RangeRef | null = null;
   private inputMode: InputMode = 'grid';
   private focus: FocusState = { mode: 'grid', target: 'grid' };
@@ -909,7 +910,8 @@ export class WorkbookSession {
       || commandId === 'sheet.range.paste'
       || commandId === 'sheet.range.clear'
       || commandId === 'sheet.range.clearContents'
-      || commandId === 'sheet.cells.shift'
+      || commandId === 'sheet.cells.insert'
+      || commandId === 'sheet.cells.delete'
       || commandId === 'sheet.style.set'
       || commandId === 'sheet.style.setMulti'
       || commandId === 'sheet.style.setMultiRange'
@@ -998,7 +1000,7 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation);
         return;
       case 'dialog.close':
         this.closeActiveDialog();
@@ -1601,10 +1603,10 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert'): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
-    this.dialogs = { ...this.dialogs, active, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    this.dialogs = { ...this.dialogs, active, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
       this.panels = { ...this.panels, active: 'print', open: true };
@@ -1803,9 +1805,9 @@ export class WorkbookSession {
     this.emit();
   }
 
-  shiftCells(direction: 'down' | 'up' | 'right' | 'left'): void {
+  applyCellShift(operation: CellShiftOperation, axis: 'row' | 'column'): void {
     const range = this.getPrimaryRange();
-    this.dispatch({ commandId: 'sheet.cells.shift', params: { sheetId: this.activeSheetId, range, direction } });
+    this.dispatch({ commandId: operation === 'insert' ? 'sheet.cells.insert' : 'sheet.cells.delete', params: { sheetId: this.activeSheetId, range, operation, axis } });
   }
 
   freezeAtPrimary(): void {

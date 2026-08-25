@@ -480,11 +480,16 @@ export type StructuralOpKind =
   | 'delete-rows'
   | 'insert-columns'
   | 'delete-columns'
+  | 'cell-shift'
   | 'move-range'
-  | 'shift-cells-down'
-  | 'shift-cells-up'
-  | 'shift-cells-right'
-  | 'shift-cells-left';
+;
+
+export interface CellShiftSpec {
+  sheetId: SheetId;
+  range: RangeRef;
+  operation: 'insert' | 'delete';
+  axis: 'row' | 'column';
+}
 
 export interface StructuralTransformParams {
   kind: StructuralOpKind;
@@ -493,4 +498,6 @@ export interface StructuralTransformParams {
   count?: number;
   sourceRange?: RangeRef;
   targetOrigin?: { row: Row; column: Column };
+  operation?: CellShiftSpec['operation'];
+  axis?: CellShiftSpec['axis'];
 }

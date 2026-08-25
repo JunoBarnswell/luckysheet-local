@@ -67,7 +67,7 @@ class MutationDescriptorRegistryTest {
                 "table.add", "table.remove", "name.set", "name.remove",
                 "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set", "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source",
-                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.shifted", "cells.shifted.restore", "rows.permuted",
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
         ), Set.copyOf(registry.acceptedIds()));
     }
@@ -335,20 +335,20 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
-    void boundedShiftAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
+    void cellInsertAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"notes":[{"row":0,"column":0,"note":{"id":"n1"}}],"commentThreads":[],"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
                 """);
-        OperationMutation shift = new OperationMutation("cells.shifted", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"direction":"down"}
+        OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}}
                 """));
         JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
         assertEquals(1, current.path("sheets").get(0).path("notes").get(0).path("row").asInt());
 
-        OperationMutation restore = new OperationMutation("cells.shifted.restore", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"direction":"down","cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
+        OperationMutation restore = new OperationMutation("cells.inserted.restore", "sheet-1", mapper.readTree("""
+                {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
                 """));
         current = registry.prepare(current, restore, WorkbookAclRole.EDITOR).descriptor().apply(current, restore);
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());

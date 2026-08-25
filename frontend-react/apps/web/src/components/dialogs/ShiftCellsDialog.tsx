@@ -3,42 +3,48 @@ import { Button, Dialog, Stack, Text } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
 
-export type ShiftCellsDirection = 'down' | 'up' | 'right' | 'left';
+export type ShiftCellsAxis = 'row' | 'column';
+export type ShiftCellsOperation = 'insert' | 'delete';
 
 export interface ShiftCellsDialogProps {
   open: boolean;
   locale?: Locale;
+  operation: ShiftCellsOperation;
   onClose: () => void;
-  onShift: (direction: ShiftCellsDirection) => void;
+  onShift: (axis: ShiftCellsAxis) => void;
 }
 
-const DIRECTIONS: Array<{ id: ShiftCellsDirection; labelKey: HomeUiTextKey; hintKey: HomeUiTextKey }> = [
-  { id: 'down', labelKey: 'shiftDown', hintKey: 'shiftDownHint' },
-  { id: 'up', labelKey: 'shiftUp', hintKey: 'shiftUpHint' },
-  { id: 'right', labelKey: 'shiftRight', hintKey: 'shiftRightHint' },
-  { id: 'left', labelKey: 'shiftLeft', hintKey: 'shiftLeftHint' },
-];
+const DIRECTIONS: Record<ShiftCellsOperation, Array<{ id: ShiftCellsAxis; labelKey: HomeUiTextKey; hintKey: HomeUiTextKey }>> = {
+  insert: [
+    { id: 'row', labelKey: 'shiftDown', hintKey: 'shiftDownHint' },
+    { id: 'column', labelKey: 'shiftRight', hintKey: 'shiftRightHint' },
+  ],
+  delete: [
+    { id: 'row', labelKey: 'shiftUp', hintKey: 'shiftUpHint' },
+    { id: 'column', labelKey: 'shiftLeft', hintKey: 'shiftLeftHint' },
+  ],
+};
 
-export function ShiftCellsDialog({ open, locale, onClose, onShift }: ShiftCellsDialogProps): React.ReactElement | null {
-  const [direction, setDirection] = useState<ShiftCellsDirection>('down');
+export function ShiftCellsDialog({ open, locale, operation, onClose, onShift }: ShiftCellsDialogProps): React.ReactElement | null {
+  const [axis, setAxis] = useState<ShiftCellsAxis>('row');
   const activeLocale = resolveHomeLocale(locale);
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title={homeText(activeLocale, 'insertDeleteCells')}
+      title={operation === 'insert' ? homeText(activeLocale, 'insertCells') : homeText(activeLocale, 'deleteCells')}
       closeLabel={homeText(activeLocale, 'close')}
-      testId="shift-cells-dialog"
+      testId={`${operation}-cells-dialog`}
       footer={(
         <>
           <Button size="sm" variant="ghost" onClick={onClose}>{homeText(activeLocale, 'cancel')}</Button>
           <Button
             size="sm"
             variant="primary"
-            data-testid="shift-cells-apply"
+            data-testid={`${operation}-cells-apply`}
             onClick={() => {
-              onShift(direction);
+              onShift(axis);
               onClose();
             }}
           >
@@ -48,14 +54,14 @@ export function ShiftCellsDialog({ open, locale, onClose, onShift }: ShiftCellsD
       )}
     >
       <Stack gap="xs">
-        {DIRECTIONS.map((entry) => (
+        {DIRECTIONS[operation].map((entry) => (
           <Button
             key={entry.id}
             size="sm"
-            variant={direction === entry.id ? 'secondary' : 'ghost'}
+            variant={axis === entry.id ? 'secondary' : 'ghost'}
             className="h-auto justify-start px-3 py-2 text-left"
-            aria-pressed={direction === entry.id}
-            onClick={() => setDirection(entry.id)}
+            aria-pressed={axis === entry.id}
+            onClick={() => setAxis(entry.id)}
           >
             <Stack gap="none" className="items-start">
               <Text size="sm" weight="medium">{homeText(activeLocale, entry.labelKey)}</Text>

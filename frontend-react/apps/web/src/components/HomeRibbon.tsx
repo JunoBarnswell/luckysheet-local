@@ -256,8 +256,8 @@ export function HomeRibbon({
           {compact ? (
             <DropdownMenu align="left" trigger={<Button aria-label="Cells" icon="columns" iconOnly size="sm" variant="ghost" className="m-5 !h-10 !w-10 rounded-none" />}>
               <Stack gap="none" className="min-w-[13rem] p-1">
-                {command('cells.insert', { className: 'w-full justify-start' })}
-                {command('cells.delete', { className: 'w-full justify-start' })}
+                {renderCommand('insertCells', { className: 'w-full justify-start' })}
+                {renderCommand('deleteCells', { className: 'w-full justify-start' })}
                 {renderCommand('insertColumnHome', { className: 'w-full justify-start' })}
                 {renderCommand('deleteColumn', { className: 'w-full justify-start' })}
                 <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>列宽…</Button>
@@ -270,10 +270,10 @@ export function HomeRibbon({
           ) : (
             <Inline gap="none" className="h-[78px] px-1 pt-1">
               <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'insert')} icon="plus" type="button">{homeText(locale, 'insert')}</Tile>}>
-                <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('insertRowHome', { className: 'w-full justify-start' })}{renderCommand('insertColumnHome', { className: 'w-full justify-start' })}{renderCommand('shiftCells', { className: 'w-full justify-start' })}</Stack>
+                <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('insertRowHome', { className: 'w-full justify-start' })}{renderCommand('insertColumnHome', { className: 'w-full justify-start' })}{renderCommand('insertCells', { className: 'w-full justify-start' })}</Stack>
               </DropdownMenu>
               <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'delete')} icon="trash" type="button">{homeText(locale, 'delete')}</Tile>}>
-                <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('deleteRow', { className: 'w-full justify-start' })}{renderCommand('deleteColumn', { className: 'w-full justify-start' })}{renderCommand('shiftCells', { className: 'w-full justify-start' })}</Stack>
+                <Stack gap="none" className="min-w-[13rem] p-1">{renderCommand('deleteRow', { className: 'w-full justify-start' })}{renderCommand('deleteColumn', { className: 'w-full justify-start' })}{renderCommand('deleteCells', { className: 'w-full justify-start' })}</Stack>
               </DropdownMenu>
               <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'format')} icon="columns" type="button">{homeText(locale, 'format')}</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">

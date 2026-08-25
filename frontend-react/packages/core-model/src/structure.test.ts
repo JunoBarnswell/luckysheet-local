@@ -71,7 +71,7 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
   });
 
-  it('shift-cells moves formulas and metadata as one bounded transform', () => {
+  it('cell-shift insert moves the complete affected band by the selection extent', () => {
     const workbook = new WorkbookModel('unit-shift-cells', 'Shift Cells');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(1, 1, { value: null, formula: '=A1+B1' });
@@ -79,15 +79,56 @@ describe('structural operations', () => {
     sheet.commentThreads.push({ id: 'c1', sheetId: sheet.id, row: 1, column: 1, author: 'u', text: 'comment', createdAt: 'now', replies: [] });
 
     StructuralTransform.apply(workbook, {
-      kind: 'shift-cells-down',
+      kind: 'cell-shift',
       sheetId: sheet.id,
-      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 },
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      operation: 'insert',
+      axis: 'row',
     });
 
     assert.equal(sheet.cells.get(2, 1)?.formula, '=A2+B2');
     assert.equal(sheet.cells.get(1, 1), undefined);
     assert.ok(sheet.notes.has('2:1'));
     assert.equal(sheet.commentThreads[0]?.row, 2);
+  });
+
+  it('cell-shift uses the selected height and width for insert and delete', () => {
+    const workbook = new WorkbookModel('unit-shift-extent', 'Shift Extent');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 8;
+    sheet.columnCount = 8;
+    sheet.cells.set(3, 0, { value: 'row-source' });
+    sheet.cells.set(0, 3, { value: 'column-source' });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 1 },
+      operation: 'insert', axis: 'row',
+    });
+    assert.equal(sheet.cells.get(5, 0)?.value, 'row-source');
+    assert.equal(sheet.cells.get(3, 0), undefined);
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 1, endColumn: 2 },
+      operation: 'insert', axis: 'column',
+    });
+    assert.equal(sheet.cells.get(0, 5)?.value, 'column-source');
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 1 },
+      operation: 'delete', axis: 'row',
+    });
+    assert.equal(sheet.cells.get(3, 0)?.value, 'row-source');
+    assert.equal(sheet.cells.get(5, 0), undefined);
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 1, endColumn: 2 },
+      operation: 'delete', axis: 'column',
+    });
+    assert.equal(sheet.cells.get(0, 3)?.value, 'column-source');
   });
 
   it('structural row shifts update chart source ranges in the canonical drawing payload', () => {
@@ -176,7 +217,7 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
   });
 
-  it('rejects a bounded shift that would silently drop an anchored object', () => {
+  it('rejects a cell shift that would silently drop an anchored object', () => {
     const workbook = new WorkbookModel('unit-shift-reject', 'Shift Reject');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(1, 0, { value: 'keep' });
@@ -189,11 +230,14 @@ describe('structural operations', () => {
       transform: { x: 0, y: 0, width: 20, height: 20 },
       zIndex: 0,
     });
+    sheet.rowCount = 2;
     assert.throws(() => StructuralTransform.apply(workbook, {
-      kind: 'shift-cells-down',
+      kind: 'cell-shift',
       sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
-    }), /drawing drawing-edge would leave/);
+      operation: 'insert',
+      axis: 'row',
+    }), /outside worksheet bounds|discard data/);
     assert.equal(sheet.cells.get(1, 0)?.value, 'keep');
     assert.equal(sheet.drawings[0]?.anchor.row, 1);
   });

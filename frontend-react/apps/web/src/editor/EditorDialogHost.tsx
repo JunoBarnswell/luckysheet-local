@@ -81,8 +81,9 @@ export function EditorDialogHost({
       <ShiftCellsDialog
         open={state.dialogs.active === 'shift-cells'}
         locale={locale}
+        operation={state.dialogs.cellShiftOperation}
         onClose={session.closeShiftCells.bind(session)}
-        onShift={(direction) => session.shiftCells(direction)}
+        onShift={(axis) => session.applyCellShift(state.dialogs.cellShiftOperation, axis)}
       />
       <MergeConfirmDialog
         open={state.dialogs.active === 'merge-confirm'}
