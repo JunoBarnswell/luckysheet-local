@@ -60,15 +60,21 @@ export type PivotSubtotalLocation = 'top' | 'bottom' | 'off';
 
 export interface PivotSourceRelationship {
   id: string;
-  left: { sheetId: SheetId; fieldId: string };
-  right: { sheetId: SheetId; fieldId: string };
+  left: { sourceId: string; fieldId: string };
+  right: { sourceId: string; fieldId: string };
   join: 'inner' | 'left';
+}
+
+/** A worksheet range is a named logical source node, not merely a position in an array. */
+export interface PivotWorksheetSourceRange {
+  sourceId: string;
+  range: RangeRef;
 }
 
 /** Canonical Pivot source. */
 export type PivotWorksheetDataSource =
   | { kind: 'worksheet-range'; range: RangeRef }
-  | { kind: 'worksheet-ranges'; ranges: RangeRef[]; relationships: PivotSourceRelationship[] };
+  | { kind: 'worksheet-ranges'; ranges: PivotWorksheetSourceRange[]; relationships: PivotSourceRelationship[] };
 
 export type PivotSource = PivotWorksheetDataSource
   | { kind: 'table'; tableId: string }
@@ -257,6 +263,8 @@ export interface PivotDefinition {
 export type PivotModel = PivotDefinition;
 
 export interface PivotSourceRowPath {
+  /** Logical source node identity; required for multi-range joins and optional for legacy single-source detail payloads. */
+  sourceId?: string;
   sheetId: SheetId;
   row: Row;
 }

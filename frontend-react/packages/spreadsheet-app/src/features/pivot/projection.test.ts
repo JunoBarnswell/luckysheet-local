@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { WorkbookModel, type PivotModel } from '@react-sheets/core-model';
 import {
   aggregatePivotValues,
   buildPivotGridProjection,
@@ -18,6 +18,53 @@ function workbookWithData(): WorkbookModel {
   return workbook;
 }
 
+function relationalWorkbook(): WorkbookModel {
+  const workbook = new WorkbookModel('pivot-relations', 'Pivot Relations');
+  const sheet = workbook.getSheet('sheet-1');
+  const ranges = [
+    [['CustomerId', 'ProductId', 'Amount'], ['c1', 'p1', 100], ['c2', 'p2', 200], ['c1', 'p2', 50]],
+    [['CustomerId', 'Region'], ['c1', 'East'], ['c2', 'West']],
+    [['ProductId', 'Category'], ['p1', 'Widget'], ['p2', 'Gadget']],
+  ];
+  const offsets = [0, 4, 7];
+  ranges.forEach((rows, rangeIndex) => rows.forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, offsets[rangeIndex]! + columnIndex, { value }))));
+  // The Products range is intentionally on the same worksheet as Orders and
+  // Customers; sourceId, rather than sheetId, is the logical identity.
+  return workbook;
+}
+
+function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
+  const ranges = {
+    orders: { sourceId: 'orders', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 } },
+    customers: { sourceId: 'customers', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 4, endColumn: 5 } },
+    products: { sourceId: 'products', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 7, endColumn: 8 } },
+  } as const;
+  const source = {
+    kind: 'worksheet-ranges' as const,
+    ranges: order.map((sourceId) => ranges[sourceId as keyof typeof ranges]),
+    relationships: [
+      { id: 'orders-customers', left: { sourceId: 'orders', fieldId: 'source:orders:column:0' }, right: { sourceId: 'customers', fieldId: 'source:customers:column:0' }, join: 'left' as const },
+      { id: 'orders-products', left: { sourceId: 'orders', fieldId: 'source:orders:column:1' }, right: { sourceId: 'products', fieldId: 'source:products:column:0' }, join: 'left' as const },
+    ],
+  };
+  const pivot: PivotModel = {
+    schema: 'PivotDefinition' as const,
+    id: `pivot-relational-${order.join('-')}`,
+    source,
+    target: { sheetId: 'sheet-1', anchor: { row: 10, column: 0 } },
+    fieldCatalog: { fields: [] },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+    layout: { rows: [], columns: [], filters: [], values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+  };
+  const catalog = getPivotFieldCatalog(workbook, pivot);
+  const region = catalog.fields.find((field) => field.name === 'Region')!;
+  const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+  pivot.fieldCatalog = catalog;
+  pivot.layout.rows = [{ fieldId: region.fieldId }];
+  pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+  return pivot;
+}
+
 describe('native PivotGridProjection contract', () => {
   it('builds a complete canonical definition with stable field IDs', () => {
     const workbook = workbookWithData();
@@ -28,6 +75,27 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(pivot.source, { kind: 'worksheet-range', range: sourceRange });
     assert.equal(pivot.target.sheetId, 'sheet-1');
     assert.ok(pivot.fieldCatalog.fields.every((field) => field.fieldId.length > 0));
+  });
+
+  it('plans star joins by source identity, is invariant to source order, and preserves provenance', () => {
+    const workbook = relationalWorkbook();
+    const first = relationalPivot(workbook, ['orders', 'customers', 'products']);
+    const reordered = relationalPivot(workbook, ['products', 'orders', 'customers']);
+    const firstResult = computePivotResult(workbook, first);
+    const reorderedResult = computePivotResult(workbook, reordered);
+    assert.deepEqual(firstResult.rows.map((node) => [node.label, node.values[0]?.values]), reorderedResult.rows.map((node) => [node.label, node.values[0]?.values]));
+    const paths = firstResult.rows[0]?.values[0]?.sourceRowPaths ?? [];
+    assert.deepEqual([...new Set(paths.map((path) => path.sourceId))].sort(), ['customers', 'orders', 'products']);
+  });
+
+  it('rejects duplicate lookup keys and incompatible relationship key types before aggregation', () => {
+    const duplicate = relationalWorkbook();
+    duplicate.getSheet('sheet-1').cells.set(2, 4, { value: 'c1' });
+    duplicate.getSheet('sheet-1').cells.set(2, 5, { value: 'Duplicate' });
+    assert.throws(() => relationalPivot(duplicate, ['orders', 'customers', 'products']), /lookup key is not unique/);
+    const incompatible = relationalWorkbook();
+    incompatible.getSheet('sheet-1').cells.set(1, 4, { value: 1 });
+    assert.throws(() => relationalPivot(incompatible, ['orders', 'customers', 'products']), /key types are incompatible/);
   });
 
   it('keeps typed members distinct and treats manual all as no filter', () => {

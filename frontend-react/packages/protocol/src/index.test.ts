@@ -254,3 +254,38 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
   validatePivotDefinition(base);
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'region', subtotal: { mode: 'custom', functions: [] } }] } }), /custom subtotal functions/);
 });
+
+test('Pivot worksheet-ranges require stable source nodes and graph endpoints', () => {
+  const base = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-relations',
+    source: {
+      kind: 'worksheet-ranges' as const,
+      ranges: [
+        { sourceId: 'orders', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 } },
+        { sourceId: 'customers', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 4, endColumn: 5 } },
+        { sourceId: 'products', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 7, endColumn: 8 } },
+      ],
+      relationships: [
+        { id: 'orders-customers', left: { sourceId: 'orders', fieldId: 'source:orders:column:0' }, right: { sourceId: 'customers', fieldId: 'source:customers:column:0' }, join: 'left' as const },
+        { id: 'orders-products', left: { sourceId: 'orders', fieldId: 'source:orders:column:1' }, right: { sourceId: 'products', fieldId: 'source:products:column:0' }, join: 'left' as const },
+      ],
+    },
+    target: { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [] },
+    layout: { rows: [], columns: [], filters: [], values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+  };
+  validatePivotDefinition(base);
+  const inner = {
+    ...base,
+    source: {
+      ...base.source,
+      relationships: base.source.relationships.map((relationship) => ({ ...relationship, join: 'inner' as const })),
+    },
+  };
+  validatePivotDefinition(inner);
+  assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, ranges: [{ sourceId: 'orders', range: base.source.ranges[0]!.range }, { sourceId: 'orders', range: base.source.ranges[1]!.range }, base.source.ranges[2]! ], relationships: [] } }), /sourceId is duplicated/);
+  assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, relationships: [{ ...base.source.relationships[0]!, left: { sheetId: 'sheet-1', fieldId: 'source:orders:column:0' } }] } }), /Pivot relationship field/);
+  assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, relationships: [...base.source.relationships, { id: 'products-customers', left: { sourceId: 'products', fieldId: 'source:products:column:0' }, right: { sourceId: 'customers', fieldId: 'source:customers:column:0' }, join: 'inner' as const }] } }), /graph contains a cycle/);
+});

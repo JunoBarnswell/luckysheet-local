@@ -449,7 +449,7 @@ final class StructuralSnapshotReducer {
         boolean ownerTarget = targetSheetId.equals(owner.path("id").asText());
         for (JsonNode raw : SnapshotMutationSupport.array(owner, "pivots")) {
             ObjectNode pivot = requireObject(raw, "Pivot");
-            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
             PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, range -> shiftRange(root, range, targetSheetId, axis, at, count, direction));
             ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
             JsonNode anchorRaw = target.get("anchor");
@@ -755,7 +755,7 @@ final class StructuralSnapshotReducer {
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) remapRangeRows(requireObject(table, "Sheet table").get("range"), range, rowMap);
         for (JsonNode rawPivot : SnapshotMutationSupport.array(sheet, "pivots")) {
             ObjectNode pivot = requireObject(rawPivot, "Pivot");
-            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
             PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, source -> remapRangeRows(source, range, rowMap));
             ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
             ObjectNode anchor = PivotMutationDescriptor.requiredAnchor(target);

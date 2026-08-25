@@ -2877,7 +2877,7 @@ export class WorkbookSession {
       sheetId: this.activeSheetId,
       pivotId,
       label,
-      sourceRowPaths: paths.map((path) => ({ sheetId: path.sheetId, row: path.row })),
+      sourceRowPaths: paths.map((path) => structuredClone(path)),
       targetSheetId,
       target: { row: 0, column: 0 },
     });
