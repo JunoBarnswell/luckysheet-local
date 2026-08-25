@@ -1,11 +1,11 @@
 import React from 'react';
-import { Button, Divider, DropdownMenu, Inline, Stack, Text, type RibbonLayoutState } from '@react-sheets/ui-system';
+import { Box, Button, Divider, DropdownMenu, Inline, Stack, Text, type RibbonLayoutState } from '@react-sheets/ui-system';
 import { getRibbonGroupDefinition, type RibbonCommandId } from '@react-sheets/spreadsheet-app';
-import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { Locale } from '../i18n';
 import { insertText, translateRibbonText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
-import { INSERT_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { INSERT_CHART_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
@@ -13,6 +13,7 @@ export interface InsertRibbonProps {
   disabled: boolean;
   renderCommand: (id: RibbonCommandId, options?: HomeRibbonCommandOptions) => React.ReactNode;
   onInsertChart: (type: ChartDrawingPayload['chartType']) => void;
+  onInsertDataChart: (type: DataChartPlotType) => void;
   onInsertSparkline: (type: SparklineModel['type']) => void;
   onInsertShape: (type: ShapeDrawingPayload['type']) => void;
   onInsertFormControl: (type: FormControlType) => void;
@@ -37,10 +38,17 @@ function RibbonLarge({ children, icon, onClick, disabled, title }: { children: R
   return <Button aria-label={title} title={title} disabled={disabled} icon={icon} size="sm" variant="ghost" className="!h-[72px] !min-h-0 !w-[64px] flex-col gap-1 rounded-none px-1 text-[12px] leading-4 [&>svg]:!h-7 [&>svg]:!w-7" onClick={onClick}>{children}</Button>;
 }
 
-export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertSparkline, onInsertShape, onInsertFormControl }: InsertRibbonProps) {
+export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertDataChart, onInsertSparkline, onInsertShape, onInsertFormControl }: InsertRibbonProps) {
+  const dataChartMenu = (
+    <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="data-chart" title={insertText(locale, 'dataChart')}>{insertText(locale, 'dataChart')}</RibbonLarge>}>
+      <Stack gap="none" className="min-w-[14rem] p-1">
+        {INSERT_DATA_CHART_VARIANTS.map((variant) => <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertDataChart(variant.value)}>{insertText(locale, variant.labelKey)}</Button>)}
+      </Stack>
+    </DropdownMenu>
+  );
   if (layout.width < 1024) {
-    const commandIds: RibbonCommandId[] = ['tableSheet', 'ganttSheet', 'reportSheet', 'worksheetTable', 'pivotTable', 'chartBuilder', 'barcode', 'sparkline', 'dataChart', 'shapesLines', 'camera', 'formControls', 'hyperlink', 'checkbox', 'textbox'];
-    return <Inline gap="xs" className="h-[96px] items-center overflow-hidden">{commandIds.map((id) => <React.Fragment key={id}>{renderCommand(id, { iconOnly: true, className: '!h-10 !w-10' })}</React.Fragment>)}</Inline>;
+    const commandIds: RibbonCommandId[] = ['tableSheet', 'ganttSheet', 'reportSheet', 'worksheetTable', 'pivotTable', 'chartBuilder', 'barcode', 'sparkline', 'shapesLines', 'camera', 'formControls', 'hyperlink', 'checkbox', 'textbox'];
+    return <Inline gap="xs" className="h-[96px] items-center overflow-hidden">{commandIds.map((id) => <React.Fragment key={id}>{renderCommand(id, { iconOnly: true, className: '!h-10 !w-10' })}</React.Fragment>)}<Box className="flex h-10 w-10 items-center justify-center">{dataChartMenu}</Box></Inline>;
   }
   return (
     <Inline gap="none" className="h-[102px] min-w-max flex-nowrap items-start overflow-hidden" data-testid="insert-ribbon-groups">
@@ -64,7 +72,7 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
         </DropdownMenu>
       </InsertGroup>
       <Divider orientation="vertical" className="h-[96px]" />
-      <InsertGroup id="insertDataCharts" locale={locale}>{renderCommand('dataChart', { tile: true })}</InsertGroup>
+      <InsertGroup id="insertDataCharts" locale={locale}>{dataChartMenu}</InsertGroup>
       <Divider orientation="vertical" className="h-[96px]" />
       <InsertGroup id="illustrations" locale={locale}>
         {renderCommand('picture', { tile: true })}

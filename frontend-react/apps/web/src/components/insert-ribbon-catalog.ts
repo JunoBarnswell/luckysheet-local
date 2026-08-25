@@ -1,4 +1,4 @@
-import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { IconName } from '@react-sheets/ui-system';
 import type { InsertUiTextKey } from '../i18n';
 
@@ -23,6 +23,16 @@ export const INSERT_CHART_VARIANTS = [
   { id: 'chart.scatter', value: 'scatter', icon: 'chart-scatter', labelKey: 'chartScatter', ariaLabelKey: 'chartScatter', tooltipKey: 'chartScatter' },
   { id: 'chart.combo', value: 'combo', icon: 'data-chart', labelKey: 'chartCombo', ariaLabelKey: 'chartCombo', tooltipKey: 'chartCombo' },
 ] as const satisfies readonly InsertVariantDefinition<ChartGalleryType>[];
+
+export const INSERT_DATA_CHART_VARIANTS = [
+  { id: 'data-chart.column', value: 'column', icon: 'chart-column', labelKey: 'dataChartColumn', ariaLabelKey: 'dataChartColumn', tooltipKey: 'dataChartColumn' },
+  { id: 'data-chart.bar', value: 'bar', icon: 'chart-bar', labelKey: 'dataChartBar', ariaLabelKey: 'dataChartBar', tooltipKey: 'dataChartBar' },
+  { id: 'data-chart.line', value: 'line', icon: 'chart-line', labelKey: 'dataChartLine', ariaLabelKey: 'dataChartLine', tooltipKey: 'dataChartLine' },
+  { id: 'data-chart.area', value: 'area', icon: 'chart-area', labelKey: 'dataChartArea', ariaLabelKey: 'dataChartArea', tooltipKey: 'dataChartArea' },
+  { id: 'data-chart.pie', value: 'pie', icon: 'chart-pie', labelKey: 'dataChartPie', ariaLabelKey: 'dataChartPie', tooltipKey: 'dataChartPie' },
+  { id: 'data-chart.doughnut', value: 'doughnut', icon: 'chart-pie', labelKey: 'dataChartDoughnut', ariaLabelKey: 'dataChartDoughnut', tooltipKey: 'dataChartDoughnut' },
+  { id: 'data-chart.scatter', value: 'scatter', icon: 'chart-scatter', labelKey: 'dataChartScatter', ariaLabelKey: 'dataChartScatter', tooltipKey: 'dataChartScatter' },
+] as const satisfies readonly InsertVariantDefinition<DataChartPlotType>[];
 
 export const INSERT_SPARKLINE_VARIANTS = [
   { id: 'sparkline.line', value: 'line', icon: 'chart-line', labelKey: 'sparklineLine', ariaLabelKey: 'sparklineLine', tooltipKey: 'sparklineLine' },

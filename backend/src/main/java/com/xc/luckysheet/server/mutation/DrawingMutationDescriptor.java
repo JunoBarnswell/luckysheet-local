@@ -41,7 +41,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
             case "drawing.transform" -> transform(sheet, params);
             case "drawing.transform.batch" -> transformBatch(sheet, params);
             case "drawing.anchor" -> anchor(root, sheet, mutation.sheetId(), params);
-            case "drawing.payload.update" -> payload(sheet, params);
+            case "drawing.payload.update" -> payload(root, sheet, params);
             case "drawing.zorder" -> zOrder(sheet, params);
             case "drawing.zorder.restore" -> restoreZOrder(sheet, params);
             default -> throw ServiceException.validation("Unsupported drawing mutation: " + id());
@@ -108,12 +108,12 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         drawing.set("anchor", anchor.deepCopy());
     }
 
-    private void payload(ObjectNode sheet, ObjectNode params) {
+    private void payload(ObjectNode root, ObjectNode sheet, ObjectNode params) {
         String payloadId = SnapshotMutationSupport.text(params, "payloadId");
         ObjectNode before = SnapshotMutationSupport.requiredObject(params, "before");
         ObjectNode after = SnapshotMutationSupport.requiredObject(params, "after");
         ObjectNode drawing = drawingByPayload(sheet, payloadId);
-        validatePayloadPair(drawing, after);
+        validatePayloadPair(root, drawing, after);
         ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
         JsonNode current = payloads.get(payloadId);
         if (current == null || !current.isObject()) throw ServiceException.notFound("Drawing payload not found: " + payloadId);
@@ -180,10 +180,10 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         validateTransformObject(drawing.path("transform"));
         JsonNode zIndex = drawing.get("zIndex");
         if (zIndex == null || !zIndex.isNumber() || !Double.isFinite(zIndex.asDouble())) throw ServiceException.validation("Drawing zIndex is invalid");
-        validatePayloadPair(drawing, payload);
+        validatePayloadPair(root, drawing, payload);
     }
 
-    private void validatePayloadPair(ObjectNode drawing, ObjectNode payload) {
+    private void validatePayloadPair(ObjectNode root, ObjectNode drawing, ObjectNode payload) {
         String drawingKind = SnapshotMutationSupport.text(drawing, "kind");
         String payloadKind = SnapshotMutationSupport.text(payload, "kind");
         if (!Set.of("image", "shape", "textbox", "chart", "data-chart", "camera", "form-control", "slicer", "timeline").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
@@ -192,6 +192,39 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if (payloadKind.equals("chart") && !SnapshotMutationSupport.text(drawing, "payloadId").equals(SnapshotMutationSupport.text(payload, "chartId"))) {
             throw ServiceException.validation("Chart payload identity does not match drawing payloadId");
         }
+        if (payloadKind.equals("data-chart")) validateDataChartPayload(root, payload);
+    }
+
+    private void validateDataChartPayload(ObjectNode root, ObjectNode payload) {
+        String plotType = SnapshotMutationSupport.text(payload, "plotType");
+        if (!Set.of("column", "bar", "line", "area", "pie", "doughnut", "scatter", "radar", "treemap", "funnel").contains(plotType)) {
+            throw ServiceException.validation("Data Chart plotType is invalid");
+        }
+        ObjectNode source = SnapshotMutationSupport.requiredObject(payload, "source");
+        String sourceKind = SnapshotMutationSupport.text(source, "kind");
+        if (sourceKind.equals("table")) SnapshotMutationSupport.text(source, "tableId");
+        else if (sourceKind.equals("report-sheet")) SnapshotMutationSupport.range(root, source.get("range"));
+        else throw ServiceException.validation("Data Chart source kind is invalid");
+        ObjectNode bindings = SnapshotMutationSupport.requiredObject(payload, "bindings");
+        for (String area : List.of("values", "category", "details", "color", "size", "tooltip", "filter")) {
+            ArrayNode entries = SnapshotMutationSupport.requiredArray(bindings, area);
+            for (JsonNode raw : entries) {
+                if (!raw.isObject()) throw ServiceException.validation("Data Chart binding must be an object");
+                ObjectNode entry = (ObjectNode) raw;
+                SnapshotMutationSupport.text(entry, "fieldId");
+                if (!area.equals(SnapshotMutationSupport.text(entry, "area"))) throw ServiceException.validation("Data Chart binding area is inconsistent");
+                if (!Set.of("sum", "average", "count", "min", "max", "none").contains(SnapshotMutationSupport.text(entry, "aggregate"))) throw ServiceException.validation("Data Chart binding aggregate is invalid");
+                if (entry.has("sort") && !Set.of("asc", "desc").contains(entry.path("sort").asText())) throw ServiceException.validation("Data Chart binding sort is invalid");
+            }
+        }
+        ObjectNode inspector = SnapshotMutationSupport.requiredObject(payload, "inspector");
+        if (!Set.of("top", "bottom", "left", "right", "none").contains(SnapshotMutationSupport.text(inspector, "legendPosition"))) throw ServiceException.validation("Data Chart legend position is invalid");
+        if (!inspector.path("showDataLabels").isBoolean()) throw ServiceException.validation("Data Chart data-label setting is invalid");
+        if (!inspector.path("showHiddenData").isBoolean()) throw ServiceException.validation("Data Chart hidden-data setting is invalid");
+        SnapshotMutationSupport.requiredObject(inspector, "chartArea");
+        SnapshotMutationSupport.requiredObject(inspector, "plotArea");
+        ObjectNode axis = SnapshotMutationSupport.requiredObject(inspector, "axis");
+        if (!axis.path("showGridlines").isBoolean()) throw ServiceException.validation("Data Chart axis setting is invalid");
     }
 
     private void validateAnchor(ObjectNode root, String sheetId, ObjectNode anchor) {

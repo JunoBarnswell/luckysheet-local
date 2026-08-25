@@ -27,6 +27,7 @@ export type RibbonTabId =
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
+  | 'dataChart'
   | 'pivot'
   | 'formulaAudit'
   | 'definedNames'

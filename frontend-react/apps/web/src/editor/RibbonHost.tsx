@@ -143,7 +143,7 @@ export function RibbonHost({
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
       onApplyBarcode={() => session.applyBarcode('qr')}
-      onCreateDataChart={() => session.insertDataChart('column')}
+      onCreateDataChart={(type) => session.insertDataChart(type)}
       onCreateCamera={() => session.insertCamera()}
       onCreateFormControl={(type) => session.insertFormControl(type)}
       onApplyCheckbox={() => session.setCellEditor({ kind: 'checkbox' })}

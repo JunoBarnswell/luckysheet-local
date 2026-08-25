@@ -39,4 +39,31 @@ describe('insert feature', () => {
     const restored = WorkbookModel.fromSnapshot(workbook.snapshot());
     assert.equal(restored.getSheet('sheet-1').drawingPayloads.get('camera-payload')?.kind, 'camera');
   });
+
+  it('creates and updates a canonical Data Chart with typed bindings and undo', () => {
+    const workbook = new WorkbookModel('data-chart-command-test', 'Data Chart');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const table: WorkbookTableModel = {
+      id: 'data-table', name: 'Sales', sourceSheetId: 'sheet-1', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }, rowCount: 3,
+      fields: [{ id: 'category', name: 'Category', ordinal: 0, type: 'text' }, { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' }], blockSize: 1024, blocks: [], revision: 0,
+    };
+    const drawing = { id: 'data-drawing', sheetId: 'sheet-1', kind: 'data-chart' as const, payloadId: 'data-payload', anchor: { kind: 'absolute' as const }, transform: { x: 0, y: 0, width: 320, height: 200, rotation: 0 }, zIndex: 0 };
+    const payload = { kind: 'data-chart' as const, source: { kind: 'table' as const, tableId: table.id }, plotType: 'column' as const, bindings: { values: [{ area: 'values' as const, fieldId: 'amount', aggregate: 'sum' as const }], category: [{ area: 'category' as const, fieldId: 'category', aggregate: 'none' as const }], details: [], color: [], size: [], tooltip: [], filter: [] }, inspector: { title: 'Sales', legendPosition: 'bottom' as const, showDataLabels: false, showHiddenData: true, chartArea: { fill: '#fff', border: '#000', borderWidth: 1 }, plotArea: { fill: '#fff' }, axis: { showGridlines: true } } };
+    runtime.execute('dataChart.create', { sheetId: 'sheet-1', drawing, payload, table });
+    assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('data-payload')?.kind, 'data-chart');
+    runtime.execute('dataChart.update', { sheetId: 'sheet-1', drawingId: drawing.id, payload: { ...payload, plotType: 'line', inspector: { ...payload.inspector, title: 'Updated' } } });
+    const updated = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
+    assert.equal(updated?.kind === 'data-chart' ? updated.plotType : undefined, 'line');
+    const invalid = structuredClone(payload) as typeof payload & { bindings: typeof payload.bindings };
+    (invalid.bindings.values[0] as { area: string }).area = 'category';
+    assert.throws(() => runtime.execute('dataChart.update', { sheetId: 'sheet-1', drawingId: drawing.id, payload: invalid as never }), /binding is invalid/);
+    const rejectedState = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
+    assert.equal(rejectedState?.kind === 'data-chart' ? rejectedState.plotType : undefined, 'line');
+    assert.equal(runtime.undo(), true);
+    const restored = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
+    assert.equal(restored?.kind === 'data-chart' ? restored.inspector.title : undefined, 'Sales');
+  });
 });

@@ -1,4 +1,4 @@
-import type { BarcodeCellPresentation, CellData, DataChartDrawingPayload, DrawingObject, FormControlDrawingPayload, ImageCellPresentation, RangeRef, SheetSnapshot, WorkbookTableModel } from '@react-sheets/core-model';
+import type { BarcodeCellPresentation, CellData, DataChartBindingArea, DataChartDrawingPayload, DrawingObject, FormControlDrawingPayload, ImageCellPresentation, RangeRef, SheetSnapshot, WorkbookTableModel, WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface AdvancedSheetCreateParams {
@@ -18,6 +18,12 @@ export interface DataChartCreateParams {
   drawing: DrawingObject;
   payload: DataChartDrawingPayload;
   table?: WorkbookTableModel;
+}
+
+export interface DataChartUpdateParams {
+  sheetId: string;
+  drawingId: string;
+  payload: DataChartDrawingPayload;
 }
 
 export interface CellImageApplyParams { sheetId: string; row: number; column: number; presentation: ImageCellPresentation }
@@ -49,7 +55,12 @@ function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: 
 
 function executeDataChartCreate(params: DataChartCreateParams, context: CommandContext) {
   if (params.drawing.kind !== 'data-chart' || params.payload.kind !== 'data-chart') throw new Error('DataChart drawing and payload kinds must match');
-  const affectedRanges: RangeRef[] = params.table?.sourceRange ? [params.table.sourceRange] : [{ sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+  const boundTable = params.payload.source.kind === 'table' ? params.table ?? context.workbook.dataModel.tables.get(params.payload.source.tableId) : undefined;
+  if (params.payload.source.kind === 'table' && !boundTable) throw new Error(`Data Chart table binding not found: ${params.payload.source.tableId}`);
+  validateDataChartPayload(params.payload, boundTable);
+  const affectedRanges: RangeRef[] = params.payload.source.kind === 'report-sheet'
+    ? [params.payload.source.range]
+    : params.table?.sourceRange ? [params.table.sourceRange] : [{ sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
   const table = params.table;
   const addsTable = Boolean(table && !context.workbook.dataModel.tables.has(table.id));
   if (addsTable && table) {
@@ -68,6 +79,61 @@ function executeDataChartCreate(params: DataChartCreateParams, context: CommandC
     },
   });
   return { operationId: context.operationId, mutationCount: addsTable ? 2 : 1, affectedRanges };
+}
+
+const DATA_CHART_AREAS: readonly DataChartBindingArea[] = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'];
+const DATA_CHART_AGGREGATES = new Set(['sum', 'average', 'count', 'min', 'max', 'none']);
+const DATA_CHART_PLOT_TYPES = new Set(['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'radar', 'treemap', 'funnel']);
+
+function validateDataChartPayload(payload: DataChartDrawingPayload, table?: WorkbookTableModel): void {
+  if (payload.kind !== 'data-chart' || !DATA_CHART_PLOT_TYPES.has(payload.plotType)) throw new Error('Data Chart payload plot type is invalid');
+  if (payload.source.kind === 'table') {
+    if (!payload.source.tableId.trim()) throw new Error('Data Chart table binding is required');
+    if (table && table.id !== payload.source.tableId) throw new Error('Data Chart table binding does not match the inserted table');
+  } else {
+    const range = payload.source.range;
+    if (!range.sheetId || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) throw new Error('Data Chart report-sheet binding range is invalid');
+  }
+  if (!payload.bindings || typeof payload.bindings !== 'object') throw new Error('Data Chart bindings are required');
+  for (const area of DATA_CHART_AREAS) {
+    const entries = payload.bindings[area];
+    if (!Array.isArray(entries)) throw new Error(`Data Chart binding area is missing: ${area}`);
+    for (const entry of entries) {
+      if (!entry || typeof entry.fieldId !== 'string' || !entry.fieldId.trim() || entry.area !== area || !DATA_CHART_AGGREGATES.has(entry.aggregate)) throw new Error(`Data Chart binding is invalid: ${area}`);
+      if (entry.sort !== undefined && entry.sort !== 'asc' && entry.sort !== 'desc') throw new Error(`Data Chart sort is invalid: ${area}`);
+    }
+  }
+  const inspector = payload.inspector;
+  if (!inspector || !['top', 'bottom', 'left', 'right', 'none'].includes(inspector.legendPosition) || typeof inspector.showDataLabels !== 'boolean') throw new Error('Data Chart inspector configuration is invalid');
+  if (!inspector.chartArea || !inspector.plotArea || !inspector.axis || typeof inspector.axis.showGridlines !== 'boolean') throw new Error('Data Chart inspector style is invalid');
+}
+
+function findDataChart(sheet: WorksheetModel, drawingId: string): { drawing: DrawingObject; payload: DataChartDrawingPayload } {
+  const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
+  const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+  if (!drawing || drawing.kind !== 'data-chart' || payload?.kind !== 'data-chart') throw new Error(`Unknown Data Chart drawing: ${drawingId}`);
+  return { drawing, payload };
+}
+
+function executeDataChartUpdate(params: DataChartUpdateParams, context: CommandContext) {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const current = findDataChart(sheet, params.drawingId);
+  const boundTable = params.payload.source.kind === 'table' ? context.workbook.dataModel.tables.get(params.payload.source.tableId) : undefined;
+  if (params.payload.source.kind === 'table' && !boundTable) throw new Error(`Data Chart table binding not found: ${params.payload.source.tableId}`);
+  validateDataChartPayload(params.payload, boundTable);
+  const affectedRanges: RangeRef[] = params.payload.source.kind === 'report-sheet'
+    ? [params.payload.source.range]
+    : (() => {
+      const table = context.workbook.dataModel.tables.get(params.payload.source.tableId);
+      return table?.sourceRange ? [table.sourceRange] : [{ sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+    })();
+  context.applyMutation({
+    id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId,
+    params: { sheetId: params.sheetId, payloadId: current.drawing.payloadId, before: current.payload, after: params.payload }, affectedRanges,
+    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: current.drawing.payloadId, before: params.payload, after: current.payload }, affectedRanges }],
+    apply: () => sheet.drawingPayloads.set(current.drawing.payloadId, structuredClone(params.payload)),
+  });
+  return { operationId: context.operationId, mutationCount: 1, affectedRanges };
 }
 
 function executeBarcodeApply(params: BarcodeApplyParams, context: CommandContext) {
@@ -98,6 +164,7 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<AdvancedSheetCreateParams>({ id: 'sheet.create.advanced', execute: executeAdvancedSheetCreate });
   runtime.registry.registerCommand<BarcodeApplyParams>({ id: 'cell.barcode.apply', execute: executeBarcodeApply });
   runtime.registry.registerCommand<DataChartCreateParams>({ id: 'dataChart.create', execute: executeDataChartCreate });
+  runtime.registry.registerCommand<DataChartUpdateParams>({ id: 'dataChart.update', execute: executeDataChartUpdate });
   runtime.registry.registerCommand<CellImageApplyParams>({
     id: 'cell.image.apply',
     execute: (params, context) => {
@@ -151,5 +218,5 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
       return { operationId: context.operationId, mutationCount, affectedRanges };
     },
   });
-  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'cell.image.apply', 'formControl.activate'];
+  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'dataChart.update', 'cell.image.apply', 'formControl.activate'];
 }
