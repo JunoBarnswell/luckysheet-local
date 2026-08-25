@@ -6,6 +6,7 @@ import type {
   PivotLayout,
   PivotModel,
   PivotShowAs,
+  PivotSourceRowPath,
   PivotValueField,
   RangeRef,
   WorkbookModel,
@@ -121,7 +122,7 @@ export interface PivotDrillDownTarget {
   pivotId: string;
   targetSheetId: string;
   target: { row: number; column: number };
-  sourceRowPaths: Array<{ sheetId: string; row: number }>;
+  sourceRowPaths: PivotSourceRowPath[];
 }
 
 export function createPivotDrillDownSheetName(pivot: PivotModel, label: string): string {

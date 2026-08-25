@@ -9,6 +9,7 @@ import type {
   PivotModel,
   PivotPresentation,
   PivotShowAs,
+  PivotSourceRowPath,
   ChartDrawingPayload,
   DrawingObject,
   RangeRef,
@@ -113,7 +114,7 @@ export interface PivotDrillDownParams {
   sheetId: string;
   pivotId: string;
   label: string;
-  sourceRowPaths: Array<{ sheetId: string; row: number }>;
+  sourceRowPaths: PivotSourceRowPath[];
   targetSheetId: string;
   target: { row: number; column: number };
 }
@@ -145,12 +146,18 @@ function pivotSourceRanges(pivot: PivotModel, workbook?: import('@react-sheets/c
   if (workbook) {
     try { return getPivotSourceRanges(workbook, pivot); } catch { /* validator/migration will report the source error */ }
   }
-  if (pivot.source.kind === 'worksheet-ranges') return structuredClone(pivot.source.ranges);
+  if (pivot.source.kind === 'worksheet-ranges') return pivot.source.ranges.map((sourceRange) => structuredClone(sourceRange.range));
   if (pivot.source.kind === 'worksheet-range') return [structuredClone(pivot.source.range)];
   return [];
 }
 
+function pivotSourceNodes(pivot: PivotModel, workbook?: import('@react-sheets/core-model').WorkbookModel): Array<{ sourceId?: string; range: RangeRef }> {
+  if (pivot.source.kind === 'worksheet-ranges') return pivot.source.ranges.map((sourceRange) => ({ sourceId: sourceRange.sourceId, range: structuredClone(sourceRange.range) }));
+  return pivotSourceRanges(pivot, workbook).map((range) => ({ range }));
+}
+
 interface DrillDownColumn {
+  sourceId?: string;
   range: RangeRef;
   column: number;
   label: string;
@@ -164,18 +171,19 @@ function sourceCellValue(cell: { value: unknown; formulaValue?: unknown } | unde
 function drillDownColumns(context: CommandContext, pivot: PivotModel): DrillDownColumn[] {
   const columns: DrillDownColumn[] = [];
   const labels = new Set<string>();
-  const ranges = pivotSourceRanges(pivot, context.workbook);
-  for (const range of ranges) {
+  const nodes = pivotSourceNodes(pivot, context.workbook);
+  for (const node of nodes) {
+    const { range } = node;
     const sheet = context.workbook.getSheet(range.sheetId);
     for (let column = range.startColumn; column <= range.endColumn; column += 1) {
       const raw = sheet.cells.get(range.startRow, column)?.value;
       const base = raw == null || raw === '' ? `Column ${column - range.startColumn + 1}` : String(raw);
       let label = base;
-      if (labels.has(label) && ranges.length > 1) label = `${sheet.name}.${base}`;
+      if (labels.has(label) && nodes.length > 1) label = `${sheet.name}.${base}`;
       let suffix = 2;
       while (labels.has(label)) label = `${base} (${suffix++})`;
       labels.add(label);
-      columns.push({ range, column, label });
+      columns.push({ sourceId: node.sourceId, range, column, label });
     }
   }
   return columns;
@@ -201,15 +209,17 @@ function writePivotDrillDown(context: CommandContext, params: PivotDrillDownPara
   const target = context.workbook.addSheet(params.targetSheetId, createPivotDrillDownSheetName(pivot, params.label));
   columns.forEach((column, index) => target.cells.set(params.target.row, params.target.column + index, { value: column.label }));
 
-  const ranges = pivotSourceRanges(pivot, context.workbook);
-  const rowsPerResult = Math.max(ranges.length, 1);
+  const nodes = pivotSourceNodes(pivot, context.workbook);
+  const rowsPerResult = Math.max(nodes.length, 1);
   const resultRowCount = Math.ceil(params.sourceRowPaths.length / rowsPerResult);
   for (let rowOffset = 0; rowOffset < resultRowCount; rowOffset += 1) {
     // Joined pivots flatten one path per source range into the result tree.
     // Re-group those paths deterministically before reading detail values.
     const paths = params.sourceRowPaths.slice(rowOffset * rowsPerResult, (rowOffset + 1) * rowsPerResult);
     columns.forEach((column, columnOffset) => {
-      const path = paths.find((entry) => entry.sheetId === column.range.sheetId);
+      const path = paths.find((entry) => column.sourceId !== undefined && entry.sourceId !== undefined
+        ? entry.sourceId === column.sourceId
+        : entry.sheetId === column.range.sheetId);
       const source = path ? context.workbook.getSheet(path.sheetId) : undefined;
       const value = source && path ? sourceCellValue(source.cells.get(path.row, column.column)) : null;
       target.cells.set(params.target.row + rowOffset + 1, params.target.column + columnOffset, { value });
@@ -305,10 +315,12 @@ const isPivotPresentation = (value: unknown): value is PivotPresentation => isRe
   && typeof value.styleOptions.showRowStripes === 'boolean'
   && typeof value.styleOptions.showColumnStripes === 'boolean'
   && typeof value.styleOptions.showLastColumn === 'boolean';
+const isPivotSourceRange = (value: unknown): boolean => isRecord(value)
+  && isNonEmptyString(value.sourceId) && isRange(value.range);
 const isPivotWorksheetSource = (value: unknown): boolean => {
   if (!isRecord(value)) return false;
   if (value.kind === 'worksheet-range') return isRange(value.range);
-  if (value.kind === 'worksheet-ranges') return Array.isArray(value.ranges) && value.ranges.every(isRange)
+  if (value.kind === 'worksheet-ranges') return Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isPivotSourceRange)
     && Array.isArray(value.relationships);
   return false;
 };
@@ -349,7 +361,7 @@ const isPivotDrillDown = (value: unknown): value is PivotDrillDownParams => isRe
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
   && typeof value.label === 'string' && isNonEmptyString(value.targetSheetId)
   && Array.isArray(value.sourceRowPaths)
-  && value.sourceRowPaths.every((entry) => isRecord(entry) && isNonEmptyString(entry.sheetId) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0)
+  && value.sourceRowPaths.every((entry) => isRecord(entry) && (entry.sourceId === undefined || isNonEmptyString(entry.sourceId)) && isNonEmptyString(entry.sheetId) && Number.isSafeInteger(entry.row) && Number(entry.row) >= 0)
   && isRecord(value.target)
   && Number.isSafeInteger(value.target.row) && Number.isSafeInteger(value.target.column)
   && Number(value.target.row) >= 0 && Number(value.target.column) >= 0;
@@ -358,7 +370,7 @@ const isPivotDrillDownRemove = (value: unknown): value is PivotDrillDownRemovePa
 function pivotMutationRanges(value: unknown): RangeRef[] {
   if (isPivotModel(value)) return pivotSourceRanges(value);
   if (isPivotUpdate(value)) {
-    if (value.source?.kind === 'worksheet-ranges') return structuredClone(value.source.ranges);
+    if (value.source?.kind === 'worksheet-ranges') return value.source.ranges.map((sourceRange) => structuredClone(sourceRange.range));
     if (value.source?.kind === 'worksheet-range') return [structuredClone(value.source.range)];
     return sheetRange(value.sheetId);
   }

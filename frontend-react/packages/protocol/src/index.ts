@@ -207,6 +207,12 @@ function isRangeRef(value: unknown): value is RangeRef {
     && Number.isSafeInteger(range.endColumn) && Number(range.endColumn) >= Number(range.startColumn);
 }
 
+function isPivotSourceRange(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const sourceRange = value as Record<string, unknown>;
+  return isNonEmptyString(sourceRange.sourceId) && isRangeRef(sourceRange.range);
+}
+
 function assertMetadataOnly(value: unknown, path: string): void {
   if (Array.isArray(value)) {
     value.forEach((entry, index) => assertMetadataOnly(entry, `${path}[${index}]`));
@@ -251,18 +257,64 @@ function validatePivotSource(value: unknown): void {
   }
   if (source.kind === 'worksheet-ranges') {
     validateExactKeys(source, ['kind', 'ranges', 'relationships'], 'Pivot worksheet sources');
-    if (!Array.isArray(source.ranges) || !source.ranges.length || !source.ranges.every(isRangeRef) || !Array.isArray(source.relationships)) {
+    if (!Array.isArray(source.ranges) || !source.ranges.length || !source.ranges.every(isPivotSourceRange) || !Array.isArray(source.relationships)) {
       throw new Error('Pivot worksheet sources are invalid');
     }
+    const sourceIds = new Set<string>();
+    for (const rawRange of source.ranges) {
+      const sourceRange = requireRecord(rawRange, 'Pivot worksheet source range');
+      validateExactKeys(sourceRange, ['sourceId', 'range'], 'Pivot worksheet source range');
+      const sourceId = String(sourceRange.sourceId);
+      if (sourceIds.has(sourceId)) throw new Error('Pivot worksheet sourceId is duplicated');
+      sourceIds.add(sourceId);
+    }
+    const parent = new Map([...sourceIds].map((sourceId) => [sourceId, sourceId]));
+    const find = (sourceId: string): string => {
+      const current = parent.get(sourceId);
+      if (!current || current === sourceId) return sourceId;
+      const root = find(current);
+      parent.set(sourceId, root);
+      return root;
+    };
+    const incomingLeft = new Set<string>();
+    const relationshipIds = new Set<string>();
     for (const relationship of source.relationships) {
       const item = requireRecord(relationship, 'Pivot relationship');
       validateExactKeys(item, ['id', 'left', 'right', 'join'], 'Pivot relationship');
-      if (!isNonEmptyString(item.id) || (item.join !== 'inner' && item.join !== 'left')) throw new Error('Pivot relationship is invalid');
+      if (!isNonEmptyString(item.id) || relationshipIds.has(String(item.id)) || (item.join !== 'inner' && item.join !== 'left')) throw new Error('Pivot relationship is invalid');
+      relationshipIds.add(String(item.id));
+      const left = requireRecord(item.left, 'Pivot relationship left');
+      const right = requireRecord(item.right, 'Pivot relationship right');
       for (const side of [item.left, item.right]) {
         const reference = requireRecord(side, 'Pivot relationship field');
-        validateExactKeys(reference, ['sheetId', 'fieldId'], 'Pivot relationship field');
-        if (!isNonEmptyString(reference.sheetId) || !isNonEmptyString(reference.fieldId)) throw new Error('Pivot relationship field is invalid');
+        validateExactKeys(reference, ['sourceId', 'fieldId'], 'Pivot relationship field');
+        if (!isNonEmptyString(reference.sourceId) || !isNonEmptyString(reference.fieldId)) throw new Error('Pivot relationship field is invalid');
       }
+      if (left.sourceId === right.sourceId || !sourceIds.has(String(left.sourceId)) || !sourceIds.has(String(right.sourceId))) throw new Error('Pivot relationship sourceId is invalid');
+      if (item.join === 'left') incomingLeft.add(String(right.sourceId));
+      const leftRoot = find(String(left.sourceId));
+      const rightRoot = find(String(right.sourceId));
+      if (leftRoot === rightRoot) throw new Error('Pivot relationship graph contains a cycle');
+      parent.set(leftRoot, rightRoot);
+    }
+    if (sourceIds.size > 1 && !source.relationships.length) throw new Error('Pivot relationship graph is disconnected');
+    const roots = source.relationships.some((entry) => (entry as Record<string, unknown>).join === 'left')
+      ? [...sourceIds].filter((sourceId) => !incomingLeft.has(sourceId))
+      : [[...sourceIds].sort()[0]!];
+    if (roots.length !== 1 && sourceIds.size > 1) throw new Error('Pivot relationship graph has an ambiguous root');
+    if (sourceIds.size > 1) {
+      const graph = new Map([...sourceIds].map((sourceId) => [sourceId, [] as string[]]));
+      for (const raw of source.relationships) {
+        const item = raw as Record<string, unknown>;
+        const left = item.left as Record<string, unknown>;
+        const right = item.right as Record<string, unknown>;
+        graph.get(String(left.sourceId))!.push(String(right.sourceId));
+        graph.get(String(right.sourceId))!.push(String(left.sourceId));
+      }
+      const visited = new Set<string>();
+      const visit = (sourceId: string): void => { if (visited.has(sourceId)) return; visited.add(sourceId); graph.get(sourceId)?.forEach(visit); };
+      visit([...sourceIds][0]!);
+      if (visited.size !== sourceIds.size) throw new Error('Pivot relationship graph is disconnected');
     }
     return;
   }

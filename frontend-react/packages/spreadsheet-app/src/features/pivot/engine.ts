@@ -139,14 +139,24 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
     });
   }
   const ranges = sourceRanges(workbook, pivot);
-  const revisions = ranges.map((range) => {
+  const revisions = ranges.map((range, index) => {
     const sheet = workbook.getSheet(range.sheetId);
     // CellMatrix revision is supplied by the block/data-source implementation
     // when available. Do not scan a whole range merely to build a cache key.
     const revision = (sheet.cells as unknown as { revision?: number }).revision;
-    return `${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
-  });
-  return fingerprint({ source, revisions });
+    const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[index]?.sourceId : undefined;
+    return `${sourceId ?? index}:${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
+  }).sort();
+  return fingerprint({ source: canonicalPivotSource(source), revisions });
+}
+
+function canonicalPivotSource(source: PivotSource): PivotSource {
+  if (source.kind !== 'worksheet-ranges') return structuredClone(source);
+  return {
+    ...structuredClone(source),
+    ranges: [...source.ranges].sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
+    relationships: [...source.relationships].sort((left, right) => left.id.localeCompare(right.id)),
+  };
 }
 
 function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): unknown[] {
@@ -166,7 +176,7 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
     // here made an ordinary source edit look like a layout mutation and caused
     // manual-refresh PivotTables to discard their last refreshed result.
     layoutRevision: fingerprint({
-      source: pivot.source,
+      source: canonicalPivotSource(pivot.source),
       fieldCatalog: pivot.fieldCatalog.fields.map(({ fieldId, name, dataType, ordinal }) => ({ fieldId, name, dataType, ordinal })),
       layout: pivot.layout,
       presentation: pivot.presentation,
@@ -224,6 +234,11 @@ function sourceIdentity(source: PivotSource, range: RangeRef, ordinal: number, r
   if (source.kind === 'table') return `table:${source.tableId}:column:${ordinal}`;
   if (source.kind === 'named-range') return `name:${source.sheetId ?? '*'}:${source.name}:column:${ordinal}`;
   if (source.kind === 'data-source') return `data-source:${source.dataSourceId}:column:${ordinal}`;
+  if (source.kind === 'worksheet-ranges') {
+    const sourceId = source.ranges[rangeIndex]?.sourceId;
+    if (!sourceId) throw new Error(`Worksheet source range ${String(rangeIndex)} has no stable sourceId`);
+    return `source:${sourceId}:column:${ordinal}`;
+  }
   return `sheet:${range.sheetId}:column:${range.startColumn + ordinal}:range:${rangeIndex}`;
 }
 
@@ -235,7 +250,7 @@ export function getStablePivotFieldId(source: PivotSource, range: RangeRef, ordi
 function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
   const source = getPivotSource(pivot);
   if (source.kind === 'worksheet-range') return [source.range];
-  if (source.kind === 'worksheet-ranges') return source.ranges;
+  if (source.kind === 'worksheet-ranges') return source.ranges.map((sourceRange) => sourceRange.range);
   if (source.kind === 'table') {
     return [resolvePivotTable(workbook, source.tableId).range];
   }
@@ -315,26 +330,135 @@ function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: stri
 
 function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, rangeIndex: number, persisted?: PivotFieldCatalog): SourceTable {
   const fields: SourceField[] = [];
-  const persistedFields = persisted?.fields ?? [];
   for (let ordinal = 0; ordinal <= range.endColumn - range.startColumn; ordinal += 1) {
     const column = range.startColumn + ordinal;
     const raw = sheet.cells.get(range.startRow, column)?.value;
     const name = raw == null || raw === '' ? `Column ${ordinal + 1}` : String(raw);
     // Ordinal/source-column identity survives a header rename. A changed
     // physical column is a new field, while a changed caption is not.
-    const persistedField = persistedFields.find((field) => field.ordinal === ordinal);
-    fields.push({ fieldId: persistedField?.fieldId ?? sourceIdentity(source, range, ordinal, rangeIndex), name, ordinal });
+    const fieldId = sourceIdentity(source, range, ordinal, rangeIndex);
+    const persistedField = persisted?.fields.find((field) => field.fieldId === fieldId);
+    fields.push({ fieldId: persistedField?.fieldId ?? fieldId, name, ordinal });
   }
   const rows: SourceRow[] = [];
+  const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[rangeIndex]?.sourceId : undefined;
   for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
     const values: Record<string, PivotScalar> = {};
     fields.forEach((field, ordinal) => {
       const cell = sheet.cells.get(row, range.startColumn + ordinal);
       values[field.fieldId] = cellScalar(cell?.formulaValue ?? cell?.value ?? null);
     });
-    rows.push({ values, paths: [{ sheetId: range.sheetId, row }] });
+    rows.push({ values, paths: [{ ...(sourceId ? { sourceId } : {}), sheetId: range.sheetId, row }] });
   }
   return { fields, rows };
+}
+
+interface LocalSourceNode {
+  sourceId: string;
+  range: RangeRef;
+  table: SourceTable;
+}
+
+interface LocalRelationship {
+  id: string;
+  left: { sourceId: string; fieldId: string };
+  right: { sourceId: string; fieldId: string };
+  join: 'inner' | 'left';
+}
+
+function sourceField(table: SourceTable, fieldId: string, sourceId: string): SourceField {
+  const field = table.fields.find((candidate) => candidate.fieldId === fieldId);
+  if (!field) throw new Error(`Pivot relationship references unknown field ${sourceId}:${fieldId}`);
+  return field;
+}
+
+function sourceFieldType(table: SourceTable, fieldId: string): PivotFieldDataType {
+  return inferType(table.rows.map((row) => row.values[fieldId] ?? null));
+}
+
+function joinKey(value: PivotScalar): string {
+  return pivotMemberKey(createPivotMemberKey(value));
+}
+
+function assertUniqueLookupKeys(table: SourceTable, fieldId: string, sourceId: string): void {
+  const keys = new Set<string>();
+  for (const row of table.rows) {
+    const key = joinKey(row.values[fieldId] ?? null);
+    if (keys.has(key)) throw new Error(`Pivot relationship lookup key is not unique: ${sourceId}:${fieldId}`);
+    keys.add(key);
+  }
+}
+
+function validateRelationshipGraph(nodes: LocalSourceNode[], relationships: readonly LocalRelationship[]): { edges: LocalRelationship[]; rootId: string } {
+  const nodeIds = new Set(nodes.map((node) => node.sourceId));
+  const nodeById = new Map(nodes.map((node) => [node.sourceId, node]));
+  const relationshipIds = new Set<string>();
+  const edges = relationships.map((relationship) => {
+    if (!relationship.id || relationshipIds.has(relationship.id)) throw new Error(`Pivot relationship id is duplicated: ${relationship.id}`);
+    relationshipIds.add(relationship.id);
+    if (!nodeIds.has(relationship.left.sourceId) || !nodeIds.has(relationship.right.sourceId) || relationship.left.sourceId === relationship.right.sourceId) {
+      throw new Error(`Pivot relationship references an unknown or self source node: ${relationship.id}`);
+    }
+    const leftNode = nodeById.get(relationship.left.sourceId)!;
+    const rightNode = nodeById.get(relationship.right.sourceId)!;
+    const leftField = sourceField(leftNode.table, relationship.left.fieldId, relationship.left.sourceId);
+    const rightField = sourceField(rightNode.table, relationship.right.fieldId, relationship.right.sourceId);
+    const leftType = sourceFieldType(leftNode.table, leftField.fieldId);
+    const rightType = sourceFieldType(rightNode.table, rightField.fieldId);
+    if (leftType === 'mixed' || rightType === 'mixed' || leftType !== rightType) {
+      throw new Error(`Pivot relationship key types are incompatible: ${relationship.id}`);
+    }
+    assertUniqueLookupKeys(rightNode.table, rightField.fieldId, relationship.right.sourceId);
+    if (relationship.join === 'inner') assertUniqueLookupKeys(leftNode.table, leftField.fieldId, relationship.left.sourceId);
+    return structuredClone(relationship);
+  });
+  if (nodes.length > 1 && edges.length === 0) throw new Error('Pivot relationship graph is disconnected');
+  const parent = new Map<string, string>(nodes.map((node) => [node.sourceId, node.sourceId]));
+  const find = (sourceId: string): string => {
+    const current = parent.get(sourceId);
+    if (!current || current === sourceId) return sourceId;
+    const root = find(current);
+    parent.set(sourceId, root);
+    return root;
+  };
+  for (const edge of edges) {
+    const left = find(edge.left.sourceId);
+    const right = find(edge.right.sourceId);
+    if (left === right) throw new Error(`Pivot relationship graph contains a cycle: ${edge.id}`);
+    parent.set(left, right);
+  }
+  const rootCandidates = edges.some((edge) => edge.join === 'left')
+    ? nodes.filter((node) => !edges.some((edge) => edge.join === 'left' && edge.right.sourceId === node.sourceId))
+    : [...nodes].sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+  if (rootCandidates.length !== 1) throw new Error('Pivot relationship graph has an ambiguous root');
+  const rootId = rootCandidates[0]!.sourceId;
+  const reachable = new Set<string>([rootId]);
+  while (true) {
+    const next = edges.flatMap((edge) => {
+      if (reachable.has(edge.left.sourceId) && !reachable.has(edge.right.sourceId)) return [edge.right.sourceId];
+      if (reachable.has(edge.right.sourceId) && !reachable.has(edge.left.sourceId)) return [edge.left.sourceId];
+      return [];
+    });
+    if (!next.length) break;
+    next.forEach((sourceId) => reachable.add(sourceId));
+  }
+  if (reachable.size !== nodes.length) throw new Error('Pivot relationship graph is disconnected');
+  return { edges: edges.sort((left, right) => left.id.localeCompare(right.id)), rootId };
+}
+
+function joinSourceTables(current: SourceTable, attached: SourceTable, currentFieldId: string, attachedFieldId: string, join: 'inner' | 'left'): SourceTable {
+  const lookup = new Map<string, SourceRow>();
+  for (const row of attached.rows) lookup.set(joinKey(row.values[attachedFieldId] ?? null), row);
+  const rows: SourceRow[] = [];
+  for (const left of current.rows) {
+    const match = lookup.get(joinKey(left.values[currentFieldId] ?? null));
+    if (!match) {
+      if (join === 'left') rows.push(left);
+      continue;
+    }
+    rows.push({ values: { ...left.values, ...match.values }, paths: [...left.paths, ...match.paths] });
+  }
+  return { fields: [...current.fields, ...attached.fields], rows };
 }
 
 function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog): SourceTable {
@@ -344,24 +468,30 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   }
   const ranges = sourceRanges(workbook, pivot);
   if (source.kind === 'worksheet-ranges') {
-    const tables = ranges.map((range, index) => readRange(workbook.getSheet(range.sheetId), range, source, index, catalog));
-    let current = tables[0] ?? { fields: [], rows: [] };
-    for (let index = 1; index < tables.length; index += 1) {
-      const right = tables[index]!;
-      const relationship = source.relationships.find((candidate) => candidate.left.sheetId === ranges[index - 1]!.sheetId && candidate.right.sheetId === ranges[index]!.sheetId);
-      if (!relationship) throw new Error('Every local worksheet range must have an adjacent typed relationship');
-      const leftField = relationship.left.fieldId;
-      const rightField = relationship.right.fieldId;
-      const leftResolved = current.fields.find((field) => field.fieldId === leftField || field.name === leftField)?.fieldId;
-      const rightResolved = right.fields.find((field) => field.fieldId === rightField || field.name === rightField)?.fieldId;
-      if (!leftResolved || !rightResolved) throw new Error('Pivot relationship references an unknown field');
-      const rows: SourceRow[] = [];
-      for (const left of current.rows) {
-        const matches = right.rows.filter((candidate) => same(left.values[leftResolved] ?? null, candidate.values[rightResolved] ?? null));
-        if (!matches.length && relationship.join === 'left') rows.push(left);
-        for (const match of matches) rows.push({ values: { ...left.values, ...match.values }, paths: [...left.paths, ...match.paths] });
+    const nodes = source.ranges.map((sourceRange, index) => ({
+      sourceId: sourceRange.sourceId,
+      range: sourceRange.range,
+      table: readRange(workbook.getSheet(sourceRange.range.sheetId), sourceRange.range, source, index, catalog),
+    }));
+    if (new Set(nodes.map((node) => node.sourceId)).size !== nodes.length || nodes.some((node) => !node.sourceId.trim())) {
+      throw new Error('Every local worksheet range must have a unique stable sourceId');
+    }
+    const plan = validateRelationshipGraph(nodes, source.relationships);
+    let current = nodes.find((node) => node.sourceId === plan.rootId)!.table;
+    const visited = new Set<string>([plan.rootId]);
+    while (visited.size < nodes.length) {
+      const candidate = plan.edges.find((edge) => (visited.has(edge.left.sourceId) && !visited.has(edge.right.sourceId)) || (visited.has(edge.right.sourceId) && !visited.has(edge.left.sourceId)));
+      if (!candidate) throw new Error('Pivot relationship graph cannot be planned from its root');
+      if (visited.has(candidate.left.sourceId)) {
+        const attached = nodes.find((node) => node.sourceId === candidate.right.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.left.fieldId, candidate.right.fieldId, candidate.join);
+        visited.add(candidate.right.sourceId);
+      } else {
+        if (candidate.join === 'left') throw new Error(`Left relationship ${candidate.id} cannot be traversed from its lookup side`);
+        const attached = nodes.find((node) => node.sourceId === candidate.left.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.right.fieldId, candidate.left.fieldId, 'inner');
+        visited.add(candidate.left.sourceId);
       }
-      current = { fields: [...current.fields, ...right.fields], rows };
     }
     return current;
   }
@@ -392,7 +522,7 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
 function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotFieldCatalog): PivotFieldCatalog {
   const fields = sourceTableValue.fields.map((field, ordinal) => {
     const values = sourceTableValue.rows.map((row) => row.values[field.fieldId] ?? null);
-    const persistedField = persisted?.fields.find((candidate) => candidate.ordinal === ordinal);
+    const persistedField = persisted?.fields.find((candidate) => candidate.fieldId === field.fieldId);
     const fieldId = persistedField?.fieldId ?? field.fieldId ?? `field:${ordinal}`;
     return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: [...new Map(values.filter((value) => value != null).map((value) => [pivotMemberKey(createPivotMemberKey(value)), value])).values()].slice(0, 10_000) };
   });

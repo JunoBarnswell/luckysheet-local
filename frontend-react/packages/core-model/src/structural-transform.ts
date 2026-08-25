@@ -412,7 +412,7 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') shiftRange(pivot.source.range);
-    if (pivot.source.kind === 'worksheet-ranges') pivot.source.ranges = pivot.source.ranges.filter(shiftRange);
+    if (pivot.source.kind === 'worksheet-ranges') pivot.source.ranges = pivot.source.ranges.filter((sourceRange) => shiftRange(sourceRange.range));
     if (pivot.target.sheetId === sheet.id) {
       const anchor = mapAnchor(pivot.target.anchor.row, pivot.target.anchor.column);
       if (anchor) { pivot.target.anchor.row = anchor.row; pivot.target.anchor.column = anchor.column; }
@@ -701,7 +701,7 @@ function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') shiftRangeRef(pivot.source.range, axis, at, count, direction);
     if (pivot.source.kind === 'worksheet-ranges') {
-      for (const range of pivot.source.ranges) shiftRangeRef(range, axis, at, count, direction);
+      for (const sourceRange of pivot.source.ranges) shiftRangeRef(sourceRange.range, axis, at, count, direction);
     }
     if (pivot.target.sheetId === sheet.id) {
       const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
@@ -995,7 +995,7 @@ function applyMoveRange(
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') relocate(pivot.source.range);
-    if (pivot.source.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) relocate(range);
+    if (pivot.source.kind === 'worksheet-ranges') for (const sourceRange of pivot.source.ranges) relocate(sourceRange.range);
     if (pivot.target.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
       pivot.target.anchor.row += rowDelta;
       pivot.target.anchor.column += colDelta;
@@ -1138,7 +1138,7 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') validateRange(pivot.source.range, `pivot ${pivot.id} source`);
-    if (pivot.source.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) validateRange(range, `pivot ${pivot.id} source`);
+    if (pivot.source.kind === 'worksheet-ranges') for (const sourceRange of pivot.source.ranges) validateRange(sourceRange.range, `pivot ${pivot.id} source`);
   }
   for (const sparkline of sheet.sparklines) validateRange(sparkline.sourceRange, `sparkline ${sparkline.id} source`);
   for (const spill of sheet.spillRanges) validateRange(spill.range, 'spill range');
