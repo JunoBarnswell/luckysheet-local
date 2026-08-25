@@ -12,6 +12,7 @@ const FormatCellsDialog = lazy(() => import("../components/dialogs/FormatCellsDi
 const ShiftCellsDialog = lazy(() => import("../components/dialogs/ShiftCellsDialog").then((module) => ({ default: module.ShiftCellsDialog })));
 const MergeConfirmDialog = lazy(() => import("../components/dialogs/MergeConfirmDialog").then((module) => ({ default: module.MergeConfirmDialog })));
 const CreatePivotTableDialog = lazy(() => import("../components/dialogs/CreatePivotTableDialog").then((module) => ({ default: module.CreatePivotTableDialog })));
+const CreateTableDialog = lazy(() => import("../components/dialogs/CreateTableDialog").then((module) => ({ default: module.CreateTableDialog })));
 const PrintPreviewDialog = lazy(() => import("../components/dialogs/PrintPreviewDialog").then((module) => ({ default: module.PrintPreviewDialog })));
 const CellTemplateDialog = lazy(() => import('../components/dialogs/CellTemplateDialog').then((module) => ({ default: module.CellTemplateDialog })));
 const CellEditorDialog = lazy(() => import('../components/dialogs/CellEditorDialog').then((module) => ({ default: module.CellEditorDialog })));
@@ -69,7 +70,7 @@ export function EditorDialogHost({
         open={state.dialogs.active === 'paste-special'}
         locale={locale}
         onClose={session.closePasteSpecial.bind(session)}
-        onPaste={(mode) => session.pasteSpecial(mode)}
+        onPaste={(spec) => session.pasteSpecial(spec)}
       />
       <FormatCellsDialog
         open={state.dialogs.active === 'format-cells'}
@@ -88,9 +89,10 @@ export function EditorDialogHost({
       <MergeConfirmDialog
         open={state.dialogs.active === 'merge-confirm'}
         discardedCellCount={state.dialogs.mergeDiscardCount}
+        operation={state.dialogs.mergeOperation}
         locale={locale}
-        onCancel={() => session.cancelMergeCells()}
-        onConfirm={() => session.confirmMergeCells()}
+        onCancel={() => session.cancelMergeAction()}
+        onConfirm={() => session.confirmMergeAction()}
       />
       <CreatePivotTableDialog
         open={state.dialogs.active === 'create-pivot'}
@@ -100,6 +102,13 @@ export function EditorDialogHost({
         locale={locale}
         onClose={session.closeCreatePivotDialog.bind(session)}
         onCreate={createPivotFromDialog}
+      />
+      <CreateTableDialog
+        open={state.dialogs.active === 'create-table'}
+        locale={locale}
+        sourceRange={session.getPrimaryRange()}
+        onClose={session.closeCreateTableDialog.bind(session)}
+        onCreate={(request) => session.createSheetTableFromDialog(request)}
       />
       <PrintPreviewDialog
         open={state.dialogs.active === 'print-preview'}

@@ -17,7 +17,9 @@ import type {
   PivotResultCell,
   PivotResultNode,
   PivotResultTree,
+  PivotResultValueField,
   PivotScalar,
+  PivotSort,
   PivotSource,
   PivotSourceRowPath,
   PivotTarget,
@@ -32,11 +34,17 @@ import type {
 import {
   PIVOT_GRID_PROJECTION_SCHEMA,
   PIVOT_RESULT_TREE_SCHEMA,
+  DEFAULT_PIVOT_STYLE_OPTIONS,
   createPivotMemberKey,
+  formatPivotMember,
+  normalizePivotTimelinePeriod,
   pivotMemberKey,
+  normalizePivotRefreshPolicy,
+  pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
 } from '@react-sheets/core-model';
+import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
 import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
 
 export interface PivotSourceRowInput {
@@ -106,7 +114,7 @@ const same = (left: PivotScalar, right: PivotScalar): boolean => {
   return left === right;
 };
 
-const display = (value: PivotScalar): string => value == null || value === '' ? '(blank)' : String(value);
+const display = (value: PivotScalar): string => formatPivotMember(value);
 
 function stableSerialize(value: unknown): string {
   if (value === undefined) return 'undefined';
@@ -137,14 +145,24 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
     });
   }
   const ranges = sourceRanges(workbook, pivot);
-  const revisions = ranges.map((range) => {
+  const revisions = ranges.map((range, index) => {
     const sheet = workbook.getSheet(range.sheetId);
     // CellMatrix revision is supplied by the block/data-source implementation
     // when available. Do not scan a whole range merely to build a cache key.
     const revision = (sheet.cells as unknown as { revision?: number }).revision;
-    return `${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
-  });
-  return fingerprint({ source, revisions });
+    const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[index]?.sourceId : undefined;
+    return `${sourceId ?? index}:${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
+  }).sort();
+  return fingerprint({ source: canonicalPivotSource(source), revisions });
+}
+
+function canonicalPivotSource(source: PivotSource): PivotSource {
+  if (source.kind !== 'worksheet-ranges') return structuredClone(source);
+  return {
+    ...structuredClone(source),
+    ranges: [...source.ranges].sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
+    relationships: [...source.relationships].sort((left, right) => left.id.localeCompare(right.id)),
+  };
 }
 
 function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): unknown[] {
@@ -164,9 +182,10 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
     // here made an ordinary source edit look like a layout mutation and caused
     // manual-refresh PivotTables to discard their last refreshed result.
     layoutRevision: fingerprint({
-      source: pivot.source,
+      source: canonicalPivotSource(pivot.source),
       fieldCatalog: pivot.fieldCatalog.fields.map(({ fieldId, name, dataType, ordinal }) => ({ fieldId, name, dataType, ordinal })),
       layout: pivot.layout,
+      presentation: pivot.presentation,
     }),
     filterRevision: fingerprint({ filters: pivot.layout.filters, linked: linkedFilterDefinitions(workbook, pivot) }),
   };
@@ -221,6 +240,11 @@ function sourceIdentity(source: PivotSource, range: RangeRef, ordinal: number, r
   if (source.kind === 'table') return `table:${source.tableId}:column:${ordinal}`;
   if (source.kind === 'named-range') return `name:${source.sheetId ?? '*'}:${source.name}:column:${ordinal}`;
   if (source.kind === 'data-source') return `data-source:${source.dataSourceId}:column:${ordinal}`;
+  if (source.kind === 'worksheet-ranges') {
+    const sourceId = source.ranges[rangeIndex]?.sourceId;
+    if (!sourceId) throw new Error(`Worksheet source range ${String(rangeIndex)} has no stable sourceId`);
+    return `source:${sourceId}:column:${ordinal}`;
+  }
   return `sheet:${range.sheetId}:column:${range.startColumn + ordinal}:range:${rangeIndex}`;
 }
 
@@ -232,7 +256,7 @@ export function getStablePivotFieldId(source: PivotSource, range: RangeRef, ordi
 function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
   const source = getPivotSource(pivot);
   if (source.kind === 'worksheet-range') return [source.range];
-  if (source.kind === 'worksheet-ranges') return source.ranges;
+  if (source.kind === 'worksheet-ranges') return source.ranges.map((sourceRange) => sourceRange.range);
   if (source.kind === 'table') {
     return [resolvePivotTable(workbook, source.tableId).range];
   }
@@ -312,26 +336,139 @@ function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: stri
 
 function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, rangeIndex: number, persisted?: PivotFieldCatalog): SourceTable {
   const fields: SourceField[] = [];
-  const persistedFields = persisted?.fields ?? [];
   for (let ordinal = 0; ordinal <= range.endColumn - range.startColumn; ordinal += 1) {
     const column = range.startColumn + ordinal;
     const raw = sheet.cells.get(range.startRow, column)?.value;
     const name = raw == null || raw === '' ? `Column ${ordinal + 1}` : String(raw);
     // Ordinal/source-column identity survives a header rename. A changed
     // physical column is a new field, while a changed caption is not.
-    const persistedField = persistedFields.find((field) => field.ordinal === ordinal);
-    fields.push({ fieldId: persistedField?.fieldId ?? sourceIdentity(source, range, ordinal, rangeIndex), name, ordinal });
+    const fieldId = sourceIdentity(source, range, ordinal, rangeIndex);
+    const persistedField = persisted?.fields.find((field) => field.fieldId === fieldId);
+    fields.push({ fieldId: persistedField?.fieldId ?? fieldId, name, ordinal });
   }
   const rows: SourceRow[] = [];
+  const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[rangeIndex]?.sourceId : undefined;
   for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
     const values: Record<string, PivotScalar> = {};
     fields.forEach((field, ordinal) => {
       const cell = sheet.cells.get(row, range.startColumn + ordinal);
       values[field.fieldId] = cellScalar(cell?.formulaValue ?? cell?.value ?? null);
     });
-    rows.push({ values, paths: [{ sheetId: range.sheetId, row }] });
+    rows.push({ values, paths: [{ ...(sourceId ? { sourceId } : {}), recordId: `${sourceId ?? range.sheetId}:${row}`, sheetId: range.sheetId, row }] });
   }
   return { fields, rows };
+}
+
+interface LocalSourceNode {
+  sourceId: string;
+  range: RangeRef;
+  table: SourceTable;
+}
+
+interface LocalRelationship {
+  id: string;
+  left: { sourceId: string; fieldId: string };
+  right: { sourceId: string; fieldId: string };
+  join: 'inner' | 'left';
+}
+
+function sourceField(table: SourceTable, fieldId: string, sourceId: string): SourceField {
+  const field = table.fields.find((candidate) => candidate.fieldId === fieldId);
+  if (!field) throw new Error(`Pivot relationship references unknown field ${sourceId}:${fieldId}`);
+  return field;
+}
+
+function sourceFieldType(table: SourceTable, fieldId: string): PivotFieldDataType {
+  return inferType(table.rows.map((row) => row.values[fieldId] ?? null));
+}
+
+function joinKey(value: PivotScalar): string {
+  return pivotMemberKey(createPivotMemberKey(value));
+}
+
+function assertUniqueLookupKeys(table: SourceTable, fieldId: string, sourceId: string): void {
+  const keys = new Set<string>();
+  for (const row of table.rows) {
+    const key = joinKey(row.values[fieldId] ?? null);
+    if (keys.has(key)) throw new Error(`Pivot relationship lookup key is not unique: ${sourceId}:${fieldId}`);
+    keys.add(key);
+  }
+}
+
+function validateRelationshipGraph(nodes: LocalSourceNode[], relationships: readonly LocalRelationship[]): { edges: LocalRelationship[]; rootId: string } {
+  const nodeIds = new Set(nodes.map((node) => node.sourceId));
+  const nodeById = new Map(nodes.map((node) => [node.sourceId, node]));
+  const relationshipIds = new Set<string>();
+  const edges = relationships.map((relationship) => {
+    if (!relationship.id || relationshipIds.has(relationship.id)) throw new Error(`Pivot relationship id is duplicated: ${relationship.id}`);
+    relationshipIds.add(relationship.id);
+    if (!nodeIds.has(relationship.left.sourceId) || !nodeIds.has(relationship.right.sourceId) || relationship.left.sourceId === relationship.right.sourceId) {
+      throw new Error(`Pivot relationship references an unknown or self source node: ${relationship.id}`);
+    }
+    const leftNode = nodeById.get(relationship.left.sourceId)!;
+    const rightNode = nodeById.get(relationship.right.sourceId)!;
+    const leftField = sourceField(leftNode.table, relationship.left.fieldId, relationship.left.sourceId);
+    const rightField = sourceField(rightNode.table, relationship.right.fieldId, relationship.right.sourceId);
+    const leftType = sourceFieldType(leftNode.table, leftField.fieldId);
+    const rightType = sourceFieldType(rightNode.table, rightField.fieldId);
+    if (leftType === 'mixed' || rightType === 'mixed' || leftType !== rightType) {
+      throw new Error(`Pivot relationship key types are incompatible: ${relationship.id}`);
+    }
+    assertUniqueLookupKeys(rightNode.table, rightField.fieldId, relationship.right.sourceId);
+    if (relationship.join === 'inner') assertUniqueLookupKeys(leftNode.table, leftField.fieldId, relationship.left.sourceId);
+    return structuredClone(relationship);
+  });
+  if (nodes.length > 1 && edges.length === 0) throw new Error('Pivot relationship graph is disconnected');
+  const parent = new Map<string, string>(nodes.map((node) => [node.sourceId, node.sourceId]));
+  const find = (sourceId: string): string => {
+    const current = parent.get(sourceId);
+    if (!current || current === sourceId) return sourceId;
+    const root = find(current);
+    parent.set(sourceId, root);
+    return root;
+  };
+  for (const edge of edges) {
+    const left = find(edge.left.sourceId);
+    const right = find(edge.right.sourceId);
+    if (left === right) throw new Error(`Pivot relationship graph contains a cycle: ${edge.id}`);
+    parent.set(left, right);
+  }
+  const rootCandidates = edges.some((edge) => edge.join === 'left')
+    ? nodes.filter((node) => !edges.some((edge) => edge.join === 'left' && edge.right.sourceId === node.sourceId))
+    : [[...nodes].sort((left, right) => left.sourceId.localeCompare(right.sourceId))[0]!];
+  if (rootCandidates.length !== 1) throw new Error('Pivot relationship graph has an ambiguous root');
+  const rootId = rootCandidates[0]!.sourceId;
+  const reachable = new Set<string>([rootId]);
+  while (true) {
+    const next = edges.flatMap((edge) => {
+      if (reachable.has(edge.left.sourceId) && !reachable.has(edge.right.sourceId)) return [edge.right.sourceId];
+      if (reachable.has(edge.right.sourceId) && !reachable.has(edge.left.sourceId)) return [edge.left.sourceId];
+      return [];
+    });
+    if (!next.length) break;
+    next.forEach((sourceId) => reachable.add(sourceId));
+  }
+  if (reachable.size !== nodes.length) throw new Error('Pivot relationship graph is disconnected');
+  return { edges: edges.sort((left, right) => left.id.localeCompare(right.id)), rootId };
+}
+
+function joinSourceTables(current: SourceTable, attached: SourceTable, currentFieldId: string, attachedFieldId: string, join: 'inner' | 'left'): SourceTable {
+  const lookup = new Map<string, SourceRow>();
+  for (const row of attached.rows) lookup.set(joinKey(row.values[attachedFieldId] ?? null), row);
+  const rows: SourceRow[] = [];
+  for (const left of current.rows) {
+    const match = lookup.get(joinKey(left.values[currentFieldId] ?? null));
+    if (!match) {
+      if (join === 'left') rows.push(left);
+      continue;
+    }
+    const recordId = left.paths[0]?.recordId ?? match.paths[0]?.recordId;
+    rows.push({
+      values: { ...left.values, ...match.values },
+      paths: [...left.paths, ...match.paths].map((path) => ({ ...path, ...(recordId ? { recordId } : {}) })),
+    });
+  }
+  return { fields: [...current.fields, ...attached.fields], rows };
 }
 
 function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog): SourceTable {
@@ -341,24 +478,30 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   }
   const ranges = sourceRanges(workbook, pivot);
   if (source.kind === 'worksheet-ranges') {
-    const tables = ranges.map((range, index) => readRange(workbook.getSheet(range.sheetId), range, source, index, catalog));
-    let current = tables[0] ?? { fields: [], rows: [] };
-    for (let index = 1; index < tables.length; index += 1) {
-      const right = tables[index]!;
-      const relationship = source.relationships.find((candidate) => candidate.left.sheetId === ranges[index - 1]!.sheetId && candidate.right.sheetId === ranges[index]!.sheetId);
-      if (!relationship) throw new Error('Every local worksheet range must have an adjacent typed relationship');
-      const leftField = relationship.left.fieldId;
-      const rightField = relationship.right.fieldId;
-      const leftResolved = current.fields.find((field) => field.fieldId === leftField || field.name === leftField)?.fieldId;
-      const rightResolved = right.fields.find((field) => field.fieldId === rightField || field.name === rightField)?.fieldId;
-      if (!leftResolved || !rightResolved) throw new Error('Pivot relationship references an unknown field');
-      const rows: SourceRow[] = [];
-      for (const left of current.rows) {
-        const matches = right.rows.filter((candidate) => same(left.values[leftResolved] ?? null, candidate.values[rightResolved] ?? null));
-        if (!matches.length && relationship.join === 'left') rows.push(left);
-        for (const match of matches) rows.push({ values: { ...left.values, ...match.values }, paths: [...left.paths, ...match.paths] });
+    const nodes = source.ranges.map((sourceRange, index) => ({
+      sourceId: sourceRange.sourceId,
+      range: sourceRange.range,
+      table: readRange(workbook.getSheet(sourceRange.range.sheetId), sourceRange.range, source, index, catalog),
+    }));
+    if (new Set(nodes.map((node) => node.sourceId)).size !== nodes.length || nodes.some((node) => !node.sourceId.trim())) {
+      throw new Error('Every local worksheet range must have a unique stable sourceId');
+    }
+    const plan = validateRelationshipGraph(nodes, source.relationships);
+    let current = nodes.find((node) => node.sourceId === plan.rootId)!.table;
+    const visited = new Set<string>([plan.rootId]);
+    while (visited.size < nodes.length) {
+      const candidate = plan.edges.find((edge) => (visited.has(edge.left.sourceId) && !visited.has(edge.right.sourceId)) || (visited.has(edge.right.sourceId) && !visited.has(edge.left.sourceId)));
+      if (!candidate) throw new Error('Pivot relationship graph cannot be planned from its root');
+      if (visited.has(candidate.left.sourceId)) {
+        const attached = nodes.find((node) => node.sourceId === candidate.right.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.left.fieldId, candidate.right.fieldId, candidate.join);
+        visited.add(candidate.right.sourceId);
+      } else {
+        if (candidate.join === 'left') throw new Error(`Left relationship ${candidate.id} cannot be traversed from its lookup side`);
+        const attached = nodes.find((node) => node.sourceId === candidate.left.sourceId)!;
+        current = joinSourceTables(current, attached.table, candidate.right.fieldId, candidate.left.fieldId, 'inner');
+        visited.add(candidate.left.sourceId);
       }
-      current = { fields: [...current.fields, ...right.fields], rows };
     }
     return current;
   }
@@ -389,7 +532,7 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
 function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotFieldCatalog): PivotFieldCatalog {
   const fields = sourceTableValue.fields.map((field, ordinal) => {
     const values = sourceTableValue.rows.map((row) => row.values[field.fieldId] ?? null);
-    const persistedField = persisted?.fields.find((candidate) => candidate.ordinal === ordinal);
+    const persistedField = persisted?.fields.find((candidate) => candidate.fieldId === field.fieldId);
     const fieldId = persistedField?.fieldId ?? field.fieldId ?? `field:${ordinal}`;
     return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: [...new Map(values.filter((value) => value != null).map((value) => [pivotMemberKey(createPivotMemberKey(value)), value])).values()].slice(0, 10_000) };
   });
@@ -405,14 +548,21 @@ function fieldName(fieldId: string, catalog: PivotFieldCatalog): string {
   return catalog.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId;
 }
 
-function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldCatalog): PivotFieldPlacement {
+function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldCatalog, valueFieldIds: ReadonlySet<string>): PivotFieldPlacement {
   const fieldId = resolveFieldId(placement.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot field: ${placement.fieldId}`);
-  const sort = placement.sort ? {
-    ...placement.sort,
-    ...(placement.sort.valueFieldId ? { valueFieldId: resolveFieldId(placement.sort.valueFieldId, catalog) } : {}),
-  } : undefined;
-  return { fieldId, sort, group: placement.group };
+  let sort: PivotSort | undefined;
+  if (placement.sort) {
+    if (placement.sort.by === 'value') {
+      const valueFieldId = resolveFieldId(placement.sort.valueFieldId, catalog);
+      if (!valueFieldId) throw new Error(`Pivot value sort requires a valueFieldId for ${fieldId}`);
+      if (!valueFieldIds.has(valueFieldId)) throw new Error(`Pivot value sort field is not in Values: ${valueFieldId}`);
+      sort = { ...placement.sort, valueFieldId };
+    } else {
+      sort = { direction: placement.sort.direction, by: 'label' };
+    }
+  }
+  return { fieldId, sort, group: placement.group, subtotal: placement.subtotal ? structuredClone(placement.subtotal) : undefined };
 }
 
 function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): PivotFilter {
@@ -426,6 +576,11 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
     if (!valueFieldId) throw new Error(`Unknown pivot value field: ${filter.valueFieldId}`);
     return { ...filter, fieldId, valueFieldId };
   }
+  if (filter.valueFieldId !== undefined) {
+    const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
+    if (!valueFieldId) throw new Error(`Unknown pivot value filter field: ${filter.valueFieldId}`);
+    return { ...filter, fieldId, valueFieldId };
+  }
   return { ...filter, fieldId };
 }
 
@@ -436,12 +591,14 @@ function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog)
 }
 
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
+  const values = layout.values.map((entry) => normalizeValueField(entry, catalog));
+  const valueFieldIds = new Set(values.map((entry) => entry.fieldId));
   return {
     ...structuredClone(layout),
-    rows: layout.rows.map((entry) => normalizePlacement(entry, catalog)),
-    columns: layout.columns.map((entry) => normalizePlacement(entry, catalog)),
+    rows: layout.rows.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
+    columns: layout.columns.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
     filters: layout.filters.map((entry) => normalizeFilter(entry, catalog)),
-    values: layout.values.map((entry) => normalizeValueField(entry, catalog)),
+    values,
     expansion: layout.expansion ? {
       expandedNodeIds: [...layout.expansion.expandedNodeIds],
       collapsedNodeIds: [...layout.expansion.collapsedNodeIds],
@@ -476,7 +633,11 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
     target: getPivotTarget(pivot),
     fieldCatalog,
     layout: normalizeLayout(pivot.layout, fieldCatalog),
-    refreshPolicy: structuredClone(pivot.refreshPolicy),
+    refreshPolicy: normalizePivotRefreshPolicy(pivot.refreshPolicy),
+    presentation: {
+      ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
+      styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },
+    },
     ...(pivot.nativeMetadata ? { nativeMetadata: structuredClone(pivot.nativeMetadata) } : {}),
   };
 }
@@ -561,10 +722,17 @@ function toNumber(value: PivotScalar): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function compare(left: PivotScalar, right: PivotScalar): number {
+function compare(left: PivotScalar, right: PivotScalar, dataType?: PivotFieldDataType): number {
   if (same(left, right)) return 0;
   if (left == null || left === '') return -1;
   if (right == null || right === '') return 1;
+  if (dataType === 'boolean' && typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
+  if (dataType === 'date') {
+    const leftDate = pivotTimelineInstant(left);
+    const rightDate = pivotTimelineInstant(right);
+    if (leftDate !== undefined && rightDate !== undefined) return leftDate - rightDate;
+  }
+  if (dataType === 'text') return String(left).localeCompare(String(right));
   const leftNumber = toNumber(left);
   const rightNumber = toNumber(right);
   if (leftNumber != null && rightNumber != null) return leftNumber - rightNumber;
@@ -634,16 +802,34 @@ function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
     const result = start + Math.floor((number - start) / group.interval) * group.interval;
     return group.end !== undefined && result > group.end ? group.end : result;
   }
-  const date = new Date(String(value));
+  const date = pivotDate(value);
   if (Number.isNaN(date.getTime())) return value;
+  const start = group.start === undefined ? undefined : pivotDate(group.start);
+  const end = group.end === undefined ? undefined : pivotDate(group.end);
+  if (start && !Number.isNaN(start.getTime()) && date < start) return group.autoStart ? dateGroupLabel(start, group) : value;
+  if (end && !Number.isNaN(end.getTime()) && date > end) return group.autoEnd ? dateGroupLabel(end, group) : value;
+  return dateGroupLabel(date, group);
+}
+
+function pivotDate(value: PivotScalar): Date {
+  if (typeof value === 'number' && Number.isFinite(value)) return new Date(Date.UTC(1899, 11, 30) + value * 86_400_000);
+  return new Date(String(value));
+}
+
+function dateGroupLabel(date: Date, group: Extract<PivotGroup, { kind: 'date' }>): PivotScalar {
   if (group.unit === 'year') return date.getFullYear();
   if (group.unit === 'quarter') return `${date.getFullYear()} Q${Math.floor(date.getMonth() / 3) + 1}`;
   if (group.unit === 'month') return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-  if (group.unit === 'week') return Math.ceil((((date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) / 86400000) + date.getDay() + 1) / 7);
+  if (group.unit === 'week') {
+    const startOfWeek = group.startOfWeek ?? 0;
+    const first = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    const offset = (first.getUTCDay() - startOfWeek + 7) % 7;
+    return Math.floor((Math.floor((date.getTime() - first.getTime()) / 86_400_000) + offset) / 7) + 1;
+  }
   return date.toISOString().slice(0, 10);
 }
 
-function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[]): AxisGroup[] {
+function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldCatalog: PivotFieldCatalog): AxisGroup[] {
   const map = new Map<string, AxisGroup>();
   for (const row of rows) {
     const values = placements.map((placement) => grouped(row.values[placement.fieldId] ?? null, placement.group));
@@ -653,12 +839,14 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[]): AxisG
     map.set(key, group);
   }
   const placement = placements[placements.length - 1];
+  const dataType = placement ? fieldCatalog.fields.find((field) => field.fieldId === placement.fieldId)?.dataType : undefined;
   const result = [...map.values()].sort((left, right) => {
     if (placement?.sort?.by === 'value' && placement.sort.valueFieldId) {
       return (aggregatePivotValues(left.rows, placement.sort.valueFieldId, 'sum') ?? 0) - (aggregatePivotValues(right.rows, placement.sort.valueFieldId, 'sum') ?? 0);
     }
     for (let index = 0; index < left.values.length; index += 1) {
-      const order = compare(left.values[index] ?? null, right.values[index] ?? null);
+      const fieldType = fieldCatalog.fields.find((field) => field.fieldId === placements[index]?.fieldId)?.dataType ?? dataType;
+      const order = compare(left.values[index] ?? null, right.values[index] ?? null, fieldType);
       if (order) return order;
     }
     return 0;
@@ -676,7 +864,9 @@ function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { 
 
 function matchesFilter(row: SourceRow, filter: PivotFilter): boolean {
   const fieldId = filter.fieldId;
-  const value = row.values[fieldId] ?? null;
+  const value = filter.kind === 'condition' && filter.valueFieldId
+    ? row.values[filter.valueFieldId] ?? null
+    : row.values[fieldId] ?? null;
   if (filter.kind === 'top-items') return true;
   if (filter.kind === 'manual') return manualFilterMatches(value, filter);
   const leftNumber = toNumber(value);
@@ -722,15 +912,14 @@ function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload): boole
   return filter.mode === 'include' ? included : !included;
 }
 
-function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload): boolean {
+function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, bounds: PivotTimelinePeriodBounds): boolean {
   const fieldId = timeline.fieldId;
   const raw = row.values[fieldId];
   if (raw == null || raw === '') return false;
-  const date = new Date(String(raw));
-  if (Number.isNaN(date.getTime())) return false;
-  const start = timeline.period.start ? new Date(timeline.period.start).getTime() : Number.NEGATIVE_INFINITY;
-  const end = timeline.period.end ? new Date(timeline.period.end).getTime() : Number.POSITIVE_INFINITY;
-  return date.getTime() >= start && date.getTime() <= end;
+  const instant = pivotTimelineInstant(raw);
+  if (instant === undefined) return false;
+  return instant >= (bounds.start ?? Number.NEGATIVE_INFINITY)
+    && instant < (bounds.endExclusive ?? Number.POSITIVE_INFINITY);
 }
 
 function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel): SourceRow[] {
@@ -746,10 +935,30 @@ function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: Pivo
       else if (payload.kind === 'timeline') timelines.push(payload);
     }
   }
-  return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer)) && timelines.every((timeline) => matchesTimeline(row, timeline)));
+  const timelineBounds = timelines.map((timeline) => normalizePivotTimelinePeriod(timeline.period));
+  return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer))
+    && timelines.every((timeline, index) => matchesTimeline(row, timeline, timelineBounds[index]!)));
 }
 
-function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail'): PivotResultCell[] {
+function resultValueFields(layout: PivotLayout): PivotResultValueField[] {
+  const customFunctions = [...layout.rows, ...layout.columns].flatMap((placement) => placement.subtotal?.mode === 'custom'
+    ? placement.subtotal.functions.map((fn) => ({ fieldId: placement.fieldId, fn }))
+    : []);
+  if (!customFunctions.length) return layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  return layout.values.flatMap((field) => {
+    const base = { ...field, sourceFieldId: field.fieldId };
+    const extras = customFunctions.filter(({ fieldId, fn }, index, all) => fn !== field.summarizeBy && all.findIndex((candidate) => candidate.fieldId === fieldId && candidate.fn === fn) === index).map(({ fieldId, fn }) => ({
+      ...field,
+      sourceFieldId: field.fieldId,
+      subtotalFunction: fn,
+      subtotalFieldId: fieldId,
+      displayName: `${field.displayName ?? field.fieldId} (${fn})`,
+    }));
+    return [base, ...extras];
+  });
+}
+
+function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string): PivotResultCell[] {
   return columns.map((column, columnIndex) => {
     const nodeRows = new Set(rows);
     const columnRows = column.rows.filter((candidate) => nodeRows.has(candidate));
@@ -759,32 +968,53 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValue
       kind,
       columnPath: column.values,
       sourceRowPaths: columnRows.flatMap((row) => row.paths),
-      values: values.map((value) => aggregatePivotValues(columnRows, value.fieldId, value.summarizeBy)),
+      values: values.map((value) => aggregatePivotValues(columnRows, value.sourceFieldId, kind === 'subtotal' && value.subtotalFieldId === subtotalFieldId
+        ? value.subtotalFunction ?? value.summarizeBy
+        : value.summarizeBy)),
     };
   });
 }
 
-function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotValueField[], showSubtotals: boolean, prefix: string[] = []): PivotResultNode[] {
-  if (depth >= placements.length) return [];
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], fieldCatalog: PivotFieldCatalog, prefix: string[] = []): PivotResultNode[] {
+  // A Pivot with no Row fields still owns one data row: the root aggregation
+  // crossing every Column path and Values placement. Grand Total is a
+  // separate axis total and must not stand in for this matrix row.
+  if (depth >= placements.length) {
+    if (placements.length !== 0 || depth !== 0) return [];
+    const path = ['__root__'];
+    return [{
+      nodeId: path[0],
+      path,
+      kind: 'leaf',
+      key: null,
+      label: 'Values',
+      depth: 0,
+      children: [],
+      values: resultCells(rows, columns, values, path),
+      subtotal: false,
+      sourceRowPaths: rows.flatMap((row) => row.paths),
+    }];
+  }
   const placement = placements[depth]!;
-  return axisGroups(rows, [placement]).map((group) => {
+  return axisGroups(rows, [placement], fieldCatalog).map((group) => {
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
-    const children = resultNodes(group.rows, placements, depth + 1, columns, values, showSubtotals, path);
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, fieldCatalog, path);
     const leaf = children.length === 0;
+    const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
     return {
       nodeId: path.join('/'),
       path,
-      kind: leaf ? 'leaf' : 'subtotal',
+      kind: subtotal ? 'subtotal' : 'leaf',
       fieldId,
       memberKey: member,
       key: group.values[0] ?? null,
       label: display(group.values[0] ?? null),
       depth,
       children,
-      values: resultCells(group.rows, columns, values, path, showSubtotals && !leaf ? 'subtotal' : 'detail'),
-      subtotal: showSubtotals && !leaf,
+      values: resultCells(group.rows, columns, values, path, subtotal ? 'subtotal' : 'detail', subtotal ? placement.fieldId : undefined),
+      subtotal,
       sourceRowPaths: group.rows.flatMap((row) => row.paths),
     };
   });
@@ -847,7 +1077,7 @@ function computePivotResultFromTable(
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' || (filter.kind === 'condition' && filter.valueFieldId) ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
     ...definition.layout.values.map((entry) => entry.fieldId),
   ];
   const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId)]);
@@ -856,12 +1086,13 @@ function computePivotResultFromTable(
   let filtered = matchesControls(workbook, rows, pivot);
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter)));
   filtered = topItems(filtered, definition.layout.filters);
-  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns) : [{ values: [], rows: filtered }];
+  const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog) : [{ values: [], rows: filtered }];
+  const resultFields = resultValueFields(definition.layout);
   const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
     columnPath: [],
-    values: definition.layout.values.map((field) => aggregatePivotValues(filtered, field.fieldId, field.summarizeBy)),
+    values: resultFields.map((field) => aggregatePivotValues(filtered, field.sourceFieldId, field.summarizeBy)),
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   } : null;
   const tree: PivotResultTree = {
@@ -869,11 +1100,12 @@ function computePivotResultFromTable(
     pivotId: definition.id,
     fields: definition.fieldCatalog,
     columnPaths: columns.map((column) => column.values),
-    rows: resultNodes(filtered, definition.layout.rows, 0, columns, definition.layout.values, definition.layout.showSubtotals),
+    valueFields: resultFields,
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.fieldCatalog),
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
-  applyShowAs(tree, definition.layout.values);
+  applyShowAs(tree, resultFields);
   const revisions = getPivotRevisionKey(workbook, pivot);
   tree.sourceRevision = sourceRevisionOverride ?? revisions.sourceRevision;
   tree.layoutRevision = revisions.layoutRevision;
@@ -903,14 +1135,16 @@ export function computePivotResultFromBlockSource(
   return structuredClone(computePivotResultFromTable(workbook, pivot, definition, source, sourceRevision));
 }
 
-function nodeVisible(node: PivotResultNode, layout: PivotLayout, ancestorsVisible: boolean): boolean {
-  if (!ancestorsVisible) return false;
+function nodeExpanded(node: PivotResultNode, layout: PivotLayout): boolean {
+  if (!node.children.length) return false;
+  const nodeId = node.nodeId ?? '';
   const expansion = layout.expansion;
-  if (!expansion || !node.children.length) return true;
-  if (expansion.collapsedNodeIds.includes(node.nodeId ?? '')) return false;
-  // An empty expanded set means the default Excel state (all nodes expanded);
-  // once the user explicitly records paths, only those paths remain open.
-  return expansion.expandedNodeIds.length === 0 || expansion.expandedNodeIds.includes(node.nodeId ?? '') || node.depth === 0;
+  if (!expansion) return true;
+  // Expansion state controls traversal, never the existence of the current
+  // row.  A collapsed node remains visible while only its descendants are
+  // omitted from the projection. Explicit expanded IDs are retained as
+  // stable overrides for restored/native Pivot state; the default is open.
+  return !expansion.collapsedNodeIds.includes(nodeId) || expansion.expandedNodeIds.includes(nodeId);
 }
 
 interface FlatNode {
@@ -923,11 +1157,37 @@ function flattenNodes(nodes: PivotResultNode[], layout: PivotLayout, labels: str
   const output: FlatNode[] = [];
   for (const node of nodes) {
     const currentLabels = [...labels, node.label];
-    const visible = nodeVisible(node, layout, parentVisible);
-    output.push({ node, labels: currentLabels, visible });
-    if (visible && node.children.length) output.push(...flattenNodes(node.children, layout, currentLabels, true));
+    const visible = parentVisible;
+    const includeNode = !node.children.length || node.subtotal;
+    const children = visible && nodeExpanded(node, layout) ? flattenNodes(node.children, layout, currentLabels, true) : [];
+    if (layout.subtotalLocation === 'bottom' && node.subtotal) {
+      output.push(...children);
+      output.push({ node, labels: currentLabels, visible });
+    } else {
+      if (includeNode) output.push({ node, labels: currentLabels, visible });
+      output.push(...children);
+    }
   }
   return output;
+}
+
+function pivotNodeIds(nodes: readonly PivotResultNode[], target = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    if (node.nodeId) target.add(node.nodeId);
+    pivotNodeIds(node.children, target);
+  }
+  return target;
+}
+
+function normalizeExpansionForTree(expansion: PivotLayout['expansion'], tree: PivotResultTree): NonNullable<PivotLayout['expansion']> {
+  const known = pivotNodeIds(tree.rows);
+  const source = expansion ?? { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true };
+  const dedupeKnown = (ids: readonly string[]) => [...new Set(ids.filter((id) => known.has(id)))];
+  return {
+    expandedNodeIds: dedupeKnown(source.expandedNodeIds),
+    collapsedNodeIds: dedupeKnown(source.collapsedNodeIds),
+    showButtons: source.showButtons,
+  };
 }
 
 function textForValue(value: PivotScalar): string {
@@ -1024,7 +1284,8 @@ function buildPivotGridProjectionCandidate(
   }
   const cells: PivotProjectionCell[] = [];
   const rowHeaderCount = Math.max(definition.layout.rows.length, 1);
-  const valueColumnCount = Math.max(tree ? tree.columnPaths.length * definition.layout.values.length : definition.layout.values.length, 1);
+  const values = tree?.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  const valueColumnCount = Math.max(tree ? tree.columnPaths.length * values.length : values.length, 1);
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
@@ -1037,7 +1298,6 @@ function buildPivotGridProjectionCandidate(
   }
   for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
   const columnPaths = tree?.columnPaths ?? [];
-  const values = definition.layout.values;
   for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
     const path = columnPaths[columnIndex] ?? [];
     for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
@@ -1045,26 +1305,28 @@ function buildPivotGridProjectionCandidate(
       const valueField = values[valueIndex];
       const valueCaption = valueField ? (valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)) : '';
       const label = path.length ? `${path.map(display).join(' / ')} ${valueCaption}`.trim() : valueCaption;
-      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId }));
+      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
     }
   }
   row += 1;
   if (tree) {
-    const flat = flattenNodes(tree.rows, definition.layout);
+    const expansion = normalizeExpansionForTree(definition.layout.expansion, tree);
+    const projectionLayout: PivotLayout = { ...definition.layout, expansion };
+    const flat = flattenNodes(tree.rows, projectionLayout);
     for (const item of flat) {
       if (!item.visible) continue;
       const node = item.node;
       for (let axis = 0; axis < rowHeaderCount; axis += 1) {
         const label = item.labels[axis] ?? (axis === 0 ? node.label : '');
-        const kind: PivotProjectionCell['kind'] = axis === 0 && node.children.length && definition.layout.expansion?.showButtons ? 'expand-toggle' : node.subtotal ? 'subtotal' : 'row-header';
-        cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, expandable: node.children.length > 0, expanded: node.children.length > 0 && !definition.layout.expansion?.collapsedNodeIds.includes(node.nodeId ?? '') }));
+        const kind: PivotProjectionCell['kind'] = axis === 0 && node.children.length && expansion.showButtons ? 'expand-toggle' : node.subtotal ? 'subtotal' : 'row-header';
+        cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, expandable: node.children.length > 0, expanded: nodeExpanded(node, projectionLayout) }));
       }
       for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
         const resultCell = node.values[columnIndex];
         for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
           const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
           const value = resultCell?.values[valueIndex] ?? null;
-          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths }));
+          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
         }
       }
       row += 1;
@@ -1085,6 +1347,7 @@ function buildPivotGridProjectionCandidate(
     pivotId: definition.id,
     sheetId: target.sheetId,
     target,
+    presentation: structuredClone(definition.presentation),
     occupiedRange,
     cells,
     collision,
@@ -1200,9 +1463,10 @@ export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): P
   const tree = computePivotResult(workbook, pivot);
   const definition = normalizePivotDefinition(workbook, pivot);
   const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) }));
+  const values = tree.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
   const headers = [
     ...definition.layout.rows.map((field) => fieldName(field.fieldId, definition.fieldCatalog)),
-    ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.fieldId, definition.fieldCatalog)}` : field.displayName ?? fieldName(field.fieldId, definition.fieldCatalog))),
+    ...tree.columnPaths.flatMap((path) => values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.sourceFieldId, definition.fieldCatalog)}` : field.displayName ?? fieldName(field.sourceFieldId, definition.fieldCatalog))),
   ];
   return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }

@@ -395,14 +395,24 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
     if (table.sourceRange?.sheetId === sheet.id && !shiftRange(table.sourceRange)) throw new Error(`Cell shift would remove workbook table ${table.id}`);
   }
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind !== 'chart') continue;
-    payload.sourceRanges = payload.sourceRanges.filter(shiftRange);
-    if (payload.categoryRange) shiftRange(payload.categoryRange);
-    payload.series = payload.series?.filter((series) => shiftRange(series.range));
+    if (payload.kind === 'chart') {
+      payload.sourceRanges = payload.sourceRanges.filter(shiftRange);
+      if (payload.categoryRange) shiftRange(payload.categoryRange);
+      payload.series = payload.series?.filter((series) => {
+        const valid = shiftRange(series.range);
+        if (series.xRange) shiftRange(series.xRange);
+        if (series.yRange) shiftRange(series.yRange);
+        if (series.errorBars?.plusRange) shiftRange(series.errorBars.plusRange);
+        if (series.errorBars?.minusRange) shiftRange(series.errorBars.minusRange);
+        return valid;
+      });
+    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
+      if (!shiftRange(payload.source.range)) throw new Error('Cell shift would remove Data Chart report binding');
+    }
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') shiftRange(pivot.source.range);
-    if (pivot.source.kind === 'worksheet-ranges') pivot.source.ranges = pivot.source.ranges.filter(shiftRange);
+    if (pivot.source.kind === 'worksheet-ranges') pivot.source.ranges = pivot.source.ranges.filter((sourceRange) => shiftRange(sourceRange.range));
     if (pivot.target.sheetId === sheet.id) {
       const anchor = mapAnchor(pivot.target.anchor.row, pivot.target.anchor.column);
       if (anchor) { pivot.target.anchor.row = anchor.row; pivot.target.anchor.column = anchor.column; }
@@ -691,7 +701,7 @@ function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') shiftRangeRef(pivot.source.range, axis, at, count, direction);
     if (pivot.source.kind === 'worksheet-ranges') {
-      for (const range of pivot.source.ranges) shiftRangeRef(range, axis, at, count, direction);
+      for (const sourceRange of pivot.source.ranges) shiftRangeRef(sourceRange.range, axis, at, count, direction);
     }
     if (pivot.target.sheetId === sheet.id) {
       const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
@@ -706,10 +716,19 @@ function shiftPivots(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
 
 function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind !== 'chart') continue;
-    for (const range of payload.sourceRanges) shiftRangeRef(range, axis, at, count, direction);
-    if (payload.categoryRange) shiftRangeRef(payload.categoryRange, axis, at, count, direction);
-    for (const series of payload.series ?? []) shiftRangeRef(series.range, axis, at, count, direction);
+    if (payload.kind === 'chart') {
+      for (const range of payload.sourceRanges) shiftRangeRef(range, axis, at, count, direction);
+      if (payload.categoryRange) shiftRangeRef(payload.categoryRange, axis, at, count, direction);
+      for (const series of payload.series ?? []) {
+        shiftRangeRef(series.range, axis, at, count, direction);
+        if (series.xRange) shiftRangeRef(series.xRange, axis, at, count, direction);
+        if (series.yRange) shiftRangeRef(series.yRange, axis, at, count, direction);
+        if (series.errorBars?.plusRange) shiftRangeRef(series.errorBars.plusRange, axis, at, count, direction);
+        if (series.errorBars?.minusRange) shiftRangeRef(series.errorBars.minusRange, axis, at, count, direction);
+      }
+    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
+      shiftRangeRef(payload.source.range, axis, at, count, direction);
+    }
   }
 }
 
@@ -960,14 +979,23 @@ function applyMoveRange(
     if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
   }
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind !== 'chart') continue;
-    for (const range of payload.sourceRanges) relocate(range);
-    if (payload.categoryRange) relocate(payload.categoryRange);
-    for (const series of payload.series ?? []) relocate(series.range);
+    if (payload.kind === 'chart') {
+      for (const range of payload.sourceRanges) relocate(range);
+      if (payload.categoryRange) relocate(payload.categoryRange);
+      for (const series of payload.series ?? []) {
+        relocate(series.range);
+        if (series.xRange) relocate(series.xRange);
+        if (series.yRange) relocate(series.yRange);
+        if (series.errorBars?.plusRange) relocate(series.errorBars.plusRange);
+        if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
+      }
+    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
+      relocate(payload.source.range);
+    }
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') relocate(pivot.source.range);
-    if (pivot.source.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) relocate(range);
+    if (pivot.source.kind === 'worksheet-ranges') for (const sourceRange of pivot.source.ranges) relocate(sourceRange.range);
     if (pivot.target.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
       pivot.target.anchor.row += rowDelta;
       pivot.target.anchor.column += colDelta;
@@ -1110,17 +1138,26 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') validateRange(pivot.source.range, `pivot ${pivot.id} source`);
-    if (pivot.source.kind === 'worksheet-ranges') for (const range of pivot.source.ranges) validateRange(range, `pivot ${pivot.id} source`);
+    if (pivot.source.kind === 'worksheet-ranges') for (const sourceRange of pivot.source.ranges) validateRange(sourceRange.range, `pivot ${pivot.id} source`);
   }
   for (const sparkline of sheet.sparklines) validateRange(sparkline.sourceRange, `sparkline ${sparkline.id} source`);
   for (const spill of sheet.spillRanges) validateRange(spill.range, 'spill range');
   for (const rule of sheet.protectionRules) if (rule.range) validateRange(rule.range, `protection ${rule.id}`);
   if (sheet.bandedRule) validateRange(sheet.bandedRule.range, 'banded rule');
   for (const payload of sheet.drawingPayloads.values()) {
-    if (payload.kind !== 'chart') continue;
-    for (const range of payload.sourceRanges) validateRange(range, 'chart source');
-    if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');
-    for (const series of payload.series ?? []) validateRange(series.range, 'chart series source');
+    if (payload.kind === 'chart') {
+      for (const range of payload.sourceRanges) validateRange(range, 'chart source');
+      if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');
+      for (const series of payload.series ?? []) {
+        validateRange(series.range, 'chart series source');
+        if (series.xRange) validateRange(series.xRange, 'chart x source');
+        if (series.yRange) validateRange(series.yRange, 'chart y source');
+        if (series.errorBars?.plusRange) validateRange(series.errorBars.plusRange, 'chart error bar plus source');
+        if (series.errorBars?.minusRange) validateRange(series.errorBars.minusRange, 'chart error bar minus source');
+      }
+    } else if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') {
+      validateRange(payload.source.range, 'data chart report binding');
+    }
   }
   for (const drawing of sheet.drawings) {
     if (drawing.anchor.kind === 'absolute' || drawing.anchor.row === undefined || drawing.anchor.column === undefined) continue;

@@ -25,7 +25,6 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
     });
     const createWorkbookSessionOptions = (unitId: string, authTokenProvider: AuthTokenProvider): WorkbookSessionOptions => ({
       unitId,
-      api: workbookApi,
       workspacePersistence: persistence,
       authTokenProvider,
     });

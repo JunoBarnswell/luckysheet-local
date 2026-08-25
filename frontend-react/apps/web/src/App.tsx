@@ -47,7 +47,7 @@ function EditorRoute({ unitId, onOpenHub }: { unitId: string; onOpenHub: () => v
   const { session, snapshot: state } = useWorkbookSession({ ...createWorkbookSessionOptions(unitId, auth.getAccessToken), initialPhase: getInitialSessionPhase() });
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const initialSelectionApplied = useRef(false);
-  const isBusy = state.phase !== "ready";
+  const isBusy = state.phase !== "ready" || state.pendingCommandCount > 0;
 
   useEffect(() => {
     const initialCell = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("initialCell");

@@ -7,6 +7,7 @@ export * from './capability-manifest';
 export * from './archive';
 export * from './native-package-state';
 export * from './native-pivot';
+export * from './native-chart';
 export * from './worker-protocol';
 export * from './worker-entry';
 export * from './worker-port';

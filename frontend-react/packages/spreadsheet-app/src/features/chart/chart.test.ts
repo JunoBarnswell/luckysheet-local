@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
+import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
-import { resolveChartData, registerChartCommands, type ChartPayload } from './index';
+import { buildPivotChartData, resolveChartData, registerChartCommands, type ChartPayload } from './index';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
@@ -31,19 +31,22 @@ describe('chart feature', () => {
       kind: 'chart',
       chartId: 'chart-1',
       chartType: 'combo',
-      title: 'Revenue',
       sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 }],
       series: [
         { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 1, endColumn: 1 }, chartType: 'column', axis: 'primary', color: '#2563eb' },
         { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 2, endColumn: 2 }, chartType: 'line', axis: 'secondary', color: '#dc2626', smooth: true },
       ],
       categoryRange: { sheetId: 'sheet-1', startRow: 1, endRow: 4, startColumn: 0, endColumn: 0 },
-      categoryAxis: { id: 'x', position: 'bottom', title: 'Month' },
-      valueAxis: { id: 'y', position: 'left', title: 'Revenue', minimum: 0, maximum: 1000, majorUnit: 100 },
-      secondaryValueAxis: { id: 'y2', position: 'right', title: 'Margin', minimum: 0, maximum: 1, scale: 'linear' },
-      legendPosition: 'bottom',
-      showDataLabels: true,
       stacked: 'none',
+      elements: {
+        title: 'Revenue',
+        legend: { visible: true, position: 'bottom' },
+        dataLabels: { visible: true },
+        hiddenData: 'show',
+        categoryAxis: { id: 'x', position: 'bottom', title: 'Month' },
+        valueAxis: { id: 'y', position: 'left', title: 'Revenue', minimum: 0, maximum: 1000, majorUnit: 100 },
+        secondaryValueAxis: { id: 'y2', position: 'right', title: 'Margin', minimum: 0, maximum: 1, scale: 'linear' },
+      },
     };
     runtime.execute('chart.insert', chartPair('sheet-1', 'chart-1', payload));
     const sheet = workbook.getSheet('sheet-1');
@@ -59,12 +62,20 @@ describe('chart feature', () => {
     assert.equal((sheet.drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'primary');
     assert.equal(runtime.redo(), true);
 
+    runtime.execute('chart.setElements', { sheetId: 'sheet-1', chartId: 'chart-1', elements: { hiddenData: 'hideRows', plotArea: { fill: '#f8fafc' }, valueAxis: { id: 'y', position: 'left', minimum: 0, maximum: 2000, majorGridlines: { visible: false } } } });
+    runtime.execute('chart.setSeriesStyle', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', style: { marker: { enabled: true, shape: 'circle', size: 6 }, trendline: { type: 'linear', color: '#2563eb' } } });
+    const edited = sheet.drawingPayloads.get('chart-1') as ChartPayload;
+    assert.equal(edited.elements.hiddenData, 'hideRows');
+    assert.equal(edited.elements.valueAxis?.majorGridlines?.visible, false);
+    assert.equal(edited.series?.[0]?.marker?.shape, 'circle');
+
     const remoteWorkbook = new WorkbookModel('chart-feature-test', 'Chart Feature');
     const remoteRuntime = new CommandRuntime(remoteWorkbook);
     registerDrawingFeature(remoteRuntime);
     registerChartCommands(remoteRuntime);
     remoteRuntime.applyRemoteMutations(runtime.getUndoEntries().flatMap((entry) => entry.redo));
     assert.equal((remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'secondary');
+    assert.equal((remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('chart-1') as ChartPayload).elements.hiddenData, 'hideRows');
   });
 
   it('supports local range data, scatter series, pivot result data and remote replay', () => {
@@ -82,6 +93,7 @@ describe('chart feature', () => {
       chartId: 'scatter-1',
       chartType: 'scatter',
       sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }],
+      elements: { hiddenData: 'show' },
       series: [
         { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter', axis: 'primary' },
         { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 2, endColumn: 2 }, chartType: 'scatter', axis: 'secondary' },
@@ -122,5 +134,62 @@ describe('chart feature', () => {
     remoteRuntime.applyRemoteMutations(operation);
     assert.equal(remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('remote-chart')?.kind, 'chart');
     assert.equal(remoteWorkbook.getSheet('sheet-1').drawings[0]?.kind, 'chart');
+  });
+
+  it('projects the complete Pivot row-path × column-path × values matrix', () => {
+    const member = (fieldId: string, value: string): string => `${fieldId}=${pivotMemberKey(createPivotMemberKey(value))}`;
+    const pivotTree: PivotResultTree = {
+      schema: 'PivotResultTree',
+      pivotId: 'matrix-pivot',
+      fields: {
+        fields: [
+          { fieldId: 'region', name: 'Region', dataType: 'text', ordinal: 0, values: ['East', 'West'] },
+          { fieldId: 'product', name: 'Product', dataType: 'text', ordinal: 1, values: ['Widget', 'Gadget'] },
+        ],
+      },
+      columnPaths: [['Jan'], ['Feb']],
+      valueFields: [
+        { fieldId: 'sales', sourceFieldId: 'sales', displayName: 'Sales', summarizeBy: 'sum' },
+        { fieldId: 'count', sourceFieldId: 'count', displayName: 'Orders', summarizeBy: 'count' },
+      ],
+      rows: [
+        {
+          kind: 'subtotal', key: 'East', label: 'East', depth: 0, subtotal: true,
+          path: [member('region', 'East')], children: [
+            { kind: 'leaf', key: 'Widget', label: 'Widget', depth: 1, subtotal: false, path: [member('region', 'East'), member('product', 'Widget')], children: [], values: [
+              { columnPath: ['Jan'], values: [10, 1], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [20, 2], sourceRowPaths: [] },
+            ], sourceRowPaths: [] },
+            { kind: 'leaf', key: 'Gadget', label: 'Gadget', depth: 1, subtotal: false, path: [member('region', 'East'), member('product', 'Gadget')], children: [], values: [
+              { columnPath: ['Jan'], values: [11, 3], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [21, 4], sourceRowPaths: [] },
+            ], sourceRowPaths: [] },
+          ], values: [], sourceRowPaths: [],
+        },
+        {
+          kind: 'subtotal', key: 'West', label: 'West', depth: 0, subtotal: true,
+          path: [member('region', 'West')], children: [
+            { kind: 'leaf', key: 'Widget', label: 'Widget', depth: 1, subtotal: false, path: [member('region', 'West'), member('product', 'Widget')], children: [], values: [
+              { columnPath: ['Jan'], values: [30, 5], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [40, 6], sourceRowPaths: [] },
+            ], sourceRowPaths: [] },
+          ], values: [], sourceRowPaths: [],
+        },
+      ],
+      grandTotal: null,
+      sourceRowPaths: [],
+    };
+    const projected = buildPivotChartData(pivotTree);
+    assert.deepEqual(projected.categories.map((category) => category.label), ['East / Widget', 'East / Gadget', 'West / Widget']);
+    assert.deepEqual(projected.series.map((entry) => entry.name), ['Jan Sales', 'Jan Orders', 'Feb Sales', 'Feb Orders']);
+    assert.deepEqual(projected.series.map((entry) => entry.values), [[10, 11, 30], [1, 3, 5], [20, 21, 40], [2, 4, 6]]);
+    assert.notEqual(projected.categories[0]?.id, projected.categories[2]?.id);
+
+    const noRows: PivotResultTree = {
+      schema: 'PivotResultTree', pivotId: 'root-pivot', fields: { fields: [] }, columnPaths: [[]],
+      valueFields: [{ fieldId: 'amount', sourceFieldId: 'amount', displayName: 'Amount', summarizeBy: 'sum' }],
+      rows: [{ kind: 'leaf', key: null, label: 'Values', depth: 0, path: ['__root__'], children: [], subtotal: false, values: [{ columnPath: [], values: [null], sourceRowPaths: [] }], sourceRowPaths: [] }],
+      grandTotal: null, sourceRowPaths: [],
+    };
+    const rootProjection = buildPivotChartData(noRows);
+    assert.deepEqual(rootProjection.categories.map((category) => category.label), ['Values']);
+    assert.deepEqual(rootProjection.series[0]?.values, [null]);
   });
 });

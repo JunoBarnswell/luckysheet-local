@@ -48,12 +48,40 @@ export function RibbonHost({
   onOpenDefaultColumnWidthDialog,
   commands,
 }: RibbonHostProps): ReactNode {
+  const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
+  const activeChartDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'chart');
+  const activePictureDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'image');
+  const activeSparklineContext = state.activeContext.kind === 'sparkline' ? state.activeContext : undefined;
   return (
     <Ribbon
       activeTab={state.ribbon.activeTab}
       activePivot={state.activeContext.kind === "pivot"
         ? { sheetId: state.activeContext.sheetId, pivotId: state.activeContext.pivotId }
         : undefined}
+      activeTableSheet={state.activeContext.kind === "table-sheet"
+        ? { sheetId: state.activeContext.sheetId, viewId: state.activeContext.viewId }
+        : undefined}
+      activeGanttSheet={state.activeContext.kind === "gantt-sheet"
+        ? { sheetId: state.activeContext.sheetId, viewId: state.activeContext.viewId }
+        : undefined}
+      activeReportSheet={state.activeContext.kind === "report-sheet"
+        ? { sheetId: state.activeContext.sheetId, tableId: state.activeContext.tableId }
+        : undefined}
+      activeTable={activeTableContext
+        ? (() => {
+          const table = state.selectedSheet.sheetTables.find((entry) => entry.id === activeTableContext.tableId);
+          const selection = state.selection.ranges[state.selection.primaryRangeIndex];
+          const resizeRange = table && selection
+            && (selection.startRow !== table.range.startRow || selection.endRow !== table.range.endRow
+              || selection.startColumn !== table.range.startColumn || selection.endColumn !== table.range.endColumn)
+            ? { ...selection }
+            : undefined;
+          return table ? { sheetId: activeTableContext.sheetId, tableId: table.id, table, resizeRange } : undefined;
+        })()
+        : undefined}
+      activeChart={activeChartDrawing ? { sheetId: activeChartDrawing.sheetId, chartId: activeChartDrawing.payloadId } : undefined}
+      activePicture={activePictureDrawing ? { sheetId: activePictureDrawing.sheetId, drawingId: activePictureDrawing.id } : undefined}
+      activeSparkline={activeSparklineContext ? { sheetId: activeSparklineContext.sheetId, sparklineId: activeSparklineContext.sparklineId } : undefined}
       locale={locale}
       onCommand={dispatchCommand}
       onSessionIntent={dispatchSessionIntent}
@@ -92,7 +120,10 @@ export function RibbonHost({
       onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
       buildSortDescriptor={commands.buildSortDescriptor}
-      onCreateSheetTable={() => session.createSheetTableFromSelection()}
+      onCreateSheetTable={() => session.openCreateTableDialog()}
+      onOpenTableSettings={() => session.openTableSettings()}
+      onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
+      onConvertActiveTableToRange={() => session.convertActiveSheetTableToRange()}
       onCreateDataTable={() => session.createDataTableFromSelection()}
       onToggleSheetTableTotalRow={commands.buildTotalRowCommand}
       onApplyFilterSelection={commands.buildFilterSelectionCommand}
@@ -115,8 +146,8 @@ export function RibbonHost({
       onSetRecalculationMode={(mode: "automatic" | "manual") => session.setRecalculationMode(mode)}
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
-      onApplyBarcode={() => session.applyBarcode('qr')}
-      onCreateDataChart={() => session.insertDataChart('column')}
+      onApplyBarcode={(symbology) => session.openBarcodePanel(symbology)}
+      onCreateDataChart={(type) => session.insertDataChart(type)}
       onCreateCamera={() => session.insertCamera()}
       onCreateFormControl={(type) => session.insertFormControl(type)}
       onApplyCheckbox={() => session.setCellEditor({ kind: 'checkbox' })}
@@ -131,7 +162,7 @@ export function RibbonHost({
       onCloseCommandPalette={session.closeCommandPalette}
       formatPainterActive={state.formatPainter !== null}
       onBeginFormatPainter={(locked) => session.beginFormatPainter(Boolean(locked))}
-      onMergeCells={() => session.requestMergeCells()}
+      onMergeCells={(operation) => session.requestMergeAction(operation)}
       canExecute={session.canExecute.bind(session)}
     />
   );

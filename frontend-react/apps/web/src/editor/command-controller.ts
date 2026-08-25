@@ -18,7 +18,7 @@ import {
   type WorkbookSession,
 } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
-import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
+import type { PivotExpansionCommand, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
 import type { Locale } from '../i18n';
 import { pivotText } from '../components/pivot/pivot-localization';
 
@@ -244,9 +244,18 @@ export function useEditorCommandController({
     },
     onSortChange: (fieldId, sort) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, sort } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, sort } : field) }); },
     onGroupChange: (fieldId, group) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, group } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, group } : field) }); },
+    onSubtotalChange: (fieldId, subtotal) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field) }); },
+    onSubtotalLocationChange: (subtotalLocation) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), subtotalLocation }); },
     onRefresh: () => { if (activePivot) session.refreshPivot(activePivot.id); },
     onLayoutChange: (layout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), compact: layout === "compact", repeatLabels: layout === "tabular" }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
+    onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
+    onExpansionCommand: (command: PivotExpansionCommand) => {
+      if (!activePivot) return;
+      const base = { sheetId: activePivotSheetId, pivotId: activePivot.id };
+      if (command.kind === 'expand-field' || command.kind === 'collapse-field') dispatchCommand({ commandId: 'pivot.expansion.field', params: { ...base, fieldId: command.fieldId, expanded: command.kind === 'expand-field' } });
+      else if (command.kind === 'toggle-buttons') dispatchCommand({ commandId: 'pivot.expansion.buttons', params: { ...base, showButtons: command.showButtons } });
+    },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
       if (enabled) session.createPivotSlicerControl(activePivot.id, fieldId);
@@ -267,7 +276,7 @@ export function useEditorCommandController({
       if (!activePivot || !chart) return;
       const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
       const drawing: DrawingObject = { id: `drawing-${chartId}`, sheetId: activePivotSheetId, kind: "chart", payloadId: chartId, anchor: { kind: "absolute" }, transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 }, zIndex: 0 };
-      const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: chart.type, title: chart.title, sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [] };
+      const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: chart.type, sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [], elements: { title: chart.title, legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show' } };
       dispatchCommand({ commandId: "pivot.chart.create", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, drawing, payload } });
     },
   };

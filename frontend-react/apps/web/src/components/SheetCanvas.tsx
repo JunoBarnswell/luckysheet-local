@@ -8,6 +8,7 @@ import {
   StatePanel,
   Button,
   ScrollBar,
+  Textarea,
 } from "@react-sheets/ui-system";
 import {
   CanvasRenderSurface,
@@ -29,11 +30,13 @@ import type {
   PivotProjectionCell,
   PivotSourceRowPath,
   PivotResultTree,
+  PivotPresentation,
   PivotSort,
   RangeRef,
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
+import { DEFAULT_PIVOT_STYLE_OPTIONS } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
@@ -44,8 +47,10 @@ import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
 import type { ColumnDimensionController } from '../editor/column-dimension-controller';
 import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
-import { PivotHeaderFilterPopover } from './pivot/PivotHeaderFilterPopover';
+import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
+import { GanttViewOverlay } from './GanttViewOverlay';
+import { ReportViewOverlay } from './ReportViewOverlay';
 
 export interface SheetCanvasProps {
   locale: Locale;
@@ -65,6 +70,8 @@ export interface SheetCanvasProps {
   sparklines?: SparklineModel[];
   tables?: readonly WorkbookTableModel[];
   selectedFloatingId: string | null;
+  textBoxPlacementActive?: boolean;
+  textBoxEdit?: { sheetId: string; drawingId: string; draftText: string } | null;
   showFormulas?: boolean;
   /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
@@ -72,6 +79,7 @@ export interface SheetCanvasProps {
   getPivotContextMenuItems?: (hit: ResolvedContextHit) => readonly ContextMenuItem[];
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
+  onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
@@ -95,6 +103,12 @@ export interface SheetCanvasProps {
   onFloatingSelect: (hit: FloatingHit | null, mode?: 'replace' | 'add' | 'toggle') => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onFloatingRemove: (drawingId: string) => void;
+  onTextBoxPlacementCommit?: (bounds: Rect) => void;
+  onCancelTextBoxPlacement?: () => void;
+  onBeginTextBoxEdit?: (drawingId: string, initialText?: string) => void;
+  onTextBoxDraftChange?: (value: string) => void;
+  onCommitTextBoxEdit?: () => void;
+  onCancelTextBoxEdit?: () => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClearSelection: (mode: "contents" | "formats") => void;
   /** Format painter is a transient session interaction, never canvas-local state. */
@@ -222,8 +236,27 @@ export function isPivotValueCell(cell: PivotProjectionCell): boolean {
   return cell.kind === "value" || cell.kind === "subtotal" || cell.kind === "grand-total";
 }
 
+interface PivotStylePalette {
+  title: string;
+  header: string;
+  value: string;
+  stripe: string;
+  total: string;
+  accent: string;
+  text: string;
+  border: string;
+}
+
+function pivotStylePalette(styleName?: string): PivotStylePalette {
+  const name = styleName?.toLocaleLowerCase() ?? '';
+  if (name.includes('dark')) return { title: '#1f4e78', header: '#5b9bd5', value: '#ffffff', stripe: '#d9eaf7', total: '#bdd7ee', accent: '#2f75b5', text: '#102a43', border: '#7f9db9' };
+  if (name.includes('medium')) return { title: '#4472c4', header: '#d9e2f3', value: '#ffffff', stripe: '#edf3f9', total: '#d9e2f3', accent: '#b4c7e7', text: '#1f2937', border: '#9fbad0' };
+  if (name.includes('light') || name.length === 0) return { title: '#dbeafe', header: '#f1f5f9', value: '#ffffff', stripe: '#f8fafc', total: '#eff6ff', accent: '#e0ecff', text: '#1e293b', border: '#cbd5e1' };
+  return { title: '#e2e8f0', header: '#f1f5f9', value: '#ffffff', stripe: '#f8fafc', total: '#e2e8f0', accent: '#dbeafe', text: '#1e293b', border: '#cbd5e1' };
+}
+
 /** Convert a derived projection cell to the render-engine cell contract. */
-export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US'): CellRenderData {
+export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US', presentation?: PivotPresentation): CellRenderData {
   const localizedText = cell.filterSummary
     ? `${cell.filterSummary.fieldName}: ${cell.filterSummary.mode === 'all' ? pivotText(locale, 'allItems') : pivotTemplate(locale, 'selectedItems', { count: cell.filterSummary.count })}`
     : cell.captionKey === 'row-labels'
@@ -236,24 +269,32 @@ export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale:
   const text = cell.kind === "expand-toggle"
     ? `${cell.expanded ? "▾" : "▸"} ${localizedText}`
     : localizedText;
+  const options = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(presentation?.styleOptions ?? {}) };
+  const palette = pivotStylePalette(presentation?.styleName);
+  const headerStyled = cell.kind === 'column-header'
+    ? (cell.column === 0 ? options.showRowHeaders : options.showColumnHeaders)
+    : false;
+  const striped = isPivotValueCell(cell) && ((options.showRowStripes && cell.row % 2 === 0) || (options.showColumnStripes && cell.column % 2 === 0));
   const style: NonNullable<CellRenderData["style"]> = {
     background: cell.kind === "title"
-      ? "#dbeafe"
+      ? palette.title
       : cell.kind === "column-header" || cell.kind === "filter"
-        ? "#f1f5f9"
+        ? headerStyled ? palette.header : palette.value
         : cell.kind === "grand-total"
-          ? "#eff6ff"
+          ? palette.total
           : cell.kind === "subtotal"
-            ? "#f8fafc"
-            : "#ffffff",
-    textColor: cell.kind === "error" ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : "#1e293b",
-    bold: cell.kind === "title" || cell.kind === "column-header" || cell.kind === "subtotal" || cell.kind === "grand-total",
+            ? palette.total
+            : cell.isLastColumn && options.showLastColumn
+              ? palette.accent
+              : striped ? palette.stripe : palette.value,
+    textColor: cell.kind === "error" ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : palette.text,
+    bold: cell.kind === "title" || headerStyled || cell.kind === "subtotal" || cell.kind === "grand-total",
     italic: cell.kind === "filter",
     horizontalAlignment: isPivotValueCell(cell) ? "right" : "left",
     verticalAlignment: "middle",
     wrapText: cell.kind === "loading" || cell.kind === "error",
     borders: {
-      bottom: { color: "#cbd5e1", style: cell.kind === "grand-total" ? "double" : "thin" },
+      bottom: { color: palette.border, style: cell.kind === "grand-total" ? "double" : "thin" },
     },
   };
   return {
@@ -293,6 +334,7 @@ export function SheetCanvas({
   onPivotContextHit,
   getPivotContextMenuItems,
   onPivotShowDetails,
+  onPivotExpansionToggle,
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
@@ -316,6 +358,14 @@ export function SheetCanvas({
   onFloatingSelect,
   onFloatingMove,
   onFloatingRemove,
+  textBoxPlacementActive = false,
+  textBoxEdit = null,
+  onTextBoxPlacementCommit,
+  onCancelTextBoxPlacement,
+  onBeginTextBoxEdit,
+  onTextBoxDraftChange,
+  onCommitTextBoxEdit,
+  onCancelTextBoxEdit,
   onCommand,
   onClearSelection,
   formatPainterActive = false,
@@ -371,7 +421,7 @@ export function SheetCanvas({
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
     const pivotCell = findPivotProjectionCell(sheet, row, column);
-    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale);
+    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
 
     const cell = sheet.getCell(row, column);
     const merge = findMerge(row, column);
@@ -482,6 +532,7 @@ export function SheetCanvas({
     containerRef,
     contextRangeRef,
     drawings,
+    drawingPayloads,
     drawingSelectionMode,
     editingCell,
     engineRef,
@@ -495,17 +546,21 @@ export function SheetCanvas({
     onBeginEdit,
     onCancelEdit,
     onCancelFormatPainter,
-    onCommitCell,
     onCommitEdit,
     onExitDrawingSelectionMode,
     onExtendSelection,
     onFillRange,
     onFloatingMove,
+    onTextBoxPlacementCommit: (bounds) => onTextBoxPlacementCommit?.(bounds),
+    onCancelTextBoxPlacement: () => onCancelTextBoxPlacement?.(),
+    onBeginTextBoxEdit: (drawingId, initialText) => onBeginTextBoxEdit?.(drawingId, initialText),
     onFloatingSelect,
+    onToggleCheckbox: (ranges) => onCommand({ commandId: 'checkbox.toggle', params: { sheetId, ranges } }),
     onFormulaDraftChange,
     onJumpEdge,
     onMovePrimary,
     onPivotContextHit,
+    onPivotExpansionToggle,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
     onResizeColumn: (column, widthPx) => columnDimensions.resizeBoundary(column, widthPx),
@@ -530,6 +585,7 @@ export function SheetCanvas({
     sheetId,
     skeleton,
     zoom,
+    textBoxPlacementActive: Boolean(textBoxPlacementActive),
   });
 
   useEffect(() => {
@@ -603,6 +659,11 @@ export function SheetCanvas({
       ];
     }
     const getContextRange = () => contextRangeRef.current ?? selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
+    const selectedDrawing = selectedFloatingId ? drawings.find((drawing) => drawing.id === selectedFloatingId) : undefined;
+    const selectedPayload = selectedDrawing ? drawingPayloads.get(selectedDrawing.payloadId) : undefined;
+    if (selectedPayload?.kind === 'textbox' && selectedDrawing) {
+      return [{ id: 'textbox-edit', label: 'Edit Text', onSelect: () => onBeginTextBoxEdit?.(selectedDrawing.id) }];
+    }
     if (contextHit?.kind === 'column-header') {
       const columns = columnDimensions.selectedColumns();
       return [
@@ -642,7 +703,7 @@ export function SheetCanvas({
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
     ];
     return items;
-  }, [columnDimensions, contextHit, getPivotContextMenuItems, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selection, sheetId]);
+  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onPaste, onPivotShowDetails, selectedFloatingId, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -655,6 +716,15 @@ export function SheetCanvas({
       return;
     }
     const local = canvasInteraction.localPointOf(event);
+    const floatingHit = engine.hitTestFloating(local);
+    if (floatingHit) {
+      // Context-menu interaction selects a control/object; activation is only
+      // allowed on an unmodified primary pointer click.
+      onFloatingSelect(floatingHit, 'replace');
+      setContextHit(null);
+      setContextMenu({ x: event.clientX, y: event.clientY, open: true });
+      return;
+    }
     const headerHit = engine.headerHitAtLocal(local);
     setContextHit(headerHit?.kind === 'row' || headerHit?.kind === 'col'
       ? resolveContextHit({
@@ -741,7 +811,7 @@ export function SheetCanvas({
       }
     }
     setContextMenu({ x: event.clientX, y: event.clientY, open: true });
-  }, [canvasInteraction.localPointOf, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
+  }, [canvasInteraction.localPointOf, onFloatingSelect, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
 
   // ---------- 编辑器定位(随滚动更新) ----------
 
@@ -768,6 +838,16 @@ export function SheetCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingCell, editingPivotContextHit, skeleton, scrollTick]);
+
+  const textBoxEditorRect = useMemo(() => {
+    void scrollTick;
+    if (!textBoxEdit) return null;
+    const engine = engineRef.current;
+    const drawing = drawings.find((entry) => entry.id === textBoxEdit.drawingId && entry.sheetId === textBoxEdit.sheetId);
+    if (!engine || !drawing || drawing.kind !== 'textbox') return null;
+    const topLeft = engine.contentToScreen({ x: drawing.transform.x, y: drawing.transform.y });
+    return { x: topLeft.x, y: topLeft.y, width: drawing.transform.width, height: drawing.transform.height, rotation: drawing.transform.rotation ?? 0 };
+  }, [drawings, scrollTick, textBoxEdit]);
 
   if (phase === "empty") {
     return (
@@ -863,6 +943,12 @@ export function SheetCanvas({
                 scrollTick={scrollTick}
               />
             )) : null}
+            {engineReady && sheet.kind === 'gantt-sheet' && sheet.ganttSheet ? (
+              <GanttViewOverlay engine={engineRef.current} sheet={sheet} tables={tables ?? []} scrollTick={scrollTick} />
+            ) : null}
+            {engineReady && sheet.kind === 'report-sheet' && sheet.reportSheet ? (
+              <ReportViewOverlay engine={engineRef.current} sheet={sheet} tables={tables ?? []} sourceSheets={allSheets ?? []} scrollTick={scrollTick} />
+            ) : null}
             {engineReady ? pivotHeaderFilterCells.map(({ cell, projection }) => {
               const row = projection.target.anchor.row + cell.row;
               const column = projection.target.anchor.column + cell.column;
@@ -889,13 +975,36 @@ export function SheetCanvas({
             </Box>
           ) : null}
 
+          {textBoxEditorRect && textBoxEdit ? (
+            <Box
+              className="absolute z-30 overflow-hidden rounded border-2 border-blue-500 bg-white/95 shadow-lg"
+              style={{ left: textBoxEditorRect.x, top: textBoxEditorRect.y, width: textBoxEditorRect.width, height: textBoxEditorRect.height, transform: textBoxEditorRect.rotation ? `rotate(${textBoxEditorRect.rotation}deg)` : undefined }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <Textarea
+                aria-label="Text box editor"
+                autoFocus
+                value={textBoxEdit.draftText}
+                onChange={(event) => onTextBoxDraftChange?.(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') { event.preventDefault(); onCancelTextBoxEdit?.(); }
+                  else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); onCommitTextBoxEdit?.(); }
+                }}
+                className="h-full resize-none rounded-none border-0 bg-transparent p-2 text-sm shadow-none focus:border-0 focus:ring-0"
+              />
+            </Box>
+          ) : null}
+
           {pivotFilterPopover ? (() => {
             const pivot = sheet.pivots.find((candidate) => candidate.id === pivotFilterPopover.pivotId);
             const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
             const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
             const currentFilter = pivot?.layout.filters.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope);
-            const valueFieldId = pivot?.layout.values[0]?.fieldId;
-            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFieldId={valueFieldId} currentFilter={currentFilter} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope); setPivotFilterPopover(null); }} /> : null;
+            const valueFields: PivotValueSortOption[] = pivot?.layout.values.map((value) => ({
+              fieldId: value.fieldId,
+              label: value.displayName ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === value.fieldId)?.name ?? value.fieldId,
+            })) ?? [];
+            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFields={valueFields} currentFilter={currentFilter} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope); setPivotFilterPopover(null); }} /> : null;
           })() : null}
 
           {fillPreview ? (

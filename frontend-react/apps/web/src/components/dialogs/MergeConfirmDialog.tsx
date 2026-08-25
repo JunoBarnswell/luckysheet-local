@@ -1,11 +1,13 @@
 import React from 'react';
 import { Button, Dialog, Stack, Text } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
+import { translateRibbonText } from '../../i18n';
 import { homeTemplate, homeText, resolveHomeLocale } from '../home/home-localization';
 
 export interface MergeConfirmDialogProps {
   open: boolean;
   discardedCellCount: number;
+  operation: 'center' | 'cells' | 'across' | 'unmerge';
   locale?: Locale;
   onCancel: () => void;
   onConfirm: () => void;
@@ -15,6 +17,7 @@ export interface MergeConfirmDialogProps {
 export function MergeConfirmDialog({
   open,
   discardedCellCount,
+  operation,
   locale,
   onCancel,
   onConfirm,
@@ -24,7 +27,7 @@ export function MergeConfirmDialog({
     <Dialog
       open={open}
       onClose={onCancel}
-      title={homeText(activeLocale, 'mergeDataLossTitle')}
+      title={`${translateRibbonText(activeLocale, operation === 'center' ? 'commands.mergeCenter' : operation === 'across' ? 'commands.mergeAcross' : 'commands.mergeCells')}?`}
       closeLabel={homeText(activeLocale, 'close')}
       testId="merge-confirm-dialog"
       footer={(

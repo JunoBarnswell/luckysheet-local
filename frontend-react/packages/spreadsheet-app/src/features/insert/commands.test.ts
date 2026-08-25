@@ -32,11 +32,242 @@ describe('insert feature', () => {
     registerDrawingFeature(runtime);
     registerInsertCommands(runtime);
     workbook.getSheet('sheet-1').cells.set(0, 0, { value: '123456789012' });
-    runtime.execute('cell.barcode.apply', { sheetId: 'sheet-1', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], presentation: { kind: 'barcode', symbology: 'ean13', source: { kind: 'cell-value' }, options: { foreground: '#000000', background: '#ffffff', showText: true, quietZone: 2 } } });
+    runtime.execute('cell.barcode.apply', { sheetId: 'sheet-1', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], presentation: { kind: 'barcode', symbology: 'ean13', source: { kind: 'cell-value' }, parameters: { symbology: 'ean13', includeCheckDigit: true }, options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 } } });
     assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.presentation?.kind, 'barcode');
+    const barcode = workbook.getSheet('sheet-1').cells.get(0, 0)?.presentation;
+    assert.equal(barcode?.kind === 'barcode' ? barcode.parameters.symbology : undefined, 'ean13');
+    assert.equal(barcode?.kind === 'barcode' ? barcode.options.labelPosition : undefined, 'below');
     runtime.execute('drawing.add.camera', { sheetId: 'sheet-1', drawing: { id: 'camera-1', sheetId: 'sheet-1', kind: 'camera', payloadId: 'camera-payload', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60 }, zIndex: 1 }, payload: { kind: 'camera', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, refreshPolicy: 'live' } });
     assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('camera-payload')?.kind, 'camera');
     const restored = WorkbookModel.fromSnapshot(workbook.snapshot());
+    const restoredBarcode = restored.getSheet('sheet-1').cells.get(0, 0)?.presentation;
+    assert.equal(restoredBarcode?.kind === 'barcode' ? restoredBarcode.parameters.symbology : undefined, 'ean13');
     assert.equal(restored.getSheet('sheet-1').drawingPayloads.get('camera-payload')?.kind, 'camera');
+  });
+
+  it('applies a barcode range atomically and restores every cell with one undo/redo entry', () => {
+    const workbook = new WorkbookModel('barcode-range-test', 'Barcode range');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'A-100' });
+    sheet.cells.set(0, 1, { value: 'B-200' });
+    runtime.execute('cell.barcode.apply', {
+      sheetId: 'sheet-1',
+      ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }],
+      presentation: {
+        kind: 'barcode', symbology: 'code93', source: { kind: 'cell-value' },
+        parameters: { symbology: 'code93', fullAscii: false, wideNarrowRatio: 2 },
+        options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+      },
+    });
+    assert.equal(sheet.cells.get(0, 0)?.presentation?.kind, 'barcode');
+    assert.equal(sheet.cells.get(0, 1)?.presentation?.kind, 'barcode');
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.cells.get(0, 0)?.presentation, undefined);
+    assert.equal(sheet.cells.get(0, 1)?.presentation, undefined);
+    assert.equal(runtime.redo(), true);
+    assert.equal(sheet.cells.get(0, 0)?.presentation?.kind, 'barcode');
+    assert.equal(sheet.cells.get(0, 1)?.presentation?.kind, 'barcode');
+  });
+
+  it('rejects an invalid cell before committing any part of a barcode range', () => {
+    const workbook = new WorkbookModel('barcode-rejection-test', 'Barcode rejection');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: '123456789012' });
+    sheet.cells.set(0, 1, { value: 'not-an-ean' });
+    assert.throws(() => runtime.execute('cell.barcode.apply', {
+      sheetId: 'sheet-1',
+      ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }],
+      presentation: {
+        kind: 'barcode', symbology: 'ean13', source: { kind: 'cell-value' },
+        parameters: { symbology: 'ean13', includeCheckDigit: true },
+        options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+      },
+    }), /invalid for ean13/);
+    assert.equal(sheet.cells.get(0, 0)?.presentation, undefined);
+    assert.equal(sheet.cells.get(0, 1)?.presentation, undefined);
+  });
+
+  it('converts cell pictures and floating pictures through one undoable aggregate', () => {
+    const workbook = new WorkbookModel('picture-conversion-test', 'Picture Conversion');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    const presentation = {
+      kind: 'image' as const,
+      src: 'data:image/png;base64,AA==',
+      altText: 'Cell logo',
+      fit: 'cover' as const,
+      crop: { left: 0.1, top: 0.05, right: 0, bottom: 0.1 },
+      effects: { brightness: 0.2, contrast: -0.1, transparency: 0.25 },
+    };
+    runtime.execute('cell.image.apply', { sheetId: 'sheet-1', row: 1, column: 1, presentation });
+    runtime.clearHistory();
+
+    runtime.execute('picture.convertToFloating', {
+      sheetId: 'sheet-1', row: 1, column: 1, drawingId: 'picture-drawing', payloadId: 'picture-payload',
+    });
+    assert.equal(sheet.cells.get(1, 1)?.presentation, undefined);
+    assert.deepEqual(sheet.drawingPayloads.get('picture-payload'), {
+      kind: 'image', src: presentation.src, altText: presentation.altText,
+      crop: presentation.crop, effects: presentation.effects,
+    });
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(sheet.cells.get(1, 1)?.presentation, presentation);
+    assert.equal(sheet.drawings.length, 0);
+    assert.equal(runtime.redo(), true);
+    assert.equal(sheet.cells.get(1, 1)?.presentation, undefined);
+    assert.equal(sheet.drawings[0]?.kind, 'image');
+
+    runtime.clearHistory();
+    runtime.execute('picture.convertToCell', { sheetId: 'sheet-1', drawingId: 'picture-drawing', row: 2, column: 2 });
+    assert.equal(sheet.drawings.length, 0);
+    assert.deepEqual(sheet.cells.get(2, 2)?.presentation, { ...presentation, fit: 'contain' });
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.drawings[0]?.id, 'picture-drawing');
+    assert.equal(sheet.cells.get(2, 2)?.presentation, undefined);
+    assert.equal(runtime.redo(), true);
+    assert.equal(sheet.drawings.length, 0);
+    assert.deepEqual(sheet.cells.get(2, 2)?.presentation, { ...presentation, fit: 'contain' });
+  });
+
+  it('rejects picture conversion before mutation when the target cell is occupied', () => {
+    const workbook = new WorkbookModel('picture-conversion-rejection-test', 'Picture Conversion Rejection');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(3, 3, { value: 'occupied' });
+    runtime.execute('drawing.add.image', {
+      sheetId: 'sheet-1',
+      drawing: {
+        id: 'occupied-target-picture', sheetId: 'sheet-1', kind: 'image', payloadId: 'occupied-target-payload',
+        anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60, rotation: 0 }, zIndex: 1,
+      },
+      payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Floating' },
+    });
+    runtime.clearHistory();
+    const before = workbook.snapshot();
+    assert.throws(() => runtime.execute('picture.convertToCell', {
+      sheetId: 'sheet-1', drawingId: 'occupied-target-picture', row: 3, column: 3,
+    }), /target cell is not empty/);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.equal(runtime.getHistoryDepth().undo, 0);
+  });
+
+  it('creates and updates a canonical Data Chart with typed bindings and undo', () => {
+    const workbook = new WorkbookModel('data-chart-command-test', 'Data Chart');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const table: WorkbookTableModel = {
+      id: 'data-table', name: 'Sales', sourceSheetId: 'sheet-1', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }, rowCount: 3,
+      fields: [{ id: 'category', name: 'Category', ordinal: 0, type: 'text' }, { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' }], blockSize: 1024, blocks: [], revision: 0,
+    };
+    const drawing = { id: 'data-drawing', sheetId: 'sheet-1', kind: 'data-chart' as const, payloadId: 'data-payload', anchor: { kind: 'absolute' as const }, transform: { x: 0, y: 0, width: 320, height: 200, rotation: 0 }, zIndex: 0 };
+    const payload = { kind: 'data-chart' as const, source: { kind: 'table' as const, tableId: table.id }, plotType: 'column' as const, bindings: { values: [{ area: 'values' as const, fieldId: 'amount', aggregate: 'sum' as const }], category: [{ area: 'category' as const, fieldId: 'category', aggregate: 'none' as const }], details: [], color: [], size: [], tooltip: [], filter: [] }, inspector: { title: 'Sales', legendPosition: 'bottom' as const, showDataLabels: false, showHiddenData: true, chartArea: { fill: '#fff', border: '#000', borderWidth: 1 }, plotArea: { fill: '#fff' }, axis: { showGridlines: true } } };
+    runtime.execute('dataChart.create', { sheetId: 'sheet-1', drawing, payload, table });
+    assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('data-payload')?.kind, 'data-chart');
+    runtime.execute('dataChart.update', { sheetId: 'sheet-1', drawingId: drawing.id, payload: { ...payload, plotType: 'line', inspector: { ...payload.inspector, title: 'Updated' } } });
+    const updated = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
+    assert.equal(updated?.kind === 'data-chart' ? updated.plotType : undefined, 'line');
+    const invalid = structuredClone(payload) as typeof payload & { bindings: typeof payload.bindings };
+    (invalid.bindings.values[0] as { area: string }).area = 'category';
+    assert.throws(() => runtime.execute('dataChart.update', { sheetId: 'sheet-1', drawingId: drawing.id, payload: invalid as never }), /binding is invalid/);
+    const rejectedState = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
+    assert.equal(rejectedState?.kind === 'data-chart' ? rejectedState.plotType : undefined, 'line');
+    assert.equal(runtime.undo(), true);
+    const restored = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
+    assert.equal(restored?.kind === 'data-chart' ? restored.inspector.title : undefined, 'Sales');
+  });
+
+  it('enforces typed form controls, numeric bounds, explicit list selection, option groups, and button events', () => {
+    const workbook = new WorkbookModel('form-control-command-test', 'Form Controls');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Alpha' });
+    sheet.cells.set(1, 0, { value: 'Beta' });
+    const add = (drawingId: string, payloadId: string, payload: any, x = 0, y = 0, height = 24) => runtime.execute('drawing.add.form-control', {
+      sheetId: 'sheet-1',
+      drawing: { id: drawingId, sheetId: 'sheet-1', kind: 'form-control', payloadId, anchor: { kind: 'absolute' }, transform: { x, y, width: 80, height, rotation: 0 }, zIndex: 0 },
+      payload,
+    });
+    const style = { fill: '#fff', border: '#000', textColor: '#000' };
+    add('group', 'group-payload', { kind: 'form-control', controlType: 'group-box', text: 'Group', value: null, groupId: 'group-1', enabled: true, style }, 0, 0, 100);
+    add('option-a', 'option-a-payload', { kind: 'form-control', controlType: 'option-button', text: 'A', value: false, cellLink: { sheetId: 'sheet-1', row: 2, column: 0 }, enabled: true, style }, 10, 10);
+    add('option-b', 'option-b-payload', { kind: 'form-control', controlType: 'option-button', text: 'B', value: false, cellLink: { sheetId: 'sheet-1', row: 3, column: 0 }, enabled: true, style }, 10, 40);
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'option-a' });
+    assert.equal((sheet.drawingPayloads.get('option-a-payload') as any).value, true);
+    assert.equal((sheet.drawingPayloads.get('option-b-payload') as any).value, false);
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'option-b' });
+    assert.equal((sheet.drawingPayloads.get('option-a-payload') as any).value, false);
+    assert.equal((sheet.drawingPayloads.get('option-b-payload') as any).value, true);
+    assert.equal(sheet.cells.get(2, 0)?.value, false);
+    assert.equal(sheet.cells.get(3, 0)?.value, true);
+
+    add('spin', 'spin-payload', { kind: 'form-control', controlType: 'spin-button', value: 0, minValue: 0, maxValue: 5, step: 2, cellLink: { sheetId: 'sheet-1', row: 4, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'spin' });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'spin' });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'spin' });
+    assert.equal((sheet.drawingPayloads.get('spin-payload') as any).value, 5);
+    assert.equal(sheet.cells.get(4, 0)?.value, 5);
+    assert.equal(runtime.undo(), true);
+    assert.equal((sheet.drawingPayloads.get('spin-payload') as any).value, 4);
+    assert.equal(runtime.redo(), true);
+    assert.equal((sheet.drawingPayloads.get('spin-payload') as any).value, 5);
+
+    add('list', 'list-payload', { kind: 'form-control', controlType: 'list-box', value: null, inputRange: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }, selectionType: 'single', selectedIndices: [], cellLink: { sheetId: 'sheet-1', row: 5, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'list', selection: { indices: [1] } });
+    assert.equal((sheet.drawingPayloads.get('list-payload') as any).value, 'Beta');
+    assert.equal(sheet.cells.get(5, 0)?.value, 'Beta');
+    const beforeInvalidSelection = workbook.snapshot();
+    assert.throws(() => runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'list', selection: { indices: [4] } }), /outside input range/);
+    assert.deepEqual(workbook.snapshot(), beforeInvalidSelection);
+
+    add('checkbox', 'checkbox-payload', { kind: 'form-control', controlType: 'checkbox', value: false, cellLink: { sheetId: 'sheet-1', row: 6, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'checkbox' });
+    assert.equal((sheet.drawingPayloads.get('checkbox-payload') as any).value, true);
+    assert.equal(sheet.cells.get(6, 0)?.value, true);
+    add('scrollbar', 'scrollbar-payload', { kind: 'form-control', controlType: 'scrollbar', value: 0, minValue: 0, maxValue: 20, step: 2, pageChange: 10, cellLink: { sheetId: 'sheet-1', row: 7, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'scrollbar', increment: 'page' });
+    assert.equal((sheet.drawingPayloads.get('scrollbar-payload') as any).value, 10);
+    add('combo', 'combo-payload', { kind: 'form-control', controlType: 'combo-box', value: null, inputRange: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }, dropDownLines: 4, cellLink: { sheetId: 'sheet-1', row: 8, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'combo', selection: { indices: [0] } });
+    assert.equal((sheet.drawingPayloads.get('combo-payload') as any).value, 'Alpha');
+    add('label', 'label-payload', { kind: 'form-control', controlType: 'label', text: 'Static', value: null, enabled: true, style });
+
+    add('button', 'button-payload', { kind: 'form-control', controlType: 'button', value: null, action: { kind: 'event', eventId: 'save' }, enabled: true, style });
+    const eventResult = runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'button' });
+    assert.deepEqual(eventResult.event, { type: 'form-control.button.click', payload: { sheetId: 'sheet-1', drawingId: 'button', eventId: 'save' } });
+    assert.equal(eventResult.mutationCount, 0);
+  });
+
+  it('rejects legacy or malformed form-control payloads before storage mutation', () => {
+    const workbook = new WorkbookModel('form-control-rejection-test', 'Form Controls');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const before = workbook.snapshot();
+    assert.throws(() => runtime.execute('drawing.add.form-control', {
+      sheetId: 'sheet-1',
+      drawing: { id: 'legacy', sheetId: 'sheet-1', kind: 'form-control', payloadId: 'legacy-payload', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 80, height: 24, rotation: 0 }, zIndex: 0 },
+      payload: { kind: 'form-control', controlType: 'button', value: false, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } },
+    }), /Invalid drawing payload/);
+    assert.deepEqual(workbook.snapshot(), before);
   });
 });

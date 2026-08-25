@@ -26,7 +26,10 @@ function isSheetTable(value: unknown): value is SheetTableModel {
     && typeof value.hasTotalRow === 'boolean'
     && typeof value.showBandedRows === 'boolean'
     && typeof value.showBandedColumns === 'boolean'
+    && typeof value.showFirstColumn === 'boolean'
+    && typeof value.showLastColumn === 'boolean'
     && typeof value.showFilterButton === 'boolean'
+    && ['none', 'rows', 'columns', 'both'].includes(String(value.autoExpand))
     && Array.isArray(value.columns)
     && value.columns.every((column) => isRecord(column) && typeof column.id === 'string' && typeof column.name === 'string');
 }
@@ -63,8 +66,15 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
     id: 'sheetTable.add',
     handler: (item, context) => {
       if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.add mutation payload');
-      const table = item.params;
-      context.workbook.getSheet(table.sheetId).sheetTables.push(structuredClone(table));
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const table = validateSheetTableModel(item.params, sheet);
+      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
+        throw new Error(`Sheet Table already exists: ${table.name}`);
+      }
+      if (sheet.sheetTables.some((entry) => entry.range.startRow <= table.range.endRow
+        && entry.range.endRow >= table.range.startRow && entry.range.startColumn <= table.range.endColumn
+        && entry.range.endColumn >= table.range.startColumn)) throw new Error('Sheet Tables cannot overlap');
+      sheet.sheetTables.push(structuredClone(table));
     },
     metadata: {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
@@ -111,11 +121,16 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
     id: 'sheetTable.update',
     handler: (item, context) => {
       if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.update mutation payload');
-      const table = item.params;
-      const sheet = context.workbook.getSheet(table.sheetId);
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      const table = validateSheetTableModel(item.params, sheet);
       const index = sheet.sheetTables.findIndex((entry) => entry.id === table.id);
-      if (index >= 0) sheet.sheetTables[index] = structuredClone(table);
-      else sheet.sheetTables.push(structuredClone(table));
+      if (index < 0) throw new Error(`Sheet Table not found: ${table.id}`);
+      if (sheet.sheetTables.some((entry) => entry.id !== table.id
+        && entry.range.startRow <= table.range.endRow && entry.range.endRow >= table.range.startRow
+        && entry.range.startColumn <= table.range.endColumn && entry.range.endColumn >= table.range.startColumn)) {
+        throw new Error('Sheet Tables cannot overlap');
+      }
+      sheet.sheetTables[index] = structuredClone(table);
     },
     metadata: {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
@@ -147,6 +162,32 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         apply: () => {
           context.workbook.getSheet(params.sheetId).sheetTables.push(structuredClone(table));
         },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<AddSheetTableParams>({
+    id: 'sheetTable.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const index = sheet.sheetTables.findIndex((entry) => entry.id === params.id);
+      if (index < 0) throw new Error(`Sheet Table not found: ${params.id}`);
+      const previous = structuredClone(sheet.sheetTables[index]!);
+      const next = validateSheetTableModel(params, sheet);
+      const overlaps = sheet.sheetTables.some((entry) => entry.id !== next.id
+        && entry.range.startRow <= next.range.endRow && entry.range.endRow >= next.range.startRow
+        && entry.range.startColumn <= next.range.endColumn && entry.range.endColumn >= next.range.startColumn);
+      if (overlaps) throw new Error('Sheet Tables cannot overlap');
+      const affectedRanges = [structuredClone(next.range)];
+      context.applyMutation({
+        id: 'sheetTable.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: next,
+        affectedRanges,
+        inverse: [{ id: 'sheetTable.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges: [structuredClone(previous.range)] }],
+        apply: () => { sheet.sheetTables[index] = structuredClone(next); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

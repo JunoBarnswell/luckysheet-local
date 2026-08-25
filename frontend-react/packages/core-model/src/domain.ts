@@ -127,7 +127,10 @@ export interface SheetTableModel {
   hasTotalRow: boolean;
   showBandedRows: boolean;
   showBandedColumns: boolean;
+  showFirstColumn: boolean;
+  showLastColumn: boolean;
   showFilterButton: boolean;
+  autoExpand: 'none' | 'rows' | 'columns' | 'both';
   autoFilter?: AutoFilterModel;
   columns: SheetTableColumn[];
   styleName?: string;
@@ -151,11 +154,28 @@ export interface DrawingAnchor {
   endColumn?: Column;
 }
 
+/** Canonical normalized crop fractions shared by in-cell and floating images. */
+export interface ImageCrop {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Supported editable picture appearance; unsupported OOXML effects remain opaque. */
+export interface ImageEffects {
+  brightness?: number;
+  contrast?: number;
+  transparency?: number;
+}
+
 export interface ImageDrawingPayload {
   kind: 'image';
   src: string;
   altText?: string;
   name?: string;
+  crop?: ImageCrop;
+  effects?: ImageEffects;
 }
 
 export interface ShapeDrawingPayload {
@@ -169,31 +189,86 @@ export interface ShapeDrawingPayload {
   fontSize?: number;
 }
 
+export type TextBoxHorizontalAlignment = 'left' | 'center' | 'right';
+export type TextBoxVerticalAlignment = 'top' | 'middle' | 'bottom';
+export type TextBoxTextDirection = 'horizontal' | 'vertical';
+export type TextBoxAutofit = 'none' | 'shrink-text' | 'resize-shape';
+
+/** Canonical OOXML text-frame semantics shared by rendering, commands and export. */
+export interface TextBoxTextFrame {
+  fontFamily: string;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  textColor: string;
+  horizontalAlignment: TextBoxHorizontalAlignment;
+  verticalAlignment: TextBoxVerticalAlignment;
+  direction: TextBoxTextDirection;
+  margin: { top: number; right: number; bottom: number; left: number };
+  wrap: boolean;
+  autofit: TextBoxAutofit;
+}
+
+export function createDefaultTextBoxTextFrame(): TextBoxTextFrame {
+  return {
+    fontFamily: 'Inter',
+    fontSize: 14,
+    bold: false,
+    italic: false,
+    underline: false,
+    textColor: '#1f2937',
+    horizontalAlignment: 'left',
+    verticalAlignment: 'top',
+    direction: 'horizontal',
+    margin: { top: 8, right: 8, bottom: 8, left: 8 },
+    wrap: true,
+    autofit: 'none',
+  };
+}
+
 export interface TextBoxDrawingPayload {
   kind: 'textbox';
   text: string;
-  textColor?: string;
-  fontSize?: number;
+  textFrame: TextBoxTextFrame;
 }
 
 export type DataChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';
 
+export type DataChartPlotType = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'treemap' | 'funnel';
+export type DataChartBindingArea = 'values' | 'category' | 'details' | 'color' | 'size' | 'tooltip' | 'filter';
+export type DataChartSource =
+  | { kind: 'table'; tableId: string }
+  | { kind: 'report-sheet'; range: RangeRef };
+
+export interface DataChartFieldBinding {
+  fieldId: string;
+  area: DataChartBindingArea;
+  aggregate: DataChartAggregate;
+  sort?: 'asc' | 'desc';
+  format?: string;
+}
+
+export interface DataChartInspectorModel {
+  title?: string;
+  legendPosition: 'top' | 'bottom' | 'left' | 'right' | 'none';
+  showDataLabels: boolean;
+  showHiddenData: boolean;
+  chartArea: { fill: string; border: string; borderWidth: number };
+  plotArea: { fill: string; border?: string };
+  axis: {
+    categoryTitle?: string;
+    valueTitle?: string;
+    showGridlines: boolean;
+  };
+}
+
 export interface DataChartDrawingPayload {
   kind: 'data-chart';
-  tableId: string;
-  plots: Array<{
-    type: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'treemap' | 'funnel';
-    valueFieldId: string;
-    aggregate: DataChartAggregate;
-    categoryFieldId?: string;
-    colorFieldId?: string;
-    sizeFieldId?: string;
-  }>;
-  config: {
-    title?: string;
-    legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
-    showDataLabels?: boolean;
-  };
+  source: DataChartSource;
+  plotType: DataChartPlotType;
+  bindings: Record<DataChartBindingArea, DataChartFieldBinding[]>;
+  inspector: DataChartInspectorModel;
 }
 
 export interface CameraDrawingPayload {
@@ -204,20 +279,170 @@ export interface CameraDrawingPayload {
 
 export type FormControlType = 'button' | 'spin-button' | 'list-box' | 'combo-box' | 'checkbox' | 'option-button' | 'group-box' | 'label' | 'scrollbar';
 
-export interface FormControlDrawingPayload {
+export interface FormControlStyle {
+  fill: string;
+  border: string;
+  textColor: string;
+  fontSize?: number;
+}
+
+export interface FormControlCellLink {
+  sheetId: SheetId;
+  row: Row;
+  column: Column;
+}
+
+export interface FormControlAction {
+  kind: 'event';
+  eventId: string;
+}
+
+interface FormControlBase {
   kind: 'form-control';
-  controlType: FormControlType;
   text?: string;
-  cellLink?: { sheetId: SheetId; row: Row; column: Column };
-  inputRange?: RangeRef;
-  value: string | number | boolean | null;
   enabled: boolean;
-  style: {
-    fill: string;
-    border: string;
-    textColor: string;
-    fontSize?: number;
-  };
+  style: FormControlStyle;
+}
+
+interface FormControlLinkedBase extends FormControlBase {
+  cellLink?: FormControlCellLink;
+}
+
+export interface ButtonFormControlPayload extends FormControlBase {
+  controlType: 'button';
+  value: null;
+  action: FormControlAction;
+}
+
+export interface SpinButtonFormControlPayload extends FormControlLinkedBase {
+  controlType: 'spin-button';
+  value: number;
+  minValue: number;
+  maxValue: number;
+  step: number;
+}
+
+export interface ListBoxFormControlPayload extends FormControlLinkedBase {
+  controlType: 'list-box';
+  value: string | null;
+  inputRange: RangeRef;
+  selectionType: 'single' | 'multiple';
+  selectedIndices: number[];
+}
+
+export interface ComboBoxFormControlPayload extends FormControlLinkedBase {
+  controlType: 'combo-box';
+  value: string | null;
+  inputRange: RangeRef;
+  dropDownLines: number;
+}
+
+export interface CheckboxFormControlPayload extends FormControlLinkedBase {
+  controlType: 'checkbox';
+  value: boolean;
+}
+
+export interface OptionButtonFormControlPayload extends FormControlLinkedBase {
+  controlType: 'option-button';
+  value: boolean;
+  groupId?: string;
+}
+
+export interface GroupBoxFormControlPayload extends FormControlBase {
+  controlType: 'group-box';
+  value: null;
+  groupId: string;
+}
+
+export interface LabelFormControlPayload extends FormControlBase {
+  controlType: 'label';
+  value: null;
+}
+
+export interface ScrollbarFormControlPayload extends FormControlLinkedBase {
+  controlType: 'scrollbar';
+  value: number;
+  minValue: number;
+  maxValue: number;
+  step: number;
+  pageChange: number;
+}
+
+export type FormControlDrawingPayload =
+  | ButtonFormControlPayload
+  | SpinButtonFormControlPayload
+  | ListBoxFormControlPayload
+  | ComboBoxFormControlPayload
+  | CheckboxFormControlPayload
+  | OptionButtonFormControlPayload
+  | GroupBoxFormControlPayload
+  | LabelFormControlPayload
+  | ScrollbarFormControlPayload;
+
+const isFormPayloadRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isRangeRef = (value: unknown): value is RangeRef => {
+  if (!isFormPayloadRecord(value)) return false;
+  const startRow = value.startRow as number;
+  const endRow = value.endRow as number;
+  const startColumn = value.startColumn as number;
+  const endColumn = value.endColumn as number;
+  return typeof value.sheetId === 'string' && value.sheetId.length > 0
+    && Number.isSafeInteger(startRow) && Number.isSafeInteger(endRow)
+    && Number.isSafeInteger(startColumn) && Number.isSafeInteger(endColumn)
+    && startRow >= 0 && endRow >= startRow
+    && startColumn >= 0 && endColumn >= startColumn;
+};
+const isCellLink = (value: unknown): value is FormControlCellLink => {
+  if (!isFormPayloadRecord(value)) return false;
+  const row = value.row as number;
+  const column = value.column as number;
+  return typeof value.sheetId === 'string' && value.sheetId.length > 0
+    && Number.isSafeInteger(row) && Number.isSafeInteger(column)
+    && row >= 0 && column >= 0;
+};
+
+/** Canonical runtime validator shared by drawing storage and form-control commands. */
+export function isFormControlDrawingPayload(value: unknown): value is FormControlDrawingPayload {
+  if (!isFormPayloadRecord(value) || value.kind !== 'form-control' || typeof value.controlType !== 'string'
+    || typeof value.enabled !== 'boolean' || !isFormPayloadRecord(value.style)
+    || typeof value.style.fill !== 'string' || typeof value.style.border !== 'string' || typeof value.style.textColor !== 'string'
+    || (value.style.fontSize !== undefined && (!isFiniteNumber(value.style.fontSize) || value.style.fontSize <= 0))) return false;
+  if (value.text !== undefined && typeof value.text !== 'string') return false;
+  if (value.cellLink !== undefined && !isCellLink(value.cellLink)) return false;
+  switch (value.controlType) {
+    case 'button':
+      return value.value === null && isFormPayloadRecord(value.action) && value.action.kind === 'event'
+        && typeof value.action.eventId === 'string' && value.action.eventId.length > 0
+        && value.cellLink === undefined;
+    case 'spin-button':
+      return isFiniteNumber(value.value) && isFiniteNumber(value.minValue) && isFiniteNumber(value.maxValue)
+        && isFiniteNumber(value.step) && (value.minValue as number) <= (value.maxValue as number) && (value.step as number) > 0
+        && (value.value as number) >= (value.minValue as number) && (value.value as number) <= (value.maxValue as number);
+    case 'scrollbar':
+      return isFiniteNumber(value.value) && isFiniteNumber(value.minValue) && isFiniteNumber(value.maxValue)
+        && isFiniteNumber(value.step) && isFiniteNumber(value.pageChange) && (value.minValue as number) <= (value.maxValue as number)
+        && (value.step as number) > 0 && (value.pageChange as number) > 0 && (value.value as number) >= (value.minValue as number) && (value.value as number) <= (value.maxValue as number);
+    case 'list-box': {
+      if ((value.value !== null && typeof value.value !== 'string') || !isRangeRef(value.inputRange)
+        || !['single', 'multiple'].includes(String(value.selectionType)) || !Array.isArray(value.selectedIndices)) return false;
+      if (!value.selectedIndices.every((index) => Number.isSafeInteger(index) && index >= 0)) return false;
+      return value.selectionType === 'multiple' || value.selectedIndices.length <= 1;
+    }
+    case 'combo-box':
+      return (value.value === null || typeof value.value === 'string') && isRangeRef(value.inputRange)
+        && Number.isSafeInteger(value.dropDownLines) && (value.dropDownLines as number) >= 1 && (value.dropDownLines as number) <= 100;
+    case 'checkbox':
+      return typeof value.value === 'boolean';
+    case 'option-button':
+      return typeof value.value === 'boolean' && (value.groupId === undefined || (typeof value.groupId === 'string' && value.groupId.length > 0));
+    case 'group-box':
+      return value.value === null && typeof value.groupId === 'string' && value.groupId.length > 0 && value.cellLink === undefined;
+    case 'label':
+      return value.value === null && value.cellLink === undefined;
+    default:
+      return false;
+  }
 }
 
 export type P1ChartType =
@@ -230,18 +455,118 @@ export type P1ChartType =
   | 'scatter'
   | 'combo';
 
+export type ChartSeriesType = Exclude<P1ChartType, 'combo'>;
+export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
+export type ChartAxisScale = 'linear' | 'logarithmic';
+export type ChartDataLabelPosition = 'best-fit' | 'center' | 'inside-end' | 'inside-base' | 'outside-end';
+
+export interface ChartAxisModel {
+  id: string;
+  position: ChartAxisPosition;
+  visible?: boolean;
+  title?: string;
+  scale?: ChartAxisScale;
+  minimum?: number;
+  maximum?: number;
+  majorUnit?: number;
+  minorUnit?: number;
+  numberFormat?: string;
+  crossesAt?: number;
+  majorGridlines?: ChartGridlineModel;
+  minorGridlines?: ChartGridlineModel;
+}
+
+export interface ChartGridlineModel {
+  visible: boolean;
+  color?: string;
+  width?: number;
+  dash?: 'solid' | 'dash' | 'dot';
+}
+
+export interface ChartAreaStyle {
+  fill?: string;
+  border?: string;
+  borderWidth?: number;
+  borderDash?: 'solid' | 'dash' | 'dot';
+}
+
+export interface ChartMarkerModel {
+  enabled: boolean;
+  shape?: 'circle' | 'square' | 'diamond' | 'triangle';
+  size?: number;
+  fill?: string;
+  border?: string;
+}
+
+export interface ChartTrendlineModel {
+  type: 'linear' | 'exponential' | 'polynomial' | 'moving-average';
+  order?: number;
+  period?: number;
+  color?: string;
+  width?: number;
+}
+
+export interface ChartErrorBarsModel {
+  type: 'fixed' | 'percentage' | 'standard-deviation' | 'standard-error' | 'custom';
+  value?: number;
+  plusRange?: RangeRef;
+  minusRange?: RangeRef;
+  color?: string;
+  width?: number;
+}
+
+export interface ChartDataLabelsModel {
+  visible: boolean;
+  showValue?: boolean;
+  showCategoryName?: boolean;
+  showSeriesName?: boolean;
+  showPercentage?: boolean;
+  position?: ChartDataLabelPosition;
+  numberFormat?: string;
+}
+
+export interface ChartSeriesModel {
+  name: string;
+  range: RangeRef;
+  xRange?: RangeRef;
+  yRange?: RangeRef;
+  color?: string;
+  chartType?: ChartSeriesType;
+  axis?: 'primary' | 'secondary';
+  smooth?: boolean;
+  marker?: ChartMarkerModel;
+  dataLabels?: ChartDataLabelsModel;
+  trendline?: ChartTrendlineModel;
+  errorBars?: ChartErrorBarsModel;
+}
+
+/** All chart semantics live in this value object; DrawingObject only owns placement. */
+export interface ChartElementModel {
+  title?: string;
+  legend?: {
+    visible: boolean;
+    position: 'top' | 'bottom' | 'left' | 'right';
+  };
+  dataLabels?: ChartDataLabelsModel;
+  categoryAxis?: ChartAxisModel;
+  valueAxis?: ChartAxisModel;
+  secondaryCategoryAxis?: ChartAxisModel;
+  secondaryValueAxis?: ChartAxisModel;
+  plotArea?: ChartAreaStyle;
+  chartArea?: ChartAreaStyle;
+  hiddenData: 'show' | 'hideRows' | 'hideColumns';
+}
+
 export interface ChartDrawingPayload {
   kind: 'chart';
   chartId: string;
   chartType: P1ChartType;
-  title?: string;
   pivotId?: string;
   sourceRanges: RangeRef[];
-  series?: Array<{ name: string; range: RangeRef; color?: string }>;
+  series?: ChartSeriesModel[];
   categoryRange?: RangeRef;
-  legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
-  showDataLabels?: boolean;
   stacked?: 'none' | 'stacked' | 'percent';
+  elements: ChartElementModel;
 }
 
 /** A typed member filter owned by a floating Pivot slicer. */

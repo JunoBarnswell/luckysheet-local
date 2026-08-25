@@ -13,7 +13,7 @@ import type {
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
-import { copyRangeToClipboardData, shiftFormula, type ClipboardPayload } from './clipboard';
+import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { parseFormula } from '@react-sheets/formula-engine';
 
@@ -696,48 +696,71 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targetOrigin: params.targetOrigin,
         clipboard,
         transfer: 'move',
-        mode: 'all',
+        spec: createPasteSpecialSpec(),
       });
     },
   });
 
-  runtime.registry.registerCommand<HomeRangeParams>({
+  const mergeRange = (params: HomeRangeParams & { confirmDataLoss?: boolean }, context: CommandContext, center: boolean): CommandResult => {
+    requireSheetId(params);
+    const range = requireRange(params, params.sheetId);
+    const sheet = context.workbook.getSheet(params.sheetId);
+    assertNoDataRegionIntersection(sheet, range, 'Merge');
+    const anchor = structuredClone(sheet.cells.get(range.startRow, range.startColumn));
+    const hasNonAnchorContent = rangeAreaOfCells(sheet, range).some(({ row, column, cell }) =>
+      (row !== range.startRow || column !== range.startColumn) && Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula)));
+    if (hasNonAnchorContent && params.confirmDataLoss === false) throw new Error('Merge would discard non-anchor cell contents');
+    const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
+    if (rangeArea(range) > 1) {
+      runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, mode: 'contents' });
+      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
+    }
+    if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
+    return result;
+  };
+
+  runtime.registry.registerCommand<HomeRangeParams & { confirmDataLoss?: boolean }>({
     id: 'sheet.merge.center',
-    execute: (params, context) => {
-      requireSheetId(params);
-      const range = requireRange(params, params.sheetId);
-      const sheet = context.workbook.getSheet(params.sheetId);
-      assertNoDataRegionIntersection(sheet, range, 'Merge');
-      const anchor = structuredClone(sheet.cells.get(range.startRow, range.startColumn));
-      const hasNonAnchorContent = rangeAreaOfCells(sheet, range).some(({ row, column, cell }) =>
-        (row !== range.startRow || column !== range.startColumn) && Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula)));
-      // The UI may ask for confirmation when this flag is true. The command
-      // itself applies Excel's canonical anchor-preserving merge semantics.
-      if (hasNonAnchorContent && (params as HomeRangeParams & { confirmDataLoss?: boolean }).confirmDataLoss === false) {
-        throw new Error('Merge would discard non-anchor cell contents');
-      }
-      const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
-      if (rangeArea(range) > 1) {
-        runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, mode: 'contents' });
-        if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
-      }
-      runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
-      return result;
-    },
+    execute: (params, context) => mergeRange(params, context, true),
   });
-  runtime.registry.registerCommand<HomeRangeParams>({
+  runtime.registry.registerCommand<HomeRangeParams & { confirmDataLoss?: boolean }>({
+    id: 'sheet.merge.cells',
+    execute: (params, context) => mergeRange(params, context, false),
+  });
+  runtime.registry.registerCommand<HomeRangeParams & { confirmDataLoss?: boolean }>({
     id: 'sheet.merge.across',
     execute: (params, context) => {
       requireSheetId(params);
       const range = requireRange(params, params.sheetId);
       let result = homeResult(context, []);
       for (let row = range.startRow; row <= range.endRow; row += 1) {
-        result = runtime.execute('sheet.merge.center', {
+        result = runtime.execute('sheet.merge.cells', {
           sheetId: params.sheetId,
           range: { ...range, startRow: row, endRow: row },
+          confirmDataLoss: params.confirmDataLoss,
         });
       }
       return result;
+    },
+  });
+  runtime.registry.registerCommand<HomeRangeParams>({
+    id: 'sheet.merge.unmerge',
+    execute: (params, context) => {
+      requireSheetId(params);
+      const range = requireRange(params, params.sheetId);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      assertNoDataRegionIntersection(sheet, range, 'Unmerge');
+      const spans = sheet.merges.filter((merge) =>
+        merge.range.startRow >= range.startRow && merge.range.endRow <= range.endRow
+        && merge.range.startColumn >= range.startColumn && merge.range.endColumn <= range.endColumn);
+      let mutationCount = 0;
+      const affectedRanges: RangeRef[] = [];
+      for (const span of spans) {
+        const result = runtime.execute('sheet.merge.remove', { sheetId: params.sheetId, range: span.range });
+        mutationCount += result.mutationCount;
+        affectedRanges.push(...result.affectedRanges);
+      }
+      return homeResult(context, affectedRanges, mutationCount);
     },
   });
   runtime.registry.registerCommand<AutoSumParams>({

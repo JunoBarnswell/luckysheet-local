@@ -459,6 +459,20 @@ export class FormulaEngine {
         currentCell: cell.address,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
+        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
+        readSpillRange: (anchor) => {
+          this.evaluateCell(anchor, cache, visiting);
+          const spill = this.spills.get(spillKey(anchor));
+          return spill ? {
+            kind: 'range' as const,
+            start: { sheetId: spill.range.sheetId, row: spill.range.startRow, column: spill.range.startColumn },
+            end: { sheetId: spill.range.sheetId, row: spill.range.endRow, column: spill.range.endColumn },
+          } : undefined;
+        },
+        readSpillValue: (address) => {
+          this.evaluateCell(address, cache, visiting);
+          return this.getSpillValueAt(address.sheetId, address.row, address.column);
+        },
         resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
         resolveTableReference: (tableName, request) => {
           const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
@@ -818,6 +832,20 @@ export class FormulaEngine {
         currentCell: cell.address,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
+        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
+        readSpillRange: (anchor) => {
+          this.evaluateCell(anchor, cache, visiting);
+          const spill = this.spills.get(spillKey(anchor));
+          return spill ? {
+            kind: 'range' as const,
+            start: { sheetId: spill.range.sheetId, row: spill.range.startRow, column: spill.range.startColumn },
+            end: { sheetId: spill.range.sheetId, row: spill.range.endRow, column: spill.range.endColumn },
+          } : undefined;
+        },
+        readSpillValue: (address) => {
+          this.evaluateCell(address, cache, visiting);
+          return this.getSpillValueAt(address.sheetId, address.row, address.column);
+        },
         resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
         resolveTableReference: (tableName, request) => {
           const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
@@ -925,7 +953,7 @@ export class FormulaEngine {
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       const line: FormulaValue[] = [];
       for (let column = range.start.column; column <= range.end.column; column += 1) {
-        line.push(this.evaluateCell({ sheetId: range.start.sheetId, row, column }, cache, visiting));
+        line.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting));
       }
       matrix.push(line);
     }
@@ -940,10 +968,19 @@ export class FormulaEngine {
     const values: FormulaValue[] = [];
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       for (let column = range.start.column; column <= range.end.column; column += 1) {
-        values.push(this.evaluateCell({ sheetId: range.start.sheetId, row, column }, cache, visiting));
+        values.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting));
       }
     }
     return values;
+  }
+
+  private evaluateCellOrSpill(
+    address: CellAddress,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+  ): FormulaValue {
+    const value = this.evaluateCell(address, cache, visiting);
+    return this.getSpillValueAt(address.sheetId, address.row, address.column) ?? value;
   }
 }
 

@@ -9,9 +9,17 @@ export interface DrawingHitTestResult {
 
 export interface DrawingPointerTransaction {
   id: string;
+  sheetId: string;
   drawingId: string;
   before: DrawingTransform;
   preview: DrawingTransform;
+}
+
+export interface DrawingReconciliation {
+  /** Selection that remains after removing IDs absent from the worksheet. */
+  selection: string[];
+  /** Pointer gestures cancelled because their drawing no longer exists. */
+  cancelledPointerTransactionIds: string[];
 }
 
 let pointerTransactionSequence = 0;
@@ -47,12 +55,55 @@ export class DrawingRuntime {
     return [...(this.selectedBySheet.get(sheetId) ?? [])];
   }
 
+  /**
+   * Reconcile transient drawing state against the canonical worksheet drawing
+   * collection. The workbook model is the existence authority; this runtime
+   * never keeps a selected ID or pointer gesture for an absent drawing.
+   */
+  reconcile(sheetId: string, validDrawingIds: Iterable<string>): DrawingReconciliation {
+    const valid = new Set(validDrawingIds);
+    const current = this.selectedBySheet.get(sheetId);
+    if (current) {
+      for (const id of current) if (!valid.has(id)) current.delete(id);
+      if (current.size === 0) this.selectedBySheet.delete(sheetId);
+    }
+
+    const cancelledPointerTransactionIds: string[] = [];
+    for (const [transactionId, transaction] of this.pointerTransactions) {
+      if (transaction.sheetId !== sheetId || valid.has(transaction.drawingId)) continue;
+      this.pointerTransactions.delete(transactionId);
+      cancelledPointerTransactionIds.push(transactionId);
+    }
+
+    return {
+      selection: [...(this.selectedBySheet.get(sheetId) ?? [])],
+      cancelledPointerTransactionIds,
+    };
+  }
+
+  /** Clear transient state belonging to sheets removed from the workbook. */
+  clearMissingSheets(liveSheetIds: Iterable<string>): string[] {
+    const live = new Set(liveSheetIds);
+    const clearedSheetIds: string[] = [];
+    for (const sheetId of this.selectedBySheet.keys()) {
+      if (live.has(sheetId)) continue;
+      this.selectedBySheet.delete(sheetId);
+      clearedSheetIds.push(sheetId);
+    }
+    for (const [transactionId, transaction] of this.pointerTransactions) {
+      if (live.has(transaction.sheetId)) continue;
+      this.pointerTransactions.delete(transactionId);
+    }
+    return clearedSheetIds;
+  }
+
   /** Begin a transient pointer gesture without changing the worksheet. */
   beginPointerTransform(sheet: WorksheetModel, drawingId: string): DrawingPointerTransaction {
     const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
     if (!drawing) throw new Error(`Unknown drawing: ${drawingId}`);
     const transaction: DrawingPointerTransaction = {
       id: `drawing-pointer-${++pointerTransactionSequence}`,
+      sheetId: sheet.id,
       drawingId,
       before: structuredClone(drawing.transform),
       preview: structuredClone(drawing.transform),

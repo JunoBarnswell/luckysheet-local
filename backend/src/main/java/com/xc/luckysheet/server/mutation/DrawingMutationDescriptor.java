@@ -203,6 +203,39 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 throw ServiceException.validation("Camera source range exceeds the rendering limit");
             }
         }
+        if (payloadKind.equals("data-chart")) validateDataChartPayload(root, payload);
+    }
+
+    private void validateDataChartPayload(ObjectNode root, ObjectNode payload) {
+        String plotType = SnapshotMutationSupport.text(payload, "plotType");
+        if (!Set.of("column", "bar", "line", "area", "pie", "doughnut", "scatter", "radar", "treemap", "funnel").contains(plotType)) {
+            throw ServiceException.validation("Data Chart plotType is invalid");
+        }
+        ObjectNode source = SnapshotMutationSupport.requiredObject(payload, "source");
+        String sourceKind = SnapshotMutationSupport.text(source, "kind");
+        if (sourceKind.equals("table")) SnapshotMutationSupport.text(source, "tableId");
+        else if (sourceKind.equals("report-sheet")) SnapshotMutationSupport.range(root, source.get("range"));
+        else throw ServiceException.validation("Data Chart source kind is invalid");
+        ObjectNode bindings = SnapshotMutationSupport.requiredObject(payload, "bindings");
+        for (String area : List.of("values", "category", "details", "color", "size", "tooltip", "filter")) {
+            ArrayNode entries = SnapshotMutationSupport.requiredArray(bindings, area);
+            for (JsonNode raw : entries) {
+                if (!raw.isObject()) throw ServiceException.validation("Data Chart binding must be an object");
+                ObjectNode entry = (ObjectNode) raw;
+                SnapshotMutationSupport.text(entry, "fieldId");
+                if (!area.equals(SnapshotMutationSupport.text(entry, "area"))) throw ServiceException.validation("Data Chart binding area is inconsistent");
+                if (!Set.of("sum", "average", "count", "min", "max", "none").contains(SnapshotMutationSupport.text(entry, "aggregate"))) throw ServiceException.validation("Data Chart binding aggregate is invalid");
+                if (entry.has("sort") && !Set.of("asc", "desc").contains(entry.path("sort").asText())) throw ServiceException.validation("Data Chart binding sort is invalid");
+            }
+        }
+        ObjectNode inspector = SnapshotMutationSupport.requiredObject(payload, "inspector");
+        if (!Set.of("top", "bottom", "left", "right", "none").contains(SnapshotMutationSupport.text(inspector, "legendPosition"))) throw ServiceException.validation("Data Chart legend position is invalid");
+        if (!inspector.path("showDataLabels").isBoolean()) throw ServiceException.validation("Data Chart data-label setting is invalid");
+        if (!inspector.path("showHiddenData").isBoolean()) throw ServiceException.validation("Data Chart hidden-data setting is invalid");
+        SnapshotMutationSupport.requiredObject(inspector, "chartArea");
+        SnapshotMutationSupport.requiredObject(inspector, "plotArea");
+        ObjectNode axis = SnapshotMutationSupport.requiredObject(inspector, "axis");
+        if (!axis.path("showGridlines").isBoolean()) throw ServiceException.validation("Data Chart axis setting is invalid");
     }
 
     private void validateAnchor(ObjectNode root, String sheetId, ObjectNode anchor) {

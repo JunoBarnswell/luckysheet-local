@@ -1,6 +1,8 @@
+import { normalizePivotRefreshPolicy } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   PivotDefinition,
+  PivotPresentation,
   RangeRef,
   SheetDataRegion,
   TableScalar,
@@ -206,6 +208,12 @@ function isRangeRef(value: unknown): value is RangeRef {
     && Number.isSafeInteger(range.endColumn) && Number(range.endColumn) >= Number(range.startColumn);
 }
 
+function isPivotSourceRange(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const sourceRange = value as Record<string, unknown>;
+  return isNonEmptyString(sourceRange.sourceId) && isRangeRef(sourceRange.range);
+}
+
 function assertMetadataOnly(value: unknown, path: string): void {
   if (Array.isArray(value)) {
     value.forEach((entry, index) => assertMetadataOnly(entry, `${path}[${index}]`));
@@ -250,18 +258,64 @@ function validatePivotSource(value: unknown): void {
   }
   if (source.kind === 'worksheet-ranges') {
     validateExactKeys(source, ['kind', 'ranges', 'relationships'], 'Pivot worksheet sources');
-    if (!Array.isArray(source.ranges) || !source.ranges.length || !source.ranges.every(isRangeRef) || !Array.isArray(source.relationships)) {
+    if (!Array.isArray(source.ranges) || !source.ranges.length || !source.ranges.every(isPivotSourceRange) || !Array.isArray(source.relationships)) {
       throw new Error('Pivot worksheet sources are invalid');
     }
+    const sourceIds = new Set<string>();
+    for (const rawRange of source.ranges) {
+      const sourceRange = requireRecord(rawRange, 'Pivot worksheet source range');
+      validateExactKeys(sourceRange, ['sourceId', 'range'], 'Pivot worksheet source range');
+      const sourceId = String(sourceRange.sourceId);
+      if (sourceIds.has(sourceId)) throw new Error('Pivot worksheet sourceId is duplicated');
+      sourceIds.add(sourceId);
+    }
+    const parent = new Map([...sourceIds].map((sourceId) => [sourceId, sourceId]));
+    const find = (sourceId: string): string => {
+      const current = parent.get(sourceId);
+      if (!current || current === sourceId) return sourceId;
+      const root = find(current);
+      parent.set(sourceId, root);
+      return root;
+    };
+    const incomingLeft = new Set<string>();
+    const relationshipIds = new Set<string>();
     for (const relationship of source.relationships) {
       const item = requireRecord(relationship, 'Pivot relationship');
       validateExactKeys(item, ['id', 'left', 'right', 'join'], 'Pivot relationship');
-      if (!isNonEmptyString(item.id) || (item.join !== 'inner' && item.join !== 'left')) throw new Error('Pivot relationship is invalid');
+      if (!isNonEmptyString(item.id) || relationshipIds.has(String(item.id)) || (item.join !== 'inner' && item.join !== 'left')) throw new Error('Pivot relationship is invalid');
+      relationshipIds.add(String(item.id));
+      const left = requireRecord(item.left, 'Pivot relationship left');
+      const right = requireRecord(item.right, 'Pivot relationship right');
       for (const side of [item.left, item.right]) {
         const reference = requireRecord(side, 'Pivot relationship field');
-        validateExactKeys(reference, ['sheetId', 'fieldId'], 'Pivot relationship field');
-        if (!isNonEmptyString(reference.sheetId) || !isNonEmptyString(reference.fieldId)) throw new Error('Pivot relationship field is invalid');
+        validateExactKeys(reference, ['sourceId', 'fieldId'], 'Pivot relationship field');
+        if (!isNonEmptyString(reference.sourceId) || !isNonEmptyString(reference.fieldId)) throw new Error('Pivot relationship field is invalid');
       }
+      if (left.sourceId === right.sourceId || !sourceIds.has(String(left.sourceId)) || !sourceIds.has(String(right.sourceId))) throw new Error('Pivot relationship sourceId is invalid');
+      if (item.join === 'left') incomingLeft.add(String(right.sourceId));
+      const leftRoot = find(String(left.sourceId));
+      const rightRoot = find(String(right.sourceId));
+      if (leftRoot === rightRoot) throw new Error('Pivot relationship graph contains a cycle');
+      parent.set(leftRoot, rightRoot);
+    }
+    if (sourceIds.size > 1 && !source.relationships.length) throw new Error('Pivot relationship graph is disconnected');
+    const roots = source.relationships.some((entry) => (entry as Record<string, unknown>).join === 'left')
+      ? [...sourceIds].filter((sourceId) => !incomingLeft.has(sourceId))
+      : [[...sourceIds].sort()[0]!];
+    if (roots.length !== 1 && sourceIds.size > 1) throw new Error('Pivot relationship graph has an ambiguous root');
+    if (sourceIds.size > 1) {
+      const graph = new Map([...sourceIds].map((sourceId) => [sourceId, [] as string[]]));
+      for (const raw of source.relationships) {
+        const item = raw as Record<string, unknown>;
+        const left = item.left as Record<string, unknown>;
+        const right = item.right as Record<string, unknown>;
+        graph.get(String(left.sourceId))!.push(String(right.sourceId));
+        graph.get(String(right.sourceId))!.push(String(left.sourceId));
+      }
+      const visited = new Set<string>();
+      const visit = (sourceId: string): void => { if (visited.has(sourceId)) return; visited.add(sourceId); graph.get(sourceId)?.forEach(visit); };
+      visit([...sourceIds][0]!);
+      if (visited.size !== sourceIds.size) throw new Error('Pivot relationship graph is disconnected');
     }
     return;
   }
@@ -283,12 +337,77 @@ function validatePivotSource(value: unknown): void {
   throw new Error('Pivot source kind is unsupported');
 }
 
+function validatePivotPresentation(value: unknown): asserts value is PivotPresentation {
+  const presentation = requireRecord(value, 'Pivot presentation');
+  validateExactKeys(presentation, ['styleName', 'styleOptions'], 'Pivot presentation');
+  if (presentation.styleName !== undefined && typeof presentation.styleName !== 'string') throw new Error('Pivot presentation styleName is invalid');
+  const options = requireRecord(presentation.styleOptions, 'Pivot presentation styleOptions');
+  validateExactKeys(options, ['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'], 'Pivot presentation styleOptions');
+  if (typeof options.showRowHeaders !== 'boolean'
+    || typeof options.showColumnHeaders !== 'boolean'
+    || typeof options.showRowStripes !== 'boolean'
+    || typeof options.showColumnStripes !== 'boolean'
+    || typeof options.showLastColumn !== 'boolean') throw new Error('Pivot presentation styleOptions are invalid');
+}
+
+function validatePivotGroup(value: unknown): void {
+  const group = requireRecord(value, 'Pivot group');
+  if (group.kind === 'date') {
+    validateExactKeys(group, ['kind', 'unit', 'startOfWeek', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot date group');
+    if (!['year', 'quarter', 'month', 'week', 'day'].includes(String(group.unit))
+      || (group.startOfWeek !== undefined && (!Number.isInteger(group.startOfWeek) || Number(group.startOfWeek) < 0 || Number(group.startOfWeek) > 6))
+      || (group.start !== undefined && !['string', 'number'].includes(typeof group.start))
+      || (group.end !== undefined && !['string', 'number'].includes(typeof group.end))
+      || (group.autoStart !== undefined && typeof group.autoStart !== 'boolean')
+      || (group.autoEnd !== undefined && typeof group.autoEnd !== 'boolean')) throw new Error('Pivot date group is invalid');
+    return;
+  }
+  if (group.kind === 'number') {
+    validateExactKeys(group, ['kind', 'interval', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot number group');
+    if (typeof group.interval !== 'number' || !Number.isFinite(group.interval) || group.interval <= 0
+      || (group.start !== undefined && (typeof group.start !== 'number' || !Number.isFinite(group.start)))
+      || (group.end !== undefined && (typeof group.end !== 'number' || !Number.isFinite(group.end)))
+      || (group.autoStart !== undefined && typeof group.autoStart !== 'boolean')
+      || (group.autoEnd !== undefined && typeof group.autoEnd !== 'boolean')) throw new Error('Pivot number group is invalid');
+    return;
+  }
+  if (group.kind === 'manual') {
+    validateExactKeys(group, ['kind', 'groups'], 'Pivot manual group');
+    if (!Array.isArray(group.groups)) throw new Error('Pivot manual group is invalid');
+    for (const raw of group.groups) {
+      const entry = requireRecord(raw, 'Pivot manual group entry');
+      validateExactKeys(entry, ['groupId', 'name', 'items'], 'Pivot manual group entry');
+      if (!isNonEmptyString(entry.groupId) || typeof entry.name !== 'string' || !Array.isArray(entry.items)) throw new Error('Pivot manual group entry is invalid');
+      entry.items.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual group item ${String(index)}`));
+    }
+    return;
+  }
+  throw new Error('Pivot group kind is unsupported');
+}
+
+function validatePivotSubtotal(value: unknown): void {
+  const subtotal = requireRecord(value, 'Pivot subtotal');
+  if (subtotal.mode === 'automatic' || subtotal.mode === 'none') {
+    validateExactKeys(subtotal, ['mode'], 'Pivot subtotal');
+    return;
+  }
+  if (subtotal.mode === 'custom') {
+    validateExactKeys(subtotal, ['mode', 'functions'], 'Pivot custom subtotal');
+    const functions = subtotal.functions;
+    const supported = ['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'];
+    if (!Array.isArray(functions) || functions.length === 0 || new Set(functions).size !== functions.length || !functions.every((item) => supported.includes(String(item)))) throw new Error('Pivot custom subtotal functions are invalid');
+    return;
+  }
+  throw new Error('Pivot subtotal mode is unsupported');
+}
+
 /** Rejects every non-canonical Pivot field at the transport boundary. */
 export function validatePivotDefinition(value: unknown): asserts value is PivotDefinition {
   const pivot = requireRecord(value, 'Pivot definition');
-  validateExactKeys(pivot, ['schema', 'id', 'source', 'target', 'fieldCatalog', 'layout', 'refreshPolicy', 'nativeMetadata'], 'Pivot definition');
+  validateExactKeys(pivot, ['schema', 'id', 'source', 'target', 'fieldCatalog', 'layout', 'refreshPolicy', 'nativeMetadata', 'presentation'], 'Pivot definition');
   if (pivot.schema !== 'PivotDefinition' || !isNonEmptyString(pivot.id)) throw new Error('Pivot definition identity is invalid');
   validatePivotSource(pivot.source);
+  if (pivot.presentation !== undefined) validatePivotPresentation(pivot.presentation);
   const target = requireRecord(pivot.target, 'Pivot target');
   validateExactKeys(target, ['sheetId', 'anchor'], 'Pivot target');
   const anchor = requireRecord(target.anchor, 'Pivot target anchor');
@@ -310,13 +429,29 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     fieldIds.add(field.fieldId);
   }
   const layout = requireRecord(pivot.layout, 'Pivot layout');
-  validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'showSubtotals', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
+  validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
-    || typeof layout.showSubtotals !== 'boolean' || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+    || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+  if (layout.expansion !== undefined) {
+    const expansion = requireRecord(layout.expansion, 'Pivot expansion');
+    validateExactKeys(expansion, ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'], 'Pivot expansion');
+    if (!Array.isArray(expansion.expandedNodeIds) || !expansion.expandedNodeIds.every(isNonEmptyString)
+      || !Array.isArray(expansion.collapsedNodeIds) || !expansion.collapsedNodeIds.every(isNonEmptyString)
+      || typeof expansion.showButtons !== 'boolean') throw new Error('Pivot expansion is invalid');
+  }
   const validatePlacement = (rawPlacement: unknown): void => {
     const placement = requireRecord(rawPlacement, 'Pivot placement');
-    validateExactKeys(placement, ['fieldId', 'sort', 'group'], 'Pivot placement');
+    validateExactKeys(placement, ['fieldId', 'sort', 'group', 'subtotal'], 'Pivot placement');
     if (!isNonEmptyString(placement.fieldId) || !fieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
+    if (placement.sort !== undefined) {
+      const sort = requireRecord(placement.sort, 'Pivot sort');
+      validateExactKeys(sort, ['direction', 'by', 'valueFieldId'], 'Pivot sort');
+      if (!['ascending', 'descending'].includes(String(sort.direction)) || (sort.by !== undefined && !['label', 'value'].includes(String(sort.by)))) throw new Error('Pivot sort is invalid');
+      if (sort.valueFieldId !== undefined && (!isNonEmptyString(sort.valueFieldId) || !fieldIds.has(sort.valueFieldId))) throw new Error('Pivot sort valueFieldId is invalid');
+      if (sort.by === 'value' && sort.valueFieldId === undefined) throw new Error('Pivot value sort requires valueFieldId');
+    }
+    if (placement.group !== undefined) validatePivotGroup(placement.group);
+    if (placement.subtotal !== undefined) validatePivotSubtotal(placement.subtotal);
   };
   layout.rows.forEach(validatePlacement);
   layout.columns.forEach(validatePlacement);
@@ -324,13 +459,20 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     const filter = requireRecord(rawFilter, 'Pivot filter');
     if (!isNonEmptyString(filter.fieldId) || !fieldIds.has(filter.fieldId)) throw new Error('Pivot filter fieldId is invalid');
     if (filter.kind === 'manual') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'mode', 'memberKeys'], 'Pivot manual filter');
+      validateExactKeys(filter, ['kind', 'fieldId', 'scope', 'mode', 'memberKeys'], 'Pivot manual filter');
+      if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot manual filter scope is invalid');
       if (!['all', 'include', 'exclude'].includes(String(filter.mode)) || !Array.isArray(filter.memberKeys)) throw new Error('Pivot manual filter is invalid');
       filter.memberKeys.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual filter member ${String(index)}`));
     } else if (filter.kind === 'condition') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'operator', 'value'], 'Pivot condition filter');
+      validateExactKeys(filter, ['kind', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'wholeDay'], 'Pivot condition filter');
+      if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
+      if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
+      if (!['equals', 'not-equals', 'contains', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'].includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid');
+      if (!(filter.value === null || ['string', 'number', 'boolean'].includes(typeof filter.value))) throw new Error('Pivot condition value is invalid');
+      if (filter.wholeDay !== undefined && typeof filter.wholeDay !== 'boolean') throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      validateExactKeys(filter, ['kind', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
       if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
   }
@@ -341,7 +483,11 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   }
   const policy = requireRecord(pivot.refreshPolicy, 'Pivot refresh policy');
   validateExactKeys(policy, ['mode', 'preserveFormatting', 'refreshOnLoad'], 'Pivot refresh policy');
-  if (!['manual', 'on-open', 'on-change'].includes(String(policy.mode)) || typeof policy.preserveFormatting !== 'boolean' || typeof policy.refreshOnLoad !== 'boolean') throw new Error('Pivot refresh policy is invalid');
+  try {
+    normalizePivotRefreshPolicy(policy as unknown as PivotDefinition['refreshPolicy']);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'Pivot refresh policy is invalid');
+  }
 }
 
 export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {
@@ -453,9 +599,9 @@ function validatePivotMutationParams(id: string, value: unknown): void {
   }
   if (id !== 'pivot.update') return;
   const params = requireRecord(value, 'Pivot update');
-  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'], 'Pivot update');
+  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'], 'Pivot update');
   if (!isNonEmptyString(params.sheetId) || !isNonEmptyString(params.pivotId)) throw new Error('Pivot update identity is invalid');
-  if (!['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'].some((key) => params[key] !== undefined)) throw new Error('Pivot update has no canonical change');
+  if (!['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'].some((key) => params[key] !== undefined)) throw new Error('Pivot update has no canonical change');
   if (params.source !== undefined) validatePivotSource(params.source);
   if (params.target !== undefined) {
     const target = requireRecord(params.target, 'Pivot update target');
@@ -463,6 +609,7 @@ function validatePivotMutationParams(id: string, value: unknown): void {
     const anchor = requireRecord(target.anchor, 'Pivot update target anchor');
     if (!isNonEmptyString(target.sheetId) || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0 || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0) throw new Error('Pivot update target is invalid');
   }
+  if (params.presentation !== undefined) validatePivotPresentation(params.presentation);
 }
 
 /** Validate the only snapshot representation accepted at the wire boundary. */

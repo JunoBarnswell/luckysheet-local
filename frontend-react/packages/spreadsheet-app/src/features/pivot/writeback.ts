@@ -1,4 +1,4 @@
-import type { PivotModel, WorkbookModel } from '@react-sheets/core-model';
+import { formatPivotMember, type PivotModel, type WorkbookModel } from '@react-sheets/core-model';
 import { computePivotResult, normalizePivotDefinition } from './engine';
 
 export interface PivotWriteResult {
@@ -17,7 +17,7 @@ export function buildPivotWriteback(pivot: PivotModel, workbook: WorkbookModel):
   const tree = computePivotResult(workbook, pivot);
   const values = definition.layout.values;
   const output: Array<Array<{ value: string | number | boolean | null }>> = [];
-  output.push(tree.columnPaths.flatMap((path) => values.map((field) => ({ value: `${path.map((item) => item == null ? '(blank)' : String(item)).join(' / ')} ${field.displayName ?? field.fieldId}`.trim() }))));
+  output.push(tree.columnPaths.flatMap((path) => values.map((field) => ({ value: `${path.map(formatPivotMember).join(' / ')} ${field.displayName ?? field.fieldId}`.trim() }))));
   for (const node of tree.rows) output.push([{ value: node.label }, ...node.values.flatMap((item) => item.values.map((value) => ({ value }))) ]);
   if (tree.grandTotal) output.push([{ value: 'Grand Total' }, ...tree.grandTotal.values.map((value) => ({ value }))]);
   return { targetStartRow: definition.target.anchor.row, targetStartColumn: definition.target.anchor.column, values: output };

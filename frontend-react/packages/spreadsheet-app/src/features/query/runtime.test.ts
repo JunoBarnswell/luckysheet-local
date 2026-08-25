@@ -31,7 +31,7 @@ function queryTargetPivot(sheetId: string) {
         { fieldId: 'query:field:1', name: 'B', dataType: 'number' as const, ordinal: 1 },
       ],
     },
-    layout: { rows: [], columns: [], values: [], filters: [], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false, expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
+    layout: { rows: [], columns: [], values: [], filters: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false, expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
 }
@@ -205,7 +205,7 @@ describe('query commands', () => {
       id: 'table-1', sheetId: sheet.id, name: 'Sales',
       range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
       hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
-      showFilterButton: true, columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both', columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
     });
     const pivot = queryTargetPivot(sheet.id);
     sheet.pivots.push(pivot);
@@ -227,7 +227,7 @@ describe('query commands', () => {
       id: 'table-1', sheetId: sheet.id, name: 'Sales',
       range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
       hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
-      showFilterButton: true, columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both', columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
     });
     model.addTable({ id: 'workbook-table-1', name: 'Results', rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
     const pivot = queryTargetPivot(sheet.id);

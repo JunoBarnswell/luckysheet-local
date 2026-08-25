@@ -70,9 +70,33 @@ final class StructuralSnapshotReducer {
             ObjectNode cell = entry.cell().deepCopy();
             SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), cell);
         }
-        rewriteAxisFormulas(root, sheetId, "row".equals(axis) ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN,
+        shiftCellBandAnchors(sheet, selection, expectedBand, axis, operation, count);
+        rewriteAxisFormulas(root, sheet, "row".equals(axis) ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN,
                 "row".equals(axis) ? selection.startRow() : selection.startColumn(), count,
                 "insert".equals(operation) ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE);
+    }
+
+    private static void shiftCellBandAnchors(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "notes")) {
+            ObjectNode note = requireObject(raw, "Note");
+            int row = note.path("row").asInt(-1);
+            int column = note.path("column").asInt(-1);
+            if (!contains(band, row, column)) continue;
+            int nextRow = "row".equals(axis) ? mapCellIndex(row, selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation) : row;
+            int nextColumn = "column".equals(axis) ? mapCellIndex(column, selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation) : column;
+            if (!contains(band, nextRow, nextColumn)) throw ServiceException.validation("Cell shift would remove a note");
+            note.put("row", nextRow).put("column", nextColumn);
+        }
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "commentThreads")) {
+            ObjectNode comment = requireObject(raw, "Comment thread");
+            int row = comment.path("row").asInt(-1);
+            int column = comment.path("column").asInt(-1);
+            if (!contains(band, row, column)) continue;
+            int nextRow = "row".equals(axis) ? mapCellIndex(row, selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation) : row;
+            int nextColumn = "column".equals(axis) ? mapCellIndex(column, selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation) : column;
+            if (!contains(band, nextRow, nextColumn)) throw ServiceException.validation("Cell shift would remove a comment thread");
+            comment.put("row", nextRow).put("column", nextColumn);
+        }
     }
 
     static void restoreShiftedCells(ObjectNode root, String sheetId, JsonNode spec, JsonNode cells) {
@@ -240,7 +264,7 @@ final class StructuralSnapshotReducer {
             if (intersectsAxis(table.get("range"), axis, at, count)) throw ServiceException.validation("Structural delete intersects a sheet table");
         }
         String targetSheetId = target.path("id").asText();
-        for (JsonNode table : SnapshotMutationSupport.dataModelArray(root, "tables")) {
+        for (JsonNode table : workbookTables(root)) {
             JsonNode range = table.get("sourceRange");
             if (range != null && targetSheetId.equals(range.path("sheetId").asText()) && intersectsAxis(range, axis, at, count)) {
                 throw ServiceException.validation("Structural delete intersects a workbook table");
@@ -425,7 +449,7 @@ final class StructuralSnapshotReducer {
         boolean ownerTarget = targetSheetId.equals(owner.path("id").asText());
         for (JsonNode raw : SnapshotMutationSupport.array(owner, "pivots")) {
             ObjectNode pivot = requireObject(raw, "Pivot");
-            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
             PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, range -> shiftRange(root, range, targetSheetId, axis, at, count, direction));
             ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
             JsonNode anchorRaw = target.get("anchor");
@@ -552,7 +576,7 @@ final class StructuralSnapshotReducer {
     }
 
     private static void shiftWorkbookTables(ObjectNode root, String targetSheetId, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        for (JsonNode raw : SnapshotMutationSupport.dataModelArray(root, "tables")) {
+        for (JsonNode raw : workbookTables(root)) {
             ObjectNode table = requireObject(raw, "Workbook table");
             if (table.has("sourceRange")) shiftRange(root, table.get("sourceRange"), targetSheetId, axis, at, count, direction);
         }
@@ -585,6 +609,16 @@ final class StructuralSnapshotReducer {
             String rewritten = FormulaReferenceTransformer.remapAxis(name.path("formula").asText(), target, target, axis, at, count, direction);
             name.put("formula", rewritten);
         }
+    }
+
+    private static ArrayNode workbookTables(ObjectNode root) {
+        JsonNode dataModel = root.get("dataModel");
+        if (dataModel == null || dataModel.isNull()) return JsonNodeFactory.instance.arrayNode();
+        if (!dataModel.isObject()) throw ServiceException.validation("dataModel must be an object");
+        JsonNode tables = dataModel.get("tables");
+        if (tables == null || tables.isNull()) return JsonNodeFactory.instance.arrayNode();
+        if (!tables.isArray()) throw ServiceException.validation("dataModel.tables must be an array");
+        return (ArrayNode) tables;
     }
 
     private static FormulaReferenceTransformer.SheetIdentity identity(ObjectNode sheet) {
@@ -721,7 +755,7 @@ final class StructuralSnapshotReducer {
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) remapRangeRows(requireObject(table, "Sheet table").get("range"), range, rowMap);
         for (JsonNode rawPivot : SnapshotMutationSupport.array(sheet, "pivots")) {
             ObjectNode pivot = requireObject(rawPivot, "Pivot");
-            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"), "Pivot");
+            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
             PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, source -> remapRangeRows(source, range, rowMap));
             ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
             ObjectNode anchor = PivotMutationDescriptor.requiredAnchor(target);

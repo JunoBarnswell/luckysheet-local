@@ -7,6 +7,7 @@ import { pivotText } from './pivot-localization';
 
 export interface PivotActionsProps {
   layout: 'compact' | 'outline' | 'tabular';
+  showButtons: boolean;
   slicerFieldIds: readonly string[];
   fields: readonly PivotFieldDefinition[];
   callbacks: PivotPanelCallbacks;
@@ -14,7 +15,7 @@ export interface PivotActionsProps {
   locale: Locale;
 }
 
-export function PivotActions({ callbacks, disabled = false, fields, layout, locale, slicerFieldIds }: PivotActionsProps) {
+export function PivotActions({ callbacks, disabled = false, fields, layout, locale, showButtons, slicerFieldIds }: PivotActionsProps) {
   const [controlField, setControlField] = useState(fields[0]?.fieldId ?? '');
   const dateFields = fields.filter((field) => field.dataType === 'date');
   const timelineField = dateFields.find((field) => field.fieldId === controlField)?.fieldId ?? dateFields[0]?.fieldId;
@@ -25,6 +26,11 @@ export function PivotActions({ callbacks, disabled = false, fields, layout, loca
         <Button disabled={disabled} icon="refresh" size="xs" variant="outline" onClick={callbacks.onRefresh}>{pivotText(locale, 'refresh')}</Button>
         <Select aria-label={pivotText(locale, 'view')} disabled={disabled} sizeVariant="sm" value={layout} onChange={(event) => callbacks.onLayoutChange(event.target.value as typeof layout)}><option value="compact">{pivotText(locale, 'compact')}</option><option value="outline">{pivotText(locale, 'outline')}</option><option value="tabular">{pivotText(locale, 'tabular')}</option></Select>
         <Select aria-label={pivotText(locale, 'controlField')} disabled={disabled || fields.length === 0} sizeVariant="sm" value={controlField} onChange={(event) => setControlField(event.target.value)}>{fields.filter((field) => field.fieldId).map((field) => <option key={field.fieldId} value={field.fieldId}>{field.name}</option>)}</Select>
+        {callbacks.onExpansionCommand ? <>
+          <Button disabled={disabled || !controlField} icon="chevron-down" size="xs" variant="outline" onClick={() => callbacks.onExpansionCommand?.({ kind: 'expand-field', fieldId: controlField })}>{pivotText(locale, 'expandField')}</Button>
+          <Button disabled={disabled || !controlField} icon="chevron-up" size="xs" variant="outline" onClick={() => callbacks.onExpansionCommand?.({ kind: 'collapse-field', fieldId: controlField })}>{pivotText(locale, 'collapseField')}</Button>
+          <Button disabled={disabled} icon="plus" size="xs" variant="outline" onClick={() => callbacks.onExpansionCommand?.({ kind: 'toggle-buttons', showButtons: !showButtons })}>{showButtons ? pivotText(locale, 'hideButtons') : pivotText(locale, 'showButtons')}</Button>
+        </> : null}
         <Button disabled={disabled || !controlField} icon="sliders" size="xs" variant="outline" onClick={() => callbacks.onSlicerChange(controlField, !slicerFieldIds.includes(controlField))}>{pivotText(locale, 'slicer')}</Button>
         {timelineField ? <Button disabled={disabled} icon="history" size="xs" variant="outline" onClick={() => callbacks.onTimelineChange(timelineField)}>{pivotText(locale, 'timeline')}</Button> : null}
         <Button disabled={disabled} icon="chart" size="xs" variant="outline" onClick={() => callbacks.onPivotChartChange({ type: 'column', title: pivotText(locale, 'pivotChart') })}>{pivotText(locale, 'pivotChart')}</Button>

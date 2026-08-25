@@ -11,6 +11,88 @@ import { normalizeRangeRef } from './data-features';
 type SheetTableColumn = SheetTableModel['columns'][number];
 export type TotalsFunction = NonNullable<SheetTableColumn['totalsFunction']>;
 
+export interface SheetTableCreationRequest {
+  sheetId: string;
+  range: RangeRef;
+  name: string;
+  hasHeaderRow: boolean;
+  styleName?: string;
+  existingNames?: Iterable<string>;
+  nextId: (prefix: string) => string;
+  readCell?: (row: number, column: number) => unknown;
+}
+
+export interface SheetTableCreationPlan {
+  table: SheetTableModel;
+}
+
+export interface SheetTableAutoExpansionPlan {
+  previous: SheetTableModel;
+  next: SheetTableModel;
+}
+
+function canonicalColumnName(raw: unknown, fallback: string): string {
+  const value = typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean'
+    ? String(raw).trim()
+    : '';
+  return value || fallback;
+}
+
+function uniqueColumnName(raw: string, used: Set<string>): string {
+  let candidate = raw;
+  let suffix = 2;
+  while (used.has(candidate.toLocaleLowerCase())) candidate = `${raw}${suffix++}`;
+  used.add(candidate.toLocaleLowerCase());
+  return candidate;
+}
+
+/**
+ * Build the complete table descriptor before the first workbook mutation.
+ * The first row is only a header source when hasHeaderRow is true; otherwise
+ * it remains ordinary table body data and receives generated ColumnN names.
+ */
+export function planSheetTableCreation(request: SheetTableCreationRequest, sheet?: WorksheetModel): SheetTableCreationPlan {
+  const range = normalizeRangeRef(request.range);
+  if (range.sheetId !== request.sheetId) throw new Error('Create Table range must target the active worksheet');
+  if (range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) {
+    throw new Error('Create Table range is invalid');
+  }
+  if (sheet && (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount)) {
+    throw new Error('Create Table range exceeds worksheet bounds');
+  }
+  const name = request.name.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(name)) throw new Error(`Invalid Sheet Table name: ${request.name}`);
+  const usedNames = new Set([...request.existingNames ?? []].map((entry) => entry.trim().toLocaleLowerCase()));
+  if (usedNames.has(name.toLocaleLowerCase())) throw new Error(`Sheet Table already exists: ${name}`);
+  const usedColumns = new Set<string>();
+  const columns: SheetTableColumn[] = [];
+  for (let offset = 0; offset <= range.endColumn - range.startColumn; offset += 1) {
+    const source = request.hasHeaderRow && request.readCell
+      ? request.readCell(range.startRow, range.startColumn + offset)
+      : undefined;
+    const raw = canonicalColumnName(source, `Column${offset + 1}`);
+    columns.push({ id: request.nextId('col'), name: uniqueColumnName(raw, usedColumns), totalsFunction: defaultTotalsFunction(offset) });
+  }
+  return {
+    table: validateSheetTableModel({
+      id: request.nextId('sheet-table'),
+      sheetId: request.sheetId,
+      name,
+      range,
+      hasHeaderRow: request.hasHeaderRow,
+      hasTotalRow: false,
+      showBandedRows: true,
+      showBandedColumns: false,
+      showFirstColumn: false,
+      showLastColumn: false,
+      showFilterButton: request.hasHeaderRow,
+      autoExpand: 'both',
+      columns,
+      ...(request.styleName?.trim() ? { styleName: request.styleName.trim() } : {}),
+    }, sheet),
+  };
+}
+
 const TABLE_HEADER_STYLE: Partial<CellStyle> = {
   background: '#4472C4',
   textColor: '#FFFFFF',
@@ -36,6 +118,8 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
   if (table.columns.length !== range.endColumn - range.startColumn + 1) {
     throw new Error('Sheet Table columns must match the range width');
   }
+  if (!['none', 'rows', 'columns', 'both'].includes(table.autoExpand)) throw new Error('Sheet Table auto-expand mode is invalid');
+  if (!table.hasHeaderRow && table.showFilterButton) throw new Error('A Sheet Table without a header row cannot show filter buttons');
   const ids = new Set<string>();
   const names = new Set<string>();
   for (const column of table.columns) {
@@ -56,6 +140,74 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
     normalized.autoFilter = createAutoFilterModelForTable(normalized);
   }
   return normalized;
+}
+
+/**
+ * Plan automatic table growth for a contiguous write immediately below or to
+ * the right of a table. The plan is metadata-only; callers apply it in the
+ * same command transaction as the cell write.
+ */
+export function planSheetTableAutoExpansion(
+  sheet: WorksheetModel,
+  writeRange: RangeRef,
+  nextId: (prefix: string) => string,
+): SheetTableAutoExpansionPlan[] {
+  const write = normalizeRangeRef(writeRange);
+  if (write.sheetId !== sheet.id) throw new Error('Table auto-expansion write must target its worksheet');
+  const plans: SheetTableAutoExpansionPlan[] = [];
+  for (const table of sheet.sheetTables.filter((entry) => entry.sheetId === sheet.id)) {
+    const source = normalizeRangeRef(table.range);
+    const allowRows = table.autoExpand === 'rows' || table.autoExpand === 'both';
+    const allowColumns = table.autoExpand === 'columns' || table.autoExpand === 'both';
+    const expandsRows = allowRows
+      && write.startColumn >= source.startColumn && write.endColumn <= source.endColumn
+      && write.startRow <= source.endRow + 1 && write.endRow > source.endRow;
+    const expandsColumns = allowColumns
+      && write.startRow >= source.startRow && write.endRow <= source.endRow
+      && write.startColumn <= source.endColumn + 1 && write.endColumn > source.endColumn;
+    if (!expandsRows && !expandsColumns) continue;
+
+    if (expandsRows && table.hasTotalRow) {
+      throw new Error(`Cannot auto-expand Sheet Table ${table.name} with a total row; resize it explicitly`);
+    }
+    const next = structuredClone(table);
+    if (expandsRows) next.range.endRow = Math.max(next.range.endRow, write.endRow);
+    if (expandsColumns) {
+      const oldEnd = next.range.endColumn;
+      next.range.endColumn = Math.max(next.range.endColumn, write.endColumn);
+      const usedNames = new Set(next.columns.map((column) => column.name.toLocaleLowerCase()));
+      for (let column = oldEnd + 1; column <= next.range.endColumn; column += 1) {
+        const base = `Column${next.columns.length + 1}`;
+        const name = uniqueColumnName(base, usedNames);
+        next.columns.push({ id: nextId('col'), name, totalsFunction: defaultTotalsFunction(next.columns.length) });
+      }
+    }
+    if (next.range.endRow >= sheet.rowCount || next.range.endColumn >= sheet.columnCount) {
+      throw new Error(`Sheet Table ${table.name} cannot expand beyond worksheet bounds`);
+    }
+    if (sheet.sheetTables.some((other) => other.id !== table.id && rangesOverlap(next.range, other.range))) {
+      throw new Error(`Sheet Table ${table.name} cannot auto-expand into another table`);
+    }
+    const previousFilter = next.autoFilter;
+    if (next.showFilterButton && next.hasHeaderRow) {
+      const expandedFilter = createAutoFilterModelForTable(next);
+      if (previousFilter) {
+        for (const [key, column] of Object.entries(previousFilter.columns)) {
+          const columnIndex = Number(key);
+          if (Number.isInteger(columnIndex) && expandedFilter.columns[columnIndex]) {
+            expandedFilter.columns[columnIndex] = { ...expandedFilter.columns[columnIndex], ...structuredClone(column) };
+          }
+        }
+        if (previousFilter.sortState) expandedFilter.sortState = structuredClone(previousFilter.sortState);
+        if (previousFilter.preservedXml !== undefined) expandedFilter.preservedXml = structuredClone(previousFilter.preservedXml);
+      }
+      next.autoFilter = expandedFilter;
+    } else {
+      next.autoFilter = undefined;
+    }
+    plans.push({ previous: structuredClone(table), next: validateSheetTableModel(next, sheet) });
+  }
+  return plans;
 }
 
 export function isPointInRange(range: RangeRef, row: number, column: number): boolean {
@@ -94,6 +246,9 @@ export function computeSheetTableCellStyle(table: SheetTableModel, row: number, 
 
   const { startRow, endRow } = tableBodyBounds(table);
   if (row < startRow || row > endRow) return { background: TABLE_BAND_LIGHT };
+
+  if (table.showFirstColumn && column === range.startColumn) return { background: TABLE_BAND_DARK, bold: true };
+  if (table.showLastColumn && column === range.endColumn) return { background: TABLE_BAND_DARK, bold: true };
 
   if (table.showBandedRows) {
     const bandIndex = row - startRow;

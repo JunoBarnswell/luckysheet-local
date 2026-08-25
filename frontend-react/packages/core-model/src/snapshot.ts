@@ -25,6 +25,8 @@ export interface WorkbookSnapshot {
   sheets: SheetSnapshot[];
 }
 
+export { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
+
 export interface WorkbookDimensionMetrics {
   normalFontFamily: string;
   normalFontSizePx: number;
@@ -32,7 +34,6 @@ export interface WorkbookDimensionMetrics {
 }
 
 export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 5 as const;
-export { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -159,6 +160,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
     || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
+  const pivotIds = new Set<string>();
   for (const sheet of snapshot.sheets) {
     if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');
     if (sheet.kind === 'table-sheet' && !sheet.tableSheet) throw new Error('TableSheet definition is required');
@@ -196,12 +198,37 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
       throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
     }
+    for (const pivot of sheet.pivots) {
+      if (!pivot.id.trim() || pivotIds.has(pivot.id)) throw new Error(`Pivot identity is duplicated or empty: ${pivot.id}`);
+      pivotIds.add(pivot.id);
+    }
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
     }
   }
+  for (const sheet of snapshot.sheets) {
+    for (const drawing of sheet.drawings) {
+      const payload = sheet.drawingPayloads[drawing.payloadId];
+      if (!payload) throw new Error(`Drawing payload is missing: ${drawing.payloadId}`);
+      if (payload.kind !== 'chart' && payload.kind !== 'slicer' && payload.kind !== 'timeline') continue;
+      if (payload.kind === 'chart' && payload.pivotId === undefined) continue;
+      if (typeof payload.pivotId !== 'string' || !payload.pivotId.trim() || !pivotIds.has(payload.pivotId)) {
+        throw new Error(`Drawing ${drawing.id} references missing Pivot: ${payload.pivotId ?? ''}`);
+      }
+      if ((payload.kind === 'slicer' || payload.kind === 'timeline') && payload.connectedPivotIds) {
+        for (const connectedPivotId of payload.connectedPivotIds) {
+          if (!pivotIds.has(connectedPivotId)) throw new Error(`Drawing ${drawing.id} references missing connected Pivot: ${connectedPivotId}`);
+        }
+      }
+    }
+  }
   const dataChartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)
-    .filter((payload) => payload.kind === 'data-chart').map((payload) => payload.tableId)));
+    .flatMap((payload) => payload.kind === 'data-chart' && payload.source.kind === 'table' ? [payload.source.tableId] : [])));
+  for (const sheet of snapshot.sheets) {
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') validateDrawingSourceRange(payload.source.range, snapshot, 'Data chart');
+    }
+  }
   for (const table of snapshot.dataModel.tables) {
     if (table.sourceRange && dataChartTableIds.has(table.id)) validateDrawingSourceRange(table.sourceRange, snapshot, 'Data chart table');
   }

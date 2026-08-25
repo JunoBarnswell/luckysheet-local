@@ -22,6 +22,7 @@ import {
   type RibbonCommandContext,
   type RibbonCommandId,
   type RibbonCommandResult,
+  type RibbonMergeOperation,
   type UiSessionIntent,
 } from '@react-sheets/spreadsheet-app';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
@@ -31,7 +32,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
-import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -43,7 +44,7 @@ export interface RibbonProps {
   onPaste: () => void;
   onBeginFormatPainter: (locked?: boolean) => void;
   formatPainterActive?: boolean;
-  onMergeCells: () => void;
+  onMergeCells: (operation: RibbonMergeOperation) => void;
   onUndo: () => void;
   onRedo: () => void;
   onSave: () => void;
@@ -79,6 +80,9 @@ export interface RibbonProps {
   /** Host-owned selection-aware sort builder. */
   buildSortDescriptor?: (ascending: boolean) => CommandDescriptor | undefined;
   onCreateSheetTable: () => void;
+  onOpenTableSettings: () => void;
+  onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
+  onConvertActiveTableToRange: () => void;
   onCreateDataTable: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
@@ -101,8 +105,8 @@ export interface RibbonProps {
   onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
-  onApplyBarcode: () => void;
-  onCreateDataChart: () => void;
+  onApplyBarcode: (symbology?: BarcodeSymbology) => void;
+  onCreateDataChart: (type?: DataChartPlotType) => void;
   onCreateCamera: () => void;
   onCreateFormControl: (type?: FormControlType) => void;
   onApplyCheckbox: () => void;
@@ -113,6 +117,13 @@ export interface RibbonProps {
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
+  activeTableSheet?: { sheetId: string; viewId: string };
+  activeGanttSheet?: { sheetId: string; viewId: string };
+  activeReportSheet?: { sheetId: string; tableId?: string };
+  activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
+  activeChart?: { sheetId: string; chartId: string };
+  activePicture?: { sheetId: string; drawingId: string };
+  activeSparkline?: { sheetId: string; sparklineId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
   canExecute?: (commandId: string, params?: unknown) => boolean;
@@ -226,6 +237,9 @@ export function Ribbon({
   onCreatePivotDialog,
   buildSortDescriptor,
   onCreateSheetTable,
+  onOpenTableSettings,
+  onToggleTableOption,
+  onConvertActiveTableToRange,
   onCreateDataTable,
   onToggleSheetTableTotalRow,
   onApplyFilterSelection,
@@ -260,6 +274,13 @@ export function Ribbon({
   onTabChange,
   phase,
   activePivot,
+  activeTableSheet,
+  activeGanttSheet,
+  activeReportSheet,
+  activeTable,
+  activeChart,
+  activePicture,
+  activeSparkline,
   homeState,
   canExecute,
   commandPaletteOpen = false,
@@ -300,9 +321,13 @@ export function Ribbon({
     onToggleViewHeadings,
     onTogglePrintHeadings,
     onAutoSum,
+    onMerge: onMergeCells,
     onFill,
     onFreezeAtPrimary,
     onCreateSheetTable,
+    onOpenTableSettings,
+    onToggleTableOption,
+    onConvertActiveTableToRange,
     onCreateDataTable,
     onToggleSheetTableTotalRow,
     onApplyFilterSelection,
@@ -340,6 +365,13 @@ export function Ribbon({
     buildSortDescriptor,
     openCreatePivotDialog: onCreatePivotDialog,
     activePivot,
+    activeTableSheet,
+    activeGanttSheet,
+    activeReportSheet,
+    activeTable,
+    activeChart,
+    activePicture,
+    activeSparkline,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
     sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
@@ -381,7 +413,16 @@ export function Ribbon({
     <RibbonLocaleContext.Provider value={locale}>
       <RibbonShell
         activeTab={activeTab}
-        contextualTabs={activePivot ? ['pivotAnalyze', 'pivotDesign'] : []}
+        contextualTabs={[
+          ...(activePivot ? ['pivotAnalyze', 'pivotDesign'] as const : []),
+          ...(activeTableSheet ? ['tableSheetDesign'] as const : []),
+          ...(activeGanttSheet ? ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'] as const : []),
+          ...(activeReportSheet ? ['reportSheetDesign'] as const : []),
+          ...(activeTable ? ['tableDesign'] as const : []),
+          ...(activeChart ? ['chartDesign', 'chartFormat'] as const : []),
+          ...(activePicture ? ['pictureFormat'] as const : []),
+          ...(activeSparkline ? ['sparklineDesign'] as const : []),
+        ]}
         disabled={disabled}
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}
         onTabChange={onTabChange}
@@ -417,12 +458,14 @@ export function Ribbon({
           />
         ) : null}
         {activeTab === 'insert' ? (
-          <InsertRibbon
+      <InsertRibbon
             locale={locale}
             layout={layout}
             disabled={disabled}
             renderCommand={renderHomeCommand}
-            onInsertChart={onInsertChartType}
+        onInsertChart={onInsertChartType}
+        onInsertDataChart={(type) => onCreateDataChart(type)}
+        onInsertBarcode={(symbology) => onApplyBarcode(symbology)}
             onInsertSparkline={onInsertSparklineType}
             onInsertShape={onInsertShapeType}
             onInsertFormControl={onCreateFormControl}

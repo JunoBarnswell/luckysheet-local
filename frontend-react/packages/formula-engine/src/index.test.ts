@@ -35,6 +35,15 @@ test('lexer and parser produce a precedence-aware AST without executable code', 
   assert.equal(parseFormula('"line\\nvalue"').type, 'string-literal');
 });
 
+test('spill and implicit-intersection references round-trip and offset through the AST', () => {
+  assert.deepEqual(lexFormula('=SUM(A2#)').map((token) => token.kind), [
+    'identifier', 'left-paren', 'identifier', 'spill-operator', 'right-paren', 'eof',
+  ]);
+  assert.equal(formatFormula(parseFormula('=SUM(A2#)')), '=SUM(A2#)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(A2#)'), 1, 1)), '=SUM(B3#)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=@A2#'), 1, 1)), '=@B3#');
+});
+
 test('AST formatter preserves explicit grouping and qualified sheet names', () => {
   const ast = parseFormula("=('Annual Plan'!$A$1+A1)*B1");
   assert.equal(formatFormula(ast), "=('Annual Plan'!$A$1+A1)*B1");
@@ -139,6 +148,16 @@ test('FormulaEngine evaluates comprehensive math, logical, text, and lookup func
   assert.equal(engine.setFormula('F7', '=ISNUMBER(A1)').value, true);
   assert.equal(engine.setFormula('F8', '=ISTEXT(B1)').value, true);
   assert.equal(engine.setFormula('F9', '=ISBLANK(Z99)').value, true);
+});
+
+test('FormulaEngine resolves spill references as dynamic ranges', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setSpillEnvironment('Sheet1', { rowCount: 20, columnCount: 10, isOccupied: () => false });
+  engine.setFormula('A2', '=SEQUENCE(2,1,1,1)');
+  const dependent = engine.setFormula('C2', '=SUM(A2#)');
+  assert.equal(dependent.value, 3);
+  assert.deepEqual(dependent.dependencies, [{ kind: 'cell', address: { sheetId: 'Sheet1', row: 1, column: 0 } }]);
+  assert.equal(engine.setFormula('D2', '=@A2#').value, 1);
 });
 
 test('FormulaEngine recalculates a dependency chain and updates replaced dependencies', () => {

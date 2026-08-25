@@ -57,6 +57,7 @@ describe('canonical drawing UI projection', () => {
       chartType: 'combo',
       stacked: 'percent',
       sourceRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }],
+      elements: { hiddenData: 'show' },
     });
 
     const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);

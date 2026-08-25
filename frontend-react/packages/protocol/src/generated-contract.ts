@@ -30,6 +30,9 @@ export const MUTATION_CAPABILITIES = {
   "cellTemplate.set": { durability: "remote", remote: true, schema: "CellStyleTemplateSet", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "cellTemplate.remove": { durability: "remote", remote: true, schema: "CellStyleTemplateRemove", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "cell.editor.set": { durability: "remote", remote: true, schema: "CellEditorSet", minRole: "editor", rebasePolicy: "range", javaReducer: true },
+  "tableSheet.update": { durability: "remote", remote: true, schema: "TableSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
+  "ganttSheet.update": { durability: "remote", remote: true, schema: "GanttSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
+  "reportSheet.update": { durability: "remote", remote: true, schema: "ReportSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "query.load.workbook-table": { durability: "local", remote: false, schema: "QueryLoadWorkbookTable", minRole: "editor", rebasePolicy: "none", javaReducer: false },
 } as const satisfies Record<string, MutationCapability>;
 export function mutationCapability(id: string): MutationCapability | undefined {

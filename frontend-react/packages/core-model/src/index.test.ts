@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertCanonicalWorkbookSnapshot, CellMatrix, WorkbookModel } from './index';
+import {
+  CellMatrix,
+  normalizePivotTimelinePeriod,
+  pivotTimelineInstant,
+  WorkbookModel,
+} from './index';
+import { assertCanonicalWorkbookSnapshot } from './snapshot';
 
 test('canonical snapshots bound drawing source work', () => {
   const workbook = new WorkbookModel('unit-drawing-ranges', 'Drawing ranges');
@@ -39,6 +45,18 @@ test('CellMatrix keeps empty logical space sparse', () => {
   assert.equal(cloned.has(100_000, 4), true);
 });
 
+test('Pivot timeline dates use deterministic half-open civil-day bounds', () => {
+  const bounds = normalizePivotTimelinePeriod({ start: '2026-08-25', end: '2026-08-25' });
+  const dayStart = Date.UTC(2026, 7, 25);
+  assert.deepEqual(bounds, { start: dayStart, endExclusive: dayStart + 86_400_000 });
+  assert.equal(pivotTimelineInstant('2026-08-25T10:30:00'), Date.UTC(2026, 7, 25, 10, 30));
+  assert.equal(pivotTimelineInstant('2026-08-25T10:30:00Z'), Date.UTC(2026, 7, 25, 10, 30));
+  assert.equal(pivotTimelineInstant('2026-08-25T10:30:00+02:00'), Date.UTC(2026, 7, 25, 8, 30));
+  assert.throws(() => normalizePivotTimelinePeriod({ start: '2026-08-26', end: '2026-08-25' }), /start must not be after end/);
+  assert.throws(() => normalizePivotTimelinePeriod({ start: '2026-02-29' }), /Invalid Pivot timeline start date/);
+  assert.equal(pivotTimelineInstant('not-a-date'), undefined);
+});
+
 test('WorksheetModel handles merges and anchors properly', () => {
   const workbook = new WorkbookModel('unit-merge', 'Merge Test');
   const sheet = workbook.getSheet('sheet-1');
@@ -72,6 +90,29 @@ test('WorkbookModel manages multiple sheets with a stable primary sheet', () => 
   assert.throws(() => workbook.removeSheet('sheet-1'), /must keep at least one worksheet/);
 });
 
+test('canonical snapshots reject drawings whose Pivot reference no longer exists', () => {
+  const workbook = new WorkbookModel('pivot-reference-validation', 'Pivot Reference Validation');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.drawings.push({
+    id: 'broken-pivot-chart',
+    sheetId: sheet.id,
+    kind: 'chart',
+    payloadId: 'broken-pivot-chart-payload',
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 100, height: 80, rotation: 0 },
+    zIndex: 0,
+  });
+  sheet.drawingPayloads.set('broken-pivot-chart-payload', {
+    kind: 'chart',
+    chartId: 'broken-pivot-chart',
+    pivotId: 'missing-pivot',
+    sourceRanges: [],
+    chartType: 'column',
+    elements: { hiddenData: 'show' },
+  });
+  assert.throws(() => assertCanonicalWorkbookSnapshot(workbook.snapshot()), /references missing Pivot/);
+});
+
 test('WorkbookSnapshot round-trips complete model state including canonical drawings and metadata', () => {
   const workbook = new WorkbookModel('unit-full', 'Full Test');
   const sheet = workbook.getSheet('sheet-1');
@@ -101,8 +142,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     kind: 'chart',
     chartId: 'chart-1',
     chartType: 'column',
-    title: 'Revenue',
     sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 }],
+    elements: { title: 'Revenue', hiddenData: 'show' },
   });
   sheet.drawings.push({
     id: 'shape-1',
@@ -151,7 +192,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restoredSheet.rowHeightsPx[0], 40);
   assert.equal(restoredSheet.drawings.length, 2);
   assert.equal(restoredSheet.drawingPayloads.get('chart-1')?.kind, 'chart');
-  assert.equal((restoredSheet.drawingPayloads.get('chart-1') as { title?: string }).title, 'Revenue');
+  assert.equal((restoredSheet.drawingPayloads.get('chart-1') as { elements?: { title?: string } }).elements?.title, 'Revenue');
   assert.equal(restoredSheet.drawingPayloads.get('shape-1')?.kind, 'shape');
   assert.equal(restoredSheet.drawings.find((drawing) => drawing.id === 'shape-1')?.visible, false);
   assert.equal(restoredSheet.sparklines.length, 1);

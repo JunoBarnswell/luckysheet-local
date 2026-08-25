@@ -34,6 +34,54 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rangePasteAppliesCanonicalSnapshotAndClearsABoundedSource() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"move"}}}}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},
+                 "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
+                """));
+
+        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var next = prepared.descriptor().apply(snapshot, mutation);
+
+        assertEquals(2, prepared.affectedRanges().size());
+        assertEquals(true, next.path("sheets").get(0).path("cells").path("0").isMissingNode());
+        assertEquals("move", next.path("sheets").get(0).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    @Test
+    void rangePasteRejectsAnOversizedSourceBeforeApplyingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"keep"}}}}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},
+                 "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":100000,"startColumn":0,"endColumn":0},
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals("keep", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+    }
+
+    @Test
+    void rangePasteRejectsTheRemovedMatrixModeContract() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":10,\"columnCount\":10,\"cells\":{}}]}");
+        var legacy = new OperationMutation("range.paste", "sheet-1", mapper.readTree("{\"startRow\":0,\"startColumn\":0,\"values\":[[{\"value\":1}]]}"));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
+    }
+
+    @Test
     void internalRestoreCannotBeSubmittedByClient() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertThrows(ServiceException.class, () -> registry.require("workbook.restore", false));
@@ -51,7 +99,7 @@ class MutationDescriptorRegistryTest {
     void acceptedMutationSurfaceIsExplicitAndAllOtherKnownMutationsRemainFailClosed() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
-                "cell.set", "cell.restore", "range.set", "range.paste", "range.clear", "range.clear.restore",
+                "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
@@ -60,7 +108,7 @@ class MutationDescriptorRegistryTest {
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
                 "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
-                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
+                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
@@ -70,6 +118,83 @@ class MutationDescriptorRegistryTest {
                 "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
         ), Set.copyOf(registry.acceptedIds()));
+    }
+
+    @Test
+    void tableSheetUpdateUsesTheBoundTableAndWholeSheetRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {
+                  "dataModel":{"tables":[{"id":"table-1","fields":[{"id":"name"},{"id":"amount"}]}]},
+                  "sheets":[{"id":"sheet-1","kind":"table-sheet","rowCount":20,"columnCount":5,"cells":{},
+                    "tableSheet":{"viewId":"table-1","columns":[{"fieldId":"name","caption":"Name"}],"grouping":[]}}
+                ]}
+                """);
+        var update = new OperationMutation("tableSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"table-1","columns":[{"fieldId":"amount","caption":"Amount","widthPx":120}],"grouping":[],"sortState":[{"fieldId":"amount","direction":"desc"}]}}
+                """));
+
+        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        assertEquals(1, prepared.affectedRanges().size());
+        assertEquals(0, prepared.affectedRanges().getFirst().startRow());
+        assertEquals(19, prepared.affectedRanges().getFirst().endRow());
+        assertEquals(0, prepared.affectedRanges().getFirst().startColumn());
+        assertEquals(4, prepared.affectedRanges().getFirst().endColumn());
+        var updated = registry.applyPublicMutations(snapshot, List.of(update));
+        assertEquals("amount", updated.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
+
+        var invalid = new OperationMutation("tableSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"table-1","columns":[{"fieldId":"missing","caption":"Missing"}],"grouping":[]}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+        assertEquals("name", snapshot.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
+    }
+
+    @Test
+    void ganttSheetUpdateUsesTheBoundTableAndWholeSheetRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {
+                  "dataModel":{"tables":[{"id":"tasks","fields":[{"id":"id"},{"id":"title"},{"id":"start"},{"id":"end"},{"id":"progress"},{"id":"parent"},{"id":"deps"}]}]},
+                  "sheets":[{"id":"sheet-1","kind":"gantt-sheet","rowCount":20,"columnCount":8,"cells":{},
+                    "ganttSheet":{"viewId":"tasks","fieldMap":{"id":"id","title":"title","start":"start","end":"end","progress":"progress","parentId":"parent","dependencies":"deps"},"calendar":{"workingDays":[1,2,3,4,5],"dayStartHour":9,"dayEndHour":18},"timeline":{"unit":"week"},"dependencyStyle":{"color":"#64748b","width":1}}}
+                ]}
+                """);
+        var update = new OperationMutation("ganttSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"tasks","fieldMap":{"id":"id","title":"title","start":"start","end":"end","progress":"progress","parentId":"parent","dependencies":"deps"},"calendar":{"workingDays":[1,2,3,4,5],"dayStartHour":8,"dayEndHour":17},"timeline":{"unit":"day"},"dependencyStyle":{"color":"#334155","width":2}}}
+                """));
+        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        assertEquals(1, prepared.affectedRanges().size());
+        assertEquals(19, prepared.affectedRanges().getFirst().endRow());
+        var updated = registry.applyPublicMutations(snapshot, List.of(update));
+        assertEquals("day", updated.path("sheets").get(0).path("ganttSheet").path("timeline").path("unit").asText());
+        var invalid = new OperationMutation("ganttSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"tasks","fieldMap":{"id":"missing","title":"title","start":"start","end":"end","progress":"progress"},"calendar":{"workingDays":[1],"dayStartHour":9,"dayEndHour":18},"timeline":{"unit":"week"},"dependencyStyle":{"color":"#64748b","width":1}}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+    }
+
+    @Test
+    void reportSheetUpdateValidatesTemplateBindingsAndWholeSheetRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"dataModel":{"tables":[{"id":"tasks","fields":[{"id":"title"}]}]},"sheets":[
+                  {"id":"template","kind":"worksheet","rowCount":20,"columnCount":8,"cells":{}},
+                  {"id":"report","kind":"report-sheet","rowCount":20,"columnCount":8,"cells":{},"reportSheet":{"templateSheetId":"template","tableId":"tasks","bindings":[],"pagination":{"enabled":true,"rowsPerPage":10,"repeatHeaderRows":[0]},"renderMode":"design","layout":{"orientation":"portrait","marginTopPx":24,"marginRightPx":24,"marginBottomPx":24,"marginLeftPx":24},"dataEntry":[]}}
+                ]}
+                """);
+        var update = new OperationMutation("reportSheet.update", "report", mapper.readTree("""
+                {"sheetId":"report","definition":{"templateSheetId":"template","tableId":"tasks","bindings":[{"cell":{"row":1,"column":0},"expression":"title","kind":"field","direction":"vertical","fill":"down"}],"pagination":{"enabled":true,"rowsPerPage":5,"repeatHeaderRows":[0]},"renderMode":"preview","layout":{"orientation":"landscape","marginTopPx":12,"marginRightPx":12,"marginBottomPx":12,"marginLeftPx":12},"dataEntry":[{"fieldId":"title","writable":true}]}}
+                """));
+        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        assertEquals(1, prepared.affectedRanges().size());
+        assertEquals(19, prepared.affectedRanges().getFirst().endRow());
+        var updated = registry.applyPublicMutations(snapshot, List.of(update));
+        assertEquals("preview", updated.path("sheets").get(1).path("reportSheet").path("renderMode").asText());
+        var invalid = new OperationMutation("reportSheet.update", "report", mapper.readTree("""
+                {"sheetId":"report","definition":{"templateSheetId":"template","tableId":"tasks","bindings":[{"cell":{"row":1,"column":0},"expression":"missing","kind":"field"}],"pagination":{"enabled":true,"rowsPerPage":5},"renderMode":"design","layout":{"orientation":"portrait","marginTopPx":0,"marginRightPx":0,"marginBottomPx":0,"marginLeftPx":0},"dataEntry":[]}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
     }
 
     @Test
@@ -123,6 +248,41 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void freezeSetAcceptsCanonicalPaneStates() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","pane":{"kind":"none"}}]}
+                """);
+
+        for (String pane : List.of(
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozenSplit\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20.5,\"ySplit\":10,\"startRow\":1,\"startColumn\":2}")) {
+            OperationMutation mutation = new OperationMutation("freeze.set", "sheet-1", mapper.readTree("{\"pane\":" + pane + "}"));
+            snapshot = registry.applyPublicMutations(snapshot, List.of(mutation));
+            assertEquals(mapper.readTree(pane), snapshot.path("sheets").get(0).path("pane"));
+        }
+    }
+
+    @Test
+    void freezeSetRejectsPaneStateThatWouldPoisonCanonicalSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","pane":{"kind":"none"}}]}
+                """);
+
+        for (String pane : List.of(
+                "{\"kind\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"split\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"split\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}")) {
+            OperationMutation mutation = new OperationMutation("freeze.set", "sheet-1", mapper.readTree("{\"pane\":" + pane + "}"));
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+            assertEquals("VALIDATION_ERROR", error.code());
+        }
+    }
+
+    @Test
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
@@ -157,7 +317,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","rule":{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0}],"type":"highlight"}}
                 """));
         var sheetTable = new OperationMutation("sheetTable.add", "sheet-1", mapper.readTree("""
-                {"id":"table-1","sheetId":"sheet-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"hasHeaderRow":true,"hasTotalRow":false,"columns":[]}
+                {"id":"table-1","sheetId":"sheet-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":true,"showBandedColumns":false,"showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"both","columns":[{"id":"c1","name":"A"},{"id":"c2","name":"B"},{"id":"c3","name":"C"}]}
                 """));
         var hideRow = new OperationMutation("row.hidden", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","index":2}
@@ -244,7 +404,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
                 """);
         OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
-                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"region","name":"Region","dataType":"text","ordinal":0},{"fieldId":"amount","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"region"}],"columns":[],"filters":[{"kind":"manual","fieldId":"region","mode":"all","memberKeys":[]}],"values":[{"fieldId":"amount","summarizeBy":"sum"}],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"region","name":"Region","dataType":"text","ordinal":0},{"fieldId":"amount","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"region","subtotal":{"mode":"automatic"}}],"columns":[],"filters":[{"kind":"manual","fieldId":"region","mode":"all","memberKeys":[]}],"values":[{"fieldId":"amount","summarizeBy":"sum"}],"subtotalLocation":"bottom","showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
         JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
@@ -276,8 +436,18 @@ class MutationDescriptorRegistryTest {
         ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
         assertEquals("VALIDATION_ERROR", error.code());
 
+        OperationMutation oldLayout = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
+                {"schema":"PivotDefinition","id":"pivot-old-layout","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, oldLayout, WorkbookAclRole.EDITOR));
+
+        OperationMutation malformedSubtotal = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
+                {"schema":"PivotDefinition","id":"pivot-bad-subtotal","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"region","name":"Region","dataType":"text","ordinal":0}]},"layout":{"rows":[{"fieldId":"region","subtotal":{"mode":"custom","functions":[]}}],"columns":[],"filters":[],"values":[],"subtotalLocation":"bottom","showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, malformedSubtotal, WorkbookAclRole.EDITOR));
+
         OperationMutation add = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
-                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"subtotalLocation":"bottom","showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
         JsonNode current = registry.applyPublicMutations(snapshot, List.of(add));
         JsonNode beforeRefresh = current.deepCopy();
@@ -289,11 +459,26 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void pivotRemovalFailsClosedWhenAChartStillReferencesThePivot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{},"drawings":[
+                  {"id":"pivot-chart-1","sheetId":"sheet-1","kind":"chart","payloadId":"pivot-chart-payload-1","anchor":{"kind":"absolute"},"transform":{"x":0,"y":0,"width":120,"height":80,"rotation":0},"zIndex":1}
+                ],"drawingPayloads":{"pivot-chart-payload-1":{"kind":"chart","chartId":"pivot-chart-1","pivotId":"pivot-1","sourceRanges":[],"chartType":"column","elements":{"hiddenData":"show"}}},"pivots":[
+                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"subtotalLocation":"bottom","showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                ]}]}
+                """);
+        OperationMutation remove = new OperationMutation("pivot.remove", "sheet-1", mapper.readTree("\"pivot-1\""));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, remove, WorkbookAclRole.EDITOR));
+        assertEquals("CONFLICT", error.code());
+    }
+
+    @Test
     void structuralTransformsUpdateCanonicalPivotSourceAndTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet 1","rowCount":10,"columnCount":10,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"notes":[],"commentThreads":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[
-                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"subtotalLocation":"bottom","showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 ]}]}
                 """);
         OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""

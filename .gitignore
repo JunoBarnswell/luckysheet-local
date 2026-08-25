@@ -52,6 +52,12 @@ HELP.md
 
 # Local temp / cache
 .univer-temp/
+
+# Playwright output is ephemeral CI evidence; provenance is stored with the run artifact, not source.
+**/test-results/
+**/playwright-report/
+**/*.trace.zip
+**/*.webm
 backend/data/
 
 # Univer competitive analysis (local clone + npm mirror)

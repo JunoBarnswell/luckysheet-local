@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookSession } from './workbook-session';
+import type { ChartDrawingPayload } from '@react-sheets/core-model';
 
 describe('WorkbookSession chart integration', () => {
   it('addChart routes through the canonical drawing aggregate', () => {
@@ -18,18 +19,16 @@ describe('WorkbookSession chart integration', () => {
       kind: 'chart',
       chartId: 'chart-test-1',
       chartType: 'column',
-      title: 'Revenue',
       sourceRanges: [{ sheetId, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }],
-      legendPosition: 'right',
-      showDataLabels: true,
+      elements: { title: 'Revenue', legend: { visible: true, position: 'right' }, dataLabels: { visible: true }, hiddenData: 'show' },
     });
 
     const sheet = app['runtime'].model.getSheet(sheetId);
     const drawing = sheet.drawings.find((entry) => entry.payloadId === 'chart-test-1');
     assert.equal(drawing?.kind, 'chart');
     assert.equal(sheet.drawingPayloads.get('chart-test-1')?.kind, 'chart');
-    assert.equal((sheet.drawingPayloads.get('chart-test-1') as { title?: string; legendPosition?: string }).title, 'Revenue');
-    assert.equal((sheet.drawingPayloads.get('chart-test-1') as { legendPosition?: string }).legendPosition, 'right');
+    assert.equal((sheet.drawingPayloads.get('chart-test-1') as ChartDrawingPayload).elements.title, 'Revenue');
+    assert.equal((sheet.drawingPayloads.get('chart-test-1') as ChartDrawingPayload).elements.legend?.position, 'right');
     let snapshot = app.getUiSnapshot();
     assert.equal(snapshot.selectedFloatingId, 'draw-chart-test-1');
 

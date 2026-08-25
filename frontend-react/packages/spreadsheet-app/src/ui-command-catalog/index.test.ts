@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
+import { transformNumberFormatPrecision } from '@react-sheets/number-format';
 import {
   buildRibbonCommand,
-  adjustRibbonDecimalPlaces,
   getRibbonSurfaces,
   getRibbonCommandDefinition,
   getRibbonGroupDefinition,
@@ -49,9 +49,13 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onToggleViewHeadings: () => undefined,
     onTogglePrintHeadings: () => undefined,
     onAutoSum: () => undefined,
+    onMerge: () => undefined,
     onFill: () => undefined,
     onFreezeAtPrimary: () => undefined,
     onCreateSheetTable: () => undefined,
+    onOpenTableSettings: () => undefined,
+    onToggleTableOption: () => undefined,
+    onConvertActiveTableToRange: () => undefined,
     onCreateDataTable: () => undefined,
     onToggleSheetTableTotalRow: () => descriptor('sheetTable.update'),
     onApplyFilterSelection: () => descriptor('data.filter.apply'),
@@ -122,6 +126,54 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(buildRibbonCommand('tableSheet', current)?.type, 'callback');
   });
 
+  it('routes all merge actions through the typed high-level callback', () => {
+    const operations: string[] = [];
+    const current = context({ actions: { ...context().actions, onMerge: (operation) => { operations.push(operation); } } });
+    for (const [command, operation] of [['mergeCenter', 'center'], ['mergeCells', 'cells'], ['mergeAcross', 'across'], ['unmergeCells', 'unmerge']] as const) {
+      const action = buildRibbonCommand(command, current);
+      assert.equal(action?.type, 'callback');
+      if (action?.type === 'callback') action.invoke();
+    }
+    assert.deepEqual(operations, ['center', 'cells', 'across', 'unmerge']);
+    const mergeSurfaces = getRibbonSurfaces('home', 'alignment', 'wide').filter((surface) => surface.menuId === 'control.merge-menu');
+    assert.deepEqual(mergeSurfaces.map((surface) => surface.commandId), ['mergeCenter', 'mergeCells', 'mergeAcross', 'unmergeCells']);
+  });
+
+  it('exposes TableSheet Designer commands only for the active bound TableSheet', () => {
+    const withoutTableSheet = context();
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('tableSheetFieldList'), withoutTableSheet), false);
+    assert.equal(buildRibbonCommand('tableSheetColumnSettings', withoutTableSheet), undefined);
+
+    const withTableSheet = context({ activeTableSheet: { sheetId: 'sheet-table-1', viewId: 'table-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('tableSheetFieldList'), withTableSheet), true);
+    assert.deepEqual(buildRibbonCommand('tableSheetFieldList', withTableSheet), {
+      type: 'intent',
+      intent: { type: 'panel.open', panel: 'data' },
+    });
+  });
+
+  it('exposes Gantt contextual commands only for the active GanttSheet', () => {
+    const withoutGantt = context();
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('ganttFieldMapping'), withoutGantt), false);
+    const withGantt = context({ activeGanttSheet: { sheetId: 'sheet-gantt-1', viewId: 'table-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('ganttFieldMapping'), withGantt), true);
+    assert.deepEqual(buildRibbonCommand('ganttTimeline', withGantt), { type: 'intent', intent: { type: 'panel.open', panel: 'data' } });
+  });
+
+  it('exposes ReportSheet design commands only for the active ReportSheet', () => {
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('reportFieldBinding'), context()), false);
+    const withReport = context({ activeReportSheet: { sheetId: 'report-1', tableId: 'table-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('reportFieldBinding'), withReport), true);
+    assert.deepEqual(buildRibbonCommand('reportPagination', withReport), { type: 'intent', intent: { type: 'panel.open', panel: 'data' } });
+  });
+
+  it('exposes Sparkline Design only for the selected sparkline anchor', () => {
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('sparklineDesign'), context()), false);
+    const withSparkline = context({ activeSparkline: { sheetId: 'sheet-1', sparklineId: 'spark-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('sparklineDesign'), withSparkline), true);
+    assert.deepEqual(buildRibbonCommand('sparklineDesign', withSparkline), { type: 'intent', intent: { type: 'panel.open', panel: 'sparkline' } });
+  });
+
   it('honors phase and permission context before building a command', () => {
     const disabled = context({ disabled: true });
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), disabled), false);
@@ -145,6 +197,22 @@ describe('Ribbon UI command catalog', () => {
     assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
   });
 
+  it('keeps the complete HOME surface set identical across responsive breakpoints', () => {
+    const groups = ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing'] as const;
+    const breakpoints = ['wide', 'compact', 'narrow'] as const;
+    for (const group of groups) {
+      const byBreakpoint = breakpoints.map((breakpoint) => getRibbonSurfaces('home', group, breakpoint).map((surface) => surface.id));
+      assert.ok(byBreakpoint.every((ids) => ids.length > 0), `${group} has no surface at one breakpoint`);
+      assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[1]), `${group} compact surface drift`);
+      assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[2]), `${group} narrow surface drift`);
+      for (const surface of getRibbonSurfaces('home', group, 'wide')) {
+        assert.equal(Boolean(surface.commandId) !== Boolean(surface.controlId), true, `${surface.id} must be command or control`);
+        if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId), `${surface.id} has no command`);
+        if (surface.menuId) assert.ok(getRibbonSurfaces('home', group, 'wide').some((owner) => owner.id === surface.menuId), `${surface.id} has no menu owner`);
+      }
+    }
+  });
+
   it('keeps Home and Insert surfaces unique and executable', () => {
     const ids = new Set<string>();
     for (const surface of RIBBON_TAB_SURFACES) {
@@ -156,10 +224,24 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(INSERT_RIBBON_SURFACES.some((surface) => surface.id.includes('quick')), false);
   });
 
-  it('adjusts decimals structurally without touching formatted cell text', () => {
-    assert.equal(adjustRibbonDecimalPlaces('general', 1), '0.0');
-    assert.equal(adjustRibbonDecimalPlaces('$#,##0.00', -1), '$#,##0.0');
-    assert.equal(adjustRibbonDecimalPlaces('0%', 2), '0.00%');
+  it('adjusts decimals through the canonical number-format transformer', () => {
+    assert.deepEqual(transformNumberFormatPrecision('$#,##0.00', -1), { ok: true, format: '$#,##0.0', decimalPlaces: 1 });
+    assert.deepEqual(transformNumberFormatPrecision('0%', 1), { ok: true, format: '0.0%', decimalPlaces: 1 });
+    assert.equal(transformNumberFormatPrecision('general', 1).ok, false);
+  });
+
+  it('does not build a style mutation for an unsupported active format', () => {
+    const dateContext = context({ cellStyle: { numberFormat: 'yyyy-mm-dd' } });
+    assert.equal(buildRibbonCommand('numberFormatDecimalIncrease', dateContext), undefined);
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('numberFormatDecimalIncrease'), dateContext), false);
+  });
+
+  it('builds one canonical style mutation without flattening custom sections', () => {
+    const result = buildRibbonCommand('numberFormatDecimalIncrease', context({ cellStyle: { numberFormat: '[Red]#,##0;[Blue]-#,##0' } }));
+    assert.deepEqual(result, {
+      type: 'command',
+      descriptor: { commandId: 'sheet.style.set', params: { style: { numberFormat: '[Red]#,##0.0;[Blue]-#,##0.0' } } },
+    });
   });
 
   it('builds the complete alignment grid as canonical style commands', () => {

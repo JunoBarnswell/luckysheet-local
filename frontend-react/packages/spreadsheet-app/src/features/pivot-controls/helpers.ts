@@ -11,6 +11,7 @@ import type {
 import {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
+  normalizePivotTimelinePeriod,
 } from '@react-sheets/core-model';
 
 type DrawingAnchor = DrawingObject['anchor'];
@@ -44,6 +45,7 @@ export function createPivotControlFilter(overrides: Partial<PivotControlFilter> 
 }
 
 export function createPivotTimelinePeriod(overrides: PivotTimelinePeriod = {}): PivotTimelinePeriod {
+  normalizePivotTimelinePeriod(overrides);
   return structuredClone(overrides);
 }
 

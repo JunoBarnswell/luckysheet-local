@@ -11,6 +11,84 @@ export const PIVOT_GRID_PROJECTION_SCHEMA = 'PivotGridProjection' as const;
 
 export type PivotScalar = string | number | boolean | null;
 export type PivotScalarType = 'text' | 'number' | 'boolean' | 'blank';
+export const PIVOT_BLANK_LABEL = '(blank)' as const;
+
+/** One civil day in the canonical UTC calendar used by Pivot timelines. */
+export const PIVOT_DAY_MS = 86_400_000;
+
+export interface PivotTimelinePeriodBounds {
+  /** Inclusive start instant at 00:00:00 UTC for the selected start day. */
+  start?: number;
+  /** Exclusive instant at 00:00:00 UTC immediately after the selected end day. */
+  endExclusive?: number;
+}
+
+const PIVOT_TIMELINE_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+function parsePivotTimelineString(value: string): number | undefined {
+  const match = PIVOT_TIMELINE_DATE_PATTERN.exec(value.trim());
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4] ?? 0);
+  const minute = Number(match[5] ?? 0);
+  const second = Number(match[6] ?? 0);
+  const millisecond = match[7] ? Number(match[7].padEnd(3, '0')) : 0;
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59 || millisecond > 999) return undefined;
+
+  // Date.UTC maps years 0..99 to 1900..1999. Constructing through setters
+  // keeps the full four-digit year and lets the round-trip validate leap days.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, millisecond);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day
+    || date.getUTCHours() !== hour || date.getUTCMinutes() !== minute || date.getUTCSeconds() !== second
+    || date.getUTCMilliseconds() !== millisecond) return undefined;
+
+  const zone = match[8];
+  if (!zone || zone === 'Z') return date.getTime();
+  const offsetHours = Number(zone.slice(1, 3));
+  const offsetMinutes = Number(zone.slice(-2));
+  if (offsetHours > 23 || offsetMinutes > 59) return undefined;
+  const offset = (offsetHours * 60 + offsetMinutes) * 60_000;
+  return date.getTime() + (zone[0] === '+' ? -offset : offset);
+}
+
+/** Parse a Pivot date value without relying on browser-local Date parsing. */
+export function pivotTimelineInstant(value: PivotScalar): number | undefined {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined;
+    return Date.UTC(1899, 11, 30) + value * PIVOT_DAY_MS;
+  }
+  return typeof value === 'string' ? parsePivotTimelineString(value) : undefined;
+}
+
+function timelineDayStart(value: string, label: 'start' | 'end'): number | undefined {
+  const instant = pivotTimelineInstant(value);
+  if (instant === undefined || !Number.isFinite(instant)) {
+    throw new Error(`Invalid Pivot timeline ${label} date: ${value}`);
+  }
+  return Math.floor(instant / PIVOT_DAY_MS) * PIVOT_DAY_MS;
+}
+
+/** Normalize an inclusive date-only period to one deterministic half-open interval. */
+export function normalizePivotTimelinePeriod(period: { start?: string; end?: string }): PivotTimelinePeriodBounds {
+  const start = period.start === undefined ? undefined : timelineDayStart(period.start, 'start');
+  const endDay = period.end === undefined ? undefined : timelineDayStart(period.end, 'end');
+  if (start !== undefined && endDay !== undefined && start > endDay) {
+    throw new Error(`Pivot timeline period start must not be after end: ${period.start} > ${period.end}`);
+  }
+  return {
+    ...(start === undefined ? {} : { start }),
+    ...(endDay === undefined ? {} : { endExclusive: endDay + PIVOT_DAY_MS }),
+  };
+}
+
+/** One presentation rule for Pivot members across grid, filters, and controls. */
+export function formatPivotMember(value: PivotScalar): string {
+  return value === null || value === '' ? PIVOT_BLANK_LABEL : String(value);
+}
 
 /** A member key keeps `1`, `"1"`, `true`, and blank members distinct. */
 export interface PivotMemberKey {
@@ -51,17 +129,30 @@ export type PivotAggregateFunction =
   | 'varp'
   | 'distinct-count';
 
+export type PivotSubtotalDefinition =
+  | { mode: 'automatic' }
+  | { mode: 'none' }
+  | { mode: 'custom'; functions: PivotAggregateFunction[] };
+
+export type PivotSubtotalLocation = 'top' | 'bottom' | 'off';
+
 export interface PivotSourceRelationship {
   id: string;
-  left: { sheetId: SheetId; fieldId: string };
-  right: { sheetId: SheetId; fieldId: string };
+  left: { sourceId: string; fieldId: string };
+  right: { sourceId: string; fieldId: string };
   join: 'inner' | 'left';
+}
+
+/** A worksheet range is a named logical source node, not merely a position in an array. */
+export interface PivotWorksheetSourceRange {
+  sourceId: string;
+  range: RangeRef;
 }
 
 /** Canonical Pivot source. */
 export type PivotWorksheetDataSource =
   | { kind: 'worksheet-range'; range: RangeRef }
-  | { kind: 'worksheet-ranges'; ranges: RangeRef[]; relationships: PivotSourceRelationship[] };
+  | { kind: 'worksheet-ranges'; ranges: PivotWorksheetSourceRange[]; relationships: PivotSourceRelationship[] };
 
 export type PivotSource = PivotWorksheetDataSource
   | { kind: 'table'; tableId: string }
@@ -91,8 +182,8 @@ export interface PivotManualGroup {
 }
 
 export type PivotGroup =
-  | { kind: 'date'; unit: 'year' | 'quarter' | 'month' | 'week' | 'day'; startOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6 }
-  | { kind: 'number'; interval: number; start?: number; end?: number }
+  | { kind: 'date'; unit: 'year' | 'quarter' | 'month' | 'week' | 'day'; startOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6; start?: PivotScalar; end?: PivotScalar; autoStart?: boolean; autoEnd?: boolean }
+  | { kind: 'number'; interval: number; start?: number; end?: number; autoStart?: boolean; autoEnd?: boolean }
   | { kind: 'manual'; groups: PivotManualGroup[] };
 
 export type PivotSort = {
@@ -105,6 +196,7 @@ export interface PivotFieldPlacement {
   fieldId: string;
   sort?: PivotSort;
   group?: PivotGroup;
+  subtotal?: PivotSubtotalDefinition;
 }
 
 export type PivotManualFilter = {
@@ -121,9 +213,12 @@ export type PivotFilter =
   | {
     kind: 'condition';
     fieldId: string;
+    /** Optional measure identity for native value filters. */
+    valueFieldId?: string;
     scope?: 'report' | 'field';
     operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
     value: PivotScalar;
+    wholeDay?: boolean;
   }
   | {
     kind: 'top-items';
@@ -183,26 +278,96 @@ export interface PivotLayout {
   values: PivotValueField[];
   calculatedFields?: PivotCalculatedField[];
   calculatedItems?: PivotCalculatedItem[];
-  showSubtotals: boolean;
+  subtotalLocation: PivotSubtotalLocation;
   showGrandTotals: boolean;
   compact: boolean;
   repeatLabels: boolean;
   expansion?: PivotExpansionState;
 }
 
+export interface PivotStyleOptions {
+  showRowHeaders: boolean;
+  showColumnHeaders: boolean;
+  showRowStripes: boolean;
+  showColumnStripes: boolean;
+  showLastColumn: boolean;
+}
+
+export interface PivotPresentation {
+  styleName?: string;
+  styleOptions: PivotStyleOptions;
+}
+
+export const DEFAULT_PIVOT_STYLE_OPTIONS: PivotStyleOptions = {
+  showRowHeaders: true,
+  showColumnHeaders: true,
+  showRowStripes: false,
+  showColumnStripes: false,
+  showLastColumn: false,
+};
+
 export interface PivotRefreshPolicy {
   mode: 'manual' | 'on-open' | 'on-change';
   preserveFormatting: boolean;
+  /**
+   * Derived wire projection of `mode`.  It remains on the public contract for
+   * the current protocol revision, but canonicalization rejects a value that
+   * disagrees with the mode, so there is only one refresh decision.
+   */
   refreshOnLoad: boolean;
 }
 
+export interface PivotNativeCacheFlags {
+  /** Native attributes belong to the shared PivotCache, not one PivotTable. */
+  refreshOnLoad?: boolean;
+  refreshOnSave?: boolean;
+  saveData?: boolean;
+  enableRefresh?: boolean;
+}
+
+/**
+ * Native Pivot filters which cannot be represented by the canonical filter
+ * algebra remain explicit boundary-owned metadata. The original attributes
+ * are retained so an import/export round trip cannot silently broaden or
+ * remove a filter that the runtime does not understand.
+ */
+export interface PivotNativeFilterMetadata {
+  fieldIndex: number;
+  type: string;
+  attributes: Record<string, string>;
+}
+
+export interface PivotNativeAutoSortMetadata {
+  fieldIndex: number;
+  sortType?: 'manual' | 'ascending' | 'descending';
+  nonAutoSortDefault?: boolean;
+  attributes: Record<string, string>;
+  references: Array<{
+    field: number;
+    selected?: boolean;
+    itemIndexes?: number[];
+  }>;
+}
+
 export interface PivotNativeMetadata {
+  /** Stable native/cache identity used when several PivotTables share a cache. */
+  cacheKey?: string;
   cacheId?: number;
   cacheDefinitionPart?: string;
   cacheRecordsPart?: string;
   pivotTablePart?: string;
+  /**
+   * The original cache-level flags are preserved at the OOXML boundary. They
+   * are not a second runtime refresh policy; edited canonical mode owns the
+   * refreshOnLoad/refreshOnSave values when the package is regenerated.
+   */
+  cacheFlags?: PivotNativeCacheFlags;
   fieldBindings?: Record<string, { cacheFieldIndex: number; sourceName?: string }>;
-  /** Only identifiers and style/display attributes may cross the model boundary. */
+  /** Native filters retained when their exact semantics exceed PivotFilter. */
+  preservedPivotFilters?: PivotNativeFilterMetadata[];
+  /** Native auto-sort scopes retained when their exact semantics exceed PivotSort. */
+  preservedAutoSortScopes?: PivotNativeAutoSortMetadata[];
+  /** Only canonical identities, presentation, and explicit native-preservation records cross the model boundary. */
   preservedFeatures?: Array<'external-connection' | 'olap' | 'consolidation' | 'macro' | 'custom-xml' | 'slicer' | 'timeline'>;
 }
 
@@ -220,6 +385,7 @@ export interface PivotDefinition {
   fieldCatalog: PivotFieldCatalog;
   layout: PivotLayout;
   refreshPolicy: PivotRefreshPolicy;
+  presentation?: PivotPresentation;
   nativeMetadata?: PivotNativeMetadata;
 }
 
@@ -227,6 +393,10 @@ export interface PivotDefinition {
 export type PivotModel = PivotDefinition;
 
 export interface PivotSourceRowPath {
+  /** Logical source node identity; required for multi-range joins and optional for legacy single-source detail payloads. */
+  sourceId?: string;
+  /** Joined-record identity; allows Show Details to group provenance without relying on source-array order. */
+  recordId?: string;
   sheetId: SheetId;
   row: Row;
 }
@@ -238,6 +408,12 @@ export interface PivotResultCell {
   columnPath: PivotScalar[];
   values: PivotScalar[];
   sourceRowPaths: PivotSourceRowPath[];
+}
+
+export interface PivotResultValueField extends PivotValueField {
+  sourceFieldId: string;
+  subtotalFunction?: PivotAggregateFunction;
+  subtotalFieldId?: string;
 }
 
 export interface PivotResultNode {
@@ -260,6 +436,7 @@ export interface PivotResultTree {
   pivotId: string;
   fields: PivotFieldCatalog;
   columnPaths: PivotScalar[][];
+  valueFields?: PivotResultValueField[];
   rows: PivotResultNode[];
   grandTotal: PivotResultCell | null;
   sourceRowPaths: PivotSourceRowPath[];
@@ -296,6 +473,7 @@ export interface PivotProjectionCell {
   nodeId?: string;
   resultCellId?: string;
   columnPath?: PivotScalar[];
+  isLastColumn?: boolean;
   sourceRowPaths?: PivotSourceRowPath[];
   expandable?: boolean;
   expanded?: boolean;
@@ -323,6 +501,7 @@ export interface PivotGridProjection {
   pivotId: string;
   sheetId: SheetId;
   target: PivotTarget;
+  presentation?: PivotPresentation;
   occupiedRange: RangeRef;
   cells: PivotProjectionCell[];
   collision: PivotCollision;
@@ -355,6 +534,7 @@ export interface ContextHit extends PivotHitTest {
 export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefinition {
   if (input.schema !== PIVOT_DEFINITION_SCHEMA) throw new Error(`Pivot ${input.id} is not a canonical definition`);
   if (!input.source || !input.target || !input.fieldCatalog || !input.refreshPolicy) throw new Error(`Pivot ${input.id} is missing canonical fields`);
+  const refreshPolicy = normalizePivotRefreshPolicy(input.refreshPolicy);
   if (input.layout.rows.some((entry) => !entry.fieldId)
     || input.layout.columns.some((entry) => !entry.fieldId)
     || input.layout.values.some((entry) => !entry.fieldId)
@@ -362,10 +542,35 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     throw new Error(`Pivot ${input.id} has non-canonical field references`);
   }
   const canonical = structuredClone(input);
+  canonical.refreshPolicy = refreshPolicy;
+  canonical.presentation = {
+    ...(canonical.presentation?.styleName ? { styleName: canonical.presentation.styleName } : {}),
+    styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(canonical.presentation?.styleOptions ?? {}) },
+  };
   const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
   canonical.layout.filters = canonical.layout.filters.map((filter) => ({
     ...filter,
     scope: filter.scope ?? (axisFields.has(filter.fieldId) ? 'field' : 'report'),
   }));
   return canonical;
+}
+
+/**
+ * Normalize the one canonical refresh decision. `on-change` includes opening
+ * refresh because a cache that is refreshed from source changes must also be
+ * current when the workbook is opened; manual is the only non-opening mode.
+ */
+export function normalizePivotRefreshPolicy(input: PivotRefreshPolicy): PivotRefreshPolicy {
+  if (!input || !['manual', 'on-open', 'on-change'].includes(input.mode) || typeof input.preserveFormatting !== 'boolean' || typeof input.refreshOnLoad !== 'boolean') {
+    throw new Error('Pivot refresh policy is invalid');
+  }
+  const expectedRefreshOnLoad = input.mode !== 'manual';
+  if (input.refreshOnLoad !== expectedRefreshOnLoad) {
+    throw new Error(`Pivot refresh policy is contradictory for mode ${input.mode}`);
+  }
+  return { mode: input.mode, preserveFormatting: input.preserveFormatting, refreshOnLoad: expectedRefreshOnLoad };
+}
+
+export function refreshOnSaveForPivotMode(mode: PivotRefreshPolicy['mode']): boolean {
+  return mode === 'on-change';
 }

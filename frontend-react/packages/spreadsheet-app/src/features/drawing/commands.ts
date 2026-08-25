@@ -3,9 +3,15 @@ import type {
   DrawingObject,
   DrawingPayload,
   DrawingTransform,
+  ImageCrop,
+  ImageDrawingPayload,
+  ImageEffects,
+  TextBoxDrawingPayload,
+  TextBoxTextFrame,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import {
+  isFormControlDrawingPayload,
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
 } from '@react-sheets/core-model';
@@ -76,6 +82,12 @@ export interface DrawingPayloadUpdateParams {
   after: DrawingPayload;
 }
 
+export interface DrawingTextBoxUpdateParams {
+  sheetId: string;
+  drawingId: string;
+  payload: TextBoxDrawingPayload;
+}
+
 export interface DrawingZOrderParams {
   sheetId: string;
   drawingId: string;
@@ -107,12 +119,7 @@ export interface DrawingCopyParams {
   offset: { x: number; y: number };
 }
 
-export interface DrawingImageCrop {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-}
+export type DrawingImageCrop = ImageCrop;
 
 export interface DrawingImageCropParams {
   sheetId: string;
@@ -126,7 +133,11 @@ export interface DrawingImageAltTextParams {
   altText: string;
 }
 
-type ImagePayloadWithCrop = Extract<DrawingPayload, { kind: 'image' }> & { crop?: DrawingImageCrop };
+export interface DrawingImageEffectsParams {
+  sheetId: string;
+  drawingId: string;
+  effects: ImageEffects;
+}
 
 const objectParams = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const hasSheetId = (value: unknown): value is { sheetId: string } => objectParams(value) && typeof value.sheetId === 'string' && value.sheetId.length > 0;
@@ -159,8 +170,34 @@ function isAnchor(value: unknown): value is DrawingObject['anchor'] {
 
 function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (!objectParams(value)) return false;
-  if (['image', 'shape', 'chart', 'data-chart', 'camera', 'textbox', 'form-control'].includes(String(value.kind))) return true;
+  if (value.kind === 'image') return isImagePayload(value);
+  if (value.kind === 'form-control') return isFormControlDrawingPayload(value);
+  if (value.kind === 'textbox') return isTextBoxPayload(value);
+  if (['shape', 'chart', 'data-chart', 'camera'].includes(String(value.kind))) return true;
   return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
+}
+
+function isTextBoxTextFrame(value: unknown): value is TextBoxTextFrame {
+  if (!objectParams(value)) return false;
+  const margin = value.margin;
+  return typeof value.fontFamily === 'string' && value.fontFamily.length > 0
+    && isFiniteNumber(value.fontSize) && value.fontSize > 0
+    && typeof value.bold === 'boolean' && typeof value.italic === 'boolean' && typeof value.underline === 'boolean'
+    && typeof value.textColor === 'string' && value.textColor.length > 0
+    && ['left', 'center', 'right'].includes(String(value.horizontalAlignment))
+    && ['top', 'middle', 'bottom'].includes(String(value.verticalAlignment))
+    && ['horizontal', 'vertical'].includes(String(value.direction))
+    && objectParams(margin)
+    && isFiniteNumber(margin.top) && margin.top >= 0
+    && isFiniteNumber(margin.right) && margin.right >= 0
+    && isFiniteNumber(margin.bottom) && margin.bottom >= 0
+    && isFiniteNumber(margin.left) && margin.left >= 0
+    && typeof value.wrap === 'boolean'
+    && ['none', 'shrink-text', 'resize-shape'].includes(String(value.autofit));
+}
+
+function isTextBoxPayload(value: unknown): value is TextBoxDrawingPayload {
+  return objectParams(value) && value.kind === 'textbox' && typeof value.text === 'string' && isTextBoxTextFrame(value.textFrame);
 }
 
 function isDrawing(value: unknown): value is DrawingObject {
@@ -216,6 +253,12 @@ function isPayloadUpdateParams(value: unknown): value is DrawingPayloadUpdatePar
   return isDrawingPayload(params.before) && isDrawingPayload(params.after);
 }
 
+function isTextBoxUpdateParams(value: unknown): value is DrawingTextBoxUpdateParams {
+  if (!hasSheetId(value) || !hasDrawingId(value) || !objectParams(value)) return false;
+  const params = value as Record<string, unknown>;
+  return isTextBoxPayload(params.payload);
+}
+
 function isZOrderParams(value: unknown): value is DrawingZOrderParams {
   if (!hasSheetId(value) || !hasDrawingId(value) || !objectParams(value)) return false;
   return ['forward', 'backward', 'front', 'back'].includes(String((value as Record<string, unknown>).direction));
@@ -239,6 +282,23 @@ function isImageCrop(value: unknown): value is DrawingImageCrop {
     && value.left + value.right < 1 && value.top + value.bottom < 1;
 }
 
+function isImageEffects(value: unknown): value is ImageEffects {
+  if (!objectParams(value)) return false;
+  return (value.brightness === undefined || (isFiniteNumber(value.brightness) && value.brightness >= -1 && value.brightness <= 1))
+    && (value.contrast === undefined || (isFiniteNumber(value.contrast) && value.contrast >= -1 && value.contrast <= 1))
+    && (value.transparency === undefined || (isFiniteNumber(value.transparency) && value.transparency >= 0 && value.transparency <= 1));
+}
+
+function isImagePayload(value: unknown): value is ImageDrawingPayload {
+  return objectParams(value)
+    && value.kind === 'image'
+    && typeof value.src === 'string' && value.src.length > 0
+    && (value.altText === undefined || typeof value.altText === 'string')
+    && (value.name === undefined || typeof value.name === 'string')
+    && (value.crop === undefined || isImageCrop(value.crop))
+    && (value.effects === undefined || isImageEffects(value.effects));
+}
+
 function isImageCropParams(value: unknown): value is DrawingImageCropParams {
   if (!hasSheetId(value) || !hasDrawingId(value) || !objectParams(value)) return false;
   return isImageCrop((value as Record<string, unknown>).crop);
@@ -247,6 +307,11 @@ function isImageCropParams(value: unknown): value is DrawingImageCropParams {
 function isImageAltTextParams(value: unknown): value is DrawingImageAltTextParams {
   if (!hasSheetId(value) || !hasDrawingId(value) || !objectParams(value)) return false;
   return typeof (value as Record<string, unknown>).altText === 'string';
+}
+
+function isImageEffectsParams(value: unknown): value is DrawingImageEffectsParams {
+  if (!hasSheetId(value) || !hasDrawingId(value) || !objectParams(value)) return false;
+  return isImageEffects((value as Record<string, unknown>).effects);
 }
 
 function isDrawingPairValid(drawing: DrawingObject, payload: DrawingPayload): void {
@@ -578,6 +643,33 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
   });
   commandIds.push('drawing.payload.update');
 
+  runtime.registry.registerCommand<DrawingTextBoxUpdateParams>({
+    id: 'drawing.textbox.update',
+    execute: (params, context) => {
+      if (!isTextBoxUpdateParams(params)) throw new Error(`Invalid textbox update payload`);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const drawing = findDrawing(sheet, params.drawingId);
+      if (drawing.kind !== 'textbox') throw new Error(`Drawing is not a textbox: ${params.drawingId}`);
+      const current = sheet.drawingPayloads.get(drawing.payloadId);
+      if (!current || current.kind !== 'textbox') throw new Error(`Missing textbox payload: ${drawing.payloadId}`);
+      isDrawingPairValid(drawing, params.payload);
+      const affectedRanges = sheetRange(params.sheetId);
+      const payloadId = drawing.payloadId;
+      const before = structuredClone(current);
+      context.applyMutation({
+        id: 'drawing.payload.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, payloadId, before, after: structuredClone(params.payload) },
+        affectedRanges,
+        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId, before: structuredClone(params.payload), after: before }, affectedRanges }],
+        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId, before, after: structuredClone(params.payload) }),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('drawing.textbox.update');
+
   runtime.registry.registerCommand<DrawingZOrderParams>({
     id: 'drawing.zorder',
     execute: (params, context) => {
@@ -693,7 +785,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       const current = sheet.drawingPayloads.get(drawing.payloadId);
       if (!current || current.kind !== 'image') throw new Error(`Missing image payload: ${drawing.payloadId}`);
       const before = structuredClone(current);
-      const after: ImagePayloadWithCrop = { ...structuredClone(current), crop: structuredClone(params.crop) };
+      const after: ImageDrawingPayload = { ...structuredClone(current), crop: structuredClone(params.crop) };
       const affectedRanges = sheetRange(params.sheetId);
       context.applyMutation({
         id: 'drawing.payload.update',
@@ -733,6 +825,32 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     },
   });
   commandIds.push('drawing.image.altText');
+
+  runtime.registry.registerCommand<DrawingImageEffectsParams>({
+    id: 'drawing.image.effects',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const drawing = findDrawing(sheet, params.drawingId);
+      if (drawing.kind !== 'image') throw new Error(`Drawing is not an image: ${params.drawingId}`);
+      const current = sheet.drawingPayloads.get(drawing.payloadId);
+      if (!current || current.kind !== 'image') throw new Error(`Missing image payload: ${drawing.payloadId}`);
+      if (!isImageEffects(params.effects)) throw new Error('Image effects are invalid');
+      const before = structuredClone(current);
+      const after: ImageDrawingPayload = { ...structuredClone(current), effects: structuredClone(params.effects) };
+      const affectedRanges = sheetRange(params.sheetId);
+      context.applyMutation({
+        id: 'drawing.payload.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after },
+        affectedRanges,
+        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
+        apply: () => updatePayload(context.workbook.getSheet(params.sheetId), { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('drawing.image.effects');
 
   return commandIds;
 }

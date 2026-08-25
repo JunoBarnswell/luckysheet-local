@@ -43,6 +43,7 @@ export function FeaturePanelHost({
   commands,
   title,
 }: FeaturePanelHostProps): ReactNode {
+  const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
   return (
     <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
@@ -68,6 +69,7 @@ export function FeaturePanelHost({
           drawings={state.selectedSheet.drawings}
           drawingPayloads={state.selectedSheet.drawingPayloads}
           selectedDrawingIds={state.selectedDrawingIds}
+          initialBarcodeSymbology={session.getBarcodeDraftSymbology()}
           onSelectDrawing={(drawingId, mode) => session.setDrawingSelection([drawingId], mode === "extend" ? "add" : mode)}
           onSetDrawingVisibility={(drawingId, visible) => session.setDrawingVisibility(drawingId, visible)}
           onRenameDrawing={(drawingId, name) => session.renameDrawing(drawingId, name)}
@@ -96,6 +98,7 @@ export function FeaturePanelHost({
           onSaveDefinedName={(input) => session.setDefinedName(input)}
           onRemoveDefinedName={(input) => session.removeDefinedName(input.name, input.scope, input.sheetId)}
           sparklines={state.selectedSheet.sparklines}
+          sparklineGroups={state.selectedSheet.sparklineGroups ?? []}
           conditionalFormats={state.selectedSheet.conditionalFormats}
           dataValidations={state.selectedSheet.dataValidations}
           historyEntries={state.historyEntries}
@@ -110,6 +113,16 @@ export function FeaturePanelHost({
           compatibilityReport={state.compatibilityReport}
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
           tables={state.tables}
+          relationships={state.relationships}
+          onUpdateTableSheet={(definition) => session.updateTableSheetDefinition(definition)}
+          onUpdateGanttSheet={(definition) => session.updateGanttSheetDefinition(definition)}
+          onUpdateReportSheet={(definition) => session.updateReportSheetDefinition(definition)}
+          activeTable={activeTableId ? state.selectedSheet.sheetTables.find((table) => table.id === activeTableId) : undefined}
+          onTableNameChange={(name) => session.setActiveSheetTableName(name)}
+          onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
+          onResizeTable={(range) => session.resizeActiveSheetTable(range)}
+          onTableStyleChange={(styleName) => session.setActiveSheetTableStyle(styleName)}
+          onConvertTableToRange={() => session.convertActiveSheetTableToRange()}
           onReadDataRows={session.readDataTable.bind(session)}
           onRemoveDataTable={session.removeDataTable.bind(session)}
           onCommand={dispatchCommand}

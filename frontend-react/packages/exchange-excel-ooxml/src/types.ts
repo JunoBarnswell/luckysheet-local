@@ -1,4 +1,6 @@
 /** XLSX 兼容级别 */
+import type { PivotStyleOptions } from '@react-sheets/core-model';
+
 export type CompatibilityLevel = 'A' | 'B' | 'C';
 export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
 export const OOXML_CODEC_REVISION = 4 as const;
@@ -79,11 +81,31 @@ export type NativePivotSource =
   | { kind: 'worksheet-range'; sheetName: string; sheetPart?: string; ref: string }
   | { kind: 'table'; tableName: string; sheetName?: string; sheetPart?: string };
 
+export type NativePivotScalar = string | number | boolean | null;
+
+export interface NativePivotFieldRange {
+  groupBy?: string;
+  start?: NativePivotScalar;
+  end?: NativePivotScalar;
+  interval?: number;
+  autoStart?: boolean;
+  autoEnd?: boolean;
+}
+
+export interface NativePivotFieldGroup {
+  base?: number;
+  parent?: number;
+  range?: NativePivotFieldRange;
+  discreteIndexes?: number[];
+  groupItems?: NativePivotScalar[];
+}
+
 export interface NativePivotCacheField {
   index: number;
   name: string;
   dataType?: 'string' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
   sharedItems?: Array<string | number | boolean | null>;
+  fieldGroup?: NativePivotFieldGroup;
 }
 
 export interface NativePivotCacheDefinition {
@@ -104,6 +126,42 @@ export interface NativePivotTableField {
   axis?: 'row' | 'column' | 'page' | 'data';
   compact?: boolean;
   outline?: boolean;
+  sortType?: 'manual' | 'ascending' | 'descending';
+  nonAutoSortDefault?: boolean;
+  autoSortScope?: NativePivotAutoSortScope;
+  collapsedItemIndexes?: number[];
+  subtotal?: { mode: 'automatic' | 'none' | 'custom'; functions?: string[] };
+}
+
+export interface NativePivotAutoSortScope {
+  dataOnly?: boolean;
+  labelOnly?: boolean;
+  outline?: boolean;
+  fieldPosition?: number;
+  attributes: Record<string, string>;
+  references: Array<{
+    field: number;
+    selected?: boolean;
+    itemIndexes?: number[];
+  }>;
+}
+
+/** A typed projection plus the original attributes for lossless native replay. */
+export interface NativePivotFilter {
+  field: number;
+  type: string;
+  measureField?: number;
+  secondMeasureField?: number;
+  evalOrder?: number;
+  id?: number;
+  stringValue1?: string;
+  stringValue2?: string;
+  value1?: NativePivotScalar;
+  value2?: NativePivotScalar;
+  wholeDay?: boolean;
+  top?: boolean;
+  percent?: boolean;
+  attributes: Record<string, string>;
 }
 
 export interface NativePivotDataField {
@@ -125,12 +183,15 @@ export interface NativePivotTableDefinition {
   columnFields: number[];
   pageFields: number[];
   dataFields: NativePivotDataField[];
+  pivotFilters?: NativePivotFilter[];
   showRowGrandTotals?: boolean;
   showColumnGrandTotals?: boolean;
-  showSubtotals?: boolean;
+  subtotalLocation?: 'top' | 'bottom' | 'off';
   repeatLabels?: boolean;
   compactData?: boolean;
   styleName?: string;
+  styleOptions?: PivotStyleOptions;
+  showButtons?: boolean;
   pivotId?: string;
 }
 

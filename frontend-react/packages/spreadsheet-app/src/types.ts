@@ -14,14 +14,30 @@ export type RibbonTabId =
   | 'settings'
   | 'automate'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat'
+  | 'reportSheetDesign'
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat'
+  | 'pictureFormat'
+  | 'sparklineDesign';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
+  | 'dataChart'
+  | 'barcode'
   | 'pivot'
   | 'formulaAudit'
   | 'definedNames'
   | 'shape'
+  | 'textbox'
+  | 'formControl'
+  | 'picture'
   | 'sparkline'
   | 'conditionalFormat'
   | 'selectionPane'
@@ -70,8 +86,9 @@ export interface PanelState {
   dock: 'left' | 'right';
 }
 
-export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'merge-confirm' | 'column-width' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture';
+export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'merge-confirm' | 'column-width' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture';
 export type CellShiftOperation = 'insert' | 'delete';
+export type MergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 
 export type SheetDialogKind = 'rename' | 'tab-color' | 'delete';
 
@@ -85,6 +102,7 @@ export interface DialogState {
   active: DialogId | null;
   findQuery: string;
   mergeDiscardCount: number;
+  mergeOperation: MergeOperation;
   columnWidth: { columns: number[]; defaultMode: boolean } | null;
   sheet: SheetDialogState | null;
   cellShiftOperation: CellShiftOperation;
@@ -93,6 +111,8 @@ export interface DialogState {
 export interface ClipboardState {
   hasContent: boolean;
   mode: 'copy' | 'cut' | null;
+  systemStatus: 'unknown' | 'published' | 'reduced' | 'failed';
+  systemFormats: readonly string[];
 }
 
 export interface UndoRedoState {
@@ -129,12 +149,16 @@ export type ActiveContext =
   | { kind: 'none' }
   | { kind: 'pivot'; sheetId: string; pivotId: string }
   | { kind: 'drawing'; sheetId: string; drawingId: string }
-  | { kind: 'table'; sheetId: string; tableId: string };
+  | { kind: 'sparkline'; sheetId: string; sparklineId: string }
+  | { kind: 'table'; sheetId: string; tableId: string }
+  | { kind: 'table-sheet'; sheetId: string; viewId: string }
+  | { kind: 'gantt-sheet'; sheetId: string; viewId: string }
+  | { kind: 'report-sheet'; sheetId: string; tableId?: string };
 
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =
   | { type: 'panel.open'; panel: SidebarPanelId; notice?: string }
-  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture'; operation?: CellShiftOperation; findQuery?: string; columnWidth?: { columns: number[]; defaultMode: boolean }; sheet?: SheetDialogState }
+  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture'; operation?: CellShiftOperation; findQuery?: string; columnWidth?: { columns: number[]; defaultMode: boolean }; sheet?: SheetDialogState }
   | { type: 'dialog.close' }
   | { type: 'dialog.update'; value: string }
   | { type: 'command-palette.open' }

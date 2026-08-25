@@ -8,6 +8,8 @@ import type {
   PivotModel,
   PivotSort,
   PivotValueField,
+  PivotPresentation,
+  PivotSubtotalDefinition,
 } from '@react-sheets/core-model';
 import type { ReactNode } from 'react';
 
@@ -21,9 +23,22 @@ export type {
   PivotModel,
   PivotSort,
   PivotValueField,
+  PivotPresentation,
+  PivotSubtotalDefinition,
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
+export type PivotExpansionCommand =
+  | { kind: 'expand-field'; fieldId: string }
+  | { kind: 'collapse-field'; fieldId: string }
+  | { kind: 'toggle-buttons'; showButtons: boolean };
+export type PivotFieldPaneLayout = 'stacked' | 'side-by-side' | 'areas-2x2' | 'areas-1x4' | 'fields-only' | 'areas-only';
+export const PIVOT_FIELD_PANE_LAYOUTS: readonly PivotFieldPaneLayout[] = ['stacked', 'side-by-side', 'areas-2x2', 'areas-1x4', 'fields-only', 'areas-only'];
+export function defaultPivotFieldArea(field: Pick<PivotFieldDefinition, 'dataType'>): PivotFieldArea {
+  if (field.dataType === 'number') return 'values';
+  if (field.dataType === 'date') return 'columns';
+  return 'rows';
+}
 export type PivotSortDirection = 'none' | 'ascending' | 'descending';
 
 export type PivotFilterMode = 'all' | 'include' | 'exclude';
@@ -74,9 +89,13 @@ export interface PivotPanelCallbacks {
   onFilterChange: (fieldId: string, filter: PivotManualFilterState) => void;
   onSortChange: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
+  onSubtotalChange?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
+  onSubtotalLocationChange?: (location: import('@react-sheets/core-model').PivotSubtotalLocation) => void;
   onRefresh: () => void;
   onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
   onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;
+  onPresentationChange?: (presentation: PivotPresentation) => void;
+  onExpansionCommand?: (command: PivotExpansionCommand) => void;
   onSlicerChange: (fieldId: string, enabled: boolean) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
   onTimelineChange: (fieldId: string | undefined) => void;

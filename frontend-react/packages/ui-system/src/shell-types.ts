@@ -32,7 +32,18 @@ export type RibbonTabId =
   | 'settings'
   | 'automate'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat'
+  | 'reportSheetDesign'
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat'
+  | 'pictureFormat'
+  | 'sparklineDesign';
 
 export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'file',

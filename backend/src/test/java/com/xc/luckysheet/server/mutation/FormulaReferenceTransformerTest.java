@@ -2,7 +2,10 @@ package com.xc.luckysheet.server.mutation;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 
 class FormulaReferenceTransformerTest {
     private final FormulaReferenceTransformer.SheetIdentity sheet = new FormulaReferenceTransformer.SheetIdentity("sheet-1", "Sheet1");
@@ -68,5 +71,17 @@ class FormulaReferenceTransformerTest {
         );
 
         assertEquals("=SUM(Sheet1!A3:B4,A1 B1,@C3#)", result);
+    }
+
+    @Test
+    void longNonReferenceIdentifierIsScannedInLinearTime() {
+        String formula = "=" + "A".repeat(128_000);
+
+        String result = assertTimeout(
+                Duration.ofSeconds(2),
+                () -> FormulaReferenceTransformer.renameSheet(formula, "Old", "New")
+        );
+
+        assertEquals(formula, result);
     }
 }

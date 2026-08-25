@@ -55,6 +55,7 @@ public final class WorkbookSnapshotValidator {
                 sheetDimensions.put(sheetId, new int[]{sheet.path("rowCount").intValue(), sheet.path("columnCount").intValue()});
             }
         }
+        java.util.Set<String> pivotIds = new java.util.HashSet<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
             String sheetId = sheet.path("id").asText().trim();
@@ -73,6 +74,11 @@ public final class WorkbookSnapshotValidator {
                     || !sheet.path("pivots").isArray() || !sheet.path("sparklines").isArray()
                     || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()) {
                 throw ServiceException.validation("Workbook snapshot sheet grid is invalid");
+            }
+            for (JsonNode pivot : sheet.path("pivots")) {
+                if (!pivot.isObject() || pivot.path("id").asText().isBlank() || !pivotIds.add(pivot.path("id").asText())) {
+                    throw ServiceException.validation("Workbook snapshot Pivot identity is duplicated or empty");
+                }
             }
             if (!sheet.path("defaultRowHeightPx").isNumber() || sheet.path("defaultRowHeightPx").asDouble() <= 0
                     || !sheet.path("defaultColumnWidthPx").isNumber() || sheet.path("defaultColumnWidthPx").asDouble() <= 0
@@ -118,9 +124,41 @@ public final class WorkbookSnapshotValidator {
                 }
             }
         }
+        for (JsonNode sheet : sheets) {
+            ObjectNode sheetObject = (ObjectNode) sheet;
+            ObjectNode payloads = (ObjectNode) sheetObject.path("drawingPayloads");
+            for (JsonNode drawing : sheetObject.path("drawings")) {
+                if (!drawing.isObject()) throw ServiceException.validation("Workbook snapshot drawing is invalid");
+                String drawingId = drawing.path("id").asText();
+                String payloadId = drawing.path("payloadId").asText();
+                JsonNode payload = payloads.get(payloadId);
+                if (payload == null || !payload.isObject()) throw ServiceException.validation("Drawing payload is missing: " + payloadId);
+                String kind = payload.path("kind").asText();
+                if (!("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))) continue;
+                if ("chart".equals(kind) && !payload.has("pivotId")) continue;
+                String pivotId = payload.path("pivotId").asText();
+                if (pivotId.isBlank() || !pivotIds.contains(pivotId)) {
+                    throw ServiceException.validation("Drawing " + drawingId + " references missing Pivot: " + pivotId);
+                }
+                if (("slicer".equals(kind) || "timeline".equals(kind)) && payload.has("connectedPivotIds")) {
+                    JsonNode connected = payload.get("connectedPivotIds");
+                    if (!connected.isArray()) throw ServiceException.validation("Drawing connectedPivotIds is invalid: " + drawingId);
+                    for (JsonNode connectedPivotId : connected) {
+                        if (!connectedPivotId.isTextual() || !pivotIds.contains(connectedPivotId.asText())) {
+                            throw ServiceException.validation("Drawing " + drawingId + " references missing connected Pivot");
+                        }
+                    }
+                }
+            }
+        }
         java.util.Set<String> dataChartTableIds = new java.util.HashSet<>();
         for (JsonNode sheet : sheets) sheet.path("drawingPayloads").forEach(payload -> {
-            if ("data-chart".equals(payload.path("kind").asText())) dataChartTableIds.add(payload.path("tableId").asText());
+            if ("data-chart".equals(payload.path("kind").asText()) && "table".equals(payload.path("source").path("kind").asText())) {
+                dataChartTableIds.add(payload.path("source").path("tableId").asText());
+            }
+            if ("data-chart".equals(payload.path("kind").asText()) && "report-sheet".equals(payload.path("source").path("kind").asText())) {
+                validateDrawingSourceRange(payload.path("source").get("range"), sheetDimensions, "Data chart");
+            }
         });
         for (JsonNode table : dataModel.path("tables")) {
             JsonNode sourceRange = table.get("sourceRange");

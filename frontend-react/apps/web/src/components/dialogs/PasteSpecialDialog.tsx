@@ -1,22 +1,37 @@
 import React from 'react';
-import type { PasteMode } from '@react-sheets/sheet-features';
+import { createPasteSpecialSpec, isPasteSpecialSpecSupported, type PasteSpecialSpec } from '@react-sheets/sheet-features';
 import { Button, Dialog, Stack } from '@react-sheets/ui-system';
 import type { Locale } from '../../i18n';
 import { homeText, resolveHomeLocale, type HomeUiTextKey } from '../home/home-localization';
 
-const PASTE_OPTIONS: Array<{ mode: PasteMode; labelKey: HomeUiTextKey }> = [
-  { mode: 'all', labelKey: 'pasteAll' },
-  { mode: 'values', labelKey: 'pasteValues' },
-  { mode: 'formats', labelKey: 'pasteFormats' },
-  { mode: 'formulas', labelKey: 'pasteFormulas' },
-  { mode: 'transpose', labelKey: 'pasteTranspose' },
+const PASTE_OPTIONS: Array<{ id: string; labelKey: HomeUiTextKey; spec: PasteSpecialSpec }> = [
+  { id: 'all', labelKey: 'pasteAll', spec: createPasteSpecialSpec() },
+  { id: 'values', labelKey: 'pasteValues', spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'formats', labelKey: 'pasteFormats', spec: createPasteSpecialSpec({ content: 'none', formatting: 'source-formatting', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'formulas', labelKey: 'pasteFormulas', spec: createPasteSpecialSpec({ content: 'formulas', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'values-number-format', labelKey: 'pasteValuesNumberFormat', spec: createPasteSpecialSpec({ content: 'values', formatting: 'number-format', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'formulas-number-format', labelKey: 'pasteFormulasNumberFormat', spec: createPasteSpecialSpec({ content: 'formulas', formatting: 'number-format', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'values-source-formatting', labelKey: 'pasteValuesSourceFormatting', spec: createPasteSpecialSpec({ content: 'values', formatting: 'source-formatting', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'all-except-borders', labelKey: 'pasteAllExceptBorders', spec: createPasteSpecialSpec({ formatting: 'all-except-borders' }) },
+  { id: 'source-theme', labelKey: 'pasteSourceTheme', spec: createPasteSpecialSpec({ formatting: 'source-theme' }) },
+  { id: 'comments-notes', labelKey: 'pasteCommentsNotes', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'validation', labelKey: 'pasteValidation', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'column-widths', labelKey: 'pasteColumnWidths', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: true, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'conditional-formats', labelKey: 'pasteConditionalFormats', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: true, hyperlinks: false } }) },
+  { id: 'add', labelKey: 'pasteAdd', spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', operation: 'add', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'subtract', labelKey: 'pasteSubtract', spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', operation: 'subtract', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'multiply', labelKey: 'pasteMultiply', spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', operation: 'multiply', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'divide', labelKey: 'pasteDivide', spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', operation: 'divide', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
+  { id: 'skip-blanks', labelKey: 'pasteSkipBlanks', spec: createPasteSpecialSpec({ skipBlanks: true }) },
+  { id: 'transpose', labelKey: 'pasteTranspose', spec: createPasteSpecialSpec({ transpose: true }) },
+  { id: 'link', labelKey: 'pasteLink', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', link: true, metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) },
 ];
 
 export interface PasteSpecialDialogProps {
   open: boolean;
   locale?: Locale;
   onClose: () => void;
-  onPaste: (mode: PasteMode) => void;
+  onPaste: (spec: PasteSpecialSpec) => Promise<unknown>;
 }
 
 export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpecialDialogProps): React.ReactElement | null {
@@ -35,14 +50,14 @@ export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpec
       <Stack gap="xs">
         {PASTE_OPTIONS.map((option) => (
           <Button
-            key={option.mode}
+            key={option.id}
             size="sm"
-            variant={option.mode === 'all' ? 'secondary' : 'ghost'}
+            variant={option.id === 'all' ? 'secondary' : 'ghost'}
             className="justify-start"
-            data-testid={`paste-special-${option.mode}`}
-            onClick={() => {
-              onPaste(option.mode);
-              onClose();
+            disabled={!isPasteSpecialSpecSupported(option.spec)}
+            data-testid={`paste-special-${option.id}`}
+            onClick={async () => {
+              await onPaste(option.spec);
             }}
           >
             {homeText(activeLocale, option.labelKey)}

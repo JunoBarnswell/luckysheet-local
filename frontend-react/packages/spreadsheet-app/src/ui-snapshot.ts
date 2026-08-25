@@ -12,13 +12,17 @@ import type {
   WorksheetPane,
   AutoFilterModel,
   FilterCriterion,
+  GanttSheetDefinition,
+  ReportSheetDefinition,
   MergeSpan,
   OutlineGroup,
   PivotModel,
   PivotGridProjection,
   PivotResultTree,
   RangeRef,
+  TableSheetDefinition,
   SheetTableModel,
+  SparklineGroup,
   SparklineModel,
   WorkbookModel,
   WorksheetModel,
@@ -95,6 +99,7 @@ export interface PreviewRowSnapshot {
 
 /** Canvas-friendly sheet snapshot — single getCell path, no SheetView DTO */
 export interface CanvasSheetSnapshot {
+  kind?: WorksheetModel['kind'];
   id: string;
   name: string;
   columns: string[];
@@ -113,6 +118,7 @@ export interface CanvasSheetSnapshot {
   /** Derived worksheet overlay; never materialized in ordinary cells. */
   pivotProjections: Record<string, PivotGridProjection>;
   sparklines: SparklineModel[];
+  sparklineGroups?: SparklineGroup[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
   merges: MergeSpan[];
@@ -138,6 +144,9 @@ export interface CanvasSheetSnapshot {
   getFilterColorDomain: (column: number) => Array<{ target: 'cell' | 'font'; color: string }>;
   getFilterIconDomain: (column: number) => Array<{ iconSet: string; iconId: number }>;
   sheetTables: SheetTableModel[];
+  tableSheet?: TableSheetDefinition;
+  ganttSheet?: GanttSheetDefinition;
+  reportSheet?: ReportSheetDefinition;
   tabColor?: string;
   hidden?: boolean;
   /** Print preview only — bounded slice */
@@ -247,7 +256,7 @@ export function buildCanvasSheetSnapshot(
 
   const resolveModelCell = (row: number, column: number): { cell?: CellData; owner: WorksheetModel; row: number; column: number } => {
     const local = cellResolver.resolve(sheet, row, column)?.cell;
-    if (local || row === 0 || !advancedTable?.sourceRange) return { cell: local, owner: sheet, row, column };
+    if (local || row === 0 || !advancedTable?.sourceRange || sheet.kind === 'report-sheet') return { cell: local, owner: sheet, row, column };
     const field = advancedTable.fields[column];
     const sourceSheet = workbook.sheets.get(advancedTable.sourceRange.sheetId);
     const sourceRow = advancedTable.sourceRange.startRow + row;
@@ -342,6 +351,7 @@ export function buildCanvasSheetSnapshot(
 
   return {
     id: sheet.id,
+    kind: sheet.kind,
     name: sheet.name,
     columns: viewColumns,
     columnCount: sheet.columnCount,
@@ -358,6 +368,7 @@ export function buildCanvasSheetSnapshot(
     pivotResults,
     pivotProjections,
     sparklines: [...sheet.sparklines],
+    sparklineGroups: structuredClone(sheet.sparklineGroups),
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
     merges: [...sheet.merges],
@@ -405,6 +416,9 @@ export function buildCanvasSheetSnapshot(
       return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));
     },
     sheetTables: [...sheet.sheetTables],
+    tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
+    ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,
+    reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
     previewRows,

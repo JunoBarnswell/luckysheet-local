@@ -8,7 +8,9 @@ import {
   parseTsv,
   parseClipboardPayload,
   shiftFormula,
+  FormulaRelocationError,
   copyRangeToClipboardData,
+  createPasteSpecialSpec,
 } from './index';
 
 test('sheet commands: cell.set, range.set, and undo/redo', () => {
@@ -54,6 +56,214 @@ test('sheet commands: cell.set, range.set, and undo/redo', () => {
   assert.equal(sheet.cells.get(1, 0), undefined);
   assert.equal(sheet.cells.get(2, 1), undefined);
   assert.equal(sheet.cells.get(0, 0)?.value, 'Title'); // untouched
+});
+
+test('checkbox editor normalizes supported values atomically and restores exact cells', () => {
+  const workbook = new WorkbookModel('unit-checkbox-editor', 'Checkbox Editor');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: null, style: { bold: true } });
+  sheet.cells.set(0, 1, { value: true });
+  sheet.cells.set(0, 2, { value: false });
+  sheet.cells.set(0, 3, { value: 0 });
+  sheet.cells.set(0, 4, { value: 1 });
+  sheet.cells.set(0, 5, { value: ' TRUE ' });
+  sheet.cells.set(0, 6, { value: 'FALSE' });
+  const before = structuredClone([...Array.from({ length: 7 }, (_, column) => sheet.cells.get(0, column))]);
+
+  runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 6 }],
+    editor: { kind: 'checkbox' },
+  });
+
+  assert.deepEqual(
+    Array.from({ length: 7 }, (_, column) => sheet.cells.get(0, column)?.value),
+    [false, true, false, false, true, true, false],
+  );
+  assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  runtime.undo();
+  assert.deepEqual(Array.from({ length: 7 }, (_, column) => sheet.cells.get(0, column)), before);
+  runtime.redo();
+  assert.equal(sheet.cells.get(0, 4)?.value, true);
+
+  runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 6 }],
+    editor: undefined,
+  });
+  assert.equal(sheet.cells.get(0, 0)?.editor, undefined);
+  assert.equal(sheet.cells.get(0, 0)?.value, false);
+});
+
+test('checkbox editor rejects unsupported and formula values without partial mutation', () => {
+  const workbook = new WorkbookModel('unit-checkbox-reject', 'Checkbox Reject');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(1, 0, { value: 'not-a-boolean' });
+  sheet.cells.set(1, 1, { value: 2 });
+  sheet.cells.set(1, 2, { formula: '=1', value: null });
+  const before = structuredClone([
+    sheet.cells.get(1, 0),
+    sheet.cells.get(1, 1),
+    sheet.cells.get(1, 2),
+  ]);
+
+  assert.throws(() => runtime.execute('sheet.cellEditor.set', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 2 }],
+    editor: { kind: 'checkbox' },
+  }), /Checkbox source value|formula cell/);
+  assert.deepEqual([
+    sheet.cells.get(1, 0),
+    sheet.cells.get(1, 1),
+    sheet.cells.get(1, 2),
+  ], before);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
+test('checkbox.toggle flips canonical ranges as one undoable operation and rejects mixed selections', () => {
+  const workbook = new WorkbookModel('unit-checkbox-toggle', 'Checkbox Toggle');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(2, 0, { value: false, editor: { kind: 'checkbox' } });
+  sheet.cells.set(2, 1, { value: true, editor: { kind: 'checkbox' } });
+  sheet.cells.set(3, 0, { value: true, editor: { kind: 'checkbox' } });
+  sheet.cells.set(3, 1, { value: false, editor: { kind: 'checkbox' } });
+
+  const result = runtime.execute('checkbox.toggle', {
+    sheetId: sheet.id,
+    ranges: [
+      { sheetId: sheet.id, startRow: 2, endRow: 3, startColumn: 0, endColumn: 1 },
+      { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 1, endColumn: 1 },
+    ],
+  });
+  assert.equal(result.mutationCount, 4);
+  assert.deepEqual(
+    Array.from({ length: 4 }, (_, index) => sheet.cells.get(2 + Math.floor(index / 2), index % 2)?.value),
+    [true, false, false, true],
+  );
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  runtime.undo();
+  assert.equal(sheet.cells.get(2, 0)?.value, false);
+  assert.equal(sheet.cells.get(3, 1)?.value, false);
+  runtime.redo();
+  assert.equal(sheet.cells.get(2, 0)?.value, true);
+
+  const before = structuredClone(sheet.cells.get(2, 0));
+  sheet.cells.set(2, 2, { value: 'text' });
+  assert.throws(() => runtime.execute('checkbox.toggle', {
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 2 }],
+  }), /canonical Boolean checkbox/);
+  assert.deepEqual(sheet.cells.get(2, 0), before);
+});
+
+test('checkbox cell text commits stay Boolean and reject unsupported input', () => {
+  const workbook = new WorkbookModel('unit-checkbox-commit', 'Checkbox Commit');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: false, editor: { kind: 'checkbox' } });
+
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'TRUE' });
+  assert.equal(sheet.cells.get(0, 0)?.value, true);
+  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'maybe' }), /Checkbox source value/);
+  assert.equal(sheet.cells.get(0, 0)?.value, true);
+});
+
+test('TableSheet designer updates the canonical definition and rejects unknown fields', () => {
+  const workbook = new WorkbookModel('unit-table-sheet-designer', 'TableSheet Designer');
+  const table = {
+    id: 'table-1',
+    name: 'Orders',
+    sourceSheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 },
+    rowCount: 4,
+    fields: [
+      { id: 'order', name: 'Order', ordinal: 0, type: 'text' as const },
+      { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' as const },
+      { id: 'region', name: 'Region', ordinal: 2, type: 'text' as const },
+    ],
+    blockSize: 4096,
+    blocks: [],
+    revision: 0,
+  };
+  workbook.addTable(table);
+  const sheet = workbook.addAdvancedSheet({ id: 'table-sheet-1', name: 'Orders view', kind: 'table-sheet', tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const next = { viewId: table.id, columns: [
+    { fieldId: 'region', caption: 'Region', type: 'text' as const, widthPx: 180 },
+    { fieldId: 'amount', caption: 'Amount', type: 'number' as const },
+  ], grouping: [{ fieldId: 'region', collapsed: false }], sortState: [{ fieldId: 'amount', direction: 'desc' as const }] };
+  runtime.execute('tableSheet.update', { sheetId: sheet.id, definition: next });
+  assert.deepEqual(sheet.tableSheet, next);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.undo();
+  assert.equal(sheet.tableSheet?.columns.length, 3);
+  runtime.redo();
+  assert.equal(sheet.tableSheet?.columns[0]?.fieldId, 'region');
+  const before = structuredClone(sheet.tableSheet);
+  assert.throws(() => runtime.execute('tableSheet.update', { sheetId: sheet.id, definition: { ...next, columns: [{ fieldId: 'missing', caption: 'Missing' }], grouping: [] } }), /definition is invalid|binding table|fields/i);
+  assert.deepEqual(sheet.tableSheet, before);
+});
+
+test('GanttSheet designer updates canonically, supports undo/redo, and rejects unmapped fields', () => {
+  const workbook = new WorkbookModel('unit-gantt-sheet-designer', 'GanttSheet Designer');
+  const table = {
+    id: 'gantt-table-1', name: 'Tasks', sourceSheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 6 }, rowCount: 3,
+    fields: [
+      { id: 'id', name: 'ID', ordinal: 0, type: 'text' as const },
+      { id: 'title', name: 'Title', ordinal: 1, type: 'text' as const },
+      { id: 'start', name: 'Start', ordinal: 2, type: 'date' as const },
+      { id: 'end', name: 'End', ordinal: 3, type: 'date' as const },
+      { id: 'progress', name: 'Progress', ordinal: 4, type: 'number' as const },
+      { id: 'parent', name: 'Parent', ordinal: 5, type: 'text' as const },
+      { id: 'deps', name: 'Dependencies', ordinal: 6, type: 'text' as const },
+    ], blockSize: 4096, blocks: [], revision: 0,
+  };
+  workbook.addTable(table);
+  const definition = { viewId: table.id, fieldMap: { id: 'id', title: 'title', start: 'start', end: 'end', progress: 'progress', parentId: 'parent', dependencies: 'deps' }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' as const }, dependencyStyle: { color: '#64748b', width: 1 } };
+  const sheet = workbook.addAdvancedSheet({ id: 'gantt-sheet-1', name: 'Tasks view', kind: 'gantt-sheet', ganttSheet: definition });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  runtime.execute('ganttSheet.update', { sheetId: sheet.id, definition: { ...definition, timeline: { unit: 'day' as const } } });
+  assert.equal(sheet.ganttSheet?.timeline.unit, 'day');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.undo();
+  assert.equal(sheet.ganttSheet?.timeline.unit, 'week');
+  runtime.redo();
+  assert.equal(sheet.ganttSheet?.timeline.unit, 'day');
+  const before = structuredClone(sheet.ganttSheet);
+  assert.throws(() => runtime.execute('ganttSheet.update', { sheetId: sheet.id, definition: { ...definition, fieldMap: { ...definition.fieldMap, start: 'missing' } } }), /field mapping|unavailable|invalid/i);
+  assert.deepEqual(sheet.ganttSheet, before);
+});
+
+test('ReportSheet designer updates canonical bindings and render settings', () => {
+  const workbook = new WorkbookModel('unit-report-sheet-designer', 'ReportSheet Designer');
+  const table = { id: 'report-table-1', name: 'Rows', sourceSheetId: 'sheet-1', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }, rowCount: 2, fields: [{ id: 'title', name: 'Title', ordinal: 0, type: 'text' as const }, { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' as const }], blockSize: 4096, blocks: [], revision: 0 };
+  workbook.addTable(table);
+  const definition = { templateSheetId: 'sheet-1', tableId: table.id, bindings: [], pagination: { enabled: true, rowsPerPage: 50, repeatHeaderRows: [0] }, renderMode: 'design' as const, layout: { orientation: 'portrait' as const, marginTopPx: 24, marginRightPx: 24, marginBottomPx: 24, marginLeftPx: 24 }, dataEntry: [] };
+  const sheet = workbook.addAdvancedSheet({ id: 'report-sheet-1', name: 'Report view', kind: 'report-sheet', reportSheet: definition });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const next = { ...definition, bindings: [{ cell: { row: 1, column: 0 }, expression: 'title', kind: 'field' as const, direction: 'vertical' as const, fill: 'down' as const }], renderMode: 'preview' as const, dataEntry: [{ fieldId: 'title', writable: true }] };
+  runtime.execute('reportSheet.update', { sheetId: sheet.id, definition: next });
+  assert.equal(sheet.reportSheet?.renderMode, 'preview');
+  assert.equal(sheet.reportSheet?.bindings[0]?.expression, 'title');
+  runtime.undo();
+  assert.equal(sheet.reportSheet?.renderMode, 'design');
+  const before = structuredClone(sheet.reportSheet);
+  assert.throws(() => runtime.execute('reportSheet.update', { sheetId: sheet.id, definition: { ...next, bindings: [{ ...next.bindings[0]!, expression: 'missing' }] } }), /binding field|unavailable|invalid/i);
+  assert.deepEqual(sheet.reportSheet, before);
 });
 
 test('sheet commands: range.clear, style.set, and merges', () => {
@@ -154,9 +364,11 @@ test('clipboard: TSV format, parse, and formula shifting', () => {
   assert.equal(parsed[2]?.[1]?.formula, '=SUM(B2:B2)');
 
   assert.equal(shiftFormula('=A1+$B$1+C$1+$D1', 2, 3), '=D3+$B$1+F$1+$D3');
+  assert.equal(shiftFormula('=SUM(A2#)', 1, 1), '=SUM(B3#)');
+  assert.throws(() => shiftFormula('=A1+', 1, 1), FormulaRelocationError);
 });
 
-test('clipboard payload carries provenance and paste modes preserve their contracts', () => {
+test('clipboard payload carries provenance and PasteSpecialSpec preserves its contracts', () => {
   const workbook = new WorkbookModel('unit-paste-modes', 'Paste Modes');
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
@@ -179,7 +391,7 @@ test('clipboard payload carries provenance and paste modes preserve their contra
     targetOrigin: { row: 0, column: 1 },
     clipboard: payload,
     transfer: 'copy',
-    mode: 'values',
+    spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
   });
   assert.deepEqual(sheet.cells.get(0, 1), { value: 12 });
 
@@ -189,7 +401,7 @@ test('clipboard payload carries provenance and paste modes preserve their contra
     targetOrigin: { row: 0, column: 1 },
     clipboard: payload,
     transfer: 'copy',
-    mode: 'formats',
+    spec: createPasteSpecialSpec({ content: 'none', formatting: 'source-formatting', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
   });
   assert.equal(sheet.cells.get(0, 1)?.value, 'keep');
   assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
@@ -204,11 +416,80 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
     values: [],
     transfer: 'copy' as const,
+    rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
   assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
   assert.equal(parseClipboardPayload(payload)[0]?.[1]?.formula, '=A1+1');
   assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
+});
+
+test('paste special copies range-owned metadata atomically and restores it once', () => {
+  const workbook = new WorkbookModel('unit-paste-metadata', 'Paste Metadata');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const source = workbook.getSheet('sheet-1');
+  source.cells.set(0, 0, { value: 'source', style: { bold: true } });
+  source.columnWidthsPx[0] = 144;
+  source.notes.set('0:0', { id: 'n1', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true });
+  source.hyperlinks.set('0:0', { id: 'h1', target: { kind: 'url', url: 'https://example.com' } });
+  source.commentThreads.push({ id: 'c1', sheetId: source.id, row: 0, column: 0, author: 'u', text: 'comment', createdAt: '2026-01-01', replies: [] });
+  source.dataValidations.push({ id: 'dv1', sheetId: source.id, ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'whole', formula1: '1' });
+  source.conditionalFormats.push({ id: 'cf1', sheetId: source.id, ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'highlight', operator: 'equal', value1: 'source' });
+  const payload = copyRangeToClipboardData(workbook, { sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  const target = { sheetId: source.id, row: 2, column: 2 };
+  const result = runtime.execute('sheet.range.paste', {
+    sheetId: source.id,
+    targetOrigin: { row: target.row, column: target.column },
+    clipboard: payload,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ metadata: { commentsNotes: true, validation: true, columnWidths: true, conditionalFormats: true, hyperlinks: true } }),
+  });
+  assert.equal(result.mutationCount, 1);
+  assert.equal(source.cells.get(2, 2)?.value, 'source');
+  assert.equal(source.notes.get('2:2')?.text, 'note');
+  assert.equal(source.hyperlinks.get('2:2')?.target.kind, 'url');
+  assert.equal(source.commentThreads.some((entry) => entry.row === 2 && entry.column === 2), true);
+  assert.equal(source.dataValidations.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), true);
+  assert.equal(source.conditionalFormats.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), true);
+  assert.equal(source.columnWidthsPx[2], 144);
+  runtime.undo();
+  assert.equal(source.cells.get(2, 2), undefined);
+  assert.equal(source.notes.has('2:2'), false);
+  assert.equal(source.hyperlinks.has('2:2'), false);
+  assert.equal(source.commentThreads.some((entry) => entry.row === 2 && entry.column === 2), false);
+  assert.equal(source.dataValidations.some((rule) => rule.ranges.some((range) => range.startRow === 2 && range.startColumn === 2)), false);
+  assert.equal(source.columnWidthsPx[2], undefined);
+  runtime.redo();
+  assert.equal(source.cells.get(2, 2)?.value, 'source');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+});
+
+test('paste special arithmetic, skip blanks and protected rejection are fail-closed', () => {
+  const workbook = new WorkbookModel('unit-paste-arithmetic', 'Paste Arithmetic');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 2 });
+  sheet.cells.set(1, 0, { value: 3 });
+  const payload = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 1, column: 0 },
+    clipboard: payload,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ content: 'values', formatting: 'none', operation: 'add', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
+  });
+  assert.equal(sheet.cells.get(1, 0)?.value, 5);
+  sheet.cells.set(2, 0, { value: 'keep' });
+  const blankPayload = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 0, endColumn: 0 });
+  runtime.execute('sheet.range.paste', { sheetId: sheet.id, targetOrigin: { row: 2, column: 0 }, clipboard: blankPayload, transfer: 'copy', spec: createPasteSpecialSpec({ skipBlanks: true }) });
+  assert.equal(sheet.cells.get(2, 0)?.value, 'keep');
+  sheet.protectionRules.push({ id: 'locked', scope: 'range', sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 }, locked: true, allow: {} });
+  assert.throws(() => runtime.execute('sheet.range.paste', { sheetId: sheet.id, targetOrigin: { row: 4, column: 0 }, clipboard: payload, transfer: 'copy', spec: createPasteSpecialSpec() }), /protected/);
+  assert.equal(sheet.cells.get(4, 0), undefined);
+  runtime.execute('sheet.range.paste', { sheetId: sheet.id, targetOrigin: { row: 5, column: 0 }, clipboard: payload, transfer: 'copy', spec: createPasteSpecialSpec({ content: 'none', formatting: 'none', link: true, metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }) });
+  assert.equal(sheet.cells.get(5, 0)?.formula, "='Sheet1'!A1");
 });
 
 test('sheet.cell.commitText is the single raw-text input path', () => {
@@ -311,6 +592,7 @@ test('cut paste is one cross-sheet transaction and preserves formula references'
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
     transfer: 'move',
+    spec: createPasteSpecialSpec(),
   });
   assert.equal(result.mutationCount, 1);
   assert.equal(source.cells.get(1, 1), undefined);
@@ -342,6 +624,7 @@ test('copy paste shifts relative references while preserving mixed and absolute 
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
     transfer: 'copy',
+    spec: createPasteSpecialSpec(),
   });
   assert.equal(sheet.cells.get(4, 4)?.formula, '=D4+$B$1+F$1+$D4');
   assert.equal(sheet.cells.get(1, 1)?.formula, '=A1+$B$1+C$1+$D1');
@@ -370,7 +653,7 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
       targetOrigin: { row: 1, column: 1 },
       clipboard: payload,
       transfer: 'copy',
-      mode: 'all',
+      spec: createPasteSpecialSpec(),
       values: [[{ value: null, formula: '=A1' }]],
       startRow: 1,
       startColumn: 1,
@@ -381,6 +664,31 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
   }]), /Invalid mutation history/);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(1, 1), undefined);
+});
+
+test('copy paste rejects a malformed formula before creating a mutation', () => {
+  const workbook = new WorkbookModel('unit-paste-fail-close', 'Paste Fail Close');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: null, formula: '=A1+' });
+  sheet.cells.set(1, 1, { value: 'unchanged' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+  assert.throws(() => runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 1, column: 1 },
+    clipboard: payload,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec(),
+  }), FormulaRelocationError);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'unchanged');
+  assert.equal(runtime.getHistoryDepth().undo, 0);
 });
 
 test('range clear modes are independent and restore auxiliary metadata', () => {

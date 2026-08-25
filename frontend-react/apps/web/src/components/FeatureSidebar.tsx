@@ -26,7 +26,14 @@ import type {
   PivotFieldDefinition,
   PivotModel,
   SparklineModel,
+  SparklineGroup,
   DefinedNameModel,
+  DataRelationship,
+  TableSheetDefinition,
+  GanttSheetDefinition,
+  ReportSheetDefinition,
+  SheetTableModel,
+  RangeRef,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
@@ -38,8 +45,13 @@ import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPh
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
+import { DataChartPanel } from './panels/DataChartPanel';
+import { BarcodePanel } from './panels/BarcodePanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
+import { TextBoxEditorPanel } from './panels/TextBoxEditorPanel';
+import { FormControlPanel } from './panels/FormControlPanel';
+import { PicturePanel } from './panels/PicturePanel';
 import { SparklinePanel } from './panels/SparklinePanel';
 import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
 import { DataValidationPanel } from './panels/DataValidationPanel';
@@ -50,6 +62,10 @@ import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
+import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
+import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
+import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
+import { TableDesignPanel } from './panels/TableDesignPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
@@ -75,6 +91,7 @@ export interface FeatureSidebarProps {
   drawings: readonly DrawingObject[];
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   selectedDrawingIds?: readonly string[];
+  initialBarcodeSymbology: import('@react-sheets/core-model').BarcodeSymbology;
   onSelectDrawing: (drawingId: string, mode: DrawingSelectionMode) => void;
   onSetDrawingVisibility: (drawingId: string, visible: boolean) => void;
   onRenameDrawing: (drawingId: string, name: string) => void;
@@ -96,6 +113,7 @@ export interface FeatureSidebarProps {
   onSaveDefinedName: (input: DefinedNameModel) => void;
   onRemoveDefinedName: (input: DefinedNameModel) => void;
   sparklines: SparklineModel[];
+  sparklineGroups: SparklineGroup[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
   historyEntries: readonly HistoryEntry[];
@@ -110,6 +128,16 @@ export interface FeatureSidebarProps {
   compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport: () => void;
   tables: readonly WorkbookTableModel[];
+  relationships: readonly DataRelationship[];
+  onUpdateTableSheet: (definition: TableSheetDefinition) => void;
+  onUpdateGanttSheet: (definition: GanttSheetDefinition) => void;
+  onUpdateReportSheet: (definition: ReportSheetDefinition) => void;
+  activeTable?: SheetTableModel;
+  onTableNameChange: (name: string) => void;
+  onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
+  onResizeTable: (range: RangeRef) => void;
+  onTableStyleChange: (styleName: string) => void;
+  onConvertTableToRange: () => void;
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
   onCommand: (descriptor: CommandDescriptor) => void;
@@ -163,10 +191,15 @@ export interface FeatureSidebarProps {
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
+  { id: 'dataChart', label: 'Data Chart', icon: 'data-chart' },
+  { id: 'barcode', label: 'Barcode', icon: 'barcode' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
+  { id: 'textbox', label: 'Text Box', icon: 'textbox' },
+  { id: 'formControl', label: 'Form Control', icon: 'sliders' },
+  { id: 'picture', label: 'Picture', icon: 'picture' },
   { id: 'selectionPane', label: 'Selection', icon: 'shape-square' },
   { id: 'sparkline', label: 'Spark', icon: 'sparkline' },
   { id: 'conditionalFormat', label: 'Format', icon: 'sparkles' },
@@ -293,6 +326,7 @@ export function FeatureSidebar({
   drawings,
   drawingPayloads,
   selectedDrawingIds = [],
+  initialBarcodeSymbology,
   onSelectDrawing,
   onSetDrawingVisibility,
   onRenameDrawing,
@@ -314,6 +348,7 @@ export function FeatureSidebar({
   onSaveDefinedName,
   onRemoveDefinedName,
   sparklines,
+  sparklineGroups,
   conditionalFormats,
   dataValidations,
   historyEntries,
@@ -328,6 +363,16 @@ export function FeatureSidebar({
   compatibilityReport = null,
   onClearCompatibilityReport,
   tables,
+  relationships,
+  onUpdateTableSheet,
+  onUpdateGanttSheet,
+  onUpdateReportSheet,
+  activeTable,
+  onTableNameChange,
+  onToggleTableOption,
+  onResizeTable,
+  onTableStyleChange,
+  onConvertTableToRange,
   onReadDataRows,
   onRemoveDataTable,
   onCommand,
@@ -368,8 +413,21 @@ export function FeatureSidebar({
   onSetHyperlink,
   onRemoveHyperlink,
 }: FeatureSidebarProps) {
+  const tableResizeRange = activeTable && selectedRange
+    && (selectedRange.startRow !== activeTable.range.startRow
+      || selectedRange.endRow !== activeTable.range.endRow
+      || selectedRange.startColumn !== activeTable.range.startColumn
+      || selectedRange.endColumn !== activeTable.range.endColumn)
+    ? { sheetId: activeTable.sheetId, ...selectedRange }
+    : undefined;
   const disabled = phase !== 'ready';
-  const activePanelLabel = localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
+  const activePanelLabel = sheet.tableSheet && activePanel === 'data'
+    ? localizeText(locale, 'TableSheet Designer')
+    : sheet.ganttSheet && activePanel === 'data'
+      ? localizeText(locale, 'GanttSheet Designer')
+      : sheet.reportSheet && activePanel === 'data'
+        ? localizeText(locale, 'ReportSheet Designer')
+    : localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
 
   const columnLabelOf = (column: number): string => {
     let label = '';
@@ -473,7 +531,29 @@ export function FeatureSidebar({
             sheetId={sheetId}
             drawings={drawings}
             drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
             defaultRange={selectionText}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'dataChart' ? (
+          <DataChartPanel
+            sheetId={sheetId}
+            sheet={sheet}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
+            tables={tables}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'barcode' ? (
+          <BarcodePanel
+            sheetId={sheetId}
+            sheet={sheet}
+            activeCell={activeCell}
+            selectedRange={selectedRange}
+            initialSymbology={initialBarcodeSymbology}
             onCommand={onCommand}
           />
         ) : null}
@@ -504,6 +584,25 @@ export function FeatureSidebar({
             onCommand={onCommand}
           />
         ) : null}
+        {phase === 'ready' && activePanel === 'textbox' ? (
+          <TextBoxEditorPanel
+            sheetId={sheetId}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
+            onCommand={onCommand}
+            onClose={onClosePanel}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'formControl' ? (
+          <FormControlPanel
+            sheetId={sheetId}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
+            onCommand={onCommand}
+          />
+        ) : null}
         {phase === 'ready' && activePanel === 'selectionPane' ? (
           <SelectionPane
             locale={locale}
@@ -527,10 +626,22 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'sparkline' ? (
           <SparklinePanel
             sheetId={sheetId}
+            activeCell={activeCell}
             sparklines={sparklines}
+            sparklineGroups={sparklineGroups}
             defaultRange={selectionText}
             onAddSparkline={onAddSparkline}
             onRemoveSparkline={onRemoveSparkline}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'picture' ? (
+          <PicturePanel
+            sheetId={sheetId}
+            activeCell={activeCell}
+            sheet={sheet}
+            selectedDrawingIds={selectedDrawingIds}
+            onCommand={onCommand}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'conditionalFormat' ? (
@@ -602,7 +713,17 @@ export function FeatureSidebar({
           />
         ) : null}
         {phase === 'ready' && activePanel === 'data' ? (
-          <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
+          sheet.tableSheet ? (
+            <TableSheetDesignerPanel definition={sheet.tableSheet} tables={tables} relationships={relationships} onUpdate={onUpdateTableSheet} />
+          ) : sheet.ganttSheet ? (
+            <GanttDesignerPanel definition={sheet.ganttSheet} tables={tables} onUpdate={onUpdateGanttSheet} />
+          ) : sheet.reportSheet ? (
+            <ReportDesignerPanel definition={sheet.reportSheet} tables={tables} activeCell={activeCell} onUpdate={onUpdateReportSheet} />
+          ) : activeTable ? (
+            <TableDesignPanel table={activeTable} locale={locale} selectedRange={tableResizeRange} onNameChange={onTableNameChange} onToggle={onToggleTableOption} onResize={onResizeTable} onStyleChange={onTableStyleChange} onConvert={onConvertTableToRange} />
+          ) : (
+            <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
+          )
         ) : null}
       </Box>
     </Box>

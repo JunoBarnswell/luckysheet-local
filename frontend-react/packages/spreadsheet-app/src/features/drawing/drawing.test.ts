@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { StructuralTransform, WorkbookModel } from '@react-sheets/core-model';
+import { StructuralTransform, WorkbookModel, type DrawingObject, type DrawingPayload, type ImageDrawingPayload } from '@react-sheets/core-model';
 import { DrawingRuntime, registerDrawingFeature } from '../../index';
 
 describe('drawing feature', () => {
@@ -149,6 +149,76 @@ describe('drawing feature', () => {
     assert.equal(runtime.redo(), true);
   });
 
+  it('reconciles selections and cancels pointer gestures for removed drawings', () => {
+    const workbook = new WorkbookModel('drawing-reconcile-test', 'Drawing Reconcile');
+    const runtime = new CommandRuntime(workbook);
+    const drawingRuntime = new DrawingRuntime();
+    registerDrawingFeature(runtime, drawingRuntime);
+    runtime.execute('drawing.add', {
+      sheetId: 'sheet-1',
+      drawing: {
+        id: 'draw-reconcile',
+        sheetId: 'sheet-1',
+        kind: 'shape',
+        payloadId: 'shape-reconcile',
+        anchor: { kind: 'absolute' },
+        transform: { x: 10, y: 10, width: 40, height: 30, rotation: 0 },
+        zIndex: 1,
+      },
+      payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' },
+    });
+    drawingRuntime.select('sheet-1', ['draw-reconcile']);
+    const transaction = drawingRuntime.beginPointerTransform(workbook.getSheet('sheet-1'), 'draw-reconcile');
+
+    const result = drawingRuntime.reconcile('sheet-1', []);
+
+    assert.deepEqual(result.selection, []);
+    assert.deepEqual(result.cancelledPointerTransactionIds, [transaction.id]);
+    assert.deepEqual(drawingRuntime.getSelection('sheet-1'), []);
+    assert.throws(() => drawingRuntime.finishPointerTransform(transaction.id), /Unknown drawing pointer transaction/);
+  });
+
+  it('applies the same existence reconciliation to every canonical drawing kind', () => {
+    const workbook = new WorkbookModel('drawing-kinds-reconcile-test', 'Drawing Kinds Reconcile');
+    const runtime = new CommandRuntime(workbook);
+    const drawingRuntime = new DrawingRuntime();
+    registerDrawingFeature(runtime, drawingRuntime);
+    const sheetId = 'sheet-1';
+    const style = { theme: 'light' as const, fill: '#fff', border: '#000', textColor: '#000', accentColor: '#2563eb' };
+    const payloads: Array<{ kind: DrawingObject['kind']; payload: DrawingPayload }> = [
+      { kind: 'image', payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Image' } },
+      { kind: 'shape', payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' } },
+      { kind: 'textbox', payload: { kind: 'textbox', text: 'Text', textFrame: { fontFamily: 'Inter', fontSize: 14, bold: false, italic: false, underline: false, textColor: '#1f2937', horizontalAlignment: 'left', verticalAlignment: 'top', direction: 'horizontal', margin: { top: 8, right: 8, bottom: 8, left: 8 }, wrap: true, autofit: 'none' } } },
+      { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [], elements: { hiddenData: 'show' } } },
+      { kind: 'data-chart', payload: { kind: 'data-chart', source: { kind: 'table', tableId: 'table-kind' }, plotType: 'column', bindings: { values: [{ area: 'values', fieldId: 'value', aggregate: 'sum' }], category: [], details: [], color: [], size: [], tooltip: [], filter: [] }, inspector: { legendPosition: 'bottom', showDataLabels: false, showHiddenData: true, chartArea: { fill: '#fff', border: '#000', borderWidth: 1 }, plotArea: { fill: '#fff' }, axis: { showGridlines: true } } } },
+      { kind: 'camera', payload: { kind: 'camera', sourceRange: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, refreshPolicy: 'live' } },
+      { kind: 'form-control', payload: { kind: 'form-control', controlType: 'button', value: null, action: { kind: 'event', eventId: 'button-click' }, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } } },
+      { kind: 'slicer', payload: { kind: 'slicer', pivotId: 'pivot-kind', fieldId: 'field-kind', filter: { mode: 'all', memberKeys: [] }, style } },
+      { kind: 'timeline', payload: { kind: 'timeline', pivotId: 'pivot-kind', fieldId: 'field-kind', period: {}, style } },
+    ];
+    const drawings = payloads.map(({ kind, payload }, index) => ({
+      id: `drawing-kind-${index}`,
+      sheetId,
+      kind,
+      payloadId: `payload-kind-${index}`,
+      anchor: { kind: 'absolute' as const },
+      transform: { x: index * 20, y: 0, width: 20, height: 20, rotation: 0 },
+      zIndex: index,
+      payload,
+    }));
+    for (const entry of drawings) {
+      runtime.execute('drawing.add', { sheetId, drawing: entry, payload: entry.payload });
+    }
+    drawingRuntime.select(sheetId, drawings.map((drawing) => drawing.id));
+
+    for (const drawing of drawings) {
+      runtime.execute('drawing.remove', { sheetId, drawingId: drawing.id });
+      const result = drawingRuntime.reconcile(sheetId, workbook.getSheet(sheetId).drawings.map((entry) => entry.id));
+      assert.equal(result.selection.includes(drawing.id), false);
+    }
+    assert.deepEqual(drawingRuntime.getSelection(sheetId), []);
+  });
+
   it('supports crop and alt text as payload mutations with inverse and remote replay', () => {
     const workbook = new WorkbookModel('drawing-image-test', 'Drawing Image');
     const runtime = new CommandRuntime(workbook);
@@ -183,6 +253,71 @@ describe('drawing feature', () => {
     assert.equal(remotePayload.kind, 'image');
     assert.equal(remotePayload.altText, 'Accessible image');
     assert.deepEqual(remotePayload.crop, { left: 0.1, top: 0.2, right: 0.1, bottom: 0 });
+  });
+
+  it('uses the canonical text-frame update command and rejects the removed flat payload', () => {
+    const workbook = new WorkbookModel('drawing-textbox-test', 'Drawing Text Box');
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    const sheetId = 'sheet-1';
+    const frame = { fontFamily: 'Inter', fontSize: 14, bold: false, italic: false, underline: false, textColor: '#1f2937', horizontalAlignment: 'left' as const, verticalAlignment: 'top' as const, direction: 'horizontal' as const, margin: { top: 8, right: 8, bottom: 8, left: 8 }, wrap: true, autofit: 'none' as const };
+    runtime.execute('drawing.add.textbox', {
+      sheetId,
+      drawing: { id: 'draw-textbox', sheetId, kind: 'textbox', payloadId: 'textbox-payload', anchor: { kind: 'absolute' }, transform: { x: 10, y: 10, width: 180, height: 60, rotation: 0 }, zIndex: 0 },
+      payload: { kind: 'textbox', text: 'Before', textFrame: frame },
+    });
+    runtime.execute('drawing.textbox.update', { sheetId, drawingId: 'draw-textbox', payload: { kind: 'textbox', text: 'After', textFrame: { ...frame, horizontalAlignment: 'center', bold: true } } });
+    const payload = workbook.getSheet(sheetId).drawingPayloads.get('textbox-payload');
+    assert.equal(payload?.kind, 'textbox');
+    assert.equal(payload?.kind === 'textbox' ? payload.text : '', 'After');
+    assert.equal(payload?.kind === 'textbox' ? payload.textFrame.horizontalAlignment : '', 'center');
+    runtime.undo();
+    assert.equal((workbook.getSheet(sheetId).drawingPayloads.get('textbox-payload') as { text?: string } | undefined)?.text, 'Before');
+    assert.throws(() => runtime.execute('drawing.add.textbox', {
+      sheetId,
+      drawing: { id: 'draw-invalid-textbox', sheetId, kind: 'textbox', payloadId: 'invalid-textbox', anchor: { kind: 'absolute' }, transform: { x: 10, y: 10, width: 180, height: 60, rotation: 0 }, zIndex: 0 },
+      payload: { kind: 'textbox', text: 'legacy' },
+    }));
+  });
+
+  it('supports typed picture effects with fail-close validation and undo', () => {
+    const workbook = new WorkbookModel('drawing-image-effects-test', 'Drawing Image Effects');
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    runtime.execute('drawing.add.image', {
+      sheetId: 'sheet-1',
+      drawing: {
+        id: 'draw-effects',
+        sheetId: 'sheet-1',
+        kind: 'image',
+        payloadId: 'effects-payload',
+        anchor: { kind: 'absolute' },
+        transform: { x: 0, y: 0, width: 120, height: 80, rotation: 0 },
+        zIndex: 1,
+      },
+      payload: { kind: 'image', src: 'data:image/png;base64,AA==' },
+    });
+    runtime.clearHistory();
+
+    runtime.execute('drawing.image.effects', {
+      sheetId: 'sheet-1',
+      drawingId: 'draw-effects',
+      effects: { brightness: 0.25, contrast: -0.1, transparency: 0.4 },
+    });
+    const payload = workbook.getSheet('sheet-1').drawingPayloads.get('effects-payload') as ImageDrawingPayload;
+    assert.deepEqual(payload.effects, { brightness: 0.25, contrast: -0.1, transparency: 0.4 });
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+
+    const beforeRejected = workbook.snapshot();
+    assert.throws(() => runtime.execute('drawing.image.effects', {
+      sheetId: 'sheet-1', drawingId: 'draw-effects', effects: { brightness: 2 },
+    }), /Image effects are invalid/);
+    assert.deepEqual(workbook.snapshot(), beforeRejected);
+
+    assert.equal(runtime.undo(), true);
+    assert.equal((workbook.getSheet('sheet-1').drawingPayloads.get('effects-payload') as ImageDrawingPayload).effects, undefined);
+    assert.equal(runtime.redo(), true);
+    assert.deepEqual((workbook.getSheet('sheet-1').drawingPayloads.get('effects-payload') as ImageDrawingPayload).effects, { brightness: 0.25, contrast: -0.1, transparency: 0.4 });
   });
 
   it('preserves anchored drawings when rows are inserted', () => {

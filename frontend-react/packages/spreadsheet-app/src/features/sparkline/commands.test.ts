@@ -81,6 +81,95 @@ describe('sparkline feature contract', () => {
     assert.throws(() => runtime.execute('sparkline.group.remove', { sheetId: 'sheet-1', groupId: 'missing' }), /Unknown sparkline group/);
   });
 
+  it('does not create history or mutation noise for a semantic no-op update', () => {
+    const { workbook, runtime } = register();
+    runtime.execute('sparkline.insertDataLocation', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-1',
+      dataRange: { sheetId: 'source-2', startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      location: { row: 1, column: 3 },
+      type: 'line',
+      highlightMax: true,
+      highlightMin: true,
+    });
+    const before = workbook.snapshot();
+    const beforeDepth = runtime.getHistoryDepth();
+    const result = runtime.execute('sparkline.update', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-1',
+      patch: { highlightMax: true, highlightMin: true },
+    });
+    assert.equal(result.mutationCount, 0);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(runtime.getHistoryDepth(), beforeDepth);
+  });
+
+  it('updates every design property through one reversible command', () => {
+    const { workbook, runtime } = register();
+    runtime.execute('sparkline.insertDataLocation', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-design',
+      dataRange: { sheetId: 'source-2', startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      location: { row: 1, column: 3 },
+      type: 'line',
+    });
+    const before = structuredClone(workbook.getSheet('sheet-1').sparklines[0]);
+    runtime.execute('sparkline.update', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-design',
+      patch: {
+        type: 'column',
+        color: '#112233',
+        negativeColor: '#aabbcc',
+        highlightMax: true,
+        highlightMin: true,
+        highlightFirst: true,
+        highlightLast: true,
+        highlightNegative: true,
+        showAxis: true,
+        showMarkers: true,
+      },
+    });
+    const updated = workbook.getSheet('sheet-1').sparklines[0]!;
+    assert.equal(updated.type, 'column');
+    assert.equal(updated.color, '#112233');
+    assert.equal(updated.negativeColor, '#aabbcc');
+    assert.equal(updated.highlightFirst, true);
+    assert.equal(updated.highlightLast, true);
+    assert.equal(updated.highlightNegative, true);
+    assert.equal(updated.showAxis, true);
+    assert.equal(updated.showMarkers, true);
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(workbook.getSheet('sheet-1').sparklines[0], before);
+    assert.equal(runtime.redo(), true);
+    assert.equal(workbook.getSheet('sheet-1').sparklines[0]?.showMarkers, true);
+  });
+
+  it('rejects malformed design payloads before mutating the workbook', () => {
+    const { workbook, runtime } = register();
+    runtime.execute('sparkline.insertDataLocation', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-valid',
+      dataRange: { sheetId: 'source-2', startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      location: { row: 1, column: 3 },
+      type: 'line',
+    });
+    const before = workbook.snapshot();
+    const depth = runtime.getHistoryDepth();
+    assert.throws(() => runtime.execute('sparkline.update', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-valid',
+      patch: { color: '#fff' },
+    }), /six-digit hexadecimal/);
+    assert.throws(() => runtime.execute('sparkline.update', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-valid',
+      patch: { showMarkers: 'yes' },
+    }), /boolean/);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(runtime.getHistoryDepth(), depth);
+  });
+
   it('removing a grouped sparkline updates group membership and restores both on undo', () => {
     const { workbook, runtime } = register();
     runtime.execute('sparkline.insertDataLocation', {

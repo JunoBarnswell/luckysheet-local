@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { WorkbookModel, type PivotModel } from '@react-sheets/core-model';
 import {
   aggregatePivotValues,
   buildPivotGridProjection,
@@ -18,6 +18,53 @@ function workbookWithData(): WorkbookModel {
   return workbook;
 }
 
+function relationalWorkbook(): WorkbookModel {
+  const workbook = new WorkbookModel('pivot-relations', 'Pivot Relations');
+  const sheet = workbook.getSheet('sheet-1');
+  const ranges = [
+    [['CustomerId', 'ProductId', 'Amount'], ['c1', 'p1', 100], ['c2', 'p2', 200], ['c1', 'p2', 50]],
+    [['CustomerId', 'Region'], ['c1', 'East'], ['c2', 'West']],
+    [['ProductId', 'Category'], ['p1', 'Widget'], ['p2', 'Gadget']],
+  ];
+  const offsets = [0, 4, 7];
+  ranges.forEach((rows, rangeIndex) => rows.forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, offsets[rangeIndex]! + columnIndex, { value }))));
+  // The Products range is intentionally on the same worksheet as Orders and
+  // Customers; sourceId, rather than sheetId, is the logical identity.
+  return workbook;
+}
+
+function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
+  const ranges = {
+    orders: { sourceId: 'orders', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 } },
+    customers: { sourceId: 'customers', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 4, endColumn: 5 } },
+    products: { sourceId: 'products', range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 7, endColumn: 8 } },
+  } as const;
+  const source = {
+    kind: 'worksheet-ranges' as const,
+    ranges: order.map((sourceId) => ranges[sourceId as keyof typeof ranges]),
+    relationships: [
+      { id: 'orders-customers', left: { sourceId: 'orders', fieldId: 'source:orders:column:0' }, right: { sourceId: 'customers', fieldId: 'source:customers:column:0' }, join: 'left' as const },
+      { id: 'orders-products', left: { sourceId: 'orders', fieldId: 'source:orders:column:1' }, right: { sourceId: 'products', fieldId: 'source:products:column:0' }, join: 'left' as const },
+    ],
+  };
+  const pivot: PivotModel = {
+    schema: 'PivotDefinition' as const,
+    id: `pivot-relational-${order.join('-')}`,
+    source,
+    target: { sheetId: 'sheet-1', anchor: { row: 10, column: 0 } },
+    fieldCatalog: { fields: [] },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+    layout: { rows: [], columns: [], filters: [], values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+  };
+  const catalog = getPivotFieldCatalog(workbook, pivot);
+  const region = catalog.fields.find((field) => field.name === 'Region')!;
+  const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+  pivot.fieldCatalog = catalog;
+  pivot.layout.rows = [{ fieldId: region.fieldId }];
+  pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+  return pivot;
+}
+
 describe('native PivotGridProjection contract', () => {
   it('builds a complete canonical definition with stable field IDs', () => {
     const workbook = workbookWithData();
@@ -28,6 +75,27 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(pivot.source, { kind: 'worksheet-range', range: sourceRange });
     assert.equal(pivot.target.sheetId, 'sheet-1');
     assert.ok(pivot.fieldCatalog.fields.every((field) => field.fieldId.length > 0));
+  });
+
+  it('plans star joins by source identity, is invariant to source order, and preserves provenance', () => {
+    const workbook = relationalWorkbook();
+    const first = relationalPivot(workbook, ['orders', 'customers', 'products']);
+    const reordered = relationalPivot(workbook, ['products', 'orders', 'customers']);
+    const firstResult = computePivotResult(workbook, first);
+    const reorderedResult = computePivotResult(workbook, reordered);
+    assert.deepEqual(firstResult.rows.map((node) => [node.label, node.values[0]?.values]), reorderedResult.rows.map((node) => [node.label, node.values[0]?.values]));
+    const paths = firstResult.rows[0]?.values[0]?.sourceRowPaths ?? [];
+    assert.deepEqual([...new Set(paths.map((path) => path.sourceId))].sort(), ['customers', 'orders', 'products']);
+  });
+
+  it('rejects duplicate lookup keys and incompatible relationship key types before aggregation', () => {
+    const duplicate = relationalWorkbook();
+    duplicate.getSheet('sheet-1').cells.set(2, 4, { value: 'c1' });
+    duplicate.getSheet('sheet-1').cells.set(2, 5, { value: 'Duplicate' });
+    assert.throws(() => relationalPivot(duplicate, ['orders', 'customers', 'products']), /lookup key is not unique/);
+    const incompatible = relationalWorkbook();
+    incompatible.getSheet('sheet-1').cells.set(1, 4, { value: 1 });
+    assert.throws(() => relationalPivot(incompatible, ['orders', 'customers', 'products']), /key types are incompatible/);
   });
 
   it('keeps typed members distinct and treats manual all as no filter', () => {
@@ -47,6 +115,133 @@ describe('native PivotGridProjection contract', () => {
     const fieldFiltered = buildPivotGridProjection(workbook, pivot);
     assert.equal(fieldFiltered.cells.some((cell) => cell.kind === 'filter'), false);
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
+  });
+
+  it('applies canonical date, numeric and manual grouping before axis aggregation', () => {
+    const workbook = new WorkbookModel('pivot-grouping', 'Pivot Grouping');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Date', 'Amount', 'Category'], [45292, 10, 'A'], [45323, 20, 'B'], [45657, 30, 'C']].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-grouping', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const date = catalog.fields.find((field) => field.name === 'Date')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
+    pivot.layout.rows = [{ fieldId: date.fieldId, group: { kind: 'date', unit: 'year' } }, { fieldId: category.fieldId, group: { kind: 'manual', groups: [{ groupId: 'ab', name: 'AB', items: [{ type: 'text', value: 'A' }, { type: 'text', value: 'B' }] }] } }];
+    pivot.layout.columns = [{ fieldId: amount.fieldId, group: { kind: 'number', interval: 10, start: 0 } }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const result = computePivotResult(workbook, pivot);
+    assert.equal(result.rows[0]?.label, '2024');
+    assert.equal(result.rows[0]?.children[0]?.label, 'AB');
+    assert.equal(result.columnPaths[0]?.[0], 10);
+    assert.equal(result.rows[0]?.children[0]?.values[0]?.values[0], 10);
+  });
+
+  it('keeps numeric label sorting separate from explicit Values sorting', () => {
+    const workbook = new WorkbookModel('pivot-numeric-sort', 'Pivot Numeric Sort');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Year', 'Sales'], [2024, 500], [2025, 100], [2026, 900]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-numeric-sort', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const year = pivot.fieldCatalog.fields.find((field) => field.name === 'Year')!;
+    const sales = pivot.fieldCatalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: year.fieldId, sort: { direction: 'ascending', by: 'label' } }];
+    pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024', '2025', '2026']);
+
+    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value', valueFieldId: sales.fieldId } };
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2025', '2024', '2026']);
+    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value' } };
+    assert.throws(() => computePivotResult(workbook, pivot), /requires a valueFieldId/);
+  });
+
+  it('keeps subtotal ownership per row field and expands custom subtotal functions', () => {
+    const workbook = new WorkbookModel('pivot-subtotals', 'Pivot Subtotals');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'City', 'Amount'], ['East', 'Boston', 10], ['East', 'Austin', 20], ['West', 'Seattle', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-subtotals', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const city = catalog.fields.find((field) => field.name === 'City')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [
+      { fieldId: region.fieldId, subtotal: { mode: 'none' } },
+      { fieldId: city.fieldId, subtotal: { mode: 'custom', functions: ['sum', 'average'] } },
+    ];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.subtotalLocation = 'bottom';
+    const result = computePivotResult(workbook, pivot);
+    const east = result.rows.find((node) => node.label === 'East')!;
+    assert.equal(east.subtotal, false);
+    assert.equal(east.children[0]?.subtotal, false);
+    assert.equal(result.valueFields?.length, 2);
+    assert.deepEqual(east.children.find((node) => node.label === 'Boston')?.values[0]?.values, [10, 10]);
+    const projection = buildPivotGridProjection(workbook, pivot, result);
+    const visibleSubtotalCells = projection.cells.filter((cell) => cell.kind === 'subtotal');
+    assert.equal(visibleSubtotalCells.length, 0);
+    pivot.layout.rows[0] = { fieldId: region.fieldId, subtotal: { mode: 'custom', functions: ['sum', 'average'] } };
+    const withOuterSubtotal = computePivotResult(workbook, pivot);
+    const eastSubtotal = withOuterSubtotal.rows.find((node) => node.label === 'East');
+    assert.equal(eastSubtotal?.subtotal, true);
+    assert.equal(withOuterSubtotal.valueFields?.length, 3);
+    assert.deepEqual(eastSubtotal?.values[0]?.values, [30, 15, 30]);
+  });
+
+  it('keeps a root data row for Columns plus Values when Rows is empty', () => {
+    const workbook = new WorkbookModel('pivot-columns-only', 'Pivot Columns Only');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Month', 'Sales'], ['Jan', 10], ['Feb', 20], ['Mar', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 };
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-columns-only', sourceRange);
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const month = catalog.fields.find((field) => field.name === 'Month')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [];
+    pivot.layout.columns = [{ fieldId: month.fieldId }];
+    pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.showGrandTotals = true;
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
+
+    const tree = computePivotResult(workbook, pivot);
+    assert.equal(tree.rows.length, 1);
+    assert.equal(tree.rows[0]?.nodeId, '__root__');
+    assert.deepEqual(Object.fromEntries(tree.columnPaths.map((path, index) => [path[0], tree.rows[0]?.values[index]?.values[0]])), { Jan: 10, Feb: 20, Mar: 30 });
+    assert.equal(tree.grandTotal?.values[0], 60);
+
+    const projection = buildPivotGridProjection(workbook, pivot, tree);
+    const values = projection.cells.filter((cell) => cell.kind === 'value');
+    assert.deepEqual(Object.fromEntries(values.map((cell) => [cell.columnPath?.[0], cell.value])), { Jan: 10, Feb: 20, Mar: 30 });
+    assert.equal(projection.cells.some((cell) => cell.text === 'Jan Sales'), true);
+    assert.equal(projection.cells.some((cell) => cell.text === 'Grand Total'), true);
+  });
+
+  it('keeps a collapsed parent visible while hiding only its descendants', () => {
+    const workbook = new WorkbookModel('pivot-expansion', 'Pivot Expansion');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'City', 'Amount'], ['East', 'Boston', 10], ['East', 'Austin', 20], ['West', 'Seattle', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 };
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-expansion', sourceRange);
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const city = catalog.fields.find((field) => field.name === 'City')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
+    const tree = computePivotResult(workbook, pivot);
+    const parent = tree.rows.find((node) => node.label === 'East')!;
+    const child = parent.children.find((node) => node.label === 'Boston')!;
+    pivot.layout.expansion = { expandedNodeIds: [], collapsedNodeIds: [parent.nodeId!], showButtons: true };
+    const collapsed = buildPivotGridProjection(workbook, pivot, tree);
+    assert.equal(collapsed.cells.some((cell) => cell.nodeId === parent.nodeId && cell.kind === 'expand-toggle' && cell.expanded === false), true);
+    assert.equal(collapsed.cells.some((cell) => cell.nodeId === child.nodeId), false);
+    pivot.layout.expansion = { expandedNodeIds: [parent.nodeId!], collapsedNodeIds: [], showButtons: true };
+    const expanded = buildPivotGridProjection(workbook, pivot, tree);
+    assert.equal(expanded.cells.some((cell) => cell.nodeId === child.nodeId), true);
   });
 
   it('implements each aggregate independently', () => {
@@ -87,7 +282,7 @@ describe('native PivotGridProjection contract', () => {
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-revision', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
     assert.ok(pivot);
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
-    pivot.refreshPolicy.mode = 'manual';
+    pivot.refreshPolicy = { ...pivot.refreshPolicy, mode: 'manual', refreshOnLoad: false };
     const catalog = getPivotFieldCatalog(workbook, pivot);
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
@@ -142,7 +337,7 @@ describe('native PivotGridProjection contract', () => {
       layout: {
         rows: [{ fieldId: 'region' }], columns: [], filters: [],
         values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
-        showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false,
+        subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
       },
     };

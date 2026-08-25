@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { WorkbookSession } from './workbook-session';
 
 function cellValue(app: WorkbookSession, row: number, column: number): string {
@@ -142,9 +143,9 @@ describe('WorkbookSession formula integration', () => {
     app.runCommand('sheet.range.paste', {
       sheetId,
       targetOrigin: { row: 1, column: 0 },
-      clipboard: { range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, values: [[{ value: 4 }]], transfer: 'copy' },
+      clipboard: { range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, values: [[{ value: 4 }]], transfer: 'copy', rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] } },
       transfer: 'copy',
-      mode: 'all',
+      spec: createPasteSpecialSpec(),
     });
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 0)?.value, 4);
 

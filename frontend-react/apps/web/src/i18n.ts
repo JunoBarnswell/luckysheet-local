@@ -31,6 +31,17 @@ export type MessageKey =
   | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat'
+  | 'reportSheetDesign'
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat'
+  | 'pictureFormat'
+  | 'sparklineDesign'
   | 'engineConnected'
   | 'searchWorkbook';
 
@@ -54,6 +65,9 @@ const textTranslations: Record<string, string> = {
   'Validate': '验证',
   'Print': '打印',
   'Tables': '数据表',
+  'TableSheet Designer': '集算表设计器',
+  'GanttSheet Designer': '甘特表设计器',
+  'ReportSheet Designer': '报表设计器',
   'History': '历史',
   'Clipboard': '剪贴板',
   'Font': '字体',
@@ -108,6 +122,12 @@ export function translateRibbonText(locale: Locale, key: RibbonTextKey): string 
   const [section, name] = key.split('.') as ['groups' | 'commands', string];
   const bundle = localeBundles[locale].ribbon[section] as Record<string, string>;
   return bundle[name] ?? key;
+}
+
+export type InsertUiTextKey = keyof typeof enUS.insertUi;
+
+export function insertText(locale: Locale, key: InsertUiTextKey): string {
+  return localeBundles[locale].insertUi[key];
 }
 
 export function formulaBarLabels(locale: Locale, phase: 'empty' | 'error' | 'loading' | 'ready') {

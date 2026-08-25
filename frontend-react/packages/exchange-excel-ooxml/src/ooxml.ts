@@ -17,7 +17,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { assertCanonicalWorkbookSnapshot, isDynamicFilterType } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
@@ -40,6 +40,7 @@ import {
   type XlsxZipLimits,
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
+import { synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -280,6 +281,17 @@ export function exportSnapshotToOpcPackageGraph(
     snapshot,
     sheetPartById,
   });
+  const chartUpdate = synchronizeNativePivotCharts({
+    files: nativeUpdate.files,
+    relationships: nativeUpdate.relationships,
+    snapshot,
+    graph: nativeUpdate.graph,
+    sheetPartById,
+    displayCellsBySheetPart: nativeUpdate.displayCellsBySheetPart,
+  });
+  nativeUpdate.files = chartUpdate.files;
+  nativeUpdate.relationships = chartUpdate.relationships;
+  files.clear();
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
   const styleOutput = buildStyles(snapshot, originalStylesXml);
@@ -743,7 +755,11 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
     const payloadId = control.id;
     if (control.kind === 'slicer') {
       const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === control.fieldId);
-      const memberKeys = (control.selectedItemIndexes ?? []).flatMap((index) => field?.values?.[index] === undefined ? [] : [nativeMemberKey(field.values[index] ?? null)]);
+      const memberKeys = (control.selectedItemIndexes ?? []).map((index) => {
+        const value = field?.values?.[index];
+        if (!field || value === undefined) throw new Error(`Native Slicer ${control.id} selected item index ${index} is outside field ${control.fieldId} member domain`);
+        return createPivotMemberKey(value);
+      });
       sheet.drawingPayloads[payloadId] = {
         kind: 'slicer',
         pivotId: control.pivotId,
@@ -773,13 +789,6 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
     };
     sheet.drawings.push(drawing);
   }
-}
-
-function nativeMemberKey(value: string | number | boolean | null): { type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null } {
-  if (value === null || value === '') return { type: 'blank', value: null };
-  if (typeof value === 'number') return { type: 'number', value };
-  if (typeof value === 'boolean') return { type: 'boolean', value };
-  return { type: 'text', value };
 }
 
 function parseSheetTables(
@@ -816,7 +825,10 @@ function parseSheetTables(
       hasTotalRow: table.attrs.totalsRowCount === '1',
       showBandedRows: child(table, 'tableStyleInfo')?.attrs.showRowStripes !== '0',
       showBandedColumns: child(table, 'tableStyleInfo')?.attrs.showColumnStripes === '1',
+      showFirstColumn: child(table, 'tableStyleInfo')?.attrs.showFirstColumn === '1',
+      showLastColumn: child(table, 'tableStyleInfo')?.attrs.showLastColumn === '1',
       showFilterButton: table.attrs.headerRowCount !== '0',
+      autoExpand: 'both',
       ...(tableAutoFilter ? { autoFilter: tableAutoFilter } : {}),
       columns,
       ...(child(table, 'tableStyleInfo')?.attrs.name ? { styleName: child(table, 'tableStyleInfo')!.attrs.name } : {}),
@@ -1206,7 +1218,7 @@ function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number],
   const ref = rangeToA1(table.range);
   const columns = table.columns.map((column, index) => `<tableColumn id="${index + 1}" name="${encodeXml(column.name)}"${column.totalsFunction && column.totalsFunction !== 'none' ? ` totalsRowFunction="${encodeXml(column.totalsFunction)}"` : ''}/>`).join('');
   const style = table.styleName
-    ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="0" showLastColumn="0" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
+    ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="${table.showFirstColumn ? '1' : '0'}" showLastColumn="${table.showLastColumn ? '1' : '0'}" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
     : '';
   const autoFilter = table.autoFilter
     ? serializeAutoFilter(table.autoFilter, differentialStyleIndexes)
@@ -1345,6 +1357,7 @@ function buildWorksheetXml(
     const preservedNodes = new Map<string, XmlNode>();
     for (const node of originalRoot.children) {
       const name = localName(node.name);
+      if (name === 'drawing' && node.attrs['r:id'] && !drawingRelations.some((relation) => relation.id === node.attrs['r:id'])) continue;
       if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'controls' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
     }
     for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'controls', 'picture', 'tableParts']) {
@@ -1656,6 +1669,8 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
   for (const name of files.keys()) {
     if (name.startsWith('xl/drawings/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.drawing+xml');
+    } else if (name.startsWith('xl/charts/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml');
     } else if (name.startsWith('xl/tables/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml');
     } else if (name.startsWith('xl/pivotTables/') && name.endsWith('.xml')) {
@@ -2110,7 +2125,7 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
             ],
           }
           : dynamic?.attrs.type
-            ? { kind: 'dynamic', type: dynamic.attrs.type, ...(dynamic.attrs.val === undefined ? {} : { value: Number(dynamic.attrs.val) }), ...(dynamic.attrs.maxVal === undefined ? {} : { maxValue: Number(dynamic.attrs.maxVal) }) }
+            ? { kind: 'dynamic', type: dynamic.attrs.type as import('@react-sheets/core-model').DynamicFilterType, ...(dynamic.attrs.val === undefined ? {} : { value: Number(dynamic.attrs.val) }), ...(dynamic.attrs.maxVal === undefined ? {} : { maxValue: Number(dynamic.attrs.maxVal) }) }
             : top10
               ? { kind: 'top10', top: top10.attrs.top !== '0', percent: top10.attrs.percent === '1', rank: Number(top10.attrs.rank ?? 10), ...(top10.attrs.filterVal === undefined ? {} : { filterValue: Number(top10.attrs.filterVal) }) }
               : color

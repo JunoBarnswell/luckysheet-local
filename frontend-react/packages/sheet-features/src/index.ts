@@ -13,6 +13,9 @@ import type {
   WorksheetModel,
   StructuralTransformParams,
   DefinedNameModel,
+  TableSheetDefinition,
+  GanttSheetDefinition,
+  ReportSheetDefinition,
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -22,10 +25,10 @@ import { buildCellFromText } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
-import { validateFilterOwnership } from './sheet-table-features';
+import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
-import { registerCellTemplateCommands } from './cell-template-commands';
+import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
 
 function snapshotCellRegion(
   sheet: WorksheetModel,
@@ -77,6 +80,21 @@ export interface CommitTextParams {
 }
 
 export interface AddTableParams extends WorkbookTableModel {}
+
+export interface TableSheetUpdateParams {
+  sheetId: string;
+  definition: TableSheetDefinition;
+}
+
+export interface GanttSheetUpdateParams {
+  sheetId: string;
+  definition: GanttSheetDefinition;
+}
+
+export interface ReportSheetUpdateParams {
+  sheetId: string;
+  definition: ReportSheetDefinition;
+}
 
 export interface SetRangeValuesParams {
   sheetId: string;
@@ -387,6 +405,113 @@ function isSheetViewMutation(value: unknown): value is { sheetId: string; showGr
     && (value.zoom === undefined || (typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom > 0));
 }
 
+function isTableSheetColumn(value: unknown): value is TableSheetDefinition['columns'][number] {
+  if (!isRecord(value) || typeof value.fieldId !== 'string' || value.fieldId.trim().length === 0 || typeof value.caption !== 'string' || value.caption.trim().length === 0) return false;
+  if (value.widthPx !== undefined && (typeof value.widthPx !== 'number' || !Number.isFinite(value.widthPx) || value.widthPx <= 0)) return false;
+  if (value.type !== undefined && typeof value.type !== 'string') return false;
+  return value.formula === undefined || typeof value.formula === 'string';
+}
+
+function isTableSheetDefinition(value: unknown): value is TableSheetDefinition {
+  if (!isRecord(value) || typeof value.viewId !== 'string' || value.viewId.trim().length === 0 || !Array.isArray(value.columns) || !Array.isArray(value.grouping)) return false;
+  if (!value.columns.every(isTableSheetColumn)) return false;
+  const columnIds = new Set(value.columns.map((column) => column.fieldId));
+  if (columnIds.size !== value.columns.length) return false;
+  if (!value.grouping.every((group) => isRecord(group) && typeof group.fieldId === 'string' && columnIds.has(group.fieldId) && (group.collapsed === undefined || typeof group.collapsed === 'boolean'))) return false;
+  if (new Set(value.grouping.map((group) => group.fieldId)).size !== value.grouping.length) return false;
+  if (value.sortState !== undefined) {
+    if (!Array.isArray(value.sortState) || !value.sortState.every((sort) => isRecord(sort) && typeof sort.fieldId === 'string' && columnIds.has(sort.fieldId) && (sort.direction === 'asc' || sort.direction === 'desc'))) return false;
+    if (new Set(value.sortState.map((sort) => sort.fieldId)).size !== value.sortState.length) return false;
+  }
+  return true;
+}
+
+function normalizeTableSheetDefinition(workbook: WorkbookModel, params: TableSheetUpdateParams): TableSheetDefinition {
+  if (!isTableSheetDefinition(params.definition)) throw new Error('TableSheet definition is invalid');
+  const sheet = workbook.getSheet(params.sheetId);
+  if (sheet.kind !== 'table-sheet' || !sheet.tableSheet) throw new Error('TableSheet definition can only be updated on a table-sheet');
+  const table = workbook.dataModel.tables.get(params.definition.viewId);
+  if (!table) throw new Error(`TableSheet binding table is unavailable: ${params.definition.viewId}`);
+  const fieldIds = new Set(table.fields.map((field) => field.id));
+  if (params.definition.columns.length === 0 || params.definition.columns.some((column) => !fieldIds.has(column.fieldId))) throw new Error('TableSheet columns must reference fields from the binding table');
+  if (params.definition.grouping.some((group) => !fieldIds.has(group.fieldId)) || params.definition.sortState?.some((sort) => !fieldIds.has(sort.fieldId))) throw new Error('TableSheet grouping and sorting must reference binding-table fields');
+  return structuredClone(params.definition);
+}
+
+function isGanttSheetDefinition(value: unknown): value is GanttSheetDefinition {
+  if (!isRecord(value) || typeof value.viewId !== 'string' || !isRecord(value.fieldMap)
+    || !isRecord(value.calendar) || !isRecord(value.timeline) || !isRecord(value.dependencyStyle)) return false;
+  const fieldMap = value.fieldMap;
+  if (['id', 'title', 'start', 'end', 'progress'].some((key) => typeof fieldMap[key] !== 'string' || String(fieldMap[key]).trim().length === 0)) return false;
+  if (fieldMap.parentId !== undefined && typeof fieldMap.parentId !== 'string') return false;
+  if (fieldMap.dependencies !== undefined && typeof fieldMap.dependencies !== 'string') return false;
+  const calendar = value.calendar;
+  if (!Array.isArray(calendar.workingDays) || !calendar.workingDays.every((day) => Number.isInteger(day) && day >= 0 && day <= 6)) return false;
+  if (typeof calendar.dayStartHour !== 'number' || !Number.isFinite(calendar.dayStartHour)
+    || typeof calendar.dayEndHour !== 'number' || !Number.isFinite(calendar.dayEndHour)
+    || calendar.dayStartHour < 0 || calendar.dayEndHour > 24 || calendar.dayStartHour >= calendar.dayEndHour) return false;
+  const timeline = value.timeline;
+  if (!['day', 'week', 'month', 'quarter'].includes(String(timeline.unit))) return false;
+  if (timeline.start !== undefined && typeof timeline.start !== 'string') return false;
+  if (timeline.end !== undefined && typeof timeline.end !== 'string') return false;
+  const style = value.dependencyStyle;
+  return typeof style.color === 'string' && style.color.trim().length > 0 && typeof style.width === 'number' && Number.isFinite(style.width) && style.width > 0;
+}
+
+function normalizeGanttSheetDefinition(workbook: WorkbookModel, params: GanttSheetUpdateParams): GanttSheetDefinition {
+  if (!isGanttSheetDefinition(params.definition)) throw new Error('GanttSheet definition is invalid');
+  const sheet = workbook.getSheet(params.sheetId);
+  if (sheet.kind !== 'gantt-sheet' || !sheet.ganttSheet) throw new Error('GanttSheet definition can only be updated on a gantt-sheet');
+  const table = workbook.dataModel.tables.get(params.definition.viewId);
+  if (!table) throw new Error(`GanttSheet binding table is unavailable: ${params.definition.viewId}`);
+  const fieldIds = new Set(table.fields.map((field) => field.id));
+  const mapping = params.definition.fieldMap;
+  for (const key of ['id', 'title', 'start', 'end', 'progress'] as const) {
+    if (!fieldIds.has(mapping[key])) throw new Error(`GanttSheet field mapping ${key} is unavailable`);
+  }
+  for (const key of ['parentId', 'dependencies'] as const) {
+    if (mapping[key] !== undefined && !fieldIds.has(mapping[key]!)) throw new Error(`GanttSheet field mapping ${key} is unavailable`);
+  }
+  return structuredClone(params.definition);
+}
+
+function isReportSheetDefinition(value: unknown): value is ReportSheetDefinition {
+  if (!isRecord(value) || typeof value.templateSheetId !== 'string' || (value.tableId !== undefined && typeof value.tableId !== 'string')
+    || !Array.isArray(value.bindings) || !isRecord(value.pagination) || !isRecord(value.layout) || !Array.isArray(value.dataEntry)) return false;
+  if (!['design', 'preview', 'paginated'].includes(String(value.renderMode))) return false;
+  if (value.pagination.enabled !== undefined && typeof value.pagination.enabled !== 'boolean') return false;
+  if (value.pagination.rowsPerPage !== undefined && (!Number.isInteger(value.pagination.rowsPerPage) || Number(value.pagination.rowsPerPage) <= 0)) return false;
+  if (value.pagination.repeatHeaderRows !== undefined && (!Array.isArray(value.pagination.repeatHeaderRows) || !value.pagination.repeatHeaderRows.every((row) => Number.isInteger(row) && row >= 0))) return false;
+  const layout = value.layout;
+  if (!['portrait', 'landscape'].includes(String(layout.orientation))) return false;
+  for (const key of ['marginTopPx', 'marginRightPx', 'marginBottomPx', 'marginLeftPx']) if (typeof layout[key] !== 'number' || !Number.isFinite(layout[key]) || layout[key] < 0) return false;
+  for (const raw of value.bindings) {
+    if (!isRecord(raw) || !isRecord(raw.cell) || !Number.isInteger(raw.cell.row) || !Number.isInteger(raw.cell.column) || Number(raw.cell.row) < 0 || Number(raw.cell.column) < 0 || typeof raw.expression !== 'string' || !raw.expression.trim() || !['static', 'field', 'formula', 'group', 'summary'].includes(String(raw.kind))) return false;
+    if (raw.direction !== undefined && !['vertical', 'horizontal'].includes(String(raw.direction))) return false;
+    if (raw.fill !== undefined && !['none', 'down', 'right'].includes(String(raw.fill))) return false;
+    if (raw.summary !== undefined && !['sum', 'count', 'average', 'min', 'max'].includes(String(raw.summary))) return false;
+  }
+  return value.dataEntry.every((entry) => isRecord(entry) && typeof entry.fieldId === 'string' && typeof entry.writable === 'boolean' && (entry.required === undefined || typeof entry.required === 'boolean'));
+}
+
+function normalizeReportSheetDefinition(workbook: WorkbookModel, params: ReportSheetUpdateParams): ReportSheetDefinition {
+  if (!isReportSheetDefinition(params.definition)) throw new Error('ReportSheet definition is invalid');
+  const sheet = workbook.getSheet(params.sheetId);
+  if (sheet.kind !== 'report-sheet' || !sheet.reportSheet) throw new Error('ReportSheet definition can only be updated on a report-sheet');
+  if (!workbook.sheets.has(params.definition.templateSheetId)) throw new Error(`ReportSheet template sheet is unavailable: ${params.definition.templateSheetId}`);
+  const table = params.definition.tableId ? workbook.dataModel.tables.get(params.definition.tableId) : undefined;
+  if (params.definition.tableId && !table) throw new Error(`ReportSheet binding table is unavailable: ${params.definition.tableId}`);
+  const fieldIds = new Set(table?.fields.map((field) => field.id) ?? []);
+  for (const binding of params.definition.bindings) if (['field', 'group', 'summary'].includes(binding.kind) && !fieldIds.has(binding.expression)) throw new Error(`ReportSheet binding field is unavailable: ${binding.expression}`);
+  if (params.definition.dataEntry.some((entry) => !fieldIds.has(entry.fieldId))) throw new Error('ReportSheet data-entry fields must belong to the binding table');
+  return structuredClone(params.definition);
+}
+
+function tableSheetAffectedRange(workbook: WorkbookModel, params: { sheetId: string }): RangeRef[] {
+  const sheet = workbook.getSheet(params.sheetId);
+  return [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
+}
+
 function isFilterMutation(value: unknown): value is { sheetId: string; autoFilter: AutoFilterModel } {
   return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.autoFilter)
     && typeof value.autoFilter.sheetId === 'string' && isRange(value.autoFilter.range)
@@ -453,6 +578,11 @@ function restoreCell(
   const { row, column, previous } = item.params;
   if (previous) sheet.cells.set(row, column, previous);
   else sheet.cells.delete(row, column);
+}
+
+function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
+  if (cell?.editor?.kind !== 'checkbox') return;
+  normalizeCheckboxCellValue(cell);
 }
 
 export function registerSheetCommands(runtime: CommandRuntime): void {
@@ -551,6 +681,49 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['sheet.remove'],
     },
   });
+  runtime.registry.registerMutation<TableSheetUpdateParams>({
+    id: 'tableSheet.update',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isTableSheetDefinition(item.params.definition)) throw new Error('Invalid tableSheet.update mutation payload');
+      const params = item.params as TableSheetUpdateParams;
+      const definition = normalizeTableSheetDefinition(context.workbook, params);
+      context.workbook.getSheet(params.sheetId).tableSheet = definition;
+    },
+    metadata: {
+      schema: { name: 'TableSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isTableSheetDefinition(value.definition) },
+      permission: { capability: 'table-sheet.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
+      inverseIds: ['tableSheet.update'],
+    },
+  });
+  runtime.registry.registerMutation<GanttSheetUpdateParams>({
+    id: 'ganttSheet.update',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isGanttSheetDefinition(item.params.definition)) throw new Error('Invalid ganttSheet.update mutation payload');
+      const params = item.params as GanttSheetUpdateParams;
+      context.workbook.getSheet(params.sheetId).ganttSheet = normalizeGanttSheetDefinition(context.workbook, params);
+    },
+    metadata: {
+      schema: { name: 'GanttSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isGanttSheetDefinition(value.definition) },
+      permission: { capability: 'gantt-sheet.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
+      inverseIds: ['ganttSheet.update'],
+    },
+  });
+  runtime.registry.registerMutation<ReportSheetUpdateParams>({
+    id: 'reportSheet.update',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isReportSheetDefinition(item.params.definition)) throw new Error('Invalid reportSheet.update mutation payload');
+      const params = item.params as ReportSheetUpdateParams;
+      context.workbook.getSheet(params.sheetId).reportSheet = normalizeReportSheetDefinition(context.workbook, params);
+    },
+    metadata: {
+      schema: { name: 'ReportSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isReportSheetDefinition(value.definition) },
+      permission: { capability: 'report-sheet.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
+      inverseIds: ['reportSheet.update'],
+    },
+  });
 
   runtime.registry.registerCommand<{ id: string }>({
     id: 'sheet.remove',
@@ -605,6 +778,84 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         ],
         apply: () =>
           context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<TableSheetUpdateParams>({
+    id: 'tableSheet.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined;
+      if (sheet.kind !== 'table-sheet' || !previous) throw new Error('TableSheet definition can only be updated on a table-sheet');
+      const definition = normalizeTableSheetDefinition(context.workbook, params);
+      if (JSON.stringify(previous) === JSON.stringify(definition)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = tableSheetAffectedRange(context.workbook, params);
+      context.applyMutation({
+        id: 'tableSheet.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, definition },
+        affectedRanges,
+        inverse: [{
+          id: 'tableSheet.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, definition: previous },
+          affectedRanges,
+        }],
+        apply: () => { sheet.tableSheet = structuredClone(definition); },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<GanttSheetUpdateParams>({
+    id: 'ganttSheet.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined;
+      if (sheet.kind !== 'gantt-sheet' || !previous) throw new Error('GanttSheet definition can only be updated on a gantt-sheet');
+      const definition = normalizeGanttSheetDefinition(context.workbook, params);
+      if (JSON.stringify(previous) === JSON.stringify(definition)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = tableSheetAffectedRange(context.workbook, params);
+      context.applyMutation({
+        id: 'ganttSheet.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, definition },
+        affectedRanges,
+        inverse: [{
+          id: 'ganttSheet.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, definition: previous },
+          affectedRanges,
+        }],
+        apply: () => { sheet.ganttSheet = structuredClone(definition); },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<ReportSheetUpdateParams>({
+    id: 'reportSheet.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined;
+      if (sheet.kind !== 'report-sheet' || !previous) throw new Error('ReportSheet definition can only be updated on a report-sheet');
+      const definition = normalizeReportSheetDefinition(context.workbook, params);
+      if (JSON.stringify(previous) === JSON.stringify(definition)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = tableSheetAffectedRange(context.workbook, params);
+      context.applyMutation({
+        id: 'reportSheet.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, definition },
+        affectedRanges,
+        inverse: [{ id: 'reportSheet.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, definition: previous }, affectedRanges }],
+        apply: () => { sheet.reportSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -723,6 +974,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isCellSetMutation(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
+      assertCanonicalCheckboxCell(params.value);
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, { ...params.value });
     },
     metadata: {
@@ -736,6 +988,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'cell.restore',
     handler: (item, context) => {
       if (!isCellRestoreMutation(item.params)) throw new Error('Invalid cell.restore mutation payload');
+      assertCanonicalCheckboxCell(item.params.previous);
       restoreCell(context.workbook, item as MutationInfo<{ row: number; column: number; previous?: CellData }>);
     },
     metadata: {
@@ -789,6 +1042,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
 
       const previous = sheet.cells.get(params.row, params.column);
       const next = buildCellFromText(params.text, previous, params.style);
+      if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next);
       // A formula is validated by the FormulaEngine after commit and does not
       // have a scalar value to validate at this boundary. Scalar input must
       // satisfy the target rule before the cell.set mutation is opened.
@@ -858,8 +1112,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.range.set',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      const writeRange = setRangeAffectedRanges(params)[0];
+      let tablePlansId = 0;
+      const tablePlans = writeRange && params.values.length > 0
+        ? planSheetTableAutoExpansion(sheet, writeRange, (prefix) => `${prefix}-${context.operationId}-${tablePlansId++}`)
+        : [];
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
-      const affectedRanges: RangeRef[] = [];
+      const affectedRanges: RangeRef[] = writeRange ? [structuredClone(writeRange)] : [];
       for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
         const rowValues = params.values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
@@ -874,6 +1133,27 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             endColumn: column,
           });
         }
+      }
+      for (const plan of tablePlans) {
+        const tableIndex = sheet.sheetTables.findIndex((table) => table.id === plan.previous.id);
+        if (tableIndex < 0) throw new Error(`Sheet Table not found: ${plan.previous.id}`);
+        const tableAffectedRanges = [structuredClone(plan.next.range)];
+        context.applyMutation({
+          id: 'sheetTable.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: plan.next,
+          affectedRanges: tableAffectedRanges,
+          inverse: [{
+            id: 'sheetTable.update',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: plan.previous,
+            affectedRanges: [structuredClone(plan.previous.range)],
+          }],
+          apply: () => { sheet.sheetTables[tableIndex] = structuredClone(plan.next); },
+        });
+        affectedRanges.push(...tableAffectedRanges);
       }
       context.applyMutation({
         id: 'range.set',
@@ -909,7 +1189,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           }
         },
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      return { operationId: context.operationId, mutationCount: 1 + tablePlans.length, affectedRanges };
     },
   });
 

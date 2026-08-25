@@ -7,10 +7,14 @@ import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
+import com.xc.luckysheet.server.mutation.SnapshotMutationSupport.CellCoordinate;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -19,25 +23,29 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final String SCHEMA = "PivotDefinition";
     private static final String FIELD_CATALOG_SCHEMA = "PivotFieldCatalog";
     private static final Set<String> PIVOT_KEYS = Set.of(
-            "schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"
+            "schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
     );
     private static final Set<String> UPDATE_KEYS = Set.of(
-            "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"
+            "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
     );
     private static final Set<String> SOURCE_KEYS = Set.of("kind", "range", "ranges", "relationships", "tableId", "name", "dataSourceId");
     private static final Set<String> TARGET_KEYS = Set.of("sheetId", "anchor");
     private static final Set<String> FIELD_KEYS = Set.of("fieldId", "name", "dataType", "ordinal", "values");
     private static final Set<String> LAYOUT_KEYS = Set.of(
             "rows", "columns", "filters", "values", "calculatedFields", "calculatedItems",
-            "showSubtotals", "showGrandTotals", "compact", "repeatLabels", "expansion"
+            "subtotalLocation", "showGrandTotals", "compact", "repeatLabels", "expansion"
     );
-    private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group");
+    private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group", "subtotal");
     private static final Set<String> VALUE_KEYS = Set.of(
             "fieldId", "summarizeBy", "displayName", "numberFormat", "baseFieldId", "baseItem", "showAs"
     );
     private static final Set<String> REFRESH_KEYS = Set.of("mode", "preserveFormatting", "refreshOnLoad");
     private static final Set<String> NATIVE_KEYS = Set.of(
             "cacheId", "cacheDefinitionPart", "cacheRecordsPart", "pivotTablePart", "fieldBindings", "preservedFeatures"
+    );
+    private static final Set<String> PRESENTATION_KEYS = Set.of("styleName", "styleOptions");
+    private static final Set<String> STYLE_OPTIONS_KEYS = Set.of(
+            "showRowHeaders", "showColumnHeaders", "showRowStripes", "showColumnStripes", "showLastColumn"
     );
     private static final Set<String> AGGREGATORS = Set.of(
             "sum", "count", "count-numbers", "average", "min", "max", "product", "stdev", "stdevp", "var", "varp", "distinct-count"
@@ -69,6 +77,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 String id = pivotId(mutation.params());
                 ObjectNode current = currentPivot(root, mutation.sheetId(), id);
                 validatePivot(root, mutation.sheetId(), current);
+                validateNoPivotDependencies(root, id);
                 yield pivotRanges(root, current);
             }
             case "pivot.update" -> {
@@ -96,7 +105,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode params = mutation.id().equals("pivot.remove") ? null : SnapshotMutationSupport.params(mutation);
         switch (id()) {
             case "pivot.add" -> add(root, mutation.sheetId(), pivots, params);
-            case "pivot.remove" -> remove(pivots, pivotId(mutation.params()));
+            case "pivot.remove" -> remove(root, pivots, pivotId(mutation.params()));
             case "pivot.update" -> update(root, mutation.sheetId(), pivots, params);
             case "pivot.refresh" -> refresh(root, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported pivot mutation: " + id());
@@ -116,8 +125,37 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         pivots.add(pivot.deepCopy());
     }
 
-    private void remove(ArrayNode pivots, String id) {
+    private void remove(ObjectNode root, ArrayNode pivots, String id) {
+        validateNoPivotDependencies(root, id);
         if (!SnapshotMutationSupport.removeById(pivots, id)) throw ServiceException.notFound("Pivot not found: " + id);
+    }
+
+    private void validateNoPivotDependencies(ObjectNode root, String pivotId) {
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            if (!rawSheet.isObject()) continue;
+            ObjectNode sheet = (ObjectNode) rawSheet;
+            ArrayNode drawings = SnapshotMutationSupport.array(sheet, "drawings");
+            ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
+            for (JsonNode rawDrawing : drawings) {
+                if (!rawDrawing.isObject()) throw ServiceException.validation("Drawing dependency record is invalid");
+                String drawingId = rawDrawing.path("id").asText();
+                String payloadId = rawDrawing.path("payloadId").asText();
+                JsonNode payload = payloads.get(payloadId);
+                if (payload == null || !payload.isObject()) throw ServiceException.validation("Drawing payload is missing: " + payloadId);
+                String kind = payload.path("kind").asText();
+                boolean primary = ("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))
+                        && pivotId.equals(payload.path("pivotId").asText());
+                boolean connected = ("slicer".equals(kind) || "timeline".equals(kind))
+                        && arrayContainsText(payload.get("connectedPivotIds"), pivotId);
+                if (primary || connected) throw ServiceException.conflict("Pivot has dependent drawing: " + drawingId);
+            }
+        }
+    }
+
+    private boolean arrayContainsText(JsonNode value, String expected) {
+        if (value == null || !value.isArray()) return false;
+        for (JsonNode entry : value) if (entry.isTextual() && expected.equals(entry.asText())) return true;
+        return false;
     }
 
     private void update(ObjectNode root, String sheetId, ArrayNode pivots, ObjectNode params) {
@@ -137,7 +175,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
 
     private ObjectNode updatedPivot(ObjectNode current, ObjectNode params) {
         ObjectNode next = current.deepCopy();
-        for (String property : List.of("source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata")) {
+        for (String property : List.of("source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata")) {
             JsonNode value = params.get(property);
             if (value != null) next.set(property, value.deepCopy());
         }
@@ -173,6 +211,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         Set<String> fieldIds = validateFieldCatalog(pivot.get("fieldCatalog"));
         validateLayout(root, pivot.get("layout"), fieldIds);
         validateRefreshPolicy(pivot.get("refreshPolicy"));
+        validatePresentation(pivot.get("presentation"));
         validateNativeMetadata(pivot.get("nativeMetadata"));
     }
 
@@ -198,8 +237,16 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 requireOnly(source, Set.of("kind", "ranges", "relationships"), "Pivot worksheet ranges source");
                 ArrayNode ranges = SnapshotMutationSupport.requiredArray(source, "ranges");
                 if (ranges.isEmpty() || ranges.size() > 10_000) throw ServiceException.validation("Pivot source ranges are invalid");
-                for (JsonNode range : ranges) SnapshotMutationSupport.range(root, range);
-                validateRelationships(root, source.get("relationships"));
+                Map<String, RangeRef> sourceRanges = new LinkedHashMap<>();
+                for (JsonNode rawRange : ranges) {
+                    if (!rawRange.isObject()) throw ServiceException.validation("Pivot source range must be an object");
+                    ObjectNode sourceRange = (ObjectNode) rawRange;
+                    SnapshotMutationSupport.validateKnownKeys(sourceRange, Set.of("sourceId", "range"), "Pivot source range");
+                    String sourceId = SnapshotMutationSupport.text(sourceRange, "sourceId");
+                    if (sourceRanges.containsKey(sourceId)) throw ServiceException.validation("Pivot sourceId is duplicated: " + sourceId);
+                    sourceRanges.put(sourceId, SnapshotMutationSupport.range(root, sourceRange.get("range")));
+                }
+                validateRelationships(root, source.get("relationships"), sourceRanges);
             }
             case "table" -> {
                 requireOnly(source, Set.of("kind", "tableId"), "Pivot table source");
@@ -217,30 +264,148 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
     }
 
-    private void validateRelationships(ObjectNode root, JsonNode raw) {
+    private void validateRelationships(ObjectNode root, JsonNode raw, Map<String, RangeRef> sourceRanges) {
         if (raw == null || !raw.isArray()) throw ServiceException.validation("Pivot source relationships must be an array");
         ArrayNode relationships = (ArrayNode) raw;
         if (relationships.size() > 10_000) throw ServiceException.validation("Pivot source relationships are invalid");
+        Set<String> sourceIds = sourceRanges.keySet();
+        Set<String> relationshipIds = new LinkedHashSet<>();
+        Set<String> incomingLeft = new LinkedHashSet<>();
+        Map<String, String> parent = new HashMap<>();
+        Map<String, Set<String>> graph = new HashMap<>();
+        sourceIds.forEach(sourceId -> { parent.put(sourceId, sourceId); graph.put(sourceId, new LinkedHashSet<>()); });
+        boolean hasLeftJoin = false;
         for (JsonNode value : relationships) {
             if (!value.isObject()) throw ServiceException.validation("Pivot source relationship must be an object");
             ObjectNode relationship = (ObjectNode) value;
             SnapshotMutationSupport.validateKnownKeys(relationship, Set.of("id", "left", "right", "join"), "Pivot source relationship");
-            SnapshotMutationSupport.text(relationship, "id");
-            validateEndpoint(root, relationship.get("left"));
-            validateEndpoint(root, relationship.get("right"));
-            if (!Set.of("inner", "left").contains(SnapshotMutationSupport.text(relationship, "join"))) {
+            String relationshipId = SnapshotMutationSupport.text(relationship, "id");
+            if (!relationshipIds.add(relationshipId)) throw ServiceException.validation("Pivot relationship id is duplicated: " + relationshipId);
+            ObjectNode left = validateEndpoint(root, relationship.get("left"), sourceRanges);
+            ObjectNode right = validateEndpoint(root, relationship.get("right"), sourceRanges);
+            if (left.path("sourceId").asText().equals(right.path("sourceId").asText())) throw ServiceException.validation("Pivot relationship cannot connect a source to itself");
+            String join = SnapshotMutationSupport.text(relationship, "join");
+            if (!Set.of("inner", "left").contains(join)) {
                 throw ServiceException.validation("Pivot source relationship join is invalid");
             }
+            String leftId = left.path("sourceId").asText();
+            String rightId = right.path("sourceId").asText();
+            String leftType = fieldType(root, sourceRanges.get(leftId), leftId, left.path("fieldId").asText());
+            String rightType = fieldType(root, sourceRanges.get(rightId), rightId, right.path("fieldId").asText());
+            if ("mixed".equals(leftType) || "mixed".equals(rightType) || !leftType.equals(rightType)) {
+                throw ServiceException.validation("Pivot relationship key types are incompatible: " + relationshipId);
+            }
+            assertUniqueLookupKeys(root, sourceRanges.get(rightId), right.path("fieldId").asText(), rightId);
+            if ("inner".equals(join)) assertUniqueLookupKeys(root, sourceRanges.get(leftId), left.path("fieldId").asText(), leftId);
+            if ("left".equals(join)) { hasLeftJoin = true; incomingLeft.add(right.path("sourceId").asText()); }
+            graph.get(leftId).add(rightId);
+            graph.get(rightId).add(leftId);
+            String leftRoot = findRoot(parent, leftId);
+            String rightRoot = findRoot(parent, rightId);
+            if (leftRoot.equals(rightRoot)) throw ServiceException.validation("Pivot relationship graph contains a cycle");
+            parent.put(leftRoot, rightRoot);
+        }
+        if (sourceIds.size() > 1 && relationships.isEmpty()) throw ServiceException.validation("Pivot relationship graph is disconnected");
+        if (sourceIds.size() > 1) {
+            Set<String> roots = new LinkedHashSet<>(sourceIds);
+            if (hasLeftJoin) roots.removeAll(incomingLeft);
+            else roots = Set.of(sourceIds.stream().sorted().findFirst().orElseThrow());
+            if (roots.size() != 1) throw ServiceException.validation("Pivot relationship graph has an ambiguous root");
+            Set<String> visited = new LinkedHashSet<>();
+            List<String> pending = new ArrayList<>();
+            pending.add(sourceIds.iterator().next());
+            while (!pending.isEmpty()) {
+                String current = pending.remove(pending.size() - 1);
+                if (!visited.add(current)) continue;
+                pending.addAll(graph.getOrDefault(current, Set.of()));
+            }
+            if (visited.size() != sourceIds.size()) throw ServiceException.validation("Pivot relationship graph is disconnected");
         }
     }
 
-    private void validateEndpoint(ObjectNode root, JsonNode raw) {
+    private String findRoot(Map<String, String> parent, String sourceId) {
+        String current = parent.get(sourceId);
+        if (current == null || current.equals(sourceId)) return sourceId;
+        String root = findRoot(parent, current);
+        parent.put(sourceId, root);
+        return root;
+    }
+
+    private ObjectNode validateEndpoint(ObjectNode root, JsonNode raw, Map<String, RangeRef> sourceRanges) {
         if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot source relationship endpoint is required");
         ObjectNode endpoint = (ObjectNode) raw;
-        SnapshotMutationSupport.validateKnownKeys(endpoint, Set.of("sheetId", "fieldId"), "Pivot source relationship endpoint");
-        String sheetId = SnapshotMutationSupport.text(endpoint, "sheetId");
-        SnapshotMutationSupport.sheet(root, sheetId);
-        SnapshotMutationSupport.text(endpoint, "fieldId");
+        SnapshotMutationSupport.validateKnownKeys(endpoint, Set.of("sourceId", "fieldId"), "Pivot source relationship endpoint");
+        String sourceId = SnapshotMutationSupport.text(endpoint, "sourceId");
+        RangeRef range = sourceRanges.get(sourceId);
+        if (range == null) throw ServiceException.validation("Pivot relationship sourceId is unknown: " + sourceId);
+        String fieldId = SnapshotMutationSupport.text(endpoint, "fieldId");
+        fieldOrdinal(sourceId, range, fieldId);
+        return endpoint;
+    }
+
+    private int fieldOrdinal(String sourceId, RangeRef range, String fieldId) {
+        String prefix = "source:" + sourceId + ":column:";
+        if (!fieldId.startsWith(prefix)) throw ServiceException.validation("Pivot relationship field is not owned by source: " + fieldId);
+        String ordinalText = fieldId.substring(prefix.length());
+        int ordinal;
+        try {
+            ordinal = Integer.parseInt(ordinalText);
+        } catch (NumberFormatException exception) {
+            throw ServiceException.validation("Pivot relationship field ordinal is invalid: " + fieldId);
+        }
+        if (ordinal < 0 || ordinal > range.endColumn() - range.startColumn()) {
+            throw ServiceException.validation("Pivot relationship field is outside source range: " + fieldId);
+        }
+        return ordinal;
+    }
+
+    private String fieldType(ObjectNode root, RangeRef range, String sourceId, String fieldId) {
+        int ordinal = fieldOrdinal(sourceId, range, fieldId);
+        Set<String> types = new LinkedHashSet<>();
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, range.sheetId());
+        for (int row = range.startRow() + 1; row <= range.endRow(); row++) {
+            ObjectNode cell = SnapshotMutationSupport.cell(sheet, new CellCoordinate(row, range.startColumn() + ordinal), false);
+            if (cell == null) continue;
+            JsonNode value = cell.get("formulaValue");
+            if (value == null || value.isNull()) value = cell.get("value");
+            String type = scalarType(value);
+            if (type != null) types.add(type);
+        }
+        if (types.isEmpty() || types.size() > 1) return "mixed";
+        return types.iterator().next();
+    }
+
+    private String scalarType(JsonNode value) {
+        if (value == null || value.isNull() || (value.isTextual() && value.asText().isEmpty())) return null;
+        if (value.isBoolean()) return "boolean";
+        if (value.isNumber()) return "number";
+        if (value.isTextual()) {
+            String text = value.asText();
+            if (text.matches("\\d{4}-\\d{2}-\\d{2}(?:[T ].*)?")) return "date";
+            return "text";
+        }
+        return "mixed";
+    }
+
+    private void assertUniqueLookupKeys(ObjectNode root, RangeRef range, String fieldId, String sourceId) {
+        int ordinal = fieldOrdinal(sourceId, range, fieldId);
+        Set<String> keys = new LinkedHashSet<>();
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, range.sheetId());
+        for (int row = range.startRow() + 1; row <= range.endRow(); row++) {
+            ObjectNode cell = SnapshotMutationSupport.cell(sheet, new CellCoordinate(row, range.startColumn() + ordinal), false);
+            JsonNode value = cell == null ? null : cell.get("formulaValue");
+            if (value == null || value.isNull()) value = cell == null ? null : cell.get("value");
+            String key = typedKey(value);
+            if (!keys.add(key)) throw ServiceException.validation("Pivot relationship lookup key is not unique: " + sourceId + ":" + fieldId);
+        }
+    }
+
+    private String typedKey(JsonNode value) {
+        if (value == null || value.isNull() || (value.isTextual() && value.asText().isEmpty())) return "blank:";
+        if (value.isBoolean()) return "boolean:" + value.asBoolean();
+        if (value.isNumber()) return "number:" + value.asText();
+        if (value.isTextual()) return "text:" + value.asText();
+        return "mixed:" + value.toString();
     }
 
     private Set<String> validateFieldCatalog(JsonNode raw) {
@@ -277,7 +442,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         for (String key : List.of("rows", "columns", "filters", "values")) {
             if (!layout.path(key).isArray()) throw ServiceException.validation("Pivot layout " + key + " must be an array");
         }
-        for (String key : List.of("showSubtotals", "showGrandTotals", "compact", "repeatLabels")) {
+        if (!layout.path("subtotalLocation").isTextual() || !Set.of("top", "bottom", "off").contains(layout.path("subtotalLocation").asText())) {
+            throw ServiceException.validation("Pivot layout subtotalLocation is invalid");
+        }
+        for (String key : List.of("showGrandTotals", "compact", "repeatLabels")) {
             if (!layout.path(key).isBoolean()) throw ServiceException.validation("Pivot layout " + key + " must be a boolean");
         }
         for (JsonNode placement : layout.path("rows")) validatePlacement(placement, fieldIds, "Pivot row field");
@@ -296,6 +464,29 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         requireField(fieldIds, placement);
         validateSort(placement.get("sort"), fieldIds, label + " sort");
         validateGroup(placement.get("group"));
+        validateSubtotal(placement.get("subtotal"), label + " subtotal");
+    }
+
+    private void validateSubtotal(JsonNode raw, String label) {
+        if (raw == null || raw.isNull()) return;
+        if (!raw.isObject()) throw ServiceException.validation(label + " must be an object");
+        ObjectNode subtotal = (ObjectNode) raw;
+        String mode = SnapshotMutationSupport.text(subtotal, "mode");
+        switch (mode) {
+            case "automatic", "none" -> SnapshotMutationSupport.validateKnownKeys(subtotal, Set.of("mode"), label);
+            case "custom" -> {
+                SnapshotMutationSupport.validateKnownKeys(subtotal, Set.of("mode", "functions"), label);
+                ArrayNode functions = SnapshotMutationSupport.requiredArray(subtotal, "functions");
+                if (functions.isEmpty() || functions.size() > AGGREGATORS.size()) throw ServiceException.validation(label + " functions are invalid");
+                Set<String> unique = new LinkedHashSet<>();
+                for (JsonNode function : functions) {
+                    if (!function.isTextual() || !AGGREGATORS.contains(function.asText()) || !unique.add(function.asText())) {
+                        throw ServiceException.validation(label + " functions are invalid");
+                    }
+                }
+            }
+            default -> throw ServiceException.validation(label + " mode is invalid");
+        }
     }
 
     private void validateFilter(JsonNode raw, Set<String> fieldIds) {
@@ -468,6 +659,19 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
     }
 
+    private void validatePresentation(JsonNode raw) {
+        if (raw == null || raw.isNull()) return;
+        if (!raw.isObject()) throw ServiceException.validation("Pivot presentation must be an object");
+        ObjectNode presentation = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(presentation, PRESENTATION_KEYS, "Pivot presentation");
+        if (presentation.has("styleName")) SnapshotMutationSupport.text(presentation, "styleName");
+        ObjectNode options = requiredObject(presentation, "styleOptions", "Pivot presentation styleOptions");
+        SnapshotMutationSupport.validateKnownKeys(options, STYLE_OPTIONS_KEYS, "Pivot presentation styleOptions");
+        for (String key : STYLE_OPTIONS_KEYS) if (!options.path(key).isBoolean()) {
+            throw ServiceException.validation("Pivot presentation style option " + key + " must be a boolean");
+        }
+    }
+
     private void validateMemberValues(JsonNode raw, String label) {
         if (raw == null || !raw.isArray() || raw.size() > 10_000) throw ServiceException.validation(label + " must be an array");
         for (JsonNode value : raw) {
@@ -542,7 +746,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             case "worksheet-range" -> List.of(SnapshotMutationSupport.range(root, source.get("range")));
             case "worksheet-ranges" -> {
                 List<RangeRef> ranges = new ArrayList<>();
-                for (JsonNode raw : SnapshotMutationSupport.requiredArray(source, "ranges")) ranges.add(SnapshotMutationSupport.range(root, raw));
+                for (JsonNode raw : SnapshotMutationSupport.requiredArray(source, "ranges")) {
+                    if (!raw.isObject()) throw ServiceException.validation("Pivot source range must be an object");
+                    ranges.add(SnapshotMutationSupport.range(root, raw.get("range")));
+                }
                 yield List.copyOf(ranges);
             }
             case "table" -> resolveTableRanges(root, SnapshotMutationSupport.text(source, "tableId"));
@@ -559,7 +766,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         switch (source.path("kind").asText()) {
             case "worksheet-range" -> consumer.accept(source.get("range"));
             case "worksheet-ranges" -> {
-                for (JsonNode range : source.path("ranges")) consumer.accept(range);
+                for (JsonNode sourceRange : source.path("ranges")) consumer.accept(sourceRange.path("range"));
             }
             default -> {
                 // Table, named-range and external data sources are moved by their own participants.

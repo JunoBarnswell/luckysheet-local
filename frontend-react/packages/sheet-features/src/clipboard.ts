@@ -1,4 +1,13 @@
-import type { CellData, RangeRef, WorkbookModel } from '@react-sheets/core-model';
+import type {
+  CellData,
+  CellHyperlink,
+  CellNote,
+  CommentThread,
+  ConditionalFormatRule,
+  DataValidationRule,
+  RangeRef,
+  WorkbookModel,
+} from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { parseCellText } from './text-input';
 
@@ -15,6 +24,116 @@ export interface ClipboardRepresentation {
 export type ClipboardTransfer = 'copy' | 'move';
 
 /**
+ * Canonical Paste Special contract.  The fields are deliberately independent:
+ * callers must not encode a combination as a string mode because content,
+ * formatting, range-owned metadata and arithmetic are separate Excel
+ * semantics.
+ */
+export type PasteContent = 'none' | 'all' | 'values' | 'formulas';
+export type PasteFormatting =
+  | 'all'
+  | 'none'
+  | 'number-format'
+  | 'source-formatting'
+  | 'all-except-borders'
+  | 'source-theme';
+export type PasteArithmetic = 'none' | 'add' | 'subtract' | 'multiply' | 'divide';
+
+export interface PasteMetadataSpec {
+  commentsNotes: boolean;
+  validation: boolean;
+  columnWidths: boolean;
+  conditionalFormats: boolean;
+  hyperlinks: boolean;
+}
+
+export interface PasteSpecialSpec {
+  content: PasteContent;
+  formatting: PasteFormatting;
+  metadata: PasteMetadataSpec;
+  operation: PasteArithmetic;
+  skipBlanks: boolean;
+  transpose: boolean;
+  /** Paste Link is represented as formulas pointing at the source range. */
+  link: boolean;
+}
+
+export const DEFAULT_PASTE_SPECIAL_SPEC: PasteSpecialSpec = {
+  content: 'all',
+  formatting: 'all',
+  metadata: {
+    commentsNotes: true,
+    validation: true,
+    columnWidths: false,
+    conditionalFormats: true,
+    hyperlinks: true,
+  },
+  operation: 'none',
+  skipBlanks: false,
+  transpose: false,
+  link: false,
+};
+
+export function createPasteSpecialSpec(overrides: Partial<PasteSpecialSpec> = {}): PasteSpecialSpec {
+  return {
+    ...structuredClone(DEFAULT_PASTE_SPECIAL_SPEC),
+    ...overrides,
+    metadata: {
+      ...structuredClone(DEFAULT_PASTE_SPECIAL_SPEC.metadata),
+      ...(overrides.metadata ?? {}),
+    },
+  };
+}
+
+/** Canonical capability gate used by both the planner and Paste Special UI. */
+export function isPasteSpecialSpecSupported(spec: PasteSpecialSpec, _payload?: ClipboardPayload): boolean {
+  // The workbook model has no editable theme owner yet. Keep the contract
+  // visible, but reject it before planning instead of reporting fake success.
+  if (spec.formatting === 'source-theme') return false;
+  if (spec.link && spec.operation !== 'none') return false;
+  if (spec.content === 'none' && spec.formatting === 'none' && spec.operation === 'none' && !spec.link
+    && !Object.values(spec.metadata).some(Boolean)) return false;
+  return true;
+}
+
+export interface ClipboardColumnWidth {
+  offset: number;
+  widthPx: number;
+}
+
+export interface ClipboardCellMetadata<T> {
+  rowOffset: number;
+  columnOffset: number;
+  value: T;
+}
+
+/** Range-owned data is carried once, outside the cell matrix. */
+export interface ClipboardRangeMetadata {
+  columnWidths: ClipboardColumnWidth[];
+  validations: DataValidationRule[];
+  conditionalFormats: ConditionalFormatRule[];
+  notes: Array<ClipboardCellMetadata<CellNote>>;
+  comments: Array<ClipboardCellMetadata<CommentThread>>;
+  hyperlinks: Array<ClipboardCellMetadata<CellHyperlink>>;
+  themeIdentity?: string;
+}
+
+export class FormulaRelocationError extends Error {
+  readonly code = 'FORMULA_RELOCATION_FAILED';
+
+  constructor(
+    readonly formula: string,
+    readonly rowOffset: number,
+    readonly columnOffset: number,
+    cause: unknown,
+  ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Formula relocation failed for ${formula}: ${detail}`);
+    this.name = 'FormulaRelocationError';
+  }
+}
+
+/**
  * Host-neutral clipboard contract.  A host may expose any subset of the
  * representations, but the command layer always consumes the normalized
  * matrix.  `representations` is intentionally a data-only value so this
@@ -25,17 +144,13 @@ export interface ClipboardPayload {
   range: RangeRef;
   values: CellData[][];
   transfer: ClipboardTransfer;
+  rangeMetadata: ClipboardRangeMetadata;
   representations?: ClipboardRepresentation[];
   mime?: string;
   html?: string;
   text?: string;
   source?: string;
 }
-
-// Temporary type-only compatibility for existing host call sites. It has no
-// runtime path or data conversion; the host migration can remove it once all
-// consumers use ClipboardPayload directly.
-export type ClipboardData = ClipboardPayload;
 
 export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRef): ClipboardPayload {
   const sheet = workbook.getSheet(range.sheetId);
@@ -50,13 +165,15 @@ export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRe
     values.push(rowList);
   }
 
-  const internal = JSON.stringify({ range, values });
+  const rangeMetadata = captureRangeMetadata(sheet, range);
+  const internal = JSON.stringify({ range, values, rangeMetadata });
   const text = formatTsv(values);
   const html = formatHtml(values);
   return {
     range: structuredClone(range),
     values,
     transfer: 'copy',
+    rangeMetadata,
     representations: [
       { mime: CLIPBOARD_INTERNAL_MIME, data: internal },
       { mime: CLIPBOARD_HTML_MIME, data: html },
@@ -66,6 +183,56 @@ export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRe
     html,
     text,
     source: 'internal',
+  };
+}
+
+function captureRangeMetadata(sheet: ReturnType<WorkbookModel['getSheet']>, range: RangeRef): ClipboardRangeMetadata {
+  const notes: Array<ClipboardCellMetadata<CellNote>> = [];
+  for (const [key, note] of sheet.notes) {
+    const row = Number(key.split(':')[0]);
+    const column = Number(key.split(':')[1]);
+    if (!Number.isInteger(row) || !Number.isInteger(column)) continue;
+    if (row < range.startRow || row > range.endRow || column < range.startColumn || column > range.endColumn) continue;
+    notes.push({ rowOffset: row - range.startRow, columnOffset: column - range.startColumn, value: structuredClone(note) });
+  }
+  const comments = sheet.commentThreads
+    .filter((thread) => thread.row >= range.startRow && thread.row <= range.endRow && thread.column >= range.startColumn && thread.column <= range.endColumn)
+    .map((thread) => ({ rowOffset: thread.row - range.startRow, columnOffset: thread.column - range.startColumn, value: structuredClone(thread) }));
+  const hyperlinks: Array<ClipboardCellMetadata<CellHyperlink>> = [];
+  for (const [key, hyperlink] of sheet.hyperlinks) {
+    const row = Number(key.split(':')[0]);
+    const column = Number(key.split(':')[1]);
+    if (!Number.isInteger(row) || !Number.isInteger(column)) continue;
+    if (row < range.startRow || row > range.endRow || column < range.startColumn || column > range.endColumn) continue;
+    hyperlinks.push({ rowOffset: row - range.startRow, columnOffset: column - range.startColumn, value: structuredClone(hyperlink) });
+  }
+  const intersects = (candidate: RangeRef): boolean => candidate.sheetId === range.sheetId
+    && candidate.startRow <= range.endRow && candidate.endRow >= range.startRow
+    && candidate.startColumn <= range.endColumn && candidate.endColumn >= range.startColumn;
+  const clip = (candidate: RangeRef): RangeRef => ({
+    sheetId: range.sheetId,
+    startRow: Math.max(candidate.startRow, range.startRow),
+    endRow: Math.min(candidate.endRow, range.endRow),
+    startColumn: Math.max(candidate.startColumn, range.startColumn),
+    endColumn: Math.min(candidate.endColumn, range.endColumn),
+  });
+  return {
+    columnWidths: Array.from({ length: range.endColumn - range.startColumn + 1 }, (_, index) => {
+      const column = range.startColumn + index;
+      const widthPx = sheet.columnWidthsPx[column];
+      return widthPx === undefined ? undefined : { offset: index, widthPx };
+    }).filter((entry): entry is ClipboardColumnWidth => entry !== undefined),
+    validations: sheet.dataValidations.filter((rule) => rule.ranges.some(intersects)).map((rule) => ({
+      ...structuredClone(rule),
+      ranges: rule.ranges.filter(intersects).map(clip),
+    })),
+    conditionalFormats: sheet.conditionalFormats.filter((rule) => rule.ranges.some(intersects)).map((rule) => ({
+      ...structuredClone(rule),
+      ranges: rule.ranges.filter(intersects).map(clip),
+    })),
+    notes,
+    comments,
+    hyperlinks,
   };
 }
 
@@ -128,7 +295,8 @@ export function parseClipboardPayload(payload: ClipboardPayload): CellData[][] {
   const internal = payload.representations?.find((entry) => entry.mime === CLIPBOARD_INTERNAL_MIME)?.data;
   if (internal) {
     try {
-      const parsed = JSON.parse(internal) as { values?: CellData[][] };
+      const parsed = JSON.parse(internal) as { values?: CellData[][]; rangeMetadata?: ClipboardRangeMetadata };
+      if (parsed.rangeMetadata && isRangeMetadata(parsed.rangeMetadata)) payload.rangeMetadata = structuredClone(parsed.rangeMetadata);
       if (Array.isArray(parsed.values)) return parsed.values.map((row) => row.map((cell) => structuredClone(cell)));
     } catch {
       // Continue to the next lossless representation rather than failing a
@@ -140,6 +308,17 @@ export function parseClipboardPayload(payload: ClipboardPayload): CellData[][] {
   if (html) return parseHtmlTable(html);
   const text = payload.representations?.find((entry) => entry.mime === CLIPBOARD_TEXT_MIME)?.data ?? payload.text;
   return text ? parseTsv(text) : [];
+}
+
+function isRangeMetadata(value: unknown): value is ClipboardRangeMetadata {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return Array.isArray(record.columnWidths)
+    && Array.isArray(record.validations)
+    && Array.isArray(record.conditionalFormats)
+    && Array.isArray(record.notes)
+    && Array.isArray(record.comments)
+    && Array.isArray(record.hyperlinks);
 }
 
 function escapeTsvField(value: string): string {
@@ -196,16 +375,12 @@ function decodeHtml(value: string): string {
     .replaceAll('&amp;', '&');
 }
 
-/**
- * Shift relative references for copy/fill/paste using the formula AST. A
- * formula that is not understood by the parser is preserved verbatim; it is
- * never rewritten by a lossy regular expression.
- */
+/** Shift relative references for copy/fill/paste using the canonical formula AST. */
 export function shiftFormula(formula: string, rowOffset: number, colOffset: number): string {
   if (!formula.trim().startsWith('=')) return formula;
   try {
     return formatFormula(offsetAst(parseFormula(formula), rowOffset, colOffset));
-  } catch {
-    return formula;
+  } catch (error) {
+    throw new FormulaRelocationError(formula, rowOffset, colOffset, error);
   }
 }

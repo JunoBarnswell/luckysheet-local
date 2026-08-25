@@ -1,7 +1,10 @@
 import { Box, Button, CheckToggle, DropdownMenu, FieldDropZone, Icon, Inline, Select, Stack, Text } from '@react-sheets/ui-system';
 import type { DragEvent, ReactNode } from 'react';
+import { useState } from 'react';
 import {
   createPivotMemberKey,
+  formatPivotMember,
+  type PivotAggregateFunction,
   pivotMemberKey,
   pivotMemberKeyEquals,
   type PivotFieldDefinition,
@@ -10,6 +13,7 @@ import {
   type PivotMemberKey,
   type PivotSort,
   type PivotScalar,
+  type PivotSubtotalDefinition,
   type PivotValueField,
 } from '@react-sheets/core-model';
 import type { PivotFieldArea as Area, PivotManualFilterState } from './pivot-contract';
@@ -37,9 +41,11 @@ export interface PivotFieldAreaProps {
   onFilter?: (fieldId: string, filter: PivotManualFilterState) => void;
   onSort?: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroup?: (fieldId: string, group: PivotGroup | undefined) => void;
+  onSubtotal?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
   valueFields?: readonly PivotValueField[];
   onValueChange?: (value: PivotValueField) => void;
   locale: Locale;
+  className?: string;
 }
 
 const icons: Record<Area, 'filter' | 'columns' | 'rows' | 'calculator'> = { filters: 'filter', columns: 'columns', rows: 'rows', values: 'calculator' };
@@ -85,7 +91,7 @@ function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state
       </Select>
       {(field.values ?? []).map((value) => {
         const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, keyFor(value)));
-        return <CheckToggle key={pivotMemberKey(keyFor(value))} label={String(value)} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />;
+        return <CheckToggle key={pivotMemberKey(keyFor(value))} label={formatPivotMember(value)} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />;
       })}
     </Stack>
   );
@@ -126,7 +132,32 @@ function groupOptions(locale: Locale, field: AreaItem, onGroup?: PivotFieldAreaP
     : null;
 }
 
-export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
+const subtotalFunctions: PivotSubtotalDefinition['mode'][] = ['automatic', 'none', 'custom'];
+const subtotalAggregates: PivotAggregateFunction[] = ['sum', 'average', 'count', 'count-numbers', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'];
+
+function subtotalOptions(locale: Locale, field: AreaItem, placement: PivotFieldPlacement | undefined, onSubtotal?: PivotFieldAreaProps['onSubtotal']): ReactNode {
+  if (!onSubtotal) return null;
+  const current = placement?.subtotal ?? { mode: 'automatic' as const };
+  const custom = current.mode === 'custom' ? current.functions : ['sum' as const];
+  return (
+    <Stack gap="xs" className="border-t border-slate-100 pt-1">
+      <Text size="xs" weight="semibold">{pivotText(locale, 'subtotal')}</Text>
+      <Select aria-label={`${field.name} ${pivotText(locale, 'subtotal')}`} sizeVariant="sm" value={current.mode} onChange={(event) => {
+        const mode = event.target.value as PivotSubtotalDefinition['mode'];
+        onSubtotal(field.fieldId, mode === 'custom' ? { mode, functions: custom.length ? custom : ['sum'] } : { mode });
+      }}>
+        {subtotalFunctions.map((mode) => <option key={mode} value={mode}>{pivotText(locale, mode === 'automatic' ? 'subtotalAutomatic' : mode === 'none' ? 'subtotalNone' : 'subtotalCustom')}</option>)}
+      </Select>
+      {current.mode === 'custom' ? <Inline gap="xs" className="flex-wrap">{subtotalAggregates.map((aggregate) => <CheckToggle key={aggregate} label={pivotText(locale, aggregate === 'count-numbers' ? 'countNumbers' : aggregate === 'distinct-count' ? 'distinctCount' : aggregate === 'var' ? 'variance' : aggregate === 'varp' ? 'variancep' : aggregate)} checked={custom.includes(aggregate)} onChange={(event) => {
+        const next = event.target.checked ? [...custom, aggregate] : custom.filter((item) => item !== aggregate);
+        onSubtotal(field.fieldId, { mode: 'custom', functions: next.length ? next : ['sum'] });
+      }} />)}</Inline> : null}
+    </Stack>
+  );
+}
+
+export function PivotFieldArea({ area, className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
+  const [valueSortFieldIds, setValueSortFieldIds] = useState<Record<string, string>>({});
   const items: AreaItem[] = fieldIds.map((fieldId, index) => {
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     return {
@@ -138,15 +169,15 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
     };
   });
   return (
-    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className="min-w-0 border-[#bdbdbd] bg-white">
-      <Inline gap="xs" className="h-8 px-2">
+    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex min-h-0 min-w-0 flex-1 flex-col border-[#bdbdbd] bg-white ${className ?? ''}`}>
+      <Inline gap="xs" className="h-8 shrink-0 px-2">
         <Icon name={icons[area]} size="xs" className="text-accent" />
         <Text size="sm" weight="medium">{pivotText(locale, area)}</Text>
       </Inline>
       <FieldDropZone<AreaItem>
         disabled={disabled}
-        emptyLabel=""
-        className="h-[92px] overflow-auto rounded-none border-0 bg-white p-1"
+        emptyLabel={pivotText(locale, 'dragFieldsHere')}
+        className="min-h-20 flex-1 overflow-auto rounded-none border-0 bg-white p-1"
         items={items}
         onDropItem={onDrop}
         renderItem={(field) => (
@@ -173,13 +204,15 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
               {({ close }) => (
                 <Inline gap="xs" className="p-1">
                    <Stack gap="xs" className="min-w-48 p-1">
+                     <Text size="xs" weight="semibold">{area === 'values' ? pivotText(locale, 'valueSettings') : pivotText(locale, 'fieldSettings')}</Text>
                      <Inline gap="xs">
                         <Button aria-label={pivotText(locale, 'moveUp')} disabled={field.index === 0} icon="arrow-up" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.fieldId, field.index, -1); close(); }} />
                         <Button aria-label={pivotText(locale, 'moveDown')} disabled={field.index === items.length - 1} icon="arrow-down" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.fieldId, field.index, 1); close(); }} />
                         <Button aria-label={pivotText(locale, 'remove')} icon="trash" iconOnly size="xs" variant="danger" onClick={() => { onRemove(field.fieldId, field.index); close(); }} />
                      </Inline>
-                      {onSort ? <Stack gap="xs" className="border-t border-slate-100 pt-1"><Text size="xs" weight="semibold">{pivotText(locale, 'sortBy')}</Text><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'label' }); close(); }}>{pivotText(locale, 'ascending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'label' }); close(); }}>{pivotText(locale, 'descending')}</Button></Inline><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'value' }); close(); }}>{pivotText(locale, 'valueAscending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'value' }); close(); }}>{pivotText(locale, 'valueDescending')}</Button></Inline><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, undefined); close(); }}>{pivotText(locale, 'clearSort')}</Button></Stack> : null}
+                      {onSort ? <Stack gap="xs" className="border-t border-slate-100 pt-1"><Text size="xs" weight="semibold">{pivotText(locale, 'sortBy')}</Text><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'label' }); close(); }}>{pivotText(locale, 'ascending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'label' }); close(); }}>{pivotText(locale, 'descending')}</Button></Inline><Select aria-label={`${field.name} ${pivotText(locale, 'sortField')}`} sizeVariant="sm" disabled={disabled || valueFields.length === 0} value={valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueFieldId ?? ''} onChange={(event) => setValueSortFieldIds((current) => ({ ...current, [field.fieldId]: event.target.value }))}><option value="" disabled>{pivotText(locale, 'sortField')}</option>{valueFields.map((value) => <option key={value.fieldId} value={value.fieldId}>{value.displayName ?? value.fieldId}</option>)}</Select><Inline gap="xs"><Button size="xs" variant="ghost" disabled={!valueSortFieldIds[field.fieldId] && !field.placement?.sort?.valueFieldId} onClick={() => { const valueFieldId = valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueFieldId; if (valueFieldId) { onSort(field.fieldId, { direction: 'ascending', by: 'value', valueFieldId }); close(); } }}>{pivotText(locale, 'valueAscending')}</Button><Button size="xs" variant="ghost" disabled={!valueSortFieldIds[field.fieldId] && !field.placement?.sort?.valueFieldId} onClick={() => { const valueFieldId = valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueFieldId; if (valueFieldId) { onSort(field.fieldId, { direction: 'descending', by: 'value', valueFieldId }); close(); } }}>{pivotText(locale, 'valueDescending')}</Button></Inline><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, undefined); close(); }}>{pivotText(locale, 'clearSort')}</Button></Stack> : null}
                       {groupOptions(locale, field, onGroup)}
+                      {area !== 'values' && area !== 'filters' ? subtotalOptions(locale, field, field.placement, onSubtotal) : null}
                       {area === 'values' && onValueChange ? (() => {
                         const value = valueFields.find((entry) => entry.fieldId === field.fieldId);
                         return value ? <PivotValueEditor locale={locale} fields={fields} value={value} disabled={disabled} onChange={onValueChange} /> : null;

@@ -5,8 +5,13 @@ import type {
   PivotDefinition,
   PivotFieldDataType,
   PivotFieldPlacement,
+  PivotGroup,
   PivotLayout,
   PivotModel,
+  PivotNativeCacheFlags,
+  PivotNativeAutoSortMetadata,
+  PivotNativeFilterMetadata,
+  PivotRefreshPolicy,
   PivotScalar,
   PivotSource,
   PivotValueField,
@@ -14,12 +19,18 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
+import { createPivotMemberKey, DEFAULT_PIVOT_STYLE_OPTIONS, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
   NativePivotCacheField,
   NativePivotControlDefinition,
   NativePivotDataField,
+  NativePivotFilter,
+  NativePivotAutoSortScope,
+  NativePivotFieldGroup,
+  NativePivotFieldRange,
+  NativePivotScalar,
   NativePivotGraph,
   NativePivotPackageUpdate,
   NativePivotSource,
@@ -133,11 +144,21 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         columnFields: parseFieldIndexes(child(definition, 'colFields'), 'colFields'),
         pageFields: parseFieldIndexes(child(definition, 'pageFields'), 'pageFields'),
         dataFields: parseDataFields(child(definition, 'dataFields')),
+        ...(child(definition, 'pivotFilters') ? { pivotFilters: parsePivotFilters(child(definition, 'pivotFilters')) } : {}),
         ...optionalBoolean(definition.attrs.rowGrandTotals ?? definition.attrs.showRowGrandTotals, 'showRowGrandTotals'),
         ...optionalBoolean(definition.attrs.colGrandTotals ?? definition.attrs.showColumnGrandTotals, 'showColumnGrandTotals'),
         ...optionalBoolean(definition.attrs.compactData, 'compactData'),
         ...optionalBoolean(definition.attrs.repeatAllLabels, 'repeatLabels'),
+        ...optionalBoolean(definition.attrs.showDrill, 'showButtons'),
+        subtotalLocation: definition.attrs.showSubtotals === '0' ? 'off' : definition.attrs.subtotalTop === '1' || definition.attrs.subtotalTop === 'true' ? 'top' : 'bottom',
         ...(style?.attrs.name ? { styleName: style.attrs.name } : {}),
+        ...(style ? { styleOptions: {
+          showRowHeaders: style.attrs.showRowHeaders === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showRowHeaders : style.attrs.showRowHeaders !== '0',
+          showColumnHeaders: style.attrs.showColHeaders === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showColumnHeaders : style.attrs.showColHeaders !== '0',
+          showRowStripes: style.attrs.showRowStripes === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showRowStripes : style.attrs.showRowStripes === '1',
+          showColumnStripes: style.attrs.showColStripes === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showColumnStripes : style.attrs.showColStripes === '1',
+          showLastColumn: style.attrs.showLastColumn === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showLastColumn : style.attrs.showLastColumn === '1',
+        } } : {}),
       });
     }
   }
@@ -292,6 +313,48 @@ function readControlDrawingAnchor(bytes: Uint8Array, name: string): { row: numbe
   return undefined;
 }
 
+function nativeCacheIdentity(cacheId: number): string { return `native-cache:${cacheId}`; }
+
+function nativeRefreshMode(flags: PivotNativeCacheFlags | NativePivotCacheDefinition): PivotRefreshPolicy['mode'] {
+  if (flags.refreshOnSave === true) return 'on-change';
+  if (flags.refreshOnLoad === true) return 'on-open';
+  return 'manual';
+}
+
+function cacheFlagsSnapshot(cache: NativePivotCacheDefinition): PivotNativeCacheFlags {
+  return {
+    ...(cache.refreshOnLoad === undefined ? {} : { refreshOnLoad: cache.refreshOnLoad }),
+    ...(cache.refreshOnSave === undefined ? {} : { refreshOnSave: cache.refreshOnSave }),
+    ...(cache.saveData === undefined ? {} : { saveData: cache.saveData }),
+    ...(cache.enableRefresh === undefined ? {} : { enableRefresh: cache.enableRefresh }),
+  };
+}
+
+function refreshPolicyForNativeCache(cache: NativePivotCacheDefinition): PivotRefreshPolicy {
+  const mode = nativeRefreshMode(cache);
+  return normalizePivotRefreshPolicy({ mode, preserveFormatting: true, refreshOnLoad: mode !== 'manual' });
+}
+
+function cacheRefreshPolicyChanged(pivot: PivotDefinition): boolean {
+  const flags = pivot.nativeMetadata?.cacheFlags;
+  if (!flags) return true;
+  return normalizePivotRefreshPolicy(pivot.refreshPolicy).mode !== nativeRefreshMode(flags);
+}
+
+/**
+ * Apply the canonical mode to a native cache only when a Pivot policy was
+ * edited. This preserves omitted XML attributes on an import→export no-op,
+ * while ensuring edits reach both new and reused cache definitions.
+ */
+function synchronizeCacheRefreshPolicy(cache: NativePivotCacheDefinition, entries: readonly PivotDefinition[]): void {
+  const policy = normalizePivotRefreshPolicy(entries[0]!.refreshPolicy);
+  if (entries.some(cacheRefreshPolicyChanged)) {
+    cache.refreshOnLoad = policy.mode !== 'manual';
+    cache.refreshOnSave = refreshOnSaveForPivotMode(policy.mode);
+    if (policy.mode !== 'manual') cache.enableRefresh = true;
+  }
+}
+
 function isSlicerCacheRelation(relation: XlsxRelationship): boolean { return relation.type === REL_SLICER_CACHE_MODERN || relation.type === REL_SLICER_CACHE || relation.type.endsWith('/slicerCache'); }
 function isSlicerRelation(relation: XlsxRelationship): boolean { return relation.type === REL_SLICER || relation.type.endsWith('/slicer'); }
 function isTimelineCacheRelation(relation: XlsxRelationship): boolean { return relation.type === REL_TIMELINE_CACHE || relation.type === REL_TIMELINE_CACHE_ALT || relation.type.endsWith('/timelineCache') || relation.type.endsWith('/TimelineCache'); }
@@ -354,19 +417,49 @@ export function mapNativePivotDefinition(
     };
   });
   const fieldId = (index: number): string => fields[index]?.fieldId ?? nativeFieldId(cache.cacheId, index);
+  const mappedFilters = mapNativePivotFilters(table.pivotFilters ?? [], fields, table.dataFields);
+  const preservedAutoSortScopes = table.fields.flatMap((field) => {
+    if (!field.autoSortScope || nativePivotSort(field, table.dataFields, fieldId) || (field.sortType === undefined && field.nonAutoSortDefault === undefined)) return [];
+    return [{
+      fieldIndex: field.index,
+      ...(field.sortType ? { sortType: field.sortType } : {}),
+      ...(field.nonAutoSortDefault !== undefined ? { nonAutoSortDefault: field.nonAutoSortDefault } : {}),
+      attributes: { ...field.autoSortScope.attributes },
+      references: field.autoSortScope.references.map((reference) => ({ ...reference, ...(reference.itemIndexes ? { itemIndexes: [...reference.itemIndexes] } : {}) })),
+    } satisfies PivotNativeAutoSortMetadata];
+  });
+  const placement = (index: number): PivotFieldPlacement => {
+    const group = nativePivotGroup(cache.fields[index], cache, fieldId(index));
+    const subtotal = nativePivotSubtotal(table.fields[index]);
+    const sort = nativePivotSort(table.fields[index], table.dataFields, fieldId);
+    return { fieldId: fieldId(index), ...(sort ? { sort } : {}), ...(group ? { group } : {}), ...(subtotal ? { subtotal } : {}) };
+  };
   const layout: PivotLayout = {
-    rows: table.rowFields.map((index) => ({ fieldId: fieldId(index) })),
-    columns: table.columnFields.map((index) => ({ fieldId: fieldId(index) })),
-    filters: table.pageFields.map((index) => ({ kind: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
+    rows: table.rowFields.map(placement),
+    columns: table.columnFields.map(placement),
+    filters: [
+      ...table.pageFields.map((index) => ({ kind: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
+      ...mappedFilters.filters,
+    ],
     values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
-    showSubtotals: table.showSubtotals ?? true,
+    subtotalLocation: table.subtotalLocation ?? 'bottom',
     showGrandTotals: (table.showRowGrandTotals ?? true) || (table.showColumnGrandTotals ?? true),
     compact: table.compactData ?? table.fields.some((field) => field.compact === true),
     repeatLabels: table.repeatLabels ?? false,
-    expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+    expansion: {
+      expandedNodeIds: [],
+      collapsedNodeIds: table.fields.flatMap((field) => field.axis === 'row'
+        ? (field.collapsedItemIndexes ?? []).flatMap((index) => {
+          const value = cache.fields[field.index]?.sharedItems?.[index];
+          return value === undefined ? [] : [`${fieldId(field.index)}=${pivotMemberKey(createPivotMemberKey(value))}`];
+        })
+        : []),
+      showButtons: table.showButtons ?? true,
+    },
   };
   const fieldBindings: Record<string, { cacheFieldIndex: number; sourceName?: string }> = {};
   for (const field of fields) fieldBindings[field.fieldId] = { cacheFieldIndex: field.ordinal, sourceName: field.name };
+  const refreshPolicy = refreshPolicyForNativeCache(cache);
   return {
     schema: 'PivotDefinition',
     id: nativePivotId(table),
@@ -374,8 +467,24 @@ export function mapNativePivotDefinition(
     target: { sheetId: target.id, anchor: { row: location.startRow, column: location.startColumn } },
     fieldCatalog: { schema: 'PivotFieldCatalog', fields },
     layout,
-    refreshPolicy: { mode: cache.refreshOnLoad ? 'on-open' : 'manual', preserveFormatting: true, refreshOnLoad: cache.refreshOnLoad ?? true },
-    nativeMetadata: { cacheId: cache.cacheId, cacheDefinitionPart: cache.part, ...(cache.recordsPart ? { cacheRecordsPart: cache.recordsPart } : {}), pivotTablePart: table.part, fieldBindings },
+    refreshPolicy,
+    ...(table.styleName || table.styleOptions ? {
+      presentation: {
+        ...(table.styleName ? { styleName: table.styleName } : {}),
+        styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) },
+      },
+    } : {}),
+    nativeMetadata: {
+      cacheKey: nativeCacheIdentity(cache.cacheId),
+      cacheId: cache.cacheId,
+      cacheDefinitionPart: cache.part,
+      ...(cache.recordsPart ? { cacheRecordsPart: cache.recordsPart } : {}),
+      pivotTablePart: table.part,
+      cacheFlags: cacheFlagsSnapshot(cache),
+      fieldBindings,
+      ...(mappedFilters.preserved.length ? { preservedPivotFilters: mappedFilters.preserved } : {}),
+      ...(preservedAutoSortScopes.length ? { preservedAutoSortScopes } : {}),
+    },
   };
 }
 
@@ -426,8 +535,20 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
   const partNumbers = nextPartNumbers(files);
   let nextCacheId = Math.max(0, ...existing.caches.map((cache) => cache.cacheId)) + 1;
   const cacheBySource = new Map<string, NativePivotCacheDefinition>();
+  const cacheByIdentity = new Map<string, NativePivotCacheDefinition>();
   const pivotEntries = input.snapshot.sheets.flatMap((sheet) => sheet.pivots.map((pivot) => ({ sheet, pivot })));
+  type PlannedPivotEntry = {
+    targetSheet: typeof pivotEntries[number]['sheet'];
+    pivot: PivotDefinition;
+    targetPart: string;
+    sourceInfo: { key: string; source: NativePivotSource; sheet: SheetSnapshot; range: RangeRef; tableName?: string };
+    oldTable?: NativePivotTableDefinition;
+    cache: NativePivotCacheDefinition;
+  };
+  const plannedEntries: PlannedPivotEntry[] = [];
 
+  // First resolve every cache assignment. Policy validation happens before any
+  // OOXML part is rebuilt, so a shared-cache conflict fails atomically.
   for (const { sheet: targetSheet, pivot: inputPivot } of pivotEntries) {
     const pivot = normalizePivot(inputPivot);
     if (!pivot) continue;
@@ -444,16 +565,65 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
       }
       continue;
     }
+    const cacheKey = `${sourceInfo.key}|${pivotGroupingKey(pivot)}`;
+    const requestedIdentity = pivot.nativeMetadata?.cacheKey ?? cacheKey;
     let cache = pivot.nativeMetadata?.cacheId === undefined ? undefined : existingCaches.get(pivot.nativeMetadata.cacheId);
-    if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheBySource.get(sourceInfo.key);
+    if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheByIdentity.get(requestedIdentity);
+    if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheBySource.get(cacheKey);
     if (!cache) {
-      cache = { cacheId: nextCacheId++, part: `xl/pivotCache/pivotCacheDefinition${partNumbers.cacheDefinition++}.xml`, recordsPart: `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`, source: sourceInfo.source, fields: [], refreshOnLoad: pivot.refreshPolicy.refreshOnLoad, refreshOnSave: pivot.refreshPolicy.mode === 'on-change', saveData: true, enableRefresh: true };
+      const policy = normalizePivotRefreshPolicy(pivot.refreshPolicy);
+      cache = {
+        cacheId: nextCacheId++,
+        part: `xl/pivotCache/pivotCacheDefinition${partNumbers.cacheDefinition++}.xml`,
+        recordsPart: `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`,
+        source: sourceInfo.source,
+        fields: [],
+        refreshOnLoad: policy.mode !== 'manual',
+        refreshOnSave: refreshOnSaveForPivotMode(policy.mode),
+        saveData: true,
+        enableRefresh: true,
+      };
     }
+    cacheBySource.set(cacheKey, cache);
+    cacheByIdentity.set(requestedIdentity, cache);
+    cacheByIdentity.set(cacheKey, cache);
+    plannedEntries.push({ targetSheet, pivot, targetPart: targetPart!, sourceInfo, ...(oldTable ? { oldTable } : {}), cache });
+  }
+
+  const policyByCache = new Map<number, { mode: PivotRefreshPolicy['mode']; pivots: PivotDefinition[] }>();
+  for (const entry of plannedEntries) {
+    const policy = normalizePivotRefreshPolicy(entry.pivot.refreshPolicy);
+    const current = policyByCache.get(entry.cache.cacheId);
+    if (current && current.mode !== policy.mode) {
+      throw new Error(`Pivot cache ${entry.cache.cacheId} has conflicting refresh policies: ${current.mode} and ${policy.mode}`);
+    }
+    if (current) current.pivots.push(entry.pivot);
+    else policyByCache.set(entry.cache.cacheId, { mode: policy.mode, pivots: [entry.pivot] });
+  }
+  for (const entry of plannedEntries) {
+    const policy = policyByCache.get(entry.cache.cacheId);
+    if (policy) synchronizeCacheRefreshPolicy(entry.cache, policy.pivots);
+  }
+
+  for (const { targetSheet, pivot, targetPart, sourceInfo, oldTable, cache } of plannedEntries) {
     usedCaches.add(cache.cacheId);
-    cacheBySource.set(sourceInfo.key, cache);
     const sourceRows = readSourceRows(sourceInfo.sheet, sourceInfo.range, pivot, sourceInfo.tableName);
     cache.source = sourceInfo.source;
-    cache.fields = sourceRows.fields.map((field, index) => ({ index, name: field.name, dataType: field.dataType, sharedItems: uniqueScalars(sourceRows.rows.map((row) => row[index] ?? null)) }));
+    const previousFields = cache.fields;
+    const groupedOrdinals = new Set([...pivot.layout.rows, ...pivot.layout.columns].flatMap((placement) => {
+      if (!placement.group) return [];
+      const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === placement.fieldId || candidate.name === placement.fieldId);
+      return field ? [field.ordinal] : [];
+    }));
+    cache.fields = sourceRows.fields.map((field, index) => ({
+      index,
+      name: field.name,
+      dataType: field.dataType,
+      sharedItems: uniqueScalars(sourceRows.rows.map((row) => row[index] ?? null)),
+      ...(previousFields[index]?.fieldGroup && (!nativePivotGroup(previousFields[index], cache, nativeFieldId(cache.cacheId, index)) || groupedOrdinals.has(index))
+        ? { fieldGroup: structuredClone(previousFields[index]!.fieldGroup) } : {}),
+    }));
+    applyCanonicalPivotGroups(cache, pivot);
     cache.recordCount = sourceRows.rows.length;
     cache.recordsPart ??= `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`;
     files[cache.part] = strToU8(buildCacheDefinitionXml(cache));
@@ -616,7 +786,7 @@ function buildSlicerCacheXml(control: NativePivotControlDefinition, payload: { k
   const values = field?.sharedItems ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId)?.values ?? [];
   const selected = new Set(payload.filter.memberKeys.map((value) => `${value.type}:${JSON.stringify(value.value)}`));
   const items = values.map((value, index) => {
-    const key = nativeMemberKey(value);
+    const key = createPivotMemberKey(value);
     const keyValue = `${key.type}:${JSON.stringify(key.value)}`;
     const checked = payload.filter.mode === 'include' ? selected.has(keyValue) : payload.filter.mode === 'exclude' ? !selected.has(keyValue) : false;
     return `<i x="${index}"${checked ? ' s="1"' : ''}/>`;
@@ -743,6 +913,10 @@ function normalizePivot(input: PivotModel): PivotDefinition | undefined {
   return structuredClone(input);
 }
 
+function pivotGroupingKey(pivot: PivotDefinition): string {
+  return JSON.stringify({ rows: pivot.layout.rows.map((placement) => placement.group ?? null), columns: pivot.layout.columns.map((placement) => placement.group ?? null) });
+}
+
 function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefinition, tableName?: string): { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] } {
   const fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }> = [];
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
@@ -758,6 +932,47 @@ function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefin
   return { fields, rows };
 }
 
+function applyCanonicalPivotGroups(cache: NativePivotCacheDefinition, pivot: PivotDefinition): void {
+  const placements = [...pivot.layout.rows, ...pivot.layout.columns];
+  for (const placement of placements) {
+    if (!placement.group) continue;
+    const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === placement.fieldId || candidate.name === placement.fieldId);
+    if (!field || !cache.fields[field.ordinal]) continue;
+    cache.fields[field.ordinal]!.fieldGroup = buildNativeFieldGroup(placement.group, field.ordinal, cache.fields[field.ordinal]!.sharedItems ?? []);
+  }
+}
+
+function buildNativeFieldGroup(group: PivotGroup, base: number, sharedItems: NativePivotScalar[]): NativePivotFieldGroup {
+  if (group.kind === 'date') {
+    const range: NativePivotFieldRange = {
+      groupBy: `${group.unit}s`,
+      ...(group.start === undefined ? {} : { start: group.start }),
+      ...(group.end === undefined ? {} : { end: group.end }),
+      ...(group.autoStart === undefined ? {} : { autoStart: group.autoStart }),
+      ...(group.autoEnd === undefined ? {} : { autoEnd: group.autoEnd }),
+    };
+    return { base, range };
+  }
+  if (group.kind === 'number') {
+    return {
+      base,
+      range: {
+        groupBy: 'range', interval: group.interval,
+        ...(group.start === undefined ? {} : { start: group.start }),
+        ...(group.end === undefined ? {} : { end: group.end }),
+        ...(group.autoStart === undefined ? {} : { autoStart: group.autoStart }),
+        ...(group.autoEnd === undefined ? {} : { autoEnd: group.autoEnd }),
+      },
+    };
+  }
+  const groupItems = group.groups.map((candidate) => candidate.name);
+  const groupByMember = new Map<string, number>();
+  group.groups.forEach((candidate, groupIndex) => candidate.items.forEach((item) => groupByMember.set(pivotMemberKey(item), groupIndex)));
+  const ungrouped = groupItems.length;
+  const discreteIndexes = sharedItems.map((value) => groupByMember.get(pivotMemberKey(createPivotMemberKey(value))) ?? ungrouped);
+  return { base, discreteIndexes, groupItems };
+}
+
 function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinition, part: string, sheetPart: string, old: NativePivotTableDefinition | undefined, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): NativePivotTableDefinition {
   const fieldIndex = (placement: PivotFieldPlacement | PivotValueField): number => {
     const id = placement.fieldId;
@@ -765,22 +980,79 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
   };
   const rows = pivot.layout.rows.map(fieldIndex).filter((index) => index >= 0);
   const columns = pivot.layout.columns.map(fieldIndex).filter((index) => index >= 0);
-  const pages = pivot.layout.filters.map(fieldIndex).filter((index) => index >= 0);
+  const pages = pivot.layout.filters
+    .filter((filter) => filter.kind === 'manual' && (filter.scope ?? 'report') === 'report')
+    .map(fieldIndex)
+    .filter((index) => index >= 0);
+  const subtotalForField = (index: number) => pivot.layout.rows.find((placement) => fieldIndex(placement) === index)?.subtotal
+    ?? pivot.layout.columns.find((placement) => fieldIndex(placement) === index)?.subtotal;
   const dataFields = pivot.layout.values.map((value) => ({ field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) })).filter((value) => value.field >= 0);
+  const placementForField = (index: number): PivotFieldPlacement | undefined => [...pivot.layout.rows, ...pivot.layout.columns].find((placement) => fieldIndex(placement) === index);
+  const nativeSortForField = (index: number): Pick<NativePivotTableField, 'sortType' | 'nonAutoSortDefault' | 'autoSortScope'> => {
+    const sort = placementForField(index)?.sort;
+    if (!sort) {
+      const preserved = pivot.nativeMetadata?.preservedAutoSortScopes?.find((candidate) => candidate.fieldIndex === index);
+      return preserved ? {
+        ...(preserved.sortType ? { sortType: preserved.sortType } : {}),
+        ...(preserved.nonAutoSortDefault === undefined ? {} : { nonAutoSortDefault: preserved.nonAutoSortDefault }),
+        autoSortScope: {
+          attributes: { ...preserved.attributes },
+          references: preserved.references.map((reference) => ({ ...reference, ...(reference.itemIndexes ? { itemIndexes: [...reference.itemIndexes] } : {}) })),
+        },
+      } : {};
+    }
+    const preserved = pivot.nativeMetadata?.preservedAutoSortScopes?.find((candidate) => candidate.fieldIndex === index);
+    const valueFieldOrdinal = sort.valueFieldId === undefined ? -1 : pivot.fieldCatalog.fields.find((field) => field.fieldId === sort.valueFieldId || field.name === sort.valueFieldId)?.ordinal ?? -1;
+    const valueField = valueFieldOrdinal < 0 ? undefined : dataFields.find((value) => value.field === valueFieldOrdinal);
+    return {
+      sortType: sort.direction,
+      ...(preserved?.nonAutoSortDefault === undefined ? {} : { nonAutoSortDefault: preserved.nonAutoSortDefault }),
+      autoSortScope: {
+        ...(sort.by === 'value' ? { dataOnly: true } : { dataOnly: false }),
+        fieldPosition: 0,
+        attributes: { dataOnly: sort.by === 'value' ? '1' : '0', fieldPosition: '0' },
+        references: valueField ? [{ field: valueField.field, selected: false, itemIndexes: [] }] : [],
+      },
+    };
+  };
   const oldAnchor = old?.locationRef ? parseA1(old.locationRef.split(':')[0] ?? '') : undefined;
   const locationRef = oldAnchor
     && oldAnchor.row === pivot.target.anchor.row
     && oldAnchor.column === pivot.target.anchor.column
     ? old?.locationRef
     : deriveLocation(pivot, source.rows.length, rows.length, columns.length, dataFields.length);
+  const styleName = pivot.presentation?.styleName ?? old?.styleName;
+  const styleOptions = pivot.presentation?.styleOptions ?? old?.styleOptions;
+  const collapsedItemIndexes = new Map<number, number[]>();
+  for (const nodeId of pivot.layout.expansion?.collapsedNodeIds ?? []) {
+    const separator = nodeId.indexOf('=');
+    if (separator <= 0) continue;
+    const fieldIdValue = nodeId.slice(0, separator);
+    const member = nodeId.slice(separator + 1);
+    const fieldIndexValue = pivot.fieldCatalog.fields.find((field) => field.fieldId === fieldIdValue || field.name === fieldIdValue)?.ordinal ?? -1;
+    if (fieldIndexValue < 0) continue;
+    const sharedItems = cache.fields[fieldIndexValue]?.sharedItems ?? [];
+    const index = sharedItems.findIndex((value) => pivotMemberKey(createPivotMemberKey(value)) === member);
+    if (index >= 0) collapsedItemIndexes.set(fieldIndexValue, [...(collapsedItemIndexes.get(fieldIndexValue) ?? []), index]);
+  }
   return {
     name: old?.name ?? (pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable'),
     part, sheetPart, relationshipId: old?.relationshipId ?? '', cacheId: cache.cacheId, pivotId: pivot.id,
     locationRef,
-    fields: source.fields.map((_, index) => ({ index, ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}), ...(pivot.layout.compact ? { compact: true } : {}) })),
+    fields: source.fields.map((_, index) => ({
+      index,
+      ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}),
+      ...nativeSortForField(index),
+      ...(pivot.layout.compact ? { compact: true } : {}),
+      ...((collapsedItemIndexes.get(index)?.length ?? 0) > 0 ? { collapsedItemIndexes: [...new Set(collapsedItemIndexes.get(index))] } : {}),
+      ...(subtotalForField(index) ? { subtotal: structuredClone(subtotalForField(index)) } : {}),
+    })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
-    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, showSubtotals: pivot.layout.showSubtotals, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
-    ...(old?.styleName ? { styleName: old.styleName } : {}),
+    pivotFilters: buildNativePivotFilters(pivot, dataFields),
+    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
+    ...(styleName ? { styleName } : {}),
+    ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
+    showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,
   };
 }
 
@@ -790,10 +1062,47 @@ function buildCacheDefinitionXml(cache: NativePivotCacheDefinition): string {
     const values = field.sharedItems ?? [];
     const contains = field.dataType === 'string' ? ' containsString="1"' : field.dataType === 'date' ? ' containsDate="1"' : field.dataType === 'number' ? ' containsNumber="1"' : field.dataType === 'boolean' ? ' containsBoolean="1"' : '';
     const shared = values.map((value) => value === null ? '<m/>' : typeof value === 'string' ? `<s v="${encodeXml(value)}"/>` : typeof value === 'boolean' ? `<b v="${value ? '1' : '0'}"/>` : field.dataType === 'date' ? `<d v="${value}"/>` : `<n v="${value}"/>`).join('');
-    return `<cacheField name="${encodeXml(field.name)}"><sharedItems count="${values.length}"${contains}>${shared}</sharedItems></cacheField>`;
+    const fieldGroup = field.fieldGroup ? buildNativeFieldGroupXml(field.fieldGroup) : '';
+    return `<cacheField name="${encodeXml(field.name)}"><sharedItems count="${values.length}"${contains}>${shared}</sharedItems>${fieldGroup}</cacheField>`;
   }).join('');
   const attrs = [...(cache.recordCount === undefined ? [] : [`recordCount="${cache.recordCount}"`]), ...boolAttr(cache.refreshOnLoad, 'refreshOnLoad'), ...boolAttr(cache.refreshOnSave, 'refreshOnSave'), ...boolAttr(cache.saveData, 'saveData'), ...boolAttr(cache.enableRefresh, 'enableRefresh')];
   return withXmlDeclaration(`<pivotCacheDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"${attrs.length ? ` ${attrs.join(' ')}` : ''}><cacheSource type="worksheet">${source}</cacheSource><cacheFields count="${cache.fields.length}">${fields}</cacheFields></pivotCacheDefinition>`);
+}
+
+function buildNativeFieldGroupXml(group: NativePivotFieldGroup): string {
+  const attrs = [
+    ...(group.base === undefined ? [] : [`base="${group.base}"`]),
+    ...(group.parent === undefined ? [] : [`par="${group.parent}"`]),
+  ];
+  const range = group.range ? buildNativeFieldRangeXml(group.range) : '';
+  const discrete = group.discreteIndexes ? `<discretePr count="${group.discreteIndexes.length}">${group.discreteIndexes.map((index) => `<x v="${index}"/>`).join('')}</discretePr>` : '';
+  const items = group.groupItems ? `<groupItems count="${group.groupItems.length}">${group.groupItems.map(nativePivotScalarXml).join('')}</groupItems>` : '';
+  return `<fieldGroup${attrs.length ? ` ${attrs.join(' ')}` : ''}>${range}${discrete}${items}</fieldGroup>`;
+}
+
+function buildNativeFieldRangeXml(range: NativePivotFieldRange): string {
+  const attrs = [
+    ...(range.groupBy === undefined ? [] : [`groupBy="${encodeXml(range.groupBy)}"`]),
+    ...(range.interval === undefined ? [] : [`groupInterval="${range.interval}"`]),
+    ...rangeBoundAttr(range.start, 'start'),
+    ...rangeBoundAttr(range.end, 'end'),
+    ...boolAttr(range.autoStart, 'autoStart'),
+    ...boolAttr(range.autoEnd, 'autoEnd'),
+  ];
+  return `<rangePr${attrs.length ? ` ${attrs.join(' ')}` : ''}/>`;
+}
+
+function rangeBoundAttr(value: NativePivotScalar | undefined, name: 'start' | 'end'): string[] {
+  if (value === undefined || value === null) return [];
+  if (typeof value === 'number') return [`${name}Num="${value}"`];
+  return [`${name}Date="${encodeXml(String(value))}"`];
+}
+
+function nativePivotScalarXml(value: NativePivotScalar): string {
+  if (value === null) return '<m/>';
+  if (typeof value === 'string') return `<s v="${encodeXml(value)}"/>`;
+  if (typeof value === 'boolean') return `<b v="${value ? '1' : '0'}"/>`;
+  return `<n v="${encodeXml(String(value))}"/>`;
 }
 
 function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScalar[][]): string {
@@ -803,13 +1112,86 @@ function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScal
 }
 
 function buildPivotTableXml(table: NativePivotTableDefinition): string {
-  const fields = table.fields.map((field) => `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}/>`).join('');
+  const fields = table.fields.map((field) => {
+    const items = field.collapsedItemIndexes?.length ? `<items count="${field.collapsedItemIndexes.length}">${field.collapsedItemIndexes.map((index) => `<item x="${index}" sd="0"/>`).join('')}</items>` : '';
+    const subtotal = nativePivotSubtotalAttrs(field.subtotal);
+    const sortType = field.sortType && field.sortType !== 'manual' ? ` sortType="${field.sortType}"` : field.sortType === 'manual' ? ' sortType="manual"' : '';
+    const nonAutoSortDefault = field.nonAutoSortDefault === undefined ? '' : ` nonAutoSortDefault="${field.nonAutoSortDefault ? '1' : '0'}"`;
+    const autoSortScope = field.autoSortScope ? buildAutoSortScopeXml(field.autoSortScope) : '';
+    return `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}${sortType}${nonAutoSortDefault}${subtotal}>${items}${autoSortScope}</pivotField>`;
+  }).join('');
   const rows = table.rowFields.map((field) => `<field x="${field}"/>`).join('');
   const columns = table.columnFields.map((field) => `<field x="${field}"/>`).join('');
   const pages = table.pageFields.map((field) => `<pageField fld="${field}"/>`).join('');
   const data = table.dataFields.map((field) => `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}/>`).join('');
-  const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0"/>` : '';
-  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}"><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${style}</pivotTableDefinition>`);
+  const filters = table.pivotFilters?.length ? `<pivotFilters count="${table.pivotFilters.length}">${table.pivotFilters.map(buildPivotFilterXml).join('')}</pivotFilters>` : '';
+  const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
+  const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
+  const subtotalAttrs = table.subtotalLocation === 'off' ? ' showSubtotals="0"' : table.subtotalLocation === 'top' ? ' subtotalTop="1"' : ' subtotalTop="0"';
+  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
+}
+
+function buildAutoSortScopeXml(scope: NativePivotAutoSortScope): string {
+  const areaAttributes = {
+    ...scope.attributes,
+    ...(scope.dataOnly === undefined ? {} : { dataOnly: scope.dataOnly ? '1' : '0' }),
+    ...(scope.labelOnly === undefined ? {} : { labelOnly: scope.labelOnly ? '1' : '0' }),
+    ...(scope.outline === undefined ? {} : { outline: scope.outline ? '1' : '0' }),
+    ...(scope.fieldPosition === undefined ? {} : { fieldPosition: String(scope.fieldPosition) }),
+  };
+  const attrs = Object.entries(areaAttributes).map(([name, value]) => `${name}="${encodeXml(value)}"`).join(' ');
+  const references = scope.references.map((reference) => `<reference field="${reference.field}"${reference.selected === undefined ? '' : ` selected="${reference.selected ? '1' : '0'}"`}${reference.itemIndexes?.length ? ` count="${reference.itemIndexes.length}"` : ''}>${(reference.itemIndexes ?? []).map((index) => `<x v="${index}"/>`).join('')}</reference>`).join('');
+  return `<autoSortScope><pivotArea${attrs ? ` ${attrs}` : ''}><references count="${scope.references.length}">${references}</references></pivotArea></autoSortScope>`;
+}
+
+function buildPivotFilterXml(filter: NativePivotFilter): string {
+  const attrs: Record<string, string> = { ...filter.attributes, fld: String(filter.field), type: filter.type };
+  if (filter.measureField !== undefined) attrs.iMeasureFld = String(filter.measureField);
+  if (filter.secondMeasureField !== undefined) attrs.iMeasureFld2 = String(filter.secondMeasureField);
+  if (filter.evalOrder !== undefined) attrs.evalOrder = String(filter.evalOrder);
+  if (filter.id !== undefined) attrs.id = String(filter.id);
+  if (filter.stringValue1 !== undefined) attrs.stringValue1 = filter.stringValue1;
+  if (filter.stringValue2 !== undefined) attrs.stringValue2 = filter.stringValue2;
+  if (filter.value1 !== undefined) attrs.val = String(filter.value1);
+  if (filter.value2 !== undefined) attrs.val2 = String(filter.value2);
+  if (filter.wholeDay !== undefined) attrs.wholeDay = filter.wholeDay ? '1' : '0';
+  if (filter.top !== undefined) attrs.top = filter.top ? '1' : '0';
+  if (filter.percent !== undefined) attrs.percent = filter.percent ? '1' : '0';
+  return `<filter ${Object.entries(attrs).map(([name, value]) => `${name}="${encodeXml(value)}"`).join(' ')}/>`;
+}
+
+function buildNativePivotFilters(pivot: PivotDefinition, dataFields: NativePivotDataField[]): NativePivotFilter[] {
+  const fieldIndex = (id: string): number => pivot.fieldCatalog.fields.find((field) => field.fieldId === id || field.name === id)?.ordinal ?? -1;
+  const dataFieldIndex = (id: string): number => dataFields.findIndex((dataField) => dataField.field === fieldIndex(id));
+  const filters = pivot.layout.filters.flatMap((filter): NativePivotFilter[] => {
+    if (filter.kind === 'manual') return [];
+    const field = fieldIndex(filter.fieldId);
+    if (field < 0) throw new Error(`Pivot filter references missing field ${filter.fieldId}`);
+    if (filter.kind === 'top-items') {
+      const measure = dataFieldIndex(filter.valueFieldId);
+      if (measure < 0) throw new Error(`Pivot top-items filter references missing value field ${filter.valueFieldId}`);
+      return [{ field, type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', measureField: measure, value1: filter.count, top: filter.direction === 'top', attributes: { fld: String(field), type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', iMeasureFld: String(measure), val: String(filter.count), top: filter.direction === 'top' ? '1' : '0' } }];
+    }
+    const measure = filter.valueFieldId === undefined ? undefined : dataFieldIndex(filter.valueFieldId);
+    const type = filter.valueFieldId === undefined
+      ? ({ equals: 'captionEqual', 'not-equals': 'captionNotEqual', contains: 'captionContains', 'greater-than': 'captionGreaterThan', 'greater-or-equal': 'captionGreaterThanOrEqual', 'less-than': 'captionLessThan', 'less-or-equal': 'captionLessThanOrEqual' } as const)[filter.operator]
+      : filter.operator === 'contains' ? undefined
+        : ({ equals: 'valueEqual', 'not-equals': 'valueNotEqual', 'greater-than': 'valueGreaterThan', 'greater-or-equal': 'valueGreaterThanOrEqual', 'less-than': 'valueLessThan', 'less-or-equal': 'valueLessThanOrEqual' } as const)[filter.operator];
+    if (!type) throw new Error(`Pivot filter operator ${filter.operator} cannot be represented in native OOXML`);
+    if (filter.valueFieldId !== undefined && (measure === undefined || measure < 0)) throw new Error(`Pivot value filter references missing value field ${filter.valueFieldId}`);
+    return [{ field, type, ...(measure === undefined ? {} : { measureField: measure }), ...(typeof filter.value === 'string' && filter.valueFieldId === undefined ? { stringValue1: filter.value } : { value1: filter.value }), ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }), attributes: { fld: String(field), type, ...(measure === undefined ? {} : { iMeasureFld: String(measure) }) } }];
+  });
+  const preserved = pivot.nativeMetadata?.preservedPivotFilters?.map((filter) => ({ field: filter.fieldIndex, type: filter.type, attributes: { ...filter.attributes } })) ?? [];
+  return [...filters, ...preserved];
+}
+
+function nativePivotSubtotalAttrs(subtotal: NativePivotTableField['subtotal']): string {
+  if (!subtotal || subtotal.mode === 'automatic') return subtotal ? ' defaultSubtotal="1"' : '';
+  if (subtotal.mode === 'none') return ' defaultSubtotal="0"';
+  const attrs: Record<string, string> = { defaultSubtotal: '0' };
+  const names: Record<string, string> = { sum: 'sumSubtotal', count: 'countSubtotal', 'count-numbers': 'countASubtotal', average: 'averageSubtotal', max: 'maxSubtotal', min: 'minSubtotal', product: 'productSubtotal', stdev: 'stdDevSubtotal', stdevp: 'stdDevpSubtotal', var: 'varSubtotal', varp: 'varPSubtotal', 'distinct-count': 'distinctCountSubtotal' };
+  for (const fn of subtotal.functions ?? []) { const name = names[fn]; if (name) attrs[name] = '1'; }
+  return Object.entries(attrs).map(([name, value]) => ` ${name}="${value}"`).join('');
 }
 
 function buildDisplayCells(pivot: PivotDefinition, table: NativePivotTableDefinition, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): Record<string, Record<string, CellData>> {
@@ -868,9 +1250,264 @@ function parseCacheSource(node: XmlNode | undefined, sheets: Map<string, { name:
   return { kind: 'unsupported', reason: 'OLAP or unsupported Pivot source is not editable' };
 }
 
-function parseCacheFields(node: XmlNode | undefined): NativePivotCacheField[] { return children(node, 'cacheField').map((field, index) => { const shared = child(field, 'sharedItems'); const values: Array<string | number | boolean | null> = []; for (const item of children(shared, 's')) values.push(item.attrs.v ?? null); for (const item of children(shared, 'n')) values.push(numberOrNull(item.attrs.v)); for (const item of children(shared, 'd')) values.push(item.attrs.v ?? null); for (const item of children(shared, 'b')) values.push(item.attrs.v === '1' || item.attrs.v === 'true'); for (const item of children(shared, 'e')) values.push(item.attrs.v ?? null); const dataType = inferCacheType(shared); return { index, name: field.attrs.name ?? `Field${index + 1}`, ...(dataType ? { dataType } : {}), ...(values.length ? { sharedItems: values } : {}) }; }); }
+function parseCacheFields(node: XmlNode | undefined): NativePivotCacheField[] {
+  return children(node, 'cacheField').map((field, index) => {
+    const shared = child(field, 'sharedItems');
+    const values = parsePivotScalars(shared);
+    const dataType = inferCacheType(shared);
+    const fieldGroup = parseFieldGroup(child(field, 'fieldGroup'), `cacheField[${index}].fieldGroup`);
+    return {
+      index,
+      name: field.attrs.name ?? `Field${index + 1}`,
+      ...(dataType ? { dataType } : {}),
+      ...(values.length ? { sharedItems: values } : {}),
+      ...(fieldGroup ? { fieldGroup } : {}),
+    };
+  });
+}
 
-function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] { return children(node, 'pivotField').map((field, index) => ({ index, ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}), ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}), ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}) })); }
+function parsePivotScalars(node: XmlNode | undefined): NativePivotScalar[] {
+  if (!node) return [];
+  return node.children.flatMap((item) => {
+    switch (localName(item.name)) {
+      case 's': return [item.attrs.v ?? null];
+      case 'n': return [numberOrNull(item.attrs.v)];
+      case 'd': return [item.attrs.v ?? null];
+      case 'b': return [item.attrs.v === '1' || item.attrs.v?.toLowerCase() === 'true'];
+      case 'e': return [item.attrs.v ?? null];
+      case 'm': return [null];
+      case 'groupItem': return [parseGroupItemValue(item)];
+      default: return [];
+    }
+  });
+}
+
+function parseGroupItemValue(node: XmlNode): NativePivotScalar {
+  const scalar = parsePivotScalars(node)[0];
+  return scalar === undefined ? (node.attrs.v ?? null) : scalar;
+}
+
+function parseFieldGroup(node: XmlNode | undefined, label: string): NativePivotFieldGroup | undefined {
+  if (!node) return undefined;
+  const base = node.attrs.base === undefined ? undefined : requiredInteger(node.attrs.base, `${label}.base`);
+  const parent = node.attrs.par === undefined ? undefined : requiredInteger(node.attrs.par, `${label}.par`);
+  const rangeNode = child(node, 'rangePr');
+  const range = rangeNode ? parseFieldRange(rangeNode, `${label}.rangePr`) : undefined;
+  const discreteNode = child(node, 'discretePr');
+  const discreteValues = discreteNode ? children(discreteNode, 'x').map((item, index) => requiredInteger(item.attrs.v, `${label}.discretePr.x[${index}]`)) : [];
+  if (discreteNode?.attrs.count !== undefined && requiredInteger(discreteNode.attrs.count, `${label}.discretePr.count`) !== discreteValues.length) throw new Error(`${label}.discretePr.count does not match x elements`);
+  const discreteIndexes = discreteNode ? discreteValues : undefined;
+  const groupItemsNode = child(node, 'groupItems');
+  const groupItems = groupItemsNode ? parsePivotScalars(groupItemsNode) : undefined;
+  if (groupItemsNode?.attrs.count !== undefined && requiredInteger(groupItemsNode.attrs.count, `${label}.groupItems.count`) !== (groupItems?.length ?? 0)) throw new Error(`${label}.groupItems.count does not match group items`);
+  return {
+    ...(base === undefined ? {} : { base }),
+    ...(parent === undefined ? {} : { parent }),
+    ...(range ? { range } : {}),
+    ...(discreteIndexes ? { discreteIndexes } : {}),
+    ...(groupItems ? { groupItems } : {}),
+  };
+}
+
+function parseFieldRange(node: XmlNode, label: string): NativePivotFieldRange {
+  const groupBy = node.attrs.groupBy;
+  const start = firstRangeValue(node.attrs, 'start');
+  const end = firstRangeValue(node.attrs, 'end');
+  const intervalValue = node.attrs.groupInterval ?? node.attrs.interval;
+  const interval = intervalValue === undefined ? undefined : finiteNumber(intervalValue, `${label}.groupInterval`);
+  if (interval !== undefined && interval <= 0) throw new Error(`${label}.groupInterval must be positive`);
+  const autoStart = node.attrs.autoStart === undefined ? undefined : parseBoolean(node.attrs.autoStart, `${label}.autoStart`);
+  const autoEnd = node.attrs.autoEnd === undefined ? undefined : parseBoolean(node.attrs.autoEnd, `${label}.autoEnd`);
+  return {
+    ...(groupBy === undefined ? {} : { groupBy }),
+    ...(start === undefined ? {} : { start }),
+    ...(end === undefined ? {} : { end }),
+    ...(interval === undefined ? {} : { interval }),
+    ...(autoStart === undefined ? {} : { autoStart }),
+    ...(autoEnd === undefined ? {} : { autoEnd }),
+  };
+}
+
+function firstRangeValue(attrs: Record<string, string>, name: 'start' | 'end'): NativePivotScalar | undefined {
+  const date = attrs[`${name}Date`];
+  if (date !== undefined) return date;
+  const number = attrs[`${name}Num`];
+  if (number !== undefined) {
+    const parsed = Number(number);
+    if (!Number.isFinite(parsed)) throw new Error(`Invalid ${name}Num range bound`);
+    return parsed;
+  }
+  const generic = attrs[name];
+  if (generic === undefined) return undefined;
+  const numeric = Number(generic);
+  return Number.isFinite(numeric) ? numeric : generic;
+}
+
+function finiteNumber(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`${label} must be finite`);
+  return parsed;
+}
+
+function parseBoolean(value: string, label: string): boolean {
+  if (value === '1' || value.toLowerCase() === 'true') return true;
+  if (value === '0' || value.toLowerCase() === 'false') return false;
+  throw new Error(`${label} must be boolean`);
+}
+
+function nativePivotSubtotal(field: NativePivotTableField | undefined): NonNullable<PivotFieldPlacement['subtotal']> | undefined {
+  const subtotal = field?.subtotal;
+  if (!subtotal) return undefined;
+  return subtotal.mode === 'custom' ? { mode: 'custom', functions: (subtotal.functions ?? []).map(mapAggregate) } : { mode: subtotal.mode };
+}
+
+function nativePivotSort(field: NativePivotTableField | undefined, dataFields: NativePivotDataField[], fieldId: (index: number) => string): NonNullable<PivotFieldPlacement['sort']> | undefined {
+  if (!field?.sortType || field.sortType === 'manual') return undefined;
+  const scope = field.autoSortScope;
+  const valueSort = scope?.dataOnly === true || scope?.labelOnly === false;
+  if (!valueSort) return { direction: field.sortType, by: 'label' };
+  const reference = scope?.references.find((candidate) => dataFields.some((dataField) => dataField.field === candidate.field));
+  const valueField = reference ? dataFields.find((candidate) => candidate.field === reference.field) : undefined;
+  if (!valueField) return undefined;
+  return { direction: field.sortType, by: 'value', valueFieldId: fieldId(valueField.field) };
+}
+
+function mapNativePivotFilters(
+  filters: NativePivotFilter[],
+  fields: Array<{ fieldId: string }>,
+  dataFields: NativePivotDataField[],
+): { filters: PivotLayout['filters']; preserved: PivotNativeFilterMetadata[] } {
+  const mapped: PivotLayout['filters'] = [];
+  const preserved: PivotNativeFilterMetadata[] = [];
+  const fieldId = (index: number): string | undefined => fields[index]?.fieldId;
+  const valueFieldId = (index: number | undefined): string | undefined => index === undefined ? undefined : dataFields[index]?.field !== undefined ? fields[dataFields[index]!.field]?.fieldId : undefined;
+  for (const filter of filters) {
+    const targetFieldId = fieldId(filter.field);
+    const measureFieldId = valueFieldId(filter.measureField);
+    const value = filter.value1 ?? filter.stringValue1;
+    const type = filter.type.toLowerCase();
+    const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false): void => {
+      if (!targetFieldId || (withMeasure && !measureFieldId)) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
+      mapped.push({ kind: 'condition', fieldId: targetFieldId, ...(withMeasure && measureFieldId ? { valueFieldId: measureFieldId } : {}), operator, value: conditionValue, scope: 'field', ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
+    };
+    if (type === 'captionequal' || type === 'dateequal') condition('equals');
+    else if (type === 'captionnotequal' || type === 'datenotequal') condition('not-equals');
+    else if (type === 'captioncontains') condition('contains');
+    else if (type === 'captiongreaterthan' || type === 'datenewerthan') condition('greater-than');
+    else if (type === 'captiongreaterthanorequal' || type === 'datenewerthanorequal') condition('greater-or-equal');
+    else if (type === 'captionlessthan' || type === 'dateolderthan') condition('less-than');
+    else if (type === 'captionlessthanorequal' || type === 'dateolderthanorequal') condition('less-or-equal');
+    else if (type === 'valueequal') condition('equals', value ?? null, true);
+    else if (type === 'valuenotequal') condition('not-equals', value ?? null, true);
+    else if (type === 'valuegreaterthan') condition('greater-than', value ?? null, true);
+    else if (type === 'valuegreaterthanorequal') condition('greater-or-equal', value ?? null, true);
+    else if (type === 'valuelessthan') condition('less-than', value ?? null, true);
+    else if (type === 'valuelessthanorequal') condition('less-or-equal', value ?? null, true);
+    else if (type === 'valuetop10' || type === 'top10' || type === 'valuebottom10' || type === 'bottom10') {
+      const count = typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
+      if (!targetFieldId || !measureFieldId || !count || count < 1 || filter.percent) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
+      else mapped.push({ kind: 'top-items', fieldId: targetFieldId, valueFieldId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope: 'field' });
+    } else preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
+  }
+  return { filters: mapped, preserved };
+}
+
+function parsePivotFieldSubtotal(field: XmlNode, index: number): NativePivotTableField['subtotal'] | undefined {
+  const attrs = field.attrs;
+  const enabled: Array<[string, string]> = [
+    ['sumSubtotal', 'sum'], ['countSubtotal', 'count'], ['countASubtotal', 'count-numbers'], ['averageSubtotal', 'average'],
+    ['maxSubtotal', 'max'], ['minSubtotal', 'min'], ['productSubtotal', 'product'], ['stdDevSubtotal', 'stdev'], ['stdDevpSubtotal', 'stdevp'],
+    ['varSubtotal', 'var'], ['varPSubtotal', 'varp'], ['distinctCountSubtotal', 'distinct-count'],
+  ];
+  const functions = enabled.flatMap(([name, value]) => attrs[name] === '1' || attrs[name] === 'true' ? [value] : []);
+  if (functions.length) return { mode: 'custom', functions };
+  if (attrs.defaultSubtotal === '0' || attrs.subtotal === '0') return { mode: 'none' };
+  if (attrs.defaultSubtotal === '1' || attrs.subtotal === '1') return { mode: 'automatic' };
+  void index;
+  return undefined;
+}
+
+function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] {
+  return children(node, 'pivotField').map((field, index) => {
+    const subtotal = parsePivotFieldSubtotal(field, index);
+    const autoSortScope = parseAutoSortScope(child(field, 'autoSortScope'), `pivotField[${index}].autoSortScope`);
+    const collapsedItemIndexes = children(child(field, 'items'), 'item').flatMap((item) => item.attrs.sd === '0' && item.attrs.x !== undefined
+      ? [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)] : []);
+    const sortType = field.attrs.sortType;
+    if (sortType !== undefined && !['manual', 'ascending', 'descending'].includes(sortType)) {
+      throw new Error(`pivotField[${index}].sortType is unsupported: ${sortType}`);
+    }
+    return {
+      index,
+      ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}),
+      ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}),
+      ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}),
+      ...(sortType ? { sortType: sortType as NativePivotTableField['sortType'] } : {}),
+      ...optionalBoolean(field.attrs.nonAutoSortDefault, 'nonAutoSortDefault'),
+      ...(autoSortScope ? { autoSortScope } : {}),
+      ...(subtotal ? { subtotal } : {}),
+      ...(collapsedItemIndexes.length ? { collapsedItemIndexes } : {}),
+    };
+  });
+}
+
+function parseAutoSortScope(node: XmlNode | undefined, label: string): NativePivotAutoSortScope | undefined {
+  if (!node) return undefined;
+  const area = child(node, 'pivotArea');
+  if (!area) throw new Error(`${label}.pivotArea is missing`);
+  const referencesNode = child(area, 'references');
+  const references = children(referencesNode, 'reference').map((reference, index) => ({
+    field: requiredInteger(reference.attrs.field, `${label}.pivotArea.references.reference[${index}].field`),
+    ...optionalBoolean(reference.attrs.selected, 'selected'),
+    ...(() => {
+      const itemIndexes = children(reference, 'x').map((item) => requiredInteger(item.attrs.v, `${label}.pivotArea.references.reference[${index}].x.v`));
+      return itemIndexes.length ? { itemIndexes } : {};
+    })(),
+  }));
+  return {
+    ...(area ? optionalBoolean(area.attrs.dataOnly, 'dataOnly') : {}),
+    ...(area ? optionalBoolean(area.attrs.labelOnly, 'labelOnly') : {}),
+    ...(area ? optionalBoolean(area.attrs.outline, 'outline') : {}),
+    ...(area?.attrs.fieldPosition !== undefined ? { fieldPosition: requiredInteger(area.attrs.fieldPosition, `${label}.pivotArea.fieldPosition`) } : {}),
+    attributes: { ...(area?.attrs ?? {}) },
+    references,
+  };
+}
+
+function parsePivotFilters(node: XmlNode | undefined): NativePivotFilter[] {
+  return children(node, 'filter').map((filter, index) => {
+    const field = requiredInteger(filter.attrs.fld, `pivotFilters.filter[${index}].fld`);
+    const type = filter.attrs.type;
+    if (!type) throw new Error(`pivotFilters.filter[${index}].type is missing`);
+    return {
+      field,
+      type,
+      ...(optionalInteger(filter.attrs.iMeasureFld, `pivotFilters.filter[${index}].iMeasureFld`) ?? {}),
+      ...(optionalInteger(filter.attrs.iMeasureFld2, `pivotFilters.filter[${index}].iMeasureFld2`) ?? {}),
+      ...(optionalInteger(filter.attrs.evalOrder, `pivotFilters.filter[${index}].evalOrder`) ?? {}),
+      ...(optionalInteger(filter.attrs.id, `pivotFilters.filter[${index}].id`) ?? {}),
+      ...(filter.attrs.stringValue1 !== undefined ? { stringValue1: filter.attrs.stringValue1 } : {}),
+      ...(filter.attrs.stringValue2 !== undefined ? { stringValue2: filter.attrs.stringValue2 } : {}),
+      ...(filter.attrs.val !== undefined || filter.attrs.value1 !== undefined ? { value1: nativeFilterScalar(filter.attrs.val ?? filter.attrs.value1!) } : {}),
+      ...(filter.attrs.val2 !== undefined || filter.attrs.value2 !== undefined ? { value2: nativeFilterScalar(filter.attrs.val2 ?? filter.attrs.value2!) } : {}),
+      ...(filter.attrs.wholeDay !== undefined ? optionalBoolean(filter.attrs.wholeDay, 'wholeDay') : {}),
+      ...(filter.attrs.top !== undefined ? optionalBoolean(filter.attrs.top, 'top') : {}),
+      ...(filter.attrs.percent !== undefined ? optionalBoolean(filter.attrs.percent, 'percent') : {}),
+      attributes: { ...filter.attrs },
+    };
+  });
+}
+
+function optionalInteger(value: string | undefined, label: string): Record<string, number> | undefined {
+  return value === undefined ? undefined : { [label.endsWith('iMeasureFld') ? 'measureField' : label.endsWith('iMeasureFld2') ? 'secondMeasureField' : label.endsWith('evalOrder') ? 'evalOrder' : 'id']: requiredInteger(value, label) };
+}
+
+function nativeFilterScalar(value: string): NativePivotScalar {
+  if (value === '') return '';
+  if (value === '0' || value === '1') return Number(value);
+  const number = Number(value);
+  return Number.isFinite(number) && value.trim() !== '' ? number : value;
+}
 function parseFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'field').map((field) => requiredInteger(field.attrs.x, `${label}.field.x`)); }
 function parseDataFields(node: XmlNode | undefined): NativePivotDataField[] { return children(node, 'dataField').map((field) => ({ field: requiredInteger(field.attrs.fld, 'dataField.fld'), ...(field.attrs.name ? { name: field.attrs.name } : {}), ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}), ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}) })); }
 function readSheetNames(workbook: XmlNode, rels: XlsxRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }
@@ -890,6 +1527,48 @@ function nativeFieldId(cacheId: number, index: number): string { return `native:
 function nativePivotId(table: NativePivotTableDefinition): string { return `native:pivot:${table.part}`; }
 function mapFieldType(value: NativePivotCacheField['dataType']): PivotFieldDataType { return value === 'string' ? 'text' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : 'mixed'; }
 function nativeDataType(value: PivotFieldDataType): NativePivotCacheField['dataType'] { return value === 'text' ? 'string' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : 'mixed'; }
+function nativePivotGroup(field: NativePivotCacheField | undefined, cache: NativePivotCacheDefinition, fieldId: string): PivotGroup | undefined {
+  const grouping = field?.fieldGroup;
+  if (!grouping) return undefined;
+  const baseField = grouping.base === undefined ? field : cache.fields[grouping.base] ?? field;
+  const range = grouping.range;
+  const groupBy = range?.groupBy?.toLowerCase();
+  const dateUnits: Record<string, 'year' | 'quarter' | 'month' | 'week' | 'day'> = {
+    year: 'year', years: 'year', quarter: 'quarter', quarters: 'quarter',
+    month: 'month', months: 'month', week: 'week', weeks: 'week', day: 'day', days: 'day',
+  };
+  if (groupBy && dateUnits[groupBy]) {
+    return {
+      kind: 'date', unit: dateUnits[groupBy],
+      ...(range?.start !== undefined ? { start: range.start } : {}),
+      ...(range?.end !== undefined ? { end: range.end } : {}),
+      ...(range?.autoStart !== undefined ? { autoStart: range.autoStart } : {}),
+      ...(range?.autoEnd !== undefined ? { autoEnd: range.autoEnd } : {}),
+    };
+  }
+  if (groupBy === 'range' || groupBy === 'number' || groupBy === 'numbers' || (baseField?.dataType === 'number' && range?.interval !== undefined)) {
+    const values = (grouping.groupItems ?? []).filter((value): value is number => typeof value === 'number');
+    const derivedInterval = values.length > 1 ? Math.abs(values[1]! - values[0]!) : undefined;
+    const interval = range?.interval ?? (derivedInterval && Number.isFinite(derivedInterval) && derivedInterval > 0 ? derivedInterval : undefined);
+    if (interval === undefined || !Number.isFinite(interval) || interval <= 0) return undefined;
+    return {
+      kind: 'number', interval,
+      ...(typeof range?.start === 'number' ? { start: range.start } : {}),
+      ...(typeof range?.end === 'number' ? { end: range.end } : {}),
+      ...(range?.autoStart !== undefined ? { autoStart: range.autoStart } : {}),
+      ...(range?.autoEnd !== undefined ? { autoEnd: range.autoEnd } : {}),
+    };
+  }
+  if (grouping.discreteIndexes && grouping.groupItems) {
+    const groups = grouping.groupItems.map((name, groupIndex) => ({
+      groupId: `${fieldId}:group:${groupIndex}`,
+      name: name === null ? '' : String(name),
+      items: (baseField?.sharedItems ?? []).flatMap((value, itemIndex) => grouping.discreteIndexes?.[itemIndex] === groupIndex ? [createPivotMemberKey(value)] : []),
+    }));
+    return { kind: 'manual', groups };
+  }
+  return undefined;
+}
 function inferDataType(sheet: SheetSnapshot, range: RangeRef, column: number): PivotFieldDataType { const values: unknown[] = []; for (let row = range.startRow + 1; row <= range.endRow; row += 1) values.push(sheet.cells[String(row)]?.[String(column)]?.value); if (values.filter((value) => value !== null).every((value) => typeof value === 'number')) return 'number'; if (values.filter((value) => value !== null).every((value) => typeof value === 'boolean')) return 'boolean'; return 'text'; }
 function mapAggregate(value: string | undefined): PivotAggregateFunction { switch ((value ?? 'sum').toLowerCase()) { case 'count': return 'count'; case 'countnums': case 'count-numbers': return 'count-numbers'; case 'average': case 'avg': return 'average'; case 'min': return 'min'; case 'max': return 'max'; case 'product': return 'product'; case 'stddev': case 'stdev': return 'stdev'; case 'stddevp': case 'stdevp': return 'stdevp'; case 'var': return 'var'; case 'varp': return 'varp'; case 'distinctcount': case 'distinct-count': return 'distinct-count'; default: return 'sum'; } }
 function nativeAggregate(value: string | undefined): string { switch (value) { case 'count-numbers': return 'countNums'; case 'stdev': return 'stdDev'; case 'stdevp': return 'stdDevp'; case 'distinct-count': return 'distinctCount'; default: return value ?? 'sum'; } }
@@ -903,7 +1582,6 @@ function a1(row: number, column: number): string { return `${columnToLetter(colu
 function columnFromLetter(value: string): number { let result = 0; for (const character of value.toUpperCase()) result = result * 26 + character.charCodeAt(0) - 64; return result - 1; }
 function columnToLetter(index: number): string { let value = index + 1; let result = ''; while (value > 0) { const remainder = (value - 1) % 26; result = String.fromCharCode(65 + remainder) + result; value = Math.floor((value - 1) / 26); } return result; }
 function isScalar(value: unknown): value is PivotScalar { return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'; }
-function nativeMemberKey(value: PivotScalar): { type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null } { if (value === null || value === '') return { type: 'blank', value: null }; if (typeof value === 'number') return { type: 'number', value }; if (typeof value === 'boolean') return { type: 'boolean', value }; return { type: 'text', value }; }
 function scalarKey(value: PivotScalar): string { return `${value === null ? 'blank' : typeof value}:${JSON.stringify(value)}`; }
 function uniqueScalars(values: PivotScalar[]): PivotScalar[] { const result: PivotScalar[] = []; const seen = new Set<string>(); for (const value of values) { const key = scalarKey(value); if (!seen.has(key)) { seen.add(key); result.push(value); } } return result; }
 function uniqueTuples(rows: PivotScalar[][], indexes: number[]): PivotScalar[][] { if (!indexes.length) return [[]]; const seen = new Set<string>(); const result: PivotScalar[][] = []; for (const row of rows) { const tuple = indexes.map((index) => row[index] ?? null); const key = tuple.map(scalarKey).join('|'); if (!seen.has(key)) { seen.add(key); result.push(tuple); } } return result; }

@@ -166,6 +166,8 @@ export function EditorShell({
                 zoom={state.zoom}
                 peers={state.peers}
                 selectedFloatingId={state.selectedFloatingId}
+                textBoxPlacementActive={state.textBoxPlacement}
+                textBoxEdit={state.textBoxEdit}
                 showFormulas={state.formulaAudit.showFormulas}
                 onPivotContextHit={(hit) => {
                   const pivotId = hit?.pivot?.pivotId ?? hit?.objectId;
@@ -186,6 +188,7 @@ export function EditorShell({
                   ];
                 }}
                 onPivotShowDetails={({ pivotId, sourceRowPaths }) => session.showPivotDetails(pivotId, sourceRowPaths)}
+                onPivotExpansionToggle={(pivotId, nodeId) => dispatchCommand({ commandId: 'pivot.expansion.toggle', params: { sheetId: state.activeSheetId, pivotId, nodeId } })}
                 onApplyPivotFilter={controller.applyPivotHeaderFilter}
                 drawings={state.selectedSheet.drawings}
                 drawingPayloads={state.selectedSheet.drawingPayloads}
@@ -213,7 +216,7 @@ export function EditorShell({
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
                 onFloatingSelect={(hit, mode) => {
-                  if (hit && !state.drawingSelectionMode) {
+                  if (hit && mode === 'replace' && !state.drawingSelectionMode) {
                     const drawing = state.selectedSheet.drawings.find((entry) => entry.id === hit.id);
                     const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
                     if (payload?.kind === 'form-control') {
@@ -225,6 +228,12 @@ export function EditorShell({
                 }}
                 onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({ commandId: "drawing.move", params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } } })}
                 onFloatingRemove={(drawingId) => dispatchCommand({ commandId: "drawing.remove", params: { sheetId: state.activeSheetId, drawingId } })}
+                onTextBoxPlacementCommit={(bounds) => session.placeTextBox(bounds)}
+                onCancelTextBoxPlacement={() => session.cancelTextBoxPlacement()}
+                onBeginTextBoxEdit={(drawingId, initialText) => session.beginTextBoxEdit(drawingId, initialText)}
+                onTextBoxDraftChange={(value) => session.setTextBoxDraft(value)}
+                onCommitTextBoxEdit={() => session.commitTextBoxEdit()}
+                onCancelTextBoxEdit={() => session.cancelTextBoxEdit()}
                 onCommand={dispatchCommand}
                 onClearSelection={(mode) => session.clearSelection(mode)}
                 formatPainterActive={state.formatPainter !== null}

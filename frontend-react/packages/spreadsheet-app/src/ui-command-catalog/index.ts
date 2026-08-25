@@ -1,5 +1,7 @@
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { AppPhase, SidebarPanelId, UiSessionIntent } from '../types';
+import type { BarcodeSymbology, DataChartPlotType, SheetTableModel } from '@react-sheets/core-model';
+import { transformNumberFormatPrecision } from '@react-sheets/number-format';
 
 export type RibbonCatalogTabId =
   | 'file'
@@ -13,7 +15,18 @@ export type RibbonCatalogTabId =
   | 'settings'
   | 'automate'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat'
+  | 'reportSheetDesign'
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat'
+  | 'pictureFormat'
+  | 'sparklineDesign';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -53,7 +66,18 @@ export type RibbonGroupId =
   | 'appearanceFiles'
   | 'settings'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat'
+  | 'reportSheetDesign'
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat'
+  | 'pictureFormat'
+  | 'sparklineDesign';
 
 export type RibbonCommandId =
   | 'save'
@@ -107,7 +131,10 @@ export type RibbonCommandId =
   | 'indentDecrease'
   | 'wrapText'
   | 'textOrientation'
+  | 'mergeCenter'
   | 'mergeCells'
+  | 'mergeAcross'
+  | 'unmergeCells'
   | 'formatCells'
   | 'numberFormatGeneral'
   | 'numberFormatCurrency'
@@ -147,6 +174,8 @@ export type RibbonCommandId =
   | 'pivotTable'
   | 'chartBuilder'
   | 'sparkline'
+  | 'pictureFormatPanel'
+  | 'sparklineDesign'
   | 'shapesLines'
   | 'deleteRow'
   | 'deleteColumn'
@@ -196,7 +225,31 @@ export type RibbonCommandId =
   | 'settings'
   | 'commandPalette'
   | 'pivotRefresh'
-  | 'pivotFieldList';
+  | 'pivotFieldList'
+  | 'tableSheetFieldList'
+  | 'tableSheetColumnSettings'
+  | 'ganttFieldMapping'
+  | 'ganttCalendar'
+  | 'ganttTimeline'
+  | 'ganttDependencyStyle'
+  | 'reportFieldBinding'
+  | 'reportRenderMode'
+  | 'reportPagination'
+  | 'reportLayout'
+  | 'tableName'
+  | 'tableHeaderRow'
+  | 'tableTotalRow'
+  | 'tableFirstColumn'
+  | 'tableLastColumn'
+  | 'tableBandedRows'
+  | 'tableBandedColumns'
+  | 'tableFilterButton'
+  | 'tableResize'
+  | 'tableConvertToRange'
+  | 'tableStyle'
+  | 'chartElements'
+  | 'chartFormatPanel'
+  | 'chartSelectData';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -314,9 +367,13 @@ export interface RibbonCommandActions {
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
+  onMerge: (operation: RibbonMergeOperation) => void;
   onFill: (direction: 'down' | 'right') => void;
   onFreezeAtPrimary: () => void;
   onCreateSheetTable: () => void;
+  onOpenTableSettings: () => void;
+  onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
+  onConvertActiveTableToRange: () => void;
   onCreateDataTable: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
@@ -339,8 +396,8 @@ export interface RibbonCommandActions {
   onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
-  onApplyBarcode: () => void;
-  onCreateDataChart: () => void;
+  onApplyBarcode: (symbology?: BarcodeSymbology) => void;
+  onCreateDataChart: (type?: DataChartPlotType) => void;
   onCreateCamera: () => void;
   onCreateFormControl: () => void;
   onApplyCheckbox: () => void;
@@ -357,10 +414,19 @@ export interface RibbonCommandContext {
   /** Host-owned Create PivotTable dialog entry point. */
   openCreatePivotDialog?: () => void;
   activePivot?: { sheetId: string; pivotId: string };
+  activeTableSheet?: { sheetId: string; viewId: string };
+  activeGanttSheet?: { sheetId: string; viewId: string };
+  activeReportSheet?: { sheetId: string; tableId?: string };
+  activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
+  activeChart?: { sheetId: string; chartId: string };
+  activePicture?: { sheetId: string; drawingId: string };
+  activeSparkline?: { sheetId: string; sparklineId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
 }
+
+export type RibbonMergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 
 export type RibbonCommandResult =
   | { type: 'command'; descriptor: CommandDescriptor }
@@ -408,6 +474,8 @@ export interface RibbonSurfaceDefinition {
   readonly appearance: RibbonSurfaceAppearance;
   readonly breakpoints: readonly RibbonSurfaceBreakpoint[];
   readonly overflowTarget?: RibbonGroupId;
+  /** Optional typed overflow menu owner. Members are rendered through this surface. */
+  readonly menuId?: string;
   readonly ariaLabel?: string;
 }
 
@@ -420,9 +488,16 @@ export type RibbonControlId =
   | 'font-decrease'
   | 'font-color'
   | 'fill-color'
-  | 'borders'
-  | 'vertical-alignment'
-  | 'number-format';
+  | 'number-format'
+  | 'merge-menu'
+  | 'cells-insert-menu'
+  | 'cells-delete-menu'
+  | 'cells-format-menu'
+  | 'column-width'
+  | 'auto-fit-column-width'
+  | 'hide-columns'
+  | 'unhide-columns'
+  | 'default-column-width';
 
 export interface RibbonControlDefinition {
   readonly id: RibbonControlId;
@@ -472,6 +547,17 @@ export const RIBBON_TEXT = {
     settings: 'groups.settings',
     pivotAnalyze: 'groups.pivotAnalyze',
     pivotDesign: 'groups.pivotDesign',
+    tableSheetDesign: 'groups.tableSheetDesign',
+    ganttTask: 'groups.ganttTask',
+    ganttProject: 'groups.ganttProject',
+    ganttView: 'groups.ganttView',
+    ganttFormat: 'groups.ganttFormat',
+    reportSheetDesign: 'groups.reportSheetDesign',
+    tableDesign: 'groups.tableDesign',
+    chartDesign: 'groups.chartDesign',
+    chartFormat: 'groups.chartFormat',
+    pictureFormat: 'groups.pictureFormat',
+    sparklineDesign: 'groups.sparklineDesign',
   },
   commands: {
     save: 'commands.save',
@@ -525,7 +611,10 @@ export const RIBBON_TEXT = {
     indentDecrease: 'commands.indentDecrease',
     wrapText: 'commands.wrapText',
     textOrientation: 'commands.textOrientation',
+    mergeCenter: 'commands.mergeCenter',
     mergeCells: 'commands.mergeCells',
+    mergeAcross: 'commands.mergeAcross',
+    unmergeCells: 'commands.unmergeCells',
     formatCells: 'commands.formatCells',
     numberFormatGeneral: 'commands.numberFormatGeneral',
     numberFormatCurrency: 'commands.numberFormatCurrency',
@@ -565,8 +654,34 @@ export const RIBBON_TEXT = {
     pivotTable: 'commands.pivotTable',
     pivotRefresh: 'commands.pivotRefresh',
     pivotFieldList: 'commands.pivotFieldList',
+    tableSheetFieldList: 'commands.tableSheetFieldList',
+    tableSheetColumnSettings: 'commands.tableSheetColumnSettings',
+    ganttFieldMapping: 'commands.ganttFieldMapping',
+    ganttCalendar: 'commands.ganttCalendar',
+    ganttTimeline: 'commands.ganttTimeline',
+    ganttDependencyStyle: 'commands.ganttDependencyStyle',
+    reportFieldBinding: 'commands.reportFieldBinding',
+    reportRenderMode: 'commands.reportRenderMode',
+    reportPagination: 'commands.reportPagination',
+    reportLayout: 'commands.reportLayout',
+    tableName: 'commands.tableName',
+    tableHeaderRow: 'commands.tableHeaderRow',
+    tableTotalRow: 'commands.tableTotalRow',
+    tableFirstColumn: 'commands.tableFirstColumn',
+    tableLastColumn: 'commands.tableLastColumn',
+    tableBandedRows: 'commands.tableBandedRows',
+    tableBandedColumns: 'commands.tableBandedColumns',
+    tableFilterButton: 'commands.tableFilterButton',
+    tableResize: 'commands.tableResize',
+    tableConvertToRange: 'commands.tableConvertToRange',
+    tableStyle: 'commands.tableStyle',
+    chartElements: 'commands.chartElements',
+    chartFormatPanel: 'commands.chartFormatPanel',
+    chartSelectData: 'commands.chartSelectData',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
+    pictureFormatPanel: 'commands.pictureFormatPanel',
+    sparklineDesign: 'commands.sparklineDesign',
     shapesLines: 'commands.shapesLines',
     deleteRow: 'commands.deleteRow',
     deleteColumn: 'commands.deleteColumn',
@@ -666,6 +781,17 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('settings', 'settings', 10),
   group('pivotAnalyze', 'pivotAnalyze', 10),
   group('pivotDesign', 'pivotDesign', 10),
+  group('tableSheetDesign', 'tableSheetDesign', 10),
+  group('ganttTask', 'ganttTask', 10),
+  group('ganttProject', 'ganttProject', 20),
+  group('ganttView', 'ganttView', 30),
+  group('ganttFormat', 'ganttFormat', 40),
+  group('reportSheetDesign', 'reportSheetDesign', 10),
+  group('tableDesign', 'tableDesign', 10),
+  group('chartDesign', 'chartDesign', 10),
+  group('chartFormat', 'chartFormat', 20),
+  group('pictureFormat', 'pictureFormat', 10),
+  group('sparklineDesign', 'sparklineDesign', 10),
 ] as const;
 
 const ribbonSurface = (
@@ -677,21 +803,23 @@ const ribbonSurface = (
   commandId: RibbonCommandId | undefined,
   breakpoints: readonly RibbonSurfaceBreakpoint[] = ['wide', 'compact', 'narrow'],
   overflowTarget?: RibbonGroupId,
-): RibbonSurfaceDefinition => ({ id, tab, group, order, appearance, commandId, breakpoints, overflowTarget });
+  menuId?: string,
+): RibbonSurfaceDefinition => ({ id, tab, group, order, appearance, commandId, breakpoints, overflowTarget, menuId });
 
 const homeControl = (
   id: RibbonControlId,
   group: RibbonGroupId,
   order: number,
   breakpoints: readonly RibbonSurfaceBreakpoint[] = ['wide', 'compact', 'narrow'],
-): RibbonSurfaceDefinition => ({ id: `control.${id}`, tab: 'home', group, controlId: id, order, appearance: 'small', breakpoints });
+  menuId?: string,
+): RibbonSurfaceDefinition => ({ id: `control.${id}`, tab: 'home', group, controlId: id, order, appearance: 'small', breakpoints, menuId });
 
 /** Single render catalogue for the Home tab. Components must not invent
  * command placements independently from this declaration. */
 export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
-  ribbonSurface('home', 'history.undo', 'history', 10, 'large', 'undo', ['wide', 'compact']),
-  ribbonSurface('home', 'history.redo', 'history', 20, 'large', 'redo', ['wide', 'compact']),
-  ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste', ['wide', 'compact']),
+  ribbonSurface('home', 'history.undo', 'history', 10, 'large', 'undo'),
+  ribbonSurface('home', 'history.redo', 'history', 20, 'large', 'redo'),
+  ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste'),
   ribbonSurface('home', 'clipboard.cut', 'clipboard', 20, 'small', 'cut'),
   ribbonSurface('home', 'clipboard.copy', 'clipboard', 30, 'small', 'copy'),
   homeControl('format-painter', 'clipboard', 40),
@@ -705,9 +833,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.underline', 'font', 70, 'small', 'underline'),
   ribbonSurface('home', 'font.strikethrough', 'font', 80, 'small', 'strikethrough'),
   ribbonSurface('home', 'font.borders', 'font', 85, 'small', 'allBorders'),
-  homeControl('borders', 'font', 90),
+  homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
-  homeControl('vertical-alignment', 'alignment', 10),
   ribbonSurface('home', 'alignment.left', 'alignment', 20, 'small', 'alignLeft'),
   ribbonSurface('home', 'alignment.center', 'alignment', 30, 'small', 'alignCenter'),
   ribbonSurface('home', 'alignment.right', 'alignment', 40, 'small', 'alignRight'),
@@ -718,7 +845,11 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'alignment.indent-decrease', 'alignment', 49, 'small', 'indentDecrease'),
   ribbonSurface('home', 'alignment.wrap', 'alignment', 50, 'small', 'wrapText'),
   ribbonSurface('home', 'alignment.orientation', 'alignment', 55, 'small', 'textOrientation'),
-  ribbonSurface('home', 'alignment.merge', 'alignment', 60, 'split', 'mergeCells'),
+  homeControl('merge-menu', 'alignment', 60),
+  ribbonSurface('home', 'alignment.merge-center', 'alignment', 61, 'menu', 'mergeCenter', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.merge-cells', 'alignment', 62, 'menu', 'mergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.merge-across', 'alignment', 63, 'menu', 'mergeAcross', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
+  ribbonSurface('home', 'alignment.unmerge', 'alignment', 64, 'menu', 'unmergeCells', ['wide', 'compact', 'narrow'], undefined, 'control.merge-menu'),
   homeControl('number-format', 'number', 10),
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
@@ -726,15 +857,26 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.decimal', 'number', 50, 'small', 'numberFormatDecimal'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
-  ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.table', 'styles', 20, 'tile', 'formatAsTable', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.format-cells', 'styles', 30, 'tile', 'formatCells', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.validation', 'styles', 40, 'tile', 'dataValidation', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.template', 'styles', 50, 'tile', 'cellTemplate', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.editor', 'styles', 60, 'tile', 'cellEditor', ['wide', 'compact']),
-  ribbonSurface('home', 'cells.insert', 'cells', 10, 'split', 'insertRowHome'),
-  ribbonSurface('home', 'cells.delete', 'cells', 20, 'split', 'deleteRow'),
-  ribbonSurface('home', 'cells.format', 'cells', 30, 'split', 'insertCells'),
+  ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat'),
+  ribbonSurface('home', 'styles.table', 'styles', 20, 'tile', 'formatAsTable'),
+  ribbonSurface('home', 'styles.format-cells', 'styles', 30, 'tile', 'formatCells'),
+  ribbonSurface('home', 'styles.validation', 'styles', 40, 'tile', 'dataValidation'),
+  ribbonSurface('home', 'styles.template', 'styles', 50, 'tile', 'cellTemplate'),
+  ribbonSurface('home', 'styles.editor', 'styles', 60, 'tile', 'cellEditor'),
+  homeControl('cells-insert-menu', 'cells', 10),
+  homeControl('cells-delete-menu', 'cells', 20),
+  homeControl('cells-format-menu', 'cells', 30),
+  ribbonSurface('home', 'cells.insert-row', 'cells', 40, 'menu', 'insertRowHome', ['wide', 'compact', 'narrow'], undefined, 'control.cells-insert-menu'),
+  ribbonSurface('home', 'cells.insert-column', 'cells', 41, 'menu', 'insertColumnHome', ['wide', 'compact', 'narrow'], undefined, 'control.cells-insert-menu'),
+  ribbonSurface('home', 'cells.insert-cells', 'cells', 42, 'menu', 'insertCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-insert-menu'),
+  ribbonSurface('home', 'cells.delete-row', 'cells', 50, 'menu', 'deleteRow', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
+  ribbonSurface('home', 'cells.delete-column', 'cells', 51, 'menu', 'deleteColumn', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
+  ribbonSurface('home', 'cells.delete-cells', 'cells', 52, 'menu', 'deleteCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
+  homeControl('column-width', 'cells', 60, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('auto-fit-column-width', 'cells', 61, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('hide-columns', 'cells', 62, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('unhide-columns', 'cells', 63, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('default-column-width', 'cells', 64, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
   ribbonSurface('home', 'editing.autosum', 'editing', 60, 'small', 'autoSum'),
   ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
   ribbonSurface('home', 'editing.fill-right', 'editing', 66, 'small', 'fillRight'),
@@ -873,17 +1015,23 @@ const styleCommand = (
   active,
 });
 
-/** Structured number-format adjustment used by the Ribbon decimal controls. */
-export function adjustRibbonDecimalPlaces(current: string | undefined, delta: number): string {
-  const source = current && current !== 'general' ? current : '0';
-  const percent = source.includes('%');
-  const currency = source.includes('$');
-  const comma = source.includes(',');
-  const match = source.match(/\.([0#?]+)/);
-  const decimals = Math.max(0, Math.min(30, (match?.[1]?.length ?? 0) + delta));
-  const integer = currency ? '$#,##0' : comma ? '#,##0' : '0';
-  return `${integer}${decimals > 0 ? `.${'0'.repeat(decimals)}` : ''}${percent ? '%' : ''}`;
-}
+const precisionStyleCommand = (
+  id: RibbonCommandId,
+  labelKey: RibbonTextKey,
+  icon: RibbonIconName,
+  delta: 1 | -1,
+): CommandDefinition => ({
+  ...command(id, 'home', 'number', 'sheet.style.set', labelKey, icon),
+  build: (context) => {
+    const result = transformNumberFormatPrecision(context.cellStyle.numberFormat, delta);
+    if (!result.ok) return undefined;
+    return { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { numberFormat: result.format } } } };
+  },
+  enabled: (context) => {
+    const result = transformNumberFormatPrecision(context.cellStyle.numberFormat, delta);
+    return result.ok && !context.disabled && (!context.canExecute || context.canExecute('sheet.style.set', { style: { numberFormat: result.format } }));
+  },
+});
 
 export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('save', 'file', 'workbook', RIBBON_TEXT.commands.save, (context) => context.actions.onSave()),
@@ -938,15 +1086,18 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   styleCommand('indentDecrease', RIBBON_TEXT.commands.indentDecrease, 'indent-decrease', (context) => ({ indent: Math.max(0, Number(context.cellStyle.indent ?? 0) - 1) }), undefined, 'alignment'),
   styleCommand('wrapText', RIBBON_TEXT.commands.wrapText, 'wrap-text', (context) => ({ wrapText: !context.cellStyle.wrapText }), (context) => Boolean(context.cellStyle.wrapText)),
   styleCommand('textOrientation', RIBBON_TEXT.commands.textOrientation, 'type', (context) => ({ textRotate: context.cellStyle.textRotate === 45 ? 0 : 45 }), (context) => Boolean(context.cellStyle.textRotate), 'alignment'),
-  command('mergeCells', 'home', 'alignment', 'sheet.merge.set', RIBBON_TEXT.commands.mergeCells, 'merge-cells'),
+  callback('mergeCenter', 'home', 'alignment', RIBBON_TEXT.commands.mergeCenter, (context) => context.actions.onMerge('center'), 'merge-cells'),
+  callback('mergeCells', 'home', 'alignment', RIBBON_TEXT.commands.mergeCells, (context) => context.actions.onMerge('cells'), 'merge-cells'),
+  callback('mergeAcross', 'home', 'alignment', RIBBON_TEXT.commands.mergeAcross, (context) => context.actions.onMerge('across'), 'merge-cells'),
+  callback('unmergeCells', 'home', 'alignment', RIBBON_TEXT.commands.unmergeCells, (context) => context.actions.onMerge('unmerge'), 'merge-cells'),
   intent('formatCells', 'home', 'number', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' }), 'table'),
   command('numberFormatGeneral', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatGeneral, undefined, { style: { numberFormat: 'general' } }),
   command('numberFormatCurrency', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatCurrency, 'dollar-sign', { style: { numberFormat: '$#,##0' } }),
   command('numberFormatPercent', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatPercent, 'percent', { style: { numberFormat: '0%' } }),
   command('numberFormatComma', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatComma, 'comma', { style: { numberFormat: '#,##0' } }),
   command('numberFormatDecimal', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatDecimal, 'decimal-increase', { style: { numberFormat: '0.00' } }),
-  styleCommand('numberFormatDecimalIncrease', RIBBON_TEXT.commands.numberFormatDecimalIncrease, 'decimal-increase', (context) => ({ numberFormat: adjustRibbonDecimalPlaces(context.cellStyle.numberFormat, 1) }), undefined, 'number'),
-  styleCommand('numberFormatDecimalDecrease', RIBBON_TEXT.commands.numberFormatDecimalDecrease, 'decimal-decrease', (context) => ({ numberFormat: adjustRibbonDecimalPlaces(context.cellStyle.numberFormat, -1) }), undefined, 'number'),
+  precisionStyleCommand('numberFormatDecimalIncrease', RIBBON_TEXT.commands.numberFormatDecimalIncrease, 'decimal-increase', 1),
+  precisionStyleCommand('numberFormatDecimalDecrease', RIBBON_TEXT.commands.numberFormatDecimalDecrease, 'decimal-decrease', -1),
   command('insertRowHome', 'home', 'cells', 'sheet.rows.insert', RIBBON_TEXT.commands.insertRowHome, 'rows', { count: 1 }),
   command('insertColumnHome', 'home', 'cells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumnHome, 'columns', { count: 1 }),
   command('deleteRow', 'home', 'cells', 'sheet.rows.delete', RIBBON_TEXT.commands.deleteRow, 'rows', { count: 1 }),
@@ -1001,6 +1152,128 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('pivotFieldList', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
     enabled: (context) => Boolean(context.activePivot),
+  },
+  {
+    ...intent('tableSheetFieldList', 'tableSheetDesign', 'tableSheetDesign', RIBBON_TEXT.commands.tableSheetFieldList, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeTableSheet),
+  },
+  {
+    ...intent('tableSheetColumnSettings', 'tableSheetDesign', 'tableSheetDesign', RIBBON_TEXT.commands.tableSheetColumnSettings, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
+    enabled: (context) => Boolean(context.activeTableSheet),
+  },
+  {
+    ...intent('ganttFieldMapping', 'ganttTask', 'ganttTask', RIBBON_TEXT.commands.ganttFieldMapping, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('ganttCalendar', 'ganttProject', 'ganttProject', RIBBON_TEXT.commands.ganttCalendar, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('ganttTimeline', 'ganttView', 'ganttView', RIBBON_TEXT.commands.ganttTimeline, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('ganttDependencyStyle', 'ganttFormat', 'ganttFormat', RIBBON_TEXT.commands.ganttDependencyStyle, () => ({ type: 'panel.open', panel: 'data' }), 'sparkles'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('reportFieldBinding', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportFieldBinding, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('reportRenderMode', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportRenderMode, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('reportPagination', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportPagination, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('reportLayout', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportLayout, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('tableName', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableName, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableHeaderRow', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableHeaderRow, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), hasHeaderRow: !context.activeTable.table.hasHeaderRow, showFilterButton: !context.activeTable.table.hasHeaderRow ? context.activeTable.table.showFilterButton : false, autoFilter: undefined } }
+      : undefined, 'rows'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableTotalRow', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableTotalRow, (context) => context.activeTable
+      ? { commandId: 'sheetTable.toggleTotalRow', params: { sheetId: context.activeTable.sheetId, tableId: context.activeTable.tableId, enabled: !context.activeTable.table.hasTotalRow } }
+      : undefined, 'rows'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableFirstColumn', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableFirstColumn, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showFirstColumn: !context.activeTable.table.showFirstColumn } }
+      : undefined, 'columns'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableLastColumn', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableLastColumn, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showLastColumn: !context.activeTable.table.showLastColumn } }
+      : undefined, 'columns'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableBandedRows', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableBandedRows, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showBandedRows: !context.activeTable.table.showBandedRows } }
+      : undefined, 'rows'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableBandedColumns', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableBandedColumns, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showBandedColumns: !context.activeTable.table.showBandedColumns } }
+      : undefined, 'columns'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableFilterButton', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableFilterButton, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showFilterButton: !context.activeTable.table.showFilterButton, autoFilter: undefined } }
+      : undefined, 'filter'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableResize', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableResize, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), range: structuredClone(context.activeTable.resizeRange ?? context.activeTable.table.range) } }
+      : undefined, 'layout'),
+    enabled: (context) => Boolean(context.activeTable?.resizeRange),
+  },
+  {
+    ...dynamicCommand('tableConvertToRange', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableConvertToRange, (context) => context.activeTable
+      ? { commandId: 'sheetTable.convertToRange', params: { sheetId: context.activeTable.sheetId, tableId: context.activeTable.tableId } }
+      : undefined, 'trash'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...intent('tableStyle', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableStyle, () => ({ type: 'panel.open', panel: 'data' }), 'sparkles'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...intent('chartElements', 'chartDesign', 'chartDesign', RIBBON_TEXT.commands.chartElements, () => ({ type: 'panel.open', panel: 'chart' }), 'chart'),
+    enabled: (context) => Boolean(context.activeChart),
+  },
+  {
+    ...intent('chartSelectData', 'chartDesign', 'chartDesign', RIBBON_TEXT.commands.chartSelectData, () => ({ type: 'panel.open', panel: 'chart' }), 'table'),
+    enabled: (context) => Boolean(context.activeChart),
+  },
+  {
+    ...intent('chartFormatPanel', 'chartFormat', 'chartFormat', RIBBON_TEXT.commands.chartFormatPanel, () => ({ type: 'panel.open', panel: 'chart' }), 'sparkles'),
+    enabled: (context) => Boolean(context.activeChart),
+  },
+  {
+    ...intent('sparklineDesign', 'sparklineDesign', 'sparklineDesign', RIBBON_TEXT.commands.sparklineDesign, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
+    enabled: (context) => Boolean(context.activeSparkline),
+  },
+  {
+    ...intent('pictureFormatPanel', 'pictureFormat', 'pictureFormat', RIBBON_TEXT.commands.pictureFormatPanel, () => ({ type: 'panel.open', panel: 'picture' }), 'picture'),
+    enabled: (context) => Boolean(context.activePicture),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

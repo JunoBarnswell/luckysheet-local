@@ -5,9 +5,14 @@ export {
   resolveActorId,
   resolveShareToken,
   type WorkbookSessionOptions,
+  type DispatchOutcome,
+  type ClipboardExecutionOutcome,
+  type DispatchErrorCode,
+  CommandDispatchError,
   type DefinedNameCommandInput,
   type UiSnapshot,
 } from './workbook-session';
+export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
 export { useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,
@@ -17,12 +22,13 @@ export {
 export * from './ui-command-catalog';
 export * from './features/formula-audit';
 export * from './features/pivot-controls';
+export { buildPivotChartData, type PivotChartCategory, type PivotChartData, type PivotChartSeries } from './features/chart/data';
 export * from './features/data-source';
 export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParams } from './features/editing/index';
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
-export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey, SheetDialogState } from './types';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey, SheetDialogState, MergeOperation } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,
@@ -143,6 +149,8 @@ export {
 } from './features/history';
 export { CollaborationSession } from './collaboration';
 export { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision } from './features/pivot/engine';
+export { buildGanttProjection, type GanttProjection, type GanttTaskProjection } from './features/gantt/projection';
+export { buildReportProjection, type ReportCellProjection, type ReportProjection } from './features/report/projection';
 export { cellAddress, columnLabel, parseAddress } from './address';
 export type { CanvasSheetSnapshot, CanvasCellSnapshot, PreviewRowSnapshot } from './ui-snapshot';
 export type { AppPhase, FocusState, FocusTarget, InputMode, RibbonTabId, SidebarPanelId, SaveState, PeerCursor, UiSessionIntent } from './types';

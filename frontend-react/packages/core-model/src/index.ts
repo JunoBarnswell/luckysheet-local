@@ -9,6 +9,8 @@ import type {
   CommentThread,
   DrawingObject,
   DrawingPayload,
+  ImageCrop,
+  ImageEffects,
   SparklineGroup,
   SheetTableModel,
   OutlineModel,
@@ -120,13 +122,23 @@ export interface CellData {
   };
 }
 
-export type BarcodeSymbology = 'qr' | 'code128' | 'code39' | 'ean13' | 'ean8' | 'upca' | 'pdf417' | 'data-matrix';
+export const BARCODE_SYMBOLOGIES = ['qr', 'code128', 'code39', 'code93', 'code49', 'codabar', 'ean13', 'ean8', 'upca', 'gs1-128', 'pdf417', 'data-matrix'] as const;
+export type BarcodeSymbology = typeof BARCODE_SYMBOLOGIES[number];
+
+export type BarcodeLabelPosition = 'above' | 'below' | 'none';
+export type BarcodeParameters =
+  | { symbology: 'qr'; errorCorrection?: 'low' | 'medium' | 'quartile' | 'high' }
+  | { symbology: 'data-matrix' }
+  | { symbology: 'pdf417'; securityLevel?: number }
+  | { symbology: 'ean13' | 'ean8' | 'upca'; addOnText?: string; includeCheckDigit?: boolean }
+  | { symbology: 'code128' | 'code39' | 'code93' | 'code49' | 'codabar' | 'gs1-128'; fullAscii?: boolean; includeCheckDigit?: boolean; wideNarrowRatio?: number };
 
 export interface BarcodeCellPresentation {
   kind: 'barcode';
   symbology: BarcodeSymbology;
   source: { kind: 'cell-value' } | { kind: 'formula'; formula: string };
-  options: { foreground: string; background: string; showText: boolean; quietZone: number };
+  parameters: BarcodeParameters;
+  options: { foreground: string; background: string; showText: boolean; labelPosition: BarcodeLabelPosition; quietZone: number; fontSize?: number };
 }
 
 export interface ImageCellPresentation {
@@ -134,6 +146,8 @@ export interface ImageCellPresentation {
   src: string;
   altText?: string;
   fit: 'contain' | 'cover' | 'stretch';
+  crop?: ImageCrop;
+  effects?: ImageEffects;
 }
 
 export type CellPresentation = BarcodeCellPresentation | ImageCellPresentation;
@@ -211,11 +225,45 @@ export type {
   HyperlinkTarget,
   DrawingPayload,
   ImageDrawingPayload,
+  ImageCrop,
+  ImageEffects,
   ShapeDrawingPayload,
   TextBoxDrawingPayload,
+  TextBoxTextFrame,
+  TextBoxHorizontalAlignment,
+  TextBoxVerticalAlignment,
+  TextBoxTextDirection,
+  TextBoxAutofit,
   ChartDrawingPayload,
+  ChartSeriesType,
+  ChartAxisModel,
+  ChartGridlineModel,
+  ChartAreaStyle,
+  ChartMarkerModel,
+  ChartTrendlineModel,
+  ChartErrorBarsModel,
+  ChartDataLabelsModel,
+  ChartSeriesModel,
+  ChartElementModel,
   DataChartDrawingPayload,
+  DataChartPlotType,
+  DataChartBindingArea,
+  DataChartSource,
+  DataChartFieldBinding,
+  DataChartInspectorModel,
   CameraDrawingPayload,
+  FormControlStyle,
+  FormControlCellLink,
+  FormControlAction,
+  ButtonFormControlPayload,
+  SpinButtonFormControlPayload,
+  ListBoxFormControlPayload,
+  ComboBoxFormControlPayload,
+  CheckboxFormControlPayload,
+  OptionButtonFormControlPayload,
+  GroupBoxFormControlPayload,
+  LabelFormControlPayload,
+  ScrollbarFormControlPayload,
   FormControlDrawingPayload,
   FormControlType,
   PivotControlFilter,
@@ -239,6 +287,7 @@ export type {
   CellShiftSpec,
   StructuralTransformParams,
 } from './domain';
+export { createDefaultTextBoxTextFrame } from './domain';
 export {
   createEmptySelection,
   isFormulaError,
@@ -249,6 +298,7 @@ export {
   isPivotControlStyle,
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
+  isFormControlDrawingPayload,
 } from './domain';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
 export { applyRowPermutation, validatePermutationMetadata, type RowPermutation } from './data-transform';

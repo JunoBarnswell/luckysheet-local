@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { WorkbookModel } from '@react-sheets/core-model';
+import { ApiRequestError } from '@react-sheets/protocol';
 import { WorkbookSession } from './workbook-session';
 
 describe('WorkbookSession local workspace integration', () => {
@@ -31,5 +33,42 @@ describe('WorkbookSession local workspace integration', () => {
     const app = new WorkbookSession();
     await app.saveWorkbook('local save');
     assert.match(app.getUiSnapshot().notice, /checkpoint saved/i);
+  });
+
+  it('uses the session share token for remote workbook reads', async () => {
+    const originalFetch = globalThis.fetch;
+    const snapshot = new WorkbookModel('shared-workbook', 'Shared workbook').snapshot();
+    let receivedShareToken: string | null = null;
+    globalThis.fetch = async (_input, init) => {
+      receivedShareToken = new Headers(init?.headers).get('x-workbook-share-token');
+      return new Response(JSON.stringify({ snapshot, revision: 1 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    try {
+      const app = new WorkbookSession({ unitId: 'shared-workbook', shareTokenProvider: () => 'guest-share-token' });
+      await app['runtime'].api.getSnapshot('shared-workbook');
+      assert.equal(receivedShareToken, 'guest-share-token');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('surfaces a rejected session share token as an authoritative remote failure', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ code: 'FORBIDDEN', message: 'Share access revoked' }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    });
+    try {
+      const app = new WorkbookSession({ unitId: 'revoked-workbook', shareTokenProvider: () => 'revoked-share-token' });
+      await assert.rejects(
+        () => app['runtime'].api.getSnapshot('revoked-workbook'),
+        (error: unknown) => error instanceof ApiRequestError && error.status === 403,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
