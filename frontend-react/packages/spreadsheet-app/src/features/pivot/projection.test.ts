@@ -201,7 +201,7 @@ describe('native PivotGridProjection contract', () => {
       target: { sheetId: workbookSheet.id, anchor: { row: 8, column: 0 } },
       fieldCatalog: { fields: [] },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
     });
     const globalPivot = createPivot('pivot-global-scope', { kind: 'named-range', name: 'SharedSource' });
     const localPivot = createPivot('pivot-local-scope', { kind: 'named-range', name: 'SharedSource', sheetId: localSheet.id });
