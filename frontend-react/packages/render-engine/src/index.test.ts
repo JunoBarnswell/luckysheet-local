@@ -412,6 +412,30 @@ test('contentToScreen selects the cell pane for frozen rows and columns', () => 
   engine.dispose();
 });
 
+test('pivot-control child hits are returned before the generic floating move hit', () => {
+  const renderSkeleton = new SheetSkeleton({ rowCount: 20, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
+  const engine = new CanvasRenderEngine({
+    skeleton: renderSkeleton,
+    viewport: { width: 300, height: 220, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
+  });
+  engine.render();
+  engine.setFloating([{
+    kind: 'pivot-control',
+    id: 'slicer-1',
+    bounds: { x: 0, y: 0, width: 160, height: 100 },
+    draw: () => undefined,
+    hitTest: (point) => point.y >= 26 && point.y < 46 ? { action: 'pivot.slicer.member', data: { member: 'text:A' } } : null,
+  }]);
+  const memberHit = engine.hitTestFloating({ x: 39 + 20, y: 20 + 35 });
+  assert.equal(memberHit?.kind, 'pivot-control');
+  assert.equal(memberHit?.control?.action, 'pivot.slicer.member');
+  assert.deepEqual(memberHit?.control?.data, { member: 'text:A' });
+  const bodyHit = engine.hitTestFloating({ x: 39 + 20, y: 20 + 70 });
+  assert.equal(bodyHit?.kind, 'pivot-control');
+  assert.equal(bodyHit?.control, undefined);
+  engine.dispose();
+});
+
 test('saved frozen top-left cell seeds initial scroll without blocking earlier rows', () => {
   const renderSkeleton = new SheetSkeleton({ rowCount: 200, columnCount: 10, defaultRowHeight: 20, defaultColumnWidth: 50 });
   const engine = new CanvasRenderEngine({ skeleton: renderSkeleton, viewport: { width: 500, height: 320, scrollX: 0, scrollY: 0, devicePixelRatio: 1 } });

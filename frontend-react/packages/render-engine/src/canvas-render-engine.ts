@@ -413,7 +413,8 @@ export class CanvasRenderEngine {
       const screen = this.contentToScreen(drawable.bounds);
       if (local.x >= screen.x && local.x <= screen.x + drawable.bounds.width
         && local.y >= screen.y && local.y <= screen.y + drawable.bounds.height) {
-        return { kind: drawable.kind, id: drawable.id };
+        const control = drawable.hitTest?.({ x: local.x - screen.x, y: local.y - screen.y }) ?? undefined;
+        return control ? { kind: drawable.kind, id: drawable.id, control } : { kind: drawable.kind, id: drawable.id };
       }
     }
     return null;

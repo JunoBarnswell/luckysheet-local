@@ -1,3 +1,10 @@
+import {
+  createPivotMemberKey,
+  formatPivotMember,
+  pivotMemberKey,
+  pivotScalarFromMemberKey,
+  pivotTimelineInstant,
+} from "@react-sheets/core-model";
 import type {
   ChartDrawingPayload,
   ChartMarkerModel,
@@ -6,6 +13,8 @@ import type {
   FormControlDrawingPayload,
   DrawingObject,
   DrawingPayload,
+  PivotMemberKey,
+  PivotScalar,
   PivotResultTree,
   PivotSlicerDrawingPayload,
   PivotTimelineDrawingPayload,
@@ -26,6 +35,14 @@ import {
   type Rect,
   type RenderPane,
 } from "@react-sheets/render-engine";
+
+/** Semantic child actions emitted by a Pivot control drawable. */
+export type PivotControlAction =
+  | { kind: 'slicer-member'; memberKey: PivotMemberKey }
+  | { kind: 'slicer-clear' }
+  | { kind: 'timeline-period'; start: string; end: string }
+  | { kind: 'timeline-handle'; edge: 'start' | 'end' }
+  | { kind: 'timeline-scroll'; direction: -1 | 1 };
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
@@ -799,12 +816,73 @@ function drawCanonicalSparklineOnCanvas(options: {
   context.restore();
 }
 
+interface PivotControlMember {
+  value: PivotScalar;
+  key: PivotMemberKey;
+  label: string;
+}
+
+function pivotControlMembers(payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): PivotControlMember[] {
+  const tree = pivotResults[payload.pivotId];
+  const field = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId);
+  const values = [...(field?.values ?? [])];
+  if (values.length === 0 && tree) {
+    const collect = (nodes: readonly PivotResultTree['rows'][number][]): void => {
+      for (const node of nodes) {
+        if (node.fieldId === payload.fieldId && node.memberKey) values.push(pivotScalarFromMemberKey(node.memberKey));
+        collect(node.children);
+      }
+    };
+    collect(tree.rows);
+  }
+  const members = new Map<string, PivotControlMember>();
+  for (const value of values) {
+    const key = createPivotMemberKey(value);
+    members.set(pivotMemberKey(key), { value, key, label: formatPivotMember(value) });
+  }
+  return [...members.values()];
+}
+
+function pivotTimelinePeriods(payload: PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): Array<{ start: string; end: string }> {
+  const values = pivotControlMembers(payload, pivotResults)
+    .map((entry) => pivotTimelineInstant(entry.value) === undefined ? undefined : new Date(pivotTimelineInstant(entry.value)!).toISOString().slice(0, 10))
+    .filter((value): value is string => Boolean(value));
+  return [...new Set(values)].sort().map((value) => ({ start: value, end: value }));
+}
+
+function pivotControlHitTest(
+  payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload,
+  members: readonly PivotControlMember[],
+  periods: readonly { start: string; end: string }[],
+  point: { x: number; y: number },
+  bounds: Rect,
+): import('@react-sheets/render-engine').FloatingControlHit | null {
+  const headerHeight = Math.min(26, bounds.height);
+  if (payload.kind === 'slicer') {
+    if (point.y <= headerHeight && point.x >= Math.max(0, bounds.width - 26)) return { action: 'pivot.slicer.clear', data: { kind: 'slicer-clear' } satisfies PivotControlAction };
+    const itemHeight = 20;
+    const index = Math.floor((point.y - headerHeight) / itemHeight);
+    const member = index >= 0 && index < members.length ? members[index] : undefined;
+    return member ? { action: 'pivot.slicer.member', data: { kind: 'slicer-member', memberKey: member.key } satisfies PivotControlAction } : null;
+  }
+  if (point.y <= headerHeight && point.x < 74) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: -1 } satisfies PivotControlAction };
+  if (point.y <= headerHeight && point.x >= Math.max(0, bounds.width - 74)) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: 1 } satisfies PivotControlAction };
+  if (point.y > headerHeight && point.y < bounds.height - 8 && point.x <= 12) return { action: 'pivot.timeline.handle', data: { kind: 'timeline-handle', edge: 'start' } satisfies PivotControlAction };
+  if (point.y > headerHeight && point.y < bounds.height - 8 && point.x >= bounds.width - 12) return { action: 'pivot.timeline.handle', data: { kind: 'timeline-handle', edge: 'end' } satisfies PivotControlAction };
+  const trackWidth = Math.max(1, bounds.width - 24);
+  const periodIndex = Math.floor(((point.x - 12) / trackWidth) * periods.length);
+  const period = periodIndex >= 0 && periodIndex < periods.length ? periods[periodIndex] : undefined;
+  return period ? { action: 'pivot.timeline.period', data: { kind: 'timeline-period', ...period } satisfies PivotControlAction } : null;
+}
+
 function drawPivotControlOnCanvas(options: {
   context: CanvasRenderingContext2D;
   payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
   bounds: Rect;
+  members: readonly PivotControlMember[];
+  periods: readonly { start: string; end: string }[];
 }): void {
-  const { context, payload, bounds } = options;
+  const { context, payload, bounds, members, periods } = options;
   const style = payload.style;
   context.save();
   context.fillStyle = style.fill;
@@ -819,10 +897,38 @@ function drawPivotControlOnCanvas(options: {
   context.textBaseline = "middle";
   context.fillText(payload.kind === "slicer" ? `Slicer · ${payload.fieldId}` : `Timeline · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
   context.font = `${style.fontSize}px Segoe UI, sans-serif`;
-  const detail = payload.kind === "slicer"
-    ? payload.filter.mode === "all" ? "All items" : `${payload.filter.memberKeys.length} selected`
-    : `${payload.period.start ?? "Start"} — ${payload.period.end ?? "End"}`;
-  context.fillText(detail, bounds.x + 8, bounds.y + Math.min(bounds.height - 12, 44), Math.max(10, bounds.width - 16));
+  if (payload.kind === "slicer") {
+    const selected = new Set(payload.filter.memberKeys.map(pivotMemberKey));
+    members.slice(0, Math.max(0, Math.floor((bounds.height - 30) / 20))).forEach((member, index) => {
+      const top = bounds.y + 28 + index * 20;
+      if (selected.has(pivotMemberKey(member.key))) {
+        context.fillStyle = style.selectedFill ?? '#bfdbfe';
+        context.fillRect(bounds.x + 2, top, Math.max(0, bounds.width - 4), 19);
+      }
+      context.fillStyle = style.textColor;
+      context.fillText(member.label, bounds.x + 8, top + 10, Math.max(10, bounds.width - 16));
+    });
+    context.fillStyle = style.textColor;
+    context.font = `600 ${style.fontSize}px Segoe UI, sans-serif`;
+    context.fillText('×', bounds.x + Math.max(0, bounds.width - 20), bounds.y + 13, 14);
+  } else {
+    const detail = `${payload.period.start ?? "Start"} — ${payload.period.end ?? "End"}`;
+    context.fillText(detail, bounds.x + 8, bounds.y + Math.min(bounds.height - 12, 44), Math.max(10, bounds.width - 16));
+    const trackY = bounds.y + Math.max(30, bounds.height - 22);
+    context.strokeStyle = style.border;
+    context.beginPath();
+    context.moveTo(bounds.x + 12, trackY);
+    context.lineTo(bounds.x + Math.max(12, bounds.width - 12), trackY);
+    context.stroke();
+    periods.slice(0, Math.max(0, Math.floor((bounds.width - 24) / 24))).forEach((period, index) => {
+      const x = bounds.x + 12 + (index + 0.5) * ((bounds.width - 24) / Math.max(1, Math.min(periods.length, Math.floor((bounds.width - 24) / 24))));
+      context.fillStyle = style.textColor;
+      context.fillRect(x - 2, trackY - 3, 4, 6);
+    });
+    context.fillStyle = style.accentColor;
+    context.fillRect(bounds.x + 8, trackY - 7, 4, 14);
+    context.fillRect(bounds.x + Math.max(8, bounds.width - 12), trackY - 7, 4, 14);
+  }
   context.restore();
 }
 
@@ -906,7 +1012,15 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
       continue;
     }
     if (payload.kind === "slicer" || payload.kind === "timeline") {
-      drawables.push({ kind: "shape", id: drawing.id, bounds, draw: (context, rect) => drawPivotControlOnCanvas({ context, payload, bounds: rect }) });
+      const members = pivotControlMembers(payload, pivotResults);
+      const periods = payload.kind === 'timeline' ? pivotTimelinePeriods(payload, pivotResults) : [];
+      drawables.push({
+        kind: "pivot-control",
+        id: drawing.id,
+        bounds,
+        draw: (context, rect) => drawPivotControlOnCanvas({ context, payload, bounds: rect, members, periods }),
+        hitTest: (point) => pivotControlHitTest(payload, members, periods, point, bounds),
+      });
       continue;
     }
     if (payload.kind === "image") {

@@ -23,6 +23,7 @@ import {
   type ResolvedContextHit,
   type SelectionState,
 } from "@react-sheets/spreadsheet-app";
+import type { PivotControlAction } from "./drawing-renderers";
 
 export interface CanvasFillPreview {
   startRow: number;
@@ -63,7 +64,7 @@ interface DragState {
   resizeIndex: number;
   floating?: {
     id: string;
-    kind: "chart" | "shape" | "image";
+    kind: "chart" | "shape" | "image" | "pivot-control";
     handle?: FloatingHandle;
     rotation?: number;
     startBounds: Rect;
@@ -94,6 +95,8 @@ export interface CanvasInteractionOptions {
   formatPainterActive: boolean;
   canRepeat: boolean;
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
+  /** Control-child actions are consumed before generic floating move/resize. */
+  onPivotControlAction?: (drawingId: string, action: PivotControlAction) => void;
   onPivotShowDetails: (request: {
     pivotId: string;
     sourceRowPaths: readonly PivotSourceRowPath[];
@@ -256,6 +259,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onJumpEdge,
     onMovePrimary,
     onPivotContextHit,
+    onPivotControlAction,
     onPivotResolve,
     onPivotShowDetails,
     onPivotExpansionToggle,
@@ -473,6 +477,17 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
 
     const floatingHit = engine.hitTestFloating(local);
     if (floatingHit) {
+      if (floatingHit.control) {
+        const action = floatingHit.control.data;
+        if (action && typeof action === 'object' && 'kind' in action) {
+          onPivotControlAction?.(floatingHit.id, action as PivotControlAction);
+        }
+        // A malformed/unsupported child hit is fail-closed: it must never
+        // fall through into a move gesture and mutate drawing geometry.
+        onFloatingSelect({ kind: floatingHit.kind, id: floatingHit.id }, event.shiftKey ? "add" : event.ctrlKey || event.metaKey ? "toggle" : "replace");
+        (event.target as Element).setPointerCapture?.(event.pointerId);
+        return;
+      }
       const drawableBounds = floatables.find((item) => item.id === floatingHit.id)?.bounds;
       if (drawableBounds) {
         dragRef.current = {
@@ -668,7 +683,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange({ ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [containerRef, drawingSelectionMode, drawings, drawingPayloads, editingCell, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
+  }, [containerRef, drawingSelectionMode, drawings, drawingPayloads, editingCell, engineRef, filterPopoverAnchor, findPivotProjectionCell, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, onTextBoxPlacementCommit, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll, textBoxPlacementActive]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;
@@ -832,6 +847,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onPivotContextHit?.(null);
     const floatingHit = engine.hitTestFloating(local);
     if (floatingHit) {
+      if (floatingHit.control) return;
       const drawing = drawings.find((entry) => entry.id === floatingHit.id);
       const payload = drawing ? drawingPayloads.get(drawing.payloadId) : undefined;
       if (payload?.kind === 'textbox') {
@@ -980,7 +996,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       else if (editingCell || editingActiveRef.current) onAppendFormulaDraft?.(key);
       else { editingActiveRef.current = true; onBeginEdit(key); }
     }
-  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
+  }, [canRepeat, containerRef, contextRangeRef, drawingPayloads, drawings, drawingSelectionMode, editingCell, findPivotProjectionCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onBeginTextBoxEdit, onCancelEdit, onCancelFormatPainter, onCancelTextBoxPlacement, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotControlAction, onPivotExpansionToggle, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, onTextBoxPlacementCommit, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton, textBoxPlacementActive]);
 
   return {
     clearTransientSelection,

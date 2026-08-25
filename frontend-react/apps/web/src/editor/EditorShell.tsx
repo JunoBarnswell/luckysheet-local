@@ -15,6 +15,8 @@ import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
 import { ColumnDimensionController } from './column-dimension-controller';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
+import { pivotMemberKey, pivotTimelineInstant } from '@react-sheets/core-model';
+import type { PivotControlAction } from '../components/canvas/drawing-renderers';
 
 const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
 
@@ -177,6 +179,51 @@ export function EditorShell({
                     session.setPanelOpen(true);
                     dispatchSessionIntent({ type: "panel.open", panel: "pivot" });
                   } else session.setActivePivotContext(null);
+                }}
+                onPivotControlAction={(drawingId, action: PivotControlAction) => {
+                  const drawing = state.selectedSheet.drawings.find((entry) => entry.id === drawingId);
+                  const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
+                  if (payload?.kind === 'slicer') {
+                    if (action.kind === 'slicer-clear') {
+                      session.setPivotSlicerFilter(drawingId, 'all', []);
+                    } else if (action.kind === 'slicer-member') {
+                      const existing = payload.filter.memberKeys;
+                      const selected = existing.some((entry) => pivotMemberKey(entry) === pivotMemberKey(action.memberKey));
+                      const memberKeys = selected
+                        ? existing.filter((entry) => pivotMemberKey(entry) !== pivotMemberKey(action.memberKey))
+                        : [...existing, action.memberKey];
+                      session.setPivotSlicerFilter(drawingId, memberKeys.length > 0 ? 'include' : 'all', memberKeys);
+                    }
+                    return;
+                  }
+                  if (payload?.kind !== 'timeline') return;
+                  const tree = state.selectedSheet.pivotResults[payload.pivotId];
+                  const values = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId)?.values ?? [];
+                  const periods = [...new Set(values
+                    .map((value) => {
+                      const instant = pivotTimelineInstant(value);
+                      return instant === undefined ? undefined : new Date(instant).toISOString().slice(0, 10);
+                    })
+                    .filter((value): value is string => Boolean(value)))].sort();
+                  if (action.kind === 'timeline-period') {
+                    session.setPivotTimelinePeriod(drawingId, action.start, action.end);
+                  } else if (periods.length > 0 && (action.kind === 'timeline-scroll' || action.kind === 'timeline-handle')) {
+                    const currentStart = payload.period.start ? periods.indexOf(payload.period.start) : 0;
+                    const currentEnd = payload.period.end ? periods.indexOf(payload.period.end) : currentStart;
+                    if (action.kind === 'timeline-scroll') {
+                      const delta = action.direction;
+                      const nextStart = Math.max(0, Math.min(periods.length - 1, (currentStart < 0 ? 0 : currentStart) + delta));
+                      const nextEnd = Math.max(nextStart, Math.min(periods.length - 1, (currentEnd < 0 ? nextStart : currentEnd) + delta));
+                      session.setPivotTimelinePeriod(drawingId, periods[nextStart], periods[nextEnd]);
+                    } else if (action.edge === 'start') {
+                      const nextStart = Math.max(0, Math.min(currentEnd < 0 ? periods.length - 1 : currentEnd, (currentStart < 0 ? 0 : currentStart) - 1));
+                      session.setPivotTimelinePeriod(drawingId, periods[nextStart], periods[Math.max(nextStart, currentEnd < 0 ? nextStart : currentEnd)]);
+                    } else {
+                      const startIndex = Math.max(0, currentStart < 0 ? 0 : currentStart);
+                      const nextEnd = Math.min(periods.length - 1, (currentEnd < 0 ? startIndex : currentEnd) + 1);
+                      session.setPivotTimelinePeriod(drawingId, periods[startIndex], periods[nextEnd]);
+                    }
+                  }
                 }}
                 getPivotContextMenuItems={(hit) => {
                   const pivotId = hit.pivot?.pivotId ?? hit.objectId;
