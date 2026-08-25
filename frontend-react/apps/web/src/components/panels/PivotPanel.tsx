@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
-import { DEFAULT_PIVOT_STYLE_OPTIONS, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotPresentation, type PivotValueField } from '@react-sheets/core-model';
+import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text, TextInput } from '@react-sheets/ui-system';
+import { DEFAULT_PIVOT_DISPLAY_OPTIONS, DEFAULT_PIVOT_STYLE_OPTIONS, normalizePivotDisplayOptions, type PivotDisplayOptions, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotPresentation, type PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { PivotActions } from '../pivot/PivotActions';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
@@ -156,11 +156,13 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const presentation: PivotPresentation = {
     ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
     styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },
+    displayOptions: normalizePivotDisplayOptions(pivot.presentation?.displayOptions),
   };
   const updatePresentation = (patch: Partial<PivotPresentation['styleOptions']> & { styleName?: string }) => {
     const { styleName, ...options } = patch;
-    callbacks?.onPresentationChange?.({ ...(styleName ?? presentation.styleName ? { styleName: styleName ?? presentation.styleName } : {}), styleOptions: { ...presentation.styleOptions, ...options } });
+    callbacks?.onPresentationChange?.({ ...(styleName ?? presentation.styleName ? { styleName: styleName ?? presentation.styleName } : {}), styleOptions: { ...presentation.styleOptions, ...options }, displayOptions: presentation.displayOptions });
   };
+  const updateDisplayOptions = (patch: Partial<PivotDisplayOptions>) => callbacks?.onDisplayOptionsChange?.(normalizePivotDisplayOptions({ ...presentation.displayOptions, ...patch }));
 
   return (
     <Panel className="flex h-full min-h-0 flex-col rounded-none border-0 bg-white shadow-none" data-testid="pivot-field-list">
@@ -185,6 +187,18 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
           <Inline gap="sm" className="flex-wrap">
             {(['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'] as const).map((option) => <CheckToggle key={option} label={pivotText(locale, option === 'showRowHeaders' ? 'rowHeaders' : option === 'showColumnHeaders' ? 'columnHeaders' : option === 'showRowStripes' ? 'bandedRows' : option === 'showColumnStripes' ? 'bandedColumns' : 'lastColumn')} checked={presentation.styleOptions[option]} disabled={disabled} onChange={(event) => updatePresentation({ [option]: event.target.checked })} />)}
           </Inline>
+        </Stack>
+        <Stack gap="xs" className="shrink-0 rounded border border-slate-200 p-2">
+          <Text size="sm" weight="medium">{pivotText(locale, 'pivotOptions')}</Text>
+          <Text size="xs" tone="muted">{pivotText(locale, 'layoutFormat')}</Text>
+          <CheckToggle label={pivotText(locale, 'fillEmptyCells')} checked={presentation.displayOptions?.fillEmptyCells ?? DEFAULT_PIVOT_DISPLAY_OPTIONS.fillEmptyCells} disabled={disabled} onChange={(event) => updateDisplayOptions({ fillEmptyCells: event.target.checked })} />
+          <TextInput aria-label={pivotText(locale, 'emptyCellText')} value={presentation.displayOptions?.emptyCellText ?? ''} disabled={disabled || !(presentation.displayOptions?.fillEmptyCells ?? false)} placeholder={pivotText(locale, 'emptyCellText')} onChange={(event) => updateDisplayOptions({ emptyCellText: event.target.value })} />
+          <CheckToggle label={pivotText(locale, 'showErrorValues')} checked={presentation.displayOptions?.showErrorValues ?? DEFAULT_PIVOT_DISPLAY_OPTIONS.showErrorValues} disabled={disabled} onChange={(event) => updateDisplayOptions({ showErrorValues: event.target.checked })} />
+          <TextInput aria-label={pivotText(locale, 'errorCellText')} value={presentation.displayOptions?.errorCellText ?? ''} disabled={disabled || !(presentation.displayOptions?.showErrorValues ?? true)} placeholder={pivotText(locale, 'errorCellText')} onChange={(event) => updateDisplayOptions({ errorCellText: event.target.value })} />
+          <Text size="xs" tone="muted">{pivotText(locale, 'displayOptions')}</Text>
+          <CheckToggle label={pivotText(locale, 'showFieldHeaders')} checked={presentation.displayOptions?.showFieldHeaders ?? true} disabled={disabled} onChange={(event) => updateDisplayOptions({ showFieldHeaders: event.target.checked })} />
+          <CheckToggle label={pivotText(locale, 'autoFitColumns')} checked={presentation.displayOptions?.autoFitColumnsOnUpdate ?? true} disabled={disabled} onChange={(event) => updateDisplayOptions({ autoFitColumnsOnUpdate: event.target.checked })} />
+          <CheckToggle label={pivotText(locale, 'preserveFormatting')} checked={pivot.refreshPolicy.preserveFormatting} disabled={disabled} onChange={(event) => callbacks?.onRefreshPolicyChange?.({ ...pivot.refreshPolicy, preserveFormatting: event.target.checked })} />
         </Stack>
         <Box className={`min-h-0 min-w-0 flex flex-1 ${sideBySide ? 'flex-row' : 'flex-col'} gap-2`}>
           {showFields ? (

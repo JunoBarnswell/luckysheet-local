@@ -363,9 +363,20 @@ export interface PivotStyleOptions {
   showLastColumn: boolean;
 }
 
+/** Persistent Layout & Format / Display options owned by one Pivot definition. */
+export interface PivotDisplayOptions {
+  fillEmptyCells: boolean;
+  emptyCellText: string;
+  showErrorValues: boolean;
+  errorCellText: string;
+  showFieldHeaders: boolean;
+  autoFitColumnsOnUpdate: boolean;
+}
+
 export interface PivotPresentation {
   styleName?: string;
   styleOptions: PivotStyleOptions;
+  displayOptions?: PivotDisplayOptions;
 }
 
 export const DEFAULT_PIVOT_STYLE_OPTIONS: PivotStyleOptions = {
@@ -375,6 +386,36 @@ export const DEFAULT_PIVOT_STYLE_OPTIONS: PivotStyleOptions = {
   showColumnStripes: false,
   showLastColumn: false,
 };
+
+export const DEFAULT_PIVOT_DISPLAY_OPTIONS: PivotDisplayOptions = {
+  fillEmptyCells: false,
+  emptyCellText: '',
+  showErrorValues: true,
+  errorCellText: '',
+  showFieldHeaders: true,
+  autoFitColumnsOnUpdate: true,
+};
+
+export function normalizePivotDisplayOptions(input?: Partial<PivotDisplayOptions>): PivotDisplayOptions {
+  const allowed = new Set<keyof PivotDisplayOptions>(['fillEmptyCells', 'emptyCellText', 'showErrorValues', 'errorCellText', 'showFieldHeaders', 'autoFitColumnsOnUpdate']);
+  if (input && Object.keys(input).some((key) => !allowed.has(key as keyof PivotDisplayOptions))) {
+    throw new Error('Pivot display options contain unsupported fields');
+  }
+  const options = { ...DEFAULT_PIVOT_DISPLAY_OPTIONS, ...(input ?? {}) };
+  if (typeof options.fillEmptyCells !== 'boolean' || typeof options.emptyCellText !== 'string'
+    || typeof options.showErrorValues !== 'boolean' || typeof options.errorCellText !== 'string'
+    || typeof options.showFieldHeaders !== 'boolean' || typeof options.autoFitColumnsOnUpdate !== 'boolean') {
+    throw new Error('Pivot display options are invalid');
+  }
+  return {
+    fillEmptyCells: options.fillEmptyCells,
+    emptyCellText: options.emptyCellText,
+    showErrorValues: options.showErrorValues,
+    errorCellText: options.errorCellText,
+    showFieldHeaders: options.showFieldHeaders,
+    autoFitColumnsOnUpdate: options.autoFitColumnsOnUpdate,
+  };
+}
 
 export interface PivotRefreshPolicy {
   mode: 'manual' | 'on-open' | 'on-change';
@@ -626,6 +667,7 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
   canonical.presentation = {
     ...(canonical.presentation?.styleName ? { styleName: canonical.presentation.styleName } : {}),
     styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(canonical.presentation?.styleOptions ?? {}) },
+    ...(canonical.presentation?.displayOptions ? { displayOptions: normalizePivotDisplayOptions(canonical.presentation.displayOptions) } : {}),
   };
   const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
   canonical.layout.filters = canonical.layout.filters.map((filter) => ({

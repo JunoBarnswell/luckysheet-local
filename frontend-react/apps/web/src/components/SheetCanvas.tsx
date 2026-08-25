@@ -270,6 +270,7 @@ export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale:
   const text = cell.kind === "expand-toggle"
     ? `${cell.expanded ? "▾" : "▸"} ${localizedText}`
     : localizedText;
+  const errorValue = isPivotError(cell.value);
   const options = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(presentation?.styleOptions ?? {}) };
   const palette = pivotStylePalette(presentation?.styleName);
   const headerStyled = cell.kind === 'column-header'
@@ -288,12 +289,12 @@ export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale:
             : cell.isLastColumn && options.showLastColumn
               ? palette.accent
               : striped ? palette.stripe : palette.value,
-    textColor: cell.kind === "error" ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : palette.text,
+    textColor: cell.kind === "error" || errorValue ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : palette.text,
     bold: cell.kind === "title" || headerStyled || cell.kind === "subtotal" || cell.kind === "grand-total",
     italic: cell.kind === "filter",
     horizontalAlignment: isPivotValueCell(cell) ? "right" : "left",
     verticalAlignment: "middle",
-    wrapText: cell.kind === "loading" || cell.kind === "error",
+    wrapText: cell.kind === "loading" || cell.kind === "error" || errorValue,
     borders: {
       bottom: { color: palette.border, style: cell.kind === "grand-total" ? "double" : "thin" },
     },
@@ -302,8 +303,8 @@ export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale:
     value: isPivotError(cell.value) ? cell.value.code : cell.value,
     displayValue: text,
     style,
-    error: cell.kind === "error" ? text : undefined,
-    invalid: cell.kind === "error",
+    error: cell.kind === "error" || errorValue ? text : undefined,
+    invalid: cell.kind === "error" || errorValue,
   };
 }
 

@@ -9,6 +9,8 @@ import type {
   PivotSort,
   PivotValueField,
   PivotPresentation,
+  PivotDisplayOptions,
+  PivotRefreshPolicy,
   PivotSubtotalDefinition,
 } from '@react-sheets/core-model';
 import type { ReactNode } from 'react';
@@ -24,6 +26,8 @@ export type {
   PivotSort,
   PivotValueField,
   PivotPresentation,
+  PivotDisplayOptions,
+  PivotRefreshPolicy,
   PivotSubtotalDefinition,
 };
 
@@ -95,6 +99,8 @@ export interface PivotPanelCallbacks {
   onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
   onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;
   onPresentationChange?: (presentation: PivotPresentation) => void;
+  onDisplayOptionsChange?: (displayOptions: PivotDisplayOptions) => void;
+  onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;
   onExpansionCommand?: (command: PivotExpansionCommand) => void;
   onSlicerChange: (fieldId: string, enabled: boolean) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;

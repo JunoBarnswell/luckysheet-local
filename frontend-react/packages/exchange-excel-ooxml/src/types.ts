@@ -193,6 +193,12 @@ export interface NativePivotTableDefinition {
   styleName?: string;
   styleOptions?: PivotStyleOptions;
   showButtons?: boolean;
+  showFieldHeaders?: boolean;
+  fillEmptyCells?: boolean;
+  emptyCellText?: string;
+  showErrorValues?: boolean;
+  errorCellText?: string;
+  preserveFormatting?: boolean;
   pivotId?: string;
 }
 

@@ -34,6 +34,7 @@ import type {
 import {
   PIVOT_GRID_PROJECTION_SCHEMA,
   PIVOT_RESULT_TREE_SCHEMA,
+  DEFAULT_PIVOT_DISPLAY_OPTIONS,
   DEFAULT_PIVOT_STYLE_OPTIONS,
   createPivotCollator,
   createPivotMemberKey,
@@ -42,6 +43,7 @@ import {
   normalizePivotTimelinePeriod,
   pivotMemberKey,
   normalizePivotRefreshPolicy,
+  normalizePivotDisplayOptions,
   pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
@@ -1308,8 +1310,10 @@ function normalizeExpansionForTree(expansion: PivotLayout['expansion'], tree: Pi
   };
 }
 
-function textForValue(value: PivotScalar): string {
-  return value == null ? '' : display(value);
+function textForValue(value: PivotScalar, options = DEFAULT_PIVOT_DISPLAY_OPTIONS): string {
+  if (isPivotError(value)) return options.showErrorValues ? (options.errorCellText || value.code) : '';
+  if (value == null || value === '') return options.fillEmptyCells ? options.emptyCellText : '';
+  return display(value);
 }
 
 function projectionCell(pivotId: string, row: number, column: number, kind: PivotProjectionCell['kind'], value: PivotScalar, text: string, extra: Partial<PivotProjectionCell> = {}): PivotProjectionCell {
@@ -1375,6 +1379,7 @@ function buildPivotGridProjectionCandidate(
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
   const definition = normalizePivotDefinition(workbook, pivot, options.formula);
+  const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
   const target = definition.target;
   let tree: PivotResultTree | undefined = cachedResult;
   let error: string | undefined;
@@ -1407,14 +1412,16 @@ function buildPivotGridProjectionCandidate(
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
-  for (const filter of definition.layout.filters.filter((entry) => entry.scope !== 'field')) {
+  for (const filter of displayOptions.showFieldHeaders ? definition.layout.filters.filter((entry) => entry.scope !== 'field') : []) {
     const selected = filter.kind === 'manual' && filter.mode !== 'all';
     const count = selected ? filter.memberKeys.length : 0;
     const filterText = selected ? `${fieldName(filter.fieldId, definition.fieldCatalog)}: ${count} selected` : `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`;
     cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, filterText, { fieldId: filter.fieldId, filterSummary: { fieldName: fieldName(filter.fieldId, definition.fieldCatalog), mode: selected ? 'selected' : 'all', count } }));
     row += 1;
   }
-  for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
+  if (displayOptions.showFieldHeaders) {
+    for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
+  }
   const columnPaths = tree?.columnPaths ?? [];
   for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
     const path = columnPaths[columnIndex] ?? [];
@@ -1423,10 +1430,10 @@ function buildPivotGridProjectionCandidate(
       const valueField = values[valueIndex];
       const valueCaption = valueField ? (valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)) : '';
       const label = path.length ? `${path.map(display).join(' / ')} ${valueCaption}`.trim() : valueCaption;
-      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
+      if (displayOptions.showFieldHeaders) cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
     }
   }
-  row += 1;
+  if (displayOptions.showFieldHeaders) row += 1;
   if (tree) {
     const expansion = normalizeExpansionForTree(definition.layout.expansion, tree);
     const projectionLayout: PivotLayout = { ...definition.layout, expansion };
@@ -1444,14 +1451,14 @@ function buildPivotGridProjectionCandidate(
         for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
           const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
           const value = resultCell?.values[valueIndex] ?? null;
-          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
+          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value, displayOptions), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
         }
       }
       row += 1;
     }
     if (tree.grandTotal) {
       cells.push(projectionCell(definition.id, row, 0, 'grand-total', null, 'Grand Total', { captionKey: 'grand-total', resultCellId: tree.grandTotal.id, sourceRowPaths: tree.grandTotal.sourceRowPaths }));
-      tree.grandTotal.values.forEach((value, index) => cells.push(projectionCell(definition.id, row, rowHeaderCount + index, 'grand-total', value, textForValue(value), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths })));
+      tree.grandTotal.values.forEach((value, index) => cells.push(projectionCell(definition.id, row, rowHeaderCount + index, 'grand-total', value, textForValue(value, displayOptions), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths })));
       row += 1;
     }
   } else {

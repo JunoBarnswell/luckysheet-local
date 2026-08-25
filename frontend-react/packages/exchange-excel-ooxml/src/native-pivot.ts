@@ -21,7 +21,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -162,6 +162,12 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
           showColumnStripes: style.attrs.showColStripes === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showColumnStripes : style.attrs.showColStripes === '1',
           showLastColumn: style.attrs.showLastColumn === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showLastColumn : style.attrs.showLastColumn === '1',
         } } : {}),
+        ...(definition.attrs.showHeaders !== undefined ? { showFieldHeaders: definition.attrs.showHeaders !== '0' && definition.attrs.showHeaders.toLowerCase() !== 'false' } : {}),
+        ...(definition.attrs.showMissing !== undefined ? { fillEmptyCells: definition.attrs.showMissing === '1' || definition.attrs.showMissing.toLowerCase() === 'true' } : {}),
+        ...(definition.attrs.missingCaption !== undefined ? { emptyCellText: definition.attrs.missingCaption } : {}),
+        ...(definition.attrs.showError !== undefined ? { showErrorValues: definition.attrs.showError === '1' || definition.attrs.showError.toLowerCase() === 'true' } : {}),
+        ...(definition.attrs.errorCaption !== undefined ? { errorCellText: definition.attrs.errorCaption } : {}),
+        ...(definition.attrs.preserveFormatting !== undefined ? { preserveFormatting: definition.attrs.preserveFormatting !== '0' && definition.attrs.preserveFormatting.toLowerCase() !== 'false' } : {}),
       });
     }
   }
@@ -464,7 +470,17 @@ export function mapNativePivotDefinition(
   };
   const fieldBindings: Record<string, { cacheFieldIndex: number; sourceName?: string }> = {};
   for (const field of fields) fieldBindings[field.fieldId] = { cacheFieldIndex: field.ordinal, sourceName: field.name };
-  const refreshPolicy = refreshPolicyForNativeCache(cache);
+  const refreshPolicy = { ...refreshPolicyForNativeCache(cache), ...(table.preserveFormatting === undefined ? {} : { preserveFormatting: table.preserveFormatting }) };
+  const displayOptions = table.showFieldHeaders === undefined && table.fillEmptyCells === undefined && table.emptyCellText === undefined
+    && table.showErrorValues === undefined && table.errorCellText === undefined
+    ? undefined
+    : normalizePivotDisplayOptions({
+      ...(table.showFieldHeaders === undefined ? {} : { showFieldHeaders: table.showFieldHeaders }),
+      ...(table.fillEmptyCells === undefined ? {} : { fillEmptyCells: table.fillEmptyCells }),
+      ...(table.emptyCellText === undefined ? {} : { emptyCellText: table.emptyCellText }),
+      ...(table.showErrorValues === undefined ? {} : { showErrorValues: table.showErrorValues }),
+      ...(table.errorCellText === undefined ? {} : { errorCellText: table.errorCellText }),
+    });
   return {
     schema: 'PivotDefinition',
     id: nativePivotId(table),
@@ -477,6 +493,7 @@ export function mapNativePivotDefinition(
       presentation: {
         ...(table.styleName ? { styleName: table.styleName } : {}),
         styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) },
+        ...(displayOptions ? { displayOptions } : {}),
       },
     } : {}),
     nativeMetadata: {
@@ -1063,6 +1080,12 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     ...(styleName ? { styleName } : {}),
     ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
     showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,
+    ...(pivot.presentation?.displayOptions?.showFieldHeaders === undefined ? {} : { showFieldHeaders: pivot.presentation.displayOptions.showFieldHeaders }),
+    ...(pivot.presentation?.displayOptions?.fillEmptyCells === undefined ? {} : { fillEmptyCells: pivot.presentation.displayOptions.fillEmptyCells }),
+    ...(pivot.presentation?.displayOptions?.emptyCellText === undefined ? {} : { emptyCellText: pivot.presentation.displayOptions.emptyCellText }),
+    ...(pivot.presentation?.displayOptions?.showErrorValues === undefined ? {} : { showErrorValues: pivot.presentation.displayOptions.showErrorValues }),
+    ...(pivot.presentation?.displayOptions?.errorCellText === undefined ? {} : { errorCellText: pivot.presentation.displayOptions.errorCellText }),
+    preserveFormatting: pivot.refreshPolicy.preserveFormatting,
   };
 }
 
@@ -1145,8 +1168,16 @@ function buildPivotTableXml(table: NativePivotTableDefinition): string {
   const filters = table.pivotFilters?.length ? `<pivotFilters count="${table.pivotFilters.length}">${table.pivotFilters.map(buildPivotFilterXml).join('')}</pivotFilters>` : '';
   const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
   const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
+  const displayAttrs = [
+    ...boolAttr(table.showFieldHeaders, 'showHeaders'),
+    ...boolAttr(table.fillEmptyCells, 'showMissing'),
+    ...(table.emptyCellText === undefined ? [] : [`missingCaption="${encodeXml(table.emptyCellText)}"`]),
+    ...boolAttr(table.showErrorValues, 'showError'),
+    ...(table.errorCellText === undefined ? [] : [`errorCaption="${encodeXml(table.errorCellText)}"`]),
+    ...boolAttr(table.preserveFormatting, 'preserveFormatting'),
+  ];
   const subtotalAttrs = table.subtotalLocation === 'off' ? ' showSubtotals="0"' : table.subtotalLocation === 'top' ? ' subtotalTop="1"' : ' subtotalTop="0"';
-  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" multipleFieldFilters="${table.multipleFieldFilters === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
+  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" multipleFieldFilters="${table.multipleFieldFilters === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${displayAttrs.length ? ` ${displayAttrs.join(' ')}` : ''}${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
 }
 
 function buildAutoSortScopeXml(scope: NativePivotAutoSortScope): string {

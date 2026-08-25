@@ -8,9 +8,11 @@ import type {
   PivotFilterFamily,
   PivotFieldDefinition,
   PivotLayout,
+  PivotDisplayOptions,
   PivotSource,
   PivotSort,
 } from "@react-sheets/core-model";
+import { DEFAULT_PIVOT_STYLE_OPTIONS } from "@react-sheets/core-model";
 import {
   type SelectionState,
   type SidebarPanelId,
@@ -251,6 +253,20 @@ export function useEditorCommandController({
     onLayoutChange: (layout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), compact: layout === "compact", repeatLabels: layout === "tabular" }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
     onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
+    onDisplayOptionsChange: (displayOptions: PivotDisplayOptions) => {
+      if (!activePivot) return;
+      const current = activePivot.presentation;
+      dispatchCommand({ commandId: 'pivot.update', params: {
+        sheetId: activePivotSheetId,
+        pivotId: activePivot.id,
+        presentation: {
+          ...(current?.styleName ? { styleName: current.styleName } : {}),
+          styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(current?.styleOptions ?? {}) },
+          displayOptions: structuredClone(displayOptions),
+        },
+      } });
+    },
+    onRefreshPolicyChange: (refreshPolicy) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, refreshPolicy: structuredClone(refreshPolicy) } }); },
     onExpansionCommand: (command: PivotExpansionCommand) => {
       if (!activePivot) return;
       const base = { sheetId: activePivotSheetId, pivotId: activePivot.id };

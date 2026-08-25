@@ -280,6 +280,14 @@ test('Pivot protocol preserves typed formula-error members and rejects unknown c
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
+  validatePivotDefinition({ ...base, presentation: {
+    styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
+    displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: true, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false },
+  } });
+  assert.throws(() => validatePivotDefinition({ ...base, presentation: {
+    styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
+    displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: true, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false, unsupported: true },
+  } }), /unsupported field/);
   assert.throws(() => validatePivotDefinition({ ...base, fieldCatalog: { ...base.fieldCatalog, fields: [{ ...base.fieldCatalog.fields[0]!, values: [{ kind: 'error', code: '#NOT-AN-EXCEL-CODE' }] }] } }), /invalid/);
 });
 
