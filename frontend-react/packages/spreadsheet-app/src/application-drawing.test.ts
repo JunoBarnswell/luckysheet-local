@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { WorkbookModel } from '@react-sheets/core-model';
 import { WorkbookSession } from './workbook-session';
+import { hydrateRuntime } from './runtime';
 
 describe('WorkbookSession drawing integration', () => {
   it('addShape routes through the canonical drawing aggregate', () => {
@@ -51,6 +53,148 @@ describe('WorkbookSession drawing integration', () => {
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const drawing = sheet.drawings.find((entry) => entry.kind === 'shape');
     assert.equal((sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { type?: string }).type, 'rectangle');
+  });
+
+  it('clears drawing selection and context on undo, with deterministic grid focus on redo', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.addShape({
+      id: 'draw-undo-reconcile',
+      sheetId,
+      kind: 'shape',
+      payloadId: 'shape-undo-reconcile',
+      anchor: { kind: 'absolute' },
+      transform: { x: 20, y: 20, width: 80, height: 40, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
+      type: 'rectangle',
+      fill: '#fff',
+      stroke: '#000',
+    });
+    app.setDrawingSelectionMode(true);
+    app.undo();
+    let snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.selectedFloatingId, null);
+    assert.deepEqual(snapshot.selectedDrawingIds, []);
+    assert.deepEqual(snapshot.activeContext, { kind: 'none' });
+    assert.equal(snapshot.drawingSelectionMode, false);
+
+    app.redo();
+    snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.selectedFloatingId, null);
+    assert.deepEqual(snapshot.selectedDrawingIds, []);
+    assert.deepEqual(snapshot.activeContext, { kind: 'none' });
+    assert.equal(snapshot.sheets[0]?.drawings.some((drawing) => drawing.id === 'draw-undo-reconcile'), true);
+  });
+
+  it('keeps valid multi-selection while removing the deleted object from active context', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const add = (id: string, payloadId: string, x: number) => app.addShape({
+      id,
+      sheetId,
+      kind: 'shape',
+      payloadId,
+      anchor: { kind: 'absolute' },
+      transform: { x, y: 20, width: 80, height: 40, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
+      type: 'rectangle',
+      fill: '#fff',
+      stroke: '#000',
+    });
+    add('draw-multi-a', 'shape-multi-a', 20);
+    add('draw-multi-b', 'shape-multi-b', 140);
+    app.setDrawingSelection(['draw-multi-a', 'draw-multi-b']);
+    app.runCommand('drawing.remove', { sheetId, drawingId: 'draw-multi-a' });
+
+    const snapshot = app.getUiSnapshot();
+    assert.deepEqual(snapshot.selectedDrawingIds, ['draw-multi-b']);
+    assert.deepEqual(snapshot.activeContext, { kind: 'drawing', sheetId, drawingId: 'draw-multi-b' });
+  });
+
+  it('reconciles remote removal and deleted-sheet selection through the same boundary', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.addShape({
+      id: 'draw-remote-reconcile',
+      sheetId,
+      kind: 'shape',
+      payloadId: 'shape-remote-reconcile',
+      anchor: { kind: 'absolute' },
+      transform: { x: 20, y: 20, width: 80, height: 40, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
+      type: 'rectangle',
+      fill: '#fff',
+      stroke: '#000',
+    });
+    const runtime = app['runtime'];
+    runtime.commands.applyRemoteMutations([{
+      id: 'drawing.remove',
+      unitId: runtime.model.unitId,
+      sheetId,
+      params: { sheetId, drawingId: 'draw-remote-reconcile' },
+      affectedRanges: [],
+    }]);
+    runtime.handlers.onMutationsApplied?.();
+    let snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.selectedFloatingId, null);
+    assert.deepEqual(snapshot.activeContext, { kind: 'none' });
+
+    runtime.commands.execute('sheet.add', { id: 'sheet-with-drawing', name: 'Drawing Sheet' });
+    app.selectSheet('sheet-with-drawing');
+    app.addShape({
+      id: 'draw-deleted-sheet',
+      sheetId: 'sheet-with-drawing',
+      kind: 'shape',
+      payloadId: 'shape-deleted-sheet',
+      anchor: { kind: 'absolute' },
+      transform: { x: 20, y: 20, width: 80, height: 40, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
+      type: 'rectangle',
+      fill: '#fff',
+      stroke: '#000',
+    });
+    app.deleteSheet('sheet-with-drawing');
+    snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.sheets.some((sheet) => sheet.id === 'sheet-with-drawing'), false);
+    assert.equal(snapshot.selectedFloatingId, null);
+    assert.deepEqual(snapshot.activeContext, { kind: 'none' });
+  });
+
+  it('clears stale drawing state when a snapshot replacement omits the selected object', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.addShape({
+      id: 'draw-hydration-reconcile',
+      sheetId,
+      kind: 'shape',
+      payloadId: 'shape-hydration-reconcile',
+      anchor: { kind: 'absolute' },
+      transform: { x: 20, y: 20, width: 80, height: 40, rotation: 0 },
+      zIndex: 0,
+    }, {
+      kind: 'shape',
+      type: 'rectangle',
+      fill: '#fff',
+      stroke: '#000',
+    });
+    const runtime = app['runtime'];
+    const replacement = new WorkbookModel(runtime.model.unitId, 'Replacement').snapshot();
+    hydrateRuntime(runtime, { snapshot: replacement, revision: 7 });
+    runtime.handlers.onMutationsApplied?.();
+
+    const snapshot = app.getUiSnapshot();
+    assert.equal(snapshot.selectedFloatingId, null);
+    assert.deepEqual(snapshot.selectedDrawingIds, []);
+    assert.deepEqual(snapshot.activeContext, { kind: 'none' });
+    assert.equal(snapshot.selectedSheet.drawings.length, 0);
   });
 
   it('exposes Page Layout arrange actions through the existing drawing command path', () => {
