@@ -5,17 +5,20 @@ import type {
   DataSourceManifest,
   DrawingObject,
   AutoFilterModel,
+  FormulaErrorCode,
   RangeRef,
   SheetDataRegion,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import { createFormulaError } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, parseFormula, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
+import { parseCellText } from './text-input';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -72,6 +75,72 @@ export interface ReplaceRangeParams {
   entireCell?: boolean;
   scope?: 'sheet' | 'workbook';
   searchIn?: 'values' | 'formulas' | 'both';
+}
+
+/**
+ * The only replacement value contract.  A replacement is parsed once before
+ * any cell mutation, so `0` cannot be confused with a failed/falsy parse and
+ * every caller observes the same typed result.
+ */
+export type ReplacementValue =
+  | { kind: 'empty'; value: null }
+  | { kind: 'text'; value: string }
+  | { kind: 'number'; value: number }
+  | { kind: 'boolean'; value: boolean }
+  | { kind: 'formula'; value: null; formula: string }
+  | { kind: 'error'; value: null; code: FormulaErrorCode };
+
+const REPLACEMENT_ERROR_CODES: ReadonlySet<string> = new Set([
+  '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
+  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!',
+]);
+
+/**
+ * Parse the dialog text without looking at display formatting or the target
+ * cell's previous value.  A leading apostrophe is the explicit text escape
+ * used by the existing spreadsheet input semantics (`'0` remains text).
+ */
+export function parseReplacementValue(text: string): ReplacementValue {
+  if (text === '') return { kind: 'empty', value: null };
+  if (text.startsWith("'")) return { kind: 'text', value: text.slice(1) };
+  if (text.startsWith('=')) {
+    try { parseFormula(text); }
+    catch (error) { throw new Error(`Invalid replacement formula: ${error instanceof Error ? error.message : String(error)}`); }
+    return { kind: 'formula', value: null, formula: text };
+  }
+  const upper = text.toUpperCase();
+  if (REPLACEMENT_ERROR_CODES.has(upper)) return { kind: 'error', value: null, code: upper as FormulaErrorCode };
+  const parsed = parseCellText(text);
+  if (typeof parsed.value === 'number') return { kind: 'number', value: parsed.value };
+  if (typeof parsed.value === 'boolean') return { kind: 'boolean', value: parsed.value };
+  if (parsed.value === null) return { kind: 'empty', value: null };
+  // parseCellText deliberately leaves an overflowing numeric literal as text;
+  // replacement must reject that input rather than persist a misleading text.
+  if (isNumericLiteral(text)) throw new Error(`Replacement number is not finite: ${text}`);
+  return { kind: 'text', value: parsed.value };
+}
+
+function isNumericLiteral(text: string): boolean {
+  return /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(text);
+}
+
+function replacementCell(cell: CellData, replacement: ReplacementValue): CellData {
+  if (replacement.kind === 'empty') throw new Error('Replacement text must not be empty');
+  const next = structuredClone(cell);
+  delete next.displayValue;
+  delete next.formula;
+  delete next.formulaMetadata;
+  delete next.formulaValue;
+  if (replacement.kind === 'formula') {
+    next.value = null;
+    next.formula = replacement.formula;
+  } else if (replacement.kind === 'error') {
+    next.value = null;
+    next.formulaValue = createFormulaError(replacement.code);
+  } else {
+    next.value = replacement.value;
+  }
+  return next;
 }
 
 export interface FilterToggleParams {
@@ -448,6 +517,38 @@ function replaceText(original: string, params: ReplaceRangeParams): string | und
   const expression = new RegExp(escaped, matchCase ? 'g' : 'gi');
   if (!expression.test(original)) return undefined;
   return original.replace(new RegExp(escaped, matchCase ? 'g' : 'gi'), params.replace);
+}
+
+interface ReplaceCandidate {
+  readonly text: string;
+  readonly formula: boolean;
+}
+
+/**
+ * Resolve the one value that Find/Replace is allowed to inspect. Formula
+ * results come from the host resolver when available; displayValue is never a
+ * source of search semantics. Formula text remains a separate candidate when
+ * the caller explicitly searches formulas.
+ */
+function replaceCandidate(
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  cell: CellData,
+  searchIn: NonNullable<ReplaceRangeParams['searchIn']>,
+  context: CommandContext,
+): ReplaceCandidate | undefined {
+  if (searchIn === 'formulas' || (searchIn === 'both' && cell.formula !== undefined)) {
+    return cell.formula === undefined ? undefined : { text: cell.formula, formula: true };
+  }
+  const resolved = context.resolveCellValue?.(sheet, row, column);
+  const value = resolved === undefined ? (cell.formulaValue ?? cell.value) : resolved;
+  if (isFormulaError(value)) return { text: value.code, formula: false };
+  if (value === null || value === undefined) return { text: '', formula: false };
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return { text: String(value), formula: false };
+  }
+  throw new Error(`Replace source at ${sheet.id}!${row}:${column} has an unsupported resolved value`);
 }
 
 function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
@@ -932,6 +1033,8 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!isValidReplaceParams(params)) throw new Error('Invalid replace parameters');
       if (!params.find) return homeResult(context, []);
+      const requestedReplacement = parseReplacementValue(params.replace);
+      if (requestedReplacement.kind === 'empty') throw new Error('Replacement text must not be empty');
       const sheets = params.scope === 'workbook' ? context.workbook.getSheets() : [context.workbook.getSheet(params.sheetId)];
       const defaultRange = params.range ? normalizeRange(params.range, params.sheetId) : undefined;
       const patches: Array<{ sheetId: string; row: number; column: number; next: CellData; previous?: CellData }> = [];
@@ -943,23 +1046,15 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         assertNoDataRegionIntersection(sheet, range, 'Replace');
         for (const { row, column, cell } of cellsInRange(sheet, range)) {
           if (!cell) continue;
-          const candidate = searchIn === 'formulas' ? cell.formula : searchIn === 'both' && cell.formula ? cell.formula : String(cell.value ?? '');
-          if (candidate === undefined) continue;
-          const replaced = replaceText(candidate, params);
+          const candidate = replaceCandidate(sheet, row, column, cell, searchIn, context);
+          if (!candidate) continue;
+          const replaced = replaceText(candidate.text, params);
           if (replaced === undefined) continue;
-          const next = structuredClone(cell);
-          if ((searchIn === 'formulas' || (searchIn === 'both' && cell.formula)) && cell.formula) {
-            if (replaced.trim().startsWith('=')) {
-              try { parseFormula(replaced); }
-              catch { throw new Error(`Replacement creates an invalid formula at ${sheet.id}!${row}:${column}`); }
-            }
-            next.formula = replaced;
-            next.value = null;
-          } else {
-            next.value = typeof cell.value === 'number' ? Number(replaced) || replaced : replaced;
-            delete next.formula;
+          const replacement = parseReplacementValue(replaced);
+          if (candidate.formula && replacement.kind !== 'formula') {
+            throw new Error(`Formula replacement at ${sheet.id}!${row}:${column} must produce a formula`);
           }
-          delete next.displayValue;
+          const next = replacementCell(cell, replacement);
           patches.push({ sheetId: sheet.id, row, column, next, previous: structuredClone(cell) });
         }
       }
