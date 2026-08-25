@@ -2122,7 +2122,6 @@ function computePivotResultFromTable(
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
   filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition);
-  const resultFields = resultValueFields(definition.layout);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields, calculatedFields) : [{ values: [], rows: filtered }];
   const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
