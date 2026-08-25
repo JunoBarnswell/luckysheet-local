@@ -220,6 +220,22 @@ export interface WorkbookSessionOptions {
   xlsxExecution?: 'worker' | 'inline-test';
 }
 
+export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
+
+export class CommandDispatchError extends Error {
+  constructor(
+    readonly code: DispatchErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CommandDispatchError';
+  }
+}
+
+export type DispatchOutcome =
+  | { status: 'committed'; result: CommandResult }
+  | { status: 'rejected'; error: CommandDispatchError };
+
 export interface UiSnapshot extends DesignerState {
   unitId: string;
   workbookName: string;
@@ -245,6 +261,7 @@ export interface UiSnapshot extends DesignerState {
   collabStatus: 'connecting' | 'open' | 'closed';
   collabRevision: number;
   pendingChangeSetCount: number;
+  pendingCommandCount: number;
   offlineQueueState: string;
   actorId: string;
   shareRole: ShareRole | null;
@@ -417,6 +434,7 @@ export class WorkbookSession {
   private overrideTarget: { row: number; column: number } | null = null;
   private clipboardData: ClipboardPayload | null = null;
   private readonly materializingDataRegions = new Map<string, Promise<void>>();
+  private pendingCommandCount = 0;
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
   private cachedUiSnapshotGeneration = -1;
@@ -793,6 +811,7 @@ export class WorkbookSession {
       collabStatus: this.collabStatus,
       collabRevision: collaboration.revision,
       pendingChangeSetCount: collaboration.pendingCount,
+      pendingCommandCount: this.pendingCommandCount,
       offlineQueueState: collaboration.offlineQueueState,
       actorId: this.actorId,
       shareRole: this.getShareRole(),
@@ -847,39 +866,48 @@ export class WorkbookSession {
   };
 
   /** Dispatch one registered domain descriptor through the sole command path. */
-  dispatch(descriptor: CommandDescriptor): boolean {
+  dispatch(descriptor: CommandDescriptor): Promise<DispatchOutcome> {
+    if (this.phase !== 'ready') {
+      return this.rejectDispatch(
+        new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready'),
+      );
+    }
     try {
-      if (this.phase !== 'ready') return false;
       const resolved = this.resolveCommandContext(descriptor.commandId, descriptor.params);
       const regions = this.dataRegionsRequiredForCommand(descriptor.commandId, resolved);
       if (regions.length > 0) {
-        void this.materializeForCommand(descriptor.commandId, resolved, regions);
-        return false;
+        return this.dispatchAfterMaterialization(descriptor.commandId, resolved, regions);
       }
-      this.runCommand(descriptor.commandId, resolved);
-      return true;
+      const result = this.runCommand(descriptor.commandId, resolved);
+      return Promise.resolve({ status: 'committed', result });
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'Permission denied');
-      return false;
+      return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Command was rejected'));
     }
   }
 
-  /**
-   * The CommandRuntime is synchronous by design. Block loading happens before
-   * its one materialization commit; every subsequent Home mutation therefore
-   * observes one canonical CellMatrix model rather than a fallback path.
-   */
-  private async materializeForCommand(commandId: string, params: unknown, regions: readonly SheetDataRegion[]): Promise<void> {
+  /** Materialization is part of the dispatch transaction and is not observable as a scheduled terminal state. */
+  private async dispatchAfterMaterialization(commandId: string, params: unknown, regions: readonly SheetDataRegion[]): Promise<DispatchOutcome> {
     try {
       await this.materializeDataRegions(regions);
-      this.runCommand(commandId, params);
-      if (commandId === 'sheet.range.paste' && params && typeof params === 'object'
-        && !Array.isArray(params) && (params as { clipboard?: ClipboardPayload }).clipboard?.transfer === 'move') {
-        this.clearClipboard();
-      }
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'Data region could not be prepared for editing');
+      return this.rejectDispatch(this.toDispatchError(error, 'MATERIALIZATION_FAILED', 'Data region could not be prepared for editing'));
     }
+    try {
+      const result = this.runCommand(commandId, params);
+      return { status: 'committed', result };
+    } catch (error) {
+      return this.rejectDispatch(this.toDispatchError(error, 'COMMAND_REJECTED', 'Command was rejected'));
+    }
+  }
+
+  private toDispatchError(error: unknown, code: DispatchErrorCode, fallback: string): CommandDispatchError {
+    if (error instanceof CommandDispatchError) return error;
+    return new CommandDispatchError(code, error instanceof Error ? error.message : fallback);
+  }
+
+  private rejectDispatch(error: CommandDispatchError): Promise<DispatchOutcome> {
+    this.notify(error.message);
+    return Promise.resolve({ status: 'rejected', error });
   }
 
   /**
@@ -900,6 +928,8 @@ export class WorkbookSession {
       const key = `${region.range.sheetId}:${region.id}`;
       let pending = this.materializingDataRegions.get(key);
       if (!pending) {
+        this.pendingCommandCount += 1;
+        this.emit();
         pending = (async () => {
           const prepared = await prepareDataRegionMaterialization(
             this.runtime.model,
@@ -914,7 +944,11 @@ export class WorkbookSession {
       try {
         await pending;
       } finally {
-        this.materializingDataRegions.delete(key);
+        if (this.materializingDataRegions.get(key) === pending) {
+          this.materializingDataRegions.delete(key);
+          this.pendingCommandCount = Math.max(0, this.pendingCommandCount - 1);
+          this.emit();
+        }
       }
     }
   }
@@ -939,6 +973,33 @@ export class WorkbookSession {
     appendRange(input.range);
     appendRange(input.sourceRange);
     appendRange(input.targetRange);
+    if (input.targetOrigin && typeof input.targetOrigin === 'object' && !Array.isArray(input.targetOrigin)) {
+      const origin = input.targetOrigin as { row?: unknown; column?: unknown };
+      const clipboard = input.clipboard && typeof input.clipboard === 'object' && !Array.isArray(input.clipboard)
+        ? input.clipboard as { values?: unknown[][]; range?: unknown }
+        : undefined;
+      appendRange(clipboard?.range);
+      const originRow = typeof origin.row === 'number' && Number.isInteger(origin.row) ? origin.row : undefined;
+      const originColumn = typeof origin.column === 'number' && Number.isInteger(origin.column) ? origin.column : undefined;
+      if (originRow !== undefined && originColumn !== undefined && Array.isArray(clipboard?.values)) {
+        const sourceRows = clipboard.values.length;
+        const sourceColumns = clipboard.values.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+        const spec = input.spec && typeof input.spec === 'object' && !Array.isArray(input.spec)
+          ? input.spec as { transpose?: unknown }
+          : undefined;
+        const rowCount = spec?.transpose === true ? sourceColumns : sourceRows;
+        const columnCount = spec?.transpose === true ? sourceRows : sourceColumns;
+        if (rowCount > 0 && columnCount > 0) {
+          appendRange({
+            sheetId,
+            startRow: originRow,
+            endRow: originRow + rowCount - 1,
+            startColumn: originColumn,
+            endColumn: originColumn + columnCount - 1,
+          });
+        }
+      }
+    }
     if (Array.isArray(input.ranges)) input.ranges.forEach(appendRange);
     if (input.filter && typeof input.filter === 'object') appendRange((input.filter as { range?: unknown }).range);
     if (input.rule && typeof input.rule === 'object' && Array.isArray((input.rule as { ranges?: unknown[] }).ranges)) {
@@ -1722,9 +1783,10 @@ export class WorkbookSession {
     this.setFocusState('grid', 'grid');
     this.emit();
   };
-  pasteSpecial(spec: PasteSpecialSpec): void {
-    this.paste(spec);
+  async pasteSpecial(spec: PasteSpecialSpec): Promise<DispatchOutcome> {
+    const outcome = await this.paste(spec);
     this.closePasteSpecial();
+    return outcome;
   };
   setShowPrintPreview = (open: boolean): void => {
     this.dialogs = { ...this.dialogs, active: open ? 'print-preview' : null };
@@ -3065,53 +3127,65 @@ export class WorkbookSession {
     }
     this.notify(move ? 'Cut to clipboard' : 'Range copied');
   }
-  paste(spec: PasteSpecialSpec = createPasteSpecialSpec()): void {
+  async paste(spec: PasteSpecialSpec = createPasteSpecialSpec()): Promise<DispatchOutcome> {
     const sel = this.selectionService.getState();
     const internal = this.clipboardData;
     if (internal) {
-      const applied = this.dispatch({ commandId: 'sheet.range.paste', params: {
+      const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
         transfer: internal.transfer,
         spec,
       } });
-      // The command owns source clearing. Keep the clipboard payload usable if
-      // a data-region preparation fails, rather than losing a pending cut.
-      if (internal.transfer === 'move' && applied) this.clearClipboard();
+      if (outcome.status !== 'committed') return outcome;
+      if (outcome.result.mutationCount === 0) {
+        this.notify('Paste made no changes');
+        return outcome;
+      }
+      if (internal.transfer === 'move') this.clearClipboard();
       this.syncDraftFromPrimary();
       this.notify('Pasted from clipboard');
-      return;
+      return outcome;
     }
     if (typeof navigator === 'undefined' || !navigator.clipboard) {
-      this.notify('No clipboard data is available');
-      return;
+      return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'No clipboard data is available'));
     }
-    void navigator.clipboard.readText().then((text) => {
-      if (!text) return;
-      const clipboard: ClipboardPayload = {
-        range: this.getPrimaryRange(),
-        values: parseTsv(text),
-        transfer: 'copy',
-        rangeMetadata: {
-          columnWidths: [],
-          validations: [],
-          conditionalFormats: [],
-          notes: [],
-          comments: [],
-          hyperlinks: [],
-        },
-      };
-      this.dispatch({ commandId: 'sheet.range.paste', params: {
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard permission was denied'));
+    }
+    if (!text) return this.rejectDispatch(new CommandDispatchError('COMMAND_REJECTED', 'Clipboard is empty'));
+    const clipboard: ClipboardPayload = {
+      range: this.getPrimaryRange(),
+      values: parseTsv(text),
+      transfer: 'copy',
+      rangeMetadata: {
+        columnWidths: [],
+        validations: [],
+        conditionalFormats: [],
+        notes: [],
+        comments: [],
+        hyperlinks: [],
+      },
+    };
+    const outcome = await this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard,
         transfer: 'copy',
         spec,
       } });
-      this.syncDraftFromPrimary();
-      this.notify('Pasted from clipboard');
-    }).catch(() => this.notify('Clipboard permission was denied'));
+    if (outcome.status !== 'committed') return outcome;
+    if (outcome.result.mutationCount === 0) {
+      this.notify('Paste made no changes');
+      return outcome;
+    }
+    this.syncDraftFromPrimary();
+    this.notify('Pasted from clipboard');
+    return outcome;
   }
   clearFormats(): void {
     this.dispatch({ commandId: 'sheet.range.clear', params: { sheetId: this.activeSheetId, range: this.getPrimaryRange(), mode: 'formats' } });

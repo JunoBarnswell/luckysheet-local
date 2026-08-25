@@ -21,7 +21,7 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app.getUiSnapshot().activeCell, 'C3');
   });
 
-  it('paste special values copies values without formulas', () => {
+  it('paste special values copies values without formulas', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
@@ -34,11 +34,67 @@ describe('WorkbookSession core editing integration', () => {
     const range = app.getPrimaryRange();
     app.setClipboard({ ...copyRangeToClipboardData(app['runtime'].model, range), transfer: 'copy' });
     selectCell(app, 0, 1);
-    app.pasteSpecial(createPasteSpecialSpec({ content: 'values', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }));
+    const outcome = await app.pasteSpecial(createPasteSpecialSpec({ content: 'values', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }));
+    assert.equal(outcome.status, 'committed');
 
     const target = app['runtime'].model.getSheet(sheetId).cells.get(0, 1);
     assert.equal(target?.value, 42);
     assert.equal(target?.formula, undefined);
+  });
+
+  it('returns a typed dispatch outcome and preserves state when permission rejects a paste', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    selectCell(app, 0, 0);
+    app.setClipboard({
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      values: [[{ value: 'blocked' }]],
+      transfer: 'move',
+      rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
+    });
+    const historyDepth = app['runtime'].commands.getHistoryDepth();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
+
+    const outcome = await app.paste();
+
+    assert.equal(outcome.status, 'rejected');
+    if (outcome.status === 'rejected') assert.equal(outcome.error.code, 'COMMAND_REJECTED');
+    assert.equal(app.getClipboard()?.transfer, 'move');
+    assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 0), undefined);
+    assert.match(app.getUiSnapshot().notice, /permission|viewer|edit/i);
+  });
+
+  it('keeps paste pending until data-region materialization rejects and then preserves all state', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app['runtime'].model.getSheet(sheetId).dataRegions.push({
+      id: 'missing-source-region',
+      sourceId: 'missing-source',
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      headerRow: 0,
+      revision: 0,
+    });
+    selectCell(app, 0, 0);
+    app.setClipboard({
+      range: { sheetId, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
+      values: [[{ value: 'materialize-me' }]],
+      transfer: 'copy',
+      rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
+    });
+    const historyDepth = app['runtime'].commands.getHistoryDepth();
+
+    const pending = app.paste();
+    assert.equal(app.getUiSnapshot().pendingCommandCount, 1);
+    const outcome = await pending;
+
+    assert.equal(outcome.status, 'rejected');
+    if (outcome.status === 'rejected') assert.equal(outcome.error.code, 'MATERIALIZATION_FAILED');
+    assert.equal(app.getUiSnapshot().pendingCommandCount, 0);
+    assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
+    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 0), undefined);
+    assert.equal(app.getClipboard()?.values[0]?.[0]?.value, 'materialize-me');
   });
 
   it('formatCells applies number format through sheet.format.set', () => {

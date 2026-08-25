@@ -31,7 +31,7 @@ export interface PasteSpecialDialogProps {
   open: boolean;
   locale?: Locale;
   onClose: () => void;
-  onPaste: (spec: PasteSpecialSpec) => void;
+  onPaste: (spec: PasteSpecialSpec) => Promise<unknown>;
 }
 
 export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpecialDialogProps): React.ReactElement | null {
@@ -56,9 +56,8 @@ export function PasteSpecialDialog({ open, locale, onClose, onPaste }: PasteSpec
             className="justify-start"
             disabled={!isPasteSpecialSpecSupported(option.spec)}
             data-testid={`paste-special-${option.id}`}
-            onClick={() => {
-              onPaste(option.spec);
-              onClose();
+            onClick={async () => {
+              await onPaste(option.spec);
             }}
           >
             {homeText(activeLocale, option.labelKey)}
