@@ -132,6 +132,36 @@ describe('native PivotGridProjection contract', () => {
     assert.throws(() => computePivotResult(workbook, pivot, formula), /blocked spill/i);
   });
 
+  it('keeps the canonical blank member in the field catalogue and manual filters', () => {
+    const workbook = new WorkbookModel('pivot-blank-member', 'Pivot Blank Member');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Region' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 'North' });
+    sheet.cells.set(1, 1, { value: 10 });
+    sheet.cells.set(2, 0, { value: null });
+    sheet.cells.set(2, 1, { value: 20 });
+    sheet.cells.set(3, 0, { value: '' });
+    sheet.cells.set(3, 1, { value: 30 });
+    sheet.cells.set(4, 0, { value: 'South' });
+    sheet.cells.set(4, 1, { value: 40 });
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-blank-member', { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    assert.deepEqual(region.values, ['North', null, 'South']);
+    pivot.fieldCatalog = catalog;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const all = computePivotResult(workbook, pivot);
+    assert.deepEqual(all.rows.map((node) => node.label), ['(blank)', 'North', 'South']);
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'blank', value: null }] }];
+    const blankOnly = computePivotResult(workbook, pivot);
+    assert.deepEqual(blankOnly.rows.map((node) => node.label), ['(blank)']);
+    assert.equal(blankOnly.rows[0]?.values[0]?.values[0], 50);
+  });
+
   it('keeps distinct FormulaEngine errors as Pivot members and aggregates them explicitly', () => {
     const workbook = new WorkbookModel('pivot-errors', 'Pivot Errors');
     const sheet = workbook.getSheet('sheet-1');
