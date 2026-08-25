@@ -564,6 +564,11 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
     if (!valueFieldId) throw new Error(`Unknown pivot value field: ${filter.valueFieldId}`);
     return { ...filter, fieldId, valueFieldId };
   }
+  if (filter.valueFieldId !== undefined) {
+    const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
+    if (!valueFieldId) throw new Error(`Unknown pivot value filter field: ${filter.valueFieldId}`);
+    return { ...filter, fieldId, valueFieldId };
+  }
   return { ...filter, fieldId };
 }
 
@@ -836,7 +841,9 @@ function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { 
 
 function matchesFilter(row: SourceRow, filter: PivotFilter): boolean {
   const fieldId = filter.fieldId;
-  const value = row.values[fieldId] ?? null;
+  const value = filter.kind === 'condition' && filter.valueFieldId
+    ? row.values[filter.valueFieldId] ?? null
+    : row.values[fieldId] ?? null;
   if (filter.kind === 'top-items') return true;
   if (filter.kind === 'manual') return manualFilterMatches(value, filter);
   const leftNumber = toNumber(value);
@@ -1046,7 +1053,7 @@ function computePivotResultFromTable(
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' || (filter.kind === 'condition' && filter.valueFieldId) ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
     ...definition.layout.values.map((entry) => entry.fieldId),
   ];
   const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId)]);
