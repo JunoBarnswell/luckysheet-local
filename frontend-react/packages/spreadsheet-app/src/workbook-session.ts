@@ -2811,6 +2811,7 @@ export class WorkbookSession {
       sheetId: sheet.id,
       pivotId,
       fieldId,
+      settings: { caption: pivot.fieldCatalog.fields.find((field) => field.fieldId === fieldId)?.name ?? 'Slicer' },
       transform: { x: 96, y: 96 + offset * 144, width: 188, height: 128 },
       zIndex: sheet.drawings.length,
       connectedPivotIds,

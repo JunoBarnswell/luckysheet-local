@@ -592,6 +592,28 @@ export interface PivotControlStyle {
   fontSize?: number;
 }
 
+/** Persisted presentation and interaction settings owned by an item Slicer. */
+export interface PivotSlicerSettings {
+  /** Whether the object header is rendered. */
+  showHeader: boolean;
+  /** User-authored caption; an empty caption is invalid so the object remains discoverable. */
+  caption: string;
+  /** Single selection replaces the current member selection; multiple selection toggles members. */
+  multiSelect: boolean;
+  /** Stable member ordering owned by the document, never inferred from locale. */
+  sort: 'ascending' | 'descending';
+  /** Hide members that have no rows after all other controls and report filters. */
+  showNoDataItems: boolean;
+  /** Keep no-data members visible, but place them after members with data. */
+  noDataItemsLast: boolean;
+  /** Render an explicit unavailable state for visible no-data members. */
+  showNoDataStyle: boolean;
+  /** Number of item columns in the object viewport. */
+  columnCount: number;
+  /** Item row height in CSS pixels. */
+  itemHeight: number;
+}
+
 /** Canonical floating Slicer payload. Its filter is not stored on PivotModel. */
 export interface PivotSlicerDrawingPayload {
   kind: 'slicer';
@@ -599,6 +621,7 @@ export interface PivotSlicerDrawingPayload {
   fieldId: string;
   filter: PivotControlFilter;
   style: PivotControlStyle;
+  settings: PivotSlicerSettings;
   connectedPivotIds?: string[];
 }
 
@@ -671,7 +694,22 @@ export function isPivotSlicerDrawingPayload(value: unknown): value is PivotSlice
     && value.fieldId.trim().length > 0
     && isPivotControlFilter(value.filter)
     && isPivotControlStyle(value.style)
+    && isPivotSlicerSettings(value.settings)
     && isConnectedPivotIds(value.connectedPivotIds);
+}
+
+export function isPivotSlicerSettings(value: unknown): value is PivotSlicerSettings {
+  if (!isRecord(value)) return false;
+  return typeof value.showHeader === 'boolean'
+    && typeof value.caption === 'string'
+    && value.caption.trim().length > 0
+    && typeof value.multiSelect === 'boolean'
+    && (value.sort === 'ascending' || value.sort === 'descending')
+    && typeof value.showNoDataItems === 'boolean'
+    && typeof value.noDataItemsLast === 'boolean'
+    && typeof value.showNoDataStyle === 'boolean'
+    && typeof value.columnCount === 'number' && Number.isSafeInteger(value.columnCount) && value.columnCount >= 1 && value.columnCount <= 32
+    && typeof value.itemHeight === 'number' && Number.isFinite(value.itemHeight) && value.itemHeight >= 16 && value.itemHeight <= 96;
 }
 
 export function isPivotTimelineDrawingPayload(value: unknown): value is PivotTimelineDrawingPayload {

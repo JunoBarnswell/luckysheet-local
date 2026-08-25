@@ -27,6 +27,7 @@ import type {
   PivotSourceRowPath,
   PivotTarget,
   PivotSlicerDrawingPayload,
+  PivotSlicerItemProjection,
   PivotTimelineDrawingPayload,
   PivotValueField,
   ContextHit,
@@ -1229,6 +1230,21 @@ function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload): boole
   return filter.mode === 'include' ? included : !included;
 }
 
+interface LinkedPivotControl {
+  drawingId: string;
+  payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
+}
+
+function linkedPivotControls(workbook: WorkbookModel, pivot: PivotModel): LinkedPivotControl[] {
+  return workbook.getSheets().flatMap((sheet) => sheet.drawings.flatMap((drawing) => {
+    if (drawing.kind !== 'slicer' && drawing.kind !== 'timeline') return [];
+    const payload = sheet.drawingPayloads.get(drawing.payloadId);
+    if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return [];
+    const linked = [payload.pivotId, ...(payload.connectedPivotIds ?? [])];
+    return linked.includes(pivot.id) ? [{ drawingId: drawing.id, payload }] : [];
+  }));
+}
+
 function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, bounds: PivotTimelinePeriodBounds): boolean {
   const fieldId = timeline.fieldId;
   const raw = row.values[fieldId];
@@ -1239,22 +1255,44 @@ function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, 
     && instant < (bounds.endExclusive ?? Number.POSITIVE_INFINITY);
 }
 
-function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel): SourceRow[] {
-  const slicers: PivotSlicerDrawingPayload[] = [];
-  const timelines: PivotTimelineDrawingPayload[] = [];
-  for (const sheet of workbook.getSheets()) {
-    for (const drawing of sheet.drawings) {
-      if (drawing.kind !== 'slicer' && drawing.kind !== 'timeline') continue;
-      const payload = sheet.drawingPayloads.get(drawing.payloadId);
-      if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) continue;
-      if (![payload.pivotId, ...(payload.connectedPivotIds ?? [])].includes(pivot.id)) continue;
-      if (payload.kind === 'slicer') slicers.push(payload);
-      else if (payload.kind === 'timeline') timelines.push(payload);
-    }
+function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel, excludedSlicerDrawingId?: string): SourceRow[] {
+  const controls = linkedPivotControls(workbook, pivot).filter((entry) => entry.drawingId !== excludedSlicerDrawingId);
+  const slicers = controls.filter((entry): entry is LinkedPivotControl & { payload: PivotSlicerDrawingPayload } => entry.payload.kind === 'slicer');
+  const timelines = controls.filter((entry): entry is LinkedPivotControl & { payload: PivotTimelineDrawingPayload } => entry.payload.kind === 'timeline');
+  const timelineBounds = timelines.map((entry) => normalizePivotTimelinePeriod(entry.payload.period));
+  return rows.filter((row) => slicers.every((entry) => matchesSlicer(row, entry.payload))
+    && timelines.every((entry, index) => matchesTimeline(row, entry.payload, timelineBounds[index]!)));
+}
+
+function slicerItemProjection(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  definition: PivotDefinition,
+  rows: SourceRow[],
+  drawingId: string,
+  payload: PivotSlicerDrawingPayload,
+  collator: Intl.Collator,
+): PivotSlicerItemProjection[] {
+  const fieldValues = rows.map((row) => row.values[payload.fieldId] ?? null);
+  const members = new Map<string, PivotSlicerItemProjection>();
+  for (const value of fieldValues) {
+    const key = createPivotMemberKey(value);
+    const identity = pivotMemberKey(key);
+    if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
   }
-  const timelineBounds = timelines.map((timeline) => normalizePivotTimelinePeriod(timeline.period));
-  return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer))
-    && timelines.every((timeline, index) => matchesTimeline(row, timeline, timelineBounds[index]!)));
+  const filteredRows = matchesControls(workbook, rows, pivot, drawingId)
+    .filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator, definition)));
+  const availableRows = topItems(filteredRows, definition.layout.filters);
+  const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(row.values[payload.fieldId] ?? null))));
+  for (const item of members.values()) {
+    item.hasData = available.has(pivotMemberKey(item.key));
+    const included = payload.filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, item.key));
+    item.selected = payload.filter.mode === 'all' || (payload.filter.mode === 'include' ? included : !included);
+  }
+  const sorted = [...members.values()].sort((left, right) => collator.compare(left.label, right.label));
+  if (payload.settings.sort === 'descending') sorted.reverse();
+  if (payload.settings.noDataItemsLast) sorted.sort((left, right) => Number(right.hasData) - Number(left.hasData));
+  return sorted;
 }
 
 function resultValueFields(layout: PivotLayout): PivotResultValueField[] {
@@ -1508,6 +1546,13 @@ function computePivotResultFromTable(
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
+  const controls = linkedPivotControls(workbook, pivot);
+  const slicerItems: Record<string, PivotSlicerItemProjection[]> = {};
+  for (const control of controls) {
+    if (control.payload.kind !== 'slicer') continue;
+    slicerItems[control.drawingId] = slicerItemProjection(workbook, pivot, definition, rows, control.drawingId, control.payload, collator);
+  }
+  if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
   applyShowAs(tree, resultFields);
   const revisions = getPivotRevisionKey(workbook, pivot, formula);
   tree.sourceRevision = sourceRevisionOverride ?? revisions.sourceRevision;

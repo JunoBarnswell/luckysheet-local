@@ -124,6 +124,7 @@ test('Pivot controls expose semantic child hit zones instead of a generic shape 
     fieldId: 'category',
     filter: { mode: 'all', memberKeys: [] },
     style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' },
+    settings: { showHeader: true, caption: 'Category', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 },
   };
   const source = sourceSnapshot();
   const drawables = createCanvasFloatingDrawables({

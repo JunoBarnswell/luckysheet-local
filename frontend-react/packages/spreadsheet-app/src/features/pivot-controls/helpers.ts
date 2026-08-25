@@ -3,6 +3,7 @@ import type {
   DrawingTransform,
   PivotControlFilter,
   PivotControlStyle,
+  PivotSlicerSettings,
   PivotSlicerDrawingPayload,
   PivotTimelineDrawingPayload,
   PivotTimelinePeriod,
@@ -32,6 +33,26 @@ export const DEFAULT_PIVOT_CONTROL_STYLE: PivotControlStyle = {
   selectedFill: '#bfdbfe',
   fontSize: 12,
 };
+
+export const DEFAULT_PIVOT_SLICER_SETTINGS: PivotSlicerSettings = {
+  showHeader: true,
+  caption: 'Slicer',
+  multiSelect: true,
+  sort: 'ascending',
+  showNoDataItems: true,
+  noDataItemsLast: true,
+  showNoDataStyle: true,
+  columnCount: 1,
+  itemHeight: 20,
+};
+
+export function createPivotSlicerSettings(overrides: Partial<PivotSlicerSettings> = {}): PivotSlicerSettings {
+  const settings = { ...DEFAULT_PIVOT_SLICER_SETTINGS, ...structuredClone(overrides) };
+  if (!Number.isSafeInteger(settings.columnCount) || settings.columnCount < 1 || settings.columnCount > 32) throw new Error('Pivot Slicer column count must be between 1 and 32');
+  if (!Number.isFinite(settings.itemHeight) || settings.itemHeight < 16 || settings.itemHeight > 96) throw new Error('Pivot Slicer item height must be between 16 and 96');
+  if (!settings.caption.trim()) throw new Error('Pivot Slicer caption must not be empty');
+  return settings;
+}
 
 export function createPivotControlStyle(overrides: Partial<PivotControlStyle> = {}): PivotControlStyle {
   return { ...DEFAULT_PIVOT_CONTROL_STYLE, ...structuredClone(overrides) };
@@ -63,7 +84,7 @@ export interface PivotControlDrawingInput {
 }
 
 export function buildPivotSlicerDrawing(
-  input: PivotControlDrawingInput & { filter?: PivotControlFilter; style?: PivotControlStyle },
+  input: PivotControlDrawingInput & { filter?: PivotControlFilter; style?: PivotControlStyle; settings?: Partial<PivotSlicerSettings> },
 ): { drawing: DrawingObject; payload: PivotSlicerDrawingPayload } {
   return {
     drawing: {
@@ -82,6 +103,7 @@ export function buildPivotSlicerDrawing(
       fieldId: input.fieldId,
       filter: createPivotControlFilter(input.filter),
       style: createPivotControlStyle(input.style),
+      settings: createPivotSlicerSettings(input.settings),
       ...(input.connectedPivotIds?.length ? { connectedPivotIds: [...new Set(input.connectedPivotIds)] } : {}),
     },
   };

@@ -766,6 +766,7 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
         fieldId: control.fieldId,
         filter: { mode: memberKeys.length ? 'include' : 'all', memberKeys },
         style,
+        settings: { showHeader: true, caption: field?.name ?? 'Slicer', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 },
         ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
       };
     } else {

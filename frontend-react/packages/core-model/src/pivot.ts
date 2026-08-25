@@ -344,6 +344,15 @@ export interface PivotReportFilterSummary {
   entries: PivotReportFilterSummaryEntry[];
 }
 
+/** Derived Slicer item state; never authored or persisted as filter state. */
+export interface PivotSlicerItemProjection {
+  key: PivotMemberKey;
+  value: PivotScalar;
+  label: string;
+  selected: boolean;
+  hasData: boolean;
+}
+
 export type PivotShowAs =
   | { kind: 'normal' }
   | { kind: 'grand-percentage' }
@@ -631,6 +640,8 @@ export interface PivotResultTree {
   sourceRevision?: string;
   layoutRevision?: string;
   filterRevision?: string;
+  /** Derived item availability for floating Slicer controls, keyed by drawing id. */
+  slicerItems?: Record<string, PivotSlicerItemProjection[]>;
 }
 
 export type PivotProjectionCellKind =

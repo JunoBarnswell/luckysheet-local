@@ -42,8 +42,8 @@ describe('pivot controls as floating drawing objects', () => {
       zIndex: 2,
     });
 
-    runtime.execute('pivot.control.slicer.create', slicer);
-    runtime.execute('pivot.control.timeline.create', timeline);
+    runtime.execute('pivot.control.slicer.create', { sheetId: 'sheet-1', ...slicer });
+    runtime.execute('pivot.control.timeline.create', { sheetId: 'sheet-1', ...timeline });
 
     const sheet = workbook.getSheet('sheet-1');
     assert.deepEqual(sheet.pivots, []);
@@ -64,7 +64,7 @@ describe('pivot controls as floating drawing objects', () => {
       transform: { x: 0, y: 0, width: 200, height: 120 },
       zIndex: 1,
     });
-    runtime.execute('pivot.control.slicer.create', slicer);
+    runtime.execute('pivot.control.slicer.create', { sheetId: 'sheet-1', ...slicer });
     runtime.execute('pivot.control.slicer.filter.set', {
       sheetId: 'sheet-1',
       drawingId: 'slicer-drawing',
@@ -102,6 +102,20 @@ describe('pivot controls as floating drawing objects', () => {
     assert.deepEqual(updated.connectedPivotIds, ['pivot-detail']);
   });
 
+  it('persists Slicer design settings and rejects invalid layout without a partial mutation', () => {
+    const { workbook, runtime } = createRuntime();
+    const slicer = buildPivotSlicerDrawing({ drawingId: 'design-slicer', payloadId: 'design-slicer-payload', sheetId: 'sheet-1', pivotId: 'pivot-sales', fieldId: 'field-region', transform: { x: 0, y: 0, width: 240, height: 160 }, zIndex: 1 });
+    runtime.execute('pivot.control.slicer.create', { sheetId: 'sheet-1', ...slicer });
+    runtime.execute('pivot.control.slicer.settings.set', { sheetId: 'sheet-1', drawingId: slicer.drawing.id, settings: { ...slicer.payload.settings, caption: 'Regions', multiSelect: false, sort: 'descending', showNoDataItems: false, noDataItemsLast: true, showNoDataStyle: true, columnCount: 2, itemHeight: 24 } });
+    const updated = workbook.getSheet('sheet-1').drawingPayloads.get(slicer.drawing.payloadId);
+    assert.equal(updated?.kind, 'slicer');
+    if (updated?.kind !== 'slicer') throw new Error('Expected slicer payload');
+    assert.deepEqual(updated.settings, { ...slicer.payload.settings, caption: 'Regions', multiSelect: false, sort: 'descending', showNoDataItems: false, noDataItemsLast: true, showNoDataStyle: true, columnCount: 2, itemHeight: 24 });
+    const before = structuredClone(updated);
+    assert.throws(() => runtime.execute('pivot.control.slicer.settings.set', { sheetId: 'sheet-1', drawingId: slicer.drawing.id, settings: { ...before.settings, caption: '', columnCount: 0 } }), /caption|column count/);
+    assert.deepEqual(workbook.getSheet('sheet-1').drawingPayloads.get(slicer.drawing.payloadId), before);
+  });
+
   it('updates timeline period while drawing commands own move, resize, delete and undo', () => {
     const { workbook, runtime } = createRuntime();
     const timeline = buildPivotTimelineDrawing({
@@ -113,7 +127,7 @@ describe('pivot controls as floating drawing objects', () => {
       transform: { x: 10, y: 20, width: 300, height: 80 },
       zIndex: 1,
     });
-    runtime.execute('pivot.control.timeline.create', timeline);
+    runtime.execute('pivot.control.timeline.create', { sheetId: 'sheet-1', ...timeline });
     runtime.execute('pivot.control.timeline.period.set', {
       sheetId: 'sheet-1',
       drawingId: 'timeline-drawing',
@@ -154,7 +168,7 @@ describe('pivot controls as floating drawing objects', () => {
       transform: { x: 10, y: 20, width: 300, height: 80 },
       zIndex: 1,
     });
-    runtime.execute('pivot.control.timeline.create', timeline);
+    runtime.execute('pivot.control.timeline.create', { sheetId: 'sheet-1', ...timeline });
     const before = structuredClone(workbook.getSheet('sheet-1').drawingPayloads.get(timeline.drawing.payloadId));
     assert.throws(() => runtime.execute('pivot.control.timeline.period.set', {
       sheetId: 'sheet-1',

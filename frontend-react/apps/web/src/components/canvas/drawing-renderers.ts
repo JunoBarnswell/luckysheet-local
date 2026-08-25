@@ -16,6 +16,7 @@ import type {
   PivotMemberKey,
   PivotScalar,
   PivotResultTree,
+  PivotSlicerItemProjection,
   PivotSlicerDrawingPayload,
   PivotTimelineDrawingPayload,
   RangeRef,
@@ -820,10 +821,16 @@ interface PivotControlMember {
   value: PivotScalar;
   key: PivotMemberKey;
   label: string;
+  selected: boolean;
+  hasData: boolean;
 }
 
-function pivotControlMembers(payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): PivotControlMember[] {
+function pivotControlMembers(drawingId: string, payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): PivotControlMember[] {
   const tree = pivotResults[payload.pivotId];
+  if (payload.kind === 'slicer') {
+    const projected = tree?.slicerItems?.[drawingId];
+    if (projected) return projected.map((item: PivotSlicerItemProjection) => ({ ...item }));
+  }
   const field = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId);
   const values = [...(field?.values ?? [])];
   if (values.length === 0 && tree) {
@@ -838,13 +845,17 @@ function pivotControlMembers(payload: PivotSlicerDrawingPayload | PivotTimelineD
   const members = new Map<string, PivotControlMember>();
   for (const value of values) {
     const key = createPivotMemberKey(value);
-    members.set(pivotMemberKey(key), { value, key, label: formatPivotMember(value) });
+    const selected = payload.kind === 'slicer'
+      ? payload.filter.mode === 'all'
+        || (payload.filter.mode === 'include' ? payload.filter.memberKeys.some((candidate) => pivotMemberKey(candidate) === pivotMemberKey(key)) : !payload.filter.memberKeys.some((candidate) => pivotMemberKey(candidate) === pivotMemberKey(key)))
+      : false;
+    members.set(pivotMemberKey(key), { value, key, label: formatPivotMember(value), selected, hasData: true });
   }
   return [...members.values()];
 }
 
 function pivotTimelinePeriods(payload: PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): Array<{ start: string; end: string }> {
-  const values = pivotControlMembers(payload, pivotResults)
+  const values = pivotControlMembers('', payload, pivotResults)
     .map((entry) => pivotTimelineInstant(entry.value) === undefined ? undefined : new Date(pivotTimelineInstant(entry.value)!).toISOString().slice(0, 10))
     .filter((value): value is string => Boolean(value));
   return [...new Set(values)].sort().map((value) => ({ start: value, end: value }));
@@ -859,10 +870,17 @@ function pivotControlHitTest(
 ): import('@react-sheets/render-engine').FloatingControlHit | null {
   const headerHeight = Math.min(26, bounds.height);
   if (payload.kind === 'slicer') {
-    if (point.y <= headerHeight && point.x >= Math.max(0, bounds.width - 26)) return { action: 'pivot.slicer.clear', data: { kind: 'slicer-clear' } satisfies PivotControlAction };
-    const itemHeight = 20;
-    const index = Math.floor((point.y - headerHeight) / itemHeight);
-    const member = index >= 0 && index < members.length ? members[index] : undefined;
+    if (payload.settings.showHeader && point.y <= headerHeight && point.x >= Math.max(0, bounds.width - 26)) return { action: 'pivot.slicer.clear', data: { kind: 'slicer-clear' } satisfies PivotControlAction };
+    if (payload.settings.showHeader && point.y <= headerHeight) return null;
+    const itemHeight = payload.settings.itemHeight;
+    const columnCount = Math.max(1, payload.settings.columnCount);
+    const visibleMembers = members.filter((member) => payload.settings.showNoDataItems || member.hasData);
+    const itemY = point.y - (payload.settings.showHeader ? headerHeight : 0);
+    const rowIndex = Math.floor(itemY / itemHeight);
+    const columnWidth = bounds.width / columnCount;
+    const columnIndex = Math.floor(point.x / Math.max(1, columnWidth));
+    const index = rowIndex * columnCount + columnIndex;
+    const member = index >= 0 && index < visibleMembers.length ? visibleMembers[index] : undefined;
     return member ? { action: 'pivot.slicer.member', data: { kind: 'slicer-member', memberKey: member.key } satisfies PivotControlAction } : null;
   }
   if (point.y <= headerHeight && point.x < 74) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: -1 } satisfies PivotControlAction };
@@ -891,26 +909,42 @@ function drawPivotControlOnCanvas(options: {
   context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
   context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
   context.fillStyle = style.accentColor;
-  context.fillRect(bounds.x, bounds.y, bounds.width, Math.min(26, bounds.height));
+  const headerHeight = payload.kind === 'slicer' && !payload.settings.showHeader ? 0 : Math.min(26, bounds.height);
+  if (headerHeight > 0) context.fillRect(bounds.x, bounds.y, bounds.width, headerHeight);
   context.fillStyle = style.textColor;
   context.font = `600 ${style.fontSize}px Segoe UI, sans-serif`;
   context.textBaseline = "middle";
-  context.fillText(payload.kind === "slicer" ? `Slicer · ${payload.fieldId}` : `Timeline · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
+  if (headerHeight > 0) context.fillText(payload.kind === "slicer" ? payload.settings.caption : `Timeline · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
   context.font = `${style.fontSize}px Segoe UI, sans-serif`;
   if (payload.kind === "slicer") {
-    const selected = new Set(payload.filter.memberKeys.map(pivotMemberKey));
-    members.slice(0, Math.max(0, Math.floor((bounds.height - 30) / 20))).forEach((member, index) => {
-      const top = bounds.y + 28 + index * 20;
-      if (selected.has(pivotMemberKey(member.key))) {
+    const visibleMembers = members.filter((member) => payload.settings.showNoDataItems || member.hasData);
+    const columnCount = Math.max(1, payload.settings.columnCount);
+    const columnWidth = bounds.width / columnCount;
+    const rows = Math.max(0, Math.floor((bounds.height - headerHeight) / payload.settings.itemHeight));
+    visibleMembers.slice(0, rows * columnCount).forEach((member, index) => {
+      const row = Math.floor(index / columnCount);
+      const column = index % columnCount;
+      const left = bounds.x + column * columnWidth;
+      const top = bounds.y + headerHeight + row * payload.settings.itemHeight;
+      if (member.selected) {
         context.fillStyle = style.selectedFill ?? '#bfdbfe';
-        context.fillRect(bounds.x + 2, top, Math.max(0, bounds.width - 4), 19);
+        context.fillRect(left + 2, top + 1, Math.max(0, columnWidth - 4), payload.settings.itemHeight - 2);
+      }
+      if (!member.hasData && payload.settings.showNoDataStyle) {
+        context.fillStyle = '#94a3b8';
+        context.fillRect(left + 2, top + 1, Math.max(0, columnWidth - 4), payload.settings.itemHeight - 2);
       }
       context.fillStyle = style.textColor;
-      context.fillText(member.label, bounds.x + 8, top + 10, Math.max(10, bounds.width - 16));
+      context.globalAlpha = member.hasData ? 1 : 0.55;
+      context.fillText(member.label, left + 8, top + payload.settings.itemHeight / 2, Math.max(10, columnWidth - 16));
+      context.globalAlpha = 1;
     });
-    context.fillStyle = style.textColor;
-    context.font = `600 ${style.fontSize}px Segoe UI, sans-serif`;
-    context.fillText('×', bounds.x + Math.max(0, bounds.width - 20), bounds.y + 13, 14);
+    if (headerHeight > 0) {
+      context.fillStyle = style.textColor;
+      context.font = `600 ${style.fontSize}px Segoe UI, sans-serif`;
+      if (payload.settings.multiSelect) context.fillText('☷', bounds.x + Math.max(0, bounds.width - 44), bounds.y + 13, 14);
+      if (payload.filter.mode !== 'all') context.fillText('×', bounds.x + Math.max(0, bounds.width - 20), bounds.y + 13, 14);
+    }
   } else {
     const detail = `${payload.period.start ?? "Start"} — ${payload.period.end ?? "End"}`;
     context.fillText(detail, bounds.x + 8, bounds.y + Math.min(bounds.height - 12, 44), Math.max(10, bounds.width - 16));
@@ -1012,7 +1046,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
       continue;
     }
     if (payload.kind === "slicer" || payload.kind === "timeline") {
-      const members = pivotControlMembers(payload, pivotResults);
+      const members = pivotControlMembers(drawing.id, payload, pivotResults);
       const periods = payload.kind === 'timeline' ? pivotTimelinePeriods(payload, pivotResults) : [];
       drawables.push({
         kind: "pivot-control",

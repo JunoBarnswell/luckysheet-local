@@ -32,6 +32,7 @@ export type SidebarPanelId =
   | 'dataChart'
   | 'barcode'
   | 'pivot'
+  | 'slicer'
   | 'formulaAudit'
   | 'definedNames'
   | 'shape'

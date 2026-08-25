@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { WorkbookModel, type PivotModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, WorkbookModel, type PivotModel } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
   aggregatePivotValues,
@@ -14,6 +14,7 @@ import {
   summarizePivotReportFilters,
 } from './engine';
 import { buildPivotModel } from './helpers';
+import { buildPivotSlicerDrawing } from '../pivot-controls/helpers';
 import { createSpillEnvironment } from '../../formula-spill-sync';
 
 function workbookWithData(): WorkbookModel {
@@ -71,6 +72,31 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
 }
 
 describe('native PivotGridProjection contract', () => {
+  it('projects selected and has-data states independently after another Slicer filters the source', () => {
+    const workbook = new WorkbookModel('pivot-slicer-projection', 'Pivot Slicer Projection');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Category', 'Amount'], ['East', 'Widget', 10], ['East', 'Gadget', 20], ['West', 'Gadget', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-slicer-projection', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    pivot.fieldCatalog = catalog;
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    sheet.pivots.push(pivot);
+    const regionSlicer = buildPivotSlicerDrawing({ drawingId: 'region-slicer', payloadId: 'region-slicer-payload', sheetId: sheet.id, pivotId: pivot.id, fieldId: region.fieldId, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1 });
+    const categorySlicer = buildPivotSlicerDrawing({ drawingId: 'category-slicer', payloadId: 'category-slicer-payload', sheetId: sheet.id, pivotId: pivot.id, fieldId: category.fieldId, filter: { mode: 'include', memberKeys: [createPivotMemberKey('Widget')] }, transform: { x: 0, y: 140, width: 200, height: 120 }, zIndex: 2 });
+    sheet.drawings.push(regionSlicer.drawing, categorySlicer.drawing);
+    sheet.drawingPayloads.set(regionSlicer.drawing.payloadId, regionSlicer.payload);
+    sheet.drawingPayloads.set(categorySlicer.drawing.payloadId, categorySlicer.payload);
+    const result = computePivotResult(workbook, pivot);
+    const items = result.slicerItems?.[regionSlicer.drawing.id] ?? [];
+    assert.deepEqual(items.map((item) => [item.value, item.selected, item.hasData]), [['East', true, true], ['West', true, false]]);
+    assert.deepEqual(result.slicerItems?.[categorySlicer.drawing.id]?.map((item) => [item.value, item.selected, item.hasData]), [['Gadget', false, true], ['Widget', true, true]]);
+  });
+
   it('reads worksheet-range Pivot values through the FormulaEngine spill authority', () => {
     const workbook = new WorkbookModel('pivot-spill', 'Pivot Spill');
     const sheet = workbook.getSheet('sheet-1');
