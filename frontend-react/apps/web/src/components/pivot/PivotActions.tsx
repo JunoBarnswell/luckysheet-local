@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Box, Button, Inline, Select, Text } from '@react-sheets/ui-system';
+import { Box, Button, CheckToggle, Inline, Select, Stack, Text } from '@react-sheets/ui-system';
 import type { PivotFieldDefinition } from '@react-sheets/core-model';
-import type { PivotPanelCallbacks } from './pivot-contract';
+import type { PivotConnectionOption, PivotPanelCallbacks } from './pivot-contract';
 import type { Locale } from '../../i18n';
 import { pivotText } from './pivot-localization';
 
@@ -13,9 +13,11 @@ export interface PivotActionsProps {
   callbacks: PivotPanelCallbacks;
   disabled?: boolean;
   locale: Locale;
+  connectionControlId?: string;
+  connectionOptions?: readonly PivotConnectionOption[];
 }
 
-export function PivotActions({ callbacks, disabled = false, fields, layout, locale, showButtons, slicerFieldIds }: PivotActionsProps) {
+export function PivotActions({ callbacks, connectionControlId, connectionOptions = [], disabled = false, fields, layout, locale, showButtons, slicerFieldIds }: PivotActionsProps) {
   const [controlField, setControlField] = useState(fields[0]?.fieldId ?? '');
   const dateFields = fields.filter((field) => field.dataType === 'date');
   const timelineField = dateFields.find((field) => field.fieldId === controlField)?.fieldId ?? dateFields[0]?.fieldId;
@@ -35,6 +37,15 @@ export function PivotActions({ callbacks, disabled = false, fields, layout, loca
         {timelineField ? <Button disabled={disabled} icon="history" size="xs" variant="outline" onClick={() => callbacks.onTimelineChange(timelineField)}>{pivotText(locale, 'timeline')}</Button> : null}
         <Button disabled={disabled} icon="chart" size="xs" variant="outline" onClick={() => callbacks.onPivotChartChange({ type: 'column', title: pivotText(locale, 'pivotChart') })}>{pivotText(locale, 'pivotChart')}</Button>
       </Inline>
+      {connectionControlId ? <Box className="mt-3 border-t border-line/60 pt-3" aria-label={pivotText(locale, 'reportConnections')}>
+        <Text size="xs" weight="semibold" tone="muted" className="mb-2 block">{pivotText(locale, 'reportConnections')}</Text>
+        {connectionOptions.length === 0
+          ? <Text size="xs" tone="subtle">{pivotText(locale, 'noCompatiblePivots')}</Text>
+          : <Stack gap="xs">{connectionOptions.map((option) => <CheckToggle key={option.pivotId} aria-label={`${pivotText(locale, 'reportConnections')}: ${option.label}`} checked={option.selected} disabled={disabled} label={option.label} onChange={(event) => {
+            const next = connectionOptions.filter((candidate) => candidate.pivotId === option.pivotId ? event.target.checked : candidate.selected).map((candidate) => ({ pivotId: candidate.pivotId, sourceKey: candidate.sourceKey, fieldId: candidate.fieldId }));
+            callbacks.onConnectionsChange?.(connectionControlId, next);
+          }} />)}</Stack>}
+      </Box> : null}
     </Box>
   );
 }

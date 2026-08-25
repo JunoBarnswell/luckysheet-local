@@ -17,7 +17,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, pivotSourceIdentity } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
@@ -754,8 +754,15 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
     const existing = sheet.drawings.find((drawing) => drawing.id === control.id);
     if (existing) continue;
     const payloadId = control.id;
+    const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === control.fieldId);
+    if (!field) continue;
+    const sourceKey = pivotSourceIdentity(pivot.source);
+    const connections = (control.connectionPivotIds ?? []).filter((pivotId) => pivotId !== control.pivotId).flatMap((pivotId) => {
+      const target = snapshot.sheets.flatMap((candidate) => candidate.pivots).find((candidate) => candidate.id === pivotId);
+      const targetField = target?.fieldCatalog.fields.find((candidate) => candidate.ordinal === field.ordinal && candidate.name === field.name && candidate.dataType === field.dataType);
+      return target && targetField && (control.kind !== 'timeline' || targetField.dataType === 'date') ? [{ pivotId, sourceKey, fieldId: targetField.fieldId }] : [];
+    });
     if (control.kind === 'slicer') {
-      const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === control.fieldId);
       const memberKeys = (control.selectedItemIndexes ?? []).map((index) => {
         const value = field?.values?.[index];
         if (!field || value === undefined) throw new Error(`Native Slicer ${control.id} selected item index ${index} is outside field ${control.fieldId} member domain`);
@@ -768,7 +775,7 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
         filter: { mode: memberKeys.length ? 'include' : 'all', memberKeys },
         style,
         settings: { showHeader: true, caption: field?.name ?? 'Slicer', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 },
-        ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
+        ...(connections.length ? { connections } : {}),
       };
     } else {
       if (!control.level || !control.selectionLevel || control.showHeader === undefined || control.showSelectionLabel === undefined || control.showTimeLevel === undefined || control.showHorizontalScrollbar === undefined || !control.filterType) {
@@ -791,7 +798,7 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
         ...(control.caption === undefined ? {} : { caption: control.caption }),
         ...(control.styleName === undefined ? {} : { styleName: control.styleName }),
         style,
-        ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
+        ...(connections.length ? { connections } : {}),
       };
     }
     const drawing: DrawingObject = {

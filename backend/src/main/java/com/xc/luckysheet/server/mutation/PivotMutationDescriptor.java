@@ -163,15 +163,15 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 boolean primary = ("chart".equals(kind) || "slicer".equals(kind) || "timeline".equals(kind))
                         && pivotId.equals(payload.path("pivotId").asText());
                 boolean connected = ("slicer".equals(kind) || "timeline".equals(kind))
-                        && arrayContainsText(payload.get("connectedPivotIds"), pivotId);
+                        && arrayContainsConnectionPivot(payload.get("connections"), pivotId);
                 if (primary || connected) throw ServiceException.conflict("Pivot has dependent drawing: " + drawingId);
             }
         }
     }
 
-    private boolean arrayContainsText(JsonNode value, String expected) {
+    private boolean arrayContainsConnectionPivot(JsonNode value, String expected) {
         if (value == null || !value.isArray()) return false;
-        for (JsonNode entry : value) if (entry.isTextual() && expected.equals(entry.asText())) return true;
+        for (JsonNode entry : value) if (entry.isObject() && expected.equals(entry.path("pivotId").asText())) return true;
         return false;
     }
 

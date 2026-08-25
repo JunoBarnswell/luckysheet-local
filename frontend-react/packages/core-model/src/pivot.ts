@@ -253,6 +253,19 @@ export type PivotSource = PivotWorksheetDataSource
   | { kind: 'named-range'; name: string; sheetId?: SheetId }
   | { kind: 'data-source'; dataSourceId: string };
 
+function stablePivotSourceValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stablePivotSourceValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => [key, stablePivotSourceValue(entry)]));
+  }
+  return value;
+}
+
+/** Canonical full source/cache identity used by Pivot Report Connections. */
+export function pivotSourceIdentity(source: PivotSource): string {
+  return JSON.stringify(stablePivotSourceValue(source));
+}
+
 export type PivotFieldDataType = 'text' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
 
 /**

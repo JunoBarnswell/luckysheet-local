@@ -22,7 +22,7 @@ import {
   type WorkbookSession,
 } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
-import type { PivotExpansionCommand, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
+import type { PivotConnectionOption, PivotExpansionCommand, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
 import type { Locale } from '../i18n';
 import { pivotDefinedNameScopeText, pivotText } from '../components/pivot/pivot-localization';
 
@@ -47,6 +47,8 @@ export interface EditorCommandController {
   pivotFields: PivotFieldDefinition[];
   pivotSlicerControls: PivotSlicerControl[];
   pivotTimelineControls: PivotTimelineControl[];
+  pivotConnectionControlId: string | undefined;
+  pivotConnectionOptions: PivotConnectionOption[];
   pivotPanelState: PivotPanelState;
   pivotCallbacks: PivotPanelCallbacks;
   pivotSourceOptions: PivotSourceOption[];
@@ -177,11 +179,20 @@ export function useEditorCommandController({
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
   const pivotSlicerControls = pivotControlRecords.flatMap((record) => record.payload.kind === "slicer"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connectedPivotIds: record.payload.connectedPivotIds }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connections: record.payload.connections }]
     : []);
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connectedPivotIds: record.payload.connectedPivotIds }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connections: record.payload.connections }]
     : []);
+  const connectionControl = pivotControlRecords.find((record) => (record.payload.kind === 'slicer' || record.payload.kind === 'timeline') && record.payload.fieldId === (pivotFields[0]?.fieldId ?? ''));
+  const connectionControlId = connectionControl?.drawing.id;
+  const connectionOptions: PivotConnectionOption[] = connectionControl && activePivot
+    ? session.listCompatiblePivotControlConnections(activePivot.id, connectionControl.payload.fieldId, connectionControl.payload.kind).map((connection) => ({
+      ...connection,
+      label: state.selectedSheet.pivots.find((candidate) => candidate.id === connection.pivotId)?.id ?? connection.pivotId,
+      selected: connectionControl.payload.connections?.some((candidate) => candidate.pivotId === connection.pivotId) ?? false,
+    }))
+    : [];
 
   const buildTotalRowCommand = (): CommandDescriptor | undefined => {
     const table = state.selectedSheet.sheetTables.find((entry) =>
@@ -341,6 +352,7 @@ export function useEditorCommandController({
         if (control) session.removePivotControl(control.drawing.id);
       }
     },
+    onConnectionsChange: (controlId, connections) => session.setPivotControlConnections(controlId, connections),
     onTimelineChange: (fieldId) => {
       if (!activePivot) return;
       if (!fieldId) {
@@ -447,6 +459,8 @@ export function useEditorCommandController({
     pivotFields,
     pivotSlicerControls,
     pivotTimelineControls,
+    pivotConnectionControlId: connectionControlId,
+    pivotConnectionOptions: connectionOptions,
     pivotPanelState,
     pivotCallbacks,
     pivotSourceOptions,

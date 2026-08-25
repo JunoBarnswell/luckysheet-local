@@ -16,6 +16,7 @@ import type {
   PivotSubtotalDefinition,
   PivotSlicerItemProjection,
   PivotSlicerSettings,
+  PivotControlConnection,
 } from '@react-sheets/core-model';
 import type { ReactNode } from 'react';
 
@@ -37,6 +38,7 @@ export type {
   PivotSubtotalDefinition,
   PivotSlicerItemProjection,
   PivotSlicerSettings,
+  PivotControlConnection,
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
@@ -72,7 +74,7 @@ export interface PivotSlicerControl {
   memberKeys: readonly PivotMemberKey[];
   settings: PivotSlicerSettings;
   items: readonly PivotSlicerItemProjection[];
-  connectedPivotIds?: readonly string[];
+  connections?: readonly PivotControlConnection[];
 }
 
 export interface PivotTimelineControl {
@@ -92,7 +94,12 @@ export interface PivotTimelineControl {
   filterType: import('@react-sheets/core-model').PivotTimelineFilterType;
   caption?: string;
   styleName?: string;
-  connectedPivotIds?: readonly string[];
+  connections?: readonly PivotControlConnection[];
+}
+
+export interface PivotConnectionOption extends PivotControlConnection {
+  label: string;
+  selected: boolean;
 }
 
 export interface PivotPanelState {
@@ -124,6 +131,7 @@ export interface PivotPanelCallbacks {
   onRefreshPolicyChange?: (refreshPolicy: PivotRefreshPolicy) => void;
   onExpansionCommand?: (command: PivotExpansionCommand) => void;
   onSlicerChange: (fieldId: string, enabled: boolean) => void;
+  onConnectionsChange?: (controlId: string, connections: PivotControlConnection[]) => void;
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
   onTimelineChange: (fieldId: string | undefined) => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;

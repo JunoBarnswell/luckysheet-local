@@ -23,6 +23,7 @@ import type {
   PivotLayout,
   PivotMemberKey,
   PivotModel,
+  PivotControlConnection,
   PivotSourceRowPath,
   PivotAggregateFunction,
   PivotDefinition,
@@ -104,12 +105,12 @@ import {
 } from './features/drawing';
 import {
   buildPivotModel,
-  connectedPivotIdsForSource,
   readPivotBlockSource,
 } from './features/pivot';
 import {
   buildPivotSlicerDrawing,
   buildPivotTimelineDrawing,
+  compatiblePivotControlConnections,
   listPivotControlsForPivot,
   type PivotControlRecord,
 } from './features/pivot-controls';
@@ -2796,14 +2797,22 @@ export class WorkbookSession {
       .map((record) => ({ drawing: structuredClone(record.drawing), payload: structuredClone(record.payload) }));
   }
 
+  listCompatiblePivotControlConnections(pivotId: string, fieldId: string, kind: 'slicer' | 'timeline'): readonly PivotControlConnection[] {
+    return compatiblePivotControlConnections(this.runtime.model, pivotId, fieldId, kind).map((connection) => structuredClone(connection));
+  }
+
+  setPivotControlConnections(drawingId: string, connections: readonly PivotControlConnection[]): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.connections.set', { sheetId: sheet.id, drawingId, connections: structuredClone(connections) });
+    this.refresh();
+  }
+
   createPivotSlicerControl(pivotId: string, fieldId: string): void {
     const pivot = this.runtime.model.getSheets().flatMap((sheet) => sheet.pivots).find((entry) => entry.id === pivotId);
     if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
     const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
     const existing = listPivotControlsForPivot(sheet, pivotId).find((entry) => entry.payload.kind === 'slicer' && entry.payload.fieldId === fieldId);
     if (existing) return;
-    const sourceRange = pivot.source.kind === 'worksheet-range' ? pivot.source.range : undefined;
-    const connectedPivotIds = sourceRange ? connectedPivotIdsForSource(this.runtime.model, pivot.target.sheetId, sourceRange) : [pivotId];
     const offset = listPivotControlsForPivot(sheet, pivotId).length;
     const control = buildPivotSlicerDrawing({
       drawingId: nextId('pivot-slicer'),
@@ -2814,7 +2823,6 @@ export class WorkbookSession {
       settings: { caption: pivot.fieldCatalog.fields.find((field) => field.fieldId === fieldId)?.name ?? 'Slicer' },
       transform: { x: 96, y: 96 + offset * 144, width: 188, height: 128 },
       zIndex: sheet.drawings.length,
-      connectedPivotIds,
     });
     this.runCommand('pivot.control.slicer.create', { sheetId: sheet.id, ...control });
     this.refresh();
@@ -2826,8 +2834,6 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(pivot.target.sheetId);
     const existing = listPivotControlsForPivot(sheet, pivotId).find((entry) => entry.payload.kind === 'timeline' && entry.payload.fieldId === fieldId);
     if (existing) return;
-    const sourceRange = pivot.source.kind === 'worksheet-range' ? pivot.source.range : undefined;
-    const connectedPivotIds = sourceRange ? connectedPivotIdsForSource(this.runtime.model, pivot.target.sheetId, sourceRange) : [pivotId];
     const offset = listPivotControlsForPivot(sheet, pivotId).length;
     const control = buildPivotTimelineDrawing({
       drawingId: nextId('pivot-timeline'),
@@ -2837,7 +2843,6 @@ export class WorkbookSession {
       fieldId,
       transform: { x: 312, y: 96 + offset * 96, width: 356, height: 72 },
       zIndex: sheet.drawings.length,
-      connectedPivotIds,
     });
     this.runCommand('pivot.control.timeline.create', { sheetId: sheet.id, ...control });
     this.refresh();
@@ -3721,9 +3726,6 @@ export class WorkbookSession {
     else this.removeShape(id);
   }
 
-  getConnectedPivotIds(sourceRange: RangeRef): string[] {
-    return connectedPivotIdsForSource(this.runtime.model, this.activeSheetId, sourceRange);
-  }
   getPivotFieldCatalog(range: RangeRef): PivotFieldDefinition[] {
     const pivot: PivotModel = {
       id: 'pivot-field-catalog',

@@ -196,7 +196,7 @@ function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): un
   return workbook.getSheets().flatMap((sheet) => sheet.drawings.map((drawing) => {
     const payload = sheet.drawingPayloads.get(drawing.payloadId);
     if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return undefined;
-    const linked = [payload.pivotId, ...(payload.connectedPivotIds ?? [])];
+    const linked = [payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)];
     return linked.includes(pivot.id) ? { drawingId: drawing.id, payload } : undefined;
   })).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
@@ -1352,8 +1352,8 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
   return result;
 }
 
-function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload): boolean {
-  const { fieldId, filter } = slicer;
+function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload, fieldId: string): boolean {
+  const { filter } = slicer;
   if (filter.mode === 'all') return true;
   const included = filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(row.values[fieldId] ?? null)));
   return filter.mode === 'include' ? included : !included;
@@ -1362,6 +1362,7 @@ function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload): boole
 interface LinkedPivotControl {
   drawingId: string;
   payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
+  fieldId: string;
 }
 
 function linkedPivotControls(workbook: WorkbookModel, pivot: PivotModel): LinkedPivotControl[] {
@@ -1369,13 +1370,13 @@ function linkedPivotControls(workbook: WorkbookModel, pivot: PivotModel): Linked
     if (drawing.kind !== 'slicer' && drawing.kind !== 'timeline') return [];
     const payload = sheet.drawingPayloads.get(drawing.payloadId);
     if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) return [];
-    const linked = [payload.pivotId, ...(payload.connectedPivotIds ?? [])];
-    return linked.includes(pivot.id) ? [{ drawingId: drawing.id, payload }] : [];
+    if (payload.pivotId === pivot.id) return [{ drawingId: drawing.id, payload, fieldId: payload.fieldId }];
+    const connection = payload.connections?.find((candidate) => candidate.pivotId === pivot.id);
+    return connection ? [{ drawingId: drawing.id, payload, fieldId: connection.fieldId }] : [];
   }));
 }
 
-function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, bounds: PivotTimelinePeriodBounds): boolean {
-  const fieldId = timeline.fieldId;
+function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, fieldId: string, bounds: PivotTimelinePeriodBounds): boolean {
   const raw = row.values[fieldId];
   if (raw == null || raw === '') return false;
   const instant = pivotTimelineInstant(raw);
@@ -1389,8 +1390,8 @@ function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: Pivo
   const slicers = controls.filter((entry): entry is LinkedPivotControl & { payload: PivotSlicerDrawingPayload } => entry.payload.kind === 'slicer');
   const timelines = controls.filter((entry): entry is LinkedPivotControl & { payload: PivotTimelineDrawingPayload } => entry.payload.kind === 'timeline');
   const timelineBounds = timelines.map((entry) => normalizePivotTimelinePeriod(entry.payload.period));
-  return rows.filter((row) => slicers.every((entry) => matchesSlicer(row, entry.payload))
-    && timelines.every((entry, index) => matchesTimeline(row, entry.payload, timelineBounds[index]!)));
+  return rows.filter((row) => slicers.every((entry) => matchesSlicer(row, entry.payload, entry.fieldId))
+    && timelines.every((entry, index) => matchesTimeline(row, entry.payload, entry.fieldId, timelineBounds[index]!)));
 }
 
 function slicerItemProjection(

@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
+import { WorkbookModel, createPivotCollator, isPivotError, normalizePivotRefreshPolicy, pivotSourceIdentity } from '@react-sheets/core-model';
 import type {
   PivotAggregateFunction,
   PivotDefinition,
@@ -330,7 +330,30 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
   if (projection.collision.status === 'collision') {
     throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
   }
+  assertPivotControlConnectionsRemainValid(context.workbook, current, next);
   Object.assign(pivot, next);
+}
+
+function assertPivotControlConnectionsRemainValid(workbook: WorkbookModel, current: PivotModel, replacement: PivotModel): void {
+  const findPivot = (id: string): PivotModel | undefined => id === current.id ? replacement : workbook.getSheets().flatMap((sheet) => sheet.pivots).find((candidate) => candidate.id === id);
+  const field = (pivot: PivotModel | undefined, fieldId: string) => pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === fieldId);
+  for (const sheet of workbook.getSheets()) for (const drawing of sheet.drawings) {
+    const payload = sheet.drawingPayloads.get(drawing.payloadId);
+    if (!payload || (payload.kind !== 'slicer' && payload.kind !== 'timeline')) continue;
+    const primary = findPivot(payload.pivotId);
+    const primaryField = field(primary, payload.fieldId);
+    if (!primary || !primaryField) throw new Error(`Pivot control ${drawing.id} references a field removed from Pivot ${payload.pivotId}`);
+    const sourceKey = pivotSourceIdentity(primary.source);
+    for (const connection of payload.connections ?? []) {
+      const target = findPivot(connection.pivotId);
+      const targetField = target ? field(target, connection.fieldId) : undefined;
+      if (!target || !targetField || connection.sourceKey !== sourceKey || pivotSourceIdentity(target.source) !== sourceKey
+        || targetField.ordinal !== primaryField.ordinal || targetField.name !== primaryField.name || targetField.dataType !== primaryField.dataType
+        || (payload.kind === 'timeline' && (primaryField.dataType !== 'date' || targetField.dataType !== 'date'))) {
+        throw new Error(`Pivot control ${drawing.id} has a stale connection; update Report Connections before changing Pivot ${current.id}`);
+      }
+    }
+  }
 }
 
 function previousPivotUpdate(pivot: PivotModel): PivotUpdateParams {
@@ -606,7 +629,7 @@ interface PivotRemovalPlan {
 function pivotDependentPayload(payload: DrawingPayload, pivotId: string): boolean {
   if (payload.kind === 'chart') return payload.pivotId === pivotId;
   if (payload.kind !== 'slicer' && payload.kind !== 'timeline') return false;
-  return payload.pivotId === pivotId || payload.connectedPivotIds?.includes(pivotId) === true;
+  return payload.pivotId === pivotId || payload.connections?.some((connection) => connection.pivotId === pivotId) === true;
 }
 
 function planPivotRemoval(context: CommandContext, pivotId: string, sheetId: string): PivotRemovalPlan {
@@ -625,10 +648,10 @@ function planPivotRemoval(context: CommandContext, pivotId: string, sheetId: str
       }
       if (payload.kind !== 'slicer' && payload.kind !== 'timeline') continue;
       const before = structuredClone(payload);
-      const connectedPivotIds = payload.connectedPivotIds?.filter((connectedPivotId) => connectedPivotId !== pivotId);
+      const connections = payload.connections?.filter((connection) => connection.pivotId !== pivotId);
       const after = structuredClone(payload);
-      if (connectedPivotIds?.length) after.connectedPivotIds = connectedPivotIds;
-      else delete after.connectedPivotIds;
+      if (connections?.length) after.connections = connections;
+      else delete after.connections;
       updates.push({ sheetId: sheet.id, payloadId: drawing.payloadId, before, after });
     }
   }
