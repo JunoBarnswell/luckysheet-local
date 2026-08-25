@@ -19,25 +19,29 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final String SCHEMA = "PivotDefinition";
     private static final String FIELD_CATALOG_SCHEMA = "PivotFieldCatalog";
     private static final Set<String> PIVOT_KEYS = Set.of(
-            "schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"
+            "schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
     );
     private static final Set<String> UPDATE_KEYS = Set.of(
-            "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata"
+            "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
     );
     private static final Set<String> SOURCE_KEYS = Set.of("kind", "range", "ranges", "relationships", "tableId", "name", "dataSourceId");
     private static final Set<String> TARGET_KEYS = Set.of("sheetId", "anchor");
     private static final Set<String> FIELD_KEYS = Set.of("fieldId", "name", "dataType", "ordinal", "values");
     private static final Set<String> LAYOUT_KEYS = Set.of(
             "rows", "columns", "filters", "values", "calculatedFields", "calculatedItems",
-            "showSubtotals", "showGrandTotals", "compact", "repeatLabels", "expansion"
+            "subtotalLocation", "showGrandTotals", "compact", "repeatLabels", "expansion"
     );
-    private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group");
+    private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group", "subtotal");
     private static final Set<String> VALUE_KEYS = Set.of(
             "fieldId", "summarizeBy", "displayName", "numberFormat", "baseFieldId", "baseItem", "showAs"
     );
     private static final Set<String> REFRESH_KEYS = Set.of("mode", "preserveFormatting", "refreshOnLoad");
     private static final Set<String> NATIVE_KEYS = Set.of(
             "cacheId", "cacheDefinitionPart", "cacheRecordsPart", "pivotTablePart", "fieldBindings", "preservedFeatures"
+    );
+    private static final Set<String> PRESENTATION_KEYS = Set.of("styleName", "styleOptions");
+    private static final Set<String> STYLE_OPTIONS_KEYS = Set.of(
+            "showRowHeaders", "showColumnHeaders", "showRowStripes", "showColumnStripes", "showLastColumn"
     );
     private static final Set<String> AGGREGATORS = Set.of(
             "sum", "count", "count-numbers", "average", "min", "max", "product", "stdev", "stdevp", "var", "varp", "distinct-count"
@@ -137,7 +141,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
 
     private ObjectNode updatedPivot(ObjectNode current, ObjectNode params) {
         ObjectNode next = current.deepCopy();
-        for (String property : List.of("source", "target", "fieldCatalog", "layout", "refreshPolicy", "nativeMetadata")) {
+        for (String property : List.of("source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata")) {
             JsonNode value = params.get(property);
             if (value != null) next.set(property, value.deepCopy());
         }
@@ -173,6 +177,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         Set<String> fieldIds = validateFieldCatalog(pivot.get("fieldCatalog"));
         validateLayout(root, pivot.get("layout"), fieldIds);
         validateRefreshPolicy(pivot.get("refreshPolicy"));
+        validatePresentation(pivot.get("presentation"));
         validateNativeMetadata(pivot.get("nativeMetadata"));
     }
 
@@ -277,7 +282,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         for (String key : List.of("rows", "columns", "filters", "values")) {
             if (!layout.path(key).isArray()) throw ServiceException.validation("Pivot layout " + key + " must be an array");
         }
-        for (String key : List.of("showSubtotals", "showGrandTotals", "compact", "repeatLabels")) {
+        if (!layout.path("subtotalLocation").isTextual() || !Set.of("top", "bottom", "off").contains(layout.path("subtotalLocation").asText())) {
+            throw ServiceException.validation("Pivot layout subtotalLocation is invalid");
+        }
+        for (String key : List.of("showGrandTotals", "compact", "repeatLabels")) {
             if (!layout.path(key).isBoolean()) throw ServiceException.validation("Pivot layout " + key + " must be a boolean");
         }
         for (JsonNode placement : layout.path("rows")) validatePlacement(placement, fieldIds, "Pivot row field");
@@ -296,6 +304,29 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         requireField(fieldIds, placement);
         validateSort(placement.get("sort"), fieldIds, label + " sort");
         validateGroup(placement.get("group"));
+        validateSubtotal(placement.get("subtotal"), label + " subtotal");
+    }
+
+    private void validateSubtotal(JsonNode raw, String label) {
+        if (raw == null || raw.isNull()) return;
+        if (!raw.isObject()) throw ServiceException.validation(label + " must be an object");
+        ObjectNode subtotal = (ObjectNode) raw;
+        String mode = SnapshotMutationSupport.text(subtotal, "mode");
+        switch (mode) {
+            case "automatic", "none" -> SnapshotMutationSupport.validateKnownKeys(subtotal, Set.of("mode"), label);
+            case "custom" -> {
+                SnapshotMutationSupport.validateKnownKeys(subtotal, Set.of("mode", "functions"), label);
+                ArrayNode functions = SnapshotMutationSupport.requiredArray(subtotal, "functions");
+                if (functions.isEmpty() || functions.size() > AGGREGATORS.size()) throw ServiceException.validation(label + " functions are invalid");
+                Set<String> unique = new LinkedHashSet<>();
+                for (JsonNode function : functions) {
+                    if (!function.isTextual() || !AGGREGATORS.contains(function.asText()) || !unique.add(function.asText())) {
+                        throw ServiceException.validation(label + " functions are invalid");
+                    }
+                }
+            }
+            default -> throw ServiceException.validation(label + " mode is invalid");
+        }
     }
 
     private void validateFilter(JsonNode raw, Set<String> fieldIds) {
@@ -465,6 +496,19 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if (metadata.has("preservedFeatures")) {
             ArrayNode features = SnapshotMutationSupport.requiredArray(metadata, "preservedFeatures");
             for (JsonNode feature : features) if (!feature.isTextual() || !Set.of("external-connection", "olap", "consolidation", "macro", "custom-xml", "slicer", "timeline").contains(feature.asText())) throw ServiceException.validation("Pivot nativeMetadata preserved feature is invalid");
+        }
+    }
+
+    private void validatePresentation(JsonNode raw) {
+        if (raw == null || raw.isNull()) return;
+        if (!raw.isObject()) throw ServiceException.validation("Pivot presentation must be an object");
+        ObjectNode presentation = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(presentation, PRESENTATION_KEYS, "Pivot presentation");
+        if (presentation.has("styleName")) SnapshotMutationSupport.text(presentation, "styleName");
+        ObjectNode options = requiredObject(presentation, "styleOptions", "Pivot presentation styleOptions");
+        SnapshotMutationSupport.validateKnownKeys(options, STYLE_OPTIONS_KEYS, "Pivot presentation styleOptions");
+        for (String key : STYLE_OPTIONS_KEYS) if (!options.path(key).isBoolean()) {
+            throw ServiceException.validation("Pivot presentation style option " + key + " must be a boolean");
         }
     }
 

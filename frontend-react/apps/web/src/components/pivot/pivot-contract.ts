@@ -9,6 +9,7 @@ import type {
   PivotSort,
   PivotValueField,
   PivotPresentation,
+  PivotSubtotalDefinition,
 } from '@react-sheets/core-model';
 import type { ReactNode } from 'react';
 
@@ -23,6 +24,7 @@ export type {
   PivotSort,
   PivotValueField,
   PivotPresentation,
+  PivotSubtotalDefinition,
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
@@ -87,6 +89,8 @@ export interface PivotPanelCallbacks {
   onFilterChange: (fieldId: string, filter: PivotManualFilterState) => void;
   onSortChange: (fieldId: string, sort: PivotSort | undefined) => void;
   onGroupChange: (fieldId: string, group: PivotGroup | undefined) => void;
+  onSubtotalChange?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
+  onSubtotalLocationChange?: (location: import('@react-sheets/core-model').PivotSubtotalLocation) => void;
   onRefresh: () => void;
   onLayoutChange: (layout: 'compact' | 'outline' | 'tabular') => void;
   onLayoutReplace: (layout: import('@react-sheets/core-model').PivotLayout) => void;

@@ -70,6 +70,39 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(result.rows[0]?.children[0]?.values[0]?.values[0], 10);
   });
 
+  it('keeps subtotal ownership per row field and expands custom subtotal functions', () => {
+    const workbook = new WorkbookModel('pivot-subtotals', 'Pivot Subtotals');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'City', 'Amount'], ['East', 'Boston', 10], ['East', 'Austin', 20], ['West', 'Seattle', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-subtotals', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const city = catalog.fields.find((field) => field.name === 'City')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [
+      { fieldId: region.fieldId, subtotal: { mode: 'none' } },
+      { fieldId: city.fieldId, subtotal: { mode: 'custom', functions: ['sum', 'average'] } },
+    ];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.subtotalLocation = 'bottom';
+    const result = computePivotResult(workbook, pivot);
+    const east = result.rows.find((node) => node.label === 'East')!;
+    assert.equal(east.subtotal, false);
+    assert.equal(east.children[0]?.subtotal, false);
+    assert.equal(result.valueFields?.length, 2);
+    assert.deepEqual(east.children.find((node) => node.label === 'Boston')?.values[0]?.values, [10, 10]);
+    const projection = buildPivotGridProjection(workbook, pivot, result);
+    const visibleSubtotalCells = projection.cells.filter((cell) => cell.kind === 'subtotal');
+    assert.equal(visibleSubtotalCells.length, 0);
+    pivot.layout.rows[0] = { fieldId: region.fieldId, subtotal: { mode: 'custom', functions: ['sum', 'average'] } };
+    const withOuterSubtotal = computePivotResult(workbook, pivot);
+    const eastSubtotal = withOuterSubtotal.rows.find((node) => node.label === 'East');
+    assert.equal(eastSubtotal?.subtotal, true);
+    assert.equal(withOuterSubtotal.valueFields?.length, 3);
+    assert.deepEqual(eastSubtotal?.values[0]?.values, [30, 15, 30]);
+  });
+
   it('keeps a root data row for Columns plus Values when Rows is empty', () => {
     const workbook = new WorkbookModel('pivot-columns-only', 'Pivot Columns Only');
     const sheet = workbook.getSheet('sheet-1');
@@ -218,7 +251,7 @@ describe('native PivotGridProjection contract', () => {
       layout: {
         rows: [{ fieldId: 'region' }], columns: [], filters: [],
         values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
-        showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false,
+        subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
       },
     };
