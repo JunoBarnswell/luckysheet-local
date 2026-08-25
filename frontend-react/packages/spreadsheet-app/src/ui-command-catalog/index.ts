@@ -13,7 +13,8 @@ export type RibbonCatalogTabId =
   | 'settings'
   | 'automate'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -53,7 +54,8 @@ export type RibbonGroupId =
   | 'appearanceFiles'
   | 'settings'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign';
 
 export type RibbonCommandId =
   | 'save'
@@ -196,7 +198,9 @@ export type RibbonCommandId =
   | 'settings'
   | 'commandPalette'
   | 'pivotRefresh'
-  | 'pivotFieldList';
+  | 'pivotFieldList'
+  | 'tableSheetFieldList'
+  | 'tableSheetColumnSettings';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -357,6 +361,7 @@ export interface RibbonCommandContext {
   /** Host-owned Create PivotTable dialog entry point. */
   openCreatePivotDialog?: () => void;
   activePivot?: { sheetId: string; pivotId: string };
+  activeTableSheet?: { sheetId: string; viewId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
@@ -472,6 +477,7 @@ export const RIBBON_TEXT = {
     settings: 'groups.settings',
     pivotAnalyze: 'groups.pivotAnalyze',
     pivotDesign: 'groups.pivotDesign',
+    tableSheetDesign: 'groups.tableSheetDesign',
   },
   commands: {
     save: 'commands.save',
@@ -565,6 +571,8 @@ export const RIBBON_TEXT = {
     pivotTable: 'commands.pivotTable',
     pivotRefresh: 'commands.pivotRefresh',
     pivotFieldList: 'commands.pivotFieldList',
+    tableSheetFieldList: 'commands.tableSheetFieldList',
+    tableSheetColumnSettings: 'commands.tableSheetColumnSettings',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
     shapesLines: 'commands.shapesLines',
@@ -666,6 +674,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('settings', 'settings', 10),
   group('pivotAnalyze', 'pivotAnalyze', 10),
   group('pivotDesign', 'pivotDesign', 10),
+  group('tableSheetDesign', 'tableSheetDesign', 10),
 ] as const;
 
 const ribbonSurface = (
@@ -1001,6 +1010,14 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('pivotFieldList', 'pivotDesign', 'pivotDesign', RIBBON_TEXT.commands.pivotFieldList, () => ({ type: 'panel.open', panel: 'pivot' }), 'table-pivot'),
     enabled: (context) => Boolean(context.activePivot),
+  },
+  {
+    ...intent('tableSheetFieldList', 'tableSheetDesign', 'tableSheetDesign', RIBBON_TEXT.commands.tableSheetFieldList, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeTableSheet),
+  },
+  {
+    ...intent('tableSheetColumnSettings', 'tableSheetDesign', 'tableSheetDesign', RIBBON_TEXT.commands.tableSheetColumnSettings, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
+    enabled: (context) => Boolean(context.activeTableSheet),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

@@ -13,6 +13,7 @@ import type {
   WorksheetModel,
   StructuralTransformParams,
   DefinedNameModel,
+  TableSheetDefinition,
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -77,6 +78,11 @@ export interface CommitTextParams {
 }
 
 export interface AddTableParams extends WorkbookTableModel {}
+
+export interface TableSheetUpdateParams {
+  sheetId: string;
+  definition: TableSheetDefinition;
+}
 
 export interface SetRangeValuesParams {
   sheetId: string;
@@ -387,6 +393,44 @@ function isSheetViewMutation(value: unknown): value is { sheetId: string; showGr
     && (value.zoom === undefined || (typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom > 0));
 }
 
+function isTableSheetColumn(value: unknown): value is TableSheetDefinition['columns'][number] {
+  if (!isRecord(value) || typeof value.fieldId !== 'string' || value.fieldId.trim().length === 0 || typeof value.caption !== 'string' || value.caption.trim().length === 0) return false;
+  if (value.widthPx !== undefined && (typeof value.widthPx !== 'number' || !Number.isFinite(value.widthPx) || value.widthPx <= 0)) return false;
+  if (value.type !== undefined && typeof value.type !== 'string') return false;
+  return value.formula === undefined || typeof value.formula === 'string';
+}
+
+function isTableSheetDefinition(value: unknown): value is TableSheetDefinition {
+  if (!isRecord(value) || typeof value.viewId !== 'string' || value.viewId.trim().length === 0 || !Array.isArray(value.columns) || !Array.isArray(value.grouping)) return false;
+  if (!value.columns.every(isTableSheetColumn)) return false;
+  const columnIds = new Set(value.columns.map((column) => column.fieldId));
+  if (columnIds.size !== value.columns.length) return false;
+  if (!value.grouping.every((group) => isRecord(group) && typeof group.fieldId === 'string' && columnIds.has(group.fieldId) && (group.collapsed === undefined || typeof group.collapsed === 'boolean'))) return false;
+  if (new Set(value.grouping.map((group) => group.fieldId)).size !== value.grouping.length) return false;
+  if (value.sortState !== undefined) {
+    if (!Array.isArray(value.sortState) || !value.sortState.every((sort) => isRecord(sort) && typeof sort.fieldId === 'string' && columnIds.has(sort.fieldId) && (sort.direction === 'asc' || sort.direction === 'desc'))) return false;
+    if (new Set(value.sortState.map((sort) => sort.fieldId)).size !== value.sortState.length) return false;
+  }
+  return true;
+}
+
+function normalizeTableSheetDefinition(workbook: WorkbookModel, params: TableSheetUpdateParams): TableSheetDefinition {
+  if (!isTableSheetDefinition(params.definition)) throw new Error('TableSheet definition is invalid');
+  const sheet = workbook.getSheet(params.sheetId);
+  if (sheet.kind !== 'table-sheet' || !sheet.tableSheet) throw new Error('TableSheet definition can only be updated on a table-sheet');
+  const table = workbook.dataModel.tables.get(params.definition.viewId);
+  if (!table) throw new Error(`TableSheet binding table is unavailable: ${params.definition.viewId}`);
+  const fieldIds = new Set(table.fields.map((field) => field.id));
+  if (params.definition.columns.length === 0 || params.definition.columns.some((column) => !fieldIds.has(column.fieldId))) throw new Error('TableSheet columns must reference fields from the binding table');
+  if (params.definition.grouping.some((group) => !fieldIds.has(group.fieldId)) || params.definition.sortState?.some((sort) => !fieldIds.has(sort.fieldId))) throw new Error('TableSheet grouping and sorting must reference binding-table fields');
+  return structuredClone(params.definition);
+}
+
+function tableSheetAffectedRange(workbook: WorkbookModel, params: { sheetId: string }): RangeRef[] {
+  const sheet = workbook.getSheet(params.sheetId);
+  return [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
+}
+
 function isFilterMutation(value: unknown): value is { sheetId: string; autoFilter: AutoFilterModel } {
   return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.autoFilter)
     && typeof value.autoFilter.sheetId === 'string' && isRange(value.autoFilter.range)
@@ -551,6 +595,21 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['sheet.remove'],
     },
   });
+  runtime.registry.registerMutation<TableSheetUpdateParams>({
+    id: 'tableSheet.update',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isTableSheetDefinition(item.params.definition)) throw new Error('Invalid tableSheet.update mutation payload');
+      const params = item.params as TableSheetUpdateParams;
+      const definition = normalizeTableSheetDefinition(context.workbook, params);
+      context.workbook.getSheet(params.sheetId).tableSheet = definition;
+    },
+    metadata: {
+      schema: { name: 'TableSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isTableSheetDefinition(value.definition) },
+      permission: { capability: 'table-sheet.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
+      inverseIds: ['tableSheet.update'],
+    },
+  });
 
   runtime.registry.registerCommand<{ id: string }>({
     id: 'sheet.remove',
@@ -605,6 +664,34 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         ],
         apply: () =>
           context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<TableSheetUpdateParams>({
+    id: 'tableSheet.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined;
+      if (sheet.kind !== 'table-sheet' || !previous) throw new Error('TableSheet definition can only be updated on a table-sheet');
+      const definition = normalizeTableSheetDefinition(context.workbook, params);
+      if (JSON.stringify(previous) === JSON.stringify(definition)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = tableSheetAffectedRange(context.workbook, params);
+      context.applyMutation({
+        id: 'tableSheet.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, definition },
+        affectedRanges,
+        inverse: [{
+          id: 'tableSheet.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, definition: previous },
+          affectedRanges,
+        }],
+        apply: () => { sheet.tableSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

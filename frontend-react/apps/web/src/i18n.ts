@@ -31,6 +31,7 @@ export type MessageKey =
   | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
+  | 'tableSheetDesign'
   | 'engineConnected'
   | 'searchWorkbook';
 
@@ -54,6 +55,7 @@ const textTranslations: Record<string, string> = {
   'Validate': '验证',
   'Print': '打印',
   'Tables': '数据表',
+  'TableSheet Designer': '集算表设计器',
   'History': '历史',
   'Clipboard': '剪贴板',
   'Font': '字体',

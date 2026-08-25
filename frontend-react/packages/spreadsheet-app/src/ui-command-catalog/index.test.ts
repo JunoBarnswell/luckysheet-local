@@ -122,6 +122,19 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(buildRibbonCommand('tableSheet', current)?.type, 'callback');
   });
 
+  it('exposes TableSheet Designer commands only for the active bound TableSheet', () => {
+    const withoutTableSheet = context();
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('tableSheetFieldList'), withoutTableSheet), false);
+    assert.equal(buildRibbonCommand('tableSheetColumnSettings', withoutTableSheet), undefined);
+
+    const withTableSheet = context({ activeTableSheet: { sheetId: 'sheet-table-1', viewId: 'table-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('tableSheetFieldList'), withTableSheet), true);
+    assert.deepEqual(buildRibbonCommand('tableSheetFieldList', withTableSheet), {
+      type: 'intent',
+      intent: { type: 'panel.open', panel: 'data' },
+    });
+  });
+
   it('honors phase and permission context before building a command', () => {
     const disabled = context({ disabled: true });
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), disabled), false);

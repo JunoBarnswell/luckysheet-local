@@ -18,6 +18,7 @@ import type {
   PivotGridProjection,
   PivotResultTree,
   RangeRef,
+  TableSheetDefinition,
   SheetTableModel,
   SparklineModel,
   WorkbookModel,
@@ -95,6 +96,7 @@ export interface PreviewRowSnapshot {
 
 /** Canvas-friendly sheet snapshot — single getCell path, no SheetView DTO */
 export interface CanvasSheetSnapshot {
+  kind?: WorksheetModel['kind'];
   id: string;
   name: string;
   columns: string[];
@@ -138,6 +140,7 @@ export interface CanvasSheetSnapshot {
   getFilterColorDomain: (column: number) => Array<{ target: 'cell' | 'font'; color: string }>;
   getFilterIconDomain: (column: number) => Array<{ iconSet: string; iconId: number }>;
   sheetTables: SheetTableModel[];
+  tableSheet?: TableSheetDefinition;
   tabColor?: string;
   hidden?: boolean;
   /** Print preview only — bounded slice */
@@ -342,6 +345,7 @@ export function buildCanvasSheetSnapshot(
 
   return {
     id: sheet.id,
+    kind: sheet.kind,
     name: sheet.name,
     columns: viewColumns,
     columnCount: sheet.columnCount,
@@ -405,6 +409,7 @@ export function buildCanvasSheetSnapshot(
       return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));
     },
     sheetTables: [...sheet.sheetTables],
+    tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
     previewRows,

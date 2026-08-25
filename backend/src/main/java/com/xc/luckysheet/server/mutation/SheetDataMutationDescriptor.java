@@ -22,7 +22,8 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             "autoFilter.set", "autoFilter.remove",
             "cf.add", "cf.remove", "cf.clear",
             "dv.add", "dv.remove", "banded.set", "outline.set",
-            "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set"
+            "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
+            "tableSheet.update"
     );
 
     SheetDataMutationDescriptor(String id) {
@@ -49,6 +50,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "banded.set" -> bandedRange(root, mutation.sheetId(), params);
             case "outline.set" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.add", "sheetTable.update" -> List.of(tableRange(root, mutation.sheetId(), params));
+            case "tableSheet.update" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.remove", "sheetTable.autoFilter.set" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         };
@@ -86,6 +88,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "banded.set" -> setBanded(root, sheet, mutation.sheetId(), params);
             case "outline.set" -> setOutline(root, sheet, mutation.sheetId(), params);
             case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params);
+            case "tableSheet.update" -> updateTableSheet(root, sheet, mutation.sheetId(), params);
             case "sheetTable.remove" -> removeSheetTable(sheet, params);
             case "sheetTable.autoFilter.set" -> setTableAutoFilter(root, sheet, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
@@ -312,6 +315,66 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, "sheetTables"), params);
     }
 
+    private void updateTableSheet(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+        SnapshotMutationSupport.requireEntitySheet(params, sheetId);
+        if (!"table-sheet".equals(sheet.path("kind").asText())) throw ServiceException.validation("TableSheet definition targets a non-TableSheet");
+        ObjectNode definition = SnapshotMutationSupport.requiredObject(params, "definition");
+        String viewId = SnapshotMutationSupport.text(definition, "viewId");
+        ObjectNode table = null;
+        for (JsonNode candidate : SnapshotMutationSupport.dataModelArray(root, "tables")) {
+            if (viewId.equals(candidate.path("id").asText()) && candidate.isObject()) {
+                table = (ObjectNode) candidate;
+                break;
+            }
+        }
+        if (table == null) throw ServiceException.validation("TableSheet binding table is unavailable: " + viewId);
+        Set<String> fieldIds = new java.util.HashSet<>();
+        for (JsonNode field : SnapshotMutationSupport.array(table, "fields")) {
+            fieldIds.add(SnapshotMutationSupport.text((ObjectNode) field, "id"));
+        }
+        ArrayNode columns = SnapshotMutationSupport.requiredArray(definition, "columns");
+        if (columns.isEmpty()) throw ServiceException.validation("TableSheet must expose at least one column");
+        Set<String> visibleIds = new java.util.HashSet<>();
+        for (JsonNode rawColumn : columns) {
+            if (!rawColumn.isObject()) throw ServiceException.validation("TableSheet column is invalid");
+            ObjectNode column = (ObjectNode) rawColumn;
+            String fieldId = SnapshotMutationSupport.text(column, "fieldId");
+            String caption = SnapshotMutationSupport.text(column, "caption");
+            if (!fieldIds.contains(fieldId) || !visibleIds.add(fieldId) || caption.isBlank()) throw ServiceException.validation("TableSheet column does not match its binding table");
+            JsonNode width = column.get("widthPx");
+            if (width != null && (!width.isNumber() || width.asDouble() <= 0)) throw ServiceException.validation("TableSheet column width is invalid");
+            JsonNode type = column.get("type");
+            if (type != null && !type.isTextual()) throw ServiceException.validation("TableSheet column type is invalid");
+            JsonNode formula = column.get("formula");
+            if (formula != null && !formula.isTextual()) throw ServiceException.validation("TableSheet column formula is invalid");
+        }
+        validateTableSheetFieldList(definition, visibleIds, "grouping");
+        JsonNode sortState = definition.get("sortState");
+        if (sortState != null) {
+            if (!sortState.isArray()) throw ServiceException.validation("TableSheet sortState is invalid");
+            Set<String> sortedIds = new java.util.HashSet<>();
+            for (JsonNode rawSort : sortState) {
+                if (!rawSort.isObject()) throw ServiceException.validation("TableSheet sort state is invalid");
+                String fieldId = SnapshotMutationSupport.text((ObjectNode) rawSort, "fieldId");
+                String direction = SnapshotMutationSupport.text((ObjectNode) rawSort, "direction");
+                if (!visibleIds.contains(fieldId) || !sortedIds.add(fieldId) || !(direction.equals("asc") || direction.equals("desc"))) throw ServiceException.validation("TableSheet sort state does not match its visible columns");
+            }
+        }
+        sheet.set("tableSheet", definition.deepCopy());
+    }
+
+    private void validateTableSheetFieldList(ObjectNode definition, Set<String> visibleIds, String property) {
+        ArrayNode entries = SnapshotMutationSupport.requiredArray(definition, property);
+        Set<String> ids = new java.util.HashSet<>();
+        for (JsonNode raw : entries) {
+            if (!raw.isObject()) throw ServiceException.validation("TableSheet " + property + " entry is invalid");
+            String fieldId = SnapshotMutationSupport.text((ObjectNode) raw, "fieldId");
+            if (!visibleIds.contains(fieldId) || !ids.add(fieldId)) throw ServiceException.validation("TableSheet " + property + " does not match its visible columns");
+            JsonNode collapsed = raw.get("collapsed");
+            if (collapsed != null && !collapsed.isBoolean()) throw ServiceException.validation("TableSheet grouping collapsed flag is invalid");
+        }
+    }
+
     private RangeRef existingTableRange(ObjectNode root, String sheetId, String tableId) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         ObjectNode table = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(sheet, "sheetTables"), tableId);
@@ -351,7 +414,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     }
 
     private static String protectionAction(String id) {
-        if (id.startsWith("sheetTable") || id.equals("sheet.reordered")) return "structure";
+        if (id.startsWith("sheetTable") || id.startsWith("tableSheet") || id.equals("sheet.reordered")) return "structure";
         if (id.startsWith("cf") || id.startsWith("dv") || id.equals("banded.set") || id.equals("outline.set")) return "format";
         return "edit-cell";
     }

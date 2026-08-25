@@ -25,6 +25,7 @@
   "automate": "自动化",
   "pivotAnalyze": "数据透视表分析",
   "pivotDesign": "数据透视表设计",
+  "tableSheetDesign": "集算表设计",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -274,7 +275,8 @@
       "appearanceFiles": "外观与文件",
       "settings": "设置",
       "pivotAnalyze": "数据透视表",
-      "pivotDesign": "数据透视表"
+      "pivotDesign": "数据透视表",
+      "tableSheetDesign": "集算表"
     },
     "commands": {
       "settings": "选项",
@@ -370,6 +372,8 @@
       "pivotTable": "透视表",
       "pivotRefresh": "刷新",
       "pivotFieldList": "字段列表",
+      "tableSheetFieldList": "字段列表",
+      "tableSheetColumnSettings": "列设置",
       "chartBuilder": "图表构建器",
       "sparkline": "迷你图",
       "shapesLines": "形状与线条",

@@ -27,6 +27,8 @@ import type {
   PivotModel,
   SparklineModel,
   DefinedNameModel,
+  DataRelationship,
+  TableSheetDefinition,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
@@ -50,6 +52,7 @@ import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
+import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
@@ -110,6 +113,8 @@ export interface FeatureSidebarProps {
   compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport: () => void;
   tables: readonly WorkbookTableModel[];
+  relationships: readonly DataRelationship[];
+  onUpdateTableSheet: (definition: TableSheetDefinition) => void;
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
   onCommand: (descriptor: CommandDescriptor) => void;
@@ -328,6 +333,8 @@ export function FeatureSidebar({
   compatibilityReport = null,
   onClearCompatibilityReport,
   tables,
+  relationships,
+  onUpdateTableSheet,
   onReadDataRows,
   onRemoveDataTable,
   onCommand,
@@ -369,7 +376,9 @@ export function FeatureSidebar({
   onRemoveHyperlink,
 }: FeatureSidebarProps) {
   const disabled = phase !== 'ready';
-  const activePanelLabel = localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
+  const activePanelLabel = sheet.tableSheet && activePanel === 'data'
+    ? localizeText(locale, 'TableSheet Designer')
+    : localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
 
   const columnLabelOf = (column: number): string => {
     let label = '';
@@ -602,7 +611,11 @@ export function FeatureSidebar({
           />
         ) : null}
         {phase === 'ready' && activePanel === 'data' ? (
-          <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
+          sheet.tableSheet ? (
+            <TableSheetDesignerPanel definition={sheet.tableSheet} tables={tables} relationships={relationships} onUpdate={onUpdateTableSheet} />
+          ) : (
+            <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
+          )
         ) : null}
       </Box>
     </Box>

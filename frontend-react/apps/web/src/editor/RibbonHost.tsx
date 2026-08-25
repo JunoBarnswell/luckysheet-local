@@ -54,6 +54,9 @@ export function RibbonHost({
       activePivot={state.activeContext.kind === "pivot"
         ? { sheetId: state.activeContext.sheetId, pivotId: state.activeContext.pivotId }
         : undefined}
+      activeTableSheet={state.activeContext.kind === "table-sheet"
+        ? { sheetId: state.activeContext.sheetId, viewId: state.activeContext.viewId }
+        : undefined}
       locale={locale}
       onCommand={dispatchCommand}
       onSessionIntent={dispatchSessionIntent}

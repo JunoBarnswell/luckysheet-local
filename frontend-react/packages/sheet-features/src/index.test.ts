@@ -58,6 +58,43 @@ test('sheet commands: cell.set, range.set, and undo/redo', () => {
   assert.equal(sheet.cells.get(0, 0)?.value, 'Title'); // untouched
 });
 
+test('TableSheet designer updates the canonical definition and rejects unknown fields', () => {
+  const workbook = new WorkbookModel('unit-table-sheet-designer', 'TableSheet Designer');
+  const table = {
+    id: 'table-1',
+    name: 'Orders',
+    sourceSheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 },
+    rowCount: 4,
+    fields: [
+      { id: 'order', name: 'Order', ordinal: 0, type: 'text' as const },
+      { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' as const },
+      { id: 'region', name: 'Region', ordinal: 2, type: 'text' as const },
+    ],
+    blockSize: 4096,
+    blocks: [],
+    revision: 0,
+  };
+  workbook.addTable(table);
+  const sheet = workbook.addAdvancedSheet({ id: 'table-sheet-1', name: 'Orders view', kind: 'table-sheet', tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const next = { viewId: table.id, columns: [
+    { fieldId: 'region', caption: 'Region', type: 'text' as const, widthPx: 180 },
+    { fieldId: 'amount', caption: 'Amount', type: 'number' as const },
+  ], grouping: [{ fieldId: 'region', collapsed: false }], sortState: [{ fieldId: 'amount', direction: 'desc' as const }] };
+  runtime.execute('tableSheet.update', { sheetId: sheet.id, definition: next });
+  assert.deepEqual(sheet.tableSheet, next);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.undo();
+  assert.equal(sheet.tableSheet?.columns.length, 3);
+  runtime.redo();
+  assert.equal(sheet.tableSheet?.columns[0]?.fieldId, 'region');
+  const before = structuredClone(sheet.tableSheet);
+  assert.throws(() => runtime.execute('tableSheet.update', { sheetId: sheet.id, definition: { ...next, columns: [{ fieldId: 'missing', caption: 'Missing' }], grouping: [] } }), /definition is invalid|binding table|fields/i);
+  assert.deepEqual(sheet.tableSheet, before);
+});
+
 test('sheet commands: range.clear, style.set, and merges', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd2', 'Commands2');
   const runtime = new CommandRuntime(workbook);

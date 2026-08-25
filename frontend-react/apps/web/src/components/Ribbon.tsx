@@ -113,6 +113,7 @@ export interface RibbonProps {
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
+  activeTableSheet?: { sheetId: string; viewId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
   canExecute?: (commandId: string, params?: unknown) => boolean;
@@ -260,6 +261,7 @@ export function Ribbon({
   onTabChange,
   phase,
   activePivot,
+  activeTableSheet,
   homeState,
   canExecute,
   commandPaletteOpen = false,
@@ -340,6 +342,7 @@ export function Ribbon({
     buildSortDescriptor,
     openCreatePivotDialog: onCreatePivotDialog,
     activePivot,
+    activeTableSheet,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
     sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
@@ -381,7 +384,10 @@ export function Ribbon({
     <RibbonLocaleContext.Provider value={locale}>
       <RibbonShell
         activeTab={activeTab}
-        contextualTabs={activePivot ? ['pivotAnalyze', 'pivotDesign'] : []}
+        contextualTabs={[
+          ...(activePivot ? ['pivotAnalyze', 'pivotDesign'] as const : []),
+          ...(activeTableSheet ? ['tableSheetDesign'] as const : []),
+        ]}
         disabled={disabled}
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}
         onTabChange={onTabChange}
