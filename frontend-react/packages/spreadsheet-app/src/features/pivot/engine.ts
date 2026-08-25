@@ -765,7 +765,25 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValue
 }
 
 function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotValueField[], showSubtotals: boolean, prefix: string[] = []): PivotResultNode[] {
-  if (depth >= placements.length) return [];
+  // A Pivot with no Row fields still owns one data row: the root aggregation
+  // crossing every Column path and Values placement. Grand Total is a
+  // separate axis total and must not stand in for this matrix row.
+  if (depth >= placements.length) {
+    if (placements.length !== 0 || depth !== 0) return [];
+    const path = ['__root__'];
+    return [{
+      nodeId: path[0],
+      path,
+      kind: 'leaf',
+      key: null,
+      label: 'Values',
+      depth: 0,
+      children: [],
+      values: resultCells(rows, columns, values, path),
+      subtotal: false,
+      sourceRowPaths: rows.flatMap((row) => row.paths),
+    }];
+  }
   const placement = placements[depth]!;
   return axisGroups(rows, [placement]).map((group) => {
     const fieldId = placement.fieldId;
