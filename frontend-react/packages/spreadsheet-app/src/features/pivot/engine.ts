@@ -35,6 +35,7 @@ import {
   PIVOT_RESULT_TREE_SCHEMA,
   DEFAULT_PIVOT_STYLE_OPTIONS,
   createPivotMemberKey,
+  formatPivotMember,
   pivotMemberKey,
   normalizePivotRefreshPolicy,
   pivotMemberKeyEquals,
@@ -109,7 +110,7 @@ const same = (left: PivotScalar, right: PivotScalar): boolean => {
   return left === right;
 };
 
-const display = (value: PivotScalar): string => value == null || value === '' ? '(blank)' : String(value);
+const display = (value: PivotScalar): string => formatPivotMember(value);
 
 function stableSerialize(value: unknown): string {
   if (value === undefined) return 'undefined';

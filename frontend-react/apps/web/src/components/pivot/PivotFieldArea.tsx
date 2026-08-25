@@ -2,6 +2,7 @@ import { Box, Button, CheckToggle, DropdownMenu, FieldDropZone, Icon, Inline, Se
 import type { DragEvent, ReactNode } from 'react';
 import {
   createPivotMemberKey,
+  formatPivotMember,
   type PivotAggregateFunction,
   pivotMemberKey,
   pivotMemberKeyEquals,
@@ -89,7 +90,7 @@ function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state
       </Select>
       {(field.values ?? []).map((value) => {
         const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, keyFor(value)));
-        return <CheckToggle key={pivotMemberKey(keyFor(value))} label={String(value)} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />;
+        return <CheckToggle key={pivotMemberKey(keyFor(value))} label={formatPivotMember(value)} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />;
       })}
     </Stack>
   );
