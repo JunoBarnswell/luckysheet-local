@@ -8,6 +8,7 @@ export {
   type DispatchOutcome,
   type ClipboardExecutionOutcome,
   type DispatchErrorCode,
+  type FindDialogParams,
   CommandDispatchError,
   type DefinedNameCommandInput,
   type UiSnapshot,
@@ -28,7 +29,7 @@ export { registerEditingFeatures, buildSelectionSnapshot, type SetSelectionParam
 export { registerDrawingFeature, DrawingRuntime } from './features/drawing/index';
 export { EditSession } from './edit-session';
 export { SelectionService, createInitialSelection, type SelectionState, type SelectionSnapshot } from './selection-service';
-export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey, SheetDialogState, MergeOperation } from './types';
+export type { HomeRibbonState, HomeSelectionValue, HomeStyleKey, SheetDialogState, MergeOperation, FindDialogMode } from './types';
 export { resolveContextHit, type ContextHitInput, type ContextTargetKind, type ResolvedContextHit } from './context';
 export {
   ShortcutRegistry,

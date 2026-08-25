@@ -59,6 +59,7 @@ export * from './outline-commands';
 export * from './outline-features';
 export * from './text-input';
 export * from './home-commands';
+export * from './find-replace';
 export * from './cell-template-commands';
 
 

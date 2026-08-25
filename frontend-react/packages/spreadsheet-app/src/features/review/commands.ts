@@ -70,6 +70,14 @@ export interface CommentRemoveParams {
   threadId: string;
 }
 
+export interface CommentUpdateParams {
+  sheetId: string;
+  threadId: string;
+  row: number;
+  column: number;
+  text: string;
+}
+
 export interface HyperlinkSetParams {
   sheetId: string;
   row: number;
@@ -143,6 +151,11 @@ const isCommentResolve = (value: unknown): value is CommentResolveParams => isRe
   && (value.resolvedAt === undefined || typeof value.resolvedAt === 'string');
 const isCommentRemove = (value: unknown): value is CommentRemoveParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId);
+const isCommentUpdate = (value: unknown): value is CommentUpdateParams => isRecord(value)
+  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.threadId)
+  && Number.isSafeInteger(value.row) && Number(value.row) >= 0
+  && Number.isSafeInteger(value.column) && Number(value.column) >= 0
+  && typeof value.text === 'string';
 const isHyperlinkSet = (value: unknown): value is HyperlinkSetParams => isRecord(value) && isCellPosition(value) && isCellHyperlink((value as Record<string, unknown>).hyperlink);
 const isHyperlinkRemove = (value: unknown): value is HyperlinkRemoveParams => isCellPosition(value);
 
@@ -209,6 +222,14 @@ function applyReviewMutation(mutationId: string, params: unknown, context: impor
     case 'comment.remove': {
       if (!isCommentRemove(params)) throw new Error('Invalid comment.remove parameters');
       if (!removeById(context.workbook.getSheet(params.sheetId).commentThreads, params.threadId)) throw new Error(`Comment thread not found: ${params.threadId}`);
+      return;
+    }
+    case 'comment.update': {
+      if (!isCommentUpdate(params)) throw new Error('Invalid comment.update parameters');
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
+      if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
+      thread.text = params.text;
       return;
     }
     case 'hyperlink.set': {
@@ -352,6 +373,23 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   },
     });
 
+  runtime.registry.registerMutation<CommentUpdateParams>({
+      id: 'comment.update',
+      handler: (item, context) => {
+    const params = item.params;
+    const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+    if (!thread) throw new Error(`Comment thread not found: ${params.threadId}`);
+    if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
+    thread.text = params.text;
+  },
+      metadata: {
+    schema: { name: 'CommentUpdateParams', validate: isCommentUpdate },
+    permission: { capability: 'review.comment' },
+    affectedRanges: { resolve: (params) => isCommentUpdate(params) ? cellRange(params.sheetId, params.row, params.column) : [], mode: 'exact' },
+    inversePolicy: { allowedMutationIds: ['comment.update'], minCount: 1, maxCount: 1 },
+  },
+    });
+
   runtime.registry.registerMutation<HyperlinkSetParams>({
       id: 'hyperlink.set',
       handler: (item, context) => {
@@ -469,6 +507,21 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
   });
   commandIds.push('comment.remove');
 
+  runtime.registry.registerCommand<CommentUpdateParams>({
+    id: 'comment.update',
+    execute: (params, context) => {
+      if (!isCommentUpdate(params)) throw new Error('Invalid comment.update parameters');
+      const thread = context.workbook.getSheet(params.sheetId).commentThreads.find((entry) => entry.id === params.threadId);
+      if (!thread) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = cellRange(params.sheetId, thread.row, thread.column);
+      if (thread.row !== params.row || thread.column !== params.column) throw new Error(`Comment thread ${params.threadId} moved before update`);
+      const previous: CommentUpdateParams = { sheetId: params.sheetId, threadId: params.threadId, row: thread.row, column: thread.column, text: thread.text };
+      context.applyMutation({ id: 'comment.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params, affectedRanges, inverse: [{ id: 'comment.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }], apply: () => applyReviewMutation('comment.update', params, context) });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+  commandIds.push('comment.update');
+
   runtime.registry.registerCommand<CommentReplyRemoveParams>({
     id: 'comment.reply.remove',
     execute: (params, context) => {
@@ -527,7 +580,7 @@ export function registerReviewFeature(runtime: CommandRuntime): SpreadsheetFeatu
     id: 'review',
     version: '1.0.0',
     commandIds,
-    mutationIds: ['note.set', 'note.remove', 'note.visibility', 'comment.add', 'comment.reply', 'comment.reply.remove', 'comment.resolve', 'comment.remove', 'hyperlink.set', 'hyperlink.remove'],
+    mutationIds: ['note.set', 'note.remove', 'note.visibility', 'comment.add', 'comment.reply', 'comment.reply.remove', 'comment.resolve', 'comment.remove', 'comment.update', 'hyperlink.set', 'hyperlink.remove'],
     ribbon: [...REVIEW_RIBBON_ENTRIES],
     permissions: ['review.comment', 'review.note', 'review.hyperlink'],
   };

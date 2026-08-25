@@ -72,6 +72,8 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'drawing.visibility.set': 'drawing',
   'drawing.rename': 'drawing',
   'comment.add': 'comment',
+  'comment.update': 'comment',
+  'find.replaced': 'cell-value',
   'pivot.layout.set': 'pivot-config',
 };
 
