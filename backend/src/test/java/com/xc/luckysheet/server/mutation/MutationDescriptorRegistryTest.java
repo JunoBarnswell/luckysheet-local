@@ -99,7 +99,7 @@ class MutationDescriptorRegistryTest {
     void acceptedMutationSurfaceIsExplicitAndAllOtherKnownMutationsRemainFailClosed() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
-                "cell.set", "cell.restore", "range.set", "range.paste", "range.clear", "range.clear.restore",
+                "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
@@ -108,7 +108,7 @@ class MutationDescriptorRegistryTest {
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
                 "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
-                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
+                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
@@ -118,6 +118,36 @@ class MutationDescriptorRegistryTest {
                 "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
         ), Set.copyOf(registry.acceptedIds()));
+    }
+
+    @Test
+    void tableSheetUpdateUsesTheBoundTableAndWholeSheetRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {
+                  "dataModel":{"tables":[{"id":"table-1","fields":[{"id":"name"},{"id":"amount"}]}]},
+                  "sheets":[{"id":"sheet-1","kind":"table-sheet","rowCount":20,"columnCount":5,"cells":{},
+                    "tableSheet":{"viewId":"table-1","columns":[{"fieldId":"name","caption":"Name"}],"grouping":[]}}
+                ]}
+                """);
+        var update = new OperationMutation("tableSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"table-1","columns":[{"fieldId":"amount","caption":"Amount","widthPx":120}],"grouping":[],"sortState":[{"fieldId":"amount","direction":"desc"}]}}
+                """));
+
+        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        assertEquals(1, prepared.affectedRanges().size());
+        assertEquals(0, prepared.affectedRanges().getFirst().startRow());
+        assertEquals(19, prepared.affectedRanges().getFirst().endRow());
+        assertEquals(0, prepared.affectedRanges().getFirst().startColumn());
+        assertEquals(4, prepared.affectedRanges().getFirst().endColumn());
+        var updated = registry.applyPublicMutations(snapshot, List.of(update));
+        assertEquals("amount", updated.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
+
+        var invalid = new OperationMutation("tableSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"table-1","columns":[{"fieldId":"missing","caption":"Missing"}],"grouping":[]}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+        assertEquals("name", snapshot.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
     }
 
     @Test

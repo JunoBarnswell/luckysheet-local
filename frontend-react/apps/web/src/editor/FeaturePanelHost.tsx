@@ -110,6 +110,8 @@ export function FeaturePanelHost({
           compatibilityReport={state.compatibilityReport}
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
           tables={state.tables}
+          relationships={state.relationships}
+          onUpdateTableSheet={(definition) => session.updateTableSheetDefinition(definition)}
           onReadDataRows={session.readDataTable.bind(session)}
           onRemoveDataTable={session.removeDataTable.bind(session)}
           onCommand={dispatchCommand}

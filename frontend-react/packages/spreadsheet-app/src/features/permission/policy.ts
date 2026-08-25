@@ -129,6 +129,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'extended.whatIf.scenario': 'script',
   'extended.whatIf.dataTable': 'script',
   'sheet.create.advanced': 'structure',
+  'tableSheet.update': 'structure',
   'cell.barcode.apply': 'format',
   'cell.image.apply': 'format',
   'dataChart.create': 'drawing',

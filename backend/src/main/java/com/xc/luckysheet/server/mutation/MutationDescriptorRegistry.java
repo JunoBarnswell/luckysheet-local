@@ -46,7 +46,7 @@ public class MutationDescriptorRegistry {
             "range.clear", "range.clear.restore", "range.paste", "range.set",
             "row.hidden", "row.resize", "row.unhidden", "rows.deleted", "rows.hidden.restore", "rows.inserted", "rows.permuted", "rows.unhidden.all",
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
-            "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
+            "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
             "style.set", "table.add", "table.remove", "view.set", "workbook.renamed", "workbook.restore"
     );
@@ -134,7 +134,7 @@ public class MutationDescriptorRegistry {
             throw ServiceException.forbidden("Workbook role " + descriptor.requiredRole().wireValue() + " is required for mutation " + mutation.id());
         }
         List<RangeRef> ranges = descriptor.affectedRanges(snapshot, mutation);
-        if (descriptor.checksProtection()) assertUnlocked(snapshot, ranges, descriptor.protectionAction());
+        if (descriptor.checksProtection() && role != WorkbookAclRole.OWNER) assertUnlocked(snapshot, ranges, descriptor.protectionAction());
         return new MutationPreparation(descriptor, ranges);
     }
 
@@ -349,7 +349,7 @@ public class MutationDescriptorRegistry {
                 if (!sheetId.equals(source.sheetId())) {
                     JsonNode sourceSnapshot = params.get("sourceSnapshot");
                     if (sourceSnapshot == null || !sourceSnapshot.isObject()) throw ServiceException.validation("Cross-sheet paste requires sourceSnapshot");
-                    applyPasteSnapshot(root, SnapshotMutationSupport.sheet(root, source.sheetId()), source.sheetId(), sourceSnapshot, List.of(source));
+                    applyPasteSnapshot(root, SnapshotMutationSupport.sheet(root, source.sheetId()), source.sheetId(), (ObjectNode) sourceSnapshot, List.of(source));
                 }
             }
         }

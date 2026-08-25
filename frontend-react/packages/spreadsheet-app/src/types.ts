@@ -14,7 +14,8 @@ export type RibbonTabId =
   | 'settings'
   | 'automate'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
@@ -131,7 +132,8 @@ export type ActiveContext =
   | { kind: 'none' }
   | { kind: 'pivot'; sheetId: string; pivotId: string }
   | { kind: 'drawing'; sheetId: string; drawingId: string }
-  | { kind: 'table'; sheetId: string; tableId: string };
+  | { kind: 'table'; sheetId: string; tableId: string }
+  | { kind: 'table-sheet'; sheetId: string; viewId: string };
 
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =

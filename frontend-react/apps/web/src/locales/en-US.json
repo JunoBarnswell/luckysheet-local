@@ -25,6 +25,7 @@
   "automate": "Automate",
   "pivotAnalyze": "PivotTable Analyze",
   "pivotDesign": "PivotTable Design",
+  "tableSheetDesign": "TableSheet Design",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -274,7 +275,8 @@
       "appearanceFiles": "Appearance & Files",
       "settings": "Settings",
       "pivotAnalyze": "PivotTable",
-      "pivotDesign": "PivotTable"
+      "pivotDesign": "PivotTable",
+      "tableSheetDesign": "TableSheet"
     },
     "commands": {
       "settings": "Options",
@@ -370,6 +372,8 @@
       "pivotTable": "Pivot Table",
       "pivotRefresh": "Refresh",
       "pivotFieldList": "Field List",
+      "tableSheetFieldList": "Field List",
+      "tableSheetColumnSettings": "Column Settings",
       "chartBuilder": "Chart Builder",
       "sparkline": "Sparkline",
       "shapesLines": "Shapes & Lines",

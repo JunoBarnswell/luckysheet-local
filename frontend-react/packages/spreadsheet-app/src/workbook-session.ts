@@ -33,6 +33,7 @@ import type {
   SheetDataRegion,
   SparklineModel,
   SparklineGroup,
+  TableSheetDefinition,
   WorkbookTableModel,
   WorkbookSnapshot,
   WorksheetModel,
@@ -277,6 +278,7 @@ export interface UiSnapshot extends DesignerState {
   persistenceChecksum: string;
   compatibilityReport: CompatibilityReport | null;
   tables: readonly WorkbookTableModel[];
+  relationships: readonly import('@react-sheets/core-model').DataRelationship[];
   dataSources: readonly DataSourceManifest[];
   definedNameModels: readonly DefinedNameModel[];
   cellStyleTemplates: readonly CellStyleTemplate[];
@@ -829,6 +831,7 @@ export class WorkbookSession {
       persistenceChecksum: this.persistenceChecksum,
       compatibilityReport: this.compatibilityReport,
       tables: [...this.runtime.model.dataModel.tables.values()].map((table) => structuredClone(table)),
+      relationships: [...this.runtime.model.dataModel.relationships.values()].map((relationship) => structuredClone(relationship)),
       dataSources: [...this.runtime.model.dataModel.sources.values()].map((source) => structuredClone(source)),
       definedNameModels: structuredClone(this.runtime.model.definedNameModels),
       cellStyleTemplates: this.runtime.model.listCellStyleTemplates(),
@@ -1352,6 +1355,22 @@ export class WorkbookSession {
       this.panels = { ...this.panels, active: 'pivot', open: true };
       this.ribbonTab = 'pivotAnalyze';
     } else if (this.ribbonTab === 'pivotAnalyze' || this.ribbonTab === 'pivotDesign') {
+      this.ribbonTab = 'home';
+    }
+    this.emit();
+  }
+
+  setActiveTableSheetContext(sheetId: string | null, viewId?: string): void {
+    const sheet = sheetId ? this.runtime.model.getSheet(sheetId) : undefined;
+    const next: ActiveContext = sheet && sheet.kind === 'table-sheet' && sheet.tableSheet
+      ? { kind: 'table-sheet', sheetId: sheet.id, viewId: viewId ?? sheet.tableSheet.viewId }
+      : { kind: 'none' };
+    if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
+    this.activeContext = next;
+    if (next.kind === 'table-sheet') {
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'tableSheetDesign';
+    } else if (this.ribbonTab === 'tableSheetDesign') {
       this.ribbonTab = 'home';
     }
     this.emit();
@@ -2212,12 +2231,19 @@ export class WorkbookSession {
   }
 
   selectSheet(sheetId: string): void {
-    this.runtime.model.getSheet(sheetId);
+    const sheet = this.runtime.model.getSheet(sheetId);
     this.activeSheetId = sheetId;
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
     this.formulaDraft = '';
-    this.activeContext = { kind: 'none' };
+    if (sheet.kind === 'table-sheet' && sheet.tableSheet) {
+      this.activeContext = { kind: 'table-sheet', sheetId: sheet.id, viewId: sheet.tableSheet.viewId };
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'tableSheetDesign';
+    } else {
+      this.activeContext = { kind: 'none' };
+      if (this.ribbonTab === 'tableSheetDesign') this.ribbonTab = 'home';
+    }
     this.runtime.drawing.deselect(sheetId);
     this.drawingSelectionMode = false;
     this.reconcileDrawingSessionState();
@@ -2277,6 +2303,12 @@ export class WorkbookSession {
     this.runCommand('sheet.create.advanced', { sheet, table, index: this.runtime.model.sheetOrder.length });
     this.selectSheet(id);
     this.notify(`${name}已创建`);
+  }
+
+  updateTableSheetDefinition(definition: TableSheetDefinition): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (sheet.kind !== 'table-sheet') throw new Error('TableSheet designer requires a table-sheet');
+    this.runCommand('tableSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
   applyBarcode(symbology: BarcodeSymbology = 'qr'): void {

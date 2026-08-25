@@ -32,7 +32,8 @@ export type RibbonTabId =
   | 'settings'
   | 'automate'
   | 'pivotAnalyze'
-  | 'pivotDesign';
+  | 'pivotDesign'
+  | 'tableSheetDesign';
 
 export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'file',
