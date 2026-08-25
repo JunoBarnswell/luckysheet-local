@@ -142,7 +142,7 @@ export function RibbonHost({
       onSetRecalculationMode={(mode: "automatic" | "manual") => session.setRecalculationMode(mode)}
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
-      onApplyBarcode={() => session.applyBarcode('qr')}
+      onApplyBarcode={(symbology) => session.openBarcodePanel(symbology)}
       onCreateDataChart={(type) => session.insertDataChart(type)}
       onCreateCamera={() => session.insertCamera()}
       onCreateFormControl={(type) => session.insertFormControl(type)}

@@ -31,7 +31,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
-import type { ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -104,7 +104,7 @@ export interface RibbonProps {
   onSetRecalculationMode: (mode: 'automatic' | 'manual') => void;
   onOpenDefinedNames: () => void;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
-  onApplyBarcode: () => void;
+  onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateDataChart: (type?: DataChartPlotType) => void;
   onCreateCamera: () => void;
   onCreateFormControl: (type?: FormControlType) => void;
@@ -455,6 +455,7 @@ export function Ribbon({
             renderCommand={renderHomeCommand}
         onInsertChart={onInsertChartType}
         onInsertDataChart={(type) => onCreateDataChart(type)}
+        onInsertBarcode={(symbology) => onApplyBarcode(symbology)}
             onInsertSparkline={onInsertSparklineType}
             onInsertShape={onInsertShapeType}
             onInsertFormControl={onCreateFormControl}

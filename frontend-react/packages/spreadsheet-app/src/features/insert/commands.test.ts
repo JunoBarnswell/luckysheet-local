@@ -32,12 +32,65 @@ describe('insert feature', () => {
     registerDrawingFeature(runtime);
     registerInsertCommands(runtime);
     workbook.getSheet('sheet-1').cells.set(0, 0, { value: '123456789012' });
-    runtime.execute('cell.barcode.apply', { sheetId: 'sheet-1', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], presentation: { kind: 'barcode', symbology: 'ean13', source: { kind: 'cell-value' }, options: { foreground: '#000000', background: '#ffffff', showText: true, quietZone: 2 } } });
+    runtime.execute('cell.barcode.apply', { sheetId: 'sheet-1', ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], presentation: { kind: 'barcode', symbology: 'ean13', source: { kind: 'cell-value' }, parameters: { symbology: 'ean13', includeCheckDigit: true }, options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 } } });
     assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.presentation?.kind, 'barcode');
+    const barcode = workbook.getSheet('sheet-1').cells.get(0, 0)?.presentation;
+    assert.equal(barcode?.kind === 'barcode' ? barcode.parameters.symbology : undefined, 'ean13');
+    assert.equal(barcode?.kind === 'barcode' ? barcode.options.labelPosition : undefined, 'below');
     runtime.execute('drawing.add.camera', { sheetId: 'sheet-1', drawing: { id: 'camera-1', sheetId: 'sheet-1', kind: 'camera', payloadId: 'camera-payload', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60 }, zIndex: 1 }, payload: { kind: 'camera', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, refreshPolicy: 'live' } });
     assert.equal(workbook.getSheet('sheet-1').drawingPayloads.get('camera-payload')?.kind, 'camera');
     const restored = WorkbookModel.fromSnapshot(workbook.snapshot());
+    const restoredBarcode = restored.getSheet('sheet-1').cells.get(0, 0)?.presentation;
+    assert.equal(restoredBarcode?.kind === 'barcode' ? restoredBarcode.parameters.symbology : undefined, 'ean13');
     assert.equal(restored.getSheet('sheet-1').drawingPayloads.get('camera-payload')?.kind, 'camera');
+  });
+
+  it('applies a barcode range atomically and restores every cell with one undo/redo entry', () => {
+    const workbook = new WorkbookModel('barcode-range-test', 'Barcode range');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'A-100' });
+    sheet.cells.set(0, 1, { value: 'B-200' });
+    runtime.execute('cell.barcode.apply', {
+      sheetId: 'sheet-1',
+      ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }],
+      presentation: {
+        kind: 'barcode', symbology: 'code93', source: { kind: 'cell-value' },
+        parameters: { symbology: 'code93', fullAscii: false, wideNarrowRatio: 2 },
+        options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+      },
+    });
+    assert.equal(sheet.cells.get(0, 0)?.presentation?.kind, 'barcode');
+    assert.equal(sheet.cells.get(0, 1)?.presentation?.kind, 'barcode');
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.cells.get(0, 0)?.presentation, undefined);
+    assert.equal(sheet.cells.get(0, 1)?.presentation, undefined);
+    assert.equal(runtime.redo(), true);
+    assert.equal(sheet.cells.get(0, 0)?.presentation?.kind, 'barcode');
+    assert.equal(sheet.cells.get(0, 1)?.presentation?.kind, 'barcode');
+  });
+
+  it('rejects an invalid cell before committing any part of a barcode range', () => {
+    const workbook = new WorkbookModel('barcode-rejection-test', 'Barcode rejection');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: '123456789012' });
+    sheet.cells.set(0, 1, { value: 'not-an-ean' });
+    assert.throws(() => runtime.execute('cell.barcode.apply', {
+      sheetId: 'sheet-1',
+      ranges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }],
+      presentation: {
+        kind: 'barcode', symbology: 'ean13', source: { kind: 'cell-value' },
+        parameters: { symbology: 'ean13', includeCheckDigit: true },
+        options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+      },
+    }), /invalid for ean13/);
+    assert.equal(sheet.cells.get(0, 0)?.presentation, undefined);
+    assert.equal(sheet.cells.get(0, 1)?.presentation, undefined);
   });
 
   it('creates and updates a canonical Data Chart with typed bindings and undo', () => {

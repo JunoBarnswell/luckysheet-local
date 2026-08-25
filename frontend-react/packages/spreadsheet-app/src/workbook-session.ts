@@ -387,6 +387,7 @@ export class WorkbookSession {
   private version = 0;
   private activeSheetId: string;
   private panels: PanelState = { active: 'inspector', open: false, dock: 'right' };
+  private barcodeDraftSymbology: BarcodeSymbology = 'qr';
   private backstage: BackstageState = { open: false, panel: 'info' };
   private ribbonTab: RibbonTabId = 'home';
   private formulaDraft = '';
@@ -524,7 +525,7 @@ export class WorkbookSession {
       this.inputMode = 'grid';
       this.focus = { mode: 'grid', target: 'grid' };
     }
-    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'shape')) {
+    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'barcode' || this.panels.active === 'shape')) {
       this.panels = { ...this.panels, open: false };
     }
     if (JSON.stringify(nextContext) !== JSON.stringify(previousContext)) {
@@ -2395,10 +2396,22 @@ export class WorkbookSession {
   }
 
   applyBarcode(symbology: BarcodeSymbology = 'qr'): void {
+    this.barcodeDraftSymbology = symbology;
     const ranges = this.selectionService.getState().ranges.map((range) => ({ ...range, sheetId: this.activeSheetId }));
-    this.runCommand('cell.barcode.apply', { sheetId: this.activeSheetId, ranges, presentation: { kind: 'barcode', symbology, source: { kind: 'cell-value' }, options: { foreground: '#111827', background: '#ffffff', showText: symbology !== 'qr' && symbology !== 'data-matrix', quietZone: 2 } } });
+    this.runCommand('cell.barcode.apply', { sheetId: this.activeSheetId, ranges, presentation: { kind: 'barcode', symbology, source: { kind: 'cell-value' }, parameters: { symbology }, options: { foreground: '#111827', background: '#ffffff', showText: symbology !== 'qr' && symbology !== 'data-matrix', labelPosition: symbology === 'qr' || symbology === 'data-matrix' ? 'none' : 'below', quietZone: 2 } } });
+    this.panels = { ...this.panels, active: 'barcode', open: true };
     this.notify('条形码已应用');
     this.refresh();
+  }
+
+  openBarcodePanel(symbology: BarcodeSymbology = 'qr'): void {
+    this.barcodeDraftSymbology = symbology;
+    this.panels = { ...this.panels, active: 'barcode', open: true };
+    this.refresh();
+  }
+
+  getBarcodeDraftSymbology(): BarcodeSymbology {
+    return this.barcodeDraftSymbology;
   }
 
   insertDataChart(type: DataChartPlotType = 'column'): void {
