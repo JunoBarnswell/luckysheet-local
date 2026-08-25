@@ -27,8 +27,17 @@ export async function exportXlsx(request: XlsxExportRequest): Promise<XlsxExport
   // because its source package contained the old opaque part.
   const emittedPackage = loadOpcPackageGraph(buffer, {}, request.fileName).packageGraph;
   const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
-  const snapshotFeatures = scanSnapshotFeatures(request.snapshot);
-  const packageFeatures = detectPackageFeatures(emittedPackage);
+  const canonicalCharts = request.snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)).filter((payload): payload is import('@react-sheets/core-model').ChartDrawingPayload => payload.kind === 'chart');
+  const sourceHasOpaqueCharts = sourcePackage ? Object.keys(sourcePackage.opaqueParts).some((name) => name.toLowerCase().includes('/charts/')) : false;
+  const allNativePivotCharts = canonicalCharts.length > 0 && canonicalCharts.every((payload) => Boolean(payload.pivotId) && ['column', 'bar', 'line', 'area'].includes(payload.chartType));
+  const snapshotFeatureSet = new Set(scanSnapshotFeatures(request.snapshot));
+  const packageFeatureSet = new Set(detectPackageFeatures(emittedPackage));
+  if (allNativePivotCharts && !sourceHasOpaqueCharts) {
+    snapshotFeatureSet.delete('charts');
+    packageFeatureSet.delete('charts');
+  }
+  const snapshotFeatures = [...snapshotFeatureSet];
+  const packageFeatures = [...packageFeatureSet];
   const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
   const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
   const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourceWorksheetDetections.map((entry) => entry.feature)])];

@@ -40,6 +40,7 @@ import {
   type XlsxZipLimits,
 } from './types';
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
+import { synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -279,6 +280,17 @@ export function exportSnapshotToOpcPackageGraph(
     snapshot,
     sheetPartById,
   });
+  const chartUpdate = synchronizeNativePivotCharts({
+    files: nativeUpdate.files,
+    relationships: nativeUpdate.relationships,
+    snapshot,
+    graph: nativeUpdate.graph,
+    sheetPartById,
+    displayCellsBySheetPart: nativeUpdate.displayCellsBySheetPart,
+  });
+  nativeUpdate.files = chartUpdate.files;
+  nativeUpdate.relationships = chartUpdate.relationships;
+  files.clear();
   for (const [name, data] of Object.entries(nativeUpdate.files)) files.set(name, data);
   const originalStylesXml = preserved && files.get(stylesPart) ? strFromU8(files.get(stylesPart)!) : undefined;
   const styleOutput = buildStyles(snapshot, originalStylesXml);
@@ -1347,6 +1359,7 @@ function buildWorksheetXml(
     const preservedNodes = new Map<string, XmlNode>();
     for (const node of originalRoot.children) {
       const name = localName(node.name);
+      if (name === 'drawing' && node.attrs['r:id'] && !drawingRelations.some((relation) => relation.id === node.attrs['r:id'])) continue;
       if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'controls' || name === 'extLst' || name === 'picture' || (name === 'tableParts' && !sheet.sheetTables?.length)) preservedNodes.set(name, node);
     }
     for (const name of ['drawing', 'legacyDrawing', 'oleObjects', 'controls', 'picture', 'tableParts']) {
@@ -1658,6 +1671,8 @@ function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPack
   for (const name of files.keys()) {
     if (name.startsWith('xl/drawings/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.drawing+xml');
+    } else if (name.startsWith('xl/charts/') && name.endsWith('.xml')) {
+      overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml');
     } else if (name.startsWith('xl/tables/') && name.endsWith('.xml')) {
       overrides.set(`/${name}`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml');
     } else if (name.startsWith('xl/pivotTables/') && name.endsWith('.xml')) {

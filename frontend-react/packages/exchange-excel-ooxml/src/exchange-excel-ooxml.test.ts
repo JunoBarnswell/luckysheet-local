@@ -300,8 +300,80 @@ describe('exchange-excel-ooxml', () => {
     for (const id of controlDrawingIds) delete controlSheet.drawingPayloads[id];
     const removedControls = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(withoutControls, output.packageGraph));
     const removedDrawing = removedControls.files['xl/drawings/drawing1.xml'];
-    assert.ok(removedDrawing);
-    assert.doesNotMatch(strFromU8(removedDrawing), /category[_-]slicer|date[_-]timeline/);
+    assert.ok(!removedDrawing || !/category[_-]slicer|date[_-]timeline/.test(strFromU8(removedDrawing)));
+  });
+
+  it('writes canonical PivotCharts as native chart parts linked to the PivotTable', async () => {
+    const workbook = new WorkbookModel('wb-native-pivot-chart', 'Native PivotChart');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Category' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 'A' });
+    sheet.cells.set(1, 1, { value: 10 });
+    sheet.cells.set(2, 0, { value: 'B' });
+    sheet.cells.set(2, 1, { value: 20 });
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'pivot-chart-1',
+      source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+      target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
+        { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
+        { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
+      ] },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    sheet.drawings.push({ id: 'pivot-chart-drawing', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 320, height: 220 }, zIndex: 1, payloadId: 'pivot-chart-payload' });
+    sheet.drawingPayloads.set('pivot-chart-payload', { kind: 'chart', chartId: 'pivot-chart-1', chartType: 'column', pivotId: 'pivot-chart-1', sourceRanges: [], elements: { hiddenData: 'show', title: 'Amounts', legend: { visible: true, position: 'bottom' } } });
+
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const chartParts = Object.keys(output.files).filter((name) => name.startsWith('xl/charts/react-pivot-chart-'));
+    assert.equal(chartParts.length, 1);
+    const chartXml = strFromU8(output.files[chartParts[0]!]!);
+    assert.match(chartXml, /<c:pivotSource>/);
+    assert.match(chartXml, /<c:barChart>/);
+    assert.match(chartXml, /PivotTable|pivot_chart_1/);
+    assert.match(strFromU8(output.files['xl/drawings/_rels/drawing1.xml.rels']!), /relationships\/chart/);
+    assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /<drawing r:id=/);
+    assert.match(strFromU8(output.files['[Content_Types].xml']!), /drawingml\.chart\+xml/);
+    assert.ok(scanSnapshotFeatures(workbook.snapshot()).includes('pivot-chart'));
+    const report = await exportXlsx({ snapshot: workbook.snapshot(), fileName: 'pivot-chart.xlsx', options: { compatibilityTarget: 'B' } });
+    assert.equal(report.report.issues.some((issue) => issue.feature === 'pivot-chart' && issue.status === 'editable'), true);
+    assert.equal(report.report.issues.some((issue) => issue.feature === 'charts' && issue.status === 'unsupported'), false);
+
+    for (const [type, xmlName] of [['bar', 'barDir val="bar"'], ['line', '<c:lineChart>'], ['area', '<c:areaChart>'] ] as const) {
+      const typed = structuredClone(workbook.snapshot());
+      const payload = typed.sheets[0]!.drawingPayloads['pivot-chart-payload'];
+      if (!payload || payload.kind !== 'chart') throw new Error('PivotChart test fixture is missing its chart payload');
+      payload.chartType = type;
+      const typedOutput = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(typed));
+      const typedChartPart = Object.keys(typedOutput.files).find((name) => name.startsWith('xl/charts/react-pivot-chart-'));
+      assert.ok(typedChartPart);
+      assert.match(strFromU8(typedOutput.files[typedChartPart!]!), new RegExp(xmlName.replace(/[<>]/g, '')));
+    }
+
+    const withoutChart = structuredClone(workbook.snapshot());
+    withoutChart.sheets[0]!.drawings = [];
+    withoutChart.sheets[0]!.drawingPayloads = {};
+    const removed = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(withoutChart, output.packageGraph));
+    assert.equal(Object.keys(removed.files).some((name) => name.startsWith('xl/charts/react-pivot-chart-')), false);
+    assert.doesNotMatch(strFromU8(removed.files['xl/worksheets/sheet1.xml']!), /<drawing r:id=/);
+  });
+
+  it('rejects unsupported native PivotChart types instead of emitting a fake chart', () => {
+    const workbook = new WorkbookModel('wb-native-pivot-chart-invalid', 'Invalid PivotChart');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'pivot-invalid-chart',
+      source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 } },
+      target: { sheetId: sheet.id, anchor: { row: 3, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'value', name: 'Value', dataType: 'number', ordinal: 0 }] },
+      layout: { rows: [], columns: [], filters: [], values: [{ fieldId: 'value', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+    });
+    sheet.drawings.push({ id: 'invalid-pivot-chart', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1, payloadId: 'invalid-pivot-chart' });
+    sheet.drawingPayloads.set('invalid-pivot-chart', { kind: 'chart', chartId: 'invalid-pivot-chart', chartType: 'pie', pivotId: 'pivot-invalid-chart', sourceRanges: [], elements: { hiddenData: 'show' } });
+    assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /unsupported native chart type/);
   });
 
   it('reads and rewrites native Pivot cache/table relationship graphs', async () => {
