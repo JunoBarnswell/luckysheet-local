@@ -29,6 +29,11 @@ interface CellEditorSetParams {
   editor?: CellEditorConfig;
 }
 
+export interface CheckboxToggleParams {
+  sheetId: string;
+  ranges: RangeRef[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -78,6 +83,35 @@ function isEditorSetParams(value: unknown): value is CellEditorSetParams {
     && (value.editor === undefined || isEditor(value.editor));
 }
 
+function isCheckboxToggleParams(value: unknown): value is CheckboxToggleParams {
+  return isRecord(value) && typeof value.sheetId === 'string'
+    && Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange);
+}
+
+/** Normalize the only values that can become an in-cell checkbox Boolean. */
+export function normalizeCheckboxCellValue(cell: CellData | undefined): boolean {
+  if (!cell) return false;
+  if (cell.formula !== undefined) throw new Error('Checkbox cannot be applied to a formula cell');
+  const value = cell.value;
+  if (typeof value === 'boolean') return value;
+  if (value === null) return false;
+  if (typeof value === 'number' && (value === 0 || value === 1)) return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toUpperCase();
+    if (normalized === 'TRUE') return true;
+    if (normalized === 'FALSE') return false;
+  }
+  throw new Error('Checkbox source value must be blank, Boolean, 0/1, TRUE, or FALSE');
+}
+
+function assertRangesWithinSheet(sheet: ReturnType<CommandContext['workbook']['getSheet']>, ranges: readonly RangeRef[]): void {
+  for (const range of ranges) {
+    if (range.sheetId !== sheet.id || range.startRow < 0 || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn >= sheet.columnCount) {
+      throw new Error('Checkbox range is outside worksheet bounds');
+    }
+  }
+}
+
 function normalizeRanges(sheetId: string, ranges: readonly RangeRef[]): RangeRef[] {
   return ranges.map((range) => {
     if (range.sheetId !== sheetId) throw new Error('Template range must target the active worksheet');
@@ -120,10 +154,12 @@ function editorAffectedRanges(params: CellEditorSetParams): RangeRef[] {
 
 function applyEditorMutation(params: CellEditorSetParams, context: CommandContext): void {
   const sheet = context.workbook.getSheet(params.sheetId);
+  assertRangesWithinSheet(sheet, params.ranges);
   for (const range of params.ranges) {
     for (let row = range.startRow; row <= range.endRow; row += 1) {
       for (let column = range.startColumn; column <= range.endColumn; column += 1) {
         const current = structuredClone(sheet.cells.get(row, column) ?? { value: null as CellData['value'] });
+        if (params.editor?.kind === 'checkbox') current.value = normalizeCheckboxCellValue(current);
         if (params.editor) current.editor = structuredClone(params.editor);
         else delete current.editor;
         sheet.cells.set(row, column, current);
@@ -208,6 +244,14 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
       if (!isEditorSetParams(params)) throw new Error('Invalid cell editor configuration');
       const ranges = normalizeRanges(params.sheetId, params.ranges);
       const sheet = context.workbook.getSheet(params.sheetId);
+      assertRangesWithinSheet(sheet, ranges);
+      if (params.editor?.kind === 'checkbox') {
+        for (const range of ranges) {
+          for (let row = range.startRow; row <= range.endRow; row += 1) {
+            for (let column = range.startColumn; column <= range.endColumn; column += 1) normalizeCheckboxCellValue(sheet.cells.get(row, column));
+          }
+        }
+      }
       const previous: Array<{ row: number; column: number; cell?: CellData }> = [];
       for (const range of ranges) {
         for (let row = range.startRow; row <= range.endRow; row += 1) {
@@ -232,6 +276,38 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
         apply: () => applyEditorMutation({ ...params, ranges }, context),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };
+    },
+  });
+  runtime.registry.registerCommand<CheckboxToggleParams>({
+    id: 'checkbox.toggle',
+    execute: (params, context) => {
+      if (!isCheckboxToggleParams(params)) throw new Error('Invalid checkbox toggle range');
+      const ranges = normalizeRanges(params.sheetId, params.ranges);
+      const sheet = context.workbook.getSheet(params.sheetId);
+      assertRangesWithinSheet(sheet, ranges);
+      const entries: Array<{ row: number; column: number; previous: CellData; next: CellData }> = [];
+      const seen = new Set<string>();
+      for (const range of ranges) {
+        for (let row = range.startRow; row <= range.endRow; row += 1) {
+          for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+            const key = `${row}:${column}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const previous = structuredClone(sheet.cells.get(row, column));
+            if (!previous?.editor || previous.editor.kind !== 'checkbox' || typeof previous.value !== 'boolean') throw new Error(`Cell ${row},${column} is not a canonical Boolean checkbox`);
+            entries.push({ row, column, previous, next: { ...previous, value: !previous.value } });
+          }
+        }
+      }
+      const affectedRanges = entries.map((entry) => ({ sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column }));
+      for (const entry of entries) {
+        const cellRange = { sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column };
+        context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, value: structuredClone(entry.next) }, affectedRanges: [cellRange],
+          inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.previous }, affectedRanges: [cellRange] }],
+          apply: () => sheet.cells.set(entry.row, entry.column, structuredClone(entry.next)),
+        });
+      }
+      return { operationId: context.operationId, mutationCount: entries.length, affectedRanges };
     },
   });
   runtime.registry.registerCommand<ApplyCellStyleTemplateParams>({

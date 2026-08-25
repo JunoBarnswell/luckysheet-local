@@ -97,7 +97,6 @@ export interface CanvasInteractionOptions {
   }) => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
-  onCommitCell: (value: string) => void;
   onBeginEdit: (initialText?: string) => void;
   onCancelEdit: () => void;
   onCommitEdit: (moveAfter?: "down" | "up" | "left" | "right" | "none") => void;
@@ -115,6 +114,7 @@ export interface CanvasInteractionOptions {
   onFillRange: (target: CanvasFillPreview) => void;
   onExitDrawingSelectionMode?: () => void;
   onFloatingSelect: (hit: FloatingHit | null, mode?: "replace" | "add" | "toggle") => void;
+  onToggleCheckbox: (ranges: RangeRef[]) => void;
   onFloatingMove: (drawingId: string, bounds: Rect, rotation?: number) => void;
   onToggleOutline?: (groupId: string) => void;
   onShortcut?: (id: string) => boolean;
@@ -233,12 +233,12 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     onCancelEdit,
     onCancelFormatPainter,
     onCommitEdit,
-    onCommitCell,
     onExitDrawingSelectionMode,
     onExtendSelection,
     onFillRange,
     onFloatingMove,
     onFloatingSelect,
+    onToggleCheckbox,
     onFormulaDraftChange,
     onJumpEdge,
     onMovePrimary,
@@ -566,6 +566,35 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     if (pivotContextHit) onPivotContextHit?.(pivotContextHit);
     if (!hitCell) return;
     const cell = resolveMergedCell(sheet, hitCell);
+    const checkboxRect = skeleton.getCellRect(cell.row, cell.column);
+    const contentPoint = engine.localToContent(local);
+    const checkboxSize = checkboxRect ? Math.min(14, Math.max(10, checkboxRect.height - 8)) : 0;
+    const checkboxHit = Boolean(checkboxRect && sheet.getCell(cell.row, cell.column)?.editor?.kind === 'checkbox'
+      && contentPoint.x >= checkboxRect.x + 2
+      && contentPoint.x <= checkboxRect.x + 6 + checkboxSize
+      && contentPoint.y >= checkboxRect.y + (checkboxRect.height - checkboxSize) / 2 - 2
+      && contentPoint.y <= checkboxRect.y + (checkboxRect.height + checkboxSize) / 2 + 2);
+    if (checkboxHit) {
+      const checkboxRange = { sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column };
+      const additive = event.ctrlKey || event.metaKey;
+      const extend = event.shiftKey && !additive;
+      if (additive) {
+        onSelectionChange({ ...selection, ranges: [...selection.ranges, checkboxRange], primaryRangeIndex: selection.ranges.length, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
+      } else if (extend) {
+        const range = {
+          ...checkboxRange,
+          startRow: Math.min(selection.anchorCell.row, cell.row),
+          endRow: Math.max(selection.anchorCell.row, cell.row),
+          startColumn: Math.min(selection.anchorCell.column, cell.column),
+          endColumn: Math.max(selection.anchorCell.column, cell.column),
+        };
+        onSelectionChange({ ...selection, ranges: [range], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column } });
+      } else {
+        onSelectionChange({ ranges: [checkboxRange], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
+      }
+      onToggleCheckbox([checkboxRange]);
+      return;
+    }
     const filterButton = sheet.filterButtons.find((button) => button.row === hitCell.row && button.column === hitCell.column);
     if (filterButton) {
       const cellRect = skeleton.getCellRect(hitCell.row, hitCell.column);
@@ -597,7 +626,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       onSelectionChange({ ranges: [{ sheetId, startRow: cell.row, endRow: cell.row, startColumn: cell.column, endColumn: cell.column }], primaryRangeIndex: 0, activeCell: { row: cell.row, column: cell.column }, anchorCell: { row: cell.row, column: cell.column } });
     }
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [containerRef, drawingSelectionMode, drawings, editingCell, engineRef, filterPopoverAnchor, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotResolve, onSelectAll, onSelectionChange, onToggleOutline, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll]);
+  }, [containerRef, drawingSelectionMode, drawings, editingCell, engineRef, filterPopoverAnchor, floatables, localPointOf, onBeginEdit, onCommitEdit, onFloatingSelect, onPivotContextHit, onPivotResolve, onSelectAll, onSelectionChange, onToggleCheckbox, onToggleOutline, phase, selection, setFillPreview, setFilterPopover, setValidationDropdown, sheet, sheetId, skeleton, stopAutoScroll]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
     const engine = engineRef.current;
@@ -765,8 +794,8 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
     const cell = resolveMergedCell(sheet, hitCell);
     const editor = sheet.getCell(cell.row, cell.column)?.editor;
     if (editor?.kind === 'checkbox') {
-      const current = sheet.getCell(cell.row, cell.column)?.value;
-      onCommitCell(String(current).toUpperCase() === 'TRUE' ? 'FALSE' : 'TRUE');
+      // Checkbox activation is owned by the glyph pointer and Spacebar. A
+      // double-click never re-enters the generic text editor.
       return;
     }
     const validationList = getValidationList(cell.row, cell.column);
@@ -839,7 +868,21 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       return;
     }
     if (shortcut && onShortcut?.(shortcut.id)) { event.preventDefault(); return; }
-    if (key === "Enter") { event.preventDefault(); if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit); else onBeginEdit(); return; }
+    const checkboxRanges = selection.ranges.filter((range) => {
+      for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+        if (sheet.getCell(row, column)?.editor?.kind !== 'checkbox') return false;
+      }
+      return true;
+    });
+    const checkboxSelection = checkboxRanges.length === selection.ranges.length && checkboxRanges.length > 0;
+    if (key === ' ' && checkboxSelection) { event.preventDefault(); onToggleCheckbox(selection.ranges); return; }
+    if (key === "Enter") {
+      event.preventDefault();
+      if (checkboxSelection) onMovePrimary(1, 0);
+      else if (activePivotContextHit) onPivotContextHit?.(activePivotContextHit);
+      else onBeginEdit();
+      return;
+    }
     const moves: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1], Tab: [0, event.shiftKey ? -1 : 1] };
     if (key in moves && !ctrl) { event.preventDefault(); const [dr, dc] = moves[key]!; onMovePrimary(dr, dc, { extend: event.shiftKey }); return; }
     if (key in moves && ctrl) { event.preventDefault(); const direction = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "ArrowLeft" ? "left" : "right"; onJumpEdge(direction, event.shiftKey); return; }
@@ -857,7 +900,7 @@ export function useCanvasInteraction(options: CanvasInteractionOptions) {
       else if (editingCell || editingActiveRef.current) onAppendFormulaDraft?.(key);
       else { editingActiveRef.current = true; onBeginEdit(key); }
     }
-  }, [canRepeat, containerRef, contextRangeRef, drawingSelectionMode, editingCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onCancelEdit, onCancelFormatPainter, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotResolve, onShortcut, onToggleAbsolute, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton]);
+  }, [canRepeat, containerRef, contextRangeRef, drawingSelectionMode, editingCell, formatPainterActive, formulaDraft, onAppendFormulaDraft, onBeginEdit, onCancelEdit, onCancelFormatPainter, onCommitEdit, onExitDrawingSelectionMode, onFormulaDraftChange, onJumpEdge, onMovePrimary, onPivotContextHit, onPivotResolve, onShortcut, onToggleAbsolute, onToggleCheckbox, phase, selectedFloatingId, selection, setContextHit, setContextMenu, sheet, sheetId, skeleton]);
 
   return {
     clearTransientSelection,

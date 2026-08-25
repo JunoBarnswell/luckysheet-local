@@ -186,7 +186,7 @@ export function drawCellLayer(options: PaneDrawOptions): void {
         if (cell.presentation?.kind === 'barcode') drawBarcodePresentation(context, spanRect, resolveDisplayText(cell), cell.presentation);
         else if (cell.presentation?.kind === 'image') drawCellImagePresentation(context, spanRect, cell.presentation);
         else drawCellValue(context, skeleton, options, address, cell, spanRect);
-        if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, cell.value === true || String(cell.value).toUpperCase() === 'TRUE');
+        if (cell.editor?.kind === 'checkbox') drawCheckboxEditor(context, spanRect, typeof cell.value === 'boolean' ? cell.value : undefined);
         if (cell.overlay?.icon) drawTrendIcon(context, spanRect, cell.overlay.icon);
       }
     }
@@ -294,17 +294,17 @@ function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect
   context.restore();
 }
 
-function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, checked: boolean): void {
+function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, checked: boolean | undefined): void {
   const size = Math.min(14, Math.max(10, rect.height - 8));
   const x = rect.x + 4;
   const y = rect.y + (rect.height - size) / 2;
   context.save();
-  context.fillStyle = '#ffffff';
-  context.strokeStyle = checked ? '#217345' : '#94a3b8';
+  context.fillStyle = checked === undefined ? '#fff7ed' : '#ffffff';
+  context.strokeStyle = checked === undefined ? '#c2410c' : checked ? '#217345' : '#94a3b8';
   context.lineWidth = 1;
   context.fillRect(x, y, size, size);
   context.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
-  if (checked) {
+  if (checked === true) {
     context.strokeStyle = '#217345';
     context.lineWidth = 2;
     context.beginPath();
@@ -312,6 +312,12 @@ function drawCheckboxEditor(context: CanvasRenderingContext2D, rect: Rect, check
     context.lineTo(x + size / 2 - 1, y + size - 3);
     context.lineTo(x + size - 2, y + 3);
     context.stroke();
+  } else if (checked === undefined) {
+    context.fillStyle = '#c2410c';
+    context.font = `${Math.max(8, size - 2)}px sans-serif`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('?', x + size / 2, y + size / 2 + 0.5);
   }
   context.restore();
 }
