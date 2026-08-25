@@ -17,7 +17,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { isDynamicFilterType } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, isDynamicFilterType } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
@@ -236,6 +236,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
     sheets,
   };
   applyReactSheetsMetadata(snapshot, files[REACT_SHEETS_METADATA_PART], loaded.packageGraph);
+  assertCanonicalWorkbookSnapshot(snapshot);
   applyPrintDefinedNames(snapshot);
   attachNativePivots(snapshot, loaded.packageGraph.nativePivotGraph, loaded.packageGraph.sheetPartById);
   return { packageGraph: loaded.packageGraph, snapshot, features: detectPackageFeatures(loaded.packageGraph, snapshot) };

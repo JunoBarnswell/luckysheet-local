@@ -84,6 +84,24 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(exported.fileName, 'roundtrip.xlsx');
   });
 
+  it('rejects custom metadata drawing ranges that exceed bounded render work', async () => {
+    const workbook = new WorkbookModel('wb-malicious-metadata', 'Malicious metadata');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.drawings.push({
+      id: 'camera', sheetId: sheet.id, kind: 'camera', payloadId: 'camera', anchor: { kind: 'absolute' },
+      transform: { x: 0, y: 0, width: 100, height: 100 }, zIndex: 0,
+    });
+    sheet.drawingPayloads.set('camera', {
+      kind: 'camera', sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 999_999, startColumn: 0, endColumn: 999_999 }, refreshPolicy: 'live',
+    });
+    const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
+
+    await assert.rejects(
+      importXlsx({ fileName: 'malicious.xlsx', buffer, options: { compatibilityTarget: 'B' } }),
+      /Camera source range/,
+    );
+  });
+
   it('materializes icon filter metadata from the numeric cells in its conditional-format range', async () => {
     const workbook = new WorkbookModel('wb-icon-filter', 'Icon Filter');
     const sheet = workbook.getSheet(workbook.primarySheetId);

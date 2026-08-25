@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -41,7 +42,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
             case "drawing.transform" -> transform(sheet, params);
             case "drawing.transform.batch" -> transformBatch(sheet, params);
             case "drawing.anchor" -> anchor(root, sheet, mutation.sheetId(), params);
-            case "drawing.payload.update" -> payload(sheet, params);
+            case "drawing.payload.update" -> payload(root, sheet, params);
             case "drawing.zorder" -> zOrder(sheet, params);
             case "drawing.zorder.restore" -> restoreZOrder(sheet, params);
             default -> throw ServiceException.validation("Unsupported drawing mutation: " + id());
@@ -108,12 +109,12 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         drawing.set("anchor", anchor.deepCopy());
     }
 
-    private void payload(ObjectNode sheet, ObjectNode params) {
+    private void payload(ObjectNode root, ObjectNode sheet, ObjectNode params) {
         String payloadId = SnapshotMutationSupport.text(params, "payloadId");
         ObjectNode before = SnapshotMutationSupport.requiredObject(params, "before");
         ObjectNode after = SnapshotMutationSupport.requiredObject(params, "after");
         ObjectNode drawing = drawingByPayload(sheet, payloadId);
-        validatePayloadPair(drawing, after);
+        validatePayloadPair(root, drawing, after);
         ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
         JsonNode current = payloads.get(payloadId);
         if (current == null || !current.isObject()) throw ServiceException.notFound("Drawing payload not found: " + payloadId);
@@ -180,10 +181,10 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         validateTransformObject(drawing.path("transform"));
         JsonNode zIndex = drawing.get("zIndex");
         if (zIndex == null || !zIndex.isNumber() || !Double.isFinite(zIndex.asDouble())) throw ServiceException.validation("Drawing zIndex is invalid");
-        validatePayloadPair(drawing, payload);
+        validatePayloadPair(root, drawing, payload);
     }
 
-    private void validatePayloadPair(ObjectNode drawing, ObjectNode payload) {
+    private void validatePayloadPair(ObjectNode root, ObjectNode drawing, ObjectNode payload) {
         String drawingKind = SnapshotMutationSupport.text(drawing, "kind");
         String payloadKind = SnapshotMutationSupport.text(payload, "kind");
         if (!Set.of("image", "shape", "textbox", "chart", "data-chart", "camera", "form-control", "slicer", "timeline").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
@@ -191,6 +192,16 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
         if (payloadKind.equals("chart") && !SnapshotMutationSupport.text(drawing, "payloadId").equals(SnapshotMutationSupport.text(payload, "chartId"))) {
             throw ServiceException.validation("Chart payload identity does not match drawing payloadId");
+        }
+        if (payloadKind.equals("camera")) {
+            ObjectNode range = SnapshotMutationSupport.requiredObject(payload, "sourceRange");
+            SnapshotMutationSupport.range(root, range);
+            long rows = (long) range.path("endRow").intValue() - range.path("startRow").intValue() + 1;
+            long columns = (long) range.path("endColumn").intValue() - range.path("startColumn").intValue() + 1;
+            if (rows > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS || columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS
+                    || rows * columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS) {
+                throw ServiceException.validation("Camera source range exceeds the rendering limit");
+            }
         }
     }
 

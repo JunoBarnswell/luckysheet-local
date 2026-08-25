@@ -1,6 +1,7 @@
 import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
+import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -31,6 +32,7 @@ export interface WorkbookDimensionMetrics {
 }
 
 export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 5 as const;
+export { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -194,6 +196,14 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
       throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
     }
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
+    }
+  }
+  const dataChartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)
+    .filter((payload) => payload.kind === 'data-chart').map((payload) => payload.tableId)));
+  for (const table of snapshot.dataModel.tables) {
+    if (table.sourceRange && dataChartTableIds.has(table.id)) validateDrawingSourceRange(table.sourceRange, snapshot, 'Data chart table');
   }
   const canonical = structuredClone(snapshot);
   canonical.cellStyleTemplates ??= [];
@@ -212,6 +222,21 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+function validateDrawingSourceRange(range: RangeRef, snapshot: WorkbookSnapshot, label: string): void {
+  const sheet = snapshot.sheets.find((candidate) => candidate.id === range.sheetId);
+  const validCoordinates = [range.startRow, range.endRow, range.startColumn, range.endColumn]
+    .every((coordinate) => Number.isSafeInteger(coordinate) && coordinate >= 0);
+  if (!sheet || !validCoordinates || range.startRow > range.endRow || range.startColumn > range.endColumn
+    || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) {
+    throw new Error(`${label} source range is outside its worksheet bounds`);
+  }
+  const rows = range.endRow - range.startRow + 1;
+  const columns = range.endColumn - range.startColumn + 1;
+  if (rows > MAX_DRAWING_SOURCE_CELLS || columns > MAX_DRAWING_SOURCE_CELLS || rows * columns > MAX_DRAWING_SOURCE_CELLS) {
+    throw new Error(`${label} source range exceeds the ${MAX_DRAWING_SOURCE_CELLS}-cell rendering limit`);
+  }
 }
 
 function rangesOverlap(left: RangeRef, right: RangeRef): boolean {

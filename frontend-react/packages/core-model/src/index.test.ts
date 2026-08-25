@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CellMatrix, WorkbookModel } from './index';
+import { assertCanonicalWorkbookSnapshot, CellMatrix, WorkbookModel } from './index';
+
+test('canonical snapshots bound drawing source work', () => {
+  const workbook = new WorkbookModel('unit-drawing-ranges', 'Drawing ranges');
+  const snapshot = workbook.snapshot();
+  const sheet = snapshot.sheets[0]!;
+  sheet.rowCount = 1_000;
+  sheet.columnCount = 1_000;
+  sheet.drawingPayloads.camera = {
+    kind: 'camera',
+    sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 9, startColumn: 0, endColumn: 9 },
+    refreshPolicy: 'live',
+  };
+  assert.doesNotThrow(() => assertCanonicalWorkbookSnapshot(snapshot));
+
+  sheet.drawingPayloads.camera.sourceRange.endRow = 999;
+  sheet.drawingPayloads.camera.sourceRange.endColumn = 999;
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /rendering limit/);
+});
 
 test('CellMatrix keeps empty logical space sparse', () => {
   const matrix = new CellMatrix();
