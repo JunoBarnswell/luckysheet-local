@@ -5,7 +5,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerPivotFeature } from './index';
 import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
-import { computePivotResult, getPivotRevisionKey } from './engine';
+import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './engine';
 import { buildPivotWriteback } from './writeback';
 
 function seedCrossSheetWorkbook(): WorkbookModel {
@@ -18,6 +18,38 @@ function seedCrossSheetWorkbook(): WorkbookModel {
 function pivotDefinition(): ReturnType<typeof buildPivotModel> {
   const workbook = seedCrossSheetWorkbook();
   return buildPivotModel(workbook, 'sheet-1', 'pivot-1', { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
+}
+
+function sameSheetRelationalPivot(): { workbook: WorkbookModel; pivot: NonNullable<ReturnType<typeof buildPivotModel>> } {
+  const workbook = new WorkbookModel('pivot-drilldown-provenance', 'Pivot Drilldown Provenance');
+  const sheet = workbook.getSheet('sheet-1');
+  [['CustomerId', 'Amount'], ['c1', 100], ['c2', 200]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+  // Deliberately reverse customer row order so the joined record uses row 1
+  // from Orders and row 2 from Customers on the same worksheet.
+  [['CustomerId', 'Region'], ['c2', 'West'], ['c1', 'East']].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, 4 + columnIndex, { value })));
+  const ordersRange = { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+  const customersRange = { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 4, endColumn: 5 };
+  const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-drilldown-provenance', ordersRange)!;
+  pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
+  pivot.source = {
+    kind: 'worksheet-ranges',
+    ranges: [
+      { sourceId: 'orders', range: ordersRange },
+      { sourceId: 'customers', range: customersRange },
+    ],
+    relationships: [{
+      id: 'orders-customers',
+      left: { sourceId: 'orders', fieldId: 'source:orders:column:0' },
+      right: { sourceId: 'customers', fieldId: 'source:customers:column:0' },
+      join: 'left',
+    }],
+  };
+  pivot.fieldCatalog = getPivotFieldCatalog(workbook, pivot);
+  const region = pivot.fieldCatalog.fields.find((field) => field.fieldId === 'source:customers:column:1')!;
+  const amount = pivot.fieldCatalog.fields.find((field) => field.fieldId === 'source:orders:column:1')!;
+  pivot.layout.rows = [{ fieldId: region.fieldId }];
+  pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+  return { workbook, pivot };
 }
 
 describe('pivot feature contract', () => {
@@ -120,6 +152,60 @@ describe('pivot feature contract', () => {
     assert.equal(workbook.sheets.has('drill-1'), false);
     assert.equal(runtime.redo(), true);
     assert.equal(workbook.getSheet('drill-1').cells.get(1, 1)?.value, 10);
+  });
+
+  it('drill-down resolves same-sheet joined rows by sourceId and recordId', () => {
+    const { workbook, pivot } = sameSheetRelationalPivot();
+    const runtime = new CommandRuntime(workbook);
+    registerPivotFeature(runtime);
+    runtime.execute('pivot.add', pivot);
+    const result = computePivotResult(workbook, workbook.getSheet('sheet-1').pivots[0]!);
+    const east = result.rows.find((node) => node.label === 'East')?.values[0];
+    assert.ok(east);
+    assert.deepEqual(east.sourceRowPaths.map((path) => [path.sourceId, path.row, path.recordId]), [
+      ['orders', 1, 'orders:1'],
+      ['customers', 2, 'orders:1'],
+    ]);
+    runtime.execute('pivot.drillDown', {
+      sheetId: 'sheet-1',
+      pivotId: pivot.id,
+      label: 'East',
+      sourceRowPaths: east.sourceRowPaths,
+      targetSheetId: 'drill-same-sheet',
+      target: { row: 0, column: 0 },
+    });
+    const detail = workbook.getSheet('drill-same-sheet');
+    assert.deepEqual([0, 1, 2, 3].map((column) => detail.cells.get(1, column)?.value), ['c1', 100, 'c1', 'East']);
+    assert.equal(runtime.undo(), true);
+    assert.equal(workbook.sheets.has('drill-same-sheet'), false);
+    runtime.execute('pivot.drillDown', {
+      sheetId: 'sheet-1',
+      pivotId: pivot.id,
+      label: 'left-unmatched',
+      sourceRowPaths: [{ sourceId: 'orders', recordId: 'orders:2', sheetId: 'sheet-1', row: 2 }],
+      targetSheetId: 'drill-left-unmatched',
+      target: { row: 0, column: 0 },
+    });
+    const unmatched = workbook.getSheet('drill-left-unmatched');
+    assert.deepEqual([0, 1, 2, 3].map((column) => unmatched.cells.get(1, column)?.value), ['c2', 200, null, null]);
+  });
+
+  it('rejects incomplete inner-join provenance before creating a detail sheet', () => {
+    const { workbook, pivot } = sameSheetRelationalPivot();
+    assert.ok(pivot.source.kind === 'worksheet-ranges');
+    pivot.source.relationships[0]!.join = 'inner';
+    const runtime = new CommandRuntime(workbook);
+    registerPivotFeature(runtime);
+    runtime.execute('pivot.add', pivot);
+    assert.throws(() => runtime.execute('pivot.drillDown', {
+      sheetId: 'sheet-1',
+      pivotId: pivot.id,
+      label: 'incomplete',
+      sourceRowPaths: [{ sourceId: 'orders', recordId: 'orders:1', sheetId: 'sheet-1', row: 1 }],
+      targetSheetId: 'drill-incomplete',
+      target: { row: 0, column: 0 },
+    }), /provenance is incomplete/);
+    assert.equal(workbook.sheets.has('drill-incomplete'), false);
   });
 
   it('writes a cross-sheet pivot result from the complete workbook model', () => {

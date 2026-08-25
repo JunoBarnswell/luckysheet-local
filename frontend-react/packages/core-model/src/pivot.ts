@@ -265,6 +265,8 @@ export type PivotModel = PivotDefinition;
 export interface PivotSourceRowPath {
   /** Logical source node identity; required for multi-range joins and optional for legacy single-source detail payloads. */
   sourceId?: string;
+  /** Joined-record identity; allows Show Details to group provenance without relying on source-array order. */
+  recordId?: string;
   sheetId: SheetId;
   row: Row;
 }

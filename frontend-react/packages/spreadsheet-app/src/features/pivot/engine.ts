@@ -348,7 +348,7 @@ function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, 
       const cell = sheet.cells.get(row, range.startColumn + ordinal);
       values[field.fieldId] = cellScalar(cell?.formulaValue ?? cell?.value ?? null);
     });
-    rows.push({ values, paths: [{ ...(sourceId ? { sourceId } : {}), sheetId: range.sheetId, row }] });
+    rows.push({ values, paths: [{ ...(sourceId ? { sourceId } : {}), recordId: `${sourceId ?? range.sheetId}:${row}`, sheetId: range.sheetId, row }] });
   }
   return { fields, rows };
 }
@@ -429,7 +429,7 @@ function validateRelationshipGraph(nodes: LocalSourceNode[], relationships: read
   }
   const rootCandidates = edges.some((edge) => edge.join === 'left')
     ? nodes.filter((node) => !edges.some((edge) => edge.join === 'left' && edge.right.sourceId === node.sourceId))
-    : [...nodes].sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+    : [[...nodes].sort((left, right) => left.sourceId.localeCompare(right.sourceId))[0]!];
   if (rootCandidates.length !== 1) throw new Error('Pivot relationship graph has an ambiguous root');
   const rootId = rootCandidates[0]!.sourceId;
   const reachable = new Set<string>([rootId]);
@@ -456,7 +456,11 @@ function joinSourceTables(current: SourceTable, attached: SourceTable, currentFi
       if (join === 'left') rows.push(left);
       continue;
     }
-    rows.push({ values: { ...left.values, ...match.values }, paths: [...left.paths, ...match.paths] });
+    const recordId = left.paths[0]?.recordId ?? match.paths[0]?.recordId;
+    rows.push({
+      values: { ...left.values, ...match.values },
+      paths: [...left.paths, ...match.paths].map((path) => ({ ...path, ...(recordId ? { recordId } : {}) })),
+    });
   }
   return { fields: [...current.fields, ...attached.fields], rows };
 }
