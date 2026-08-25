@@ -282,7 +282,15 @@ function drawCellImagePresentation(context: CanvasRenderingContext2D, rect: Rect
   context.beginPath();
   context.rect(rect.x, rect.y, rect.width, rect.height);
   context.clip();
-  context.drawImage(image, x, y, width, height);
+  const crop = presentation.crop ?? { left: 0, top: 0, right: 0, bottom: 0 };
+  const sourceX = image.naturalWidth * crop.left;
+  const sourceY = image.naturalHeight * crop.top;
+  const sourceWidth = image.naturalWidth * (1 - crop.left - crop.right);
+  const sourceHeight = image.naturalHeight * (1 - crop.top - crop.bottom);
+  const effects = presentation.effects;
+  context.globalAlpha = 1 - (effects?.transparency ?? 0);
+  context.filter = `brightness(${1 + (effects?.brightness ?? 0)}) contrast(${1 + (effects?.contrast ?? 0)})`;
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
   context.restore();
 }
 

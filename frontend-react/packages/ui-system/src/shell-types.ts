@@ -42,6 +42,7 @@ export type RibbonTabId =
   | 'tableDesign'
   | 'chartDesign'
   | 'chartFormat'
+  | 'pictureFormat'
   | 'sparklineDesign';
 
 export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [

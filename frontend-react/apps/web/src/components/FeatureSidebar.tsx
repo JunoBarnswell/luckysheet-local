@@ -49,6 +49,7 @@ import { DataChartPanel } from './panels/DataChartPanel';
 import { BarcodePanel } from './panels/BarcodePanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
+import { PicturePanel } from './panels/PicturePanel';
 import { SparklinePanel } from './panels/SparklinePanel';
 import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
 import { DataValidationPanel } from './panels/DataValidationPanel';
@@ -194,6 +195,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
+  { id: 'picture', label: 'Picture', icon: 'picture' },
   { id: 'selectionPane', label: 'Selection', icon: 'shape-square' },
   { id: 'sparkline', label: 'Spark', icon: 'sparkline' },
   { id: 'conditionalFormat', label: 'Format', icon: 'sparkles' },
@@ -607,6 +609,15 @@ export function FeatureSidebar({
             defaultRange={selectionText}
             onAddSparkline={onAddSparkline}
             onRemoveSparkline={onRemoveSparkline}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'picture' ? (
+          <PicturePanel
+            sheetId={sheetId}
+            activeCell={activeCell}
+            sheet={sheet}
+            selectedDrawingIds={selectedDrawingIds}
             onCommand={onCommand}
           />
         ) : null}

@@ -40,6 +40,7 @@ export type MessageKey =
   | 'tableDesign'
   | 'chartDesign'
   | 'chartFormat'
+  | 'pictureFormat'
   | 'sparklineDesign'
   | 'engineConnected'
   | 'searchWorkbook';

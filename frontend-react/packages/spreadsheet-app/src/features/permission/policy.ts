@@ -134,6 +134,8 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'reportSheet.update': 'structure',
   'cell.barcode.apply': 'format',
   'cell.image.apply': 'format',
+  'picture.convertToCell': 'drawing',
+  'picture.convertToFloating': 'drawing',
   'dataChart.create': 'drawing',
   'formControl.activate': 'drawing',
 };
@@ -156,6 +158,7 @@ export function resolveCommandAction(commandId: string): PermissionAction {
   if (commandId.startsWith('hyperlink.')) return 'edit-cell';
   if (commandId.startsWith('drawing.') || commandId.startsWith('chart.') || commandId.startsWith('dataChart.') || commandId.startsWith('shape.')) return 'drawing';
   if (commandId.startsWith('sparkline.')) return 'drawing';
+  if (commandId.startsWith('picture.')) return 'drawing';
   if (commandId.startsWith('pivot.')) return 'structure';
   if (commandId.startsWith('sheet.style') || commandId.startsWith('sheet.merge') || commandId.startsWith('sheet.cf')) return 'format';
   if (commandId.startsWith('sheet.row') || commandId.startsWith('sheet.column') || commandId.startsWith('sheet.rows') || commandId.startsWith('sheet.columns') || commandId.startsWith('outline.') || commandId.startsWith('data.')) {

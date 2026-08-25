@@ -93,6 +93,78 @@ describe('insert feature', () => {
     assert.equal(sheet.cells.get(0, 1)?.presentation, undefined);
   });
 
+  it('converts cell pictures and floating pictures through one undoable aggregate', () => {
+    const workbook = new WorkbookModel('picture-conversion-test', 'Picture Conversion');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    const presentation = {
+      kind: 'image' as const,
+      src: 'data:image/png;base64,AA==',
+      altText: 'Cell logo',
+      fit: 'cover' as const,
+      crop: { left: 0.1, top: 0.05, right: 0, bottom: 0.1 },
+      effects: { brightness: 0.2, contrast: -0.1, transparency: 0.25 },
+    };
+    runtime.execute('cell.image.apply', { sheetId: 'sheet-1', row: 1, column: 1, presentation });
+    runtime.clearHistory();
+
+    runtime.execute('picture.convertToFloating', {
+      sheetId: 'sheet-1', row: 1, column: 1, drawingId: 'picture-drawing', payloadId: 'picture-payload',
+    });
+    assert.equal(sheet.cells.get(1, 1)?.presentation, undefined);
+    assert.deepEqual(sheet.drawingPayloads.get('picture-payload'), {
+      kind: 'image', src: presentation.src, altText: presentation.altText,
+      crop: presentation.crop, effects: presentation.effects,
+    });
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(sheet.cells.get(1, 1)?.presentation, presentation);
+    assert.equal(sheet.drawings.length, 0);
+    assert.equal(runtime.redo(), true);
+    assert.equal(sheet.cells.get(1, 1)?.presentation, undefined);
+    assert.equal(sheet.drawings[0]?.kind, 'image');
+
+    runtime.clearHistory();
+    runtime.execute('picture.convertToCell', { sheetId: 'sheet-1', drawingId: 'picture-drawing', row: 2, column: 2 });
+    assert.equal(sheet.drawings.length, 0);
+    assert.deepEqual(sheet.cells.get(2, 2)?.presentation, { ...presentation, fit: 'contain' });
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+    assert.equal(runtime.undo(), true);
+    assert.equal(sheet.drawings[0]?.id, 'picture-drawing');
+    assert.equal(sheet.cells.get(2, 2)?.presentation, undefined);
+    assert.equal(runtime.redo(), true);
+    assert.equal(sheet.drawings.length, 0);
+    assert.deepEqual(sheet.cells.get(2, 2)?.presentation, { ...presentation, fit: 'contain' });
+  });
+
+  it('rejects picture conversion before mutation when the target cell is occupied', () => {
+    const workbook = new WorkbookModel('picture-conversion-rejection-test', 'Picture Conversion Rejection');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(3, 3, { value: 'occupied' });
+    runtime.execute('drawing.add.image', {
+      sheetId: 'sheet-1',
+      drawing: {
+        id: 'occupied-target-picture', sheetId: 'sheet-1', kind: 'image', payloadId: 'occupied-target-payload',
+        anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60, rotation: 0 }, zIndex: 1,
+      },
+      payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Floating' },
+    });
+    runtime.clearHistory();
+    const before = workbook.snapshot();
+    assert.throws(() => runtime.execute('picture.convertToCell', {
+      sheetId: 'sheet-1', drawingId: 'occupied-target-picture', row: 3, column: 3,
+    }), /target cell is not empty/);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.equal(runtime.getHistoryDepth().undo, 0);
+  });
+
   it('creates and updates a canonical Data Chart with typed bindings and undo', () => {
     const workbook = new WorkbookModel('data-chart-command-test', 'Data Chart');
     const runtime = new CommandRuntime(workbook);

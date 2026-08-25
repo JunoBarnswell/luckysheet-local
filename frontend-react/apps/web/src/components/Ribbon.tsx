@@ -121,6 +121,7 @@ export interface RibbonProps {
   activeReportSheet?: { sheetId: string; tableId?: string };
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   activeChart?: { sheetId: string; chartId: string };
+  activePicture?: { sheetId: string; drawingId: string };
   activeSparkline?: { sheetId: string; sparklineId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
@@ -277,6 +278,7 @@ export function Ribbon({
   activeReportSheet,
   activeTable,
   activeChart,
+  activePicture,
   activeSparkline,
   homeState,
   canExecute,
@@ -366,6 +368,7 @@ export function Ribbon({
     activeReportSheet,
     activeTable,
     activeChart,
+    activePicture,
     activeSparkline,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
@@ -415,6 +418,7 @@ export function Ribbon({
           ...(activeReportSheet ? ['reportSheetDesign'] as const : []),
           ...(activeTable ? ['tableDesign'] as const : []),
           ...(activeChart ? ['chartDesign', 'chartFormat'] as const : []),
+          ...(activePicture ? ['pictureFormat'] as const : []),
           ...(activeSparkline ? ['sparklineDesign'] as const : []),
         ]}
         disabled={disabled}

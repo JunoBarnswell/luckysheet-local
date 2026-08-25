@@ -9,6 +9,8 @@ import type {
   CommentThread,
   DrawingObject,
   DrawingPayload,
+  ImageCrop,
+  ImageEffects,
   SparklineGroup,
   SheetTableModel,
   OutlineModel,
@@ -144,6 +146,8 @@ export interface ImageCellPresentation {
   src: string;
   altText?: string;
   fit: 'contain' | 'cover' | 'stretch';
+  crop?: ImageCrop;
+  effects?: ImageEffects;
 }
 
 export type CellPresentation = BarcodeCellPresentation | ImageCellPresentation;
@@ -221,6 +225,8 @@ export type {
   HyperlinkTarget,
   DrawingPayload,
   ImageDrawingPayload,
+  ImageCrop,
+  ImageEffects,
   ShapeDrawingPayload,
   TextBoxDrawingPayload,
   ChartDrawingPayload,

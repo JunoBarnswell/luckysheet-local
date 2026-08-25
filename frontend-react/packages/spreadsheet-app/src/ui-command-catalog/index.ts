@@ -24,6 +24,7 @@ export type RibbonCatalogTabId =
   | 'tableDesign'
   | 'chartDesign'
   | 'chartFormat'
+  | 'pictureFormat'
   | 'sparklineDesign';
 
 export type RibbonGroupId =
@@ -74,6 +75,7 @@ export type RibbonGroupId =
   | 'tableDesign'
   | 'chartDesign'
   | 'chartFormat'
+  | 'pictureFormat'
   | 'sparklineDesign';
 
 export type RibbonCommandId =
@@ -168,6 +170,7 @@ export type RibbonCommandId =
   | 'pivotTable'
   | 'chartBuilder'
   | 'sparkline'
+  | 'pictureFormatPanel'
   | 'sparklineDesign'
   | 'shapesLines'
   | 'deleteRow'
@@ -411,6 +414,7 @@ export interface RibbonCommandContext {
   activeReportSheet?: { sheetId: string; tableId?: string };
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   activeChart?: { sheetId: string; chartId: string };
+  activePicture?: { sheetId: string; drawingId: string };
   activeSparkline?: { sheetId: string; sparklineId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
@@ -536,6 +540,7 @@ export const RIBBON_TEXT = {
     tableDesign: 'groups.tableDesign',
     chartDesign: 'groups.chartDesign',
     chartFormat: 'groups.chartFormat',
+    pictureFormat: 'groups.pictureFormat',
     sparklineDesign: 'groups.sparklineDesign',
   },
   commands: {
@@ -656,6 +661,7 @@ export const RIBBON_TEXT = {
     chartSelectData: 'commands.chartSelectData',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
+    pictureFormatPanel: 'commands.pictureFormatPanel',
     sparklineDesign: 'commands.sparklineDesign',
     shapesLines: 'commands.shapesLines',
     deleteRow: 'commands.deleteRow',
@@ -765,6 +771,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('tableDesign', 'tableDesign', 10),
   group('chartDesign', 'chartDesign', 10),
   group('chartFormat', 'chartFormat', 20),
+  group('pictureFormat', 'pictureFormat', 10),
   group('sparklineDesign', 'sparklineDesign', 10),
 ] as const;
 
@@ -1219,6 +1226,10 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('sparklineDesign', 'sparklineDesign', 'sparklineDesign', RIBBON_TEXT.commands.sparklineDesign, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
     enabled: (context) => Boolean(context.activeSparkline),
+  },
+  {
+    ...intent('pictureFormatPanel', 'pictureFormat', 'pictureFormat', RIBBON_TEXT.commands.pictureFormatPanel, () => ({ type: 'panel.open', panel: 'picture' }), 'picture'),
+    enabled: (context) => Boolean(context.activePicture),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),
