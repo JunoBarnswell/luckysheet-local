@@ -49,6 +49,7 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onToggleViewHeadings: () => undefined,
     onTogglePrintHeadings: () => undefined,
     onAutoSum: () => undefined,
+    onMergeCells: () => undefined,
     onFill: () => undefined,
     onFreezeAtPrimary: () => undefined,
     onCreateSheetTable: () => undefined,
@@ -181,6 +182,22 @@ describe('Ribbon UI command catalog', () => {
       if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId));
     }
     assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
+  });
+
+  it('keeps the complete HOME surface set identical across responsive breakpoints', () => {
+    const groups = ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing'] as const;
+    const breakpoints = ['wide', 'compact', 'narrow'] as const;
+    for (const group of groups) {
+      const byBreakpoint = breakpoints.map((breakpoint) => getRibbonSurfaces('home', group, breakpoint).map((surface) => surface.id));
+      assert.ok(byBreakpoint.every((ids) => ids.length > 0), `${group} has no surface at one breakpoint`);
+      assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[1]), `${group} compact surface drift`);
+      assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[2]), `${group} narrow surface drift`);
+      for (const surface of getRibbonSurfaces('home', group, 'wide')) {
+        assert.equal(Boolean(surface.commandId) !== Boolean(surface.controlId), true, `${surface.id} must be command or control`);
+        if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId), `${surface.id} has no command`);
+        if (surface.menuId) assert.ok(getRibbonSurfaces('home', group, 'wide').some((owner) => owner.id === surface.menuId), `${surface.id} has no menu owner`);
+      }
+    }
   });
 
   it('keeps Home and Insert surfaces unique and executable', () => {
