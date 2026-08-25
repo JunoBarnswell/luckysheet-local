@@ -157,6 +157,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
     || !Number.isFinite(snapshot.dimensionMetrics.normalFontSizePx) || snapshot.dimensionMetrics.normalFontSizePx <= 0
     || !Number.isFinite(snapshot.dimensionMetrics.maximumDigitWidthPx) || snapshot.dimensionMetrics.maximumDigitWidthPx <= 0) throw new Error('Workbook snapshot dimensionMetrics is invalid');
+  const pivotIds = new Set<string>();
   for (const sheet of snapshot.sheets) {
     if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');
     if (sheet.kind === 'table-sheet' && !sheet.tableSheet) throw new Error('TableSheet definition is required');
@@ -193,6 +194,26 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     }
     if (sheet.autoFilter && tableFilters.some((table) => rangesOverlap(sheet.autoFilter!.range, table.autoFilter!.range))) {
       throw new Error('Worksheet and Table AutoFilter ranges cannot overlap');
+    }
+    for (const pivot of sheet.pivots) {
+      if (!pivot.id.trim() || pivotIds.has(pivot.id)) throw new Error(`Pivot identity is duplicated or empty: ${pivot.id}`);
+      pivotIds.add(pivot.id);
+    }
+  }
+  for (const sheet of snapshot.sheets) {
+    for (const drawing of sheet.drawings) {
+      const payload = sheet.drawingPayloads[drawing.payloadId];
+      if (!payload) throw new Error(`Drawing payload is missing: ${drawing.payloadId}`);
+      if (payload.kind !== 'chart' && payload.kind !== 'slicer' && payload.kind !== 'timeline') continue;
+      if (payload.kind === 'chart' && payload.pivotId === undefined) continue;
+      if (typeof payload.pivotId !== 'string' || !payload.pivotId.trim() || !pivotIds.has(payload.pivotId)) {
+        throw new Error(`Drawing ${drawing.id} references missing Pivot: ${payload.pivotId ?? ''}`);
+      }
+      if ((payload.kind === 'slicer' || payload.kind === 'timeline') && payload.connectedPivotIds) {
+        for (const connectedPivotId of payload.connectedPivotIds) {
+          if (!pivotIds.has(connectedPivotId)) throw new Error(`Drawing ${drawing.id} references missing connected Pivot: ${connectedPivotId}`);
+        }
+      }
     }
   }
   const canonical = structuredClone(snapshot);

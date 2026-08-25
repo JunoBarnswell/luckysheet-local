@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RangeRef } from '@react-sheets/core-model';
 import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
-import { resolveCameraSourceGeometry } from './drawing-renderers';
+import { createCanvasFloatingDrawables, resolveCameraSourceGeometry } from './drawing-renderers';
+import type { DrawingObject, DrawingPayload } from '@react-sheets/core-model';
+import type { SheetSkeleton } from '@react-sheets/render-engine';
 
 function sourceSnapshot(): CanvasSheetSnapshot {
   return {
@@ -69,4 +71,39 @@ test('Camera geometry rejects invalid, cross-sheet, and fully hidden source rang
   assert.equal(resolveCameraSourceGeometry(source, { sheetId: 'sheet-1', startRow: 0, endRow: 6, startColumn: 0, endColumn: 1 }), null);
   assert.equal(resolveCameraSourceGeometry(source, { sheetId: 'sheet-1', startRow: 3, endRow: 3, startColumn: 0, endColumn: 1 }), null);
   assert.equal(resolveCameraSourceGeometry(source, { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 1, endColumn: 1 }), null);
+});
+
+test('PivotChart with a missing Pivot renders a broken reference instead of source-range data', () => {
+  const drawing: DrawingObject = {
+    id: 'broken-pivot-chart',
+    sheetId: 'sheet-1',
+    kind: 'chart',
+    payloadId: 'broken-pivot-chart-payload',
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 160, height: 100, rotation: 0 },
+    zIndex: 0,
+  };
+  const payload: DrawingPayload = {
+    kind: 'chart',
+    chartId: drawing.payloadId,
+    pivotId: 'missing-pivot',
+    sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }],
+    chartType: 'column',
+    elements: { hiddenData: 'show' },
+  };
+  const sheet = { id: 'sheet-1', pivotResults: {} } as unknown as CanvasSheetSnapshot;
+  const drawables = createCanvasFloatingDrawables({
+    drawings: [drawing],
+    drawingPayloads: new Map([[drawing.payloadId, payload]]),
+    allSheets: [sheet],
+    sheet,
+    pivotResults: {},
+    sparklines: [],
+    skeleton: {} as SheetSkeleton,
+    imageCache: new Map(),
+    requestRender: () => undefined,
+    tables: [],
+  });
+  assert.equal(drawables.length, 1);
+  assert.equal(drawables[0]?.kind, 'shape');
 });

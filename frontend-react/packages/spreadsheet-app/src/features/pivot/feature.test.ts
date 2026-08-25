@@ -3,8 +3,10 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
+import { registerDrawingFeature } from '../drawing';
 import { registerPivotFeature } from './index';
 import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
+import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
 import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './engine';
 import { buildPivotWriteback } from './writeback';
 
@@ -18,6 +20,44 @@ function seedCrossSheetWorkbook(): WorkbookModel {
 function pivotDefinition(): ReturnType<typeof buildPivotModel> {
   const workbook = seedCrossSheetWorkbook();
   return buildPivotModel(workbook, 'sheet-1', 'pivot-1', { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
+}
+
+function pivotChartDrawing(pivotId: string) {
+  return {
+    drawing: {
+      id: `chart-${pivotId}`,
+      sheetId: 'sheet-1',
+      kind: 'chart' as const,
+      payloadId: `chart-payload-${pivotId}`,
+      anchor: { kind: 'absolute' as const },
+      transform: { x: 10, y: 10, width: 240, height: 160, rotation: 0 },
+      zIndex: 1,
+    },
+    payload: {
+      kind: 'chart' as const,
+      chartId: `chart-payload-${pivotId}`,
+      pivotId,
+      sourceRanges: [],
+      chartType: 'column' as const,
+      elements: {
+        hiddenData: 'show' as const,
+        legend: { visible: true, position: 'bottom' as const },
+        dataLabels: { visible: false },
+        categoryAxis: { id: 'category', position: 'bottom' as const },
+        valueAxis: { id: 'value', position: 'left' as const },
+      },
+    },
+  };
+}
+
+function snapshotWithStableCollectionOrder(workbook: WorkbookModel) {
+  const snapshot = workbook.snapshot();
+  for (const sheet of snapshot.sheets) {
+    const byId = <T extends { id: string }>(left: T, right: T) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+    sheet.pivots.sort(byId);
+    sheet.drawings.sort(byId);
+  }
+  return snapshot;
 }
 
 function sameSheetRelationalPivot(): { workbook: WorkbookModel; pivot: NonNullable<ReturnType<typeof buildPivotModel>> } {
@@ -88,12 +128,12 @@ describe('pivot feature contract', () => {
     assert.ok(pivot);
     pivot.id = 'pivot-invalid-create';
     pivot.target = { sheetId: 'pivot-invalid-sheet', anchor: { row: 0, column: 0 } };
-    const before = workbook.snapshot();
+    const before = snapshotWithStableCollectionOrder(workbook);
     assert.throws(() => runtime.execute('pivot.create', {
       pivot,
       destination: { kind: 'new-sheet', sheetId: 'pivot-invalid-sheet', name: 'Pivot Invalid' },
     }), /duplicated/);
-    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.getUndoEntries().length, 0);
   });
 
@@ -109,12 +149,12 @@ describe('pivot feature contract', () => {
     runtime.onMutation((mutation, source) => {
       if (source === 'command' && mutation.id === 'pivot.add') throw new Error('Injected pivot create failure');
     });
-    const before = workbook.snapshot();
+    const before = snapshotWithStableCollectionOrder(workbook);
     assert.throws(() => runtime.execute('pivot.create', {
       pivot,
       destination: { kind: 'new-sheet', sheetId: 'pivot-failure-sheet', name: 'Pivot Failure' },
     }), /Injected pivot create failure/);
-    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.getUndoEntries().length, 0);
   });
 
@@ -152,6 +192,97 @@ describe('pivot feature contract', () => {
     assert.equal(workbook.sheets.has('drill-1'), false);
     assert.equal(runtime.redo(), true);
     assert.equal(workbook.getSheet('drill-1').cells.get(1, 1)?.value, 10);
+  });
+
+  it('removes PivotChart and Pivot controls as one atomic reversible lifecycle transaction', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    pivot.id = 'pivot-delete-target';
+    const connectedPivot = structuredClone(pivot);
+    connectedPivot.id = 'pivot-delete-connected';
+    connectedPivot.target = { sheetId: 'sheet-1', anchor: { row: 20, column: 0 } };
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    registerPivotFeature(runtime);
+    runtime.execute('pivot.add', pivot);
+    runtime.execute('pivot.add', connectedPivot);
+
+    const chart = pivotChartDrawing(pivot.id);
+    const slicer = buildPivotSlicerDrawing({
+      drawingId: 'slicer-primary',
+      payloadId: 'slicer-primary-payload',
+      sheetId: 'sheet-1',
+      pivotId: pivot.id,
+      fieldId: 'source:source-2:column:0',
+      transform: { x: 10, y: 190, width: 160, height: 80, rotation: 0 },
+      zIndex: 2,
+    });
+    const timeline = buildPivotTimelineDrawing({
+      drawingId: 'timeline-primary',
+      payloadId: 'timeline-primary-payload',
+      sheetId: 'sheet-1',
+      pivotId: pivot.id,
+      fieldId: 'source:source-2:column:0',
+      transform: { x: 10, y: 280, width: 200, height: 80, rotation: 0 },
+      zIndex: 3,
+    });
+    const connected = buildPivotSlicerDrawing({
+      drawingId: 'slicer-connected',
+      payloadId: 'slicer-connected-payload',
+      sheetId: 'sheet-1',
+      pivotId: connectedPivot.id,
+      connectedPivotIds: [pivot.id, connectedPivot.id],
+      fieldId: 'source:source-2:column:0',
+      transform: { x: 10, y: 370, width: 160, height: 80, rotation: 0 },
+      zIndex: 4,
+    });
+    for (const entry of [chart, slicer, timeline, connected]) {
+      runtime.execute('drawing.add', { sheetId: 'sheet-1', drawing: entry.drawing, payload: entry.payload });
+    }
+
+    const before = snapshotWithStableCollectionOrder(workbook);
+    assert.throws(() => runtime.applyRemoteMutations([{
+      id: 'pivot.remove',
+      unitId: workbook.unitId,
+      sheetId: 'sheet-1',
+      params: pivot.id,
+      affectedRanges: [],
+    }]), /dependent drawings/);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+    assert.throws(() => runtime.applyRemoteMutations([
+      {
+        id: 'drawing.remove',
+        unitId: workbook.unitId,
+        sheetId: 'sheet-1',
+        params: { sheetId: 'sheet-1', drawingId: chart.drawing.id },
+        affectedRanges: [],
+      },
+      {
+        id: 'pivot.remove',
+        unitId: workbook.unitId,
+        sheetId: 'sheet-1',
+        params: pivot.id,
+        affectedRanges: [],
+      },
+    ]), /dependent drawings/);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+
+    const result = runtime.execute('pivot.remove', { sheetId: 'sheet-1', pivotId: pivot.id });
+    assert.equal(result.mutationCount, 5);
+    const sheet = workbook.getSheet('sheet-1');
+    assert.equal(sheet.pivots.some((entry) => entry.id === pivot.id), false);
+    assert.equal(sheet.drawings.some((entry) => entry.id === chart.drawing.id), false);
+    assert.equal(sheet.drawings.some((entry) => entry.id === slicer.drawing.id), false);
+    assert.equal(sheet.drawings.some((entry) => entry.id === timeline.drawing.id), false);
+    assert.deepEqual((sheet.drawingPayloads.get(connected.drawing.payloadId) as { connectedPivotIds?: string[] })?.connectedPivotIds, [connectedPivot.id]);
+
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+    assert.equal(runtime.redo(), true);
+    assert.equal(workbook.getSheet('sheet-1').pivots.some((entry) => entry.id === pivot.id), false);
+    assert.equal(workbook.getSheet('sheet-1').drawingPayloads.has(chart.drawing.payloadId), false);
+    assert.deepEqual((workbook.getSheet('sheet-1').drawingPayloads.get(connected.drawing.payloadId) as { connectedPivotIds?: string[] })?.connectedPivotIds, [connectedPivot.id]);
   });
 
   it('drill-down resolves same-sheet joined rows by sourceId and recordId', () => {

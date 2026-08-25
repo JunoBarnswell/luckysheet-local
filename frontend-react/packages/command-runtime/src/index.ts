@@ -1,4 +1,4 @@
-import type { RangeRef, WorkbookModel } from '@react-sheets/core-model';
+import { WorkbookModel, type RangeRef } from '@react-sheets/core-model';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -655,6 +655,11 @@ export class CommandRuntime {
    */
   applyRemoteMutations(items: readonly MutationInfo[]): void {
     this.registry.assertComplete();
+    // A committed operation may contain several dependent mutations. Replay
+    // them against an isolated snapshot first so a later rejection cannot
+    // leave the live workbook partially changed.
+    const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
+    preview.applyHistory(items, 'remote');
     this.applyHistory(items, 'remote');
   }
 
