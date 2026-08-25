@@ -39,12 +39,37 @@ function removeField(layout: PivotLayout, fieldId: string): PivotLayout {
   next.values = next.values.filter((field) => field.fieldId !== fieldId);
   return next;
 }
+function removeValueField(layout: PivotLayout, valueId: string): PivotLayout {
+  const next = cloneLayout(layout);
+  next.values = next.values.filter((field) => field.valueId !== valueId);
+  return next;
+}
+function nextValueId(layout: PivotLayout, fieldId: string): string {
+  const base = `value:${fieldId}`;
+  if (!layout.values.some((field) => field.valueId === base)) return base;
+  let index = 2;
+  while (layout.values.some((field) => field.valueId === `${base}:${index}`)) index += 1;
+  return `${base}:${index}`;
+}
 function moveField(layout: PivotLayout, field: PivotFieldDefinition, area: Area, index: number): PivotLayout {
-  const next = removeField(layout, field.fieldId);
+  const next = cloneLayout(layout);
+  if (area !== 'values') {
+    next.filters = next.filters.filter((entry) => entry.fieldId !== field.fieldId);
+    next.columns = next.columns.filter((entry) => entry.fieldId !== field.fieldId);
+    next.rows = next.rows.filter((entry) => entry.fieldId !== field.fieldId);
+  }
   if (area === 'filters') next.filters.splice(index, 0, { kind: 'manual', family: 'manual', fieldId: field.fieldId, scope: 'report', mode: 'all', memberKeys: [] });
   else if (area === 'columns') next.columns.splice(index, 0, { fieldId: field.fieldId });
   else if (area === 'rows') next.rows.splice(index, 0, { fieldId: field.fieldId });
-  else next.values.splice(index, 0, { fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
+  else next.values.splice(index, 0, { valueId: nextValueId(next, field.fieldId), fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
+  return next;
+}
+function moveValueField(layout: PivotLayout, valueId: string, index: number): PivotLayout {
+  const next = cloneLayout(layout);
+  const currentIndex = next.values.findIndex((field) => field.valueId === valueId);
+  if (currentIndex < 0) throw new Error(`Unknown Pivot Values placement: ${valueId}`);
+  const [value] = next.values.splice(currentIndex, 1);
+  next.values.splice(Math.max(0, Math.min(index, next.values.length)), 0, value!);
   return next;
 }
 function filterStates(layout: PivotLayout): Record<string, PivotManualFilterState> {
@@ -116,15 +141,16 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
     if (delayUpdate) { setDraft(cloneLayout(next)); setDirty(true); }
     else callbacks?.onLayoutReplace(next);
   };
-  const idsFor = (area: Area): readonly string[] => area === 'filters' ? filters : area === 'columns' ? columns : area === 'rows' ? rows : values.map((field) => field.fieldId);
+  const idsFor = (area: Area): readonly string[] => area === 'filters' ? filters : area === 'columns' ? columns : area === 'rows' ? rows : values.map((field) => field.valueId);
   const changeArea = (fieldId: string, area: Area, index: number) => {
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     if (field) applyLayout(moveField(layout, field, area, index));
   };
-  const removeFromArea = (fieldId: string) => applyLayout(removeField(layout, fieldId));
-  const drop = (area: Area) => (event: DragEvent<HTMLElement>, index?: number) => { event.preventDefault(); const fieldId = event.dataTransfer.getData('application/x-pivot-field'); if (fieldId) changeArea(fieldId, area, index ?? idsFor(area).length); };
+  const removeFromArea = (area: Area, placementId: string) => applyLayout(area === 'values' ? removeValueField(layout, placementId) : removeField(layout, placementId));
+  const moveWithinArea = (area: Area, placementId: string, index: number) => applyLayout(area === 'values' ? moveValueField(layout, placementId, index) : (() => { const field = fields.find((candidate) => candidate.fieldId === placementId); return field ? moveField(layout, field, area, index) : layout; })());
+  const drop = (area: Area) => (event: DragEvent<HTMLElement>, index?: number) => { event.preventDefault(); const valueId = event.dataTransfer.getData('application/x-pivot-value'); if (valueId && area === 'values') { moveWithinArea(area, valueId, index ?? idsFor(area).length); return; } const fieldId = event.dataTransfer.getData('application/x-pivot-field'); if (fieldId) changeArea(fieldId, area, index ?? idsFor(area).length); };
   const toggle = (fieldId: string, checked: boolean) => {
-    if (!checked) { removeFromArea(fieldId); return; }
+    if (!checked) { applyLayout(removeField(layout, fieldId)); return; }
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     if (!field) return;
     const area = defaultPivotFieldArea(field);
@@ -155,7 +181,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const sort = (fieldId: string, nextSort: Parameters<NonNullable<PivotPanelCallbacks['onSortChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry) });
   const group = (fieldId: string, nextGroup: Parameters<NonNullable<PivotPanelCallbacks['onGroupChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry) });
   const subtotal = (fieldId: string, nextSubtotal: Parameters<NonNullable<PivotPanelCallbacks['onSubtotalChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, subtotal: nextSubtotal } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, subtotal: nextSubtotal } : entry) });
-  const valueChange = (value: PivotValueField) => applyLayout({ ...cloneLayout(layout), values: layout.values.map((entry) => entry.fieldId === value.fieldId ? value : entry) });
+  const valueChange = (value: PivotValueField) => applyLayout({ ...cloneLayout(layout), values: layout.values.map((entry) => entry.valueId === value.valueId ? value : entry) });
   const presentation: PivotPresentation = {
     ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
     styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },
@@ -227,7 +253,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
             <Box className="min-h-0 min-w-0 flex flex-1 flex-col">
               <Text size="sm" className="mb-1 shrink-0">{pivotText(locale, 'dragFields')}</Text>
               <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-2'} min-h-0 flex-1 gap-1`}>
-                {(['filters', 'columns', 'rows', 'values'] as const).map((area) => <Box key={area} className="min-h-0 min-w-0 border border-[#bdbdbd]"><PivotFieldArea className="border-0" locale={locale} area={area} fields={fields} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onSubtotal={subtotal} onRemove={(fieldId) => removeFromArea(fieldId)} onMoveByKeyboard={(fieldId, itemIndex, direction) => changeArea(fieldId, area, itemIndex + direction)} onSort={sort} onValueChange={valueChange} /></Box>)}
+                {(['filters', 'columns', 'rows', 'values'] as const).map((area) => <Box key={area} className="min-h-0 min-w-0 border border-[#bdbdbd]"><PivotFieldArea className="border-0" locale={locale} area={area} fields={fields} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onSubtotal={subtotal} onRemove={(placementId) => removeFromArea(area, placementId)} onMoveByKeyboard={(placementId, itemIndex, direction) => moveWithinArea(area, placementId, itemIndex + direction)} onSort={sort} onValueChange={valueChange} /></Box>)}
               </Box>
             </Box>
           ) : null}

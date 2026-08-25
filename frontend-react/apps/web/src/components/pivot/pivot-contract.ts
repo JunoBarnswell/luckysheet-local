@@ -114,7 +114,8 @@ export interface PivotPanelCallbacks {
   onCreate?: () => void;
   onPivotSelect?: (pivotId: string) => void;
   onFieldAreaChange: (fieldId: string, area: PivotFieldArea, index: number) => void;
-  onRemoveField: (fieldId: string, area: PivotFieldArea, index: number) => void;
+  /** Uses source field IDs for axis areas and the canonical Values placement ID for Values. */
+  onRemoveField: (placementId: string, area: PivotFieldArea, index: number) => void;
   onValueChange: (value: PivotValueField) => void;
   onCalculatedFieldsChange?: (fields: PivotCalculatedField[]) => void;
   onCalculatedItemsChange?: (items: PivotCalculatedItem[]) => void;

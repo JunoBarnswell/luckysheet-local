@@ -74,19 +74,27 @@ export function assertPivotDefinition(workbook: WorkbookModel, pivot: PivotModel
   const fields = new Set(definition.fieldCatalog.fields.flatMap((entry) => [entry.fieldId, entry.name]));
   for (const calculated of definition.layout.calculatedFields ?? []) fields.add(calculated.fieldId);
   for (const calculated of definition.layout.calculatedItems ?? []) fields.add(calculated.fieldId);
+  const valueSourceReferences = definition.layout.filters.flatMap((filter) => {
+    const valueId = filter.kind === 'top-items' || (filter.kind === 'condition' && filter.valueId) ? filter.valueId : undefined;
+    if (!valueId) return [];
+    const value = definition.layout.values.find((entry) => entry.valueId === valueId);
+    if (!value) throw new Error(`Unknown Pivot Values placement: ${valueId}`);
+    return [value.fieldId];
+  });
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' || (filter.kind === 'condition' && filter.valueFieldId) ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.filters.map((filter) => filter.fieldId),
+    ...valueSourceReferences,
     ...definition.layout.values.map((entry) => entry.fieldId),
   ];
   const unknown = references.find((field) => field && !fields.has(field));
   if (unknown) throw new Error(`Unknown pivot field: ${unknown}`);
 }
 
-export function patchPivotValueField(layout: PivotLayout, fieldId: string, patch: Partial<PivotValueField>): PivotLayout {
-  if (!layout.values.some((entry) => entry.fieldId === fieldId)) throw new Error(`Unknown pivot value field: ${fieldId}`);
-  return { ...layout, values: layout.values.map((entry) => (entry.fieldId === fieldId ? { ...entry, ...patch, fieldId } : entry)) };
+export function patchPivotValueField(layout: PivotLayout, valueId: string, patch: Partial<PivotValueField>): PivotLayout {
+  if (!layout.values.some((entry) => entry.valueId === valueId)) throw new Error(`Unknown Pivot Values placement: ${valueId}`);
+  return { ...layout, values: layout.values.map((entry) => (entry.valueId === valueId ? { ...entry, ...patch, valueId } : entry)) };
 }
 
 export function patchPivotRowField(layout: PivotLayout, fieldId: string, patch: Partial<PivotFieldPlacement>): PivotLayout {
@@ -99,12 +107,12 @@ export function patchPivotColumnField(layout: PivotLayout, fieldId: string, patc
   return { ...layout, columns: layout.columns.map((entry) => (entry.fieldId === fieldId ? { ...entry, ...patch, fieldId } : entry)) };
 }
 
-export function setPivotAggregate(layout: PivotLayout, fieldId: string, summarizeBy: PivotAggregateFunction): PivotLayout {
-  return patchPivotValueField(layout, fieldId, { summarizeBy });
+export function setPivotAggregate(layout: PivotLayout, valueId: string, summarizeBy: PivotAggregateFunction): PivotLayout {
+  return patchPivotValueField(layout, valueId, { summarizeBy });
 }
 
-export function setPivotShowAs(layout: PivotLayout, fieldId: string, showAs: PivotShowAs): PivotLayout {
-  return patchPivotValueField(layout, fieldId, { showAs });
+export function setPivotShowAs(layout: PivotLayout, valueId: string, showAs: PivotShowAs): PivotLayout {
+  return patchPivotValueField(layout, valueId, { showAs });
 }
 
 /** Update the Excel row-grand-total column without changing column totals. */

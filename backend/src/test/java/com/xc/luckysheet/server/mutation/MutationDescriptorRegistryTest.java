@@ -476,7 +476,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
                 """);
         OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
-                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"sheet:sheet-1:column:0:range:0","subtotal":{"mode":"automatic"}}],"columns":[],"filters":[{"kind":"manual","family":"manual","fieldId":"sheet:sheet-1:column:0:range:0","scope":"report","mode":"all","memberKeys":[]}],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"fieldId":"sheet:sheet-1:column:1:range:0","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"sheet:sheet-1:column:0:range:0","subtotal":{"mode":"automatic"}}],"columns":[],"filters":[{"kind":"manual","family":"manual","fieldId":"sheet:sheet-1:column:0:range:0","scope":"report","mode":"all","memberKeys":[]}],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:amount","fieldId":"sheet:sheet-1:column:1:range:0","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
         JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
@@ -551,7 +551,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         OperationMutation update = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[{"fieldId":"calculated:margin"}],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"fieldId":"calculated:margin","summarizeBy":"sum"}],"calculatedFields":[{"fieldId":"calculated:margin","name":"Margin","formula":"=amount*1.15"}],"calculatedItems":[{"fieldId":"calculated-item:amount:premium","targetFieldId":"sheet:sheet-1:column:1:range:0","name":"Premium","formula":"=amount*3"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
+                {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[{"fieldId":"calculated:margin"}],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:calculated:margin","fieldId":"calculated:margin","summarizeBy":"sum"}],"calculatedFields":[{"fieldId":"calculated:margin","name":"Margin","formula":"=amount*1.15"}],"calculatedItems":[{"fieldId":"calculated-item:amount:premium","targetFieldId":"sheet:sheet-1:column:1:range:0","name":"Premium","formula":"=amount*3"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
                 """));
 
         JsonNode next = registry.applyPublicMutations(snapshot, List.of(update));
@@ -592,6 +592,8 @@ class MutationDescriptorRegistryTest {
                 """);
         String region = "sheet:sheet-1:column:0:range:0";
         String amount = "sheet:sheet-1:column:1:range:0";
+        String valueId = "value:amount:sum";
+        String countValueId = "value:amount:count";
         ObjectNode pivot = (ObjectNode) mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-filter-scope","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":1}},
                  "target":{"sheetId":"sheet-1","anchor":{"row":5,"column":3}},
@@ -599,12 +601,12 @@ class MutationDescriptorRegistryTest {
                  "layout":{"rows":[{"fieldId":"%s"}],"columns":[],"filters":[
                    {"kind":"manual","family":"manual","fieldId":"%s","mode":"all","memberKeys":[]},
                    {"kind":"condition","family":"label","fieldId":"%s","scope":"report","operator":"begins-with","value":"E"},
-                   {"kind":"top-items","family":"top-items","fieldId":"%s","scope":"field","count":1,"valueFieldId":"%s","direction":"top"},
-                   {"kind":"condition","family":"value","fieldId":"%s","operator":"between","value":10,"value2":50,"valueFieldId":"%s"}],
+                   {"kind":"top-items","family":"top-items","fieldId":"%s","scope":"field","count":1,"valueId":"%s","direction":"top"},
+                   {"kind":"condition","family":"value","fieldId":"%s","operator":"between","value":10,"value2":50,"valueId":"%s"}],
                    "allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},
-                   "values":[{"fieldId":"%s","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},
+                   "values":[{"valueId":"%s","fieldId":"%s","summarizeBy":"sum"},{"valueId":"%s","fieldId":"%s","summarizeBy":"count"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},
                  "refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
-                """.formatted(region, amount, region, region, region, region, amount, amount, amount, amount));
+                """.formatted(region, amount, region, region, region, region, valueId, amount, valueId, valueId, amount, countValueId, amount));
         OperationMutation add = new OperationMutation("pivot.add", "sheet-1", pivot);
         JsonNode current = registry.applyPublicMutations(snapshot, List.of(add));
         JsonNode filters = current.path("sheets").get(0).path("pivots").get(0).path("layout").path("filters");
@@ -612,6 +614,15 @@ class MutationDescriptorRegistryTest {
         assertEquals("report", filters.get(1).path("scope").asText());
         assertEquals("field", filters.get(2).path("scope").asText());
         assertEquals("report", filters.get(3).path("scope").asText());
+        JsonNode values = current.path("sheets").get(0).path("pivots").get(0).path("layout").path("values");
+        assertEquals(2, values.size());
+        assertEquals(2, values.findValues("valueId").size());
+
+        ObjectNode duplicateValuesPivot = (ObjectNode) pivot.deepCopy();
+        ArrayNode duplicateValues = (ArrayNode) duplicateValuesPivot.path("layout").path("values");
+        duplicateValues.add(duplicateValues.get(0).deepCopy());
+        OperationMutation duplicateValuesMutation = new OperationMutation("pivot.add", "sheet-1", duplicateValuesPivot);
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicateValuesMutation, WorkbookAclRole.EDITOR));
 
         ObjectNode invalidScopePivot = (ObjectNode) pivot.deepCopy();
         ((ObjectNode) invalidScopePivot.path("layout").path("filters").get(0)).put("scope", "workspace");

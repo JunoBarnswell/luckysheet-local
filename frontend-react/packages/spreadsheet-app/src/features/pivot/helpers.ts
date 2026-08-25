@@ -40,7 +40,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     filters: [],
     allowMultipleFiltersPerField: true,
     collation: { ...DEFAULT_PIVOT_COLLATION },
-    values: [{ fieldId: valueId, summarizeBy }],
+    values: [{ valueId: `value:${valueId}`, fieldId: valueId, summarizeBy }],
     subtotalLocation: 'bottom',
     showRowGrandTotals: true,
     showColumnGrandTotals: true,

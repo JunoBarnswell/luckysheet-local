@@ -25,7 +25,7 @@ export interface PivotChartSeries {
   id: string;
   name: string;
   columnPath: PivotScalar[];
-  valueFieldId?: string;
+  valueId?: string;
   valueIndex: number;
   values: PivotScalar[];
 }
@@ -74,14 +74,15 @@ export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): 
     const columnCaption = columnPath.map(pivotScalarLabel).join(' / ');
     for (let valueIndex = 0; valueIndex < valueCount; valueIndex += 1) {
       const field = valueFields[valueIndex];
-      const valueFieldId = field?.sourceFieldId ?? field?.fieldId ?? pivot?.layout.values[valueIndex]?.fieldId;
-      const valueCaption = field?.displayName ?? fieldName(valueFieldId, tree);
+      const valueId = field?.valueId ?? pivot?.layout.values[valueIndex]?.valueId;
+      const sourceFieldId = field?.sourceFieldId ?? field?.fieldId ?? pivot?.layout.values[valueIndex]?.fieldId;
+      const valueCaption = field?.displayName ?? fieldName(sourceFieldId, tree);
       const name = columnCaption ? `${columnCaption} ${valueCaption}` : valueCaption;
       series.push({
-        id: `${pivotPathKey(columnPath)}|value:${valueIndex}:${valueFieldId ?? 'unknown'}`,
+        id: `${pivotPathKey(columnPath)}|value:${valueIndex}:${valueId ?? 'unknown'}`,
         name,
         columnPath: [...columnPath],
-        ...(valueFieldId ? { valueFieldId } : {}),
+        ...(valueId ? { valueId } : {}),
         valueIndex,
         values: leaves.map(({ node }) => {
           const cell = node.values.find((candidate) => pivotPathKey(candidate.columnPath) === pivotPathKey(columnPath));

@@ -34,7 +34,7 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
         filters: [],
         allowMultipleFiltersPerField: true,
         collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
-        values: [{ fieldId: amount.fieldId, summarizeBy: 'sum' }],
+        values: [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }],
         subtotalLocation: 'bottom',
         showRowGrandTotals: true,
         showColumnGrandTotals: true,
@@ -176,7 +176,7 @@ describe('WorkbookSession PivotTable integration', () => {
     app.addPivot(pivot);
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
     const nextLayout = structuredClone(pivot.layout);
-    nextLayout.values = [{ fieldId: amount.fieldId, summarizeBy: 'count' }];
+    nextLayout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'count' }];
     const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
     assert.equal(dispatch.status, 'committed');
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
@@ -241,7 +241,7 @@ describe('WorkbookSession PivotTable integration', () => {
     const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: amount.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     app.addPivot(pivot);
     const tree = app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]!;
     const parent = tree.rows[0]!;
