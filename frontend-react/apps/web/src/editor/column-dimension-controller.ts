@@ -1,5 +1,5 @@
 import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth } from '@react-sheets/exchange-excel-ooxml';
-import { DEFAULT_RENDER_THEME, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
+import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
 export interface ColumnWidthPreview {
@@ -97,7 +97,7 @@ export class ColumnDimensionController {
       for (let column = sheet.usedRange.startColumn; column <= sheet.usedRange.endColumn; column += 1) {
         if (sheet.merges.some((merge) => merge.range.startRow !== merge.range.endRow && row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn)) continue;
         const cell = sheet.getCell(row, column);
-        if (!cell?.value) continue;
+        if (!cell || !hasMeasurableCellContent(cell)) continue;
         const availableWidthPx = sheet.columnWidthsPx[column] ?? sheet.defaultColumnWidthPx;
         heightPx = Math.max(heightPx, measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, availableWidthPx, sheet.filterButtons.some((button) => button.row === row && button.column === column)).heightPx);
       }
@@ -122,7 +122,7 @@ export class ColumnDimensionController {
       for (const column of bounded) {
         if (isMultiColumnMerge(sheet, row, column)) continue;
         const cell = sheet.getCell(row, column);
-        if (!cell?.value) continue;
+        if (!cell || !hasMeasurableCellContent(cell)) continue;
         const width = measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, undefined, filterButtons.has(`${row}:${column}`)).widthPx;
         maxima.set(column, Math.max(maxima.get(column) ?? 8, width));
       }
@@ -151,7 +151,7 @@ export class ColumnDimensionController {
         for (let row = startRow; row <= endRow; row += 1) for (const column of columns) {
           if (isMultiColumnMerge(sheet, row, column)) continue;
           const cell = sheet.getCell(row, column);
-          if (cell?.value) cells.push({ column, value: cell.displayValue ?? cell.value, style: cell.style, filterButton: filterButtons.has(`${row}:${column}`) });
+          if (cell && hasMeasurableCellContent(cell)) cells.push({ column, value: cell.displayValue ?? cell.value, style: cell.style, filterButton: filterButtons.has(`${row}:${column}`) });
         }
         worker.postMessage({ kind: 'chunk', taskId, cells });
         await yieldToBrowser();

@@ -1,4 +1,4 @@
-import { DEFAULT_RENDER_THEME, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
+import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
 
 type AutoFitCell = { column: number; value: string; style?: CellRenderStyle; filterButton?: boolean };
 type Request =
@@ -10,8 +10,9 @@ type Request =
 const tasks = new Map<string, { maxima: Map<number, number> }>();
 const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1) : null;
 const context = canvas?.getContext('2d') ?? null;
+const workerScope = typeof self === 'undefined' ? undefined : self;
 
-self.onmessage = (event: MessageEvent<Request>) => {
+if (workerScope) workerScope.onmessage = (event: MessageEvent<Request>) => {
   const request = event.data;
   if (request.kind === 'start') {
     tasks.set(request.taskId, { maxima: new Map(request.columns.map((column) => [column, 8])) });
@@ -25,6 +26,7 @@ self.onmessage = (event: MessageEvent<Request>) => {
   if (!task) return;
   if (request.kind === 'chunk') {
     for (const cell of request.cells) {
+      if (!hasMeasurableCellContent(cell)) continue;
       const width = context
         ? measureCellAutoFit(context, { value: cell.value, displayValue: cell.value, style: cell.style }, DEFAULT_RENDER_THEME, undefined, cell.filterButton).widthPx
         : fallbackWidth(cell);
@@ -33,7 +35,7 @@ self.onmessage = (event: MessageEvent<Request>) => {
     return;
   }
   tasks.delete(request.taskId);
-  self.postMessage({ kind: 'complete', taskId: request.taskId, widths: [...task.maxima].map(([column, widthPx]) => ({ column, widthPx })) });
+  workerScope.postMessage({ kind: 'complete', taskId: request.taskId, widths: [...task.maxima].map(([column, widthPx]) => ({ column, widthPx })) });
 };
 
 function fallbackWidth(cell: AutoFitCell): number {
@@ -41,4 +43,3 @@ function fallbackWidth(cell: AutoFitCell): number {
   const units = [...cell.value].reduce((total, character) => total + (/[^\u0000-\u00ff]/.test(character) ? 1 : 0.55), 0);
   return Math.ceil(units * size + (cell.style?.padding ?? DEFAULT_RENDER_THEME.cellPadding) * 2 + (cell.filterButton ? 18 : 0));
 }
-
