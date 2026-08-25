@@ -332,6 +332,22 @@ function validatePivotGroup(value: unknown): void {
   throw new Error('Pivot group kind is unsupported');
 }
 
+function validatePivotSubtotal(value: unknown): void {
+  const subtotal = requireRecord(value, 'Pivot subtotal');
+  if (subtotal.mode === 'automatic' || subtotal.mode === 'none') {
+    validateExactKeys(subtotal, ['mode'], 'Pivot subtotal');
+    return;
+  }
+  if (subtotal.mode === 'custom') {
+    validateExactKeys(subtotal, ['mode', 'functions'], 'Pivot custom subtotal');
+    const functions = subtotal.functions;
+    const supported = ['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'];
+    if (!Array.isArray(functions) || functions.length === 0 || new Set(functions).size !== functions.length || !functions.every((item) => supported.includes(String(item)))) throw new Error('Pivot custom subtotal functions are invalid');
+    return;
+  }
+  throw new Error('Pivot subtotal mode is unsupported');
+}
+
 /** Rejects every non-canonical Pivot field at the transport boundary. */
 export function validatePivotDefinition(value: unknown): asserts value is PivotDefinition {
   const pivot = requireRecord(value, 'Pivot definition');
@@ -360,9 +376,9 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     fieldIds.add(field.fieldId);
   }
   const layout = requireRecord(pivot.layout, 'Pivot layout');
-  validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'showSubtotals', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
+  validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
-    || typeof layout.showSubtotals !== 'boolean' || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+    || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
   if (layout.expansion !== undefined) {
     const expansion = requireRecord(layout.expansion, 'Pivot expansion');
     validateExactKeys(expansion, ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'], 'Pivot expansion');
@@ -372,9 +388,10 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   }
   const validatePlacement = (rawPlacement: unknown): void => {
     const placement = requireRecord(rawPlacement, 'Pivot placement');
-    validateExactKeys(placement, ['fieldId', 'sort', 'group'], 'Pivot placement');
+    validateExactKeys(placement, ['fieldId', 'sort', 'group', 'subtotal'], 'Pivot placement');
     if (!isNonEmptyString(placement.fieldId) || !fieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
     if (placement.group !== undefined) validatePivotGroup(placement.group);
+    if (placement.subtotal !== undefined) validatePivotSubtotal(placement.subtotal);
   };
   layout.rows.forEach(validatePlacement);
   layout.columns.forEach(validatePlacement);

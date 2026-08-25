@@ -51,6 +51,13 @@ export type PivotAggregateFunction =
   | 'varp'
   | 'distinct-count';
 
+export type PivotSubtotalDefinition =
+  | { mode: 'automatic' }
+  | { mode: 'none' }
+  | { mode: 'custom'; functions: PivotAggregateFunction[] };
+
+export type PivotSubtotalLocation = 'top' | 'bottom' | 'off';
+
 export interface PivotSourceRelationship {
   id: string;
   left: { sheetId: SheetId; fieldId: string };
@@ -105,6 +112,7 @@ export interface PivotFieldPlacement {
   fieldId: string;
   sort?: PivotSort;
   group?: PivotGroup;
+  subtotal?: PivotSubtotalDefinition;
 }
 
 export type PivotManualFilter = {
@@ -183,7 +191,7 @@ export interface PivotLayout {
   values: PivotValueField[];
   calculatedFields?: PivotCalculatedField[];
   calculatedItems?: PivotCalculatedItem[];
-  showSubtotals: boolean;
+  subtotalLocation: PivotSubtotalLocation;
   showGrandTotals: boolean;
   compact: boolean;
   repeatLabels: boolean;
@@ -262,6 +270,12 @@ export interface PivotResultCell {
   sourceRowPaths: PivotSourceRowPath[];
 }
 
+export interface PivotResultValueField extends PivotValueField {
+  sourceFieldId: string;
+  subtotalFunction?: PivotAggregateFunction;
+  subtotalFieldId?: string;
+}
+
 export interface PivotResultNode {
   nodeId?: string;
   path?: string[];
@@ -282,6 +296,7 @@ export interface PivotResultTree {
   pivotId: string;
   fields: PivotFieldCatalog;
   columnPaths: PivotScalar[][];
+  valueFields?: PivotResultValueField[];
   rows: PivotResultNode[];
   grandTotal: PivotResultCell | null;
   sourceRowPaths: PivotSourceRowPath[];

@@ -292,7 +292,7 @@ const isPivotExpansion = (value: unknown): boolean => isRecord(value)
 const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && Array.isArray(value.rows) && Array.isArray(value.columns) && Array.isArray(value.filters)
   && Array.isArray(value.values)
-  && typeof value.showSubtotals === 'boolean' && typeof value.showGrandTotals === 'boolean'
+  && ['top', 'bottom', 'off'].includes(String(value.subtotalLocation)) && typeof value.showGrandTotals === 'boolean'
   && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean'
   && (value.expansion === undefined || isPivotExpansion(value.expansion));
 const isPivotPresentation = (value: unknown): value is PivotPresentation => isRecord(value)

@@ -10,6 +10,7 @@ import {
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
   validateUserPreferences,
+  validatePivotDefinition,
   validateWorkbookSnapshot,
 } from './index';
 
@@ -238,4 +239,18 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
       drawingPayloads: {},
     }],
   }), /legacy drawing collections/);
+});
+
+test('Pivot subtotal contract rejects malformed custom functions and accepts field-owned modes', () => {
+  const base = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-subtotals',
+    source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+    target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [{ fieldId: 'region', name: 'Region', dataType: 'text' as const, ordinal: 0 }, { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 }] },
+    layout: { rows: [{ fieldId: 'region', subtotal: { mode: 'none' as const } }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+  };
+  validatePivotDefinition(base);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'region', subtotal: { mode: 'custom', functions: [] } }] } }), /custom subtotal functions/);
 });

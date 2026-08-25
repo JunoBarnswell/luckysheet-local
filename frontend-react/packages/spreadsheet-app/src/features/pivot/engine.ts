@@ -17,6 +17,7 @@ import type {
   PivotResultCell,
   PivotResultNode,
   PivotResultTree,
+  PivotResultValueField,
   PivotScalar,
   PivotSource,
   PivotSourceRowPath,
@@ -414,7 +415,7 @@ function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldC
     ...placement.sort,
     ...(placement.sort.valueFieldId ? { valueFieldId: resolveFieldId(placement.sort.valueFieldId, catalog) } : {}),
   } : undefined;
-  return { fieldId, sort, group: placement.group };
+  return { fieldId, sort, group: placement.group, subtotal: placement.subtotal ? structuredClone(placement.subtotal) : undefined };
 }
 
 function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): PivotFilter {
@@ -773,7 +774,25 @@ function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: Pivo
   return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer)) && timelines.every((timeline) => matchesTimeline(row, timeline)));
 }
 
-function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail'): PivotResultCell[] {
+function resultValueFields(layout: PivotLayout): PivotResultValueField[] {
+  const customFunctions = [...layout.rows, ...layout.columns].flatMap((placement) => placement.subtotal?.mode === 'custom'
+    ? placement.subtotal.functions.map((fn) => ({ fieldId: placement.fieldId, fn }))
+    : []);
+  if (!customFunctions.length) return layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  return layout.values.flatMap((field) => {
+    const base = { ...field, sourceFieldId: field.fieldId };
+    const extras = customFunctions.filter(({ fieldId, fn }, index, all) => fn !== field.summarizeBy && all.findIndex((candidate) => candidate.fieldId === fieldId && candidate.fn === fn) === index).map(({ fieldId, fn }) => ({
+      ...field,
+      sourceFieldId: field.fieldId,
+      subtotalFunction: fn,
+      subtotalFieldId: fieldId,
+      displayName: `${field.displayName ?? field.fieldId} (${fn})`,
+    }));
+    return [base, ...extras];
+  });
+}
+
+function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string): PivotResultCell[] {
   return columns.map((column, columnIndex) => {
     const nodeRows = new Set(rows);
     const columnRows = column.rows.filter((candidate) => nodeRows.has(candidate));
@@ -783,12 +802,14 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotValue
       kind,
       columnPath: column.values,
       sourceRowPaths: columnRows.flatMap((row) => row.paths),
-      values: values.map((value) => aggregatePivotValues(columnRows, value.fieldId, value.summarizeBy)),
+      values: values.map((value) => aggregatePivotValues(columnRows, value.sourceFieldId, kind === 'subtotal' && value.subtotalFieldId === subtotalFieldId
+        ? value.subtotalFunction ?? value.summarizeBy
+        : value.summarizeBy)),
     };
   });
 }
 
-function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotValueField[], showSubtotals: boolean, prefix: string[] = []): PivotResultNode[] {
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], prefix: string[] = []): PivotResultNode[] {
   // A Pivot with no Row fields still owns one data row: the root aggregation
   // crossing every Column path and Values placement. Grand Total is a
   // separate axis total and must not stand in for this matrix row.
@@ -813,20 +834,21 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
-    const children = resultNodes(group.rows, placements, depth + 1, columns, values, showSubtotals, path);
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, path);
     const leaf = children.length === 0;
+    const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
     return {
       nodeId: path.join('/'),
       path,
-      kind: leaf ? 'leaf' : 'subtotal',
+      kind: subtotal ? 'subtotal' : 'leaf',
       fieldId,
       memberKey: member,
       key: group.values[0] ?? null,
       label: display(group.values[0] ?? null),
       depth,
       children,
-      values: resultCells(group.rows, columns, values, path, showSubtotals && !leaf ? 'subtotal' : 'detail'),
-      subtotal: showSubtotals && !leaf,
+      values: resultCells(group.rows, columns, values, path, subtotal ? 'subtotal' : 'detail', subtotal ? placement.fieldId : undefined),
+      subtotal,
       sourceRowPaths: group.rows.flatMap((row) => row.paths),
     };
   });
@@ -899,11 +921,12 @@ function computePivotResultFromTable(
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter)));
   filtered = topItems(filtered, definition.layout.filters);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns) : [{ values: [], rows: filtered }];
+  const resultFields = resultValueFields(definition.layout);
   const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
     columnPath: [],
-    values: definition.layout.values.map((field) => aggregatePivotValues(filtered, field.fieldId, field.summarizeBy)),
+    values: resultFields.map((field) => aggregatePivotValues(filtered, field.sourceFieldId, field.summarizeBy)),
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   } : null;
   const tree: PivotResultTree = {
@@ -911,11 +934,12 @@ function computePivotResultFromTable(
     pivotId: definition.id,
     fields: definition.fieldCatalog,
     columnPaths: columns.map((column) => column.values),
-    rows: resultNodes(filtered, definition.layout.rows, 0, columns, definition.layout.values, definition.layout.showSubtotals),
+    valueFields: resultFields,
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation),
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
-  applyShowAs(tree, definition.layout.values);
+  applyShowAs(tree, resultFields);
   const revisions = getPivotRevisionKey(workbook, pivot);
   tree.sourceRevision = sourceRevisionOverride ?? revisions.sourceRevision;
   tree.layoutRevision = revisions.layoutRevision;
@@ -968,8 +992,15 @@ function flattenNodes(nodes: PivotResultNode[], layout: PivotLayout, labels: str
   for (const node of nodes) {
     const currentLabels = [...labels, node.label];
     const visible = parentVisible;
-    output.push({ node, labels: currentLabels, visible });
-    if (visible && nodeExpanded(node, layout)) output.push(...flattenNodes(node.children, layout, currentLabels, true));
+    const includeNode = !node.children.length || node.subtotal;
+    const children = visible && nodeExpanded(node, layout) ? flattenNodes(node.children, layout, currentLabels, true) : [];
+    if (layout.subtotalLocation === 'bottom' && node.subtotal) {
+      output.push(...children);
+      output.push({ node, labels: currentLabels, visible });
+    } else {
+      if (includeNode) output.push({ node, labels: currentLabels, visible });
+      output.push(...children);
+    }
   }
   return output;
 }
@@ -1087,7 +1118,8 @@ function buildPivotGridProjectionCandidate(
   }
   const cells: PivotProjectionCell[] = [];
   const rowHeaderCount = Math.max(definition.layout.rows.length, 1);
-  const valueColumnCount = Math.max(tree ? tree.columnPaths.length * definition.layout.values.length : definition.layout.values.length, 1);
+  const values = tree?.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  const valueColumnCount = Math.max(tree ? tree.columnPaths.length * values.length : values.length, 1);
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
@@ -1100,7 +1132,6 @@ function buildPivotGridProjectionCandidate(
   }
   for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
   const columnPaths = tree?.columnPaths ?? [];
-  const values = definition.layout.values;
   for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
     const path = columnPaths[columnIndex] ?? [];
     for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
@@ -1266,9 +1297,10 @@ export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): P
   const tree = computePivotResult(workbook, pivot);
   const definition = normalizePivotDefinition(workbook, pivot);
   const rows = tree.rows.map((node) => ({ keys: [node.label], values: node.values.flatMap((cell) => cell.values) }));
+  const values = tree.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
   const headers = [
     ...definition.layout.rows.map((field) => fieldName(field.fieldId, definition.fieldCatalog)),
-    ...tree.columnPaths.flatMap((path) => definition.layout.values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.fieldId, definition.fieldCatalog)}` : field.displayName ?? fieldName(field.fieldId, definition.fieldCatalog))),
+    ...tree.columnPaths.flatMap((path) => values.map((field) => path.length ? `${path.map(display).join(' / ')} ${field.displayName ?? fieldName(field.sourceFieldId, definition.fieldCatalog)}` : field.displayName ?? fieldName(field.sourceFieldId, definition.fieldCatalog))),
   ];
   return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }

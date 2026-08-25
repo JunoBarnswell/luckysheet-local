@@ -186,7 +186,7 @@ describe('exchange-excel-ooxml', () => {
         { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
       ] },
-      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
       presentation: { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true } },
     });
@@ -222,7 +222,7 @@ describe('exchange-excel-ooxml', () => {
       layout: {
         rows: [{ fieldId: 'date', group: { kind: 'date', unit: 'month', start: 45292, end: 45657 } }, { fieldId: 'category', group: { kind: 'manual', groups: [{ groupId: 'ab', name: 'AB', items: [createPivotMemberKey('A'), createPivotMemberKey('B')] }, { groupId: 'c', name: 'C', items: [createPivotMemberKey('C')] }] } }],
         columns: [{ fieldId: 'amount', group: { kind: 'number', interval: 10, start: 0, end: 100 } }],
-        filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false,
+        filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false,
       },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
@@ -258,7 +258,7 @@ describe('exchange-excel-ooxml', () => {
         { fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 1 },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 2 },
       ] },
-      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push(
@@ -315,7 +315,7 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
-    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow"/><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields></pivotTableDefinition>');
+    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0"/><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields></pivotTableDefinition>');
     const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
@@ -323,6 +323,8 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
+    assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.subtotal, { mode: 'none' });
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.subtotalLocation, 'top');
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'editable');
     const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadOpcPackageGraph(exported.buffer);
@@ -330,6 +332,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /pivotCaches/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
     assert.match(strFromU8(output.files['[Content_Types].xml']!), /pivotTable/);
+    assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /defaultSubtotal="0"/);
   });
 
   it('round-trips styles, merges, scoped names, freeze and the 1904 date system', async () => {

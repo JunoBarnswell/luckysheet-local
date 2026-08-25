@@ -127,6 +127,7 @@ export interface NativePivotTableField {
   compact?: boolean;
   outline?: boolean;
   collapsedItemIndexes?: number[];
+  subtotal?: { mode: 'automatic' | 'none' | 'custom'; functions?: string[] };
 }
 
 export interface NativePivotDataField {
@@ -150,7 +151,7 @@ export interface NativePivotTableDefinition {
   dataFields: NativePivotDataField[];
   showRowGrandTotals?: boolean;
   showColumnGrandTotals?: boolean;
-  showSubtotals?: boolean;
+  subtotalLocation?: 'top' | 'bottom' | 'off';
   repeatLabels?: boolean;
   compactData?: boolean;
   styleName?: string;

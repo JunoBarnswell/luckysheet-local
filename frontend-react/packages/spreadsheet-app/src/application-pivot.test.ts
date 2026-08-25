@@ -33,7 +33,7 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
         columns: [],
         filters: [],
         values: [{ fieldId: amount.fieldId, summarizeBy: 'sum' }],
-        showSubtotals: true,
+        subtotalLocation: 'bottom',
         showGrandTotals: true,
         compact: true,
         repeatLabels: false,

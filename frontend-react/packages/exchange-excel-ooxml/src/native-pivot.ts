@@ -143,6 +143,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         ...optionalBoolean(definition.attrs.compactData, 'compactData'),
         ...optionalBoolean(definition.attrs.repeatAllLabels, 'repeatLabels'),
         ...optionalBoolean(definition.attrs.showDrill, 'showButtons'),
+        subtotalLocation: definition.attrs.showSubtotals === '0' ? 'off' : definition.attrs.subtotalTop === '1' || definition.attrs.subtotalTop === 'true' ? 'top' : 'bottom',
         ...(style?.attrs.name ? { styleName: style.attrs.name } : {}),
         ...(style ? { styleOptions: {
           showRowHeaders: style.attrs.showRowHeaders === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showRowHeaders : style.attrs.showRowHeaders !== '0',
@@ -369,14 +370,15 @@ export function mapNativePivotDefinition(
   const fieldId = (index: number): string => fields[index]?.fieldId ?? nativeFieldId(cache.cacheId, index);
   const placement = (index: number): PivotFieldPlacement => {
     const group = nativePivotGroup(cache.fields[index], cache, fieldId(index));
-    return { fieldId: fieldId(index), ...(group ? { group } : {}) };
+    const subtotal = nativePivotSubtotal(table.fields[index]);
+    return { fieldId: fieldId(index), ...(group ? { group } : {}), ...(subtotal ? { subtotal } : {}) };
   };
   const layout: PivotLayout = {
     rows: table.rowFields.map(placement),
     columns: table.columnFields.map(placement),
     filters: table.pageFields.map((index) => ({ kind: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
     values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
-    showSubtotals: table.showSubtotals ?? true,
+    subtotalLocation: table.subtotalLocation ?? 'bottom',
     showGrandTotals: (table.showRowGrandTotals ?? true) || (table.showColumnGrandTotals ?? true),
     compact: table.compactData ?? table.fields.some((field) => field.compact === true),
     repeatLabels: table.repeatLabels ?? false,
@@ -858,6 +860,8 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
   const rows = pivot.layout.rows.map(fieldIndex).filter((index) => index >= 0);
   const columns = pivot.layout.columns.map(fieldIndex).filter((index) => index >= 0);
   const pages = pivot.layout.filters.map(fieldIndex).filter((index) => index >= 0);
+  const subtotalForField = (index: number) => pivot.layout.rows.find((placement) => fieldIndex(placement) === index)?.subtotal
+    ?? pivot.layout.columns.find((placement) => fieldIndex(placement) === index)?.subtotal;
   const dataFields = pivot.layout.values.map((value) => ({ field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) })).filter((value) => value.field >= 0);
   const oldAnchor = old?.locationRef ? parseA1(old.locationRef.split(':')[0] ?? '') : undefined;
   const locationRef = oldAnchor
@@ -883,9 +887,15 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     name: old?.name ?? (pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable'),
     part, sheetPart, relationshipId: old?.relationshipId ?? '', cacheId: cache.cacheId, pivotId: pivot.id,
     locationRef,
-    fields: source.fields.map((_, index) => ({ index, ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}), ...(pivot.layout.compact ? { compact: true } : {}), ...((collapsedItemIndexes.get(index)?.length ?? 0) > 0 ? { collapsedItemIndexes: [...new Set(collapsedItemIndexes.get(index))] } : {}) })),
+    fields: source.fields.map((_, index) => ({
+      index,
+      ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}),
+      ...(pivot.layout.compact ? { compact: true } : {}),
+      ...((collapsedItemIndexes.get(index)?.length ?? 0) > 0 ? { collapsedItemIndexes: [...new Set(collapsedItemIndexes.get(index))] } : {}),
+      ...(subtotalForField(index) ? { subtotal: structuredClone(subtotalForField(index)) } : {}),
+    })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
-    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, showSubtotals: pivot.layout.showSubtotals, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
+    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
     ...(styleName ? { styleName } : {}),
     ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
     showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,
@@ -948,14 +958,24 @@ function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScal
 }
 
 function buildPivotTableXml(table: NativePivotTableDefinition): string {
-  const fields = table.fields.map((field) => { const items = field.collapsedItemIndexes?.length ? `<items count="${field.collapsedItemIndexes.length}">${field.collapsedItemIndexes.map((index) => `<item x="${index}" sd="0"/>`).join('')}</items>` : ''; return `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}>${items}</pivotField>`; }).join('');
+  const fields = table.fields.map((field) => { const items = field.collapsedItemIndexes?.length ? `<items count="${field.collapsedItemIndexes.length}">${field.collapsedItemIndexes.map((index) => `<item x="${index}" sd="0"/>`).join('')}</items>` : ''; const subtotal = nativePivotSubtotalAttrs(field.subtotal); return `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}${subtotal}>${items}</pivotField>`; }).join('');
   const rows = table.rowFields.map((field) => `<field x="${field}"/>`).join('');
   const columns = table.columnFields.map((field) => `<field x="${field}"/>`).join('');
   const pages = table.pageFields.map((field) => `<pageField fld="${field}"/>`).join('');
   const data = table.dataFields.map((field) => `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}/>`).join('');
   const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
   const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
-  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${style}</pivotTableDefinition>`);
+  const subtotalAttrs = table.subtotalLocation === 'off' ? ' showSubtotals="0"' : table.subtotalLocation === 'top' ? ' subtotalTop="1"' : ' subtotalTop="0"';
+  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${style}</pivotTableDefinition>`);
+}
+
+function nativePivotSubtotalAttrs(subtotal: NativePivotTableField['subtotal']): string {
+  if (!subtotal || subtotal.mode === 'automatic') return subtotal ? ' defaultSubtotal="1"' : '';
+  if (subtotal.mode === 'none') return ' defaultSubtotal="0"';
+  const attrs: Record<string, string> = { defaultSubtotal: '0' };
+  const names: Record<string, string> = { sum: 'sumSubtotal', count: 'countSubtotal', 'count-numbers': 'countASubtotal', average: 'averageSubtotal', max: 'maxSubtotal', min: 'minSubtotal', product: 'productSubtotal', stdev: 'stdDevSubtotal', stdevp: 'stdDevpSubtotal', var: 'varSubtotal', varp: 'varPSubtotal', 'distinct-count': 'distinctCountSubtotal' };
+  for (const fn of subtotal.functions ?? []) { const name = names[fn]; if (name) attrs[name] = '1'; }
+  return Object.entries(attrs).map(([name, value]) => ` ${name}="${value}"`).join('');
 }
 
 function buildDisplayCells(pivot: PivotDefinition, table: NativePivotTableDefinition, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): Record<string, Record<string, CellData>> {
@@ -1119,7 +1139,28 @@ function parseBoolean(value: string, label: string): boolean {
   throw new Error(`${label} must be boolean`);
 }
 
-function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] { return children(node, 'pivotField').map((field, index) => ({ index, ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}), ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}), ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}), ...((() => { const indexes = children(child(field, 'items'), 'item').flatMap((item) => item.attrs.sd === '0' && item.attrs.x !== undefined ? [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)] : []); return indexes.length ? { collapsedItemIndexes: indexes } : {}; })()) })); }
+function nativePivotSubtotal(field: NativePivotTableField | undefined): NonNullable<PivotFieldPlacement['subtotal']> | undefined {
+  const subtotal = field?.subtotal;
+  if (!subtotal) return undefined;
+  return subtotal.mode === 'custom' ? { mode: 'custom', functions: (subtotal.functions ?? []).map(mapAggregate) } : { mode: subtotal.mode };
+}
+
+function parsePivotFieldSubtotal(field: XmlNode, index: number): NativePivotTableField['subtotal'] | undefined {
+  const attrs = field.attrs;
+  const enabled: Array<[string, string]> = [
+    ['sumSubtotal', 'sum'], ['countSubtotal', 'count'], ['countASubtotal', 'count-numbers'], ['averageSubtotal', 'average'],
+    ['maxSubtotal', 'max'], ['minSubtotal', 'min'], ['productSubtotal', 'product'], ['stdDevSubtotal', 'stdev'], ['stdDevpSubtotal', 'stdevp'],
+    ['varSubtotal', 'var'], ['varPSubtotal', 'varp'], ['distinctCountSubtotal', 'distinct-count'],
+  ];
+  const functions = enabled.flatMap(([name, value]) => attrs[name] === '1' || attrs[name] === 'true' ? [value] : []);
+  if (functions.length) return { mode: 'custom', functions };
+  if (attrs.defaultSubtotal === '0' || attrs.subtotal === '0') return { mode: 'none' };
+  if (attrs.defaultSubtotal === '1' || attrs.subtotal === '1') return { mode: 'automatic' };
+  void index;
+  return undefined;
+}
+
+function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] { return children(node, 'pivotField').map((field, index) => ({ index, ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}), ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}), ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}), ...(parsePivotFieldSubtotal(field, index) ? { subtotal: parsePivotFieldSubtotal(field, index) } : {}), ...((() => { const indexes = children(child(field, 'items'), 'item').flatMap((item) => item.attrs.sd === '0' && item.attrs.x !== undefined ? [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)] : []); return indexes.length ? { collapsedItemIndexes: indexes } : {}; })()) })); }
 function parseFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'field').map((field) => requiredInteger(field.attrs.x, `${label}.field.x`)); }
 function parseDataFields(node: XmlNode | undefined): NativePivotDataField[] { return children(node, 'dataField').map((field) => ({ field: requiredInteger(field.attrs.fld, 'dataField.fld'), ...(field.attrs.name ? { name: field.attrs.name } : {}), ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}), ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}) })); }
 function readSheetNames(workbook: XmlNode, rels: XlsxRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }
