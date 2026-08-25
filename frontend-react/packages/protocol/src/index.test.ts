@@ -365,6 +365,38 @@ test('Pivot calculated definitions extend the effective field set without catalo
     ...calculated,
     layout: { ...calculated.layout, calculatedFields: [{ fieldId: 'calculated:bad', name: 'Bad', formula: '', unsupported: true }] as never },
   }), /unsupported field/);
+  assert.throws(() => validatePivotDefinition({
+    ...calculated,
+    layout: { ...calculated.layout, calculatedItems: [{ fieldId: 'calculated-item:margin:bad', targetFieldId: 'calculated:margin', name: 'Bad', formula: '=amount' }] },
+  }), /cannot be a calculated field/);
+  assert.throws(() => validatePivotDefinition({
+    ...calculated,
+    layout: { ...calculated.layout, calculatedItems: [{ ...calculated.layout.calculatedItems![0]!, formula: '=North&1' }] },
+  }), /unsupported syntax/);
+});
+
+test('Pivot calculated item protocol rejects unknown, ambiguous, and cyclic item formulas', () => {
+  const base = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-calculated-item-validation',
+    source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 } },
+    target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [
+      { fieldId: 'region', name: 'Region', dataType: 'text' as const, ordinal: 0, values: ['North', 'South'] },
+      { fieldId: 'category', name: 'Category', dataType: 'text' as const, ordinal: 1, values: ['North', 'South'] },
+      { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 2, values: [100, 50] },
+    ] },
+    layout: { rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ valueId: 'value:amount', fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+  };
+  const item = { fieldId: 'calculated-item:region:commission', targetFieldId: 'region', name: 'Commission', formula: '=Region[North]*0.1' };
+  validatePivotDefinition({ ...base, layout: { ...base.layout, calculatedItems: [item] } });
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, calculatedItems: [{ ...item, formula: '=Missing+1' }] } }), /unknown item/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, calculatedItems: [{ ...item, formula: '=North+1' }] } }), /ambiguous/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, calculatedItems: [
+    { fieldId: 'calculated-item:region:a', targetFieldId: 'region', name: 'A', formula: '=B+1' },
+    { fieldId: 'calculated-item:region:b', targetFieldId: 'region', name: 'B', formula: '=A+1' },
+  ] } }), /dependency cycle/);
 });
 
 test('Pivot layout-only update accepts a new calculated field without fieldCatalog', () => {

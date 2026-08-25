@@ -12,6 +12,7 @@ import type {
   PivotGridProjection,
   PivotHitTest,
   PivotLayout,
+  PivotCalculatedItem,
   PivotMemberKey,
   PivotModel,
   PivotProjectionCell,
@@ -56,7 +57,9 @@ import {
   pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
+  parsePivotCalculatedItemFormula,
 } from '@react-sheets/core-model';
+import type { PivotCalculatedItemFormulaToken } from '@react-sheets/core-model';
 import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
 import { collectNameReferences, FormulaEngine, isFormulaError, parseFormula, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
@@ -832,6 +835,54 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   };
 }
 
+/**
+ * Validate calculated-item definitions without widening the source field
+ * catalogue. A calculated item is a derived member identity owned by its
+ * target field; it is never a field that can be placed on an axis or in
+ * Values. This runtime check mirrors the protocol/backend effective-field
+ * boundary so direct local projection cannot accept a shape the server will
+ * reject.
+ */
+function normalizeCalculatedItemDefinitions(
+  calculatedItems: PivotLayout['calculatedItems'] = [],
+  catalog: PivotFieldCatalog,
+  calculatedFieldIds: ReadonlySet<string> = new Set(),
+): void {
+  const fieldIds = new Set(catalog.fields.map((field) => field.fieldId));
+  const itemIds = new Set<string>();
+  const itemNames = new Set<string>();
+  for (const item of calculatedItems) {
+    if (!item || typeof item !== 'object' || typeof item.fieldId !== 'string' || !item.fieldId.trim()
+      || typeof item.targetFieldId !== 'string' || !item.targetFieldId.trim()
+      || typeof item.name !== 'string' || !item.name.trim()
+      || typeof item.formula !== 'string' || !item.formula.trim()) {
+      throw new Error('Pivot calculated item definition is invalid');
+    }
+    if (fieldIds.has(item.fieldId) || calculatedFieldIds.has(item.fieldId) || !itemIds.add(item.fieldId)) {
+      throw new Error(`Pivot calculated item identity collides with an effective field or another item: ${item.fieldId}`);
+    }
+    if (calculatedFieldIds.has(item.targetFieldId)) {
+      throw new Error(`Pivot calculated item target field cannot be a calculated field: ${item.targetFieldId}`);
+    }
+    const targetField = catalog.fields.find((field) => field.fieldId === item.targetFieldId);
+    if (!targetField) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    const nameKey = `${targetField.fieldId}|${item.name}`;
+    if (!itemNames.add(nameKey)) throw new Error(`Pivot calculated item member is duplicated: ${item.name}`);
+    if ((targetField.values ?? []).some((value) => same(value, item.name))) {
+      throw new Error(`Pivot calculated item member already exists in source data: ${item.name}`);
+    }
+  }
+}
+
+function appendCalculatedItemMembers(catalog: PivotFieldCatalog, calculatedItems: readonly PivotCalculatedItem[] = []): void {
+  for (const item of calculatedItems) {
+    const target = catalog.fields.find((field) => field.fieldId === item.targetFieldId);
+    if (!target) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    const values = target.values ?? [];
+    if (!values.some((value) => same(value, item.name))) target.values = [...values, item.name];
+  }
+}
+
 /** Canonicalize field catalog values against the live source. Calculation has one model shape. */
 export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotDefinition {
   const source = getPivotSource(pivot);
@@ -839,22 +890,22 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
   const fieldCatalog = source.kind === 'data-source'
     ? getPivotFieldCatalog(workbook, pivot)
     : normalizeFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
-  const calculatedFields = [
-    ...(pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
-    ...(pivot.layout.calculatedItems ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
-  ];
+  const calculatedFields = (pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name }));
   for (const calculated of calculatedFields) {
     if (!fieldCatalog.fields.some((field) => field.fieldId === calculated.fieldId || field.name === calculated.name)) {
       fieldCatalog.fields.push({ fieldId: calculated.fieldId, name: calculated.name, dataType: 'mixed', ordinal: fieldCatalog.fields.length, values: [] });
     }
   }
+  normalizeCalculatedItemDefinitions(pivot.layout.calculatedItems, fieldCatalog, new Set(calculatedFields.map((field) => field.fieldId)));
+  appendCalculatedItemMembers(fieldCatalog, pivot.layout.calculatedItems);
+  const layout = normalizeLayout(pivot.layout, fieldCatalog);
   return {
     schema: 'PivotDefinition',
     id: pivot.id,
     source,
     target: getPivotTarget(pivot),
     fieldCatalog,
-    layout: normalizeLayout(pivot.layout, fieldCatalog),
+    layout,
     refreshPolicy: normalizePivotRefreshPolicy(pivot.refreshPolicy),
     presentation: {
       ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
@@ -924,31 +975,228 @@ function rewriteCalculatedFormula(formula: string, fields: SourceField[]): strin
   return `=${rewritten}`;
 }
 
-function calculateRowFormula(row: SourceRow, formula: string, fields: SourceField[]): PivotScalar | null {
-  const sourceError = Object.values(row.values).find(isPivotError);
-  if (sourceError) return sourceError;
-  const engine = new FormulaEngine({ defaultSheetId: 'pivot' });
-  fields.forEach((field, index) => {
-    const value = row.values[field.fieldId] ?? null;
-    engine.setValue({ sheetId: 'pivot', row: 0, column: index }, isPivotError(value) ? null : value);
-  });
-  engine.setFormula({ sheetId: 'pivot', row: 1, column: 0 }, rewriteCalculatedFormula(formula, fields));
-  return formulaScalar(engine.getCellValue({ sheetId: 'pivot', row: 1, column: 0 }));
+interface CalculatedItemReference {
+  fieldId: string;
+  member: PivotScalar;
+  itemId?: string;
 }
 
-function applyCalculatedItems(rows: SourceRow[], fields: PivotFieldDefinition[], calculatedItems: PivotLayout['calculatedItems'] = []): SourceRow[] {
-  if (!calculatedItems.length) return rows;
-  const currentFields: SourceField[] = fields.map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
-  return rows.map((row) => {
-    const values = { ...row.values };
-    for (const calculated of calculatedItems) {
-      const fieldId = calculated.fieldId;
-      const targetFieldId = resolveFieldId(calculated.targetFieldId, { fields: currentFields.map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType ?? 'mixed' })) });
-      if (targetFieldId && same(values[targetFieldId] ?? null, calculated.name)) values[fieldId] = calculateRowFormula({ ...row, values }, calculated.formula, currentFields);
-      if (!currentFields.some((field) => field.fieldId === fieldId)) currentFields.push({ fieldId, name: calculated.name, ordinal: currentFields.length, dataType: 'mixed' });
+interface CalculatedItemPlanEntry extends PivotCalculatedItem {
+  references: CalculatedItemReference[];
+  rewrittenFormula: string;
+}
+
+interface CalculatedItemPlan {
+  ordered: CalculatedItemPlanEntry[];
+}
+
+function itemMemberMatches(value: PivotScalar, text: string): boolean {
+  if (value === null || isPivotError(value)) return false;
+  return String(value).toLocaleUpperCase() === text.toLocaleUpperCase();
+}
+
+function itemFieldLabel(field: PivotFieldDefinition): string {
+  return field.name || field.fieldId;
+}
+
+function calculatedItemMemberKey(fieldId: string, value: PivotScalar): string {
+  return `${fieldId}|${pivotMemberKey(createPivotMemberKey(value))}`;
+}
+
+/**
+ * Resolve the deliberately small, canonical Pivot-item formula grammar.
+ *
+ * Item formulas are not worksheet formulas: bare names identify a member and
+ * `Field[Member]` is the qualified form.  Resolving names before handing the
+ * expression to FormulaEngine keeps worksheet cell references out of this
+ * contract and makes ambiguous cross-field names fail closed.
+ */
+function resolveCalculatedItemReferences(
+  formula: string,
+  fields: readonly PivotFieldDefinition[],
+  calculatedItems: readonly PivotCalculatedItem[],
+): { references: CalculatedItemReference[]; rewritten: string } {
+  const source = formula.trim().replace(/^=/, '').trim();
+  const tokens = parsePivotCalculatedItemFormula(formula);
+  const membersByField = new Map<string, PivotScalar[]>();
+  for (const field of fields) membersByField.set(field.fieldId, [...(field.values ?? [])]);
+  for (const item of calculatedItems) {
+    const members = membersByField.get(item.targetFieldId);
+    if (!members) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    if (!members.some((value) => same(value, item.name))) members.push(item.name);
+  }
+
+  const fieldByReference = (reference: string): PivotFieldDefinition | undefined => fields.find((field) => field.fieldId === reference || itemFieldLabel(field) === reference);
+  const resolveMember = (field: PivotFieldDefinition, text: string): PivotScalar => {
+    const candidates = (membersByField.get(field.fieldId) ?? []).filter((value) => itemMemberMatches(value, text));
+    if (candidates.length !== 1) {
+      if (!candidates.length) throw new Error(`Pivot calculated item references unknown item ${field.name}[${text}]`);
+      throw new Error(`Pivot calculated item reference is ambiguous: ${field.name}[${text}]`);
     }
-    return { ...row, values };
+    return candidates[0]!;
+  };
+  const itemByMember = new Map<string, PivotCalculatedItem>();
+  for (const item of calculatedItems) itemByMember.set(calculatedItemMemberKey(item.targetFieldId, item.name), item);
+  const references: CalculatedItemReference[] = [];
+  const replacements: Array<{ start: number; end: number; cell: string }> = [];
+  const referenceCells = new Map<string, string>();
+  const cellFor = (reference: CalculatedItemReference): string => {
+    const key = calculatedItemMemberKey(reference.fieldId, reference.member);
+    const existing = referenceCells.get(key);
+    if (existing) return existing;
+    const cell = `${columnLabel(referenceCells.size)}1`;
+    referenceCells.set(key, cell);
+    references.push(reference);
+    return cell;
+  };
+  const occupied: Array<{ start: number; end: number }> = [];
+  const addReplacement = (start: number, end: number, reference: CalculatedItemReference): void => {
+    if (occupied.some((range) => start < range.end && end > range.start)) return;
+    occupied.push({ start, end });
+    replacements.push({ start, end, cell: cellFor(reference) });
+  };
+  const referenceFor = (field: PivotFieldDefinition, member: PivotScalar): CalculatedItemReference => ({
+    fieldId: field.fieldId,
+    member,
+    ...(itemByMember.get(calculatedItemMemberKey(field.fieldId, member))?.fieldId
+      ? { itemId: itemByMember.get(calculatedItemMemberKey(field.fieldId, member))!.fieldId }
+      : {}),
   });
+  const resolveToken = (token: Extract<PivotCalculatedItemFormulaToken, { kind: 'item' }>): void => {
+    if (token.fieldReference !== undefined) {
+      const field = fieldByReference(token.fieldReference);
+      if (!field) throw new Error(`Pivot calculated item references unknown field: ${token.fieldReference}`);
+      addReplacement(token.start, token.end, referenceFor(field, resolveMember(field, token.member)));
+      return;
+    }
+    // Numeric literals are represented by number tokens, so an unqualified
+    // token can only be a textual item.  It must resolve to exactly one field;
+    // the target field is not an implicit disambiguation rule.
+    if (/^[A-Z]{1,3}[1-9][0-9]*$/i.test(token.member)) {
+      throw new Error(`Pivot calculated item worksheet reference is unsupported: ${token.member}`);
+    }
+    const candidates = fields.flatMap((field) => (membersByField.get(field.fieldId) ?? [])
+      .filter((value) => typeof value === 'string' && itemMemberMatches(value, token.member))
+      .map((member) => ({ field, member })));
+    if (!candidates.length) throw new Error(`Pivot calculated item references unknown item: ${token.member}`);
+    if (candidates.length !== 1) throw new Error(`Pivot calculated item reference is ambiguous: ${token.member}`);
+    addReplacement(token.start, token.end, referenceFor(candidates[0]!.field, candidates[0]!.member));
+  };
+  for (const token of tokens) if (token.kind === 'item') resolveToken(token);
+  const rewritten = replacements.sort((left, right) => right.start - left.start).reduce((current, replacement) => `${current.slice(0, replacement.start)}${replacement.cell}${current.slice(replacement.end)}`, source);
+  try {
+    parseFormula(`=${rewritten}`);
+  } catch (error) {
+    throw new Error(`Pivot calculated item formula is invalid: ${formula}`, { cause: error });
+  }
+  return { references, rewritten: `=${rewritten}` };
+}
+
+function createCalculatedItemPlan(
+  fields: readonly PivotFieldDefinition[],
+  calculatedItems: readonly PivotCalculatedItem[] = [],
+): CalculatedItemPlan {
+  const entries = new Map<string, CalculatedItemPlanEntry>();
+  for (const item of calculatedItems) {
+    if (entries.has(item.fieldId)) throw new Error(`Pivot calculated item is duplicated: ${item.fieldId}`);
+    if (!item.name.trim() || !item.formula.trim()) throw new Error(`Pivot calculated item definition is invalid: ${item.fieldId}`);
+    if (!fields.some((field) => field.fieldId === item.targetFieldId)) throw new Error(`Pivot calculated item target field is unknown: ${item.targetFieldId}`);
+    entries.set(item.fieldId, { ...item, references: [], rewrittenFormula: item.formula });
+  }
+  const orderedEntries = [...entries.values()];
+  for (const entry of orderedEntries) {
+    const resolved = resolveCalculatedItemReferences(entry.formula, fields, calculatedItems);
+    const references = resolved.references.map((reference) => ({ ...reference, ...(entries.has(reference.itemId ?? '') ? { itemId: reference.itemId } : {}) }));
+    entry.references = references;
+    entry.rewrittenFormula = resolved.rewritten;
+  }
+  const state = new Map<string, 'visiting' | 'visited'>();
+  const ordered: CalculatedItemPlanEntry[] = [];
+  const visit = (fieldId: string, path: string[]): void => {
+    const current = state.get(fieldId);
+    if (current === 'visited') return;
+    if (current === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, fieldId].join(' -> ')}`);
+    const entry = entries.get(fieldId);
+    if (!entry) return;
+    state.set(fieldId, 'visiting');
+    for (const reference of entry.references) if (reference.itemId) visit(reference.itemId, [...path, fieldId]);
+    state.set(fieldId, 'visited');
+    ordered.push(entry);
+  };
+  for (const entry of orderedEntries) visit(entry.fieldId, []);
+  return { ordered };
+}
+
+function calculatedItemContextKey(row: SourceRow, contextFieldIds: readonly string[], placements: readonly PivotFieldPlacement[]): string {
+  return JSON.stringify(contextFieldIds.map((fieldId) => {
+    const placement = placements.find((candidate) => candidate.fieldId === fieldId);
+    return createPivotMemberKey(grouped(row.values[fieldId] ?? null, placement?.group));
+  }));
+}
+
+function evaluateCalculatedItemFormula(
+  entry: CalculatedItemPlanEntry,
+  rows: readonly SourceRow[],
+  valueFieldId: string,
+): PivotScalar {
+  const engine = new FormulaEngine({ defaultSheetId: 'pivot-calculated-item' });
+  entry.references.forEach((reference, index) => {
+    const memberRows = rows.filter((row) => same(row.values[reference.fieldId] ?? null, reference.member));
+    const value = aggregatePivotValues(memberRows, valueFieldId, 'sum');
+    if (isPivotError(value)) throw new Error(`Pivot calculated item source aggregate failed: ${entry.fieldId} (${value.code})`);
+    engine.setValue({ sheetId: 'pivot-calculated-item', row: 0, column: index }, value);
+  });
+  try {
+    engine.setFormula({ sheetId: 'pivot-calculated-item', row: 1, column: 0 }, entry.rewrittenFormula);
+  } catch (error) {
+    throw new Error(`Pivot calculated item formula evaluation failed: ${entry.fieldId}`, { cause: error });
+  }
+  const value = formulaScalar(engine.getCellValue({ sheetId: 'pivot-calculated-item', row: 1, column: 0 }));
+  if (value === null && entry.references.length > 0 && rows.length === 0) return null;
+  return value;
+}
+
+function applyCalculatedItems(
+  rows: SourceRow[],
+  fields: PivotFieldDefinition[],
+  layout: PivotLayout,
+  valueFields: readonly PivotValueField[],
+): SourceRow[] {
+  const calculatedItems = layout.calculatedItems ?? [];
+  if (!calculatedItems.length) return rows;
+  const plan = createCalculatedItemPlan(fields, calculatedItems);
+  let currentRows = rows;
+  const axisPlacements = [...layout.rows, ...layout.columns];
+  for (const entry of plan.ordered) {
+    const contextFieldIds = axisPlacements
+      .map((placement) => placement.fieldId)
+      // A calculated item is a new member of its target field.  Every other
+      // axis field remains part of the summary context, even when the formula
+      // explicitly references one of its members; otherwise a cross-field
+      // qualified reference would silently aggregate across that axis.
+      .filter((fieldId, index, all) => fieldId !== entry.targetFieldId && all.indexOf(fieldId) === index);
+    const contexts = new Map<string, SourceRow[]>();
+    for (const row of rows) {
+      const key = calculatedItemContextKey(row, contextFieldIds, axisPlacements);
+      const context = contexts.get(key) ?? [];
+      context.push(row);
+      contexts.set(key, context);
+    }
+    const generated = [...contexts.values()].map((context) => {
+      const template = context[0];
+      if (!template) throw new Error(`Pivot calculated item context is empty: ${entry.fieldId}`);
+      const contextKey = calculatedItemContextKey(template, contextFieldIds, axisPlacements);
+      const candidateRows = currentRows.filter((row) => calculatedItemContextKey(row, contextFieldIds, axisPlacements) === contextKey);
+      const values = { ...template.values, [entry.targetFieldId]: entry.name };
+      for (const valueField of valueFields) {
+        if (valueField.fieldId === entry.targetFieldId) continue;
+        values[valueField.fieldId] = evaluateCalculatedItemFormula(entry, candidateRows, valueField.fieldId);
+      }
+      return { values, paths: [...new Map(context.flatMap((row) => row.paths).map((path) => [stableSerialize(path), path])).values()] };
+    });
+    currentRows = [...currentRows, ...generated];
+  }
+  return currentRows;
 }
 
 function calculatedFieldReferenceIds(formula: string, fields: SourceField[], definitions: Map<string, PivotCalculatedField>, ownerId: string): string[] {
@@ -987,10 +1235,8 @@ function calculatedFieldReferenceIds(formula: string, fields: SourceField[], def
   return references;
 }
 
-function createCalculatedFieldPlan(fields: PivotFieldDefinition[], calculatedFields: PivotLayout['calculatedFields'] = [], calculatedItems: PivotLayout['calculatedItems'] = []): CalculatedFieldPlan {
-  const calculatedItemIds = new Set((calculatedItems ?? []).map((field) => field.fieldId));
+function createCalculatedFieldPlan(fields: PivotFieldDefinition[], calculatedFields: PivotLayout['calculatedFields'] = []): CalculatedFieldPlan {
   const descriptors: SourceField[] = fields
-    .filter((field) => !calculatedItemIds.has(field.fieldId))
     .map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
   const definitions = new Map<string, PivotCalculatedField>();
   for (const calculated of calculatedFields ?? []) {
@@ -1842,10 +2088,10 @@ function computePivotResultFromTable(
   if (calculatedStructuralReference) throw new Error(`Pivot calculated field is only valid in Values: ${calculatedStructuralReference}`);
   const calculatedItemStructuralReference = structuralReferences.find((field) => calculatedItemIds.has(field));
   if (calculatedItemStructuralReference) throw new Error(`Pivot calculated item is only valid in Values: ${calculatedItemStructuralReference}`);
-  const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
+  const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields);
   const calculatedFields = createCalculatedFieldEvaluator(calculatedPlan);
-  const baseFields = definition.fieldCatalog.fields.filter((field) => !calculatedFieldIds.has(field.fieldId) && !calculatedItemIds.has(field.fieldId));
-  const rows = applyCalculatedItems(rawTable.rows, baseFields, definition.layout.calculatedItems);
+  const resultFields = resultValueFields(definition.layout);
+  const rows = applyCalculatedItems(rawTable.rows, definition.fieldCatalog.fields, definition.layout, resultFields);
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
@@ -1863,7 +2109,6 @@ function computePivotResultFromTable(
   filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
   filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition);
-  const resultFields = resultValueFields(definition.layout);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields) : [{ values: [], rows: filtered }];
   const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
