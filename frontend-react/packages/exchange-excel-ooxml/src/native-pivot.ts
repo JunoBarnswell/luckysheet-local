@@ -28,7 +28,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotRefreshPolicy, pivotMemberKey, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -47,6 +47,7 @@ import type {
   NativePivotTableField,
   XlsxRelationship,
 } from './types';
+import { builtInNumberFormat, collectCustomNumberFormatIds, numberFormatId } from './native-number-format';
 
 const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const NS_DOC_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -96,6 +97,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
   const workbookBytes = input.files[workbookPart];
   if (!workbookBytes) throw new Error('Native Pivot reader requires xl/workbook.xml');
   const workbook = firstElement(parseXml(strFromU8(workbookBytes)), 'workbook');
+  const numberFormats = readNativeNumberFormats(input.files['xl/styles.xml']);
   const workbookRels = input.relationships[workbookPart] ?? [];
   const sheetNames = readSheetNames(workbook, workbookRels, input.sheetPartById);
   const caches: NativePivotCacheDefinition[] = [];
@@ -152,7 +154,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         rowFields: parseFieldIndexes(child(definition, 'rowFields'), 'rowFields'),
         columnFields: parseFieldIndexes(child(definition, 'colFields'), 'colFields'),
         pageFields: parsePageFieldIndexes(child(definition, 'pageFields'), 'pageFields'),
-        dataFields: parseDataFields(child(definition, 'dataFields')),
+        dataFields: parseDataFields(child(definition, 'dataFields'), numberFormats),
         ...(child(definition, 'pivotFilters') ? { pivotFilters: parsePivotFilters(child(definition, 'pivotFilters')) } : {}),
         ...optionalBoolean(definition.attrs.rowGrandTotals ?? definition.attrs.showRowGrandTotals, 'showRowGrandTotals'),
         ...optionalBoolean(definition.attrs.colGrandTotals ?? definition.attrs.showColumnGrandTotals, 'showColumnGrandTotals'),
@@ -569,7 +571,7 @@ export function mapNativePivotDefinition(
     filters: [...pageFilters, ...manualItemFilters, ...mappedFilters.filters],
     allowMultipleFiltersPerField: table.multipleFieldFilters ?? true,
     collation: { ...DEFAULT_PIVOT_COLLATION },
-    values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
+    values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.numberFormat ? { numberFormat: normalizePivotNumberFormat(data.numberFormat) } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
     subtotalLocation: table.subtotalLocation ?? 'bottom',
     showRowGrandTotals: table.showRowGrandTotals ?? true,
     showColumnGrandTotals: table.showColumnGrandTotals ?? true,
@@ -671,6 +673,7 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
   const usedCaches = new Set<number>();
   const caches: NativePivotCacheDefinition[] = [];
   const tables: NativePivotTableDefinition[] = [];
+  const customNumberFormatIds = collectCustomNumberFormatIds(input.snapshot);
   const displayCellsBySheetPart: NativePivotPackageUpdate['displayCellsBySheetPart'] = {};
   const partNumbers = nextPartNumbers(files);
   let nextCacheId = Math.max(0, ...existing.caches.map((cache) => cache.cacheId)) + 1;
@@ -773,7 +776,7 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
     const table = buildNativeTable(pivot, cache, tablePart, targetPart!, oldTable, sourceRows);
     tables.push(table);
     if (oldTable) usedTables.add(oldTable.part);
-    files[tablePart] = strToU8(buildPivotTableXml(table));
+    files[tablePart] = strToU8(buildPivotTableXml(table, customNumberFormatIds));
     const sheetCells = displayCellsBySheetPart[targetPart!] ??= {};
     mergeDisplayCells(sheetCells, buildDisplayCells(pivot, table, sourceRows), targetSheet);
   }
@@ -1243,7 +1246,10 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     .filter((index) => index >= 0))];
   const subtotalForField = (index: number) => pivot.layout.rows.find((placement) => fieldIndex(placement) === index)?.subtotal
     ?? pivot.layout.columns.find((placement) => fieldIndex(placement) === index)?.subtotal;
-  const dataFields = pivot.layout.values.map((value) => ({ field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) })).filter((value) => value.field >= 0);
+  const dataFields = pivot.layout.values.map((value) => {
+    const numberFormat = normalizePivotNumberFormat(value.numberFormat);
+    return { field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(numberFormat ? { numberFormat } : {}), ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) };
+  }).filter((value) => value.field >= 0);
   const placementForField = (index: number): PivotFieldPlacement | undefined => [...pivot.layout.rows, ...pivot.layout.columns].find((placement) => fieldIndex(placement) === index);
   const nativeSortForField = (index: number): Pick<NativePivotTableField, 'sortType' | 'nonAutoSortDefault' | 'autoSortScope'> => {
     const sort = placementForField(index)?.sort;
@@ -1408,7 +1414,7 @@ function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScal
   return withXmlDeclaration(`<pivotCacheRecords xmlns="${NS_MAIN}" count="${rows.length}">${records}</pivotCacheRecords>`);
 }
 
-function buildPivotTableXml(table: NativePivotTableDefinition): string {
+function buildPivotTableXml(table: NativePivotTableDefinition, customNumberFormatIds: ReadonlyMap<string, number>): string {
   const fields = table.fields.map((field) => {
     const itemIndexes = [...new Set([...(field.collapsedItemIndexes ?? []), ...(field.hiddenItemIndexes ?? [])])].sort((left, right) => left - right);
     const hiddenItems = new Set(field.hiddenItemIndexes ?? []);
@@ -1422,7 +1428,11 @@ function buildPivotTableXml(table: NativePivotTableDefinition): string {
   const rows = table.rowFields.map((field) => `<field x="${field}"/>`).join('');
   const columns = table.columnFields.map((field) => `<field x="${field}"/>`).join('');
   const pages = table.pageFields.map((field) => `<pageField fld="${field}"/>`).join('');
-  const data = table.dataFields.map((field) => `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}/>`).join('');
+  const data = table.dataFields.map((field) => {
+    const numFmtId = field.numberFormat === undefined ? undefined : numberFormatId(field.numberFormat, customNumberFormatIds);
+    if (field.numberFormat !== undefined && numFmtId === undefined) throw new Error(`Pivot value field numberFormat cannot be serialized: ${field.numberFormat}`);
+    return `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}${numFmtId === undefined ? '' : ` numFmtId="${numFmtId}"`}/>`;
+  }).join('');
   const filters = table.pivotFilters?.length ? `<pivotFilters count="${table.pivotFilters.length}">${table.pivotFilters.map(buildPivotFilterXml).join('')}</pivotFilters>` : '';
   const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
   const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
@@ -1846,6 +1856,29 @@ function optionalInteger(value: string | undefined, label: string): Record<strin
   return value === undefined ? undefined : { [label.endsWith('iMeasureFld') ? 'measureField' : label.endsWith('iMeasureFld2') ? 'secondMeasureField' : label.endsWith('evalOrder') ? 'evalOrder' : 'id']: requiredInteger(value, label) };
 }
 
+function readNativeNumberFormats(bytes: Uint8Array | undefined): Map<number, string> {
+  const formats = new Map<number, string>();
+  if (!bytes) return formats;
+  const root = firstElement(parseXml(strFromU8(bytes)), 'styleSheet');
+  for (const node of children(child(root, 'numFmts'), 'numFmt')) {
+    const id = requiredInteger(node.attrs.numFmtId, 'numFmt.numFmtId');
+    const format = node.attrs.formatCode;
+    if (!format) throw new Error(`numFmt ${id} is missing formatCode`);
+    if (builtInNumberFormat(id) !== undefined) throw new Error(`numFmt ${id} illegally overrides a built-in format`);
+    if (formats.has(id)) throw new Error(`numFmt ${id} is duplicated`);
+    formats.set(id, normalizePivotNumberFormat(format)!);
+  }
+  return formats;
+}
+
+function nativeNumberFormat(idText: string | undefined, custom: ReadonlyMap<number, string>): string | undefined {
+  if (idText === undefined) return undefined;
+  const id = requiredInteger(idText, 'dataField.numFmtId');
+  const format = builtInNumberFormat(id) ?? custom.get(id);
+  if (format === undefined) throw new Error(`dataField.numFmtId ${id} has no declared number format`);
+  return normalizePivotNumberFormat(format);
+}
+
 function nativeFilterScalar(value: string): NativePivotScalar {
   if (value === '') return '';
   if (value.startsWith('#')) return nativePivotError(value);
@@ -1855,7 +1888,18 @@ function nativeFilterScalar(value: string): NativePivotScalar {
 }
 function parseFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'field').map((field) => requiredInteger(field.attrs.x, `${label}.field.x`)); }
 function parsePageFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'pageField').map((field) => requiredInteger(field.attrs.fld, `${label}.pageField.fld`)); }
-function parseDataFields(node: XmlNode | undefined): NativePivotDataField[] { return children(node, 'dataField').map((field) => ({ field: requiredInteger(field.attrs.fld, 'dataField.fld'), ...(field.attrs.name ? { name: field.attrs.name } : {}), ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}), ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}) })); }
+function parseDataFields(node: XmlNode | undefined, customNumberFormats: ReadonlyMap<number, string> = new Map()): NativePivotDataField[] {
+  return children(node, 'dataField').map((field) => {
+    const numberFormat = nativeNumberFormat(field.attrs.numFmtId, customNumberFormats);
+    return {
+      field: requiredInteger(field.attrs.fld, 'dataField.fld'),
+      ...(field.attrs.name ? { name: field.attrs.name } : {}),
+      ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}),
+      ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}),
+      ...(numberFormat ? { numberFormat } : {}),
+    };
+  });
+}
 function readSheetNames(workbook: XmlNode, rels: XlsxRelationship[], parts: Record<string, string>): Map<string, { name: string; part: string }> { const result = new Map<string, { name: string; part: string }>(); for (const [id, part] of Object.entries(parts)) { const node = children(child(workbook, 'sheets'), 'sheet').find((candidate) => `sheet-${candidate.attrs.sheetId}` === id); if (node?.attrs.name) result.set(id, { name: node.attrs.name, part }); } for (const node of children(child(workbook, 'sheets'), 'sheet')) { const relation = rels.find((candidate) => candidate.id === (node.attrs['r:id'] ?? node.attrs.id)); if (relation && node.attrs.name) result.set(`sheet-${node.attrs.sheetId ?? result.size + 1}`, { name: node.attrs.name, part: resolveTarget('xl/workbook.xml', relation.target) }); } return result; }
 function requireRelationship(rels: XlsxRelationship[], id: string, type: string, context: string): XlsxRelationship { const relation = rels.find((candidate) => candidate.id === id); if (!relation) throw new Error(`${context} relation ${id} is missing`); if (relation.type !== type && !relation.type.endsWith(`/${type.split('/').pop()!}`)) throw new Error(`${context} relation ${id} has unexpected type ${relation.type}`); return relation; }
 function firstElement(root: XmlNode, name: string): XmlNode { const found = localName(root.name) === name ? root : descendants(root, name)[0]; if (!found) throw new Error(`OOXML part is missing <${name}>`); return found; }

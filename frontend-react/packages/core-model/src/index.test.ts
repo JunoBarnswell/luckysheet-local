@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CellMatrix,
   buildPivotTimelineTiles,
+  normalizePivotNumberFormat,
   normalizePivotTimelinePeriod,
   pivotTimelineInstant,
   WorkbookModel,
@@ -68,6 +69,14 @@ test('Pivot timeline tiles provide canonical Years, Quarters, Months and Days le
   assert.equal(days.at(-1)?.label, '2025-01-01');
   assert.equal(days.some((tile) => tile.label === '2024-01-16' && !tile.hasData), true);
   assert.throws(() => buildPivotTimelineTiles(values, 'invalid' as never), /Invalid Pivot timeline level/);
+});
+
+test('Pivot value field number formats are canonical and fail closed', () => {
+  assert.equal(normalizePivotNumberFormat('  #,##0.00  '), '#,##0.00');
+  assert.equal(normalizePivotNumberFormat(undefined), undefined);
+  assert.throws(() => normalizePivotNumberFormat(''), /must not be empty/);
+  assert.throws(() => normalizePivotNumberFormat('[Red'), /unterminated/);
+  assert.throws(() => normalizePivotNumberFormat('0.00\\'), /dangling escape/);
 });
 
 test('WorksheetModel handles merges and anchors properly', () => {

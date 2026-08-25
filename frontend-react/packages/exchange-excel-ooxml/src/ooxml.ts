@@ -42,6 +42,7 @@ import {
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
+import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds } from './native-number-format';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1130,13 +1131,7 @@ function buildStyles(snapshot: WorkbookSnapshot, originalStylesXml?: string): st
       }
     }
   }
-  const custom = new Map<string, number>();
-  let nextFormat = 164;
-  for (const record of [...records, ...templateRecords]) {
-    if (record.numberFormat && !builtInNumberFormatId(record.numberFormat)) {
-      if (!custom.has(record.numberFormat)) custom.set(record.numberFormat, nextFormat++);
-    }
-  }
+  const custom = collectCustomNumberFormatIds(snapshot);
   const numFmts = [...custom.entries()].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${encodeXml(code)}"/>`).join('');
   const fontIndexes = new Map<string, number>();
   const fillIndexes = new Map<string, number>();
@@ -2585,16 +2580,6 @@ function isScalar(value: unknown): value is string | number | boolean {
 
 function randomId(): string {
   return Math.random().toString(36).slice(2, 10);
-}
-
-function builtInNumberFormat(id: number): string | undefined {
-  const formats: Record<number, string> = { 0: 'General', 1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 9: '0%', 10: '0.00%', 14: 'm/d/yy', 20: 'h:mm', 21: 'h:mm:ss', 22: 'm/d/yy h:mm' };
-  return formats[id];
-}
-
-function builtInNumberFormatId(format: string): number | undefined {
-  for (const id of [0, 1, 2, 3, 4, 9, 10, 14, 20, 21, 22]) if (builtInNumberFormat(id) === format) return id;
-  return undefined;
 }
 
 function normalizeHorizontal(value: string): CellStyle['horizontalAlignment'] | undefined {
