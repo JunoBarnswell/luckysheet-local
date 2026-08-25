@@ -7,7 +7,7 @@ import { registerDrawingFeature } from '../drawing';
 import { registerPivotFeature } from './index';
 import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
 import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
-import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './engine';
+import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition } from './engine';
 import { buildPivotWriteback } from './writeback';
 import { clearPivotFilterFamily, clearPivotFiltersForField, setPivotColumnGrandTotals, setPivotRowGrandTotals, upsertPivotFilter } from './panel-state';
 
@@ -450,5 +450,28 @@ describe('pivot feature contract', () => {
     assert.equal(clearPivotFilterFamily(withValue, region, 'label').filters.length, 2);
     assert.equal(clearPivotFiltersForField(withValue, region).filters.length, 0);
     assert.throws(() => computePivotResult(workbook, { ...pivot, layout: { ...withValue, allowMultipleFiltersPerField: false } }), /Multiple Pivot filters are disabled/);
+  });
+
+  it('canonicalizes omitted filter scope from axis placement and rejects field scope outside rows or columns', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId;
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId;
+    pivot.layout.rows = [{ fieldId: region }];
+    pivot.layout.values = [{ fieldId: amount, summarizeBy: 'sum' }];
+    pivot.layout.filters = [
+      { kind: 'manual', family: 'manual', fieldId: region, mode: 'all', memberKeys: [] },
+      { kind: 'manual', family: 'manual', fieldId: amount, mode: 'all', memberKeys: [] },
+    ];
+    const normalized = normalizePivotDefinition(workbook, pivot);
+    assert.deepEqual(normalized.layout.filters.map((filter) => filter.scope), ['field', 'report']);
+    assert.throws(() => normalizePivotDefinition(workbook, {
+      ...pivot,
+      layout: {
+        ...pivot.layout,
+        filters: [{ kind: 'manual', family: 'manual', fieldId: amount, scope: 'field', mode: 'all', memberKeys: [] }],
+      },
+    }), /row or column field/);
   });
 });

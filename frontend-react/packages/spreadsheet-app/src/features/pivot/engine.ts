@@ -714,7 +714,7 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
   if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId}`);
   if (filter.kind === 'manual') {
     if (filter.family !== 'manual') throw new Error(`Pivot manual filter family is invalid: ${fieldId}`);
-    return { kind: 'manual', family: 'manual', fieldId, scope: filter.scope ?? 'report', mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
+    return { kind: 'manual', family: 'manual', fieldId, scope: filter.scope, mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
   }
   if (filter.kind === 'top-items') {
     if (filter.family !== 'top-items') throw new Error(`Pivot top-items filter family is invalid: ${fieldId}`);
@@ -745,7 +745,15 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   const filters = layout.filters.map((entry) => normalizeFilter(entry, catalog));
   const normalizedRows = layout.rows.map((entry) => normalizePlacement(entry, catalog, valueFieldIds));
   const normalizedColumns = layout.columns.map((entry) => normalizePlacement(entry, catalog, valueFieldIds));
-  for (const filter of filters) {
+  const axisFieldIds = new Set([...normalizedRows, ...normalizedColumns].map((entry) => entry.fieldId));
+  const scopedFilters = filters.map((filter) => {
+    const scope = filter.scope ?? (axisFieldIds.has(filter.fieldId) ? 'field' : 'report');
+    if (scope === 'field' && !axisFieldIds.has(filter.fieldId)) {
+      throw new Error(`Pivot field filter must target a row or column field: ${filter.fieldId}`);
+    }
+    return { ...filter, scope };
+  });
+  for (const filter of scopedFilters) {
     if (filter.kind !== 'manual' || (filter.scope ?? 'report') !== 'field') continue;
     const placement = [...normalizedRows, ...normalizedColumns].find((entry) => entry.fieldId === filter.fieldId && entry.group);
     const field = catalog.fields.find((entry) => entry.fieldId === filter.fieldId);
@@ -756,7 +764,7 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   }
   const identities = new Set<string>();
   const fields = new Set<string>();
-  for (const filter of filters) {
+  for (const filter of scopedFilters) {
     const identity = `${filter.fieldId}|${filter.scope ?? 'report'}|${filter.family}`;
     if (identities.has(identity)) throw new Error(`Duplicate Pivot filter family: ${identity}`);
     identities.add(identity);
@@ -768,7 +776,7 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
     ...structuredClone(layout),
     rows: normalizedRows,
     columns: normalizedColumns,
-    filters,
+    filters: scopedFilters,
     values,
     expansion: layout.expansion ? {
       expandedNodeIds: [...layout.expansion.expandedNodeIds],

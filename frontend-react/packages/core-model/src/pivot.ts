@@ -869,10 +869,14 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     return { ...field, ...(numberFormat === undefined ? {} : { numberFormat }) };
   });
   createPivotCollator(canonical.layout.collation);
+  const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
   const identities = new Set<string>();
   for (const filter of canonical.layout.filters) {
     const expectedFamily = filter.kind === 'manual' ? 'manual' : filter.kind === 'top-items' ? 'top-items' : filter.family;
     if (filter.family !== expectedFamily) throw new Error(`Pivot ${input.id} has an invalid filter family`);
+    if (filter.scope === 'field' && !axisFields.has(filter.fieldId)) {
+      throw new Error(`Pivot ${input.id} field filter must target a row or column field`);
+    }
     const identity = pivotFilterIdentity(filter);
     if (identities.has(identity)) throw new Error(`Pivot ${input.id} contains duplicate filter family ${identity}`);
     identities.add(identity);
@@ -883,7 +887,6 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(canonical.presentation?.styleOptions ?? {}) },
     ...(canonical.presentation?.displayOptions ? { displayOptions: normalizePivotDisplayOptions(canonical.presentation.displayOptions) } : {}),
   };
-  const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
   canonical.layout.filters = canonical.layout.filters.map((filter) => ({
     ...filter,
     scope: filter.scope ?? (axisFields.has(filter.fieldId) ? 'field' : 'report'),

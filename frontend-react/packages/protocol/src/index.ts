@@ -549,6 +549,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   };
   layout.rows.forEach(validatePlacement);
   layout.columns.forEach(validatePlacement);
+  const axisFieldIds = new Set<string>([...layout.rows, ...layout.columns].map((placement) => String((placement as Record<string, unknown>).fieldId)));
   const filterIdentities = new Set<string>();
   const filterFields = new Set<string>();
   for (const rawFilter of layout.filters) {
@@ -584,7 +585,8 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
       if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !effectiveFieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
-    const scope = filter.scope ?? 'report';
+    const scope = filter.scope ?? (axisFieldIds.has(filter.fieldId) ? 'field' : 'report');
+    if (scope === 'field' && !axisFieldIds.has(filter.fieldId)) throw new Error('Pivot field filter must target a row or column field');
     const identity = `${filter.fieldId}|${scope}|${String(filter.family)}`;
     if (filterIdentities.has(identity)) throw new Error('Pivot filter family is duplicated');
     filterIdentities.add(identity);
