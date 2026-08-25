@@ -76,7 +76,7 @@ export function assertPivotDefinition(workbook: WorkbookModel, pivot: PivotModel
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' || (filter.kind === 'condition' && filter.valueFieldId) ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
     ...definition.layout.values.map((entry) => entry.fieldId),
   ];
   const unknown = references.find((field) => field && !fields.has(field));

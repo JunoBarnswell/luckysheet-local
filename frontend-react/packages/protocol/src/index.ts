@@ -443,6 +443,13 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     const placement = requireRecord(rawPlacement, 'Pivot placement');
     validateExactKeys(placement, ['fieldId', 'sort', 'group', 'subtotal'], 'Pivot placement');
     if (!isNonEmptyString(placement.fieldId) || !fieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
+    if (placement.sort !== undefined) {
+      const sort = requireRecord(placement.sort, 'Pivot sort');
+      validateExactKeys(sort, ['direction', 'by', 'valueFieldId'], 'Pivot sort');
+      if (!['ascending', 'descending'].includes(String(sort.direction)) || (sort.by !== undefined && !['label', 'value'].includes(String(sort.by)))) throw new Error('Pivot sort is invalid');
+      if (sort.valueFieldId !== undefined && (!isNonEmptyString(sort.valueFieldId) || !fieldIds.has(sort.valueFieldId))) throw new Error('Pivot sort valueFieldId is invalid');
+      if (sort.by === 'value' && sort.valueFieldId === undefined) throw new Error('Pivot value sort requires valueFieldId');
+    }
     if (placement.group !== undefined) validatePivotGroup(placement.group);
     if (placement.subtotal !== undefined) validatePivotSubtotal(placement.subtotal);
   };
@@ -452,13 +459,20 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     const filter = requireRecord(rawFilter, 'Pivot filter');
     if (!isNonEmptyString(filter.fieldId) || !fieldIds.has(filter.fieldId)) throw new Error('Pivot filter fieldId is invalid');
     if (filter.kind === 'manual') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'mode', 'memberKeys'], 'Pivot manual filter');
+      validateExactKeys(filter, ['kind', 'fieldId', 'scope', 'mode', 'memberKeys'], 'Pivot manual filter');
+      if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot manual filter scope is invalid');
       if (!['all', 'include', 'exclude'].includes(String(filter.mode)) || !Array.isArray(filter.memberKeys)) throw new Error('Pivot manual filter is invalid');
       filter.memberKeys.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual filter member ${String(index)}`));
     } else if (filter.kind === 'condition') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'operator', 'value'], 'Pivot condition filter');
+      validateExactKeys(filter, ['kind', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'wholeDay'], 'Pivot condition filter');
+      if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
+      if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
+      if (!['equals', 'not-equals', 'contains', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'].includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid');
+      if (!(filter.value === null || ['string', 'number', 'boolean'].includes(typeof filter.value))) throw new Error('Pivot condition value is invalid');
+      if (filter.wholeDay !== undefined && typeof filter.wholeDay !== 'boolean') throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      validateExactKeys(filter, ['kind', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
       if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
   }

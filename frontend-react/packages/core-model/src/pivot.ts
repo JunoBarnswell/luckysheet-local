@@ -135,9 +135,12 @@ export type PivotFilter =
   | {
     kind: 'condition';
     fieldId: string;
+    /** Optional measure identity for native value filters. */
+    valueFieldId?: string;
     scope?: 'report' | 'field';
     operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
     value: PivotScalar;
+    wholeDay?: boolean;
   }
   | {
     kind: 'top-items';
@@ -244,6 +247,30 @@ export interface PivotNativeCacheFlags {
   enableRefresh?: boolean;
 }
 
+/**
+ * Native Pivot filters which cannot be represented by the canonical filter
+ * algebra remain explicit boundary-owned metadata. The original attributes
+ * are retained so an import/export round trip cannot silently broaden or
+ * remove a filter that the runtime does not understand.
+ */
+export interface PivotNativeFilterMetadata {
+  fieldIndex: number;
+  type: string;
+  attributes: Record<string, string>;
+}
+
+export interface PivotNativeAutoSortMetadata {
+  fieldIndex: number;
+  sortType?: 'manual' | 'ascending' | 'descending';
+  nonAutoSortDefault?: boolean;
+  attributes: Record<string, string>;
+  references: Array<{
+    field: number;
+    selected?: boolean;
+    itemIndexes?: number[];
+  }>;
+}
+
 export interface PivotNativeMetadata {
   /** Stable native/cache identity used when several PivotTables share a cache. */
   cacheKey?: string;
@@ -258,7 +285,11 @@ export interface PivotNativeMetadata {
    */
   cacheFlags?: PivotNativeCacheFlags;
   fieldBindings?: Record<string, { cacheFieldIndex: number; sourceName?: string }>;
-  /** Only identifiers and style/display attributes may cross the model boundary. */
+  /** Native filters retained when their exact semantics exceed PivotFilter. */
+  preservedPivotFilters?: PivotNativeFilterMetadata[];
+  /** Native auto-sort scopes retained when their exact semantics exceed PivotSort. */
+  preservedAutoSortScopes?: PivotNativeAutoSortMetadata[];
+  /** Only canonical identities, presentation, and explicit native-preservation records cross the model boundary. */
   preservedFeatures?: Array<'external-connection' | 'olap' | 'consolidation' | 'macro' | 'custom-xml' | 'slicer' | 'timeline'>;
 }
 

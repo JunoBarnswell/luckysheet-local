@@ -390,7 +390,7 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
-    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0"/><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields></pivotTableDefinition>');
+    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
     const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
@@ -402,6 +402,13 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.refreshOnLoad, false);
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.cacheFlags, {});
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.subtotal, { mode: 'none' });
+    assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.sort, { direction: 'descending', by: 'label' });
+    assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.filters, [
+      { kind: 'condition', fieldId: 'native:cache:1:field:0', operator: 'equals', value: 'A', scope: 'field' },
+      { kind: 'condition', fieldId: 'native:cache:1:field:0', valueFieldId: 'native:cache:1:field:1', operator: 'greater-than', value: 10, scope: 'field' },
+      { kind: 'top-items', fieldId: 'native:cache:1:field:0', valueFieldId: 'native:cache:1:field:1', count: 3, direction: 'top', scope: 'field' },
+    ]);
+    assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.preservedPivotFilters, [{ fieldIndex: 1, type: 'futureFilter', attributes: { fld: '1', type: 'futureFilter', id: '7', stringValue1: 'preserve' } }]);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.subtotalLocation, 'top');
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'editable');
     const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
@@ -414,6 +421,11 @@ describe('exchange-excel-ooxml', () => {
     assert.doesNotMatch(noFlagCacheXml, /refreshOnLoad=/);
     assert.doesNotMatch(noFlagCacheXml, /refreshOnSave=/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /defaultSubtotal="0"/);
+    const nativeAdvancedXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(nativeAdvancedXml, /sortType="descending"/);
+    assert.match(nativeAdvancedXml, /<autoSortScope><pivotArea[^>]*dataOnly="0"/);
+    assert.match(nativeAdvancedXml, /<pivotFilters count="4">/);
+    assert.match(nativeAdvancedXml, /type="futureFilter"[^>]*id="7"[^>]*stringValue1="preserve"/);
 
     const editedSnapshot = structuredClone(imported.snapshot);
     const editedPivot = editedSnapshot.sheets[0]?.pivots[0];
@@ -445,6 +457,10 @@ describe('exchange-excel-ooxml', () => {
     assert.match(flaggedCacheXml, /refreshOnSave="1"/);
     assert.match(flaggedCacheXml, /saveData="0"/);
     assert.match(flaggedCacheXml, /enableRefresh="1"/);
+
+    const malformedParts = structuredClone(parts);
+    malformedParts['xl/pivotTables/pivotTable1.xml'] = strToU8(strFromU8(malformedParts['xl/pivotTables/pivotTable1.xml']!).replace('<filter fld="0" type="captionEqual"', '<filter type="captionEqual"'));
+    await assert.rejects(importXlsx({ fileName: 'native-pivot-malformed-filter.xlsx', buffer: zipXlsxPartsBuffer(malformedParts), options: { compatibilityTarget: 'B' } }), /pivotFilters\.filter\[0\]\.fld/);
   });
 
   it('rejects conflicting refresh modes before rebuilding a shared native cache', () => {
@@ -465,6 +481,28 @@ describe('exchange-excel-ooxml', () => {
       { schema: 'PivotDefinition', id: 'shared-open', source, target: { sheetId: sheet.id, anchor: { row: 10, column: 0 } }, fieldCatalog: fields, layout, refreshPolicy: { mode: 'on-open', preserveFormatting: true, refreshOnLoad: true } },
     );
     assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /conflicting refresh policies/);
+  });
+
+  it('writes canonical value sorting and value filters with stable data-field identity', () => {
+    const workbook = new WorkbookModel('wb-pivot-advanced-write', 'Pivot Advanced Write');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Category', 'Amount'], ['A', 10], ['B', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'advanced-write', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } }, target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 }, { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 }] },
+      layout: {
+        rows: [{ fieldId: 'category', sort: { direction: 'ascending', by: 'value', valueFieldId: 'amount' } }], columns: [],
+        filters: [{ kind: 'condition', fieldId: 'category', valueFieldId: 'amount', operator: 'greater-than', value: 5 }],
+        values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false,
+      },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const xml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(xml, /sortType="ascending"/);
+    assert.match(xml, /<autoSortScope><pivotArea[^>]*dataOnly="1"[^>]*fieldPosition="0"/);
+    assert.match(xml, /<reference field="1"/);
+    assert.match(xml, /type="valueGreaterThan"[^>]*iMeasureFld="0"[^>]*val="5"/);
   });
 
   it('round-trips styles, merges, scoped names, freeze and the 1904 date system', async () => {
