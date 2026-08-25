@@ -18,7 +18,8 @@ export type RibbonCatalogTabId =
   | 'ganttTask'
   | 'ganttProject'
   | 'ganttView'
-  | 'ganttFormat';
+  | 'ganttFormat'
+  | 'reportSheetDesign';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -63,7 +64,8 @@ export type RibbonGroupId =
   | 'ganttTask'
   | 'ganttProject'
   | 'ganttView'
-  | 'ganttFormat';
+  | 'ganttFormat'
+  | 'reportSheetDesign';
 
 export type RibbonCommandId =
   | 'save'
@@ -212,7 +214,11 @@ export type RibbonCommandId =
   | 'ganttFieldMapping'
   | 'ganttCalendar'
   | 'ganttTimeline'
-  | 'ganttDependencyStyle';
+  | 'ganttDependencyStyle'
+  | 'reportFieldBinding'
+  | 'reportRenderMode'
+  | 'reportPagination'
+  | 'reportLayout';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -375,6 +381,7 @@ export interface RibbonCommandContext {
   activePivot?: { sheetId: string; pivotId: string };
   activeTableSheet?: { sheetId: string; viewId: string };
   activeGanttSheet?: { sheetId: string; viewId: string };
+  activeReportSheet?: { sheetId: string; tableId?: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
@@ -495,6 +502,7 @@ export const RIBBON_TEXT = {
     ganttProject: 'groups.ganttProject',
     ganttView: 'groups.ganttView',
     ganttFormat: 'groups.ganttFormat',
+    reportSheetDesign: 'groups.reportSheetDesign',
   },
   commands: {
     save: 'commands.save',
@@ -594,6 +602,10 @@ export const RIBBON_TEXT = {
     ganttCalendar: 'commands.ganttCalendar',
     ganttTimeline: 'commands.ganttTimeline',
     ganttDependencyStyle: 'commands.ganttDependencyStyle',
+    reportFieldBinding: 'commands.reportFieldBinding',
+    reportRenderMode: 'commands.reportRenderMode',
+    reportPagination: 'commands.reportPagination',
+    reportLayout: 'commands.reportLayout',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
     shapesLines: 'commands.shapesLines',
@@ -700,6 +712,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('ganttProject', 'ganttProject', 20),
   group('ganttView', 'ganttView', 30),
   group('ganttFormat', 'ganttFormat', 40),
+  group('reportSheetDesign', 'reportSheetDesign', 10),
 ] as const;
 
 const ribbonSurface = (
@@ -1059,6 +1072,22 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('ganttDependencyStyle', 'ganttFormat', 'ganttFormat', RIBBON_TEXT.commands.ganttDependencyStyle, () => ({ type: 'panel.open', panel: 'data' }), 'sparkles'),
     enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('reportFieldBinding', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportFieldBinding, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('reportRenderMode', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportRenderMode, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('reportPagination', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportPagination, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
+    enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('reportLayout', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportLayout, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
+    enabled: (context) => Boolean(context.activeReportSheet),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

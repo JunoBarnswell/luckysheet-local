@@ -19,7 +19,8 @@ export type RibbonTabId =
   | 'ganttTask'
   | 'ganttProject'
   | 'ganttView'
-  | 'ganttFormat';
+  | 'ganttFormat'
+  | 'reportSheetDesign';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
@@ -138,7 +139,8 @@ export type ActiveContext =
   | { kind: 'drawing'; sheetId: string; drawingId: string }
   | { kind: 'table'; sheetId: string; tableId: string }
   | { kind: 'table-sheet'; sheetId: string; viewId: string }
-  | { kind: 'gantt-sheet'; sheetId: string; viewId: string };
+  | { kind: 'gantt-sheet'; sheetId: string; viewId: string }
+  | { kind: 'report-sheet'; sheetId: string; tableId?: string };
 
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =

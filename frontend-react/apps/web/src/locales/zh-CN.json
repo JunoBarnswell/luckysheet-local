@@ -30,6 +30,7 @@
   "ganttProject": "甘特项目",
   "ganttView": "甘特视图",
   "ganttFormat": "甘特格式",
+  "reportSheetDesign": "报表设计",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -285,6 +286,7 @@
       ,"ganttProject": "甘特项目"
       ,"ganttView": "甘特视图"
       ,"ganttFormat": "甘特格式"
+      ,"reportSheetDesign": "报表设计"
     },
     "commands": {
       "settings": "选项",
@@ -386,6 +388,10 @@
       "ganttCalendar": "日历",
       "ganttTimeline": "时间轴",
       "ganttDependencyStyle": "依赖样式",
+      "reportFieldBinding": "报表字段",
+      "reportRenderMode": "渲染模式",
+      "reportPagination": "分页",
+      "reportLayout": "布局",
       "chartBuilder": "图表构建器",
       "sparkline": "迷你图",
       "shapesLines": "形状与线条",

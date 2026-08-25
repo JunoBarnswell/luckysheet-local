@@ -60,6 +60,9 @@ export function RibbonHost({
       activeGanttSheet={state.activeContext.kind === "gantt-sheet"
         ? { sheetId: state.activeContext.sheetId, viewId: state.activeContext.viewId }
         : undefined}
+      activeReportSheet={state.activeContext.kind === "report-sheet"
+        ? { sheetId: state.activeContext.sheetId, tableId: state.activeContext.tableId }
+        : undefined}
       locale={locale}
       onCommand={dispatchCommand}
       onSessionIntent={dispatchSessionIntent}

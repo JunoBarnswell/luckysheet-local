@@ -131,6 +131,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.create.advanced': 'structure',
   'tableSheet.update': 'structure',
   'ganttSheet.update': 'structure',
+  'reportSheet.update': 'structure',
   'cell.barcode.apply': 'format',
   'cell.image.apply': 'format',
   'dataChart.create': 'drawing',

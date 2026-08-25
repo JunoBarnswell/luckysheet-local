@@ -1392,6 +1392,22 @@ export class WorkbookSession {
     this.emit();
   }
 
+  setActiveReportSheetContext(sheetId: string | null): void {
+    const sheet = sheetId ? this.runtime.model.getSheet(sheetId) : undefined;
+    const next: ActiveContext = sheet && sheet.kind === 'report-sheet' && sheet.reportSheet
+      ? { kind: 'report-sheet', sheetId: sheet.id, ...(sheet.reportSheet.tableId ? { tableId: sheet.reportSheet.tableId } : {}) }
+      : { kind: 'none' };
+    if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
+    this.activeContext = next;
+    if (next.kind === 'report-sheet') {
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'reportSheetDesign';
+    } else if (this.ribbonTab === 'reportSheetDesign') {
+      this.ribbonTab = 'home';
+    }
+    this.emit();
+  }
+
   setActiveDrawingContext(drawingId: string | null, sheetId = this.activeSheetId): void {
     const next: ActiveContext = drawingId === null ? { kind: 'none' } : { kind: 'drawing', sheetId, drawingId };
     if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
@@ -2260,9 +2276,13 @@ export class WorkbookSession {
       this.activeContext = { kind: 'gantt-sheet', sheetId: sheet.id, viewId: sheet.ganttSheet.viewId };
       this.panels = { ...this.panels, active: 'data', open: true };
       this.ribbonTab = 'ganttTask';
+    } else if (sheet.kind === 'report-sheet' && sheet.reportSheet) {
+      this.activeContext = { kind: 'report-sheet', sheetId: sheet.id, ...(sheet.reportSheet.tableId ? { tableId: sheet.reportSheet.tableId } : {}) };
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'reportSheetDesign';
     } else {
       this.activeContext = { kind: 'none' };
-      if (this.ribbonTab === 'tableSheetDesign' || ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'].includes(this.ribbonTab)) this.ribbonTab = 'home';
+      if (this.ribbonTab === 'tableSheetDesign' || ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'].includes(this.ribbonTab) || this.ribbonTab === 'reportSheetDesign') this.ribbonTab = 'home';
     }
     this.runtime.drawing.deselect(sheetId);
     this.drawingSelectionMode = false;
@@ -2318,7 +2338,7 @@ export class WorkbookSession {
       defaultRowHeightPx: 20, defaultColumnWidthPx: 80,
       ...(kind === 'table-sheet' ? { tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } } : {}),
       ...(kind === 'gantt-sheet' ? { ganttSheet: { viewId: table.id, fieldMap: { id: table.fields[0]!.id, title: table.fields[1]!.id, start: table.fields[2]!.id, end: table.fields[3]!.id, progress: table.fields[4]!.id, parentId: table.fields[5]?.id, dependencies: table.fields[6]?.id }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' }, dependencyStyle: { color: '#64748b', width: 1 } } } : {}),
-      ...(kind === 'report-sheet' ? { reportSheet: { templateSheetId: this.activeSheetId, tableId: table.id, bindings: [], pagination: { enabled: true, rowsPerPage: 50 } } } : {}),
+      ...(kind === 'report-sheet' ? { reportSheet: { templateSheetId: this.activeSheetId, tableId: table.id, bindings: [], pagination: { enabled: true, rowsPerPage: 50, repeatHeaderRows: [0] }, renderMode: 'design' as const, layout: { orientation: 'portrait' as const, marginTopPx: 24, marginRightPx: 24, marginBottomPx: 24, marginLeftPx: 24 }, dataEntry: [] } } : {}),
     };
     this.runCommand('sheet.create.advanced', { sheet, table, index: this.runtime.model.sheetOrder.length });
     this.selectSheet(id);
@@ -2335,6 +2355,12 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (sheet.kind !== 'gantt-sheet') throw new Error('GanttSheet designer requires a gantt-sheet');
     this.runCommand('ganttSheet.update', { sheetId: this.activeSheetId, definition });
+  }
+
+  updateReportSheetDefinition(definition: import('@react-sheets/core-model').ReportSheetDefinition): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (sheet.kind !== 'report-sheet') throw new Error('ReportSheet designer requires a report-sheet');
+    this.runCommand('reportSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
   applyBarcode(symbology: BarcodeSymbology = 'qr'): void {

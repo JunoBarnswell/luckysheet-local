@@ -115,6 +115,7 @@ export interface RibbonProps {
   activePivot?: { sheetId: string; pivotId: string };
   activeTableSheet?: { sheetId: string; viewId: string };
   activeGanttSheet?: { sheetId: string; viewId: string };
+  activeReportSheet?: { sheetId: string; tableId?: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
   canExecute?: (commandId: string, params?: unknown) => boolean;
@@ -264,6 +265,7 @@ export function Ribbon({
   activePivot,
   activeTableSheet,
   activeGanttSheet,
+  activeReportSheet,
   homeState,
   canExecute,
   commandPaletteOpen = false,
@@ -346,6 +348,7 @@ export function Ribbon({
     activePivot,
     activeTableSheet,
     activeGanttSheet,
+    activeReportSheet,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
     sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
@@ -391,6 +394,7 @@ export function Ribbon({
           ...(activePivot ? ['pivotAnalyze', 'pivotDesign'] as const : []),
           ...(activeTableSheet ? ['tableSheetDesign'] as const : []),
           ...(activeGanttSheet ? ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'] as const : []),
+          ...(activeReportSheet ? ['reportSheetDesign'] as const : []),
         ]}
         disabled={disabled}
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}

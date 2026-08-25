@@ -30,6 +30,7 @@ import type {
   DataRelationship,
   TableSheetDefinition,
   GanttSheetDefinition,
+  ReportSheetDefinition,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
@@ -55,6 +56,7 @@ import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
 import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
 import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
+import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
@@ -118,6 +120,7 @@ export interface FeatureSidebarProps {
   relationships: readonly DataRelationship[];
   onUpdateTableSheet: (definition: TableSheetDefinition) => void;
   onUpdateGanttSheet: (definition: GanttSheetDefinition) => void;
+  onUpdateReportSheet: (definition: ReportSheetDefinition) => void;
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
   onCommand: (descriptor: CommandDescriptor) => void;
@@ -339,6 +342,7 @@ export function FeatureSidebar({
   relationships,
   onUpdateTableSheet,
   onUpdateGanttSheet,
+  onUpdateReportSheet,
   onReadDataRows,
   onRemoveDataTable,
   onCommand,
@@ -384,6 +388,8 @@ export function FeatureSidebar({
     ? localizeText(locale, 'TableSheet Designer')
     : sheet.ganttSheet && activePanel === 'data'
       ? localizeText(locale, 'GanttSheet Designer')
+      : sheet.reportSheet && activePanel === 'data'
+        ? localizeText(locale, 'ReportSheet Designer')
     : localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
 
   const columnLabelOf = (column: number): string => {
@@ -621,6 +627,8 @@ export function FeatureSidebar({
             <TableSheetDesignerPanel definition={sheet.tableSheet} tables={tables} relationships={relationships} onUpdate={onUpdateTableSheet} />
           ) : sheet.ganttSheet ? (
             <GanttDesignerPanel definition={sheet.ganttSheet} tables={tables} onUpdate={onUpdateGanttSheet} />
+          ) : sheet.reportSheet ? (
+            <ReportDesignerPanel definition={sheet.reportSheet} tables={tables} activeCell={activeCell} onUpdate={onUpdateReportSheet} />
           ) : (
             <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
           )

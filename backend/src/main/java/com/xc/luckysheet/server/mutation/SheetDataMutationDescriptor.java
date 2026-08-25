@@ -23,7 +23,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             "cf.add", "cf.remove", "cf.clear",
             "dv.add", "dv.remove", "banded.set", "outline.set",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
-            "tableSheet.update", "ganttSheet.update"
+            "tableSheet.update", "ganttSheet.update", "reportSheet.update"
     );
 
     SheetDataMutationDescriptor(String id) {
@@ -50,7 +50,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "banded.set" -> bandedRange(root, mutation.sheetId(), params);
             case "outline.set" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.add", "sheetTable.update" -> List.of(tableRange(root, mutation.sheetId(), params));
-            case "tableSheet.update", "ganttSheet.update" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
+            case "tableSheet.update", "ganttSheet.update", "reportSheet.update" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.remove", "sheetTable.autoFilter.set" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         };
@@ -90,6 +90,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params);
             case "tableSheet.update" -> updateTableSheet(root, sheet, mutation.sheetId(), params);
             case "ganttSheet.update" -> updateGanttSheet(root, sheet, mutation.sheetId(), params);
+            case "reportSheet.update" -> updateReportSheet(root, sheet, mutation.sheetId(), params);
             case "sheetTable.remove" -> removeSheetTable(sheet, params);
             case "sheetTable.autoFilter.set" -> setTableAutoFilter(root, sheet, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
@@ -401,6 +402,49 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         ObjectNode dependencyStyle = SnapshotMutationSupport.requiredObject(definition, "dependencyStyle");
         if (SnapshotMutationSupport.text(dependencyStyle, "color").isBlank() || !dependencyStyle.path("width").isNumber() || dependencyStyle.path("width").asDouble() <= 0) throw ServiceException.validation("GanttSheet dependency style is invalid");
         sheet.set("ganttSheet", definition.deepCopy());
+    }
+
+    private void updateReportSheet(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+        SnapshotMutationSupport.requireEntitySheet(params, sheetId);
+        if (!"report-sheet".equals(sheet.path("kind").asText())) throw ServiceException.validation("ReportSheet definition targets a non-ReportSheet");
+        ObjectNode definition = SnapshotMutationSupport.requiredObject(params, "definition");
+        String templateSheetId = SnapshotMutationSupport.text(definition, "templateSheetId");
+        SnapshotMutationSupport.sheet(root, templateSheetId);
+        JsonNode tableId = definition.get("tableId");
+        ObjectNode table = null;
+        if (tableId != null && !tableId.isNull()) {
+            if (!tableId.isTextual()) throw ServiceException.validation("ReportSheet tableId is invalid");
+            for (JsonNode candidate : SnapshotMutationSupport.dataModelArray(root, "tables")) if (tableId.asText().equals(candidate.path("id").asText()) && candidate.isObject()) { table = (ObjectNode) candidate; break; }
+            if (table == null) throw ServiceException.validation("ReportSheet binding table is unavailable: " + tableId.asText());
+        }
+        Set<String> fieldIds = new java.util.HashSet<>();
+        if (table != null) for (JsonNode field : SnapshotMutationSupport.array(table, "fields")) fieldIds.add(SnapshotMutationSupport.text((ObjectNode) field, "id"));
+        String renderMode = SnapshotMutationSupport.text(definition, "renderMode");
+        if (!Set.of("design", "preview", "paginated").contains(renderMode)) throw ServiceException.validation("ReportSheet renderMode is invalid");
+        ObjectNode pagination = SnapshotMutationSupport.requiredObject(definition, "pagination");
+        if (!pagination.path("enabled").isBoolean()) throw ServiceException.validation("ReportSheet pagination.enabled is invalid");
+        if (pagination.get("rowsPerPage") != null && (!pagination.get("rowsPerPage").isIntegralNumber() || pagination.get("rowsPerPage").asInt() <= 0)) throw ServiceException.validation("ReportSheet rowsPerPage is invalid");
+        ObjectNode layout = SnapshotMutationSupport.requiredObject(definition, "layout");
+        if (!Set.of("portrait", "landscape").contains(SnapshotMutationSupport.text(layout, "orientation"))) throw ServiceException.validation("ReportSheet layout orientation is invalid");
+        for (String key : List.of("marginTopPx", "marginRightPx", "marginBottomPx", "marginLeftPx")) if (!layout.path(key).isNumber() || layout.path(key).asDouble() < 0) throw ServiceException.validation("ReportSheet layout margin is invalid");
+        ArrayNode bindings = SnapshotMutationSupport.requiredArray(definition, "bindings");
+        for (JsonNode raw : bindings) {
+            if (!raw.isObject()) throw ServiceException.validation("ReportSheet binding is invalid");
+            ObjectNode binding = (ObjectNode) raw;
+            ObjectNode cell = SnapshotMutationSupport.requiredObject(binding, "cell");
+            if (!cell.path("row").canConvertToInt() || !cell.path("column").canConvertToInt() || cell.path("row").asInt() < 0 || cell.path("column").asInt() < 0) throw ServiceException.validation("ReportSheet binding cell is invalid");
+            String kind = SnapshotMutationSupport.text(binding, "kind");
+            if (!Set.of("static", "field", "formula", "group", "summary").contains(kind)) throw ServiceException.validation("ReportSheet binding kind is invalid");
+            String expression = SnapshotMutationSupport.text(binding, "expression");
+            if (expression.isBlank() || Set.of("field", "group", "summary").contains(kind) && !fieldIds.contains(expression)) throw ServiceException.validation("ReportSheet binding field is unavailable");
+            if (binding.get("direction") != null && !Set.of("vertical", "horizontal").contains(binding.get("direction").asText())) throw ServiceException.validation("ReportSheet binding direction is invalid");
+            if (binding.get("fill") != null && !Set.of("none", "down", "right").contains(binding.get("fill").asText())) throw ServiceException.validation("ReportSheet binding fill is invalid");
+        }
+        ArrayNode dataEntry = SnapshotMutationSupport.requiredArray(definition, "dataEntry");
+        for (JsonNode raw : dataEntry) {
+            if (!raw.isObject() || !fieldIds.contains(SnapshotMutationSupport.text((ObjectNode) raw, "fieldId")) || !raw.path("writable").isBoolean()) throw ServiceException.validation("ReportSheet data-entry rule is invalid");
+        }
+        sheet.set("reportSheet", definition.deepCopy());
     }
 
     private void validateTableSheetFieldList(ObjectNode definition, Set<String> visibleIds, String property) {
