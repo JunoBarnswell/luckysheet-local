@@ -252,6 +252,9 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
+  validatePivotDefinition({ ...base, source: { kind: 'named-range', name: 'SharedName', sheetId: 'sheet-1' } });
+  assert.throws(() => validatePivotDefinition({ ...base, source: { kind: 'named-range', name: 'SharedName', sheetId: '' } }), /Pivot named source is invalid/);
+  assert.throws(() => validatePivotDefinition({ ...base, source: { kind: 'named-range', name: 'SharedName', sheetId: 'sheet-1', extra: true } }), /unsupported field: extra/);
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, showGrandTotals: true } }), /unsupported field: showGrandTotals/);
   const { collation: _collation, ...legacyCollationLayout } = base.layout;
   assert.throws(() => validatePivotDefinition({ ...base, layout: legacyCollationLayout }), /collation/);

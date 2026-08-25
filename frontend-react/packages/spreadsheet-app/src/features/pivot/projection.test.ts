@@ -146,6 +146,38 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(computePivotResult(workbook, pivot, formula).rows.map((node) => node.key), [1, 2, 3]);
   });
 
+  it('resolves colliding workbook and worksheet names through the source sheet scope', () => {
+    const workbook = new WorkbookModel('pivot-named-scope', 'Pivot Named Scope');
+    const workbookSheet = workbook.getSheet('sheet-1');
+    const localSheet = workbook.addSheet('sheet-2', 'Sheet2');
+    [['Region', 'Amount'], ['East', 10], ['West', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => workbookSheet.cells.set(rowIndex, columnIndex, { value })));
+    [['Region', 'Amount'], ['North', 7], ['South', 8]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => localSheet.cells.set(rowIndex, columnIndex, { value })));
+    workbook.setDefinedName({ name: 'SharedSource', formula: "='Sheet1'!A1:B3", scope: 'workbook' });
+    workbook.setDefinedName({ name: 'SharedSource', formula: "='Sheet2'!A1:B3", scope: 'sheet', sheetId: localSheet.id });
+
+    const createPivot = (id: string, source: PivotModel['source']): PivotModel => ({
+      schema: 'PivotDefinition',
+      id,
+      source,
+      target: { sheetId: workbookSheet.id, anchor: { row: 8, column: 0 } },
+      fieldCatalog: { fields: [] },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
+    });
+    const globalPivot = createPivot('pivot-global-scope', { kind: 'named-range', name: 'SharedSource' });
+    const localPivot = createPivot('pivot-local-scope', { kind: 'named-range', name: 'SharedSource', sheetId: localSheet.id });
+    for (const pivot of [globalPivot, localPivot]) {
+      pivot.fieldCatalog = getPivotFieldCatalog(workbook, pivot);
+      const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
+      const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+      pivot.layout.rows = [{ fieldId: region.fieldId }];
+      pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    }
+
+    assert.deepEqual(computePivotResult(workbook, globalPivot).rows.map((node) => node.key), ['East', 'West']);
+    assert.deepEqual(computePivotResult(workbook, localPivot).rows.map((node) => node.key), ['North', 'South']);
+  });
+
   it('fails closed when a Pivot source intersects a blocked spill', () => {
     const workbook = new WorkbookModel('pivot-blocked-spill', 'Pivot Blocked Spill');
     const sheet = workbook.getSheet('sheet-1');
