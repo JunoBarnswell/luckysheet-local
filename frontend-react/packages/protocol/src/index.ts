@@ -1,3 +1,4 @@
+import { normalizePivotRefreshPolicy } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   PivotDefinition,
@@ -468,7 +469,11 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   }
   const policy = requireRecord(pivot.refreshPolicy, 'Pivot refresh policy');
   validateExactKeys(policy, ['mode', 'preserveFormatting', 'refreshOnLoad'], 'Pivot refresh policy');
-  if (!['manual', 'on-open', 'on-change'].includes(String(policy.mode)) || typeof policy.preserveFormatting !== 'boolean' || typeof policy.refreshOnLoad !== 'boolean') throw new Error('Pivot refresh policy is invalid');
+  try {
+    normalizePivotRefreshPolicy(policy as unknown as PivotDefinition['refreshPolicy']);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'Pivot refresh policy is invalid');
+  }
 }
 
 export function validateDataSourceManifest(value: unknown): asserts value is DataSourceManifest {

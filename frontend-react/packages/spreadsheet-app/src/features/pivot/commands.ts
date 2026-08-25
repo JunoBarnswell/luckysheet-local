@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { WorkbookModel, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
 import type {
   PivotAggregateFunction,
   PivotDefinition,
@@ -318,7 +318,7 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
     target: structuredClone(params.target ?? current.target),
     fieldCatalog: structuredClone(params.fieldCatalog ?? current.fieldCatalog),
     layout: structuredClone(params.layout ?? current.layout),
-    refreshPolicy: structuredClone(params.refreshPolicy ?? current.refreshPolicy),
+    refreshPolicy: normalizePivotRefreshPolicy(structuredClone(params.refreshPolicy ?? current.refreshPolicy)),
     presentation: structuredClone(params.presentation ?? current.presentation),
     ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
   };
@@ -394,6 +394,15 @@ const isPivotPresentation = (value: unknown): value is PivotPresentation => isRe
   && typeof value.styleOptions.showRowStripes === 'boolean'
   && typeof value.styleOptions.showColumnStripes === 'boolean'
   && typeof value.styleOptions.showLastColumn === 'boolean';
+const isPivotRefreshPolicy = (value: unknown): value is PivotDefinition['refreshPolicy'] => {
+  if (!isRecord(value) || !['manual', 'on-open', 'on-change'].includes(String(value.mode)) || typeof value.preserveFormatting !== 'boolean' || typeof value.refreshOnLoad !== 'boolean') return false;
+  try {
+    normalizePivotRefreshPolicy(value as unknown as PivotDefinition['refreshPolicy']);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const isPivotSourceRange = (value: unknown): boolean => isRecord(value)
   && isNonEmptyString(value.sourceId) && isRange(value.range);
 const isPivotWorksheetSource = (value: unknown): boolean => {
@@ -417,7 +426,7 @@ const isPivotModel = (value: unknown): value is PivotModel => isRecord(value)
     && Number.isSafeInteger(value.target.anchor.row) && Number(value.target.anchor.row) >= 0
     && Number.isSafeInteger(value.target.anchor.column) && Number(value.target.anchor.column) >= 0
   && isRecord(value.fieldCatalog) && Array.isArray(value.fieldCatalog.fields)
-  && isRecord(value.refreshPolicy) && ['manual', 'on-open', 'on-change'].includes(String(value.refreshPolicy.mode))
+  && isPivotRefreshPolicy(value.refreshPolicy)
   && (value.presentation === undefined || isPivotPresentation(value.presentation));
 const isPivotCreateDestination = (value: unknown): value is PivotCreateDestination => {
   if (!isRecord(value) || !isNonEmptyString(value.kind) || !isNonEmptyString(value.sheetId)) return false;

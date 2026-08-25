@@ -193,7 +193,10 @@ describe('exchange-excel-ooxml', () => {
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     assert.equal(output.packageGraph.nativePivotGraph?.caches.length, 1);
     assert.equal(output.packageGraph.nativePivotGraph?.tables.length, 1);
-    assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /worksheetSource name="SalesTable"/);
+    const cacheXml = strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
+    assert.match(cacheXml, /worksheetSource name="SalesTable"/);
+    assert.match(cacheXml, /refreshOnLoad="1"/);
+    assert.match(cacheXml, /refreshOnSave="1"/);
     assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /<cacheSource type="worksheet">/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /name="PivotStyleMedium4" showRowHeaders="0" showColHeaders="1" showRowStripes="1" showColStripes="1" showLastColumn="1"/);
@@ -395,6 +398,9 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.mode, 'manual');
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.refreshOnLoad, false);
+    assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.cacheFlags, {});
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.subtotal, { mode: 'none' });
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.subtotalLocation, 'top');
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'editable');
@@ -404,7 +410,61 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /pivotCaches/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
     assert.match(strFromU8(output.files['[Content_Types].xml']!), /pivotTable/);
+    const noFlagCacheXml = strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
+    assert.doesNotMatch(noFlagCacheXml, /refreshOnLoad=/);
+    assert.doesNotMatch(noFlagCacheXml, /refreshOnSave=/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /defaultSubtotal="0"/);
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    const editedPivot = editedSnapshot.sheets[0]?.pivots[0];
+    if (!editedPivot) throw new Error('Imported Pivot fixture is missing');
+    editedPivot.refreshPolicy = { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true };
+    const edited = await exportXlsx({ snapshot: editedSnapshot, nativePackage: imported.nativePackage, fileName: 'native-pivot-edited.xlsx', options: { compatibilityTarget: 'B' } });
+    const editedOutput = loadOpcPackageGraph(edited.buffer);
+    const editedCacheXml = strFromU8(editedOutput.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
+    assert.match(editedCacheXml, /refreshOnLoad="1"/);
+    assert.match(editedCacheXml, /refreshOnSave="1"/);
+    assert.match(editedCacheXml, /enableRefresh="1"/);
+
+    const flaggedParts = structuredClone(parts);
+    flaggedParts['xl/pivotCache/pivotCacheDefinition1.xml'] = strToU8(strFromU8(flaggedParts['xl/pivotCache/pivotCacheDefinition1.xml']!).replace(
+      '<pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"',
+      '<pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" refreshOnLoad="1" refreshOnSave="0" saveData="0" enableRefresh="0"',
+    ));
+    const flaggedImported = await importXlsx({ fileName: 'native-pivot-flags.xlsx', buffer: zipXlsxPartsBuffer(flaggedParts), options: { compatibilityTarget: 'B' } });
+    const flaggedPivot = flaggedImported.snapshot.sheets[0]?.pivots[0];
+    assert.equal(flaggedPivot?.refreshPolicy.mode, 'on-open');
+    assert.deepEqual(flaggedPivot?.nativeMetadata?.cacheFlags, { refreshOnLoad: true, refreshOnSave: false, saveData: false, enableRefresh: false });
+    const flaggedEdited = structuredClone(flaggedImported.snapshot);
+    const flaggedEditedPivot = flaggedEdited.sheets[0]?.pivots[0];
+    if (!flaggedEditedPivot) throw new Error('Flagged imported Pivot fixture is missing');
+    flaggedEditedPivot.refreshPolicy = { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true };
+    const flaggedExport = await exportXlsx({ snapshot: flaggedEdited, nativePackage: flaggedImported.nativePackage, fileName: 'native-pivot-flags-edited.xlsx', options: { compatibilityTarget: 'B' } });
+    const flaggedOutput = loadOpcPackageGraph(flaggedExport.buffer);
+    const flaggedCacheXml = strFromU8(flaggedOutput.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
+    assert.match(flaggedCacheXml, /refreshOnSave="1"/);
+    assert.match(flaggedCacheXml, /saveData="0"/);
+    assert.match(flaggedCacheXml, /enableRefresh="1"/);
+  });
+
+  it('rejects conflicting refresh modes before rebuilding a shared native cache', () => {
+    const workbook = new WorkbookModel('wb-shared-cache-conflict', 'Shared Cache Conflict');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Category' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 'A' });
+    sheet.cells.set(1, 1, { value: 10 });
+    const layout = { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false };
+    const fields = { schema: 'PivotFieldCatalog' as const, fields: [
+      { fieldId: 'category', name: 'Category', dataType: 'text' as const, ordinal: 0 },
+      { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 },
+    ] };
+    const source = { kind: 'worksheet-range' as const, range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 } };
+    sheet.pivots.push(
+      { schema: 'PivotDefinition', id: 'shared-manual', source, target: { sheetId: sheet.id, anchor: { row: 4, column: 0 } }, fieldCatalog: fields, layout, refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false } },
+      { schema: 'PivotDefinition', id: 'shared-open', source, target: { sheetId: sheet.id, anchor: { row: 10, column: 0 } }, fieldCatalog: fields, layout, refreshPolicy: { mode: 'on-open', preserveFormatting: true, refreshOnLoad: true } },
+    );
+    assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /conflicting refresh policies/);
   });
 
   it('round-trips styles, merges, scoped names, freeze and the 1904 date system', async () => {

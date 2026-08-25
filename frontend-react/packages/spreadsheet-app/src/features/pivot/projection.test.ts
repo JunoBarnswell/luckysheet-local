@@ -264,7 +264,7 @@ describe('native PivotGridProjection contract', () => {
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-revision', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
     assert.ok(pivot);
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
-    pivot.refreshPolicy.mode = 'manual';
+    pivot.refreshPolicy = { ...pivot.refreshPolicy, mode: 'manual', refreshOnLoad: false };
     const catalog = getPivotFieldCatalog(workbook, pivot);
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
