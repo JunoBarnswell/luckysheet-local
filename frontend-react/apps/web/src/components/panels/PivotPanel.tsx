@@ -9,7 +9,7 @@ import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
 import { PivotSlicer } from '../pivot/PivotSlicer';
 import { PivotTimeline } from '../pivot/PivotTimeline';
 import { pivotText } from '../pivot/pivot-localization';
-import { PIVOT_FIELD_PANE_LAYOUTS, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
+import { defaultPivotFieldArea, PIVOT_FIELD_PANE_LAYOUTS, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
 import type { PivotMessageKey } from '../pivot/pivot-localization';
 
 export interface PivotPanelProps {
@@ -43,11 +43,6 @@ function moveField(layout: PivotLayout, field: PivotFieldDefinition, area: Area,
   else if (area === 'rows') next.rows.splice(index, 0, { fieldId: field.fieldId });
   else next.values.splice(index, 0, { fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
   return next;
-}
-function defaultArea(field: PivotFieldDefinition): Area {
-  if (field.dataType === 'number') return 'values';
-  if (field.dataType === 'date') return 'columns';
-  return 'rows';
 }
 function filterStates(layout: PivotLayout): Record<string, PivotManualFilterState> {
   const result: Record<string, PivotManualFilterState> = {};
@@ -129,7 +124,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
     if (!checked) { removeFromArea(fieldId); return; }
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     if (!field) return;
-    const area = defaultArea(field);
+    const area = defaultPivotFieldArea(field);
     changeArea(fieldId, area, idsFor(area).length);
   };
   const toggleVisible = (fieldIds: readonly string[], checked: boolean) => {
@@ -139,7 +134,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
       if (!checked) continue;
       const field = fields.find((candidate) => candidate.fieldId === fieldId);
       if (!field) continue;
-      const area = defaultArea(field);
+      const area = defaultPivotFieldArea(field);
       const index = area === 'filters' ? next.filters.length : area === 'columns' ? next.columns.length : area === 'rows' ? next.rows.length : next.values.length;
       next = moveField(next, field, area, index);
     }
@@ -176,7 +171,7 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
           {showFields ? (
             <Box className="min-h-0 min-w-0 flex flex-col" style={sideBySide ? { width: `${showAreas ? fieldPaneSplit : 100}%` } : { flexBasis: `${showAreas ? fieldPaneSplit : 100}%` }}>
               <Text size="sm" className="mb-1 shrink-0">{pivotText(locale, 'addFields')}</Text>
-              <PivotFieldCatalog className="flex-1" locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(fieldId, area) => changeArea(fieldId, area, idsFor(area).length)} />
+              <PivotFieldCatalog className="flex-1" locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(field) => { const area = defaultPivotFieldArea(field); changeArea(field.fieldId, area, idsFor(area).length); }} />
             </Box>
           ) : null}
           {showFields && showAreas ? (
