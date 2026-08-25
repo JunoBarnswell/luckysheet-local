@@ -24,6 +24,8 @@ export type {
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
+export type PivotFieldPaneLayout = 'stacked' | 'side-by-side' | 'areas-2x2' | 'areas-1x4' | 'fields-only' | 'areas-only';
+export const PIVOT_FIELD_PANE_LAYOUTS: readonly PivotFieldPaneLayout[] = ['stacked', 'side-by-side', 'areas-2x2', 'areas-1x4', 'fields-only', 'areas-only'];
 export type PivotSortDirection = 'none' | 'ascending' | 'descending';
 
 export type PivotFilterMode = 'all' | 'include' | 'exclude';
