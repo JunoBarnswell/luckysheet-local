@@ -269,6 +269,20 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'region', subtotal: { mode: 'custom', functions: [] } }] } }), /custom subtotal functions/);
 });
 
+test('Pivot protocol preserves typed formula-error members and rejects unknown codes', () => {
+  const base = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-error-members',
+    source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 } },
+    target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [{ fieldId: 'member', name: 'Member', dataType: 'error' as const, ordinal: 0, values: [{ kind: 'error' as const, code: '#N/A' as const }] }] },
+    layout: { rows: [{ fieldId: 'member' }], columns: [], filters: [{ kind: 'manual' as const, family: 'manual' as const, fieldId: 'member', mode: 'include' as const, memberKeys: [{ type: 'error' as const, value: '#N/A' as const }] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ fieldId: 'member', summarizeBy: 'count' as const }], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+  };
+  validatePivotDefinition(base);
+  assert.throws(() => validatePivotDefinition({ ...base, fieldCatalog: { ...base.fieldCatalog, fields: [{ ...base.fieldCatalog.fields[0]!, values: [{ kind: 'error', code: '#NOT-AN-EXCEL-CODE' }] }] } }), /invalid/);
+});
+
 test('Pivot worksheet-ranges require stable source nodes and graph endpoints', () => {
   const base = {
     schema: 'PivotDefinition' as const,

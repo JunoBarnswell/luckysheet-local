@@ -132,6 +132,40 @@ describe('native PivotGridProjection contract', () => {
     assert.throws(() => computePivotResult(workbook, pivot, formula), /blocked spill/i);
   });
 
+  it('keeps distinct FormulaEngine errors as Pivot members and aggregates them explicitly', () => {
+    const workbook = new WorkbookModel('pivot-errors', 'Pivot Errors');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Member' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: null, formula: '=1/0' });
+    sheet.cells.set(1, 1, { value: 10 });
+    sheet.cells.set(2, 0, { value: null, formula: '=VALUE("bad")' });
+    sheet.cells.set(2, 1, { value: 20 });
+    const formula = new FormulaEngine({ defaultSheetId: sheet.id });
+    formula.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
+    formula.setFormula({ sheetId: sheet.id, row: 1, column: 0 }, '=1/0');
+    formula.setFormula({ sheetId: sheet.id, row: 2, column: 0 }, '=VALUE("bad")');
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-errors', { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot, formula);
+    const member = catalog.fields.find((field) => field.name === 'Member')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.fieldCatalog = catalog;
+    pivot.layout.rows = [{ fieldId: member.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const result = computePivotResult(workbook, pivot, formula);
+    assert.deepEqual(result.rows.map((node) => node.label), ['#DIV/0!', '#VALUE!']);
+    assert.equal(result.grandTotal?.values[0], 30);
+    const errorRows = [
+      { values: { value: { kind: 'error' as const, code: '#DIV/0!' as const } } },
+      { values: { value: { kind: 'error' as const, code: '#N/A' as const } } },
+      { values: { value: 2 } },
+    ];
+    assert.equal(aggregatePivotValues(errorRows, 'value', 'count'), 3);
+    assert.equal(aggregatePivotValues(errorRows, 'value', 'distinct-count'), 3);
+    assert.deepEqual(aggregatePivotValues(errorRows, 'value', 'sum'), { kind: 'error', code: '#DIV/0!' });
+  });
+
   it('orders text members from persisted collation, independent of host defaults', () => {
     const workbook = new WorkbookModel('pivot-collation', 'Pivot Collation');
     const sheet = workbook.getSheet('sheet-1');

@@ -38,6 +38,7 @@ import {
   createPivotCollator,
   createPivotMemberKey,
   formatPivotMember,
+  isPivotError,
   normalizePivotTimelinePeriod,
   pivotMemberKey,
   normalizePivotRefreshPolicy,
@@ -46,7 +47,7 @@ import {
   pivotScalarFromMemberKey,
 } from '@react-sheets/core-model';
 import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
-import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
+import { FormulaEngine, isFormulaError, type FormulaValue } from '@react-sheets/formula-engine';
 import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
 
 export interface PivotSourceRowInput {
@@ -115,6 +116,9 @@ const lastValidPivotProjections = new WeakMap<WorkbookModel, Map<string, LastVal
 
 const same = (left: PivotScalar, right: PivotScalar): boolean => {
   if ((left == null || left === '') && (right == null || right === '')) return true;
+  if (isPivotError(left) || isPivotError(right)) {
+    return isPivotError(left) && isPivotError(right) && left.code === right.code;
+  }
   return left === right;
 };
 
@@ -321,7 +325,10 @@ function cellScalar(value: unknown): PivotScalar {
   if (Array.isArray(value) && value.length === 1 && Array.isArray(value[0]) && value[0].length === 1) {
     return cellScalar(value[0][0]);
   }
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
+  if (Array.isArray(value)) throw new Error('Pivot source array value must be resolved through its spill range');
+  if (isFormulaError(value)) return { kind: 'error', code: value.code, ...(value.message ? { message: value.message } : {}) };
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  throw new Error(`Unsupported Pivot source value type: ${typeof value}`);
 }
 
 function formulaCellValue(formula: FormulaEngine, address: { sheetId: string; row: number; column: number }, fallback: unknown): FormulaValue | unknown {
@@ -337,6 +344,8 @@ function formulaCellValue(formula: FormulaEngine, address: { sheetId: string; ro
 function inferType(values: PivotScalar[]): PivotFieldDataType {
   const present = values.filter((value) => value != null && value !== '');
   if (!present.length) return 'mixed';
+  if (present.every(isPivotError)) return 'error';
+  if (present.some(isPivotError)) return 'mixed';
   if (present.every((value) => typeof value === 'boolean')) return 'boolean';
   if (present.every((value) => typeof value === 'number' && Number.isFinite(value))) return 'number';
   const dateLike = present.every((value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/.test(value) && !Number.isNaN(Date.parse(value)));
@@ -740,6 +749,8 @@ export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel,
 }
 
 function formulaScalar(value: FormulaValue): PivotScalar | null {
+  if (isFormulaError(value)) return { kind: 'error', code: value.code, ...(value.message ? { message: value.message } : {}) };
+  if (Array.isArray(value)) throw new Error('Pivot calculated formula returned an array instead of a scalar');
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
 }
 
@@ -768,8 +779,13 @@ function rewriteCalculatedFormula(formula: string, fields: string[]): string {
 }
 
 function calculateRowFormula(row: SourceRow, formula: string, fields: SourceField[]): PivotScalar | null {
+  const sourceError = Object.values(row.values).find(isPivotError);
+  if (sourceError) return sourceError;
   const engine = new FormulaEngine({ defaultSheetId: 'pivot' });
-  fields.forEach((field, index) => engine.setValue({ sheetId: 'pivot', row: 0, column: index }, row.values[field.fieldId] ?? null));
+  fields.forEach((field, index) => {
+    const value = row.values[field.fieldId] ?? null;
+    engine.setValue({ sheetId: 'pivot', row: 0, column: index }, isPivotError(value) ? null : value);
+  });
   engine.setFormula({ sheetId: 'pivot', row: 1, column: 0 }, rewriteCalculatedFormula(formula, fields.map((field) => field.name)));
   return formulaScalar(engine.getCellValue({ sheetId: 'pivot', row: 1, column: 0 }));
 }
@@ -805,6 +821,10 @@ function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldData
   if (same(left, right)) return 0;
   if (left == null || left === '') return -1;
   if (right == null || right === '') return 1;
+  if (isPivotError(left) || isPivotError(right)) {
+    if (isPivotError(left) && isPivotError(right)) return collator.compare(left.code, right.code);
+    return isPivotError(left) ? 1 : -1;
+  }
   if (dataType === 'boolean' && typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
   if (dataType === 'date') {
     const leftDate = pivotTimelineInstant(left);
@@ -819,42 +839,49 @@ function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldData
 }
 
 /** Every aggregate has its own semantics; no operation falls through to sum. */
-export function aggregatePivotValues(rows: ReadonlyArray<{ values: Record<string, PivotScalar> }>, fieldId: string, operation: PivotAggregateFunction): number | null {
+export function aggregatePivotValues(rows: ReadonlyArray<{ values: Record<string, PivotScalar> }>, fieldId: string, operation: PivotAggregateFunction): PivotScalar {
   const numbers: number[] = [];
   const members = new Set<string>();
+  const errors: Extract<PivotScalar, { kind: 'error' }>[] = [];
   let nonBlank = 0;
   for (const row of rows) {
     const raw = row.values[fieldId] ?? null;
     if (raw != null && raw !== '') nonBlank += 1;
+    if (isPivotError(raw)) errors.push(raw);
     if (raw != null && raw !== '') members.add(pivotMemberKey(createPivotMemberKey(raw)));
     const number = toNumber(raw);
     if (number != null) numbers.push(number);
   }
+  const firstError = errors[0];
   switch (operation) {
     case 'count': return nonBlank;
     case 'count-numbers': return numbers.length;
-    case 'sum': return numbers.reduce((sum, value) => sum + value, 0);
-    case 'average': return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
-    case 'min': return numbers.length ? Math.min(...numbers) : null;
-    case 'max': return numbers.length ? Math.max(...numbers) : null;
-    case 'product': return numbers.length ? numbers.reduce((product, value) => product * value, 1) : null;
+    case 'sum': return firstError ?? numbers.reduce((sum, value) => sum + value, 0);
+    case 'average': return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null);
+    case 'min': return firstError ?? (numbers.length ? Math.min(...numbers) : null);
+    case 'max': return firstError ?? (numbers.length ? Math.max(...numbers) : null);
+    case 'product': return firstError ?? (numbers.length ? numbers.reduce((product, value) => product * value, 1) : null);
     case 'distinct-count': return members.size;
     case 'stdev': {
+      if (firstError) return firstError;
       if (numbers.length < 2) return null;
       const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
       return Math.sqrt(numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (numbers.length - 1));
     }
     case 'stdevp': {
+      if (firstError) return firstError;
       if (!numbers.length) return null;
       const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
       return Math.sqrt(numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / numbers.length);
     }
     case 'var': {
+      if (firstError) return firstError;
       if (numbers.length < 2) return null;
       const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
       return numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (numbers.length - 1);
     }
     case 'varp': {
+      if (firstError) return firstError;
       if (!numbers.length) return null;
       const mean = numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
       return numbers.reduce((sum, value) => sum + (value - mean) ** 2, 0) / numbers.length;
@@ -921,7 +948,7 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   const dataType = placement ? fieldCatalog.fields.find((field) => field.fieldId === placement.fieldId)?.dataType : undefined;
   const result = [...map.values()].sort((left, right) => {
     if (placement?.sort?.by === 'value' && placement.sort.valueFieldId) {
-      return (aggregatePivotValues(left.rows, placement.sort.valueFieldId, 'sum') ?? 0) - (aggregatePivotValues(right.rows, placement.sort.valueFieldId, 'sum') ?? 0);
+      return (toNumber(aggregatePivotValues(left.rows, placement.sort.valueFieldId, 'sum')) ?? 0) - (toNumber(aggregatePivotValues(right.rows, placement.sort.valueFieldId, 'sum')) ?? 0);
     }
     for (let index = 0; index < left.values.length; index += 1) {
       const fieldType = fieldCatalog.fields.find((field) => field.fieldId === placements[index]?.fieldId)?.dataType ?? dataType;
@@ -977,7 +1004,7 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
       bucket.push(row);
       buckets.set(key, bucket);
     }
-    const ranked = [...buckets.values()].sort((left, right) => (aggregatePivotValues(left, valueFieldId, 'sum') ?? 0) - (aggregatePivotValues(right, valueFieldId, 'sum') ?? 0));
+    const ranked = [...buckets.values()].sort((left, right) => (toNumber(aggregatePivotValues(left, valueFieldId, 'sum')) ?? 0) - (toNumber(aggregatePivotValues(right, valueFieldId, 'sum')) ?? 0));
     if (filter.direction === 'top') ranked.reverse();
     result = ranked.slice(0, filter.count).flat();
   }
@@ -1273,7 +1300,7 @@ function normalizeExpansionForTree(expansion: PivotLayout['expansion'], tree: Pi
 }
 
 function textForValue(value: PivotScalar): string {
-  return value == null ? '' : String(value);
+  return value == null ? '' : display(value);
 }
 
 function projectionCell(pivotId: string, row: number, column: number, kind: PivotProjectionCell['kind'], value: PivotScalar, text: string, extra: Partial<PivotProjectionCell> = {}): PivotProjectionCell {

@@ -6,10 +6,32 @@ import { importXlsx } from './import';
 import { scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
+import { readNativePivotGraph } from './native-pivot';
 import { strFromU8, strToU8 } from 'fflate';
 import { readFile } from 'node:fs/promises';
 
 describe('exchange-excel-ooxml', () => {
+  it('preserves native Pivot error cache items as typed error members', () => {
+    const main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const graph = readNativePivotGraph({
+      files: {
+        'xl/workbook.xml': strToU8(`<workbook xmlns="${main}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1"/></sheets><pivotCaches count="1"><pivotCache cacheId="1" r:id="rIdCache"/></pivotCaches></workbook>`),
+        'xl/pivotCache/pivotCacheDefinition1.xml': strToU8(`<pivotCacheDefinition xmlns="${main}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cacheSource type="worksheet"><worksheetSource ref="A1:A2" sheet="Sheet1"/></cacheSource><cacheFields count="1"><cacheField name="Error"><sharedItems containsError="1"><e v="#N/A"/></sharedItems></cacheField></cacheFields></pivotCacheDefinition>`),
+        'xl/pivotCache/pivotCacheRecords1.xml': strToU8(`<pivotCacheRecords xmlns="${main}" count="1"><r><e v="#N/A"/></r></pivotCacheRecords>`),
+        'xl/worksheets/sheet1.xml': strToU8(`<worksheet xmlns="${main}"/>`),
+      },
+      relationships: {
+        'xl/workbook.xml': [{ id: 'rIdCache', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition', target: 'pivotCache/pivotCacheDefinition1.xml' }],
+        'xl/pivotCache/pivotCacheDefinition1.xml': [{ id: 'rIdRecords', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords', target: 'pivotCacheRecords1.xml' }],
+        'xl/worksheets/sheet1.xml': [],
+      },
+      sheetPartById: { 'sheet-1': 'xl/worksheets/sheet1.xml' },
+    });
+    assert.equal(graph.caches[0]?.fields[0]?.dataType, 'error');
+    assert.deepEqual(graph.caches[0]?.fields[0]?.sharedItems, [{ kind: 'error', code: '#N/A' }]);
+    assert.equal(graph.caches[0]?.recordCount, 1);
+  });
+
   it('scans workbook features for compatibility reporting', () => {
     const workbook = new WorkbookModel('wb-xlsx', 'XLSX');
     const sheet = workbook.getSheet(workbook.primarySheetId);

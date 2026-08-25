@@ -1,4 +1,4 @@
-import { createPivotMemberKey, pivotMemberKey, type PivotModel, type PivotResultNode, type PivotResultTree, type PivotScalar, type WorkbookModel, type WorksheetModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, formatPivotMember, pivotMemberKey, type PivotModel, type PivotResultNode, type PivotResultTree, type PivotScalar, type WorkbookModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { ChartPayload, ChartSeries } from './commands';
 
 export interface ResolvedChartSeries {
@@ -115,7 +115,7 @@ function pivotMemberTokenLabel(token: string): string {
   try { return pivotScalarLabel(JSON.parse(value) as PivotScalar); } catch { return value; }
 }
 
-function pivotScalarLabel(value: PivotScalar): string { return value === null || value === '' ? '(blank)' : String(value); }
+function pivotScalarLabel(value: PivotScalar): string { return formatPivotMember(value); }
 function pivotPathKey(path: readonly PivotScalar[]): string { return path.map((value) => pivotMemberKey(createPivotMemberKey(value))).join('|'); }
 function fieldName(fieldId: string | undefined, tree: PivotResultTree): string { return tree.fields.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId ?? 'Value'; }
 
