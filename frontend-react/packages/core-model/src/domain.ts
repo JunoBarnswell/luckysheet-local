@@ -127,7 +127,10 @@ export interface SheetTableModel {
   hasTotalRow: boolean;
   showBandedRows: boolean;
   showBandedColumns: boolean;
+  showFirstColumn: boolean;
+  showLastColumn: boolean;
   showFilterButton: boolean;
+  autoExpand: 'none' | 'rows' | 'columns' | 'both';
   autoFilter?: AutoFilterModel;
   columns: SheetTableColumn[];
   styleName?: string;

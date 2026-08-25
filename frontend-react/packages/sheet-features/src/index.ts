@@ -25,7 +25,7 @@ import { buildCellFromText } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
-import { validateFilterOwnership } from './sheet-table-features';
+import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-table-features';
 import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { registerCellTemplateCommands } from './cell-template-commands';
@@ -1104,8 +1104,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.range.set',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      const writeRange = setRangeAffectedRanges(params)[0];
+      let tablePlansId = 0;
+      const tablePlans = writeRange && params.values.length > 0
+        ? planSheetTableAutoExpansion(sheet, writeRange, (prefix) => `${prefix}-${context.operationId}-${tablePlansId++}`)
+        : [];
       const previous: Array<{ row: number; column: number; value?: CellData }> = [];
-      const affectedRanges: RangeRef[] = [];
+      const affectedRanges: RangeRef[] = writeRange ? [structuredClone(writeRange)] : [];
       for (let rowOffset = 0; rowOffset < params.values.length; rowOffset += 1) {
         const rowValues = params.values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
@@ -1120,6 +1125,27 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             endColumn: column,
           });
         }
+      }
+      for (const plan of tablePlans) {
+        const tableIndex = sheet.sheetTables.findIndex((table) => table.id === plan.previous.id);
+        if (tableIndex < 0) throw new Error(`Sheet Table not found: ${plan.previous.id}`);
+        const tableAffectedRanges = [structuredClone(plan.next.range)];
+        context.applyMutation({
+          id: 'sheetTable.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: plan.next,
+          affectedRanges: tableAffectedRanges,
+          inverse: [{
+            id: 'sheetTable.update',
+            unitId: context.workbook.unitId,
+            sheetId: params.sheetId,
+            params: plan.previous,
+            affectedRanges: [structuredClone(plan.previous.range)],
+          }],
+          apply: () => { sheet.sheetTables[tableIndex] = structuredClone(plan.next); },
+        });
+        affectedRanges.push(...tableAffectedRanges);
       }
       context.applyMutation({
         id: 'range.set',
@@ -1155,7 +1181,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           }
         },
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      return { operationId: context.operationId, mutationCount: 1 + tablePlans.length, affectedRanges };
     },
   });
 

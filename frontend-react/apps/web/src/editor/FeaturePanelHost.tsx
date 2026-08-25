@@ -43,6 +43,7 @@ export function FeaturePanelHost({
   commands,
   title,
 }: FeaturePanelHostProps): ReactNode {
+  const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
   return (
     <SidebarShell open={sidebarOpen} onOpenChange={onSidebarOpenChange} title={title} showHeader={state.panels.active !== 'pivot'} width={state.panels.active === 'pivot' ? 390 : state.panels.width} minWidth={state.panels.active === 'pivot' ? 360 : undefined} maxWidth={state.panels.active === 'pivot' ? 480 : undefined}>
       <Suspense fallback={<Box className="h-full min-h-0" />}>
@@ -114,6 +115,12 @@ export function FeaturePanelHost({
           onUpdateTableSheet={(definition) => session.updateTableSheetDefinition(definition)}
           onUpdateGanttSheet={(definition) => session.updateGanttSheetDefinition(definition)}
           onUpdateReportSheet={(definition) => session.updateReportSheetDefinition(definition)}
+          activeTable={activeTableId ? state.selectedSheet.sheetTables.find((table) => table.id === activeTableId) : undefined}
+          onTableNameChange={(name) => session.setActiveSheetTableName(name)}
+          onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
+          onResizeTable={(range) => session.resizeActiveSheetTable(range)}
+          onTableStyleChange={(styleName) => session.setActiveSheetTableStyle(styleName)}
+          onConvertTableToRange={() => session.convertActiveSheetTableToRange()}
           onReadDataRows={session.readDataTable.bind(session)}
           onRemoveDataTable={session.removeDataTable.bind(session)}
           onCommand={dispatchCommand}

@@ -31,6 +31,7 @@
   "ganttView": "Gantt View",
   "ganttFormat": "Gantt Format",
   "reportSheetDesign": "ReportSheet Design",
+  "tableDesign": "Table Design",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -287,6 +288,7 @@
       ,"ganttView": "Gantt View"
       ,"ganttFormat": "Gantt Format"
       ,"reportSheetDesign": "ReportSheet Design"
+      ,"tableDesign": "Table Design"
     },
     "commands": {
       "settings": "Options",
@@ -392,6 +394,17 @@
       "reportRenderMode": "Render Mode",
       "reportPagination": "Pagination",
       "reportLayout": "Layout",
+      "tableName": "Table Name",
+      "tableHeaderRow": "Header Row",
+      "tableTotalRow": "Total Row",
+      "tableFirstColumn": "First Column",
+      "tableLastColumn": "Last Column",
+      "tableBandedRows": "Banded Rows",
+      "tableBandedColumns": "Banded Columns",
+      "tableFilterButton": "Filter Button",
+      "tableResize": "Resize Table",
+      "tableConvertToRange": "Convert to Range",
+      "tableStyle": "Table Styles",
       "chartBuilder": "Chart Builder",
       "sparkline": "Sparkline",
       "shapesLines": "Shapes & Lines",

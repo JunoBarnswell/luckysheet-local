@@ -313,8 +313,28 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     }
 
     private void upsertSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
-        tableRange(root, sheetId, params);
+        RangeRef range = tableRange(root, sheetId, params);
+        validateSheetTable(params, range);
         SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, "sheetTables"), params);
+    }
+
+    private void validateSheetTable(ObjectNode table, RangeRef range) {
+        for (String key : List.of("hasHeaderRow", "hasTotalRow", "showBandedRows", "showBandedColumns", "showFirstColumn", "showLastColumn", "showFilterButton")) {
+            if (!table.path(key).isBoolean()) throw ServiceException.validation("Sheet Table " + key + " must be boolean");
+        }
+        String autoExpand = SnapshotMutationSupport.text(table, "autoExpand");
+        if (!Set.of("none", "rows", "columns", "both").contains(autoExpand)) throw ServiceException.validation("Sheet Table autoExpand is invalid");
+        ArrayNode columns = SnapshotMutationSupport.requiredArray(table, "columns");
+        if (columns.size() != range.endColumn() - range.startColumn() + 1) throw ServiceException.validation("Sheet Table columns do not match its range");
+        Set<String> ids = new java.util.HashSet<>();
+        Set<String> names = new java.util.HashSet<>();
+        for (JsonNode raw : columns) {
+            if (!raw.isObject()) throw ServiceException.validation("Sheet Table column is invalid");
+            String id = SnapshotMutationSupport.text((ObjectNode) raw, "id");
+            String name = SnapshotMutationSupport.text((ObjectNode) raw, "name");
+            if (id.isBlank() || !ids.add(id) || !names.add(name.toLowerCase(java.util.Locale.ROOT))) throw ServiceException.validation("Sheet Table columns must be unique");
+        }
+        if (!table.path("hasHeaderRow").asBoolean() && table.path("showFilterButton").asBoolean()) throw ServiceException.validation("A Table without headers cannot expose a filter button");
     }
 
     private void updateTableSheet(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {

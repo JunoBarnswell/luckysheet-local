@@ -31,6 +31,7 @@
   "ganttView": "甘特视图",
   "ganttFormat": "甘特格式",
   "reportSheetDesign": "报表设计",
+  "tableDesign": "表格设计",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -287,6 +288,7 @@
       ,"ganttView": "甘特视图"
       ,"ganttFormat": "甘特格式"
       ,"reportSheetDesign": "报表设计"
+      ,"tableDesign": "表格设计"
     },
     "commands": {
       "settings": "选项",
@@ -392,6 +394,17 @@
       "reportRenderMode": "渲染模式",
       "reportPagination": "分页",
       "reportLayout": "布局",
+      "tableName": "表名称",
+      "tableHeaderRow": "标题行",
+      "tableTotalRow": "汇总行",
+      "tableFirstColumn": "第一列",
+      "tableLastColumn": "最后一列",
+      "tableBandedRows": "带状行",
+      "tableBandedColumns": "带状列",
+      "tableFilterButton": "筛选按钮",
+      "tableResize": "调整表格大小",
+      "tableConvertToRange": "转换为区域",
+      "tableStyle": "表格样式",
       "chartBuilder": "图表构建器",
       "sparkline": "迷你图",
       "shapesLines": "形状与线条",

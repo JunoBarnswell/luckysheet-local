@@ -31,7 +31,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
-import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -79,6 +79,9 @@ export interface RibbonProps {
   /** Host-owned selection-aware sort builder. */
   buildSortDescriptor?: (ascending: boolean) => CommandDescriptor | undefined;
   onCreateSheetTable: () => void;
+  onOpenTableSettings: () => void;
+  onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
+  onConvertActiveTableToRange: () => void;
   onCreateDataTable: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
@@ -116,6 +119,7 @@ export interface RibbonProps {
   activeTableSheet?: { sheetId: string; viewId: string };
   activeGanttSheet?: { sheetId: string; viewId: string };
   activeReportSheet?: { sheetId: string; tableId?: string };
+  activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
   canExecute?: (commandId: string, params?: unknown) => boolean;
@@ -229,6 +233,9 @@ export function Ribbon({
   onCreatePivotDialog,
   buildSortDescriptor,
   onCreateSheetTable,
+  onOpenTableSettings,
+  onToggleTableOption,
+  onConvertActiveTableToRange,
   onCreateDataTable,
   onToggleSheetTableTotalRow,
   onApplyFilterSelection,
@@ -266,6 +273,7 @@ export function Ribbon({
   activeTableSheet,
   activeGanttSheet,
   activeReportSheet,
+  activeTable,
   homeState,
   canExecute,
   commandPaletteOpen = false,
@@ -309,6 +317,9 @@ export function Ribbon({
     onFill,
     onFreezeAtPrimary,
     onCreateSheetTable,
+    onOpenTableSettings,
+    onToggleTableOption,
+    onConvertActiveTableToRange,
     onCreateDataTable,
     onToggleSheetTableTotalRow,
     onApplyFilterSelection,
@@ -349,6 +360,7 @@ export function Ribbon({
     activeTableSheet,
     activeGanttSheet,
     activeReportSheet,
+    activeTable,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
     sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
@@ -395,6 +407,7 @@ export function Ribbon({
           ...(activeTableSheet ? ['tableSheetDesign'] as const : []),
           ...(activeGanttSheet ? ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'] as const : []),
           ...(activeReportSheet ? ['reportSheetDesign'] as const : []),
+          ...(activeTable ? ['tableDesign'] as const : []),
         ]}
         disabled={disabled}
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}

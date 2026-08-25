@@ -37,6 +37,7 @@ export type MessageKey =
   | 'ganttView'
   | 'ganttFormat'
   | 'reportSheetDesign'
+  | 'tableDesign'
   | 'engineConnected'
   | 'searchWorkbook';
 

@@ -134,7 +134,10 @@ describe('exchange-excel-ooxml', () => {
       hasTotalRow: false,
       showBandedRows: true,
       showBandedColumns: false,
+      showFirstColumn: false,
+      showLastColumn: false,
       showFilterButton: true,
+      autoExpand: 'both',
       columns: [{ id: 'category', name: 'Category' }, { id: 'amount', name: 'Amount' }],
       styleName: 'TableStyleMedium2',
     });
@@ -173,7 +176,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.sheetTables.push({
       id: 'table-1', sheetId: sheet.id, name: 'SalesTable',
       range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
-      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false, showFilterButton: true,
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false, showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both',
       columns: [{ id: 'category', name: 'Category' }, { id: 'amount', name: 'Amount' }], styleName: 'TableStyleMedium2',
     });
     sheet.pivots.push({

@@ -10,6 +10,8 @@ import {
   isPointInRange,
   mergePresentationStyles,
   planTotalRowToggle,
+  planSheetTableAutoExpansion,
+  planSheetTableCreation,
   resolveFilterButtonCells,
   resolveAutoFilters,
   resolveActiveAutoFilter,
@@ -27,7 +29,10 @@ const sampleTable: SheetTableModel = {
   hasTotalRow: true,
   showBandedRows: true,
   showBandedColumns: false,
+  showFirstColumn: false,
+  showLastColumn: false,
   showFilterButton: true,
+  autoExpand: 'both',
   columns: [{ id: 'c1', name: 'Product' }, { id: 'c2', name: 'Amount' }],
 };
 
@@ -50,6 +55,41 @@ test('createAutoFilterModelForTable uses the table range', () => {
   const filter = createAutoFilterModelForTable(sampleTable);
   assert.deepEqual(filter.range, sampleTable.range);
   assert.equal(filter.sheetId, 's1');
+});
+
+test('planSheetTableCreation preserves body rows when headers are disabled', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  let id = 0;
+  const plan = planSheetTableCreation({
+    sheetId: 's1',
+    range: { sheetId: 's1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    name: 'BodyOnly',
+    hasHeaderRow: false,
+    nextId: (prefix) => `${prefix}-${id++}`,
+    readCell: () => 'must-not-be-used',
+  }, sheet);
+  assert.deepEqual(plan.table.columns.map((column) => column.name), ['Column1', 'Column2']);
+  assert.equal(plan.table.hasHeaderRow, false);
+  assert.equal(plan.table.showFilterButton, false);
+  assert.equal(plan.table.autoFilter, undefined);
+});
+
+test('planSheetTableAutoExpansion grows contiguous rows and columns atomically', () => {
+  const sheet = new WorksheetModel('s1', 'Sheet1');
+  const table: SheetTableModel = {
+    ...sampleTable,
+    hasTotalRow: false,
+    range: { sheetId: 's1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    columns: [{ id: 'c1', name: 'Product' }, { id: 'c2', name: 'Amount' }],
+  };
+  sheet.sheetTables.push(table);
+  const rowPlan = planSheetTableAutoExpansion(sheet, { sheetId: 's1', startRow: 3, endRow: 4, startColumn: 0, endColumn: 1 }, (prefix) => `${prefix}-row`);
+  assert.equal(rowPlan.length, 1);
+  assert.equal(rowPlan[0]?.next.range.endRow, 4);
+  const columnPlan = planSheetTableAutoExpansion(sheet, { sheetId: 's1', startRow: 0, endRow: 2, startColumn: 2, endColumn: 2 }, (prefix) => `${prefix}-column`);
+  assert.equal(columnPlan.length, 1);
+  assert.equal(columnPlan[0]?.next.range.endColumn, 2);
+  assert.equal(columnPlan[0]?.next.columns.length, 3);
 });
 
 test('mergePresentationStyles keeps later layers on top', () => {

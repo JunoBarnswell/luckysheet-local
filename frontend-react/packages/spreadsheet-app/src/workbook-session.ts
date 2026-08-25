@@ -45,7 +45,7 @@ import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
 import { computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
-  defaultTotalsFunction,
+  planSheetTableCreation,
   findSheetTableAt,
   findValidationRule,
   groupsWithinRange,
@@ -528,6 +528,26 @@ export class WorkbookSession {
     }
     if (JSON.stringify(nextContext) !== JSON.stringify(previousContext)) {
       this.activeContext = nextContext;
+    }
+  }
+
+  private syncTableContextFromSelection(): void {
+    if (this.drawingSelectionMode) return;
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (sheet.kind !== 'worksheet') return;
+    const active = this.selectionService.getState().activeCell;
+    const table = findSheetTableAt(sheet, active.row, active.column);
+    const next: ActiveContext = table
+      ? { kind: 'table', sheetId: sheet.id, tableId: table.id }
+      : { kind: 'none' };
+    if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
+    if (this.activeContext.kind !== 'none' && !['table'].includes(this.activeContext.kind)) return;
+    this.activeContext = next;
+    if (next.kind === 'table') {
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'tableDesign';
+    } else if (this.ribbonTab === 'tableDesign') {
+      this.ribbonTab = 'home';
     }
   }
 
@@ -1188,6 +1208,7 @@ export class WorkbookSession {
       this.clearHistoryPreview();
     }
     this.applySelectionFromCommand(commandId, resolvedParams, result);
+    this.syncTableContextFromSelection();
     this.refresh();
     return result;
   }
@@ -1319,6 +1340,7 @@ export class WorkbookSession {
     if (range) {
       this.selectionService.selectRange(range, 'replace');
       this.syncDraftFromPrimary();
+      this.syncTableContextFromSelection();
       this.emit();
       return true;
     }
@@ -1781,7 +1803,7 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert'): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert'): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
     this.dialogs = { ...this.dialogs, active, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
@@ -1845,6 +1867,11 @@ export class WorkbookSession {
     this.setFocusState('grid', 'grid');
     this.emit();
   };
+  closeCreateTableDialog = (): void => {
+    if (this.dialogs.active === 'create-table') this.dialogs = { ...this.dialogs, active: null };
+    this.setFocusState('grid', 'grid');
+    this.emit();
+  };
   async pasteSpecial(spec: PasteSpecialSpec): Promise<DispatchOutcome> {
     const outcome = await this.paste(spec);
     this.closePasteSpecial();
@@ -1880,12 +1907,14 @@ export class WorkbookSession {
       insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
     });
     if (changed) this.syncDraftFromPrimary();
+    this.syncTableContextFromSelection();
     this.emit();
   }
 
   selectRange(range: { startRow: number; startColumn: number; endRow: number; endColumn: number }, mode: 'replace' | 'add' | 'extend' = 'replace'): void {
     this.selectionService.selectRange(range, mode);
     this.syncDraftFromPrimary();
+    this.syncTableContextFromSelection();
     this.emit();
   }
 
@@ -1904,6 +1933,7 @@ export class WorkbookSession {
       if (painter.mode === 'once') this.formatPainter = null;
     }
     this.syncDraftFromPrimary();
+    this.syncTableContextFromSelection();
     this.emit();
   }
 
@@ -4096,13 +4126,13 @@ export class WorkbookSession {
     await this.runtime.formulaCalculation;
   }
 
-  createSheetTableFromSelection(): void {
+  openCreateTableDialog(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const range = normalizeRangeRef(this.getPrimaryRange());
     const regions = this.dataRegionsIntersectingRanges(this.activeSheetId, [range]);
     if (regions.length > 0) {
       void this.materializeDataRegions(regions)
-        .then(() => this.createSheetTableFromSelection())
+        .then(() => this.openCreateTableDialog())
         .catch((error) => this.notify(error instanceof Error ? error.message : 'Data region could not be prepared as a table'));
       return;
     }
@@ -4110,35 +4140,44 @@ export class WorkbookSession {
       this.notify('Select a multi-cell range before creating a table');
       return;
     }
-    const usedNames = new Set(sheet.sheetTables.map((table) => table.name.trim().toUpperCase()));
-    let tableIndex = sheet.sheetTables.length + 1;
-    while (usedNames.has(`TABLE${tableIndex}`)) tableIndex += 1;
-    const fieldNames = new Set<string>();
-    const columns: SheetTableModel['columns'] = [];
-    for (let column = range.startColumn; column <= range.endColumn; column++) {
-      const rawName = String(this.readResolvedCell(sheet, range.startRow, column)?.value ?? '').trim() || `Column${column - range.startColumn + 1}`;
-      let name = rawName;
-      let suffix = 2;
-      while (fieldNames.has(name.toUpperCase())) name = `${rawName}${suffix++}`;
-      fieldNames.add(name.toUpperCase());
-      const columnIndex = column - range.startColumn;
-      columns.push({ id: nextId('col'), name, totalsFunction: defaultTotalsFunction(columnIndex) });
-    }
-    const table: SheetTableModel = {
-      id: nextId('sheet-table'),
+    this.openDialog('create-table');
+  }
+
+  createSheetTableFromDialog(request: { name: string; hasHeaderRow: boolean; styleName?: string }): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const usedNames = sheet.sheetTables.map((table) => table.name);
+    const plan = planSheetTableCreation({
       sheetId: this.activeSheetId,
-      name: `Table${tableIndex}`,
       range,
-      hasHeaderRow: true,
-      hasTotalRow: false,
-      showBandedRows: true,
-      showBandedColumns: false,
-      showFilterButton: true,
-      columns,
-    };
-    this.runCommand('sheetTable.add', table);
-    this.notify(`Sheet table ${table.name} created`);
+      name: request.name,
+      hasHeaderRow: request.hasHeaderRow,
+      ...(request.styleName ? { styleName: request.styleName } : {}),
+      existingNames: usedNames,
+      nextId,
+      readCell: (row, column) => this.readResolvedCell(sheet, row, column)?.value,
+    }, sheet);
+    this.runCommand('sheetTable.add', plan.table);
+    this.closeCreateTableDialog();
+    this.notify(`Sheet table ${plan.table.name} created`);
     this.refresh();
+  }
+
+  /** Build the canonical table descriptor for APIs that already own confirmation. */
+  planSheetTableFromSelection(request: { name: string; hasHeaderRow: boolean; styleName?: string }): SheetTableModel {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const range = normalizeRangeRef(this.getPrimaryRange());
+    const usedNames = sheet.sheetTables.map((table) => table.name);
+    return planSheetTableCreation({
+      sheetId: this.activeSheetId,
+      range,
+      name: request.name,
+      hasHeaderRow: request.hasHeaderRow,
+      ...(request.styleName ? { styleName: request.styleName } : {}),
+      existingNames: usedNames,
+      nextId,
+      readCell: (row, column) => this.readResolvedCell(sheet, row, column)?.value,
+    }, sheet).table;
   }
 
   async toggleSheetTableTotalRow(tableId?: string, enabled?: boolean): Promise<void> {
@@ -4155,6 +4194,92 @@ export class WorkbookSession {
     await this.executeCommandAfterMaterialization('sheetTable.toggleTotalRow', { sheetId: this.activeSheetId, tableId: table.id, enabled: nextEnabled });
     this.notify(nextEnabled ? `Total row added to ${table.name}` : `Total row removed from ${table.name}`);
     this.refresh();
+  }
+
+  openTableSettings(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const table = findSheetTableAt(sheet, this.selectionService.getState().activeCell.row, this.selectionService.getState().activeCell.column);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    this.panels = { ...this.panels, active: 'data', open: true };
+    this.emit();
+  }
+
+  toggleActiveSheetTableOption(option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton'): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const table = findSheetTableAt(sheet, active.row, active.column);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    const next = { ...structuredClone(table), [option]: !table[option] };
+    if (option === 'hasHeaderRow' && !next.hasHeaderRow) {
+      next.autoFilter = undefined;
+      next.showFilterButton = false;
+    }
+    if (option === 'showFilterButton' && !next.showFilterButton) next.autoFilter = undefined;
+    this.runCommand('sheetTable.update', next);
+  }
+
+  convertActiveSheetTableToRange(): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const table = findSheetTableAt(sheet, active.row, active.column);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    this.runCommand('sheetTable.convertToRange', { sheetId: this.activeSheetId, tableId: table.id });
+  }
+
+  resizeActiveSheetTable(range: RangeRef): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const table = findSheetTableAt(sheet, active.row, active.column);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    this.runCommand('sheetTable.update', { ...structuredClone(table), range: { ...structuredClone(range), sheetId: this.activeSheetId } });
+  }
+
+  setActiveSheetTableStyle(styleName: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const table = findSheetTableAt(sheet, active.row, active.column);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    const normalized = styleName.trim();
+    if (!/^TableStyle[A-Za-z0-9]+$/.test(normalized)) {
+      this.notify('Invalid table style');
+      return;
+    }
+    this.runCommand('sheetTable.update', { ...structuredClone(table), styleName: normalized });
+  }
+
+  setActiveSheetTableName(name: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const active = this.selectionService.getState().activeCell;
+    const table = findSheetTableAt(sheet, active.row, active.column);
+    if (!table) {
+      this.notify('Select a cell inside a sheet table first');
+      return;
+    }
+    const normalized = name.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(normalized)) {
+      this.notify('Invalid table name');
+      return;
+    }
+    if (sheet.sheetTables.some((entry) => entry.id !== table.id && entry.name.toLocaleLowerCase() === normalized.toLocaleLowerCase())) {
+      this.notify(`Sheet Table already exists: ${normalized}`);
+      return;
+    }
+    this.runCommand('sheetTable.update', { ...structuredClone(table), name: normalized });
   }
 
   groupRowsFromSelection(): void {

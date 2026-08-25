@@ -815,7 +815,10 @@ function parseSheetTables(
       hasTotalRow: table.attrs.totalsRowCount === '1',
       showBandedRows: child(table, 'tableStyleInfo')?.attrs.showRowStripes !== '0',
       showBandedColumns: child(table, 'tableStyleInfo')?.attrs.showColumnStripes === '1',
+      showFirstColumn: child(table, 'tableStyleInfo')?.attrs.showFirstColumn === '1',
+      showLastColumn: child(table, 'tableStyleInfo')?.attrs.showLastColumn === '1',
       showFilterButton: table.attrs.headerRowCount !== '0',
+      autoExpand: 'both',
       ...(tableAutoFilter ? { autoFilter: tableAutoFilter } : {}),
       columns,
       ...(child(table, 'tableStyleInfo')?.attrs.name ? { styleName: child(table, 'tableStyleInfo')!.attrs.name } : {}),
@@ -1205,7 +1208,7 @@ function buildTableXml(table: NonNullable<SheetSnapshot['sheetTables']>[number],
   const ref = rangeToA1(table.range);
   const columns = table.columns.map((column, index) => `<tableColumn id="${index + 1}" name="${encodeXml(column.name)}"${column.totalsFunction && column.totalsFunction !== 'none' ? ` totalsRowFunction="${encodeXml(column.totalsFunction)}"` : ''}/>`).join('');
   const style = table.styleName
-    ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="0" showLastColumn="0" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
+    ? `<tableStyleInfo name="${encodeXml(table.styleName)}" showFirstColumn="${table.showFirstColumn ? '1' : '0'}" showLastColumn="${table.showLastColumn ? '1' : '0'}" showRowStripes="${table.showBandedRows ? '1' : '0'}" showColumnStripes="${table.showBandedColumns ? '1' : '0'}"/>`
     : '';
   const autoFilter = table.autoFilter
     ? serializeAutoFilter(table.autoFilter, differentialStyleIndexes)
