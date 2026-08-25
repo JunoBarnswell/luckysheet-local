@@ -137,6 +137,7 @@
     "pasteAllExceptBorders": "除边框外全部",
     "pasteSourceTheme": "使用源主题全部（暂不支持）",
     "pasteCommentsNotes": "批注和备注",
+    "cells": "单元格",
     "pasteValidation": "数据验证",
     "pasteColumnWidths": "源列宽",
     "pasteConditionalFormats": "条件格式",
