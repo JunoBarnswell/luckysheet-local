@@ -90,8 +90,7 @@ function pivot(source: string): PivotDefinition {
       subtotalLocation: 'bottom',
       showRowGrandTotals: true,
       showColumnGrandTotals: true,
-      compact: false,
-      repeatLabels: false,
+      reportLayout: 'outline',
     },
     refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
   };

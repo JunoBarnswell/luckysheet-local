@@ -11,6 +11,7 @@ import type {
   PivotGroup,
   PivotLabelFilterOperator,
   PivotLayout,
+  PivotReportLayout,
   PivotModel,
   PivotNativeCacheFlags,
   PivotNativeAutoSortMetadata,
@@ -495,6 +496,36 @@ function pruneRemovedControlDrawingAnchors(
   }
 }
 
+/**
+ * Convert OOXML's split compactData/repeatAllLabels/pivotField flags into the
+ * one canonical report-layout value. Conflicting or malformed combinations
+ * are rejected at the external protocol boundary instead of being guessed.
+ */
+function nativeReportLayout(table: NativePivotTableDefinition): PivotReportLayout {
+  const rowFields = table.fields.filter((field) => field.axis === 'row');
+  const compactFields = rowFields.filter((field) => field.compact === true);
+  const explicitCompactFields = rowFields.filter((field) => field.compact !== undefined);
+  const outlineFields = rowFields.filter((field) => field.outline === true);
+  if (table.compactData === true && table.repeatLabels === true) {
+    throw new Error(`PivotTable ${table.part} has conflicting compactData and repeatAllLabels flags`);
+  }
+  if (table.compactData === true && outlineFields.length > 0) {
+    throw new Error(`PivotTable ${table.part} has outline row fields in compact layout`);
+  }
+  if (table.repeatLabels === true && outlineFields.length > 0) {
+    throw new Error(`PivotTable ${table.part} has outline row fields in tabular layout`);
+  }
+  if (table.compactData === false && compactFields.length > 0) {
+    throw new Error(`PivotTable ${table.part} has compact row fields in non-compact layout`);
+  }
+  if (compactFields.length > 0 && compactFields.length !== explicitCompactFields.length) {
+    throw new Error(`PivotTable ${table.part} has mixed compact row-field flags`);
+  }
+  if (table.compactData === true || (table.compactData === undefined && compactFields.length > 0)) return 'compact';
+  if (table.repeatLabels === true) return 'tabular';
+  return 'outline';
+}
+
 /** Convert a supported native table/cache pair to the canonical Pivot definition. */
 export function mapNativePivotDefinition(
   table: NativePivotTableDefinition,
@@ -506,6 +537,7 @@ export function mapNativePivotDefinition(
   const source = mapNativeSource(cache.source, snapshot, sheetPartById);
   const location = target && table.locationRef ? parseRange(table.locationRef, target.id) : undefined;
   if (!target || !source || !location) return undefined;
+  const reportLayout = nativeReportLayout(table);
   const fields = cache.fields.map((field) => {
     const fieldId = nativeFieldId(cache.cacheId, field.index);
     return {
@@ -575,8 +607,7 @@ export function mapNativePivotDefinition(
     subtotalLocation: table.subtotalLocation ?? 'bottom',
     showRowGrandTotals: table.showRowGrandTotals ?? true,
     showColumnGrandTotals: table.showColumnGrandTotals ?? true,
-    compact: table.compactData ?? table.fields.some((field) => field.compact === true),
-    repeatLabels: table.repeatLabels ?? false,
+    reportLayout,
     expansion: {
       expandedNodeIds: [],
       collapsedNodeIds: table.fields.flatMap((field) => field.axis === 'row'
@@ -1331,14 +1362,14 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
       index,
       ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}),
       ...nativeSortForField(index),
-      ...(pivot.layout.compact ? { compact: true } : {}),
+      ...(pivot.layout.reportLayout === 'compact' ? { compact: true, outline: false } : { compact: false, outline: pivot.layout.reportLayout === 'outline' }),
       ...((collapsedItemIndexes.get(index)?.length ?? 0) > 0 ? { collapsedItemIndexes: [...new Set(collapsedItemIndexes.get(index))] } : {}),
       ...((hiddenItemIndexes.get(index)?.length ?? 0) > 0 ? { hiddenItemIndexes: hiddenItemIndexes.get(index) } : {}),
       ...(subtotalForField(index) ? { subtotal: structuredClone(subtotalForField(index)) } : {}),
     })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
     pivotFilters: buildNativePivotFilters(pivot, dataFields),
-    showRowGrandTotals: pivot.layout.showRowGrandTotals, showColumnGrandTotals: pivot.layout.showColumnGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact, multipleFieldFilters: pivot.layout.allowMultipleFiltersPerField,
+    showRowGrandTotals: pivot.layout.showRowGrandTotals, showColumnGrandTotals: pivot.layout.showColumnGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.reportLayout === 'tabular', compactData: pivot.layout.reportLayout === 'compact', multipleFieldFilters: pivot.layout.allowMultipleFiltersPerField,
     ...(styleName ? { styleName } : {}),
     ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
     showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,
@@ -1423,7 +1454,7 @@ function buildPivotTableXml(table: NativePivotTableDefinition, customNumberForma
     const sortType = field.sortType && field.sortType !== 'manual' ? ` sortType="${field.sortType}"` : field.sortType === 'manual' ? ' sortType="manual"' : '';
     const nonAutoSortDefault = field.nonAutoSortDefault === undefined ? '' : ` nonAutoSortDefault="${field.nonAutoSortDefault ? '1' : '0'}"`;
     const autoSortScope = field.autoSortScope ? buildAutoSortScopeXml(field.autoSortScope) : '';
-    return `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}${sortType}${nonAutoSortDefault}${subtotal}>${items}${autoSortScope}</pivotField>`;
+    return `<pivotField${field.axis === 'row' ? ' axis="axisRow"' : field.axis === 'column' ? ' axis="axisCol"' : field.axis === 'page' ? ' axis="axisPage"' : ''}${field.compact === undefined ? '' : ` compact="${field.compact ? '1' : '0'}"`}${field.outline === undefined ? '' : ` outline="${field.outline ? '1' : '0'}"`}${sortType}${nonAutoSortDefault}${subtotal}>${items}${autoSortScope}</pivotField>`;
   }).join('');
   const rows = table.rowFields.map((field) => `<field x="${field}"/>`).join('');
   const columns = table.columnFields.map((field) => `<field x="${field}"/>`).join('');
@@ -1445,7 +1476,7 @@ function buildPivotTableXml(table: NativePivotTableDefinition, customNumberForma
     ...boolAttr(table.preserveFormatting, 'preserveFormatting'),
   ];
   const subtotalAttrs = table.subtotalLocation === 'off' ? ' showSubtotals="0"' : table.subtotalLocation === 'top' ? ' subtotalTop="1"' : ' subtotalTop="0"';
-  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" multipleFieldFilters="${table.multipleFieldFilters === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${displayAttrs.length ? ` ${displayAttrs.join(' ')}` : ''}${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
+  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" repeatAllLabels="${table.repeatLabels === true ? '1' : '0'}" multipleFieldFilters="${table.multipleFieldFilters === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${displayAttrs.length ? ` ${displayAttrs.join(' ')}` : ''}${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
 }
 
 function buildAutoSortScopeXml(scope: NativePivotAutoSortScope): string {
@@ -2013,7 +2044,7 @@ function aggregate(values: PivotScalar[], operation: string | undefined): PivotS
 }
 function inferCacheType(node: XmlNode | undefined): NativePivotCacheField['dataType'] | undefined { if (!node) return undefined; if (node.attrs.containsString === '1' || node.attrs.containsString === 'true') return 'string'; if (node.attrs.containsDate === '1' || node.attrs.containsDate === 'true') return 'date'; if (node.attrs.containsNumber === '1' || node.attrs.containsNumber === 'true') return 'number'; if (node.attrs.containsBoolean === '1' || node.attrs.containsBoolean === 'true') return 'boolean'; if (node.attrs.containsError === '1' || node.attrs.containsError === 'true') return 'error'; return undefined; }
 function numberOrNull(value: string | undefined): number | null { const number = Number(value); return Number.isFinite(number) ? number : null; }
-function optionalBoolean(value: string | undefined, key: string): Record<string, boolean> { return value === undefined ? {} : { [key]: value === '1' || value.toLowerCase() === 'true' }; }
+function optionalBoolean(value: string | undefined, key: string): Record<string, boolean> { return value === undefined ? {} : { [key]: parseBoolean(value, key) }; }
 function boolAttr(value: boolean | undefined, name: string): string[] { return value === undefined ? [] : [`${name}="${value ? '1' : '0'}"`]; }
 function requiredInteger(value: string | undefined, label: string): number { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) throw new Error(`${label} must be a non-negative integer`); return number; }
 function withXmlDeclaration(xml: string): string { return xml.startsWith('<?xml') ? xml : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`; }
