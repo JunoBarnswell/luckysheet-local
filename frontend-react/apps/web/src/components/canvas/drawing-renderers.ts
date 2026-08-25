@@ -220,33 +220,54 @@ function dataChartSeries(
   tables: readonly WorkbookTableModel[],
   getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined,
 ): { categories: string[]; series: CanvasChartSeries[] } {
-  const table = tables.find((entry) => entry.id === payload.tableId);
-  if (!table?.sourceRange) return { categories: [], series: [] };
-  const sheet = getSheet(table.sourceRange.sheetId);
+  const source = payload.source;
+  const table = source.kind === 'table' ? tables.find((entry) => entry.id === source.tableId) : undefined;
+  const sourceRange = table?.sourceRange ?? (source.kind === 'report-sheet' ? source.range : undefined);
+  if (!sourceRange) return { categories: [], series: [] };
+  const sheet = getSheet(sourceRange.sheetId);
   if (!sheet) return { categories: [], series: [] };
-  const plot = payload.plots[0];
-  if (!plot) return { categories: [], series: [] };
-  const valueField = table.fields.find((field) => field.id === plot.valueFieldId);
-  const categoryField = table.fields.find((field) => field.id === plot.categoryFieldId);
-  if (!valueField) return { categories: [], series: [] };
-  const buckets = new Map<string, number[]>();
-  for (let row = table.sourceRange.startRow + 1; row <= table.sourceRange.endRow; row += 1) {
-    const category = categoryField ? sheet.getCell(row, table.sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : String(row - table.sourceRange.startRow);
-    const raw = sheet.getCell(row, table.sourceRange.startColumn + valueField.ordinal)?.value ?? '';
-    const value = numericCellValue(raw);
-    if (value === undefined) continue;
-    const values = buckets.get(category) ?? [];
-    values.push(value);
-    buckets.set(category, values);
+  const fields = source.kind === 'table'
+    ? (table?.fields ?? []).map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal }))
+    : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
+  const fieldById = new Map(fields.map((field) => [field.id, field]));
+  const isVisibleField = (field: { ordinal: number } | undefined): boolean => Boolean(field && (payload.inspector.showHiddenData || !sheet.hiddenColumns.includes(sourceRange.startColumn + field.ordinal)));
+  const categoryBinding = payload.bindings.category[0];
+  const categoryField = categoryBinding && isVisibleField(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
+  const valueBindings = payload.bindings.values.filter((binding) => isVisibleField(fieldById.get(binding.fieldId)));
+  if (!valueBindings.length) return { categories: [], series: [] };
+  const buckets = new Map<string, Map<string, number[]>>();
+  for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
+    if (!payload.inspector.showHiddenData && sheet.hiddenRows.includes(row)) continue;
+    const category = String(categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow);
+    const byField = buckets.get(category) ?? new Map<string, number[]>();
+    for (const binding of valueBindings) {
+      const field = fieldById.get(binding.fieldId)!;
+      const raw = sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value ?? '';
+      const value = numericCellValue(String(raw));
+      if (value !== undefined) byField.set(binding.fieldId, [...(byField.get(binding.fieldId) ?? []), value]);
+    }
+    buckets.set(category, byField);
   }
-  const aggregate = (values: number[]): number => {
-    if (plot.aggregate === 'count') return values.length;
-    if (plot.aggregate === 'min') return Math.min(...values);
-    if (plot.aggregate === 'max') return Math.max(...values);
-    if (plot.aggregate === 'average') return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+  const aggregate = (values: number[], mode: DataChartDrawingPayload['bindings']['values'][number]['aggregate']): number => {
+    if (!values.length || mode === 'none') return values.length ? values[values.length - 1]! : 0;
+    if (mode === 'count') return values.length;
+    if (mode === 'min') return Math.min(...values);
+    if (mode === 'max') return Math.max(...values);
+    if (mode === 'average') return values.reduce((sum, value) => sum + value, 0) / values.length;
     return values.reduce((sum, value) => sum + value, 0);
   };
-  return { categories: [...buckets.keys()], series: [{ name: valueField.name, values: [...buckets.values()].map(aggregate) }] };
+  const categories = [...buckets.keys()];
+  const series = valueBindings.map((binding) => ({ name: fieldById.get(binding.fieldId)!.name, values: categories.map((category) => aggregate(buckets.get(category)?.get(binding.fieldId) ?? [], binding.aggregate)) }));
+  const sortBinding = valueBindings.find((binding) => binding.sort);
+  if (sortBinding) {
+    const index = series.findIndex((entry) => entry.name === fieldById.get(sortBinding.fieldId)?.name);
+    if (index >= 0) {
+      const order = sortBinding.sort === 'desc' ? -1 : 1;
+      const orderIndexes = categories.map((_category, categoryIndex) => categoryIndex).sort((left, right) => (series[index]!.values[left]! - series[index]!.values[right]!) * order);
+      return { categories: orderIndexes.map((categoryIndex) => categories[categoryIndex]!), series: series.map((entry) => ({ ...entry, values: orderIndexes.map((categoryIndex) => entry.values[categoryIndex]!) })) };
+    }
+  }
+  return { categories, series };
 }
 
 function drawCameraOnCanvas(context: CanvasRenderingContext2D, payload: CameraDrawingPayload, bounds: Rect, getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined): void {
@@ -676,8 +697,8 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (payload.kind === 'data-chart') {
       const data = dataChartSeries(payload, tables, getSheet);
       const chartPayload: ChartDrawingPayload = {
-        kind: 'chart', chartId: drawing.payloadId, chartType: payload.plots[0]?.type === 'radar' || payload.plots[0]?.type === 'treemap' || payload.plots[0]?.type === 'funnel' ? 'column' : payload.plots[0]?.type ?? 'column',
-        sourceRanges: [], elements: { title: payload.config.title, legend: { visible: payload.config.legendPosition !== 'none', position: payload.config.legendPosition === 'none' ? 'bottom' : payload.config.legendPosition ?? 'bottom' }, dataLabels: { visible: payload.config.showDataLabels ?? false }, hiddenData: 'show' },
+        kind: 'chart', chartId: drawing.payloadId, chartType: payload.plotType === 'radar' || payload.plotType === 'treemap' || payload.plotType === 'funnel' ? 'column' : payload.plotType,
+        sourceRanges: [], elements: { title: payload.inspector.title, legend: { visible: payload.inspector.legendPosition !== 'none', position: payload.inspector.legendPosition === 'none' ? 'bottom' : payload.inspector.legendPosition }, dataLabels: { visible: payload.inspector.showDataLabels }, hiddenData: 'show', chartArea: payload.inspector.chartArea, plotArea: payload.inspector.plotArea, valueAxis: { id: 'value', position: 'left', title: payload.inspector.axis.valueTitle, majorGridlines: { visible: payload.inspector.axis.showGridlines, color: '#e2e8f0', width: 1, dash: 'solid' } }, categoryAxis: { id: 'category', position: 'bottom', title: payload.inspector.axis.categoryTitle, majorGridlines: { visible: false } } },
       };
       drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawCanonicalChartOnCanvas({ context, payload: chartPayload, bounds: rect, categories: data.categories, series: data.series }) });
       continue;

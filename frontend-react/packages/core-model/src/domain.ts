@@ -181,22 +181,40 @@ export interface TextBoxDrawingPayload {
 
 export type DataChartAggregate = 'sum' | 'average' | 'count' | 'min' | 'max' | 'none';
 
+export type DataChartPlotType = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'treemap' | 'funnel';
+export type DataChartBindingArea = 'values' | 'category' | 'details' | 'color' | 'size' | 'tooltip' | 'filter';
+export type DataChartSource =
+  | { kind: 'table'; tableId: string }
+  | { kind: 'report-sheet'; range: RangeRef };
+
+export interface DataChartFieldBinding {
+  fieldId: string;
+  area: DataChartBindingArea;
+  aggregate: DataChartAggregate;
+  sort?: 'asc' | 'desc';
+  format?: string;
+}
+
+export interface DataChartInspectorModel {
+  title?: string;
+  legendPosition: 'top' | 'bottom' | 'left' | 'right' | 'none';
+  showDataLabels: boolean;
+  showHiddenData: boolean;
+  chartArea: { fill: string; border: string; borderWidth: number };
+  plotArea: { fill: string; border?: string };
+  axis: {
+    categoryTitle?: string;
+    valueTitle?: string;
+    showGridlines: boolean;
+  };
+}
+
 export interface DataChartDrawingPayload {
   kind: 'data-chart';
-  tableId: string;
-  plots: Array<{
-    type: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'treemap' | 'funnel';
-    valueFieldId: string;
-    aggregate: DataChartAggregate;
-    categoryFieldId?: string;
-    colorFieldId?: string;
-    sizeFieldId?: string;
-  }>;
-  config: {
-    title?: string;
-    legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
-    showDataLabels?: boolean;
-  };
+  source: DataChartSource;
+  plotType: DataChartPlotType;
+  bindings: Record<DataChartBindingArea, DataChartFieldBinding[]>;
+  inspector: DataChartInspectorModel;
 }
 
 export interface CameraDrawingPayload {

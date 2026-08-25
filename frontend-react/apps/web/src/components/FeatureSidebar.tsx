@@ -44,6 +44,7 @@ import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPh
 import { localizeText, type Locale } from '../i18n';
 import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
+import { DataChartPanel } from './panels/DataChartPanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
 import { SparklinePanel } from './panels/SparklinePanel';
@@ -183,6 +184,7 @@ export interface FeatureSidebarProps {
 const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: SidebarPanelId; label: string }> = [
   { id: 'inspector', label: 'Inspect', icon: 'sliders' },
   { id: 'chart', label: 'Chart', icon: 'chart' },
+  { id: 'dataChart', label: 'Data Chart', icon: 'data-chart' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
@@ -518,6 +520,17 @@ export function FeatureSidebar({
             drawingPayloads={drawingPayloads}
             selectedDrawingIds={selectedDrawingIds}
             defaultRange={selectionText}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'dataChart' ? (
+          <DataChartPanel
+            sheetId={sheetId}
+            sheet={sheet}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
+            tables={tables}
             onCommand={onCommand}
           />
         ) : null}

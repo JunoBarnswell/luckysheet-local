@@ -15,6 +15,7 @@ import type {
   DrawingObject,
   DrawingTransform,
   DataChartDrawingPayload,
+  DataChartPlotType,
   FormControlDrawingPayload,
   FormControlType,
   ImageDrawingPayload,
@@ -523,7 +524,7 @@ export class WorkbookSession {
       this.inputMode = 'grid';
       this.focus = { mode: 'grid', target: 'grid' };
     }
-    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'shape')) {
+    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'shape')) {
       this.panels = { ...this.panels, open: false };
     }
     if (JSON.stringify(nextContext) !== JSON.stringify(previousContext)) {
@@ -2400,15 +2401,19 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  insertDataChart(type: DataChartDrawingPayload['plots'][number]['type'] = 'column'): void {
+  insertDataChart(type: DataChartPlotType = 'column'): void {
     const table = this.buildSelectionWorkbookTable('data-chart');
-    const numeric = table.fields.find((field) => field.type === 'number') ?? table.fields[1] ?? table.fields[0]!;
-    const category = table.fields.find((field) => field.id !== numeric.id);
+    if (!table.sourceRange) throw new Error('Data Chart requires a non-empty selected range with a header row');
+    const numericFields = table.fields.filter((field) => field.type === 'number');
+    if (numericFields.length === 0) throw new Error('Data Chart requires at least one numeric value field');
+    const category = table.fields.find((field) => field.type !== 'number') ?? table.fields[0];
+    const bindings: DataChartDrawingPayload['bindings'] = { values: numericFields.map((field) => ({ area: 'values', fieldId: field.id, aggregate: 'sum' })), category: category ? [{ area: 'category', fieldId: category.id, aggregate: 'none' }] : [], details: [], color: [], size: [], tooltip: [], filter: [] };
     const payloadId = nextId('data-chart');
     const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'data-chart', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 480, height: 280, rotation: 0 }, zIndex: 0, payloadId };
-    const payload: DataChartDrawingPayload = { kind: 'data-chart', tableId: table.id, plots: [{ type, valueFieldId: numeric.id, aggregate: 'sum', categoryFieldId: category?.id }], config: { title: '数据图表', legendPosition: 'bottom', showDataLabels: false } };
+    const payload: DataChartDrawingPayload = { kind: 'data-chart', source: { kind: 'table', tableId: table.id }, plotType: type, bindings, inspector: { title: '数据图表', legendPosition: 'bottom', showDataLabels: false, showHiddenData: true, chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 }, plotArea: { fill: '#ffffff' }, axis: { showGridlines: true } } };
     this.runCommand('dataChart.create', { sheetId: this.activeSheetId, drawing, payload, table });
     this.setDrawingSelection([drawing.id]);
+    this.panels = { ...this.panels, active: 'dataChart', open: true };
     this.notify('数据图表已插入');
     this.refresh();
   }
