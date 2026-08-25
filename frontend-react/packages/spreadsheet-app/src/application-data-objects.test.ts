@@ -20,7 +20,7 @@ function selectRange(
 }
 
 describe('WorkbookSession data objects integration', () => {
-  it('createSheetTableFromSelection registers a sheet table with headers', () => {
+  it('Create Table plan registers a sheet table with explicit headers', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
@@ -34,13 +34,34 @@ describe('WorkbookSession data objects integration', () => {
       ],
     });
     selectRange(app, 0, 0, 2, 1);
-    app.createSheetTableFromSelection();
+    app.createSheetTableFromDialog({ name: 'Table1', hasHeaderRow: true, styleName: 'TableStyleMedium2' });
 
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.sheetTables.length, 1);
     assert.equal(sheet.sheetTables[0]?.name, 'Table1');
     assert.equal(sheet.sheetTables[0]?.columns.length, 2);
     assert.ok(sheet.sheetTables[0]?.autoFilter);
+    app.setActiveSheetTableName('Revenue');
+    app.setActiveSheetTableStyle('TableStyleMedium4');
+    assert.equal(sheet.sheetTables[0]?.name, 'Revenue');
+    assert.equal(sheet.sheetTables[0]?.styleName, 'TableStyleMedium4');
+  });
+
+  it('auto-expands a table when a contiguous row is written below it', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.range.set', {
+      sheetId,
+      startRow: 0,
+      startColumn: 0,
+      values: [[{ value: 'Name' }, { value: 'Amount' }], [{ value: 'Alpha' }, { value: 10 }]],
+    });
+    selectRange(app, 0, 0, 1, 1);
+    app.createSheetTableFromDialog({ name: 'AutoTable', hasHeaderRow: true });
+    app.runCommand('sheet.range.set', { sheetId, startRow: 2, startColumn: 0, values: [[{ value: 'Beta' }, { value: 20 }]] });
+    const table = app['runtime'].model.getSheet(sheetId).sheetTables[0]!;
+    assert.equal(table.range.endRow, 2);
+    assert.equal(table.autoFilter?.range.endRow, 2);
   });
 
   it('addConditionalFormat stores rules on the worksheet', () => {

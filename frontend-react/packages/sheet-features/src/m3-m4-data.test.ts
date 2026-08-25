@@ -43,7 +43,7 @@ test('total row inserts a real row and does not overwrite data below table', () 
     id: 'table-1', sheetId: sheet.id, name: 'Sales',
     range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
     hasHeaderRow: true, hasTotalRow: false, showBandedRows: false,
-    showBandedColumns: false, showFilterButton: false,
+    showBandedColumns: false, showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'both',
     columns: [{ id: 'name', name: 'Name', totalsFunction: 'count' }],
   });
   commands.execute('sheetTable.toggleTotalRow', { sheetId: sheet.id, tableId: 'table-1', enabled: true });

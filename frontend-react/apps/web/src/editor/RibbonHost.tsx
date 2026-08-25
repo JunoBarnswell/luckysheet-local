@@ -48,6 +48,7 @@ export function RibbonHost({
   onOpenDefaultColumnWidthDialog,
   commands,
 }: RibbonHostProps): ReactNode {
+  const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
   return (
     <Ribbon
       activeTab={state.ribbon.activeTab}
@@ -62,6 +63,18 @@ export function RibbonHost({
         : undefined}
       activeReportSheet={state.activeContext.kind === "report-sheet"
         ? { sheetId: state.activeContext.sheetId, tableId: state.activeContext.tableId }
+        : undefined}
+      activeTable={activeTableContext
+        ? (() => {
+          const table = state.selectedSheet.sheetTables.find((entry) => entry.id === activeTableContext.tableId);
+          const selection = state.selection.ranges[state.selection.primaryRangeIndex];
+          const resizeRange = table && selection
+            && (selection.startRow !== table.range.startRow || selection.endRow !== table.range.endRow
+              || selection.startColumn !== table.range.startColumn || selection.endColumn !== table.range.endColumn)
+            ? { ...selection }
+            : undefined;
+          return table ? { sheetId: activeTableContext.sheetId, tableId: table.id, table, resizeRange } : undefined;
+        })()
         : undefined}
       locale={locale}
       onCommand={dispatchCommand}
@@ -101,7 +114,10 @@ export function RibbonHost({
       onOpenDefaultColumnWidth={onOpenDefaultColumnWidthDialog}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
       buildSortDescriptor={commands.buildSortDescriptor}
-      onCreateSheetTable={() => session.createSheetTableFromSelection()}
+      onCreateSheetTable={() => session.openCreateTableDialog()}
+      onOpenTableSettings={() => session.openTableSettings()}
+      onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
+      onConvertActiveTableToRange={() => session.convertActiveSheetTableToRange()}
       onCreateDataTable={() => session.createDataTableFromSelection()}
       onToggleSheetTableTotalRow={commands.buildTotalRowCommand}
       onApplyFilterSelection={commands.buildFilterSelectionCommand}

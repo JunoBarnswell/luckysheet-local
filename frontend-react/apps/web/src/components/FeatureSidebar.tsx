@@ -31,6 +31,8 @@ import type {
   TableSheetDefinition,
   GanttSheetDefinition,
   ReportSheetDefinition,
+  SheetTableModel,
+  RangeRef,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
@@ -57,6 +59,7 @@ import { DataModelPanel } from './panels/DataModelPanel';
 import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
 import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
 import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
+import { TableDesignPanel } from './panels/TableDesignPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
@@ -121,6 +124,12 @@ export interface FeatureSidebarProps {
   onUpdateTableSheet: (definition: TableSheetDefinition) => void;
   onUpdateGanttSheet: (definition: GanttSheetDefinition) => void;
   onUpdateReportSheet: (definition: ReportSheetDefinition) => void;
+  activeTable?: SheetTableModel;
+  onTableNameChange: (name: string) => void;
+  onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
+  onResizeTable: (range: RangeRef) => void;
+  onTableStyleChange: (styleName: string) => void;
+  onConvertTableToRange: () => void;
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
   onCommand: (descriptor: CommandDescriptor) => void;
@@ -343,6 +352,12 @@ export function FeatureSidebar({
   onUpdateTableSheet,
   onUpdateGanttSheet,
   onUpdateReportSheet,
+  activeTable,
+  onTableNameChange,
+  onToggleTableOption,
+  onResizeTable,
+  onTableStyleChange,
+  onConvertTableToRange,
   onReadDataRows,
   onRemoveDataTable,
   onCommand,
@@ -383,6 +398,13 @@ export function FeatureSidebar({
   onSetHyperlink,
   onRemoveHyperlink,
 }: FeatureSidebarProps) {
+  const tableResizeRange = activeTable && selectedRange
+    && (selectedRange.startRow !== activeTable.range.startRow
+      || selectedRange.endRow !== activeTable.range.endRow
+      || selectedRange.startColumn !== activeTable.range.startColumn
+      || selectedRange.endColumn !== activeTable.range.endColumn)
+    ? { sheetId: activeTable.sheetId, ...selectedRange }
+    : undefined;
   const disabled = phase !== 'ready';
   const activePanelLabel = sheet.tableSheet && activePanel === 'data'
     ? localizeText(locale, 'TableSheet Designer')
@@ -629,6 +651,8 @@ export function FeatureSidebar({
             <GanttDesignerPanel definition={sheet.ganttSheet} tables={tables} onUpdate={onUpdateGanttSheet} />
           ) : sheet.reportSheet ? (
             <ReportDesignerPanel definition={sheet.reportSheet} tables={tables} activeCell={activeCell} onUpdate={onUpdateReportSheet} />
+          ) : activeTable ? (
+            <TableDesignPanel table={activeTable} locale={locale} selectedRange={tableResizeRange} onNameChange={onTableNameChange} onToggle={onToggleTableOption} onResize={onResizeTable} onStyleChange={onTableStyleChange} onConvert={onConvertTableToRange} />
           ) : (
             <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
           )

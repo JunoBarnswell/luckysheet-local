@@ -1,5 +1,6 @@
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { AppPhase, SidebarPanelId, UiSessionIntent } from '../types';
+import type { SheetTableModel } from '@react-sheets/core-model';
 
 export type RibbonCatalogTabId =
   | 'file'
@@ -19,7 +20,8 @@ export type RibbonCatalogTabId =
   | 'ganttProject'
   | 'ganttView'
   | 'ganttFormat'
-  | 'reportSheetDesign';
+  | 'reportSheetDesign'
+  | 'tableDesign';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -65,7 +67,8 @@ export type RibbonGroupId =
   | 'ganttProject'
   | 'ganttView'
   | 'ganttFormat'
-  | 'reportSheetDesign';
+  | 'reportSheetDesign'
+  | 'tableDesign';
 
 export type RibbonCommandId =
   | 'save'
@@ -218,7 +221,18 @@ export type RibbonCommandId =
   | 'reportFieldBinding'
   | 'reportRenderMode'
   | 'reportPagination'
-  | 'reportLayout';
+  | 'reportLayout'
+  | 'tableName'
+  | 'tableHeaderRow'
+  | 'tableTotalRow'
+  | 'tableFirstColumn'
+  | 'tableLastColumn'
+  | 'tableBandedRows'
+  | 'tableBandedColumns'
+  | 'tableFilterButton'
+  | 'tableResize'
+  | 'tableConvertToRange'
+  | 'tableStyle';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -339,6 +353,9 @@ export interface RibbonCommandActions {
   onFill: (direction: 'down' | 'right') => void;
   onFreezeAtPrimary: () => void;
   onCreateSheetTable: () => void;
+  onOpenTableSettings: () => void;
+  onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
+  onConvertActiveTableToRange: () => void;
   onCreateDataTable: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
@@ -382,6 +399,7 @@ export interface RibbonCommandContext {
   activeTableSheet?: { sheetId: string; viewId: string };
   activeGanttSheet?: { sheetId: string; viewId: string };
   activeReportSheet?: { sheetId: string; tableId?: string };
+  activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
@@ -503,6 +521,7 @@ export const RIBBON_TEXT = {
     ganttView: 'groups.ganttView',
     ganttFormat: 'groups.ganttFormat',
     reportSheetDesign: 'groups.reportSheetDesign',
+    tableDesign: 'groups.tableDesign',
   },
   commands: {
     save: 'commands.save',
@@ -606,6 +625,17 @@ export const RIBBON_TEXT = {
     reportRenderMode: 'commands.reportRenderMode',
     reportPagination: 'commands.reportPagination',
     reportLayout: 'commands.reportLayout',
+    tableName: 'commands.tableName',
+    tableHeaderRow: 'commands.tableHeaderRow',
+    tableTotalRow: 'commands.tableTotalRow',
+    tableFirstColumn: 'commands.tableFirstColumn',
+    tableLastColumn: 'commands.tableLastColumn',
+    tableBandedRows: 'commands.tableBandedRows',
+    tableBandedColumns: 'commands.tableBandedColumns',
+    tableFilterButton: 'commands.tableFilterButton',
+    tableResize: 'commands.tableResize',
+    tableConvertToRange: 'commands.tableConvertToRange',
+    tableStyle: 'commands.tableStyle',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
     shapesLines: 'commands.shapesLines',
@@ -713,6 +743,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('ganttView', 'ganttView', 30),
   group('ganttFormat', 'ganttFormat', 40),
   group('reportSheetDesign', 'reportSheetDesign', 10),
+  group('tableDesign', 'tableDesign', 10),
 ] as const;
 
 const ribbonSurface = (
@@ -1088,6 +1119,68 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('reportLayout', 'reportSheetDesign', 'reportSheetDesign', RIBBON_TEXT.commands.reportLayout, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
     enabled: (context) => Boolean(context.activeReportSheet),
+  },
+  {
+    ...intent('tableName', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableName, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableHeaderRow', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableHeaderRow, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), hasHeaderRow: !context.activeTable.table.hasHeaderRow, showFilterButton: !context.activeTable.table.hasHeaderRow ? context.activeTable.table.showFilterButton : false, autoFilter: undefined } }
+      : undefined, 'rows'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableTotalRow', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableTotalRow, (context) => context.activeTable
+      ? { commandId: 'sheetTable.toggleTotalRow', params: { sheetId: context.activeTable.sheetId, tableId: context.activeTable.tableId, enabled: !context.activeTable.table.hasTotalRow } }
+      : undefined, 'rows'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableFirstColumn', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableFirstColumn, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showFirstColumn: !context.activeTable.table.showFirstColumn } }
+      : undefined, 'columns'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableLastColumn', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableLastColumn, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showLastColumn: !context.activeTable.table.showLastColumn } }
+      : undefined, 'columns'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableBandedRows', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableBandedRows, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showBandedRows: !context.activeTable.table.showBandedRows } }
+      : undefined, 'rows'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableBandedColumns', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableBandedColumns, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showBandedColumns: !context.activeTable.table.showBandedColumns } }
+      : undefined, 'columns'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableFilterButton', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableFilterButton, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), showFilterButton: !context.activeTable.table.showFilterButton, autoFilter: undefined } }
+      : undefined, 'filter'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...dynamicCommand('tableResize', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableResize, (context) => context.activeTable
+      ? { commandId: 'sheetTable.update', params: { ...structuredClone(context.activeTable.table), range: structuredClone(context.activeTable.resizeRange ?? context.activeTable.table.range) } }
+      : undefined, 'layout'),
+    enabled: (context) => Boolean(context.activeTable?.resizeRange),
+  },
+  {
+    ...dynamicCommand('tableConvertToRange', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableConvertToRange, (context) => context.activeTable
+      ? { commandId: 'sheetTable.convertToRange', params: { sheetId: context.activeTable.sheetId, tableId: context.activeTable.tableId } }
+      : undefined, 'trash'),
+    enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...intent('tableStyle', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableStyle, () => ({ type: 'panel.open', panel: 'data' }), 'sparkles'),
+    enabled: (context) => Boolean(context.activeTable),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

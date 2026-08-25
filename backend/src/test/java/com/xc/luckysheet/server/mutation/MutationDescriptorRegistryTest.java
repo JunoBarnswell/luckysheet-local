@@ -317,7 +317,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","rule":{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0}],"type":"highlight"}}
                 """));
         var sheetTable = new OperationMutation("sheetTable.add", "sheet-1", mapper.readTree("""
-                {"id":"table-1","sheetId":"sheet-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"hasHeaderRow":true,"hasTotalRow":false,"columns":[]}
+                {"id":"table-1","sheetId":"sheet-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":true,"showBandedColumns":false,"showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"both","columns":[{"id":"c1","name":"A"},{"id":"c2","name":"B"},{"id":"c3","name":"C"}]}
                 """));
         var hideRow = new OperationMutation("row.hidden", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","index":2}

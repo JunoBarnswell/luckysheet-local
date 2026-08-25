@@ -216,7 +216,10 @@ test('table style and drawing pane commands are canonical, persisted, and undoab
     hasTotalRow: false,
     showBandedRows: false,
     showBandedColumns: false,
+    showFirstColumn: false,
+    showLastColumn: false,
     showFilterButton: true,
+    autoExpand: 'both',
     columns: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
   });
   runtime.execute('sheetTable.style.set', { sheetId: sheet.id, tableId: 'home-table', styleName: 'TableStyleMedium2', showBandedRows: true });
