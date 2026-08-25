@@ -138,6 +138,24 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(result.rows[0]?.children[0]?.values[0]?.values[0], 10);
   });
 
+  it('keeps numeric label sorting separate from explicit Values sorting', () => {
+    const workbook = new WorkbookModel('pivot-numeric-sort', 'Pivot Numeric Sort');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Year', 'Sales'], [2024, 500], [2025, 100], [2026, 900]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-numeric-sort', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const year = pivot.fieldCatalog.fields.find((field) => field.name === 'Year')!;
+    const sales = pivot.fieldCatalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: year.fieldId, sort: { direction: 'ascending', by: 'label' } }];
+    pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024', '2025', '2026']);
+
+    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value', valueFieldId: sales.fieldId } };
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2025', '2024', '2026']);
+    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value' } };
+    assert.throws(() => computePivotResult(workbook, pivot), /requires a valueFieldId/);
+  });
+
   it('keeps subtotal ownership per row field and expands custom subtotal functions', () => {
     const workbook = new WorkbookModel('pivot-subtotals', 'Pivot Subtotals');
     const sheet = workbook.getSheet('sheet-1');
