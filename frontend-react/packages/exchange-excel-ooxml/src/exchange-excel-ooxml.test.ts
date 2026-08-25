@@ -7,6 +7,7 @@ import { scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToXlsxBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedXlsx, zipXlsxPartsBuffer } from './archive';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
+import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
 import { readFile } from 'node:fs/promises';
 
@@ -679,6 +680,10 @@ describe('exchange-excel-ooxml', () => {
     const workbook = new WorkbookModel('wb-native-pivot', 'Native Pivot');
     const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     const parts = generated.packageGraph.parts;
+    parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace(
+      '</sheetData>',
+      '<row r="1"><c r="A1" t="inlineStr"><is><t>Category</t></is></c><c r="B1" t="inlineStr"><is><t>Amount</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>A</t></is></c><c r="B2"><v>10</v></c></row></sheetData>',
+    ));
     parts['xl/workbook.xml'] = strToU8(strFromU8(parts['xl/workbook.xml']!).replace('</workbook>', '<pivotCaches count="1"><pivotCache cacheId="1" r:id="rIdPivotCache"/></pivotCaches></workbook>'));
     parts['xl/_rels/workbook.xml.rels'] = strToU8(strFromU8(parts['xl/_rels/workbook.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotCache" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>'));
     parts['xl/pivotCache/pivotCacheDefinition1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cacheSource type="worksheet"><worksheetSource ref="A1:B2" sheet="Sheet1"/></cacheSource><cacheFields count="2"><cacheField name="Category"><sharedItems containsString="1"><s v="A"/></sharedItems></cacheField><cacheField name="Amount"><sharedItems containsNumber="1"><n v="10"/></sharedItems></cacheField></cacheFields></pivotCacheDefinition>');
@@ -686,16 +691,19 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
-    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum" numFmtId="2"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
+    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum" showDataAs="difference" baseField="0" baseItem="0" numFmtId="2"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
     const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.field, 1);
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.numberFormat, '0.00');
+    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.baseField, 0);
+    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.baseItem, 0);
     assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.values[0]?.numberFormat, '0.00');
+    assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.layout.values[0]?.showAs, { kind: 'difference', baseFieldId: 'native:cache:1:field:0', baseItem: createPivotMemberKey('A') });
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.mode, 'manual');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.refreshOnLoad, false);
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.cacheFlags, {});
@@ -726,6 +734,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(nativeAdvancedXml, /colGrandTotals="1"/);
     assert.match(nativeAdvancedXml, /sortType="descending"/);
     assert.match(nativeAdvancedXml, /<autoSortScope><pivotArea[^>]*dataOnly="0"/);
+    assert.match(nativeAdvancedXml, /<dataField[^>]*showDataAs="difference"[^>]*baseField="0"[^>]*baseItem="0"/);
     assert.match(nativeAdvancedXml, /<pivotFilters count="4">/);
     assert.match(nativeAdvancedXml, /type="futureFilter"[^>]*id="7"[^>]*stringValue1="preserve"/);
 
@@ -763,6 +772,116 @@ describe('exchange-excel-ooxml', () => {
     const malformedParts = structuredClone(parts);
     malformedParts['xl/pivotTables/pivotTable1.xml'] = strToU8(strFromU8(malformedParts['xl/pivotTables/pivotTable1.xml']!).replace('<filter fld="0" type="captionEqual"', '<filter type="captionEqual"'));
     await assert.rejects(importXlsx({ fileName: 'native-pivot-malformed-filter.xlsx', buffer: zipXlsxPartsBuffer(malformedParts), options: { compatibilityTarget: 'B' } }), /pivotFilters\.filter\[0\]\.fld/);
+    const missingBaseFieldParts = structuredClone(parts);
+    missingBaseFieldParts['xl/pivotTables/pivotTable1.xml'] = strToU8(strFromU8(missingBaseFieldParts['xl/pivotTables/pivotTable1.xml']!).replace(' baseField="0"', ''));
+    await assert.rejects(importXlsx({ fileName: 'native-pivot-missing-base-field.xlsx', buffer: zipXlsxPartsBuffer(missingBaseFieldParts), options: { compatibilityTarget: 'B' } }), /missing baseField/);
+  });
+
+  it('round-trips native Difference/%Difference/Running Total operands and Previous/Next sentinels', () => {
+    const workbook = new WorkbookModel('wb-native-show-as-operands', 'Native Show As Operands');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Month', 'Amount'], ['Jan', 10], ['Feb', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const cache: NativePivotCacheDefinition = {
+      cacheId: 7,
+      part: 'xl/pivotCache/pivotCacheDefinition7.xml',
+      source: { kind: 'worksheet-range', sheetName: sheet.name, sheetPart: 'xl/worksheets/sheet1.xml', ref: 'A1:B3' },
+      fields: [
+        { index: 0, name: 'Month', dataType: 'string', sharedItems: ['Jan', 'Feb'] },
+        { index: 1, name: 'Amount', dataType: 'number', sharedItems: [10, 20] },
+      ],
+    };
+    const baseTable: Omit<NativePivotTableDefinition, 'dataFields'> = {
+      name: 'NativeShowAs', part: 'xl/pivotTables/pivotTable7.xml', sheetPart: 'xl/worksheets/sheet1.xml', relationshipId: 'rIdPivotTable', cacheId: 7,
+      locationRef: 'D1:E4', fields: [{ index: 0, axis: 'row' }, { index: 1 }], rowFields: [0], columnFields: [], pageFields: [],
+    };
+    const map = (dataField: NativePivotTableDefinition['dataFields'][number]) => mapNativePivotDefinition({ ...baseTable, dataFields: [dataField] }, cache, workbook.snapshot(), { [sheet.id]: 'xl/worksheets/sheet1.xml' })!;
+
+    const difference = map({ field: 1, subtotal: 'sum', showDataAs: 'difference', baseField: 0, baseItem: 0 });
+    assert.deepEqual(difference.layout.values[0], {
+      valueId: 'native:cache:7:value:0', fieldId: 'native:cache:7:field:1', summarizeBy: 'sum',
+      showAs: { kind: 'difference', baseFieldId: 'native:cache:7:field:0', baseItem: createPivotMemberKey('Jan') },
+    });
+    const percentDifference = map({ field: 1, subtotal: 'sum', showDataAs: 'percentDiff', baseField: 0, baseItem: 'next' });
+    assert.deepEqual(percentDifference.layout.values[0]?.showAs, { kind: 'percentage-difference', baseFieldId: 'native:cache:7:field:0', baseItem: 'next' });
+    const runningTotal = map({ field: 1, subtotal: 'sum', showDataAs: 'runTotal', baseField: 0 });
+    assert.deepEqual(runningTotal.layout.values[0]?.showAs, { kind: 'running-total', baseFieldId: 'native:cache:7:field:0' });
+
+    const snapshot = workbook.snapshot();
+    snapshot.sheets[0]!.pivots.push(percentDifference);
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(snapshot));
+    const xml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(xml, /<dataField[^>]*showDataAs="percentDiff"[^>]*baseField="0"[^>]*baseItem="1048829"/);
+
+    const invalid = { ...baseTable, dataFields: [{ field: 1, subtotal: 'sum', showDataAs: 'difference', baseField: 0, baseItem: 99 }] };
+    assert.throws(() => mapNativePivotDefinition(invalid, cache, workbook.snapshot(), { [sheet.id]: 'xl/worksheets/sheet1.xml' }), /baseItem 99 is outside/);
+    assert.throws(() => map({ field: 1, subtotal: 'sum', showDataAs: 'difference', baseField: 0 }), /missing baseField\/baseItem/);
+
+    const reordered = new WorkbookModel('wb-native-show-as-reordered', 'Native Show As Reordered');
+    const reorderedSheet = reordered.getSheet(reordered.primarySheetId);
+    [['Amount', 'Month'], [10, 'Jan'], [20, 'Feb']].forEach((row, rowIndex) => row.forEach((value, columnIndex) => reorderedSheet.cells.set(rowIndex, columnIndex, { value })));
+    reorderedSheet.pivots.push({
+      schema: 'PivotDefinition', id: 'pivot-reordered',
+      source: { kind: 'worksheet-range', range: { sheetId: reorderedSheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+      target: { sheetId: reorderedSheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
+        { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 0 },
+        { fieldId: 'month', name: 'Month', dataType: 'text', ordinal: 1 },
+      ] },
+      layout: { rows: [{ fieldId: 'month' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ valueId: 'value:amount', fieldId: 'amount', summarizeBy: 'sum', showAs: { kind: 'difference', baseFieldId: 'month', baseItem: createPivotMemberKey('Jan') } }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
+      refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+    });
+    const reorderedOutput = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(reordered.snapshot()));
+    assert.match(strFromU8(reorderedOutput.files['xl/pivotTables/pivotTable1.xml']!), /<dataField[^>]*fld="0"[^>]*showDataAs="difference"[^>]*baseField="1"[^>]*baseItem="0"/);
+  });
+
+  it('rejects unsupported native Show Values As instead of projecting it as normal', () => {
+    const workbook = new WorkbookModel('wb-native-show-as-invalid', 'Native Show As Invalid');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Month', 'Amount'], ['Jan', 10]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const cache: NativePivotCacheDefinition = {
+      cacheId: 8, part: 'xl/pivotCache/pivotCacheDefinition8.xml', source: { kind: 'worksheet-range', sheetName: sheet.name, ref: 'A1:B2' },
+      fields: [{ index: 0, name: 'Month', dataType: 'string', sharedItems: ['Jan'] }, { index: 1, name: 'Amount', dataType: 'number', sharedItems: [10] }],
+    };
+    const table: NativePivotTableDefinition = {
+      name: 'InvalidShowAs', part: 'xl/pivotTables/pivotTable8.xml', sheetPart: 'xl/worksheets/sheet1.xml', relationshipId: 'rIdPivotTable', cacheId: 8,
+      locationRef: 'D1:E3', fields: [{ index: 0, axis: 'row' }, { index: 1 }], rowFields: [0], columnFields: [], pageFields: [],
+      dataFields: [{ field: 1, subtotal: 'sum', showDataAs: 'unknownCalculation', baseField: 0, baseItem: 0 }],
+    };
+    assert.throws(() => mapNativePivotDefinition(table, cache, workbook.snapshot(), { [sheet.id]: 'xl/worksheets/sheet1.xml' }), /dataField\.showDataAs is unsupported/);
+  });
+
+  it('rejects native dataField operands that are not semantically attached to a calculation', () => {
+    const workbook = new WorkbookModel('wb-native-show-as-orphan', 'Native Show As Orphan');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Month', 'Amount'], ['Jan', 10]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const cache: NativePivotCacheDefinition = {
+      cacheId: 9, part: 'xl/pivotCache/pivotCacheDefinition9.xml', source: { kind: 'worksheet-range', sheetName: sheet.name, ref: 'A1:B2' },
+      fields: [{ index: 0, name: 'Month', dataType: 'string', sharedItems: ['Jan'] }, { index: 1, name: 'Amount', dataType: 'number', sharedItems: [10] }],
+    };
+    const table: NativePivotTableDefinition = {
+      name: 'OrphanShowAs', part: 'xl/pivotTables/pivotTable9.xml', sheetPart: 'xl/worksheets/sheet1.xml', relationshipId: 'rIdPivotTable', cacheId: 9,
+      locationRef: 'D1:E3', fields: [{ index: 0, axis: 'row' }, { index: 1 }], rowFields: [0], columnFields: [], pageFields: [],
+      dataFields: [{ field: 1, subtotal: 'sum', showDataAs: 'normal', baseField: 0, baseItem: 0 }],
+    };
+    assert.throws(() => mapNativePivotDefinition(table, cache, workbook.snapshot(), { [sheet.id]: 'xl/worksheets/sheet1.xml' }), /has operands for normal/);
+  });
+
+  it('rejects malformed native baseField/baseItem attributes at the parser boundary', () => {
+    const main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const files = {
+      'xl/workbook.xml': strToU8(`<workbook xmlns="${main}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1"/></sheets><pivotCaches count="1"><pivotCache cacheId="1" r:id="rIdCache"/></pivotCaches></workbook>`),
+      'xl/pivotCache/pivotCacheDefinition1.xml': strToU8(`<pivotCacheDefinition xmlns="${main}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cacheSource type="worksheet"><worksheetSource ref="A1:B2" sheet="Sheet1"/></cacheSource><cacheFields count="2"><cacheField name="Month"><sharedItems containsString="1"><s v="Jan"/></sharedItems></cacheField><cacheField name="Amount"><sharedItems containsNumber="1"><n v="10"/></sharedItems></cacheField></cacheFields></pivotCacheDefinition>`),
+      'xl/worksheets/sheet1.xml': strToU8(`<worksheet xmlns="${main}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><pivotTableParts count="1"><pivotTablePart r:id="rIdTable"/></pivotTableParts></worksheet>`),
+      'xl/pivotTables/pivotTable1.xml': strToU8(`<pivotTableDefinition xmlns="${main}" name="Bad" cacheId="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField/><pivotField/></pivotFields><rowFields count="0"/><dataFields count="1"><dataField fld="1" showDataAs="difference" baseField="NaN" baseItem="0"/></dataFields></pivotTableDefinition>`),
+    };
+    const relationships = {
+      'xl/workbook.xml': [{ id: 'rIdCache', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition', target: 'pivotCache/pivotCacheDefinition1.xml' }],
+      'xl/pivotCache/pivotCacheDefinition1.xml': [],
+      'xl/worksheets/sheet1.xml': [{ id: 'rIdTable', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable', target: '../pivotTables/pivotTable1.xml' }],
+    };
+    assert.throws(() => readNativePivotGraph({ files, relationships, sheetPartById: { 'sheet-1': 'xl/worksheets/sheet1.xml' }, dateSystem: '1900' }), /dataField\.baseField/);
+    const unsupportedAttributeFiles = { ...files, 'xl/pivotTables/pivotTable1.xml': strToU8(strFromU8(files['xl/pivotTables/pivotTable1.xml']!).replace('baseField="NaN"', 'extra="1"')) };
+    assert.throws(() => readNativePivotGraph({ files: unsupportedAttributeFiles, relationships, sheetPartById: { 'sheet-1': 'xl/worksheets/sheet1.xml' }, dateSystem: '1900' }), /dataField attribute is unsupported/);
   });
 
   it('rejects conflicting refresh modes before rebuilding a shared native cache', () => {
