@@ -8,6 +8,7 @@ import type {
   DefinedNameModel,
   DrawingObject,
   AutoFilterModel,
+  FilterScalar,
   MergeSpan,
   OutlineModel,
   ProtectionRule,
@@ -17,7 +18,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, pivotSourceIdentity } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, pivotSourceIdentity, resolveFilterCellValue } from '@react-sheets/core-model';
 import {
   canonicalExcelDateDayOfWeek,
   canonicalExcelDateFromParts,
@@ -510,7 +511,7 @@ function parseSheet(
   if (importedFilters.some((filter) => Object.values(filter.columns).some((column) => column.criterion?.kind === 'dynamic')) && !canonicalReferenceDate) {
     throw new Error('Dynamic date AutoFilter requires an explicit canonical workbook reference date');
   }
-  materializeFilterMetadata(cells, descriptor.id, importedFilters, conditionalFormats);
+  materializeFilterMetadata(cells, descriptor.id, importedFilters, conditionalFormats, pkg.dateSystem);
   const filterOwnedRows = new Set<number>();
   for (const filter of importedFilters) {
     const table = sheetTables.find((candidate) => candidate.autoFilter === filter);
@@ -572,15 +573,16 @@ function filterRowMatches(
     const criterion = column.criterion;
     if (!criterion) continue;
     const cell = cells[String(row)]?.[String(column.column)];
-    const value = cell?.value ?? null;
-    const text = value == null ? '' : String(value);
+    const resolved = resolveFilterCellValue(cell, undefined, dateSystem);
+    const value = resolved.value;
+    const text = resolved.text;
     if (criterion.kind === 'values') {
       const valueMatches = criterion.values.some((candidate) => String(candidate ?? '').toLocaleLowerCase() === text.toLocaleLowerCase())
         || (text === '' && criterion.includeBlank);
       const dateMatches = (criterion.dateGroups ?? []).some((group) => dateMatchesGroup(toFilterDate(value, dateSystem), group));
       if (!valueMatches && !dateMatches) return false;
     } else if (criterion.kind === 'custom') {
-      const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition)).map((condition) => compareFilterText(text, String(condition.value ?? ''), condition.operator));
+      const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition)).map((condition) => compareFilterText(text, String(condition.value ?? ''), condition.operator, value));
       if (criterion.join === 'and' ? !results.every(Boolean) : !results.some(Boolean)) return false;
     } else if (criterion.kind === 'dynamic') {
       if (!matchesDynamicFilter(toFilterDate(value, dateSystem), criterion.type, dateSystem, canonicalReferenceDate)) return false;
@@ -588,8 +590,8 @@ function filterRowMatches(
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return false;
       const values = Array.from({ length: filter.range.endRow - filter.range.startRow }, (_, index) => {
-        const candidate = cells[String(filter.range.startRow + 1 + index)]?.[String(column.column)]?.value;
-        return typeof candidate === 'number' ? candidate : Number(candidate);
+        const candidate = resolveFilterCellValue(cells[String(filter.range.startRow + 1 + index)]?.[String(column.column)], undefined, dateSystem).value;
+        return typeof candidate === 'number' ? candidate : Number.NaN;
       }).filter(Number.isFinite).sort((left, right) => criterion.top ? right - left : left - right);
       const requested = criterion.percent ? Math.max(1, Math.ceil(values.length * criterion.rank / 100)) : criterion.rank;
       const cutoff = values[Math.min(requested, values.length) - 1];
@@ -604,10 +606,10 @@ function filterRowMatches(
   return true;
 }
 
-function compareFilterText(text: string, operand: string, operator: string): boolean {
+function compareFilterText(text: string, operand: string, operator: string, value: FilterScalar): boolean {
   const left = text.toLocaleLowerCase();
   const right = operand.toLocaleLowerCase();
-  const numericLeft = Number(text);
+  const numericLeft = typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
   const numericRight = Number(operand);
   const numeric = Number.isFinite(numericLeft) && Number.isFinite(numericRight);
   switch (operator.toLocaleLowerCase()) {
@@ -671,6 +673,7 @@ function materializeFilterMetadata(
   sheetId: string,
   filters: AutoFilterModel[],
   conditionalFormats: ConditionalFormatRule[],
+  dateSystem: DateSystem,
 ): void {
   const inRange = (range: RangeRef, row: number, column: number): boolean => range.sheetId === sheetId
     && row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn;
@@ -690,12 +693,13 @@ function materializeFilterMetadata(
         }
         if (criterion.kind === 'icon') {
           const rule = conditionalFormats.find((candidate) => candidate.type === 'iconSet' && candidate.ranges.some((range) => inRange(range, row, column.column)));
-          const numeric = typeof cell.value === 'number' ? cell.value : Number(cell.value);
+          const numericValue = resolveFilterCellValue(cell, undefined, dateSystem).value;
+          const numeric = typeof numericValue === 'number' ? numericValue : Number.NaN;
           if (rule && Number.isFinite(numeric)) {
             const ruleRange = rule.ranges.find((range) => inRange(range, row, column.column));
             let values: number[] = [];
             if (ruleRange) {
-              values = numericValuesByRange.get(ruleRange) ?? numericValues(cells, ruleRange);
+              values = numericValuesByRange.get(ruleRange) ?? numericValues(cells, ruleRange, dateSystem);
               numericValuesByRange.set(ruleRange, values);
             }
             const thresholds = resolveIconThresholds(rule.iconThresholds, values);
@@ -708,7 +712,7 @@ function materializeFilterMetadata(
   }
 }
 
-function numericValues(cells: Record<string, Record<string, CellData>>, range: RangeRef): number[] {
+function numericValues(cells: Record<string, Record<string, CellData>>, range: RangeRef, dateSystem: DateSystem): number[] {
   const values: number[] = [];
   for (const [rowKey, rowCells] of Object.entries(cells)) {
     const row = Number(rowKey);
@@ -716,8 +720,8 @@ function numericValues(cells: Record<string, Record<string, CellData>>, range: R
     for (const [columnKey, cell] of Object.entries(rowCells)) {
       const column = Number(columnKey);
       if (column < range.startColumn || column > range.endColumn) continue;
-      const value = cell.value;
-      const numeric = typeof value === 'number' ? value : Number(value);
+      const value = resolveFilterCellValue(cell, undefined, dateSystem).value;
+      const numeric = typeof value === 'number' ? value : Number.NaN;
       if (Number.isFinite(numeric)) values.push(numeric);
     }
   }

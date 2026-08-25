@@ -1,5 +1,6 @@
 import type {
   CellData,
+  FilterCellValue,
   CellEditorConfig,
   CellStyle,
   CellStyleTemplate,
@@ -42,7 +43,7 @@ import type {
   WorkbookSnapshot,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { createDefaultTextBoxTextFrame } from '@react-sheets/core-model';
+import { createDefaultTextBoxTextFrame, resolveFilterCellValue } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
@@ -772,6 +773,19 @@ export class WorkbookSession {
   /** The sole worksheet read path for session-level Home behavior. */
   private readResolvedCell(sheet: WorksheetModel, row: number, column: number): CellData | undefined {
     return this.cellResolver.resolve(sheet, row, column)?.cell;
+  }
+
+  /** Filter menus use the FormulaEngine/spill result, never authored storage. */
+  private readResolvedFilterCell(sheet: WorksheetModel, row: number, column: number): FilterCellValue {
+    const cell = this.readResolvedCell(sheet, row, column);
+    const spillValue = this.runtime.formula.getSpillValueAt(sheet.id, row, column);
+    if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, this.runtime.dateSystem);
+    if (cell?.formula !== undefined) {
+      const result = this.runtime.formula.getCellResult({ sheetId: sheet.id, row, column });
+      const evaluated = result ? result.value : cell.formulaValue !== undefined ? cell.formulaValue : null;
+      return resolveFilterCellValue(cell, evaluated, this.runtime.dateSystem);
+    }
+    return resolveFilterCellValue(cell, undefined, this.runtime.dateSystem);
   }
 
   /**
@@ -3389,7 +3403,7 @@ export class WorkbookSession {
       const descriptor = getAutoFilterDomainDescriptor(
         sheet,
         column,
-        (row, currentColumn) => this.readResolvedCell(sheet, row, currentColumn),
+        (row, currentColumn) => this.readResolvedFilterCell(sheet, row, currentColumn),
         this.nativePackage?.dateSystem ?? '1900',
       );
       validateFilterCriterionAgainstDomain(descriptor, patch.criterion);

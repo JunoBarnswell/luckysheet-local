@@ -39,6 +39,47 @@ describe('canonical drawing UI projection', () => {
     assert.equal(snapshot.getCell(2, 0)?.value, 'Drop');
   });
 
+  it('uses the current FormulaEngine result for filter domains and row visibility', () => {
+    const workbook = new WorkbookModel('snapshot-formula-filter', 'Snapshot Formula Filter');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 4;
+    sheet.columnCount = 2;
+    sheet.cells.set(0, 0, { value: 'Status' });
+    sheet.cells.set(0, 1, { value: 'Source' });
+    sheet.cells.set(1, 0, { value: null, formula: '=B2' });
+    sheet.cells.set(2, 0, { value: null, formula: '=B3' });
+    sheet.cells.set(3, 0, { value: null, formula: '=B4' });
+    sheet.cells.set(1, 1, { value: 'Open' });
+    sheet.cells.set(2, 1, { value: 'Closed' });
+    sheet.cells.set(3, 1, { value: 'Open' });
+    sheet.autoFilter = {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
+      columns: {
+        0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: ['Open'], includeBlank: false } },
+      },
+    };
+    const formula = new FormulaEngine({ defaultSheetId: sheet.id });
+    formula.setValue({ sheetId: sheet.id, row: 1, column: 1 }, 'Open');
+    formula.setValue({ sheetId: sheet.id, row: 2, column: 1 }, 'Closed');
+    formula.setValue({ sheetId: sheet.id, row: 3, column: 1 }, 'Open');
+    formula.setFormula({ sheetId: sheet.id, row: 1, column: 0 }, '=B2');
+    formula.setFormula({ sheetId: sheet.id, row: 2, column: 0 }, '=B3');
+    formula.setFormula({ sheetId: sheet.id, row: 3, column: 0 }, '=B4');
+    formula.recalculate();
+
+    const snapshot = buildCanvasSheetSnapshot(workbook, sheet, formula, true);
+    assert.deepEqual(snapshot.getFilterValueDomain(0), ['Closed', 'Open']);
+    assert.deepEqual(snapshot.hiddenRows, [2]);
+    assert.equal(snapshot.getCell(1, 0)?.value, 'Open');
+    assert.equal(snapshot.getCell(2, 0)?.value, 'Closed');
+    formula.setValue({ sheetId: sheet.id, row: 2, column: 1 }, 'Open');
+    formula.recalculate();
+    const recalculated = buildCanvasSheetSnapshot(workbook, sheet, formula, true);
+    assert.deepEqual(recalculated.getFilterValueDomain(0), ['Open']);
+    assert.deepEqual(recalculated.hiddenRows, []);
+  });
+
   it('exposes conditional-format colors to the filter domain without writing styles into cells', () => {
     const workbook = new WorkbookModel('snapshot-filter-color', 'Snapshot Filter Color');
     const sheet = workbook.getSheet('sheet-1');
