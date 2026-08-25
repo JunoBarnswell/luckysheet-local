@@ -41,7 +41,8 @@ export type RibbonTabId =
   | 'reportSheetDesign'
   | 'tableDesign'
   | 'chartDesign'
-  | 'chartFormat';
+  | 'chartFormat'
+  | 'sparklineDesign';
 
 export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'file',

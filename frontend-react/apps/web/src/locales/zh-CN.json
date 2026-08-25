@@ -34,6 +34,7 @@
   "tableDesign": "表格设计",
   "chartDesign": "图表设计",
   "chartFormat": "图表格式",
+  "sparklineDesign": "迷你图设计",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -315,6 +316,7 @@
       ,"tableDesign": "表格设计"
       ,"chartDesign": "图表设计"
       ,"chartFormat": "图表格式"
+      ,"sparklineDesign": "迷你图设计"
     },
     "commands": {
       "settings": "选项",
@@ -436,6 +438,7 @@
       "chartSelectData": "选择数据",
       "chartBuilder": "图表构建器",
       "sparkline": "迷你图",
+      "sparklineDesign": "迷你图设计",
       "shapesLines": "形状与线条",
       "deleteRow": "删除行",
       "deleteColumn": "删除列",

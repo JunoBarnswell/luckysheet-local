@@ -227,9 +227,16 @@ export interface SparklineInsertDialogParams {
   highlightFirst?: boolean;
   highlightLast?: boolean;
   highlightNegative?: boolean;
+  showAxis?: boolean;
+  showMarkers?: boolean;
 }
 
 const SPARKLINE_TYPES = new Set<SparklineModel['type']>(['line', 'column', 'win-loss']);
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const SPARKLINE_PATCH_KEYS = new Set<keyof SparklineModel>([
+  'anchor', 'sourceRange', 'type', 'color', 'negativeColor', 'highlightMax', 'highlightMin',
+  'highlightFirst', 'highlightLast', 'highlightNegative', 'groupId', 'showAxis', 'showMarkers',
+]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
@@ -243,6 +250,15 @@ const isSparkline = (value: unknown): value is SparklineModel => isRecord(value)
   && isNonEmptyString(value.id) && isNonEmptyString(value.sheetId)
   && isRecord(value.anchor) && Number.isSafeInteger(value.anchor.row) && Number.isSafeInteger(value.anchor.column)
   && Number(value.anchor.row) >= 0 && Number(value.anchor.column) >= 0
+  && typeof value.color === 'string' && HEX_COLOR.test(value.color)
+  && (value.negativeColor === undefined || (typeof value.negativeColor === 'string' && HEX_COLOR.test(value.negativeColor)))
+  && (value.highlightMax === undefined || typeof value.highlightMax === 'boolean')
+  && (value.highlightMin === undefined || typeof value.highlightMin === 'boolean')
+  && (value.highlightFirst === undefined || typeof value.highlightFirst === 'boolean')
+  && (value.highlightLast === undefined || typeof value.highlightLast === 'boolean')
+  && (value.highlightNegative === undefined || typeof value.highlightNegative === 'boolean')
+  && (value.showAxis === undefined || typeof value.showAxis === 'boolean')
+  && (value.showMarkers === undefined || typeof value.showMarkers === 'boolean')
   && isRange(value.sourceRange) && SPARKLINE_TYPES.has(value.type as SparklineModel['type'])
   && (value.groupId === undefined || isNonEmptyString(value.groupId));
 const isSparklineGroup = (value: unknown): value is SparklineGroup => isRecord(value)
@@ -270,7 +286,8 @@ const isSparklineRemove = (value: unknown): value is SparklineRemoveParams => is
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.sparklineId)
   && (value.groupState === undefined || isGroupState(value.groupState));
 const isSparklineUpdate = (value: unknown): value is SparklineUpdateParams => isRecord(value)
-  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.sparklineId) && isRecord(value.patch);
+  && isNonEmptyString(value.sheetId) && isNonEmptyString(value.sparklineId) && isRecord(value.patch)
+  && Object.keys(value.patch).every((key) => SPARKLINE_PATCH_KEYS.has(key as keyof SparklineModel));
 const isGroupStateParams = (value: unknown): value is SparklineGroupStateParams => isGroupState(value);
 
 function sparklineAffectedRanges(value: unknown): ReturnType<typeof sheetRange> {
@@ -321,6 +338,24 @@ function sameSparklineValue(left: unknown, right: unknown): boolean {
   return keys.every((key) => sameSparklineValue(leftRecord[key], rightRecord[key]));
 }
 
+function editableSparklinePatch(sparkline: SparklineModel): Partial<SparklineModel> {
+  return {
+    anchor: structuredClone(sparkline.anchor),
+    sourceRange: structuredClone(sparkline.sourceRange),
+    type: sparkline.type,
+    color: sparkline.color,
+    negativeColor: sparkline.negativeColor,
+    highlightMax: sparkline.highlightMax,
+    highlightMin: sparkline.highlightMin,
+    highlightFirst: sparkline.highlightFirst,
+    highlightLast: sparkline.highlightLast,
+    highlightNegative: sparkline.highlightNegative,
+    groupId: sparkline.groupId,
+    showAxis: sparkline.showAxis,
+    showMarkers: sparkline.showMarkers,
+  };
+}
+
 function applySparklineUpdate(context: CommandContext, params: SparklineUpdateParams): void {
   const sparkline = context.workbook.getSheet(params.sheetId).sparklines.find((entry) => entry.id === params.sparklineId);
   if (!sparkline) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
@@ -347,7 +382,12 @@ function validateSparklineState(context: CommandContext, sparkline: SparklineMod
   if (!sparkline.id.trim()) throw new Error('Sparkline id is required');
   const target = context.workbook.getSheet(sparkline.sheetId);
   if (!SPARKLINE_TYPES.has(sparkline.type)) throw new Error(`Unsupported sparkline type: ${String(sparkline.type)}`);
-  if (sparkline.anchor.row < 0 || sparkline.anchor.column < 0) throw new Error('Sparkline anchor is invalid');
+  if (!HEX_COLOR.test(sparkline.color) || (sparkline.negativeColor !== undefined && !HEX_COLOR.test(sparkline.negativeColor))) {
+    throw new Error('Sparkline colors must be six-digit hexadecimal values');
+  }
+  const flags: Array<keyof Pick<SparklineModel, 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'showAxis' | 'showMarkers'>> = ['highlightMax', 'highlightMin', 'highlightFirst', 'highlightLast', 'highlightNegative', 'showAxis', 'showMarkers'];
+  if (flags.some((flag) => sparkline[flag] !== undefined && typeof sparkline[flag] !== 'boolean')) throw new Error('Sparkline display flags must be boolean');
+  if (sparkline.anchor.row < 0 || sparkline.anchor.column < 0 || sparkline.anchor.row >= target.rowCount || sparkline.anchor.column >= target.columnCount) throw new Error('Sparkline anchor exceeds worksheet bounds');
   const source = sparkline.sourceRange;
   const sourceSheet = context.workbook.getSheet(source.sheetId);
   if (source.startRow < 0 || source.endRow < source.startRow || source.startColumn < 0 || source.endColumn < source.startColumn) {
@@ -452,16 +492,16 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         anchor: { row: params.location.row, column: params.location.column },
         sourceRange: structuredClone(params.dataRange),
         type: params.type,
-        color: '#2563eb',
-        negativeColor: '#ef4444',
+        color: params.color ?? '#2563eb',
+        negativeColor: params.negativeColor ?? '#ef4444',
         highlightMax: params.highlightMax,
         highlightMin: params.highlightMin,
         highlightFirst: params.highlightFirst,
         highlightLast: params.highlightLast,
         highlightNegative: params.highlightNegative,
         groupId: params.groupId,
-        showAxis: false,
-        showMarkers: false,
+        showAxis: params.showAxis ?? false,
+        showMarkers: params.showMarkers ?? false,
       };
       return executeSparklineInsert({ sheetId: params.sheetId, sparkline }, context);
     },
@@ -487,7 +527,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
         sheetId: params.sheetId,
         params,
         affectedRanges,
-        inverse: [{ id: 'sparkline.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparklineId: params.sparklineId, patch: previous }, affectedRanges }],
+        inverse: [{ id: 'sparkline.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, sparklineId: params.sparklineId, patch: editableSparklinePatch(previous) }, affectedRanges }],
         apply: () => applySparklineUpdate(context, params),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

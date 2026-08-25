@@ -23,7 +23,8 @@ export type RibbonTabId =
   | 'reportSheetDesign'
   | 'tableDesign'
   | 'chartDesign'
-  | 'chartFormat';
+  | 'chartFormat'
+  | 'sparklineDesign';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
@@ -142,6 +143,7 @@ export type ActiveContext =
   | { kind: 'none' }
   | { kind: 'pivot'; sheetId: string; pivotId: string }
   | { kind: 'drawing'; sheetId: string; drawingId: string }
+  | { kind: 'sparkline'; sheetId: string; sparklineId: string }
   | { kind: 'table'; sheetId: string; tableId: string }
   | { kind: 'table-sheet'; sheetId: string; viewId: string }
   | { kind: 'gantt-sheet'; sheetId: string; viewId: string }

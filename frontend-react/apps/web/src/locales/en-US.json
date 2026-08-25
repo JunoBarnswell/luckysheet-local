@@ -34,6 +34,7 @@
   "tableDesign": "Table Design",
   "chartDesign": "Chart Design",
   "chartFormat": "Chart Format",
+  "sparklineDesign": "Sparkline Design",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -315,6 +316,7 @@
       ,"tableDesign": "Table Design"
       ,"chartDesign": "Chart Design"
       ,"chartFormat": "Chart Format"
+      ,"sparklineDesign": "Sparkline Design"
     },
     "commands": {
       "settings": "Options",
@@ -436,6 +438,7 @@
       "chartSelectData": "Select Data",
       "chartBuilder": "Chart Builder",
       "sparkline": "Sparkline",
+      "sparklineDesign": "Sparkline Design",
       "shapesLines": "Shapes & Lines",
       "deleteRow": "Delete Row",
       "deleteColumn": "Delete Column",

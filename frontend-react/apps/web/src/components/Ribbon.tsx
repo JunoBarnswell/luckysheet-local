@@ -121,6 +121,7 @@ export interface RibbonProps {
   activeReportSheet?: { sheetId: string; tableId?: string };
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
   activeChart?: { sheetId: string; chartId: string };
+  activeSparkline?: { sheetId: string; sparklineId: string };
   /** Canonical, selection-derived Home state. All Home controls read this one source. */
   homeState: HomeRibbonState;
   canExecute?: (commandId: string, params?: unknown) => boolean;
@@ -276,6 +277,7 @@ export function Ribbon({
   activeReportSheet,
   activeTable,
   activeChart,
+  activeSparkline,
   homeState,
   canExecute,
   commandPaletteOpen = false,
@@ -364,6 +366,7 @@ export function Ribbon({
     activeReportSheet,
     activeTable,
     activeChart,
+    activeSparkline,
     actions: catalogActions,
     dispatchSessionIntent: onSessionIntent,
     sampleAutomationScript: SAMPLE_AUTOMATION_SCRIPT,
@@ -412,6 +415,7 @@ export function Ribbon({
           ...(activeReportSheet ? ['reportSheetDesign'] as const : []),
           ...(activeTable ? ['tableDesign'] as const : []),
           ...(activeChart ? ['chartDesign', 'chartFormat'] as const : []),
+          ...(activeSparkline ? ['sparklineDesign'] as const : []),
         ]}
         disabled={disabled}
         onFileEntry={() => onSessionIntent({ type: 'backstage.open', panel: 'info' })}
