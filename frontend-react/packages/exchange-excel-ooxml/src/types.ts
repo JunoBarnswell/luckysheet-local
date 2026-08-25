@@ -166,15 +166,24 @@ export interface NativePivotFilter {
   attributes: Record<string, string>;
 }
 
+/** Native SpreadsheetML dataField base-item identity.
+ *
+ * Excel stores the Previous/Next choices as reserved unsigned integers, not
+ * as cache shared-item indexes.  Keeping them typed at the exchange boundary
+ * prevents a serializer from accidentally treating either sentinel as a
+ * real member index.
+ */
+export type NativePivotBaseItem = number | 'previous' | 'next';
+
 export interface NativePivotDataField {
   field: number;
   name?: string;
   subtotal?: string;
   showDataAs?: string;
-  /** Native dataField base coordinate used by Difference/Running Total. */
+  /** Native cache-field index used by custom Show Values As calculations. */
   baseField?: number;
-  /** Native shared-item index, or the explicit previous/next sentinel. */
-  baseItem?: number;
+  /** Shared-item index or Excel's Previous/Next sentinel. */
+  baseItem?: NativePivotBaseItem;
   /** Canonical Excel format code represented by OOXML dataField@numFmtId. */
   numberFormat?: string;
 }

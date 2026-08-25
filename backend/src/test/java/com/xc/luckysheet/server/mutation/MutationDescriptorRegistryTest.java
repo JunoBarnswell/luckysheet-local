@@ -481,6 +481,17 @@ class MutationDescriptorRegistryTest {
         JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
 
+        ObjectNode difference = (ObjectNode) pivot.params().deepCopy();
+        ObjectNode differenceValue = (ObjectNode) difference.path("layout").path("values").get(0);
+        differenceValue.put("baseFieldId", "sheet:sheet-1:column:0:range:0");
+        differenceValue.set("baseItem", mapper.readTree("""{"type":"text","value":"East"}"""));
+        differenceValue.set("showAs", mapper.readTree("""{"kind":"difference","base":"grand"}"""));
+        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", difference), WorkbookAclRole.EDITOR);
+
+        ObjectNode missingOperand = (ObjectNode) difference.deepCopy();
+        ((ObjectNode) missingOperand.path("layout").path("values").get(0)).remove("baseItem");
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", missingOperand), WorkbookAclRole.EDITOR));
+
         ObjectNode highCardinality = (ObjectNode) pivot.params().deepCopy();
         ArrayNode members = mapper.createArrayNode();
         for (int index = 0; index < 10_001; index++) members.add("Member " + index);
