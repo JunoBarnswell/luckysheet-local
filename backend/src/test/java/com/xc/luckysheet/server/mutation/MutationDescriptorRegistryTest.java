@@ -618,6 +618,23 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, values.size());
         assertEquals(2, values.findValues("valueId").size());
 
+        ObjectNode validValueSortPivot = (ObjectNode) pivot.deepCopy();
+        ((ObjectNode) validValueSortPivot.path("layout").path("rows").get(0)).set("sort", mapper.readTree("""
+                {"direction":"descending","by":"value","valueId":"value:amount:count"}
+                """));
+        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", validValueSortPivot), WorkbookAclRole.EDITOR);
+
+        ObjectNode missingValueSortIdentity = (ObjectNode) validValueSortPivot.deepCopy();
+        ((ObjectNode) missingValueSortIdentity.path("layout").path("rows").get(0).path("sort")).remove("valueId");
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", missingValueSortIdentity), WorkbookAclRole.EDITOR));
+
+        ObjectNode labelSortWithValueIdentity = (ObjectNode) validValueSortPivot.deepCopy();
+        ObjectNode labelSort = (ObjectNode) labelSortWithValueIdentity.path("layout").path("rows").get(0).path("sort");
+        labelSort.put("by", "label");
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", labelSortWithValueIdentity), WorkbookAclRole.EDITOR));
+
         ObjectNode duplicateValuesPivot = (ObjectNode) pivot.deepCopy();
         ArrayNode duplicateValues = (ArrayNode) duplicateValuesPivot.path("layout").path("values");
         duplicateValues.add(duplicateValues.get(0).deepCopy());

@@ -29,6 +29,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
+import { canonicalDateToSerial, serialToCanonicalDate } from './date-system';
 import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotNumericValue, pivotSourceIdentity, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
@@ -75,6 +76,7 @@ export interface NativePivotReadInput {
   files: Record<string, Uint8Array>;
   relationships: Record<string, XlsxRelationship[]>;
   sheetPartById: Record<string, string>;
+  dateSystem: import('./types').DateSystem;
 }
 
 export interface NativePivotWriteInput {
@@ -90,6 +92,7 @@ export interface NativePivotPackageWriteInput {
   graph?: NativePivotGraph;
   snapshot: WorkbookSnapshot;
   sheetPartById: Record<string, string>;
+  dateSystem: import('./types').DateSystem;
 }
 
 /** Read all reachable Pivot caches, cache records, table definitions and sheet relations. */
@@ -121,7 +124,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
       part,
       ...(recordsPart ? { recordsPart } : {}),
       source: parseCacheSource(child(definition, 'cacheSource'), sheetNames),
-      fields: parseCacheFields(child(definition, 'cacheFields')),
+      fields: parseCacheFields(child(definition, 'cacheFields'), input.dateSystem),
       ...(recordsRoot?.attrs.count !== undefined ? { recordCount: requiredInteger(recordsRoot.attrs.count, 'pivotCacheRecords.count') } : {}),
       ...optionalBoolean(definition.attrs.refreshOnLoad, 'refreshOnLoad'),
       ...optionalBoolean(definition.attrs.refreshOnSave, 'refreshOnSave'),
@@ -781,7 +784,7 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
 
   for (const { targetSheet, pivot, targetPart, sourceInfo, oldTable, cache } of plannedEntries) {
     usedCaches.add(cache.cacheId);
-    const sourceRows = readSourceRows(sourceInfo.sheet, sourceInfo.range, pivot, sourceInfo.tableName);
+    const sourceRows = readSourceRows(sourceInfo.sheet, sourceInfo.range, pivot, sourceInfo.tableName, input.dateSystem);
     cache.source = sourceInfo.source;
     const previousFields = cache.fields;
     const groupedOrdinals = new Set([...pivot.layout.rows, ...pivot.layout.columns].flatMap((placement) => {
@@ -797,7 +800,7 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
       ...(previousFields[index]?.fieldGroup && (!nativePivotGroup(previousFields[index], cache, nativeFieldId(cache.cacheId, index)) || groupedOrdinals.has(index))
         ? { fieldGroup: structuredClone(previousFields[index]!.fieldGroup) } : {}),
     }));
-    applyCanonicalPivotGroups(cache, pivot);
+    applyCanonicalPivotGroups(cache, pivot, input.dateSystem);
     cache.recordCount = sourceRows.rows.length;
     cache.recordsPart ??= `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`;
     files[cache.part] = strToU8(buildCacheDefinitionXml(cache));
@@ -1199,7 +1202,7 @@ function pivotGroupingKey(pivot: PivotDefinition): string {
   return JSON.stringify({ rows: pivot.layout.rows.map((placement) => placement.group ?? null), columns: pivot.layout.columns.map((placement) => placement.group ?? null) });
 }
 
-function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefinition, tableName?: string): { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] } {
+function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefinition, tableName: string | undefined, dateSystem: import('./types').DateSystem): { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] } {
   const fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }> = [];
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
     const cell = sheet.cells[String(range.startRow)]?.[String(column)];
@@ -1212,30 +1215,37 @@ function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefin
     const values = fields.map((_, offset) => {
       const cell = sheet.cells[String(row)]?.[String(range.startColumn + offset)];
       const value = cell?.formulaValue ?? cell?.value;
-      return isScalar(value) ? value : null;
+      if (!isScalar(value)) return null;
+      const field = pivot.fieldCatalog.fields[offset];
+      if (field?.dataType === 'date') {
+        if (typeof value === 'number') return serialToCanonicalDate(value, dateSystem);
+        if (typeof value === 'string') return canonicalizeNativeDate(value, dateSystem, `${sheet.id}!${row}:${offset}`);
+        if (value !== null && !isPivotError(value)) throw new Error(`Pivot date field ${field.fieldId} contains a non-date scalar`);
+      }
+      return value;
     });
     if (values.some((value) => value !== null)) rows.push(values);
   }
   return { fields, rows };
 }
 
-function applyCanonicalPivotGroups(cache: NativePivotCacheDefinition, pivot: PivotDefinition): void {
+function applyCanonicalPivotGroups(cache: NativePivotCacheDefinition, pivot: PivotDefinition, dateSystem: import('./types').DateSystem): void {
   const placements = [...pivot.layout.rows, ...pivot.layout.columns];
   for (const placement of placements) {
     if (!placement.group) continue;
     const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === placement.fieldId || candidate.name === placement.fieldId);
     if (!field || !cache.fields[field.ordinal]) continue;
-    cache.fields[field.ordinal]!.fieldGroup = buildNativeFieldGroup(placement.group, field.ordinal, cache.fields[field.ordinal]!.sharedItems ?? []);
+    cache.fields[field.ordinal]!.fieldGroup = buildNativeFieldGroup(placement.group, field.ordinal, cache.fields[field.ordinal]!.sharedItems ?? [], dateSystem);
   }
 }
 
-function buildNativeFieldGroup(group: PivotGroup, base: number, sharedItems: NativePivotScalar[]): NativePivotFieldGroup {
+function buildNativeFieldGroup(group: PivotGroup, base: number, sharedItems: NativePivotScalar[], dateSystem: import('./types').DateSystem): NativePivotFieldGroup {
   if (group.kind === 'date') {
     if (group.units && group.units.length > 1) throw new Error('Native Pivot export cannot represent multi-level date grouping without a native hierarchy');
     const range: NativePivotFieldRange = {
       groupBy: `${group.units?.[0] ?? group.unit}s`,
-      ...(group.start === undefined ? {} : { start: group.start }),
-      ...(group.end === undefined ? {} : { end: group.end }),
+      ...(group.start === undefined ? {} : { start: canonicalDateGroupBound(group.start, dateSystem) }),
+      ...(group.end === undefined ? {} : { end: canonicalDateGroupBound(group.end, dateSystem) }),
       ...(group.autoStart === undefined ? {} : { autoStart: group.autoStart }),
       ...(group.autoEnd === undefined ? {} : { autoEnd: group.autoEnd }),
     };
@@ -1259,6 +1269,12 @@ function buildNativeFieldGroup(group: PivotGroup, base: number, sharedItems: Nat
   const ungrouped = groupItems.length;
   const discreteIndexes = sharedItems.map((value) => groupByMember.get(pivotMemberKey(createPivotMemberKey(value))) ?? ungrouped);
   return { base, discreteIndexes, groupItems };
+}
+
+function canonicalDateGroupBound(value: PivotScalar, dateSystem: import('./types').DateSystem): string {
+  if (typeof value === 'number') return serialToCanonicalDate(value, dateSystem);
+  if (typeof value !== 'string') throw new Error('Pivot date group bound must be canonical ISO text');
+  return canonicalizeNativeDate(value, dateSystem, 'Pivot date group bound');
 }
 
 function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinition, part: string, sheetPart: string, old: NativePivotTableDefinition | undefined, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): NativePivotTableDefinition {
@@ -1296,7 +1312,9 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
       } : {};
     }
     const preserved = pivot.nativeMetadata?.preservedAutoSortScopes?.find((candidate) => candidate.fieldIndex === index);
-    const valueFieldPlacement = sort.valueId === undefined ? undefined : pivot.layout.values.find((value) => value.valueId === sort.valueId);
+    if (sort.by === 'value' && !sort.valueId) throw new Error(`Pivot value sort for field ${index} is missing a Values placement identity`);
+    const valueFieldPlacement = sort.by === 'value' ? pivot.layout.values.find((value) => value.valueId === sort.valueId) : undefined;
+    if (sort.by === 'value' && !valueFieldPlacement) throw new Error(`Pivot value sort for field ${index} references an unknown Values placement`);
     const valuePlacementIndex = valueFieldPlacement ? pivot.layout.values.findIndex((value) => value.valueId === valueFieldPlacement.valueId) : -1;
     const valueField = valuePlacementIndex < 0 ? undefined : dataFields[valuePlacementIndex];
     return {
@@ -1388,7 +1406,7 @@ function buildCacheDefinitionXml(cache: NativePivotCacheDefinition): string {
   const fields = cache.fields.map((field) => {
     const values = field.sharedItems ?? [];
     const contains = field.dataType === 'string' ? ' containsString="1"' : field.dataType === 'date' ? ' containsDate="1"' : field.dataType === 'number' ? ' containsNumber="1"' : field.dataType === 'boolean' ? ' containsBoolean="1"' : field.dataType === 'error' ? ' containsError="1"' : '';
-    const shared = values.map((value) => nativePivotScalarXml(value)).join('');
+    const shared = values.map((value) => nativePivotScalarXml(value, field.dataType === 'date')).join('');
     const fieldGroup = field.fieldGroup ? buildNativeFieldGroupXml(field.fieldGroup) : '';
     return `<cacheField name="${encodeXml(field.name)}"><sharedItems count="${values.length}"${contains}>${shared}</sharedItems>${fieldGroup}</cacheField>`;
   }).join('');
@@ -1403,7 +1421,7 @@ function buildNativeFieldGroupXml(group: NativePivotFieldGroup): string {
   ];
   const range = group.range ? buildNativeFieldRangeXml(group.range) : '';
   const discrete = group.discreteIndexes ? `<discretePr count="${group.discreteIndexes.length}">${group.discreteIndexes.map((index) => `<x v="${index}"/>`).join('')}</discretePr>` : '';
-  const items = group.groupItems ? `<groupItems count="${group.groupItems.length}">${group.groupItems.map(nativePivotScalarXml).join('')}</groupItems>` : '';
+  const items = group.groupItems ? `<groupItems count="${group.groupItems.length}">${group.groupItems.map((value) => nativePivotScalarXml(value)).join('')}</groupItems>` : '';
   return `<fieldGroup${attrs.length ? ` ${attrs.join(' ')}` : ''}>${range}${discrete}${items}</fieldGroup>`;
 }
 
@@ -1425,9 +1443,13 @@ function rangeBoundAttr(value: NativePivotScalar | undefined, name: 'start' | 'e
   return [`${name}Date="${encodeXml(String(value))}"`];
 }
 
-function nativePivotScalarXml(value: NativePivotScalar): string {
+function nativePivotScalarXml(value: NativePivotScalar, date = false): string {
   if (value === null) return '<m/>';
   if (isPivotError(value)) return `<e v="${encodeXml(value.code)}"/>`;
+  if (date) {
+    if (typeof value !== 'string') throw new Error('Native Pivot date cache member is not canonical ISO text');
+    return `<d v="${encodeXml(value)}"/>`;
+  }
   if (typeof value === 'string') return `<s v="${encodeXml(value)}"/>`;
   if (typeof value === 'boolean') return `<b v="${value ? '1' : '0'}"/>`;
   return `<n v="${encodeXml(String(value))}"/>`;
@@ -1610,12 +1632,12 @@ function parseCacheSource(node: XmlNode | undefined, sheets: Map<string, { name:
   return { kind: 'unsupported', reason: 'OLAP or unsupported Pivot source is not editable' };
 }
 
-function parseCacheFields(node: XmlNode | undefined): NativePivotCacheField[] {
+function parseCacheFields(node: XmlNode | undefined, dateSystem: import('./types').DateSystem): NativePivotCacheField[] {
   return children(node, 'cacheField').map((field, index) => {
     const shared = child(field, 'sharedItems');
-    const values = parsePivotScalars(shared);
     const dataType = inferCacheType(shared);
-    const fieldGroup = parseFieldGroup(child(field, 'fieldGroup'), `cacheField[${index}].fieldGroup`);
+    const values = canonicalizeNativeDates(parsePivotScalars(shared), dataType, dateSystem, `cacheField[${index}].sharedItems`);
+    const fieldGroup = parseFieldGroup(child(field, 'fieldGroup'), `cacheField[${index}].fieldGroup`, dataType === 'date', dateSystem);
     return {
       index,
       name: field.attrs.name ?? `Field${index + 1}`,
@@ -1647,12 +1669,12 @@ function parseGroupItemValue(node: XmlNode): NativePivotScalar {
   return scalar === undefined ? (node.attrs.v ?? null) : scalar;
 }
 
-function parseFieldGroup(node: XmlNode | undefined, label: string): NativePivotFieldGroup | undefined {
+function parseFieldGroup(node: XmlNode | undefined, label: string, dateType: boolean, dateSystem: import('./types').DateSystem): NativePivotFieldGroup | undefined {
   if (!node) return undefined;
   const base = node.attrs.base === undefined ? undefined : requiredInteger(node.attrs.base, `${label}.base`);
   const parent = node.attrs.par === undefined ? undefined : requiredInteger(node.attrs.par, `${label}.par`);
   const rangeNode = child(node, 'rangePr');
-  const range = rangeNode ? parseFieldRange(rangeNode, `${label}.rangePr`) : undefined;
+  const range = rangeNode ? parseFieldRange(rangeNode, `${label}.rangePr`, dateType, dateSystem) : undefined;
   const discreteNode = child(node, 'discretePr');
   const discreteValues = discreteNode ? children(discreteNode, 'x').map((item, index) => requiredInteger(item.attrs.v, `${label}.discretePr.x[${index}]`)) : [];
   if (discreteNode?.attrs.count !== undefined && requiredInteger(discreteNode.attrs.count, `${label}.discretePr.count`) !== discreteValues.length) throw new Error(`${label}.discretePr.count does not match x elements`);
@@ -1669,10 +1691,10 @@ function parseFieldGroup(node: XmlNode | undefined, label: string): NativePivotF
   };
 }
 
-function parseFieldRange(node: XmlNode, label: string): NativePivotFieldRange {
+function parseFieldRange(node: XmlNode, label: string, dateType: boolean, dateSystem: import('./types').DateSystem): NativePivotFieldRange {
   const groupBy = node.attrs.groupBy;
-  const start = firstRangeValue(node.attrs, 'start');
-  const end = firstRangeValue(node.attrs, 'end');
+  const start = firstRangeValue(node.attrs, 'start', dateType, dateSystem, label);
+  const end = firstRangeValue(node.attrs, 'end', dateType, dateSystem, label);
   const intervalValue = node.attrs.groupInterval ?? node.attrs.interval;
   const interval = intervalValue === undefined ? undefined : finiteNumber(intervalValue, `${label}.groupInterval`);
   if (interval !== undefined && interval <= 0) throw new Error(`${label}.groupInterval must be positive`);
@@ -1688,19 +1710,39 @@ function parseFieldRange(node: XmlNode, label: string): NativePivotFieldRange {
   };
 }
 
-function firstRangeValue(attrs: Record<string, string>, name: 'start' | 'end'): NativePivotScalar | undefined {
+function firstRangeValue(attrs: Record<string, string>, name: 'start' | 'end', dateType: boolean, dateSystem: import('./types').DateSystem, label: string): NativePivotScalar | undefined {
   const date = attrs[`${name}Date`];
-  if (date !== undefined) return date;
+  if (date !== undefined) return dateType ? canonicalizeNativeDate(date, dateSystem, `${label}.${name}Date`) : date;
   const number = attrs[`${name}Num`];
   if (number !== undefined) {
     const parsed = Number(number);
     if (!Number.isFinite(parsed)) throw new Error(`Invalid ${name}Num range bound`);
-    return parsed;
+    return dateType ? serialToCanonicalDate(parsed, dateSystem) : parsed;
   }
   const generic = attrs[name];
   if (generic === undefined) return undefined;
   const numeric = Number(generic);
+  if (dateType) return Number.isFinite(numeric) ? serialToCanonicalDate(numeric, dateSystem) : canonicalizeNativeDate(generic, dateSystem, `${label}.${name}`);
   return Number.isFinite(numeric) ? numeric : generic;
+}
+
+function canonicalizeNativeDate(value: string, dateSystem: import('./types').DateSystem, label: string): string {
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) return serialToCanonicalDate(Number(value), dateSystem);
+  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?$/.test(value)) throw new Error(`${label} is not a canonical date or Excel serial`);
+  const canonical = value.length === 10 ? `${value}T00:00:00.000Z` : value;
+  new Date(canonical).getTime();
+  if (Number.isNaN(new Date(canonical).getTime())) throw new Error(`${label} is not a valid date`);
+  return canonical;
+}
+
+function canonicalizeNativeDates(values: NativePivotScalar[], dataType: NativePivotCacheField['dataType'], dateSystem: import('./types').DateSystem, label: string): NativePivotScalar[] {
+  if (dataType !== 'date') return values;
+  return values.map((value, index) => {
+    if (value === null || isPivotError(value)) return value;
+    if (typeof value === 'number') return serialToCanonicalDate(value, dateSystem);
+    if (typeof value === 'string') return canonicalizeNativeDate(value, dateSystem, `${label}[${index}]`);
+    throw new Error(`${label}[${index}] is not a valid date scalar`);
+  });
 }
 
 function finiteNumber(value: string, label: string): number {

@@ -818,8 +818,35 @@ describe('native PivotGridProjection contract', () => {
 
     pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value', valueId: `value:${sales.fieldId}` } };
     assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2025', '2024', '2026']);
-    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value' } };
+    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value' } as never };
     assert.throws(() => computePivotResult(workbook, pivot), /requires a valueId/);
+  });
+
+  it('sorts rows by the selected Values placement calculation', () => {
+    const workbook = new WorkbookModel('pivot-value-sort-aggregates', 'Pivot Value Sort Aggregates');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Product', 'Sales'], ['A', 100], ['B', 60], ['B', 60], ['C', 30], ['C', 30], ['C', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-value-sort-aggregates', { sheetId: 'sheet-1', startRow: 0, endRow: 6, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const product = pivot.fieldCatalog.fields.find((field) => field.name === 'Product')!;
+    const sales = pivot.fieldCatalog.fields.find((field) => field.name === 'Sales')!;
+    const values = [
+      { valueId: 'sales:sum', fieldId: sales.fieldId, summarizeBy: 'sum' as const },
+      { valueId: 'sales:count', fieldId: sales.fieldId, summarizeBy: 'count' as const },
+      { valueId: 'sales:average', fieldId: sales.fieldId, summarizeBy: 'average' as const },
+    ];
+    pivot.layout.rows = [{ fieldId: product.fieldId }];
+    pivot.layout.values = values;
+    const sortBy = (valueId: string) => {
+      pivot.layout.rows[0] = { fieldId: product.fieldId, sort: { direction: 'descending', by: 'value', valueId } };
+      return computePivotResult(workbook, pivot).rows.map((node) => node.label);
+    };
+    assert.deepEqual(sortBy('sales:sum'), ['B', 'A', 'C']);
+    assert.deepEqual(sortBy('sales:count'), ['C', 'B', 'A']);
+    assert.deepEqual(sortBy('sales:average'), ['A', 'B', 'C']);
+
+    pivot.layout.rows[0] = { fieldId: product.fieldId, sort: { direction: 'descending', by: 'value', valueId: 'missing-value-placement' } as never };
+    assert.throws(() => computePivotResult(workbook, pivot), /value sort placement is not in Values/);
   });
 
   it('evaluates typed label and date filter families with range predicates', () => {
