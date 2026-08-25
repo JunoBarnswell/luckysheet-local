@@ -15,6 +15,39 @@ function selectCell(app: WorkbookSession, row: number, column: number): void {
 }
 
 describe('WorkbookSession core editing integration', () => {
+  it('preserves AutoFit dimension results through undo and redo', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    const defaultWidth = sheet.defaultColumnWidthPx;
+    const defaultHeight = sheet.defaultRowHeightPx;
+
+    app.applyColumnWidths([{ column: 0, widthPx: 140 }, { column: 1, widthPx: 160 }]);
+    app.applyRowHeights([{ row: 0, heightPx: 36 }, { row: 1, heightPx: 42 }]);
+    assert.equal(sheet.columnWidthsPx[0], 140);
+    assert.equal(sheet.columnWidthsPx[1], 160);
+    assert.equal(sheet.rowHeightsPx[0], 36);
+    assert.equal(sheet.rowHeightsPx[1], 42);
+
+    app.undo();
+    assert.equal(sheet.rowHeightsPx[0], defaultHeight);
+    assert.equal(sheet.rowHeightsPx[1], defaultHeight);
+    assert.equal(sheet.columnWidthsPx[0], 140);
+    assert.equal(sheet.columnWidthsPx[1], 160);
+    app.undo();
+    assert.equal(sheet.columnWidthsPx[0], defaultWidth);
+    assert.equal(sheet.columnWidthsPx[1], defaultWidth);
+    assert.equal(sheet.defaultColumnWidthPx, defaultWidth);
+    assert.equal(sheet.defaultRowHeightPx, defaultHeight);
+
+    app.redo();
+    app.redo();
+    assert.equal(sheet.columnWidthsPx[0], 140);
+    assert.equal(sheet.columnWidthsPx[1], 160);
+    assert.equal(sheet.rowHeightsPx[0], 36);
+    assert.equal(sheet.rowHeightsPx[1], 42);
+  });
+
   it('selectAddress jumps to the requested cell', () => {
     const app = new WorkbookSession();
     assert.equal(app.selectAddress('C3'), true);

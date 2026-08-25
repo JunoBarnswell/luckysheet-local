@@ -421,6 +421,20 @@ export function resolveDisplayText(cell: CellRenderData): string {
   return String(cell.value);
 }
 
+/**
+ * AutoFit consumes the already resolved render projection.  Do not use JS
+ * truthiness here: numeric zero and FALSE are visible content, while the
+ * canonical empty display is the empty string.
+ */
+export function hasMeasurableCellContent(
+  cell: { value?: unknown; displayValue?: unknown } | undefined,
+): boolean {
+  if (!cell) return false;
+  const displayValue = cell.displayValue ?? cell.value;
+  if (displayValue === undefined || displayValue === null) return false;
+  return typeof displayValue === 'string' ? displayValue.length > 0 : true;
+}
+
 export function cellRenderFont(style: CellRenderData["style"], theme: RenderTheme): string {
   const size = style?.fontSizePx ?? 13;
   const family = style?.fontFamily ? '"' + style.fontFamily + '", sans-serif' : '"Microsoft YaHei", "Segoe UI", sans-serif';

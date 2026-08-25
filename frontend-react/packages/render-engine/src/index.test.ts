@@ -15,6 +15,7 @@ import {
   isSelectAllRange,
   mergeCellRanges,
   rangeToViewportRect,
+  hasMeasurableCellContent,
 } from './index';
 import { drawCellLayer, drawGridLayer } from './cell-renderer';
 import { DEFAULT_RENDER_THEME, type CellRenderData, type RenderPane } from './types';
@@ -502,4 +503,17 @@ test('content range screen geometry splits overlays across frozen panes', () => 
   assert.ok(rects.some((rect) => rect.x === 39 && rect.y === 20));
   assert.ok(rects.length >= 2);
   engine.dispose();
+});
+
+test('AutoFit content gate preserves typed zero, FALSE, formatted text and errors', () => {
+  assert.equal(hasMeasurableCellContent(undefined), false);
+  assert.equal(hasMeasurableCellContent({ value: null }), false);
+  assert.equal(hasMeasurableCellContent({ value: undefined }), false);
+  assert.equal(hasMeasurableCellContent({ value: '' }), false);
+  assert.equal(hasMeasurableCellContent({ value: 0 }), true);
+  assert.equal(hasMeasurableCellContent({ value: false }), true);
+  assert.equal(hasMeasurableCellContent({ value: 0, displayValue: '0.00' }), true);
+  assert.equal(hasMeasurableCellContent({ value: false, displayValue: 'FALSE' }), true);
+  assert.equal(hasMeasurableCellContent({ value: null, displayValue: '#DIV/0!' }), true);
+  assert.equal(hasMeasurableCellContent({ value: 'raw', displayValue: '' }), false);
 });
