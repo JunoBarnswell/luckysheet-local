@@ -56,7 +56,7 @@ export class HistoryPreviewSession {
     for (const sheet of workbook.getSheets()) {
       for (const pivot of sheet.pivots) {
         try {
-          const result = computePivotResult(workbook, pivot);
+          const result = computePivotResult(workbook, pivot, formula);
           const cacheKey = pivotCacheKey(meta.revision, pivot.id);
           derivedCache.set(cacheKey, structuredClone(result));
           pivotResults[pivot.id] = result;

@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel, type PivotModel } from '@react-sheets/core-model';
+import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
   aggregatePivotValues,
   buildPivotGridProjection,
   computePivotResult,
   computePivotResultFromBlockSource,
   getPivotFieldCatalog,
+  getPivotSourceRanges,
   hitTestPivotProjection,
 } from './engine';
 import { buildPivotModel } from './helpers';
+import { createSpillEnvironment } from '../../formula-spill-sync';
 
 function workbookWithData(): WorkbookModel {
   const workbook = new WorkbookModel('pivot-projection', 'Pivot Projection');
@@ -66,6 +69,69 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
 }
 
 describe('native PivotGridProjection contract', () => {
+  it('reads worksheet-range Pivot values through the FormulaEngine spill authority', () => {
+    const workbook = new WorkbookModel('pivot-spill', 'Pivot Spill');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Member' });
+    sheet.cells.set(0, 1, { value: 'Amount' });
+    [10, 20, 30].forEach((value, row) => sheet.cells.set(row + 1, 1, { value }));
+    const formula = new FormulaEngine({ defaultSheetId: sheet.id });
+    formula.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
+    formula.setFormula({ sheetId: sheet.id, row: 1, column: 0 }, '=SEQUENCE(3,1,1,1)');
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-spill', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot, formula);
+    const member = catalog.fields.find((field) => field.name === 'Member')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.fieldCatalog = catalog;
+    pivot.layout.rows = [{ fieldId: member.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const result = computePivotResult(workbook, pivot, formula);
+    assert.deepEqual(result.rows.map((node) => node.key), [1, 2, 3]);
+    assert.equal(result.grandTotal?.values[0], 60);
+  });
+
+  it('resolves named-range spill sources and recomputes their current extent', () => {
+    const workbook = new WorkbookModel('pivot-named-spill', 'Pivot Named Spill');
+    const sheet = workbook.getSheet('sheet-1');
+    workbook.setDefinedName({ name: 'DynamicSource', formula: "='Sheet1'!A1#", scope: 'workbook' });
+    const formula = new FormulaEngine({ defaultSheetId: sheet.id });
+    formula.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
+    formula.setFormula({ sheetId: sheet.id, row: 0, column: 0 }, '=SEQUENCE(3,1,0,1)');
+    const pivot: PivotModel = {
+      schema: 'PivotDefinition',
+      id: 'pivot-named-spill',
+      source: { kind: 'named-range', name: 'DynamicSource' },
+      target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
+      fieldCatalog: { fields: [] },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+    };
+    const catalog = getPivotFieldCatalog(workbook, pivot, formula);
+    pivot.fieldCatalog = catalog;
+    pivot.layout.rows = [{ fieldId: catalog.fields[0]!.fieldId }];
+    pivot.layout.values = [{ fieldId: catalog.fields[0]!.fieldId, summarizeBy: 'count' }];
+    assert.equal(getPivotSourceRanges(workbook, pivot, formula)[0]?.endRow, 2);
+    assert.deepEqual(computePivotResult(workbook, pivot, formula).rows.map((node) => node.key), [1, 2]);
+    formula.setFormula({ sheetId: sheet.id, row: 0, column: 0 }, '=SEQUENCE(4,1,0,1)');
+    assert.equal(getPivotSourceRanges(workbook, pivot, formula)[0]?.endRow, 3);
+    assert.deepEqual(computePivotResult(workbook, pivot, formula).rows.map((node) => node.key), [1, 2, 3]);
+  });
+
+  it('fails closed when a Pivot source intersects a blocked spill', () => {
+    const workbook = new WorkbookModel('pivot-blocked-spill', 'Pivot Blocked Spill');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Member' });
+    sheet.cells.set(1, 0, { value: 'occupied' });
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-blocked-spill', { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 });
+    assert.ok(pivot);
+    sheet.cells.set(0, 0, { value: null, formula: '=SEQUENCE(3,1,1,1)' });
+    const formula = new FormulaEngine({ defaultSheetId: sheet.id });
+    formula.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
+    formula.setFormula({ sheetId: sheet.id, row: 0, column: 0 }, '=SEQUENCE(3,1,1,1)');
+    assert.throws(() => computePivotResult(workbook, pivot, formula), /blocked spill/i);
+  });
+
   it('orders text members from persisted collation, independent of host defaults', () => {
     const workbook = new WorkbookModel('pivot-collation', 'Pivot Collation');
     const sheet = workbook.getSheet('sheet-1');

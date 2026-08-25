@@ -47,6 +47,7 @@ import {
 } from '@react-sheets/core-model';
 import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
 import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
+import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
 
 export interface PivotSourceRowInput {
   values: Record<string, PivotScalar>;
@@ -96,6 +97,8 @@ export interface PivotProjectionSourceState {
 
 export interface PivotProjectionOptions {
   sourceState?: PivotProjectionSourceState;
+  /** The session's canonical FormulaEngine; required for live spill values. */
+  formula?: FormulaEngine;
 }
 
 interface LastValidPivotProjection {
@@ -135,7 +138,7 @@ function fingerprint(value: unknown): string {
   return hash.toString(16).padStart(16, '0');
 }
 
-function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
+function sourceRevision(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): string {
   const source = getPivotSource(pivot);
   if (source.kind === 'data-source') {
     const manifest = workbook.getDataSource(source.dataSourceId);
@@ -145,7 +148,7 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
       blocks: manifest.blocks.map((block) => ({ id: block.id, checksum: block.checksum, revision: block.revision })),
     });
   }
-  const ranges = sourceRanges(workbook, pivot);
+  const ranges = sourceRanges(workbook, pivot, formula);
   const revisions = ranges.map((range, index) => {
     const sheet = workbook.getSheet(range.sheetId);
     // CellMatrix revision is supplied by the block/data-source implementation
@@ -154,7 +157,15 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel): string {
     const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[index]?.sourceId : undefined;
     return `${sourceId ?? index}:${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
   }).sort();
-  return fingerprint({ source: canonicalPivotSource(source), revisions });
+  return fingerprint({
+    source: canonicalPivotSource(source),
+    revisions,
+    ...(formula ? {
+      formulaGeneration: formula.getCalculationGeneration(),
+      spills: ranges.map((range) => formula.getSpillsForSheet(range.sheetId)
+        .map((spill) => ({ anchor: spill.anchor, range: spill.range, state: spill.state }))),
+    } : {}),
+  });
 }
 
 function canonicalPivotSource(source: PivotSource): PivotSource {
@@ -175,10 +186,10 @@ function linkedFilterDefinitions(workbook: WorkbookModel, pivot: PivotModel): un
   })).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
 
-export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel): PivotRevisionKey {
+export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotRevisionKey {
   return {
     pivotId: pivot.id,
-    sourceRevision: sourceRevision(workbook, pivot),
+    sourceRevision: sourceRevision(workbook, pivot, formula),
     // Live member values belong exclusively to sourceRevision. Including them
     // here made an ordinary source edit look like a layout mutation and caused
     // manual-refresh PivotTables to discard their last refreshed result.
@@ -193,18 +204,18 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
 }
 
 /** A derived result is reusable only when every canonical Pivot revision matches. */
-export function pivotResultMatchesRevision(workbook: WorkbookModel, pivot: PivotModel, result: PivotResultTree | undefined): result is PivotResultTree {
+export function pivotResultMatchesRevision(workbook: WorkbookModel, pivot: PivotModel, result: PivotResultTree | undefined, formula?: FormulaEngine): result is PivotResultTree {
   if (!result || result.pivotId !== pivot.id) return false;
-  const revision = getPivotRevisionKey(workbook, pivot);
+  const revision = getPivotRevisionKey(workbook, pivot, formula);
   return result.sourceRevision === revision.sourceRevision
     && result.layoutRevision === revision.layoutRevision
     && result.filterRevision === revision.filterRevision;
 }
 
 /** Manual-refresh PivotTables may reuse source-stale data only when their layout and filters still match. */
-export function pivotResultMatchesLayoutAndFilter(workbook: WorkbookModel, pivot: PivotModel, result: PivotResultTree | undefined): result is PivotResultTree {
+export function pivotResultMatchesLayoutAndFilter(workbook: WorkbookModel, pivot: PivotModel, result: PivotResultTree | undefined, formula?: FormulaEngine): result is PivotResultTree {
   if (!result || result.pivotId !== pivot.id) return false;
-  const revision = getPivotRevisionKey(workbook, pivot);
+  const revision = getPivotRevisionKey(workbook, pivot, formula);
   return result.layoutRevision === revision.layoutRevision && result.filterRevision === revision.filterRevision;
 }
 
@@ -254,7 +265,23 @@ export function getStablePivotFieldId(source: PivotSource, range: RangeRef, ordi
   return sourceIdentity(source, range, ordinal, rangeIndex);
 }
 
-function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
+function createPivotFormulaEngine(workbook: WorkbookModel): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, recalculationMode: 'manual' });
+  engine.setDefinedNameModels(workbook.definedNameModels);
+  configureWorkbookSpillEnvironments(engine, workbook);
+  syncWorkbookSheetTables(engine, workbook);
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      const address = { sheetId: sheet.id, row, column };
+      if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
+      else if (cell.value != null) engine.setValue(address, cell.value as never);
+    });
+  }
+  engine.recalculate();
+  return engine;
+}
+
+function sourceRanges(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): RangeRef[] {
   const source = getPivotSource(pivot);
   if (source.kind === 'worksheet-range') return [source.range];
   if (source.kind === 'worksheet-ranges') return source.ranges.map((sourceRange) => sourceRange.range);
@@ -266,7 +293,7 @@ function sourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
     if (!manifest.sourceRange) throw new Error(`Pivot data source ${source.dataSourceId} has no worksheet range`);
     return [manifest.sourceRange];
   }
-  return [resolveNamedRange(workbook, source.name, source.sheetId ?? pivot.target.sheetId)];
+  return [resolveNamedRange(workbook, source.name, source.sheetId ?? pivot.target.sheetId, formula ?? createPivotFormulaEngine(workbook))];
 }
 
 function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
@@ -291,7 +318,20 @@ function resolvePivotTable(workbook: WorkbookModel, tableId: string): {
 }
 
 function cellScalar(value: unknown): PivotScalar {
+  if (Array.isArray(value) && value.length === 1 && Array.isArray(value[0]) && value[0].length === 1) {
+    return cellScalar(value[0][0]);
+  }
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null ? value : null;
+}
+
+function formulaCellValue(formula: FormulaEngine, address: { sheetId: string; row: number; column: number }, fallback: unknown): FormulaValue | unknown {
+  // Spill children are derived values and therefore have no authored cell
+  // result. Authored cells absent from a session engine still use the model
+  // value until the canonical engine receives that input.
+  if (formula.getSpillValueAt(address.sheetId, address.row, address.column) !== undefined || formula.getCellResult(address) !== undefined) {
+    return formula.getCellValue(address);
+  }
+  return fallback;
 }
 
 function inferType(values: PivotScalar[]): PivotFieldDataType {
@@ -314,9 +354,11 @@ function parseColumnLabel(value: string): number {
   return column - 1;
 }
 
-function parseA1Range(formula: string, workbook: WorkbookModel, fallbackSheetId: string): RangeRef {
+function parseA1Range(formula: string, workbook: WorkbookModel, fallbackSheetId: string, calculator?: FormulaEngine): RangeRef {
   const cleaned = formula.trim().replace(/^=/, '').replace(/^\+/, '');
-  const match = cleaned.match(/^(?:'((?:[^']|'')+)'|([A-Za-z0-9_-]+))?!?\$?([A-Za-z]+)\$?(\d+)(?::\$?([A-Za-z]+)\$?(\d+))?$/);
+  const spillReference = cleaned.endsWith('#');
+  const reference = spillReference ? cleaned.slice(0, -1) : cleaned;
+  const match = reference.match(/^(?:'((?:[^']|'')+)'|([A-Za-z0-9_-]+))?!?\$?([A-Za-z]+)\$?(\d+)(?::\$?([A-Za-z]+)\$?(\d+))?$/);
   if (!match) throw new Error(`Named range is not a worksheet range: ${formula}`);
   const sheetName = (match[1] ?? match[2])?.replace(/''/g, "'");
   const sheet = sheetName ? workbook.getSheetByName(sheetName) : workbook.getSheet(fallbackSheetId);
@@ -326,20 +368,37 @@ function parseA1Range(formula: string, workbook: WorkbookModel, fallbackSheetId:
   const endColumn = match[5] ? parseColumnLabel(match[5]) : startColumn;
   const endRow = match[6] ? Number(match[6]) - 1 : startRow;
   if (startRow < 0 || endRow < startRow || startColumn < 0 || endColumn < startColumn) throw new Error(`Invalid named range: ${formula}`);
+  if (spillReference) {
+    if (match[5] || !calculator) throw new Error(`Named range spill reference is not resolved: ${formula}`);
+    const spill = calculator.getSpillsForSheet(sheet.id).find((candidate) => candidate.anchor.row === startRow && candidate.anchor.column === startColumn);
+    if (!spill) throw new Error(`Named range spill anchor has no resolved spill: ${formula}`);
+    if (spill.state !== 'ok') throw new Error(`Named range spill is blocked: ${formula}`);
+    return structuredClone(spill.range);
+  }
   return { sheetId: sheet.id, startRow, endRow, startColumn, endColumn };
 }
 
-function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: string): RangeRef {
+function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: string, calculator?: FormulaEngine): RangeRef {
   const formula = workbook.getDefinedName(name, sheetId)?.formula ?? '';
   if (!formula) throw new Error(`Unknown named range: ${name}`);
-  return parseA1Range(formula, workbook, workbook.primarySheetId);
+  return parseA1Range(formula, workbook, workbook.primarySheetId, calculator);
 }
 
-function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, rangeIndex: number, persisted?: PivotFieldCatalog): SourceTable {
+function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, rangeIndex: number, persisted?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
+  if (formula) {
+    for (const spill of formula.getSpillsForSheet(sheet.id)) {
+      const intersects = spill.range.startRow <= range.endRow && range.startRow <= spill.range.endRow
+        && spill.range.startColumn <= range.endColumn && range.startColumn <= spill.range.endColumn;
+      if (intersects && spill.state !== 'ok') throw new Error(`Pivot source intersects blocked spill at ${sheet.id}!${spill.anchor.row}:${spill.anchor.column}`);
+    }
+  }
   const fields: SourceField[] = [];
   for (let ordinal = 0; ordinal <= range.endColumn - range.startColumn; ordinal += 1) {
     const column = range.startColumn + ordinal;
-    const raw = sheet.cells.get(range.startRow, column)?.value;
+    const headerCell = sheet.cells.get(range.startRow, column);
+    const raw = formula
+      ? formulaCellValue(formula, { sheetId: sheet.id, row: range.startRow, column }, headerCell?.formulaValue ?? headerCell?.value ?? null)
+      : headerCell?.formulaValue ?? headerCell?.value ?? null;
     const name = raw == null || raw === '' ? `Column ${ordinal + 1}` : String(raw);
     // Ordinal/source-column identity survives a header rename. A changed
     // physical column is a new field, while a changed caption is not.
@@ -353,7 +412,10 @@ function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, 
     const values: Record<string, PivotScalar> = {};
     fields.forEach((field, ordinal) => {
       const cell = sheet.cells.get(row, range.startColumn + ordinal);
-      values[field.fieldId] = cellScalar(cell?.formulaValue ?? cell?.value ?? null);
+      const raw = formula
+        ? formulaCellValue(formula, { sheetId: sheet.id, row, column: range.startColumn + ordinal }, cell?.formulaValue ?? cell?.value ?? null)
+        : cell?.formulaValue ?? cell?.value ?? null;
+      values[field.fieldId] = cellScalar(raw);
     });
     rows.push({ values, paths: [{ ...(sourceId ? { sourceId } : {}), recordId: `${sourceId ?? range.sheetId}:${row}`, sheetId: range.sheetId, row }] });
   }
@@ -472,17 +534,17 @@ function joinSourceTables(current: SourceTable, attached: SourceTable, currentFi
   return { fields: [...current.fields, ...attached.fields], rows };
 }
 
-function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog): SourceTable {
+function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
   const source = getPivotSource(pivot);
   if (source.kind === 'data-source') {
     throw new Error(`Block-backed data source ${source.dataSourceId} requires asynchronous Pivot computation`);
   }
-  const ranges = sourceRanges(workbook, pivot);
+  const ranges = sourceRanges(workbook, pivot, formula);
   if (source.kind === 'worksheet-ranges') {
     const nodes = source.ranges.map((sourceRange, index) => ({
       sourceId: sourceRange.sourceId,
       range: sourceRange.range,
-      table: readRange(workbook.getSheet(sourceRange.range.sheetId), sourceRange.range, source, index, catalog),
+      table: readRange(workbook.getSheet(sourceRange.range.sheetId), sourceRange.range, source, index, catalog, formula),
     }));
     if (new Set(nodes.map((node) => node.sourceId)).size !== nodes.length || nodes.some((node) => !node.sourceId.trim())) {
       throw new Error('Every local worksheet range must have a unique stable sourceId');
@@ -509,7 +571,7 @@ function sourceTable(workbook: WorkbookModel, pivot: PivotModel, catalog?: Pivot
   const range = ranges[0]!;
   // Table field IDs come from the table model, so read the source columns with
   // their physical identities first and remap once below.
-  const table = readRange(workbook.getSheet(range.sheetId), range, source, 0, source.kind === 'table' ? undefined : catalog);
+  const table = readRange(workbook.getSheet(range.sheetId), range, source, 0, source.kind === 'table' ? undefined : catalog, formula);
   if (source.kind === 'table') {
     const stored = resolvePivotTable(workbook, source.tableId).fields;
     table.fields.forEach((field, index) => {
@@ -627,11 +689,12 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
 }
 
 /** Canonicalize field catalog values against the live source. Calculation has one model shape. */
-export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel): PivotDefinition {
+export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotDefinition {
   const source = getPivotSource(pivot);
+  const calculator = source.kind === 'data-source' ? formula : (formula ?? createPivotFormulaEngine(workbook));
   const fieldCatalog = source.kind === 'data-source'
     ? getPivotFieldCatalog(workbook, pivot)
-    : normalizeFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog), pivot.fieldCatalog);
+    : normalizeFieldCatalog(sourceTable(workbook, pivot, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
   const calculatedFields = [
     ...(pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
     ...(pivot.layout.calculatedItems ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name })),
@@ -657,7 +720,7 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
   };
 }
 
-export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel): PivotFieldCatalog {
+export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotFieldCatalog {
   const source = getPivotSource(pivot);
   if (source.kind === 'data-source') {
     const manifest = workbook.getDataSource(source.dataSourceId);
@@ -672,7 +735,8 @@ export function getPivotFieldCatalog(workbook: WorkbookModel, pivot: PivotModel)
       })),
     };
   }
-  return normalizeFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog), pivot.fieldCatalog);
+  const calculator = formula ?? createPivotFormulaEngine(workbook);
+  return normalizeFieldCatalog(sourceTable(workbook, { ...pivot, source }, pivot.fieldCatalog, calculator), pivot.fieldCatalog);
 }
 
 function formulaScalar(value: FormulaValue): PivotScalar | null {
@@ -1087,6 +1151,7 @@ function computePivotResultFromTable(
   definition: PivotDefinition,
   rawTable: PivotSourceTableInput,
   sourceRevisionOverride?: string,
+  formula?: FormulaEngine,
 ): PivotResultTree {
   const collator = createPivotCollator(definition.layout.collation);
   const rows = applyCalculatedData(rawTable.rows, definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
@@ -1122,21 +1187,22 @@ function computePivotResultFromTable(
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
   applyShowAs(tree, resultFields);
-  const revisions = getPivotRevisionKey(workbook, pivot);
+  const revisions = getPivotRevisionKey(workbook, pivot, formula);
   tree.sourceRevision = sourceRevisionOverride ?? revisions.sourceRevision;
   tree.layoutRevision = revisions.layoutRevision;
   tree.filterRevision = revisions.filterRevision;
   return tree;
 }
 
-function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
-  const definition = normalizePivotDefinition(workbook, pivot);
-  const rawTable = sourceTable(workbook, pivot, definition.fieldCatalog);
-  return computePivotResultFromTable(workbook, pivot, definition, rawTable);
+function computePivotResultUncached(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotResultTree {
+  const calculator = pivot.source.kind === 'data-source' ? formula : (formula ?? createPivotFormulaEngine(workbook));
+  const definition = normalizePivotDefinition(workbook, pivot, calculator);
+  const rawTable = sourceTable(workbook, pivot, definition.fieldCatalog, calculator);
+  return computePivotResultFromTable(workbook, pivot, definition, rawTable, undefined, calculator);
 }
 
-export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel): PivotResultTree {
-  return structuredClone(computePivotResultUncached(workbook, pivot));
+export function computePivotResult(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): PivotResultTree {
+  return structuredClone(computePivotResultUncached(workbook, pivot, formula));
 }
 
 /** Apply the normal Pivot calculation pipeline to asynchronously loaded block data. */
@@ -1249,8 +1315,8 @@ function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId && left.startRow <= right.endRow && right.startRow <= left.endRow && left.startColumn <= right.endColumn && right.startColumn <= left.endColumn;
 }
 
-function refreshState(workbook: WorkbookModel, pivot: PivotModel, collision: import('@react-sheets/core-model').PivotCollision, status: PivotRefreshState['status'] = 'ready', error?: string): PivotRefreshState {
-  const revisions = getPivotRevisionKey(workbook, pivot);
+function refreshState(workbook: WorkbookModel, pivot: PivotModel, collision: import('@react-sheets/core-model').PivotCollision, status: PivotRefreshState['status'] = 'ready', error?: string, formula?: FormulaEngine): PivotRefreshState {
+  const revisions = getPivotRevisionKey(workbook, pivot, formula);
   return {
     status: collision.status === 'collision' ? 'collision' : status,
     revision: Number.parseInt(revisions.sourceRevision.slice(-6), 16) || 0,
@@ -1272,7 +1338,7 @@ function buildPivotGridProjectionCandidate(
   cachedResult?: PivotResultTree,
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
-  const definition = normalizePivotDefinition(workbook, pivot);
+  const definition = normalizePivotDefinition(workbook, pivot, options.formula);
   const target = definition.target;
   let tree: PivotResultTree | undefined = cachedResult;
   let error: string | undefined;
@@ -1288,7 +1354,7 @@ function buildPivotGridProjectionCandidate(
     }
   } else if (!tree) {
     try {
-      tree = computePivotResult(workbook, pivot);
+      tree = computePivotResult(workbook, pivot, options.formula);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -1367,7 +1433,7 @@ function buildPivotGridProjectionCandidate(
     occupiedRange,
     cells,
     collision,
-    refresh: refreshState(workbook, pivot, collision, error ? 'error' : loading ? 'refreshing' : tree ? 'ready' : 'refreshing', error),
+    refresh: refreshState(workbook, pivot, collision, error ? 'error' : loading ? 'refreshing' : tree ? 'ready' : 'refreshing', error, options.formula),
   };
 }
 
@@ -1378,10 +1444,11 @@ function projectionWithStatus(
   collision: import('@react-sheets/core-model').PivotCollision,
   status: PivotRefreshState['status'],
   error?: string,
+  formula?: FormulaEngine,
 ): PivotGridProjection {
   const projection = structuredClone(entry.projection);
   projection.collision = structuredClone(collision);
-  projection.refresh = refreshState(workbook, pivot, collision, status, error);
+  projection.refresh = refreshState(workbook, pivot, collision, status, error, formula);
   return projection;
 }
 
@@ -1396,17 +1463,17 @@ export function buildPivotGridProjection(
   cachedResult?: PivotResultTree,
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
-  const revision = getPivotRevisionKey(workbook, pivot);
+  const revision = getPivotRevisionKey(workbook, pivot, options.formula);
   const blockResultReady = pivot.source.kind === 'data-source'
     && options.sourceState?.availability === 'ready'
-    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult);
+    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula);
   const staleManualResult = pivot.refreshPolicy.mode === 'manual'
-    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult)
+    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula)
     && cachedResult.sourceRevision !== revision.sourceRevision;
-  let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult) || staleManualResult || blockResultReady ? cachedResult : undefined;
+  let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult, options.formula) || staleManualResult || blockResultReady ? cachedResult : undefined;
   if (!effectiveResult && pivot.source.kind !== 'data-source') {
     try {
-      effectiveResult = computePivotResult(workbook, pivot);
+      effectiveResult = computePivotResult(workbook, pivot, options.formula);
     } catch {
       // The candidate builder creates the explicit synchronous error state.
     }
@@ -1417,7 +1484,7 @@ export function buildPivotGridProjection(
   const candidateTree = effectiveResult;
 
   if (staleManualResult && candidate.collision.status === 'clear') {
-    candidate.refresh = refreshState(workbook, pivot, candidate.collision, 'stale');
+    candidate.refresh = refreshState(workbook, pivot, candidate.collision, 'stale', undefined, options.formula);
     return candidate;
   }
 
@@ -1436,6 +1503,7 @@ export function buildPivotGridProjection(
       candidate.collision,
       'collision',
       `Pivot target collision: ${candidate.collision.reasons.join(', ')}`,
+      options.formula,
     );
   }
 
@@ -1449,9 +1517,10 @@ export function buildPivotGridProjection(
         retainedCollision,
         'collision',
         `Pivot target collision: ${retainedCollision.reasons.join(', ')}`,
+        options.formula,
       );
     }
-    return projectionWithStatus(workbook, pivot, last, retainedCollision, candidate.refresh.status, candidate.refresh.error);
+    return projectionWithStatus(workbook, pivot, last, retainedCollision, candidate.refresh.status, candidate.refresh.error, options.formula);
   }
 
   return candidate;
@@ -1487,10 +1556,10 @@ export function computePivotTable(workbook: WorkbookModel, pivot: PivotModel): P
   return { headers, rows, grandTotal: tree.grandTotal?.values ?? [], tree };
 }
 
-function pivotSourceRangesForExport(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
-  return sourceRanges(workbook, pivot);
+function pivotSourceRangesForExport(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): RangeRef[] {
+  return sourceRanges(workbook, pivot, formula);
 }
 
-export function getPivotSourceRanges(workbook: WorkbookModel, pivot: PivotModel): RangeRef[] {
-  return structuredClone(pivotSourceRangesForExport(workbook, pivot));
+export function getPivotSourceRanges(workbook: WorkbookModel, pivot: PivotModel, formula?: FormulaEngine): RangeRef[] {
+  return structuredClone(pivotSourceRangesForExport(workbook, pivot, formula));
 }
