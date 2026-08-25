@@ -56,6 +56,7 @@ public final class WorkbookSnapshotValidator {
             }
         }
         java.util.Set<String> pivotIds = new java.util.HashSet<>();
+        java.util.Map<String, JsonNode> pivotsById = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
             String sheetId = sheet.path("id").asText().trim();
@@ -79,6 +80,7 @@ public final class WorkbookSnapshotValidator {
                 if (!pivot.isObject() || pivot.path("id").asText().isBlank() || !pivotIds.add(pivot.path("id").asText())) {
                     throw ServiceException.validation("Workbook snapshot Pivot identity is duplicated or empty");
                 }
+                pivotsById.put(pivot.path("id").asText(), pivot);
             }
             if (!sheet.path("defaultRowHeightPx").isNumber() || sheet.path("defaultRowHeightPx").asDouble() <= 0
                     || !sheet.path("defaultColumnWidthPx").isNumber() || sheet.path("defaultColumnWidthPx").asDouble() <= 0
@@ -140,12 +142,29 @@ public final class WorkbookSnapshotValidator {
                 if (pivotId.isBlank() || !pivotIds.contains(pivotId)) {
                     throw ServiceException.validation("Drawing " + drawingId + " references missing Pivot: " + pivotId);
                 }
-                if (("slicer".equals(kind) || "timeline".equals(kind)) && payload.has("connectedPivotIds")) {
-                    JsonNode connected = payload.get("connectedPivotIds");
-                    if (!connected.isArray()) throw ServiceException.validation("Drawing connectedPivotIds is invalid: " + drawingId);
-                    for (JsonNode connectedPivotId : connected) {
-                        if (!connectedPivotId.isTextual() || !pivotIds.contains(connectedPivotId.asText())) {
-                            throw ServiceException.validation("Drawing " + drawingId + " references missing connected Pivot");
+                if (("slicer".equals(kind) || "timeline".equals(kind)) && payload.has("connections")) {
+                    JsonNode connections = payload.get("connections");
+                    if (!connections.isArray()) throw ServiceException.validation("Drawing connections is invalid: " + drawingId);
+                    JsonNode primary = pivotsById.get(pivotId);
+                    JsonNode primaryField = findPivotField(primary, payload.path("fieldId").asText());
+                    if (primaryField == null) throw ServiceException.validation("Drawing primary field is missing: " + drawingId);
+                    String primarySourceKey = canonicalJson(primary.get("source"));
+                    java.util.Set<String> seenConnections = new java.util.HashSet<>();
+                    for (JsonNode connection : connections) {
+                        if (!connection.isObject()) throw ServiceException.validation("Drawing connection is invalid: " + drawingId);
+                        String targetId = connection.path("pivotId").asText();
+                        String sourceKey = connection.path("sourceKey").asText();
+                        String fieldId = connection.path("fieldId").asText();
+                        if (targetId.isBlank() || !pivotIds.contains(targetId) || targetId.equals(pivotId) || !seenConnections.add(targetId)) {
+                            throw ServiceException.validation("Drawing connection Pivot is invalid: " + drawingId);
+                        }
+                        JsonNode target = pivotsById.get(targetId);
+                        JsonNode targetField = findPivotField(target, fieldId);
+                        if (!primarySourceKey.equals(sourceKey) || !primarySourceKey.equals(canonicalJson(target.get("source"))) || !compatiblePivotField(primaryField, targetField)) {
+                            throw ServiceException.validation("Drawing connection source/cache/field is incompatible: " + drawingId);
+                        }
+                        if ("timeline".equals(kind) && (!"date".equals(primaryField.path("dataType").asText()) || !"date".equals(targetField.path("dataType").asText()))) {
+                            throw ServiceException.validation("Drawing Timeline connection field is not date-semantic: " + drawingId);
                         }
                     }
                 }
@@ -167,6 +186,44 @@ public final class WorkbookSnapshotValidator {
             }
         }
         return snapshot;
+    }
+
+    private static JsonNode findPivotField(JsonNode pivot, String fieldId) {
+        if (pivot == null || !pivot.path("fieldCatalog").path("fields").isArray()) return null;
+        for (JsonNode field : pivot.path("fieldCatalog").path("fields")) if (field.path("fieldId").asText().equals(fieldId)) return field;
+        return null;
+    }
+
+    private static boolean compatiblePivotField(JsonNode primary, JsonNode target) {
+        return target != null
+                && primary.path("ordinal").asInt(-1) == target.path("ordinal").asInt(-1)
+                && primary.path("name").asText().equals(target.path("name").asText())
+                && primary.path("dataType").asText().equals(target.path("dataType").asText());
+    }
+
+    private static String canonicalJson(JsonNode node) {
+        if (node == null || node.isNull()) return "null";
+        if (node.isObject()) {
+            java.util.List<String> keys = new java.util.ArrayList<>();
+            node.fieldNames().forEachRemaining(keys::add);
+            java.util.Collections.sort(keys);
+            StringBuilder result = new StringBuilder("{");
+            for (int index = 0; index < keys.size(); index++) {
+                if (index > 0) result.append(',');
+                String key = keys.get(index);
+                result.append(com.fasterxml.jackson.databind.node.TextNode.valueOf(key)).append(':').append(canonicalJson(node.get(key)));
+            }
+            return result.append('}').toString();
+        }
+        if (node.isArray()) {
+            StringBuilder result = new StringBuilder("[");
+            for (int index = 0; index < node.size(); index++) {
+                if (index > 0) result.append(',');
+                result.append(canonicalJson(node.get(index)));
+            }
+            return result.append(']').toString();
+        }
+        return node.toString();
     }
 
     private static void validateDrawingSourceRange(JsonNode value, java.util.Map<String, int[]> sheetDimensions, String label) {

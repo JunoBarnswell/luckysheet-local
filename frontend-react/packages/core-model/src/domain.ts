@@ -620,6 +620,15 @@ export interface PivotSlicerSettings {
   itemHeight: number;
 }
 
+/** A validated Report Connections edge, resolved against the target Pivot. */
+export interface PivotControlConnection {
+  pivotId: string;
+  /** Canonical full Pivot source/cache identity. */
+  sourceKey: string;
+  /** Field identity owned by the target Pivot and source dimension. */
+  fieldId: string;
+}
+
 /** Canonical floating Slicer payload. Its filter is not stored on PivotModel. */
 export interface PivotSlicerDrawingPayload {
   kind: 'slicer';
@@ -628,7 +637,7 @@ export interface PivotSlicerDrawingPayload {
   filter: PivotControlFilter;
   style: PivotControlStyle;
   settings: PivotSlicerSettings;
-  connectedPivotIds?: string[];
+  connections?: PivotControlConnection[];
 }
 
 /** Canonical floating Timeline payload. Its period is not stored on PivotModel. */
@@ -654,7 +663,7 @@ export interface PivotTimelineDrawingPayload {
   caption?: string;
   styleName?: string;
   style: PivotControlStyle;
-  connectedPivotIds?: string[];
+  connections?: PivotControlConnection[];
 }
 
 export type DrawingPayload =
@@ -711,9 +720,15 @@ export function isPivotControlStyle(value: unknown): value is PivotControlStyle 
     && (value.fontSize === undefined || (typeof value.fontSize === 'number' && Number.isFinite(value.fontSize) && value.fontSize > 0));
 }
 
-function isConnectedPivotIds(value: unknown): value is string[] {
-  return value === undefined || (Array.isArray(value)
-    && value.every((entry) => typeof entry === 'string' && entry.trim().length > 0));
+function isPivotControlConnection(value: unknown): value is PivotControlConnection {
+  if (!isRecord(value)) return false;
+  return typeof value.pivotId === 'string' && value.pivotId.trim().length > 0
+    && typeof value.sourceKey === 'string' && value.sourceKey.trim().length > 0
+    && typeof value.fieldId === 'string' && value.fieldId.trim().length > 0;
+}
+
+function isPivotControlConnections(value: unknown): value is PivotControlConnection[] {
+  return value === undefined || (Array.isArray(value) && value.every(isPivotControlConnection));
 }
 
 export function isPivotSlicerDrawingPayload(value: unknown): value is PivotSlicerDrawingPayload {
@@ -725,7 +740,7 @@ export function isPivotSlicerDrawingPayload(value: unknown): value is PivotSlice
     && isPivotControlFilter(value.filter)
     && isPivotControlStyle(value.style)
     && isPivotSlicerSettings(value.settings)
-    && isConnectedPivotIds(value.connectedPivotIds);
+    && isPivotControlConnections(value.connections);
 }
 
 export function isPivotSlicerSettings(value: unknown): value is PivotSlicerSettings {
@@ -761,7 +776,7 @@ export function isPivotTimelineDrawingPayload(value: unknown): value is PivotTim
     && (value.caption === undefined || typeof value.caption === 'string')
     && (value.styleName === undefined || (typeof value.styleName === 'string' && value.styleName.trim().length > 0))
     && isPivotControlStyle(value.style)
-    && isConnectedPivotIds(value.connectedPivotIds);
+    && isPivotControlConnections(value.connections);
 }
 
 /** 浮动对象唯一 bounds/z-order 入口 */

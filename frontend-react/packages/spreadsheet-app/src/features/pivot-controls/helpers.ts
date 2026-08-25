@@ -2,17 +2,20 @@ import type {
   DrawingObject,
   DrawingTransform,
   PivotControlFilter,
+  PivotControlConnection,
   PivotControlStyle,
   PivotSlicerSettings,
   PivotSlicerDrawingPayload,
   PivotTimelineDrawingPayload,
   PivotTimelinePeriod,
+  PivotModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
   normalizePivotTimelinePeriod,
+  pivotSourceIdentity,
 } from '@react-sheets/core-model';
 
 type DrawingAnchor = DrawingObject['anchor'];
@@ -80,7 +83,7 @@ export interface PivotControlDrawingInput {
   zIndex: number;
   anchor?: DrawingAnchor;
   name?: string;
-  connectedPivotIds?: string[];
+  connections?: PivotControlConnection[];
 }
 
 export function buildPivotSlicerDrawing(
@@ -104,7 +107,7 @@ export function buildPivotSlicerDrawing(
       filter: createPivotControlFilter(input.filter),
       style: createPivotControlStyle(input.style),
       settings: createPivotSlicerSettings(input.settings),
-      ...(input.connectedPivotIds?.length ? { connectedPivotIds: [...new Set(input.connectedPivotIds)] } : {}),
+      ...(input.connections?.length ? { connections: structuredClone(input.connections) } : {}),
     },
   };
 }
@@ -154,7 +157,7 @@ export function buildPivotTimelineDrawing(
       ...(input.caption === undefined ? {} : { caption: input.caption }),
       styleName: input.styleName ?? 'TimelineStyleLight2',
       style: createPivotControlStyle(input.style),
-      ...(input.connectedPivotIds?.length ? { connectedPivotIds: [...new Set(input.connectedPivotIds)] } : {}),
+      ...(input.connections?.length ? { connections: structuredClone(input.connections) } : {}),
     },
   };
 }
@@ -185,9 +188,63 @@ export function findPivotControlRecord(sheet: WorksheetModel, drawingId: string)
 }
 
 export function linkedPivotIds(payload: PivotControlPayload): string[] {
-  return [...new Set([payload.pivotId, ...(payload.connectedPivotIds ?? [])])];
+  return [...new Set([payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)])];
 }
 
 export function listPivotControlsForPivot(sheet: WorksheetModel, pivotId: string): PivotControlRecord[] {
   return listPivotControlRecords(sheet).filter((record) => linkedPivotIds(record.payload).includes(pivotId));
+}
+
+function pivotById(workbook: import('@react-sheets/core-model').WorkbookModel, pivotId: string): PivotModel {
+  const pivot = workbook.getSheets().flatMap((sheet) => sheet.pivots).find((candidate) => candidate.id === pivotId);
+  if (!pivot) throw new Error(`Unknown PivotTable: ${pivotId}`);
+  return pivot;
+}
+
+function fieldFor(pivot: PivotModel, fieldId: string) {
+  const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === fieldId);
+  if (!field) throw new Error(`Unknown Pivot field ${fieldId} on ${pivot.id}`);
+  return field;
+}
+
+/** Return only Pivots with the same complete source/cache and source dimension. */
+export function compatiblePivotControlConnections(
+  workbook: import('@react-sheets/core-model').WorkbookModel,
+  pivotId: string,
+  fieldId: string,
+  kind: 'slicer' | 'timeline',
+): PivotControlConnection[] {
+  const primary = pivotById(workbook, pivotId);
+  const primaryField = fieldFor(primary, fieldId);
+  if (kind === 'timeline' && primaryField.dataType !== 'date') throw new Error(`Timeline field is not date-semantic: ${fieldId}`);
+  const sourceKey = pivotSourceIdentity(primary.source);
+  return workbook.getSheets().flatMap((sheet) => sheet.pivots).filter((candidate) => candidate.id !== primary.id).flatMap((candidate) => {
+    if (pivotSourceIdentity(candidate.source) !== sourceKey) return [];
+    const targetField = candidate.fieldCatalog.fields.find((field) => field.ordinal === primaryField.ordinal && field.name === primaryField.name && field.dataType === primaryField.dataType);
+    if (!targetField || (kind === 'timeline' && targetField.dataType !== 'date')) return [];
+    return [{ pivotId: candidate.id, sourceKey, fieldId: targetField.fieldId }];
+  });
+}
+
+/** Validate an explicit Report Connections set atomically against workbook state. */
+export function validatePivotControlConnections(
+  workbook: import('@react-sheets/core-model').WorkbookModel,
+  payload: PivotControlPayload,
+  connections: readonly PivotControlConnection[],
+): PivotControlConnection[] {
+  const primary = pivotById(workbook, payload.pivotId);
+  const primaryField = fieldFor(primary, payload.fieldId);
+  if (payload.kind === 'timeline' && primaryField.dataType !== 'date') throw new Error(`Timeline field is not date-semantic: ${payload.fieldId}`);
+  const sourceKey = pivotSourceIdentity(primary.source);
+  const seen = new Set<string>();
+  return connections.map((connection) => {
+    if (!connection.pivotId.trim() || connection.pivotId === payload.pivotId || seen.has(connection.pivotId)) throw new Error(`Duplicate or primary Pivot connection: ${connection.pivotId}`);
+    seen.add(connection.pivotId);
+    const target = pivotById(workbook, connection.pivotId);
+    if (connection.sourceKey !== sourceKey || pivotSourceIdentity(target.source) !== sourceKey) throw new Error(`Pivot connection source/cache is incompatible: ${connection.pivotId}`);
+    const targetField = fieldFor(target, connection.fieldId);
+    if (targetField.ordinal !== primaryField.ordinal || targetField.name !== primaryField.name || targetField.dataType !== primaryField.dataType) throw new Error(`Pivot connection field is incompatible: ${connection.fieldId}`);
+    if (payload.kind === 'timeline' && targetField.dataType !== 'date') throw new Error(`Timeline connection field is not date-semantic: ${connection.fieldId}`);
+    return { pivotId: connection.pivotId, sourceKey, fieldId: targetField.fieldId };
+  });
 }

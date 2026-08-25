@@ -267,6 +267,7 @@ export type {
   FormControlDrawingPayload,
   FormControlType,
   PivotControlFilter,
+  PivotControlConnection,
   PivotTimelinePeriod,
   PivotTimelineLevel,
   PivotTimelineFilterType,

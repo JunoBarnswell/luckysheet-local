@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { createPivotMemberKey, WorkbookModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, pivotSourceIdentity, WorkbookModel, type PivotModel } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
 import {
   buildPivotSlicerDrawing,
@@ -13,6 +13,19 @@ import {
 
 function createRuntime() {
   const workbook = new WorkbookModel('pivot-controls-test', 'Pivot Controls');
+  const pivotBase: PivotModel = {
+    schema: 'PivotDefinition', id: 'pivot-sales', source: { kind: 'worksheet-range', range: { sheetId: 'sheet-1', startRow: 0, endRow: 10, startColumn: 0, endColumn: 2 } },
+    target: { sheetId: 'sheet-1', anchor: { row: 12, column: 0 } },
+    fieldCatalog: { fields: [
+      { fieldId: 'field-region', name: 'Region', dataType: 'text', ordinal: 0 },
+      { fieldId: 'field-date', name: 'Date', dataType: 'date', ordinal: 1 },
+      { fieldId: 'field-sales', name: 'Sales', dataType: 'number', ordinal: 2 },
+    ] },
+    refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact', calculatedFields: [], calculatedItems: [] },
+  };
+  const detail = structuredClone(pivotBase); detail.id = 'pivot-detail'; detail.target = { sheetId: 'sheet-1', anchor: { row: 12, column: 6 } };
+  workbook.getSheet('sheet-1').pivots.push(pivotBase, detail);
   const runtime = new CommandRuntime(workbook);
   registerDrawingFeature(runtime);
   registerPivotControlFeature(runtime);
@@ -46,7 +59,7 @@ describe('pivot controls as floating drawing objects', () => {
     runtime.execute('pivot.control.timeline.create', { sheetId: 'sheet-1', ...timeline });
 
     const sheet = workbook.getSheet('sheet-1');
-    assert.deepEqual(sheet.pivots, []);
+    assert.deepEqual(sheet.pivots.map((pivot) => pivot.id), ['pivot-sales', 'pivot-detail']);
     assert.deepEqual(listPivotControlRecords(sheet).map((record) => record.payload.kind), ['slicer', 'timeline']);
     assert.equal(listPivotControlsForPivot(sheet, 'pivot-sales').length, 2);
     assert.deepEqual(sheet.drawingPayloads.get('slicer-payload'), slicer.payload);
@@ -93,13 +106,17 @@ describe('pivot controls as floating drawing objects', () => {
     runtime.execute('pivot.control.connections.set', {
       sheetId: 'sheet-1',
       drawingId: 'slicer-drawing',
-      connectedPivotIds: ['pivot-detail', 'pivot-detail', ''],
+      connections: [{ pivotId: 'pivot-detail', sourceKey: pivotSourceIdentity(workbook.getSheet('sheet-1').pivots[0]!.source), fieldId: 'field-region' }],
     });
     const updated = workbook.getSheet('sheet-1').drawingPayloads.get('slicer-payload');
     assert.equal(updated?.kind, 'slicer');
     if (updated?.kind !== 'slicer') throw new Error('Expected slicer payload');
     assert.equal(updated.style.theme, 'dark');
-    assert.deepEqual(updated.connectedPivotIds, ['pivot-detail']);
+    assert.deepEqual(updated.connections, [{ pivotId: 'pivot-detail', sourceKey: pivotSourceIdentity(workbook.getSheet('sheet-1').pivots[0]!.source), fieldId: 'field-region' }]);
+    assert.throws(() => runtime.execute('pivot.control.connections.set', {
+      sheetId: 'sheet-1', drawingId: 'slicer-drawing',
+      connections: [{ pivotId: 'pivot-detail', sourceKey: 'bad', fieldId: 'field-region' }],
+    }), /source\/cache is incompatible/);
   });
 
   it('persists Slicer design settings and rejects invalid layout without a partial mutation', () => {

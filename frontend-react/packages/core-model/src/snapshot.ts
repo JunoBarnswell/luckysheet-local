@@ -2,7 +2,7 @@ import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, Unit
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
-import { canonicalizePivotDefinition } from './pivot';
+import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -217,9 +217,22 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (typeof payload.pivotId !== 'string' || !payload.pivotId.trim() || !pivotIds.has(payload.pivotId)) {
         throw new Error(`Drawing ${drawing.id} references missing Pivot: ${payload.pivotId ?? ''}`);
       }
-      if ((payload.kind === 'slicer' || payload.kind === 'timeline') && payload.connectedPivotIds) {
-        for (const connectedPivotId of payload.connectedPivotIds) {
-          if (!pivotIds.has(connectedPivotId)) throw new Error(`Drawing ${drawing.id} references missing connected Pivot: ${connectedPivotId}`);
+      if ((payload.kind === 'slicer' || payload.kind === 'timeline') && payload.connections) {
+        const primary = snapshot.sheets.flatMap((candidate) => candidate.pivots).find((pivot) => pivot.id === payload.pivotId);
+        if (!primary) throw new Error(`Drawing ${drawing.id} references missing primary Pivot: ${payload.pivotId}`);
+        const primaryField = primary.fieldCatalog.fields.find((field) => field.fieldId === payload.fieldId);
+        if (!primaryField) throw new Error(`Drawing ${drawing.id} references missing primary field: ${payload.fieldId}`);
+        for (const connection of payload.connections) {
+          if (!pivotIds.has(connection.pivotId)) throw new Error(`Drawing ${drawing.id} references missing connected Pivot: ${connection.pivotId}`);
+          if (connection.pivotId === payload.pivotId) throw new Error(`Drawing ${drawing.id} repeats its primary Pivot connection`);
+          const target = snapshot.sheets.flatMap((candidate) => candidate.pivots).find((pivot) => pivot.id === connection.pivotId);
+          if (!target || pivotSourceIdentity(target.source) !== connection.sourceKey) throw new Error(`Drawing ${drawing.id} has an incompatible Pivot source connection: ${connection.pivotId}`);
+          if (connection.sourceKey !== pivotSourceIdentity(primary.source)) throw new Error(`Drawing ${drawing.id} connects incompatible Pivot caches: ${connection.pivotId}`);
+          const targetField = target.fieldCatalog.fields.find((field) => field.fieldId === connection.fieldId);
+          if (!targetField || targetField.ordinal !== primaryField.ordinal || targetField.dataType !== primaryField.dataType || targetField.name !== primaryField.name) {
+            throw new Error(`Drawing ${drawing.id} references an incompatible connected field: ${connection.fieldId}`);
+          }
+          if (payload.kind === 'timeline' && (primaryField.dataType !== 'date' || targetField.dataType !== 'date')) throw new Error(`Drawing ${drawing.id} Timeline field is not date-semantic`);
         }
       }
     }

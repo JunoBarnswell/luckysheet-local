@@ -8,7 +8,7 @@ import type {
   WorkbookModel,
 } from '@react-sheets/core-model';
 import { DEFAULT_PIVOT_COLLATION } from '@react-sheets/core-model';
-import { getPivotFieldCatalog, getPivotSourceRanges } from './engine';
+import { getPivotFieldCatalog } from './engine';
 
 export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string, sourceRegion: RangeRef): PivotLayout | undefined {
   const draft = {
@@ -74,14 +74,4 @@ export function buildPivotModel(workbook: WorkbookModel, sheetId: string, pivotI
     layout,
   };
   return draft;
-}
-
-export function connectedPivotIdsForSource(workbook: WorkbookModel, _sheetId: string, sourceRegion: RangeRef): string[] {
-  const sameRange = (left: RangeRef, right: RangeRef): boolean => left.sheetId === right.sheetId
-    && left.startRow === right.startRow && left.endRow === right.endRow
-    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
-  return workbook.getSheets()
-    .flatMap((sheet) => sheet.pivots)
-    .filter((pivot) => getPivotSourceRanges(workbook, pivot).some((range) => sameRange(range, sourceRegion)))
-    .map((pivot) => pivot.id);
 }

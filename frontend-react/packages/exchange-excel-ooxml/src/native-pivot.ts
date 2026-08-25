@@ -29,7 +29,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotNumericValue, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotNumericValue, pivotSourceIdentity, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -299,7 +299,7 @@ function buildImportedControl(
   const pivotCache = cachePart?.pivotCacheId === undefined ? undefined : caches.find((cache) => cache.cacheId === cachePart.pivotCacheId);
   const table = cachePart?.pivotTableNames.map((tableName) => tables.find((candidate) => candidate.name === tableName)).find((candidate): candidate is NativePivotTableDefinition => Boolean(candidate && (!pivotCache || candidate.cacheId === pivotCache.cacheId)));
   const field = pivotCache && cachePart?.sourceName ? pivotCache.fields.find((candidate) => candidate.name === cachePart.sourceName) : undefined;
-  const connectedPivotIds = cachePart?.pivotTableNames.flatMap((tableName) => { const found = tables.find((candidate) => candidate.name === tableName); return found ? [nativePivotId(found)] : []; });
+  const connectionPivotIds = cachePart?.pivotTableNames.flatMap((tableName) => { const found = tables.find((candidate) => candidate.name === tableName); return found ? [nativePivotId(found)] : []; });
   const valid = Boolean(cachePart && pivotCache && table && field);
   const timelineLevel = kind === 'timeline' ? parseTimelineLevel(node.attrs.level, `${kind} level`) : undefined;
   const selectionLevel = kind === 'timeline' ? parseTimelineLevel(node.attrs.selectionLevel, `${kind} selectionLevel`) : undefined;
@@ -325,7 +325,7 @@ function buildImportedControl(
     ...(table ? { pivotId: nativePivotId(table) } : {}),
     ...(field ? { fieldId: nativeFieldId(pivotCache!.cacheId, field.index), fieldIndex: field.index } : {}),
     ...(pivotCache ? { pivotCacheId: pivotCache.cacheId } : {}),
-    ...(connectedPivotIds?.length ? { connectedPivotIds } : {}),
+    ...(connectionPivotIds?.length ? { connectionPivotIds } : {}),
     ...(selection ? { selection } : {}),
     ...(timelineLevel ? { level: timelineLevel } : {}),
     ...(selectionLevel ? { selectionLevel } : {}),
@@ -887,12 +887,12 @@ function synchronizeNativeControls(input: NativeControlSyncInput): NativeControl
     const cacheName = old?.cacheName ?? `${kind === 'slicer' ? 'Slicer' : 'NativeTimeline'}_${safeControlName(entry.drawing.id, kind)}`;
     const cachePart = old?.cachePart || (kind === 'slicer' ? `xl/slicerCaches/slicerCache${partNumbers.slicerCache++}.xml` : `xl/timelineCaches/timelineCache${partNumbers.timelineCache++}.xml`);
     const part = old?.part || (kind === 'slicer' ? `xl/slicers/slicer${partNumbers.slicer++}.xml` : `xl/timelines/timeline${partNumbers.timeline++}.xml`);
-    const connectedPivotIds = [...new Set([entry.payload.pivotId, ...(entry.payload.connectedPivotIds ?? [])])];
+    const connectionPivotIds = [...new Set([entry.payload.pivotId, ...(entry.payload.connections ?? []).map((connection) => connection.pivotId)])];
     const control: NativePivotControlDefinition = {
       kind, id: entry.drawing.id, name, sheetPart: input.sheetPartById[entry.sheet.id]!, part, cachePart, cacheName,
       relationshipId: old?.relationshipId ?? '', cacheRelationshipId: old?.cacheRelationshipId ?? '',
       ...(old?.drawingPart ? { drawingPart: old.drawingPart } : {}), ...(old?.drawingRelationshipId ? { drawingRelationshipId: old.drawingRelationshipId } : {}),
-      pivotId: entry.payload.pivotId, fieldId: entry.payload.fieldId, fieldIndex: cacheFieldIndex, pivotCacheId: table.cacheId, connectedPivotIds,
+      pivotId: entry.payload.pivotId, fieldId: entry.payload.fieldId, fieldIndex: cacheFieldIndex, pivotCacheId: table.cacheId, connectionPivotIds,
       valid: true,
     };
     if (entry.payload.kind === 'timeline') {
@@ -978,7 +978,7 @@ function buildSlicerCacheXml(control: NativePivotControlDefinition, payload: Piv
     const checked = payload.filter.mode === 'include' ? selected.has(keyValue) : payload.filter.mode === 'exclude' ? !selected.has(keyValue) : false;
     return `<i x="${index}"${checked ? ' s="1"' : ''}/>`;
   }).join('');
-  const connected = [...new Set([payload.pivotId, ...(payload.connectedPivotIds ?? [])])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
+  const connected = [...new Set([payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
   return withXmlDeclaration(`<slicerCacheDefinition xmlns="${NS_X14}" xmlns:x="${NS_MAIN}" name="${encodeXml(control.cacheName)}" sourceName="${encodeXml(field?.name ?? payload.fieldId)}"><pivotTables>${connected}</pivotTables><data><tabular pivotCacheId="${control.pivotCacheId ?? cache.cacheId}"><items count="${values.length}">${items}</items></tabular></data></slicerCacheDefinition>`);
 }
 
@@ -996,7 +996,7 @@ function buildTimelineCacheXml(
   originalBytes?: Uint8Array,
 ): string {
   const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId);
-  const connected = [...new Set([payload.pivotId, ...(payload.connectedPivotIds ?? [])])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
+  const connected = [...new Set([payload.pivotId, ...(payload.connections ?? []).map((connection) => connection.pivotId)])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
   const bounds = resolveTimelineBounds(payload.bounds, pivot, payload.fieldId, sheet);
   validateTimelinePeriod(payload.period, `Timeline ${control.id} selection`);
   const filterType = payload.filterType;

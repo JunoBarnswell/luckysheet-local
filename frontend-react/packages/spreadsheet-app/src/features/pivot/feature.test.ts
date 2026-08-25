@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { pivotSourceIdentity, WorkbookModel } from '@react-sheets/core-model';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerDrawingFeature } from '../drawing';
 import { registerPivotFeature } from './index';
-import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
+import { buildPivotModel } from './helpers';
 import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
 import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinition } from './engine';
 import { buildPivotWriteback } from './writeback';
@@ -159,7 +159,7 @@ describe('pivot feature contract', () => {
     assert.equal(runtime.getUndoEntries().length, 0);
   });
 
-  it('keeps display sheet and cross-sheet source distinct', () => {
+  it('keeps display sheet and cross-sheet source distinct without implicit control links', () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-1', { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
     assert.ok(pivot);
@@ -168,7 +168,7 @@ describe('pivot feature contract', () => {
     const sourceRange = pivot.source.kind === 'worksheet-range' ? pivot.source.range : undefined;
     assert.equal(sourceRange?.sheetId, 'source-2');
     workbook.getSheet('sheet-1').pivots.push(pivot);
-    assert.deepEqual(connectedPivotIdsForSource(workbook, 'sheet-1', sourceRange!), ['pivot-1']);
+    assert.equal(sourceRange?.sheetId, 'source-2');
   });
 
   it('drill-down creates a pure detail sheet and removes it through undo', () => {
@@ -233,7 +233,7 @@ describe('pivot feature contract', () => {
       payloadId: 'slicer-connected-payload',
       sheetId: 'sheet-1',
       pivotId: connectedPivot.id,
-      connectedPivotIds: [pivot.id, connectedPivot.id],
+      connections: [{ pivotId: pivot.id, sourceKey: pivotSourceIdentity(connectedPivot.source), fieldId: 'source:source-2:column:0' }],
       fieldId: 'source:source-2:column:0',
       transform: { x: 10, y: 370, width: 160, height: 80, rotation: 0 },
       zIndex: 4,
@@ -276,14 +276,14 @@ describe('pivot feature contract', () => {
     assert.equal(sheet.drawings.some((entry) => entry.id === chart.drawing.id), false);
     assert.equal(sheet.drawings.some((entry) => entry.id === slicer.drawing.id), false);
     assert.equal(sheet.drawings.some((entry) => entry.id === timeline.drawing.id), false);
-    assert.deepEqual((sheet.drawingPayloads.get(connected.drawing.payloadId) as { connectedPivotIds?: string[] })?.connectedPivotIds, [connectedPivot.id]);
+    assert.deepEqual((sheet.drawingPayloads.get(connected.drawing.payloadId) as { connections?: unknown[] })?.connections, undefined);
 
     assert.equal(runtime.undo(), true);
     assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.redo(), true);
     assert.equal(workbook.getSheet('sheet-1').pivots.some((entry) => entry.id === pivot.id), false);
     assert.equal(workbook.getSheet('sheet-1').drawingPayloads.has(chart.drawing.payloadId), false);
-    assert.deepEqual((workbook.getSheet('sheet-1').drawingPayloads.get(connected.drawing.payloadId) as { connectedPivotIds?: string[] })?.connectedPivotIds, [connectedPivot.id]);
+    assert.deepEqual((workbook.getSheet('sheet-1').drawingPayloads.get(connected.drawing.payloadId) as { connections?: unknown[] })?.connections, undefined);
   });
 
   it('drill-down resolves same-sheet joined rows by sourceId and recordId', () => {

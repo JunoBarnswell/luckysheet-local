@@ -3,6 +3,7 @@ import type {
   DrawingObject,
   DrawingPayload,
   PivotControlFilter,
+  PivotControlConnection,
   PivotControlStyle,
   PivotSlicerDrawingPayload,
   PivotSlicerSettings,
@@ -24,6 +25,7 @@ import {
   createPivotSlicerSettings,
   createPivotTimelinePeriod,
   findPivotControlRecord,
+  validatePivotControlConnections,
 } from './helpers';
 
 function sheetRange(sheetId: string) {
@@ -102,7 +104,7 @@ export interface PivotSlicerSettingsSetParams {
 export interface PivotControlConnectionsSetParams {
   sheetId: string;
   drawingId: string;
-  connectedPivotIds: string[];
+  connections: PivotControlConnection[];
 }
 
 function isPivotControlPayload(payload: DrawingPayload): payload is PivotSlicerDrawingPayload | PivotTimelineDrawingPayload {
@@ -150,10 +152,14 @@ function executeCreate(
 ): CommandResult {
   const sheet = context.workbook.getSheet(params.sheetId);
   validateCreatePair(sheet, params);
+  const connections = validatePivotControlConnections(context.workbook, params.payload, params.payload.connections ?? []);
+  const canonicalPayload = structuredClone(params.payload);
+  if (connections.length > 0) canonicalPayload.connections = connections;
+  else delete canonicalPayload.connections;
   const mutationParams: DrawingAddParams = {
     sheetId: params.sheetId,
     drawing: structuredClone(params.drawing),
-    payload: structuredClone(params.payload),
+    payload: canonicalPayload,
   };
   const affectedRanges = sheetRange(params.sheetId);
   context.applyMutation({
@@ -335,12 +341,13 @@ export function registerPivotControlCommands(runtime: CommandRuntime): string[] 
   runtime.registry.registerCommand<PivotControlConnectionsSetParams>({
     id: 'pivot.control.connections.set',
     execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
-      const connectedPivotIds = [...new Set(params.connectedPivotIds.map((id) => id.trim()).filter(Boolean))];
-      return connectedPivotIds.length > 0
-        ? { ...payload, connectedPivotIds }
+      if (!Array.isArray(params.connections)) throw new Error(`Invalid Pivot Report Connections: ${params.drawingId}`);
+      const connections = validatePivotControlConnections(context.workbook, payload, params.connections);
+      return connections.length > 0
+        ? { ...payload, connections }
         : (() => {
           const next = { ...payload };
-          delete next.connectedPivotIds;
+          delete next.connections;
           return next;
         })();
     }),

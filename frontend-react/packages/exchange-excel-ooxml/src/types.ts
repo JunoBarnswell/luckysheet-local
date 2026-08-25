@@ -223,7 +223,8 @@ export interface NativePivotControlDefinition {
   fieldId?: string;
   fieldIndex?: number;
   pivotCacheId?: number;
-  connectedPivotIds?: string[];
+  /** Native OOXML pivotTable references; converted to typed model connections on import. */
+  connectionPivotIds?: string[];
   selection?: { start?: string; end?: string };
   level?: PivotTimelineLevel;
   selectionLevel?: PivotTimelineLevel;

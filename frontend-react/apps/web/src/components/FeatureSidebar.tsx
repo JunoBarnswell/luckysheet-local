@@ -43,7 +43,7 @@ import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
 import { parseAddress, type CanvasSheetSnapshot, type SidebarPanelId, type AppPhase } from '@react-sheets/spreadsheet-app';
 import { localizeText, type Locale } from '../i18n';
-import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
+import type { PivotConnectionOption, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from './pivot/pivot-contract';
 import { ChartPanel } from './panels/ChartPanel';
 import { DataChartPanel } from './panels/DataChartPanel';
 import { BarcodePanel } from './panels/BarcodePanel';
@@ -103,6 +103,8 @@ export interface FeatureSidebarProps {
   pivotFieldCatalog?: readonly PivotFieldDefinition[];
   pivotSlicerControls?: readonly PivotSlicerControl[];
   pivotTimelineControls?: readonly PivotTimelineControl[];
+  pivotConnectionControlId?: string;
+  pivotConnectionOptions?: readonly PivotConnectionOption[];
   pivotPanelState?: PivotPanelState;
   pivotCallbacks?: PivotPanelCallbacks;
   formulaAudit?: FormulaAuditPanelProps['projection'];
@@ -339,6 +341,8 @@ export function FeatureSidebar({
   pivotFieldCatalog,
   pivotSlicerControls,
   pivotTimelineControls,
+  pivotConnectionControlId,
+  pivotConnectionOptions,
   pivotPanelState,
   pivotCallbacks,
   formulaAudit,
@@ -450,7 +454,7 @@ export function FeatureSidebar({
   if (activePanel === 'pivot' && phase === 'ready') {
     return (
       <Box as="aside" aria-label="Feature sidebar" className="flex h-full min-h-0 flex-1 flex-col bg-white">
-        <PivotPanel locale={locale} pivot={pivot} pivotList={pivotList} activePivotId={activePivotId} fieldCatalog={pivotFieldCatalog} slicerControls={pivotSlicerControls} timelineControls={pivotTimelineControls} state={pivotPanelState} callbacks={pivotCallbacks} onClose={onClosePanel} />
+        <PivotPanel locale={locale} pivot={pivot} pivotList={pivotList} activePivotId={activePivotId} fieldCatalog={pivotFieldCatalog} slicerControls={pivotSlicerControls} timelineControls={pivotTimelineControls} pivotConnectionControlId={pivotConnectionControlId} pivotConnectionOptions={pivotConnectionOptions} state={pivotPanelState} callbacks={pivotCallbacks} onClose={onClosePanel} />
       </Box>
     );
   }
