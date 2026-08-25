@@ -776,7 +776,7 @@ export class WorkbookSession {
       } : null,
       activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
       ribbon: { activeTab: this.ribbonTab },
-      clipboard: { hasContent: Boolean(this.clipboardData), mode: this.clipboardData ? (this.clipboardData.isCut ? 'cut' : 'copy') : null },
+      clipboard: { hasContent: Boolean(this.clipboardData), mode: this.clipboardData ? (this.clipboardData.transfer === 'move' ? 'cut' : 'copy') : null },
       undoRedo: { canUndo: undoEntries.length > 0, canRedo: redoEntries.length > 0, undoCount: undoEntries.length, redoCount: redoEntries.length },
       formatPainter: this.formatPainter?.mode ?? null,
       printLayout: this.printLayout,
@@ -828,7 +828,7 @@ export class WorkbookSession {
       await this.materializeDataRegions(regions);
       this.runCommand(commandId, params);
       if (commandId === 'sheet.range.paste' && params && typeof params === 'object'
-        && !Array.isArray(params) && (params as { clipboard?: ClipboardData }).clipboard?.isCut) {
+        && !Array.isArray(params) && (params as { clipboard?: ClipboardData }).clipboard?.transfer === 'move') {
         this.clearClipboard();
       }
     } catch (error) {
@@ -3023,7 +3023,7 @@ export class WorkbookSession {
     void this.copyOrCut(true);
   }
 
-  private async copyOrCut(isCut: boolean): Promise<void> {
+  private async copyOrCut(move: boolean): Promise<void> {
     const range = this.getPrimaryRange();
     try {
       await this.materializeDataRegions(this.dataRegionsIntersectingRanges(range.sheetId, [range]));
@@ -3032,11 +3032,11 @@ export class WorkbookSession {
       return;
     }
     const data = copyRangeToClipboardData(this.runtime.model, range);
-    this.setClipboard({ ...data, isCut });
+    this.setClipboard({ ...data, transfer: move ? 'move' : 'copy' });
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       void navigator.clipboard.writeText(formatTsv(data.values)).catch(() => undefined);
     }
-    this.notify(isCut ? 'Cut to clipboard' : 'Range copied');
+    this.notify(move ? 'Cut to clipboard' : 'Range copied');
   }
   paste(mode: PasteMode = 'all'): void {
     const sel = this.selectionService.getState();
@@ -3046,11 +3046,12 @@ export class WorkbookSession {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
+        transfer: internal.transfer,
         mode,
       } });
       // The command owns source clearing. Keep the clipboard payload usable if
       // a data-region preparation fails, rather than losing a pending cut.
-      if (internal.isCut && applied) this.clearClipboard();
+      if (internal.transfer === 'move' && applied) this.clearClipboard();
       this.syncDraftFromPrimary();
       this.notify('Pasted from clipboard');
       return;
@@ -3064,11 +3065,13 @@ export class WorkbookSession {
       const clipboard: ClipboardData = {
         range: this.getPrimaryRange(),
         values: parseTsv(text),
+        transfer: 'copy',
       };
       this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard,
+        transfer: 'copy',
         mode,
       } });
       this.syncDraftFromPrimary();

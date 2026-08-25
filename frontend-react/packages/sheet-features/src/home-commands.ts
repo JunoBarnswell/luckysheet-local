@@ -687,7 +687,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       };
       assertNoDataRegionIntersection(sheet, targetRange, 'Range move');
       const clipboard = copyRangeToClipboardData(context.workbook, sourceRange);
-      clipboard.isCut = true;
+      clipboard.transfer = 'move';
       const targetEndRow = params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow;
       const targetEndColumn = params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn;
       if (targetEndRow >= sheet.rowCount || targetEndColumn >= sheet.columnCount) throw new Error('Range move exceeds worksheet bounds');
@@ -695,6 +695,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
+        transfer: 'move',
         mode: 'all',
       });
     },
