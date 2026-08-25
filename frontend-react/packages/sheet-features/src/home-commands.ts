@@ -15,7 +15,7 @@ import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
-import { parseFormula } from '@react-sheets/formula-engine';
+import { isFormulaError, isSpillChild, parseFormula, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -213,37 +213,96 @@ function columnLabel(column: number): string {
   return label;
 }
 
-function isNumericCell(cell: CellData | undefined): boolean {
-  return typeof cell?.value === 'number' && Number.isFinite(cell.value);
+type ResolvedAutoSumValue = ScalarValue | FormulaError;
+
+function normalizeAutoSumValue(value: unknown): ResolvedAutoSumValue {
+  if (Array.isArray(value)) throw new Error('AutoSum cannot use an unresolved array result');
+  if (value === undefined || value === null) return null;
+  if (isFormulaError(value)) return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('AutoSum cannot use a non-finite numeric result');
+    return value;
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  throw new Error(`AutoSum resolved value has unsupported type: ${typeof value}`);
 }
 
-function contiguousNumericAbove(sheet: WorksheetModel, row: number, column: number): { startRow: number; endRow: number } | undefined {
+function resolveAutoSumValue(sheet: WorksheetModel, row: number, column: number, context: CommandContext): ResolvedAutoSumValue {
+  const resolved = context.resolveCellValue?.(sheet, row, column);
+  if (resolved !== undefined) return normalizeAutoSumValue(resolved);
+  const cell = sheet.cells.get(row, column);
+  if (cell?.formula !== undefined) {
+    if (cell.formulaValue === undefined) throw new Error(`AutoSum formula result unavailable at ${sheet.id}!${row}:${column}`);
+    return normalizeAutoSumValue(cell.formulaValue);
+  }
+  return normalizeAutoSumValue(cell?.value ?? null);
+}
+
+function isNumericResolvedValue(value: ResolvedAutoSumValue): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function contiguousNumericAbove(sheet: WorksheetModel, row: number, column: number, context: CommandContext): { startRow: number; endRow: number } | undefined {
   let endRow = row - 1;
-  while (endRow >= 0 && !isNumericCell(sheet.cells.get(endRow, column))) endRow -= 1;
+  while (endRow >= 0 && !isNumericResolvedValue(resolveAutoSumValue(sheet, endRow, column, context))) endRow -= 1;
   if (endRow < 0) return undefined;
   let startRow = endRow;
-  while (startRow > 0 && isNumericCell(sheet.cells.get(startRow - 1, column))) startRow -= 1;
+  while (startRow > 0 && isNumericResolvedValue(resolveAutoSumValue(sheet, startRow - 1, column, context))) startRow -= 1;
   return { startRow, endRow };
 }
 
-function contiguousNumericLeft(sheet: WorksheetModel, row: number, column: number): { startColumn: number; endColumn: number } | undefined {
+function contiguousNumericLeft(sheet: WorksheetModel, row: number, column: number, context: CommandContext): { startColumn: number; endColumn: number } | undefined {
   let endColumn = column - 1;
-  while (endColumn >= 0 && !isNumericCell(sheet.cells.get(row, endColumn))) endColumn -= 1;
+  while (endColumn >= 0 && !isNumericResolvedValue(resolveAutoSumValue(sheet, row, endColumn, context))) endColumn -= 1;
   if (endColumn < 0) return undefined;
   let startColumn = endColumn;
-  while (startColumn > 0 && isNumericCell(sheet.cells.get(row, startColumn - 1))) startColumn -= 1;
+  while (startColumn > 0 && isNumericResolvedValue(resolveAutoSumValue(sheet, row, startColumn - 1, context))) startColumn -= 1;
   return { startColumn, endColumn };
 }
 
-function formulaForAutoSum(sheet: WorksheetModel, targetRow: number, targetColumn: number, functionName: AutoSumParams['functionName'], selectedRange: RangeRef): string {
+function hasNumericResolvedValue(sheet: WorksheetModel, range: RangeRef, context: CommandContext): boolean {
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      if (isNumericResolvedValue(resolveAutoSumValue(sheet, row, column, context))) return true;
+    }
+  }
+  return false;
+}
+
+function formulaForAutoSum(sheet: WorksheetModel, targetRow: number, targetColumn: number, functionName: AutoSumParams['functionName'], selectedRange: RangeRef, context: CommandContext): string {
   const name = functionName ?? 'SUM';
-  const above = contiguousNumericAbove(sheet, targetRow, targetColumn);
+  const above = contiguousNumericAbove(sheet, targetRow, targetColumn, context);
   if (above) return `=${name}(${columnLabel(targetColumn)}${above.startRow + 1}:${columnLabel(targetColumn)}${above.endRow + 1})`;
-  const left = contiguousNumericLeft(sheet, targetRow, targetColumn);
+  const left = contiguousNumericLeft(sheet, targetRow, targetColumn, context);
   if (left) return `=${name}(${columnLabel(left.startColumn)}${targetRow + 1}:${columnLabel(left.endColumn)}${targetRow + 1})`;
-  // Explicit selections are a reliable fallback when the adjacent cells are
-  // formulas or text-formatted numbers and therefore cannot be inferred.
+  if (!hasNumericResolvedValue(sheet, selectedRange, context)) throw new Error('AutoSum source contains no numeric result');
+  if (targetRow >= selectedRange.startRow && targetRow <= selectedRange.endRow
+    && targetColumn >= selectedRange.startColumn && targetColumn <= selectedRange.endColumn) {
+    throw new Error('AutoSum source range would include its target');
+  }
   return `=${name}(${columnLabel(selectedRange.startColumn)}${selectedRange.startRow + 1}:${columnLabel(selectedRange.endColumn)}${selectedRange.endRow + 1})`;
+}
+
+function assertSafeAutoSumTarget(sheet: WorksheetModel, target: { row: number; column: number }): void {
+  const targetRange = cellRange(sheet.id, target.row, target.column);
+  const cell = sheet.cells.get(target.row, target.column);
+  if (cell && (cell.formula !== undefined || cell.formulaValue !== undefined
+    || (cell.value !== undefined && cell.value !== null))) {
+    throw new Error(`AutoSum target ${sheet.id}!${target.row}:${target.column} is not blank`);
+  }
+  if (sheet.merges.some((merge) => rangesIntersect(merge.range, targetRange))) {
+    throw new Error(`AutoSum target ${sheet.id}!${target.row}:${target.column} intersects a merged range`);
+  }
+  if (sheet.spillRanges.some((spill) => isSpillChild(spill, target.row, target.column))) {
+    throw new Error(`AutoSum target ${sheet.id}!${target.row}:${target.column} is a formula spill child`);
+  }
+  for (const rule of sheet.protectionRules) {
+    if (!rule.locked || rule.allowedActions?.includes('edit-cell')) continue;
+    const covers = rule.scope === 'workbook'
+      || (rule.scope === 'sheet' && rule.sheetId === sheet.id)
+      || (rule.scope === 'range' && rule.range !== undefined && rangesIntersect(rule.range, targetRange));
+    if (covers) throw new Error(`AutoSum target ${sheet.id}!${target.row}:${target.column} is protected`);
+  }
 }
 
 function isValidAutoSumParams(value: unknown): value is AutoSumParams {
@@ -780,7 +839,15 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         targets.push({ row: range.endRow + 1, column: range.startColumn });
       }
       if (targets.some(({ row, column }) => row >= sheet.rowCount || column >= sheet.columnCount)) throw new Error('AutoSum target is outside worksheet bounds');
-      for (const target of targets) assertNoDataRegionIntersection(sheet, cellRange(params.sheetId, target.row, target.column), 'AutoSum');
+      if (targets.some((target) => target.row >= range.startRow && target.row <= range.endRow
+        && target.column >= range.startColumn && target.column <= range.endColumn)) {
+        throw new Error('AutoSum source range would include its target');
+      }
+      if (!hasNumericResolvedValue(sheet, range, context)) throw new Error('AutoSum source contains no numeric result');
+      for (const target of targets) {
+        assertNoDataRegionIntersection(sheet, cellRange(params.sheetId, target.row, target.column), 'AutoSum');
+        assertSafeAutoSumTarget(sheet, target);
+      }
       const values: CellData[][] = [];
       const minRow = Math.min(...targets.map((target) => target.row));
       const maxRow = Math.max(...targets.map((target) => target.row));
@@ -799,7 +866,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
             ...(previous?.style ? { style: structuredClone(previous.style) } : {}),
             ...(previous?.numberFormat ? { numberFormat: previous.numberFormat } : {}),
             value: null,
-            formula: formulaForAutoSum(sheet, row, column, params.functionName, range),
+            formula: formulaForAutoSum(sheet, row, column, params.functionName, range, context),
           });
         }
         values.push(line);

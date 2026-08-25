@@ -1536,6 +1536,21 @@ export class WorkbookSession {
     return this.selectionService.primaryRangeOrDefault();
   }
 
+  private isCanonicalCellOccupied(sheet: WorksheetModel, row: number, column: number): boolean {
+    const address = { sheetId: sheet.id, row, column };
+    if (this.runtime.formula.getSpillValueAt(sheet.id, row, column) !== undefined) return true;
+    const cell = sheet.cells.get(row, column);
+    if (cell?.formula !== undefined) {
+      const result = this.runtime.formula.getCellResult(address);
+      if (result === undefined) throw new Error(`AutoSum formula result unavailable at ${sheet.id}!${row}:${column}`);
+      return result.value !== null && result.value !== undefined;
+    }
+    const result = this.runtime.formula.getCellResult(address);
+    if (result !== undefined) return result.value !== null && result.value !== undefined;
+    const value = cell?.formulaValue ?? cell?.value;
+    return value !== null && value !== undefined;
+  }
+
   getCurrentRegion(): RangeRef {
     const selection = this.selectionService.getState();
     const primary = this.getPrimaryRange();
@@ -1552,6 +1567,7 @@ export class WorkbookSession {
       sheet,
       selection.activeCell.row,
       selection.activeCell.column,
+      (row, column) => this.isCanonicalCellOccupied(sheet, row, column),
     );
   }
 

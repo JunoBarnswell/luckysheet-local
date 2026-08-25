@@ -63,6 +63,24 @@ export function inferAffectedRanges(commandId: string, params: unknown, sheetId:
       }
     }
   }
+  if (commandId === 'formula.autosum' && p.range && typeof p.range === 'object' && !Array.isArray(p.range)) {
+    const source = p.range as RangeRef;
+    const target = p.target && typeof p.target === 'object' && !Array.isArray(p.target)
+      ? p.target as { row?: unknown; column?: unknown }
+      : undefined;
+    const targetRow = target?.row;
+    const targetColumn = target?.column;
+    if (Number.isSafeInteger(targetRow) && Number.isSafeInteger(targetColumn)) {
+      return [{ sheetId, startRow: Number(targetRow), endRow: Number(targetRow), startColumn: Number(targetColumn), endColumn: Number(targetColumn) }];
+    }
+    if (Number.isSafeInteger(source.startRow) && Number.isSafeInteger(source.endRow)
+      && Number.isSafeInteger(source.startColumn) && Number.isSafeInteger(source.endColumn)) {
+      const endRow = Number(source.endRow) + 1;
+      return [p.byColumn === true || Number(source.startColumn) !== Number(source.endColumn)
+        ? { sheetId, startRow: endRow, endRow, startColumn: Number(source.startColumn), endColumn: Number(source.endColumn) }
+        : { sheetId, startRow: endRow, endRow, startColumn: Number(source.startColumn), endColumn: Number(source.startColumn) }];
+    }
+  }
   if (typeof p.row === 'number' && typeof p.column === 'number') {
     return [{ sheetId, startRow: p.row, endRow: p.row, startColumn: p.column, endColumn: p.column }];
   }
