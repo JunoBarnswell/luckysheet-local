@@ -203,6 +203,8 @@ export type HomeStyleKey = keyof Pick<
   | 'wrapText'
   | 'numberFormat'
   | 'borders'
+  | 'locked'
+  | 'formulaHidden'
 >;
 
 /**

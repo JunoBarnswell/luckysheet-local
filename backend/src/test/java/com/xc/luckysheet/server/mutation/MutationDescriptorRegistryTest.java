@@ -341,6 +341,48 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void sheetProtectionUsesCellLockedStyleAndNativeAllowFlags() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":4,"columnCount":4,
+                  "cells":{"0":{"0":{"value":"unlocked","style":{"locked":false}},"1":{"value":"locked","style":{"locked":true}}}},
+                  "protectionRules":[{"id":"sheet-lock","scope":"sheet","sheetId":"sheet-1","locked":true,"allow":{"formatCells":true}}]}]}
+                """);
+
+        var unlocked = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
+                {"row":0,"column":0,"value":{"value":"changed"}}
+                """));
+        assertDoesNotThrow(() -> registry.prepare(snapshot, unlocked, WorkbookAclRole.EDITOR));
+
+        var locked = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
+                {"row":0,"column":1,"value":{"value":"rejected"}}
+                """));
+        ServiceException lockedError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, locked, WorkbookAclRole.EDITOR));
+        assertEquals("FORBIDDEN", lockedError.code());
+
+        var format = new OperationMutation("style.set", "sheet-1", mapper.readTree("""
+                {"range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":1,"endColumn":1},"style":{"bold":true}}
+                """));
+        assertDoesNotThrow(() -> registry.prepare(snapshot, format, WorkbookAclRole.EDITOR));
+    }
+
+    @Test
+    void mixedLockedCellsFailBeforeACollectionMutationCanBeApplied() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":4,"columnCount":4,
+                  "cells":{"0":{"0":{"value":"open","style":{"locked":false}},"1":{"value":"closed","style":{"locked":true}}}},
+                  "protectionRules":[{"id":"sheet-lock","scope":"sheet","sheetId":"sheet-1","locked":true,"allow":{}}]}]}
+                """);
+        var mutation = new OperationMutation("range.set", "sheet-1", mapper.readTree("""
+                {"startRow":0,"startColumn":0,"values":[[{"value":"a"},{"value":"b"}]]}
+                """));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        assertEquals("FORBIDDEN", error.code());
+        assertEquals("open", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+    }
+
+    @Test
     void freezeSetAcceptsCanonicalPaneStates() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

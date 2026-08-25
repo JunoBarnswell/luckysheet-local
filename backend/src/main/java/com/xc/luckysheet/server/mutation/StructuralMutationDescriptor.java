@@ -18,8 +18,19 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
     );
 
     StructuralMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "structure");
+        super(id, WorkbookAclRole.EDITOR, true, protectionAction(id));
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported structural mutation: " + id);
+    }
+
+    private static String protectionAction(String id) {
+        return switch (id) {
+            case "rows.inserted", "cells.inserted", "rows.inserted.restore" -> "insert-rows";
+            case "rows.deleted", "cells.deleted", "rows.deleted.restore" -> "delete-rows";
+            case "columns.inserted", "columns.inserted.restore" -> "insert-columns";
+            case "columns.deleted", "columns.deleted.restore" -> "delete-columns";
+            case "rows.permuted" -> "sort";
+            default -> "edit-cell";
+        };
     }
 
     @Override

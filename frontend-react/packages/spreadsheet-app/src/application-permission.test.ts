@@ -50,7 +50,7 @@ describe('WorkbookSession permission integration', () => {
       activeCell: { row: 1, column: 1 },
       anchorCell: { row: 1, column: 1 },
     });
-    app.protectSelection(['format']);
+    app.protectSelection({ formatCells: true });
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     assert.equal(sheet.protectionRules.length, 1);
     assert.equal(app.canExecute('sheet.cell.set', { row: 1, column: 1, value: { value: 9 } }), false);
@@ -62,7 +62,7 @@ describe('WorkbookSession permission integration', () => {
 
   it('restores the exact protection rule through undo and redo', () => {
     const app = new WorkbookSession();
-    app.protectSelection(['format']);
+    app.protectSelection({ formatCells: true });
     const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
     const rule = structuredClone(sheet.protectionRules[0]);
     assert.ok(rule);

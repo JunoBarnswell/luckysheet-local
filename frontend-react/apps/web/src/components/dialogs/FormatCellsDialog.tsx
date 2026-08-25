@@ -255,6 +255,16 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
               {tab === 'protection' ? (
                 <Stack gap="md">
                   <Text size="xs" tone="subtle">{homeText(activeLocale, 'protectionHint')}</Text>
+                  <CheckToggle
+                    checked={style.locked !== false}
+                    label={homeText(activeLocale, 'protectionLocked')}
+                    onChange={(event) => setStyle({ locked: event.target.checked })}
+                  />
+                  <CheckToggle
+                    checked={Boolean(style.formulaHidden)}
+                    label={homeText(activeLocale, 'protectionHidden')}
+                    onChange={(event) => setStyle({ formulaHidden: event.target.checked })}
+                  />
                 </Stack>
               ) : null}
             </Box>

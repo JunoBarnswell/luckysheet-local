@@ -109,6 +109,28 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(exported.fileName, 'roundtrip.xlsx');
   });
 
+  it('round-trips native sheet protection allow flags and cell protection styles', async () => {
+    const workbook = new WorkbookModel('wb-protection-roundtrip', 'Protection');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.protectionRules.push({
+      id: 'sheet-protection', scope: 'sheet', sheetId: sheet.id, locked: true,
+      allow: { selectLocked: true, selectUnlocked: true, formatCells: true, sort: true, autoFilter: false },
+    });
+    sheet.cells.set(0, 0, { value: '=SUM(A2:A3)', formula: '=SUM(A2:A3)', style: { locked: false, formulaHidden: true } });
+    const imported = await importXlsx({
+      fileName: 'protection.xlsx',
+      buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'B' },
+    });
+    const importedSheet = imported.snapshot.sheets[0]!;
+    assert.deepEqual(importedSheet.protectionRules?.[0]?.allow, {
+      selectLocked: true, selectUnlocked: true, formatCells: true, insertRows: false,
+      insertColumns: false, deleteRows: false, deleteColumns: false, sort: true, autoFilter: false, editObjects: false,
+    });
+    assert.equal(importedSheet.cells['0']?.['0']?.style?.locked, false);
+    assert.equal(importedSheet.cells['0']?.['0']?.style?.formulaHidden, true);
+  });
+
   it('rejects custom metadata drawing ranges that exceed bounded render work', async () => {
     const workbook = new WorkbookModel('wb-malicious-metadata', 'Malicious metadata');
     const sheet = workbook.getSheet(workbook.primarySheetId);

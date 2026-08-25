@@ -499,6 +499,7 @@ export interface HistoryEntry {
 export type MutationSource = 'command' | 'undo' | 'redo' | 'remote';
 
 export type MutationListener = (mutation: MutationInfo, source: MutationSource) => void;
+export type MutationGuard = (mutation: MutationInfo, source: MutationSource) => void;
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
 export type HistoryReplayListener = (source: 'undo' | 'redo', entry: HistoryEntry) => void;
 
@@ -511,6 +512,7 @@ export class CommandRuntime {
   private readonly commandListeners: CommandListener[] = [];
   private readonly historyReplayListeners: HistoryReplayListener[] = [];
   private cellValueResolver?: (sheet: WorksheetModel, row: number, column: number) => unknown;
+  private mutationGuard?: MutationGuard;
 
   constructor(
     readonly workbook: WorkbookModel,
@@ -519,6 +521,11 @@ export class CommandRuntime {
 
   setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void {
     this.cellValueResolver = resolver;
+  }
+
+  /** Guard every local, undo/redo, and remote mutation at one boundary. */
+  setMutationGuard(guard: MutationGuard | undefined): void {
+    this.mutationGuard = guard;
   }
 
   onMutation(listener: MutationListener): () => void {
@@ -578,6 +585,7 @@ export class CommandRuntime {
         // callback is allowed to touch the workbook. This makes both local
         // execution and every replay path fail closed on protocol drift.
         this.registry.assertMutation(mutation);
+        this.mutationGuard?.(mutation, 'command');
         mutation.apply(context);
         const info: MutationInfo = {
           id: mutation.id,
@@ -705,6 +713,7 @@ export class CommandRuntime {
     if (issues.length > 0) {
       throw new Error(`Invalid mutation history: ${formatIssues(issues)}`);
     }
+    for (const item of items) this.mutationGuard?.(item, source);
     for (const item of items) {
       const handler = this.registry.getMutation(item.id);
       const replayContext: CommandContext = {

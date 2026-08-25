@@ -38,8 +38,7 @@ describe('permission policy', () => {
       sheetId: 'sheet-1',
       range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 },
       locked: true,
-      allow: {},
-      allowedActions: ['format'],
+      allow: { formatCells: true },
     });
     const blocked = canExecuteCommand(editorPermission, workbook, 'sheet.cell.set', { row: 1, column: 1, value: { value: 2 } }, 'editor-1', 'sheet-1');
     assert.equal(blocked.allowed, false);
