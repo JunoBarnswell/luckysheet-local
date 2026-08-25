@@ -8,6 +8,23 @@ function cellValue(app: WorkbookSession, row: number, column: number): string {
 }
 
 describe('WorkbookSession formula integration', () => {
+  it('derives the AutoSum current region from resolved formula results', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    for (const [row, formula] of [[0, '=10'], [1, '=20'], [2, '=30']] as const) {
+      app.runCommand('sheet.cell.set', { sheetId, row, column: 0, value: { formula } });
+    }
+    await app.waitForFormulaCalculation();
+    assert.equal(app.selectAddress('A1'), true);
+    assert.deepEqual(app.getCurrentRegion(), {
+      sheetId,
+      startRow: 0,
+      endRow: 2,
+      startColumn: 0,
+      endColumn: 0,
+    });
+  });
+
   it('recalculates dependent formulas automatically when source values change', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

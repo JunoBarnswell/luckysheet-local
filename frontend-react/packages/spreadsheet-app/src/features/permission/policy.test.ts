@@ -45,5 +45,11 @@ describe('permission policy', () => {
     assert.equal(blocked.allowed, false);
     const formatAllowed = canExecuteCommand(editorPermission, workbook, 'sheet.style.set', { range: { sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }, style: { bold: true } }, 'editor-1', 'sheet-1');
     assert.equal(formatAllowed.allowed, true);
+
+    const autoSumTargetBlocked = canExecuteCommand(editorPermission, workbook, 'formula.autosum', {
+      range: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+      target: { row: 2, column: 0 },
+    }, 'editor-1', 'sheet-1');
+    assert.equal(autoSumTargetBlocked.allowed, false);
   });
 });

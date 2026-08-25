@@ -27,7 +27,12 @@ export function usedRangeOfSheet(sheet: WorksheetModel): RangeRef {
  * Excel-style current region. A table/data region always wins; otherwise the
  * region grows over adjacent nonblank rows and columns around the active cell.
  */
-export function currentRegionOfSheet(sheet: WorksheetModel, row: number, column: number): RangeRef {
+export function currentRegionOfSheet(
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  isOccupied: (row: number, column: number) => boolean,
+): RangeRef {
   const table = sheet.sheetTables.find((entry) =>
     row >= entry.range.startRow && row <= entry.range.endRow
     && column >= entry.range.startColumn && column <= entry.range.endColumn);
@@ -36,7 +41,7 @@ export function currentRegionOfSheet(sheet: WorksheetModel, row: number, column:
     row >= entry.range.startRow && row <= entry.range.endRow
     && column >= entry.range.startColumn && column <= entry.range.endColumn);
   if (dataRegion) return structuredClone(dataRegion.range);
-  if (!sheet.cells.has(row, column)) {
+  if (!isOccupied(row, column)) {
     return { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column };
   }
 
@@ -46,13 +51,13 @@ export function currentRegionOfSheet(sheet: WorksheetModel, row: number, column:
   let endColumn = column;
   const rowHasData = (candidate: number): boolean => {
     for (let current = startColumn; current <= endColumn; current += 1) {
-      if (sheet.cells.has(candidate, current)) return true;
+      if (isOccupied(candidate, current)) return true;
     }
     return false;
   };
   const columnHasData = (candidate: number): boolean => {
     for (let current = startRow; current <= endRow; current += 1) {
-      if (sheet.cells.has(current, candidate)) return true;
+      if (isOccupied(current, candidate)) return true;
     }
     return false;
   };

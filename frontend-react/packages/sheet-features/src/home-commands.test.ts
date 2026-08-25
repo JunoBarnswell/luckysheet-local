@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime } from '@react-sheets/command-runtime';
+import { createFormulaError } from '@react-sheets/formula-engine';
 import { registerSheetCommands } from './index';
 
 function setup(): { workbook: WorkbookModel; runtime: CommandRuntime } {
@@ -10,6 +11,133 @@ function setup(): { workbook: WorkbookModel; runtime: CommandRuntime } {
   registerSheetCommands(runtime);
   return { workbook, runtime };
 }
+
+test('AutoSum uses resolved formula results and keeps one reversible remote-replayable operation', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { formula: '=10', value: null });
+  sheet.cells.set(1, 0, { formula: '=20', value: null });
+  sheet.cells.set(2, 0, { formula: '=30', value: null });
+  runtime.setCellValueResolver((_sheet, row, column) => column === 0 ? (row + 1) * 10 : undefined);
+  const before = workbook.snapshot();
+
+  runtime.execute('formula.autosum', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    target: { row: 3, column: 0 },
+  });
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=SUM(A1:A3)');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  const entry = runtime.getUndoEntries().at(-1)!;
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteRuntime = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(entry.redo);
+  assert.deepEqual(remoteWorkbook.snapshot().sheets, workbook.snapshot().sheets);
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(3, 0), undefined);
+  assert.equal(runtime.redo(), true);
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=SUM(A1:A3)');
+});
+
+test('AutoSum treats zero and FALSE as typed values and rejects errors, self-reference, and unsafe targets', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 0 });
+  sheet.cells.set(1, 0, { value: false });
+  runtime.setCellValueResolver(() => undefined);
+  runtime.execute('formula.autosum', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    target: { row: 2, column: 0 },
+  });
+  assert.equal(sheet.cells.get(2, 0)?.formula, '=SUM(A1:A1)');
+
+  const errorCase = setup();
+  const errorSheet = errorCase.workbook.getSheet(errorCase.workbook.primarySheetId);
+  errorSheet.cells.set(0, 0, { formula: '=1/0', value: null });
+  errorCase.runtime.setCellValueResolver(() => createFormulaError('#DIV/0!', 'division by zero'));
+  assert.throws(() => errorCase.runtime.execute('formula.autosum', {
+    sheetId: errorSheet.id,
+    range: { sheetId: errorSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 0 },
+  }), /no numeric result/);
+  assert.equal(errorSheet.cells.get(1, 0), undefined);
+  assert.equal(errorCase.runtime.getHistoryDepth().undo, 0);
+
+  const unsafe = setup();
+  const unsafeSheet = unsafe.workbook.getSheet(unsafe.workbook.primarySheetId);
+  unsafeSheet.cells.set(0, 0, { value: 10 });
+  unsafeSheet.cells.set(1, 0, { formula: '=A1', value: null });
+  assert.throws(() => unsafe.runtime.execute('formula.autosum', {
+    sheetId: unsafeSheet.id,
+    range: { sheetId: unsafeSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 0 },
+  }), /not blank/);
+  assert.equal(unsafe.runtime.getHistoryDepth().undo, 0);
+
+  const selfReference = setup();
+  const selfSheet = selfReference.workbook.getSheet(selfReference.workbook.primarySheetId);
+  selfSheet.cells.set(0, 0, { value: 10 });
+  assert.throws(() => selfReference.runtime.execute('formula.autosum', {
+    sheetId: selfSheet.id,
+    range: { sheetId: selfSheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 0 },
+  }), /include its target/);
+  assert.equal(selfReference.runtime.getHistoryDepth().undo, 0);
+});
+
+test('AutoSum fails closed for protected, merged, and spill-child targets', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 10 });
+  sheet.protectionRules.push({ id: 'locked-target', scope: 'range', sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }, locked: true, allow: {} });
+  assert.throws(() => runtime.execute('formula.autosum', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 0 },
+  }), /protected/);
+
+  const merged = setup();
+  const mergedSheet = merged.workbook.getSheet(merged.workbook.primarySheetId);
+  mergedSheet.cells.set(0, 0, { value: 10 });
+  mergedSheet.merges.push({ range: { sheetId: mergedSheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, anchor: { row: 1, column: 0 } });
+  assert.throws(() => merged.runtime.execute('formula.autosum', {
+    sheetId: mergedSheet.id,
+    range: { sheetId: mergedSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 1 },
+  }), /merged range/);
+
+  const spill = setup();
+  const spillSheet = spill.workbook.getSheet(spill.workbook.primarySheetId);
+  spillSheet.cells.set(0, 0, { value: 10 });
+  spillSheet.spillRanges.push({
+    sheetId: spillSheet.id,
+    anchor: { row: 1, column: 0 },
+    range: { sheetId: spillSheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 },
+    values: [[1, 2]],
+    state: 'ok',
+  });
+  assert.throws(() => spill.runtime.execute('formula.autosum', {
+    sheetId: spillSheet.id,
+    range: { sheetId: spillSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 1 },
+  }), /spill child/);
+
+  const styledBlank = setup();
+  const styledSheet = styledBlank.workbook.getSheet(styledBlank.workbook.primarySheetId);
+  styledSheet.cells.set(0, 0, { value: 10 });
+  styledSheet.cells.set(1, 0, { value: undefined as never, style: { bold: true } });
+  styledBlank.runtime.execute('formula.autosum', {
+    sheetId: styledSheet.id,
+    range: { sheetId: styledSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    target: { row: 1, column: 0 },
+  });
+  assert.equal(styledSheet.cells.get(1, 0)?.formula, '=SUM(A1:A1)');
+  assert.equal(styledSheet.cells.get(1, 0)?.style?.bold, true);
+});
 
 test('formula.autosum emits a formula and has one undo entry', () => {
   const { workbook, runtime } = setup();
