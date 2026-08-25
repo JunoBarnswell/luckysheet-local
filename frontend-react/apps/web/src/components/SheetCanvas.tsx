@@ -46,6 +46,7 @@ import { buildPivotGroupedFilterMembers, resolveContextHit, type PeerCursor, typ
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
+import type { PivotControlAction } from "./canvas/drawing-renderers";
 import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
 import type { ColumnDimensionController } from '../editor/column-dimension-controller';
 import type { Locale } from '../i18n';
@@ -78,6 +79,8 @@ export interface SheetCanvasProps {
   showFormulas?: boolean;
   /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
+  /** Canonical child action from an interactive Slicer/Timeline drawable. */
+  onPivotControlAction?: (drawingId: string, action: PivotControlAction) => void;
   /** Lets the host add/replace Pivot-specific right-click commands. */
   getPivotContextMenuItems?: (hit: ResolvedContextHit) => readonly ContextMenuItem[];
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
@@ -407,6 +410,7 @@ export function SheetCanvas({
   selectedFloatingId,
   showFormulas = false,
   onPivotContextHit,
+  onPivotControlAction,
   getPivotContextMenuItems,
   onPivotShowDetails,
   onPivotExpansionToggle,
@@ -635,6 +639,7 @@ export function SheetCanvas({
     onJumpEdge,
     onMovePrimary,
     onPivotContextHit,
+    onPivotControlAction,
     onPivotExpansionToggle,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,

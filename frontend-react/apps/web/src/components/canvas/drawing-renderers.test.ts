@@ -107,3 +107,52 @@ test('PivotChart with a missing Pivot renders a broken reference instead of sour
   assert.equal(drawables.length, 1);
   assert.equal(drawables[0]?.kind, 'shape');
 });
+
+test('Pivot controls expose semantic child hit zones instead of a generic shape hit', () => {
+  const drawing: DrawingObject = {
+    id: 'slicer-control',
+    sheetId: 'sheet-1',
+    kind: 'slicer',
+    payloadId: 'slicer-control-payload',
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 180, height: 100, rotation: 0 },
+    zIndex: 0,
+  };
+  const payload: DrawingPayload = {
+    kind: 'slicer',
+    pivotId: 'pivot-1',
+    fieldId: 'category',
+    filter: { mode: 'all', memberKeys: [] },
+    style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' },
+  };
+  const source = sourceSnapshot();
+  const drawables = createCanvasFloatingDrawables({
+    drawings: [drawing],
+    drawingPayloads: new Map([[drawing.payloadId, payload]]),
+    allSheets: [source],
+    sheet: source,
+    pivotResults: {
+      'pivot-1': {
+        schema: 'PivotResultTree',
+        pivotId: 'pivot-1',
+        fields: { fields: [{ fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0, values: ['Alpha', 'Beta'] }] },
+        columnPaths: [],
+        rows: [],
+        grandTotal: null,
+        sourceRowPaths: [],
+      },
+    },
+    sparklines: [],
+    skeleton: {} as SheetSkeleton,
+    imageCache: new Map(),
+    requestRender: () => undefined,
+    tables: [],
+  });
+  assert.equal(drawables.length, 1);
+  assert.equal(drawables[0]?.kind, 'pivot-control');
+  const child = drawables[0]?.hitTest?.({ x: 20, y: 35 });
+  assert.equal(child?.action, 'pivot.slicer.member');
+  assert.deepEqual(child?.data, { kind: 'slicer-member', memberKey: { type: 'text', value: 'Alpha' } });
+  const clear = drawables[0]?.hitTest?.({ x: 170, y: 13 });
+  assert.equal(clear?.action, 'pivot.slicer.clear');
+});

@@ -253,20 +253,37 @@ export function createEmptyChromeState(): ChromeState {
 
 // ---------- 浮动对象 ----------
 
-export type FloatingKind = "chart" | "shape" | "image";
+/**
+ * A pivot control is still anchored by the drawing layer, but it has its own
+ * semantic hit contract. Keeping it out of `shape` is important: a control
+ * click must be resolved before the generic drawing move gesture.
+ */
+export type FloatingKind = "chart" | "shape" | "image" | "pivot-control";
 export type FloatingHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+
+/** Stable, renderer-agnostic identity for an interactive child zone. */
+export interface FloatingControlHit {
+  action: string;
+  data?: unknown;
+}
 
 export interface FloatingDrawable {
   kind: FloatingKind;
   id: string;
   bounds: Rect;
   draw: (context: CanvasRenderingContext2D, rect: Rect) => void;
+  /**
+   * Resolves a point relative to the drawable bounds. Returning null leaves
+   * the point available to the ordinary floating-object move gesture.
+   */
+  hitTest?: (point: Point) => FloatingControlHit | null;
 }
 
 export interface FloatingHit {
   kind: FloatingKind;
   id: string;
   handle?: FloatingHandle;
+  control?: FloatingControlHit;
 }
 
 export type HeaderHitKind = "corner" | "row" | "col";
