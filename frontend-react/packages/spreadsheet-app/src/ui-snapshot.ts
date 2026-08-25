@@ -12,6 +12,7 @@ import type {
   WorksheetPane,
   AutoFilterModel,
   FilterCriterion,
+  DateGroupItem,
   GanttSheetDefinition,
   ReportSheetDefinition,
   MergeSpan,
@@ -33,6 +34,7 @@ import {
   computeFilterHiddenRows,
   createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
+  getAutoFilterDateDomain,
   computeOutlineHiddenColumns,
   computeOutlineHiddenRows,
   computeSheetTableCellStyle,
@@ -141,6 +143,8 @@ export interface CanvasSheetSnapshot {
   filterButtons: FilterButtonCell[];
   filterButtonStates: FilterButtonState[];
   getFilterValueDomain: (column: number) => string[];
+  /** Typed source dates for hierarchical date-group editing; never derived from display text. */
+  getFilterDateDomain?: (column: number) => Array<{ value: import('@react-sheets/core-model').FilterScalar; group: DateGroupItem & { hour: number; minute: number; second: number } }>;
   getFilterCriterion: (column: number) => FilterCriterion | undefined;
   getFilterColorDomain: (column: number) => Array<{ target: 'cell' | 'font'; color: string }>;
   getFilterIconDomain: (column: number) => Array<{ iconSet: string; iconId: number }>;
@@ -384,6 +388,7 @@ export function buildCanvasSheetSnapshot(
     filterButtons,
     filterButtonStates: resolveFilterButtonStates(sheet),
     getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
+    getFilterDateDomain: (column) => getAutoFilterDateDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
     getFilterOwner: (column) => resolveFilterOwner(sheet, column),
     getActiveAutoFilter: (column) => {
       const filter = resolveActiveAutoFilter(sheet, column);

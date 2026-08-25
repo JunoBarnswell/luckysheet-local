@@ -1069,6 +1069,33 @@ describe('exchange-excel-ooxml', () => {
     );
   });
 
+  it('round-trips typed date-group criteria and preserves unsupported date-group nodes', () => {
+    const workbook = new WorkbookModel('wb-date-group-filter', 'Date Group Filter');
+    const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const worksheet = strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!);
+    const autoFilter = '<autoFilter ref="A1:A2"><filterColumn colId="0"><filters blank="1"><filter val="literal"/><dateGroupItem dateTimeGrouping="year" year="2026"/><dateGroupItem dateTimeGrouping="month" year="2026" month="8"/><dateGroupItem dateTimeGrouping="day" year="2026" month="8" day="15"/><dateGroupItem dateTimeGrouping="hour" year="2026" month="8" day="15" hour="13"/><dateGroupItem dateTimeGrouping="minute" year="2026" month="8" day="15" hour="13" minute="14"/><dateGroupItem dateTimeGrouping="second" year="2026" month="8" day="15" hour="13" minute="14" second="15"/><dateGroupItem dateTimeGrouping="quarter" year="2026" quarter="3"/><dateGroupItem dateTimeGrouping="year" year="2026" month="8"/></filters></filterColumn></autoFilter>';
+    const parts = { ...generated.packageGraph.parts, 'xl/worksheets/sheet1.xml': strToU8(worksheet.replace('</worksheet>', `${autoFilter}</worksheet>`)) };
+    const imported = parseLoadedXlsx(loadOpcPackageGraph(zipXlsxPartsBuffer(parts))).snapshot;
+    const column = imported.sheets[0]?.autoFilter?.columns[0];
+    assert.deepEqual(column?.criterion, {
+      kind: 'values',
+      values: ['literal'],
+      includeBlank: true,
+      dateGroups: [
+        { year: 2026 },
+        { year: 2026, month: 8 },
+        { year: 2026, month: 8, day: 15 },
+        { year: 2026, month: 8, day: 15, hour: 13 },
+        { year: 2026, month: 8, day: 15, hour: 13, minute: 14 },
+        { year: 2026, month: 8, day: 15, hour: 13, minute: 14, second: 15 },
+      ],
+    });
+    const exported = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(imported));
+    const exportedWorksheet = strFromU8(exported.files['xl/worksheets/sheet1.xml']!);
+    assert.match(exportedWorksheet, /dateTimeGrouping="quarter" year="2026" quarter="3"/);
+    assert.match(exportedWorksheet, /dateTimeGrouping="year" year="2026" month="8"/);
+  });
+
   it('resolves and preserves Strict relationship kinds and a non-standard workbook part path', async () => {
     const parts: Record<string, Uint8Array> = {
       '[Content_Types].xml': strToU8('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'),

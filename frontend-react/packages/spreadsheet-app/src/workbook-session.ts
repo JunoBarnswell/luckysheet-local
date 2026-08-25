@@ -379,6 +379,31 @@ export function getInitialSessionPhase(): AppPhase {
   return queryPhase === 'error' || queryPhase === 'empty' ? queryPhase : 'loading';
 }
 
+function filterCriterionKey(criterion: FilterCriterion | undefined): string {
+  if (!criterion) return 'none';
+  if (criterion.kind === 'values') {
+    const values = [...new Set(criterion.values.map((value) => JSON.stringify(value)))].sort();
+    const dateGroups = [...(criterion.dateGroups ?? [])]
+      .map((group) => JSON.stringify(group))
+      .sort();
+    return JSON.stringify({ kind: criterion.kind, values, includeBlank: criterion.includeBlank, dateGroups });
+  }
+  return JSON.stringify(criterion);
+}
+
+function filterCriteriaEqual(left: FilterCriterion | undefined, right: FilterCriterion | undefined): boolean {
+  return filterCriterionKey(left) === filterCriterionKey(right);
+}
+
+function clearPreservedFilterChildren(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.filterChildren)) return value;
+  const next = { ...record };
+  delete next.filterChildren;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
@@ -3338,6 +3363,10 @@ export class WorkbookSession {
   applyFilter(column: number, patch: { criterion?: FilterCriterion }): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const activeFilter = resolveActiveAutoFilter(sheet, column);
+    const previousColumn = activeFilter?.columns[column];
+    const hasPreservedFilterChildren = Boolean(previousColumn?.preservedXml && typeof previousColumn.preservedXml === 'object'
+      && !Array.isArray(previousColumn.preservedXml) && Array.isArray((previousColumn.preservedXml as Record<string, unknown>).filterChildren));
+    if (filterCriteriaEqual(previousColumn?.criterion, patch.criterion) && !(patch.criterion === undefined && hasPreservedFilterChildren)) return;
     const owner = resolveFilterOwner(sheet, column);
     const tableOwner = owner?.kind === 'table'
       ? sheet.sheetTables.find((table) => table.id === owner.tableId)
@@ -3349,7 +3378,12 @@ export class WorkbookSession {
     for (let current = baseRange.startColumn; current <= baseRange.endColumn; current += 1) {
       columns[current] ??= { column: current, showButton: true, hiddenButton: false };
     }
-    columns[column] = { ...(columns[column] ?? { column, showButton: true, hiddenButton: false }), criterion: patch.criterion ? structuredClone(patch.criterion) : undefined };
+    const columnBeforePatch = columns[column] ?? { column, showButton: true, hiddenButton: false };
+    columns[column] = {
+      ...columnBeforePatch,
+      ...(patch.criterion ? {} : { preservedXml: clearPreservedFilterChildren(columnBeforePatch.preservedXml) }),
+      criterion: patch.criterion ? structuredClone(patch.criterion) : undefined,
+    };
     const autoFilter = { sheetId: this.activeSheetId, range: baseRange, columns };
     if (owner?.kind === 'table' && tableOwner) {
       this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter } });

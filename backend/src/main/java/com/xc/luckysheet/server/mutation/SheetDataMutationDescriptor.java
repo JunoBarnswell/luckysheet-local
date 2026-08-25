@@ -199,7 +199,40 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             if (!criterion.isObject() || !Set.of("values", "custom", "dynamic", "top10", "color", "icon").contains(criterion.path("kind").asText())) {
                 throw ServiceException.validation("AutoFilter criterion kind is invalid");
             }
+            if ("values".equals(criterion.path("kind").asText())) validateValuesCriterion((ObjectNode) criterion);
         });
+    }
+
+    private void validateValuesCriterion(ObjectNode criterion) {
+        SnapshotMutationSupport.validateKnownKeys(criterion, Set.of("kind", "values", "includeBlank", "dateGroups"), "AutoFilter values criterion");
+        if (!criterion.path("values").isArray() || !criterion.path("includeBlank").isBoolean()) throw ServiceException.validation("AutoFilter values criterion is invalid");
+        JsonNode dateGroups = criterion.get("dateGroups");
+        if (dateGroups == null) return;
+        if (!dateGroups.isArray()) throw ServiceException.validation("AutoFilter dateGroups must be an array");
+        for (JsonNode raw : dateGroups) {
+            if (!raw.isObject()) throw ServiceException.validation("AutoFilter dateGroup is invalid");
+            ObjectNode group = (ObjectNode) raw;
+            SnapshotMutationSupport.validateKnownKeys(group, Set.of("year", "month", "day", "hour", "minute", "second"), "AutoFilter dateGroup");
+            validateDateGroupNumber(group, "year", 1, 9999, true);
+            validateDateGroupNumber(group, "month", 1, 12, false);
+            validateDateGroupNumber(group, "day", 1, 31, false);
+            validateDateGroupNumber(group, "hour", 0, 23, false);
+            validateDateGroupNumber(group, "minute", 0, 59, false);
+            validateDateGroupNumber(group, "second", 0, 59, false);
+            String[] units = { "year", "month", "day", "hour", "minute", "second" };
+            for (int index = 1; index < units.length; index++) {
+                if (group.has(units[index]) && !group.has(units[index - 1])) throw ServiceException.validation("AutoFilter dateGroup " + units[index] + " requires " + units[index - 1]);
+            }
+        }
+    }
+
+    private void validateDateGroupNumber(ObjectNode group, String key, int minimum, int maximum, boolean required) {
+        JsonNode value = group.get(key);
+        if (value == null) {
+            if (required) throw ServiceException.validation("AutoFilter dateGroup " + key + " is required");
+            return;
+        }
+        if (!value.isIntegralNumber() || value.intValue() < minimum || value.intValue() > maximum) throw ServiceException.validation("AutoFilter dateGroup " + key + " is invalid");
     }
 
     private static boolean sameRange(RangeRef left, RangeRef right) {

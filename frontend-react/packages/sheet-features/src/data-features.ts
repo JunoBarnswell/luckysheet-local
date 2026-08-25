@@ -10,6 +10,8 @@ import type {
   WorkbookModel,
   WorksheetModel,
   ConditionalFormatTopBottom,
+  DateGroupItem,
+  FilterScalar,
 } from "@react-sheets/core-model";
 import { StructuralTransform, applyRowPermutation, columnLabel, isDynamicFilterType, validatePermutationMetadata } from "@react-sheets/core-model";
 import { resolveAutoFilters } from './sheet-table-features';
@@ -642,7 +644,10 @@ export type FilterCellReader = (row: number, column: number) => CellData | undef
 export type FilterDateSystem = '1900' | '1904';
 
 function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
-  if (criterion.kind === 'values') return { ...structuredClone(criterion), values: [...new Set(criterion.values)] };
+  if (criterion.kind === 'values') {
+    const dateGroups = criterion.dateGroups?.map((group) => normalizeDateGroupItem(group));
+    return { ...structuredClone(criterion), values: [...new Set(criterion.values)], ...(dateGroups ? { dateGroups } : {}) };
+  }
   if (criterion.kind === 'custom') {
     if (!criterion.conditions[0]) throw new Error('Custom filter requires a condition');
     return structuredClone(criterion);
@@ -650,6 +655,23 @@ function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
   if (criterion.kind === 'top10' && (!Number.isSafeInteger(criterion.rank) || criterion.rank <= 0)) throw new Error('Top10 filter rank must be positive');
   if (criterion.kind === 'dynamic' && !isDynamicFilterType(criterion.type)) throw new Error(`UNSUPPORTED_FEATURE: dynamic AutoFilter type "${String(criterion.type)}" is not supported`);
   return structuredClone(criterion);
+}
+
+function normalizeDateGroupItem(raw: DateGroupItem): DateGroupItem {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Filter date group is invalid');
+  const group = raw as unknown as Record<string, unknown>;
+  const allowed = new Set(['year', 'month', 'day', 'hour', 'minute', 'second']);
+  if (Object.keys(group).some((key) => !allowed.has(key))) throw new Error('Filter date group contains unsupported fields');
+  const ranges: Record<string, [number, number]> = { year: [1, 9999], month: [1, 12], day: [1, 31], hour: [0, 23], minute: [0, 59], second: [0, 59] };
+  const units = Object.keys(ranges);
+  if (!Number.isSafeInteger(group.year) || Number(group.year) < ranges.year![0] || Number(group.year) > ranges.year![1]) throw new Error('Filter date group year is invalid');
+  for (let index = 1; index < units.length; index += 1) {
+    const unit = units[index]!;
+    const previous = units[index - 1]!;
+    if (group[unit] !== undefined && group[previous] === undefined) throw new Error(`Filter date group ${unit} requires ${previous}`);
+    if (group[unit] !== undefined && (!Number.isSafeInteger(group[unit]) || Number(group[unit]) < ranges[unit]![0] || Number(group[unit]) > ranges[unit]![1])) throw new Error(`Filter date group ${unit} is invalid`);
+  }
+  return structuredClone(raw);
 }
 
 export function computeFilterHiddenRows(
@@ -723,6 +745,52 @@ export function getAutoFilterValueDomain(
     values.add(cellText(cell));
   }
   return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Returns typed date coordinates for the active filter column.  The UI uses
+ * this instead of parsing the display-value strings, because locale/number
+ * formatting is not a stable date identity.
+ */
+export interface FilterDateDomainEntry {
+  value: FilterScalar;
+  group: DateGroupItem & { hour: number; minute: number; second: number };
+}
+
+export function getAutoFilterDateDomain(
+  sheet: WorksheetModel,
+  column: number,
+  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): FilterDateDomainEntry[] {
+  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const filter = resolveAutoFilters(sheet)
+    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
+    .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
+  if (!filter) return [];
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+    && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
+    && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
+  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+  const entries = new Map<string, FilterDateDomainEntry>();
+  for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
+    const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
+      if (entry.column === column || !entry.criterion) return true;
+      const cell = readCell(row, entry.column);
+      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+    });
+    if (!otherColumnsMatch) continue;
+    const cell = readCell(row, column);
+    const value = cell?.value;
+    if (value !== null && typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue;
+    const date = toFilterDate(value, cellText(cell), dateSystem);
+    if (!date) continue;
+    const group = { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate(), hour: date.getHours(), minute: date.getMinutes(), second: date.getSeconds() };
+    const key = `${JSON.stringify(value)}|${JSON.stringify(group)}`;
+    entries.set(key, { value: value as FilterScalar, group });
+  }
+  return [...entries.values()].sort((left, right) => JSON.stringify(left.group).localeCompare(JSON.stringify(right.group)));
 }
 
 function matchesFilterCriterion(
