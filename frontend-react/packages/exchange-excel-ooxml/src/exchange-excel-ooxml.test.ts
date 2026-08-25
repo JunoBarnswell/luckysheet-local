@@ -188,6 +188,7 @@ describe('exchange-excel-ooxml', () => {
       ] },
       layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+      presentation: { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true } },
     });
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     assert.equal(output.packageGraph.nativePivotGraph?.caches.length, 1);
@@ -195,8 +196,10 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /worksheetSource name="SalesTable"/);
     assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /<cacheSource type="worksheet">/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
+    assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /name="PivotStyleMedium4" showRowHeaders="0" showColHeaders="1" showRowStripes="1" showColStripes="1" showLastColumn="1"/);
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
+    assert.deepEqual(imported.sheets[0]?.pivots[0]?.presentation, { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true } });
   });
 
   it('writes and validates canonical Slicer and Timeline native parts', async () => {

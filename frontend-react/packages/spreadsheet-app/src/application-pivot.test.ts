@@ -159,4 +159,20 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(dispatch.status, 'committed');
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
   });
+
+  it('persists Pivot style options through one reversible presentation update', async () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-style';
+    app.addPivot(pivot);
+    const presentation = { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: false, showLastColumn: true } } as const;
+    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, presentation } });
+    assert.equal(dispatch.status, 'committed');
+    assert.deepEqual(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation, presentation);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[pivot.id]?.presentation?.styleName, 'PivotStyleMedium4');
+    app.undo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation?.styleName, undefined);
+    app.redo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.presentation?.styleOptions.showRowStripes, true);
+  });
 });

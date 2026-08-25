@@ -1,4 +1,6 @@
 /** XLSX 兼容级别 */
+import type { PivotStyleOptions } from '@react-sheets/core-model';
+
 export type CompatibilityLevel = 'A' | 'B' | 'C';
 export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
 export const OOXML_CODEC_REVISION = 4 as const;
@@ -131,6 +133,7 @@ export interface NativePivotTableDefinition {
   repeatLabels?: boolean;
   compactData?: boolean;
   styleName?: string;
+  styleOptions?: PivotStyleOptions;
   pivotId?: string;
 }
 

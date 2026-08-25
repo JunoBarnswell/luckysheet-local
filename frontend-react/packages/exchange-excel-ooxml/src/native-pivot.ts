@@ -14,6 +14,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
+import { DEFAULT_PIVOT_STYLE_OPTIONS } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -138,6 +139,13 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         ...optionalBoolean(definition.attrs.compactData, 'compactData'),
         ...optionalBoolean(definition.attrs.repeatAllLabels, 'repeatLabels'),
         ...(style?.attrs.name ? { styleName: style.attrs.name } : {}),
+        ...(style ? { styleOptions: {
+          showRowHeaders: style.attrs.showRowHeaders === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showRowHeaders : style.attrs.showRowHeaders !== '0',
+          showColumnHeaders: style.attrs.showColHeaders === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showColumnHeaders : style.attrs.showColHeaders !== '0',
+          showRowStripes: style.attrs.showRowStripes === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showRowStripes : style.attrs.showRowStripes === '1',
+          showColumnStripes: style.attrs.showColStripes === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showColumnStripes : style.attrs.showColStripes === '1',
+          showLastColumn: style.attrs.showLastColumn === undefined ? DEFAULT_PIVOT_STYLE_OPTIONS.showLastColumn : style.attrs.showLastColumn === '1',
+        } } : {}),
       });
     }
   }
@@ -375,6 +383,12 @@ export function mapNativePivotDefinition(
     fieldCatalog: { schema: 'PivotFieldCatalog', fields },
     layout,
     refreshPolicy: { mode: cache.refreshOnLoad ? 'on-open' : 'manual', preserveFormatting: true, refreshOnLoad: cache.refreshOnLoad ?? true },
+    ...(table.styleName || table.styleOptions ? {
+      presentation: {
+        ...(table.styleName ? { styleName: table.styleName } : {}),
+        styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) },
+      },
+    } : {}),
     nativeMetadata: { cacheId: cache.cacheId, cacheDefinitionPart: cache.part, ...(cache.recordsPart ? { cacheRecordsPart: cache.recordsPart } : {}), pivotTablePart: table.part, fieldBindings },
   };
 }
@@ -773,6 +787,8 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     && oldAnchor.column === pivot.target.anchor.column
     ? old?.locationRef
     : deriveLocation(pivot, source.rows.length, rows.length, columns.length, dataFields.length);
+  const styleName = pivot.presentation?.styleName ?? old?.styleName;
+  const styleOptions = pivot.presentation?.styleOptions ?? old?.styleOptions;
   return {
     name: old?.name ?? (pivot.id.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 255) || 'PivotTable'),
     part, sheetPart, relationshipId: old?.relationshipId ?? '', cacheId: cache.cacheId, pivotId: pivot.id,
@@ -780,7 +796,8 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     fields: source.fields.map((_, index) => ({ index, ...(rows.includes(index) ? { axis: 'row' as const } : columns.includes(index) ? { axis: 'column' as const } : pages.includes(index) ? { axis: 'page' as const } : {}), ...(pivot.layout.compact ? { compact: true } : {}) })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
     showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, showSubtotals: pivot.layout.showSubtotals, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
-    ...(old?.styleName ? { styleName: old.styleName } : {}),
+    ...(styleName ? { styleName } : {}),
+    ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
   };
 }
 
@@ -808,7 +825,8 @@ function buildPivotTableXml(table: NativePivotTableDefinition): string {
   const columns = table.columnFields.map((field) => `<field x="${field}"/>`).join('');
   const pages = table.pageFields.map((field) => `<pageField fld="${field}"/>`).join('');
   const data = table.dataFields.map((field) => `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}/>`).join('');
-  const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0"/>` : '';
+  const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
+  const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
   return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}"><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${style}</pivotTableDefinition>`);
 }
 

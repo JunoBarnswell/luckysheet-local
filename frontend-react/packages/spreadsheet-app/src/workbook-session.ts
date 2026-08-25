@@ -2778,7 +2778,7 @@ export class WorkbookSession {
   updatePivotConfiguration(
     pivotId: string,
     patch: Parameters<WorkbookSession['updatePivotLayout']>[1] extends PivotLayout
-      ? { source?: PivotDefinition['source']; target?: PivotDefinition['target']; fieldCatalog?: PivotDefinition['fieldCatalog']; refreshPolicy?: PivotDefinition['refreshPolicy']; nativeMetadata?: PivotDefinition['nativeMetadata']; layout?: PivotLayout }
+      ? { source?: PivotDefinition['source']; target?: PivotDefinition['target']; fieldCatalog?: PivotDefinition['fieldCatalog']; refreshPolicy?: PivotDefinition['refreshPolicy']; nativeMetadata?: PivotDefinition['nativeMetadata']; presentation?: PivotDefinition['presentation']; layout?: PivotLayout }
       : never,
   ): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });

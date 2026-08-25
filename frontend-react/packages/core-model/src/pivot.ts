@@ -190,6 +190,27 @@ export interface PivotLayout {
   expansion?: PivotExpansionState;
 }
 
+export interface PivotStyleOptions {
+  showRowHeaders: boolean;
+  showColumnHeaders: boolean;
+  showRowStripes: boolean;
+  showColumnStripes: boolean;
+  showLastColumn: boolean;
+}
+
+export interface PivotPresentation {
+  styleName?: string;
+  styleOptions: PivotStyleOptions;
+}
+
+export const DEFAULT_PIVOT_STYLE_OPTIONS: PivotStyleOptions = {
+  showRowHeaders: true,
+  showColumnHeaders: true,
+  showRowStripes: false,
+  showColumnStripes: false,
+  showLastColumn: false,
+};
+
 export interface PivotRefreshPolicy {
   mode: 'manual' | 'on-open' | 'on-change';
   preserveFormatting: boolean;
@@ -220,6 +241,7 @@ export interface PivotDefinition {
   fieldCatalog: PivotFieldCatalog;
   layout: PivotLayout;
   refreshPolicy: PivotRefreshPolicy;
+  presentation?: PivotPresentation;
   nativeMetadata?: PivotNativeMetadata;
 }
 
@@ -296,6 +318,7 @@ export interface PivotProjectionCell {
   nodeId?: string;
   resultCellId?: string;
   columnPath?: PivotScalar[];
+  isLastColumn?: boolean;
   sourceRowPaths?: PivotSourceRowPath[];
   expandable?: boolean;
   expanded?: boolean;
@@ -323,6 +346,7 @@ export interface PivotGridProjection {
   pivotId: string;
   sheetId: SheetId;
   target: PivotTarget;
+  presentation?: PivotPresentation;
   occupiedRange: RangeRef;
   cells: PivotProjectionCell[];
   collision: PivotCollision;
@@ -362,6 +386,10 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     throw new Error(`Pivot ${input.id} has non-canonical field references`);
   }
   const canonical = structuredClone(input);
+  canonical.presentation = {
+    ...(canonical.presentation?.styleName ? { styleName: canonical.presentation.styleName } : {}),
+    styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(canonical.presentation?.styleOptions ?? {}) },
+  };
   const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
   canonical.layout.filters = canonical.layout.filters.map((filter) => ({
     ...filter,

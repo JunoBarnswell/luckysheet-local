@@ -247,6 +247,7 @@ export function useEditorCommandController({
     onRefresh: () => { if (activePivot) session.refreshPivot(activePivot.id); },
     onLayoutChange: (layout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), compact: layout === "compact", repeatLabels: layout === "tabular" }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
+    onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
       if (enabled) session.createPivotSlicerControl(activePivot.id, fieldId);

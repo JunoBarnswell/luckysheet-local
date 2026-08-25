@@ -32,6 +32,7 @@ import type {
 import {
   PIVOT_GRID_PROJECTION_SCHEMA,
   PIVOT_RESULT_TREE_SCHEMA,
+  DEFAULT_PIVOT_STYLE_OPTIONS,
   createPivotMemberKey,
   pivotMemberKey,
   pivotMemberKeyEquals,
@@ -167,6 +168,7 @@ export function getPivotRevisionKey(workbook: WorkbookModel, pivot: PivotModel):
       source: pivot.source,
       fieldCatalog: pivot.fieldCatalog.fields.map(({ fieldId, name, dataType, ordinal }) => ({ fieldId, name, dataType, ordinal })),
       layout: pivot.layout,
+      presentation: pivot.presentation,
     }),
     filterRevision: fingerprint({ filters: pivot.layout.filters, linked: linkedFilterDefinitions(workbook, pivot) }),
   };
@@ -477,6 +479,10 @@ export function normalizePivotDefinition(workbook: WorkbookModel, pivot: PivotMo
     fieldCatalog,
     layout: normalizeLayout(pivot.layout, fieldCatalog),
     refreshPolicy: structuredClone(pivot.refreshPolicy),
+    presentation: {
+      ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
+      styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },
+    },
     ...(pivot.nativeMetadata ? { nativeMetadata: structuredClone(pivot.nativeMetadata) } : {}),
   };
 }
@@ -1063,7 +1069,7 @@ function buildPivotGridProjectionCandidate(
       const valueField = values[valueIndex];
       const valueCaption = valueField ? (valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)) : '';
       const label = path.length ? `${path.map(display).join(' / ')} ${valueCaption}`.trim() : valueCaption;
-      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId }));
+      cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
     }
   }
   row += 1;
@@ -1082,7 +1088,7 @@ function buildPivotGridProjectionCandidate(
         for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
           const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
           const value = resultCell?.values[valueIndex] ?? null;
-          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths }));
+          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
         }
       }
       row += 1;
@@ -1103,6 +1109,7 @@ function buildPivotGridProjectionCandidate(
     pivotId: definition.id,
     sheetId: target.sheetId,
     target,
+    presentation: structuredClone(definition.presentation),
     occupiedRange,
     cells,
     collision,

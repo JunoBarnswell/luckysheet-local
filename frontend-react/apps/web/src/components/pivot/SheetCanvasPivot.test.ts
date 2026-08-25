@@ -98,4 +98,20 @@ describe("SheetCanvas Pivot projection boundary", () => {
     assert.equal(pivotProjectionCellRenderData(cell, 'zh-CN').displayValue, '行标签');
     assert.equal(pivotProjectionCellRenderData(cell, 'en-US').displayValue, 'Row Labels');
   });
+
+  it('resolves Pivot presentation style and options instead of using one fixed palette', () => {
+    const cell = { id: 'pivot-1|header', pivotId: 'pivot-1', row: 1, column: 1, kind: 'column-header' as const, value: null, text: 'Amount' };
+    const medium = pivotProjectionCellRenderData(cell, 'en-US', {
+      styleName: 'PivotStyleMedium4',
+      styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
+    });
+    assert.equal(medium.style?.background, '#d9e2f3');
+
+    const striped = pivotProjectionCellRenderData({ ...cell, kind: 'value', row: 2, column: 2, value: 10, text: '10', isLastColumn: true }, 'en-US', {
+      styleName: 'PivotStyleLight16',
+      styleOptions: { showRowHeaders: false, showColumnHeaders: false, showRowStripes: true, showColumnStripes: false, showLastColumn: true },
+    });
+    assert.equal(striped.style?.background, '#e0ecff');
+    assert.equal(striped.style?.bold, false);
+  });
 });
