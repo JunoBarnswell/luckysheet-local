@@ -485,6 +485,73 @@ describe('native PivotGridProjection contract', () => {
     assert.throws(() => computePivotResult(workbook, pivot), /only valid in Values/i);
   });
 
+  it('injects calculated item members into the target field without source-name predicates', () => {
+    const workbook = new WorkbookModel('pivot-calculated-item', 'Pivot Calculated Item');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Sales'], ['North', 100], ['South', 50]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-calculated-item', { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    pivot.fieldCatalog = catalog;
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.calculatedItems = [{ fieldId: 'calculated-item:region:commission', targetFieldId: region.fieldId, name: 'Commission', formula: '=North*0.1' }];
+
+    const result = computePivotResult(workbook, pivot);
+    const rows = result.rows.map((node) => [node.label, node.values[0]?.values[0]]);
+    assert.deepEqual(rows, [['Commission', 10], ['North', 100], ['South', 50]]);
+    assert.ok(result.fields.fields.find((field) => field.fieldId === region.fieldId)?.values?.some((value) => value === 'Commission'));
+    assert.equal(result.grandTotal?.values[0], 160);
+  });
+
+  it('resolves qualified two-item formulas per non-target axis context', () => {
+    const workbook = new WorkbookModel('pivot-calculated-item-qualified', 'Pivot Calculated Item Qualified');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Category', 'Sales'], ['North', 'A', 100], ['South', 'A', 50], ['North', 'B', 20], ['South', 'B', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-calculated-item-qualified', { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    pivot.fieldCatalog = catalog;
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.columns = [{ fieldId: category.fieldId }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.calculatedItems = [{ fieldId: 'calculated-item:region:total', targetFieldId: region.fieldId, name: 'Total', formula: '=Region[North]+Region[South]' }];
+
+    const result = computePivotResult(workbook, pivot);
+    const total = result.rows.find((node) => node.label === 'Total');
+    assert.deepEqual(total?.values.map((cell) => cell.values[0]), [150, 50]);
+  });
+
+  it('rejects unknown, ambiguous, and cyclic calculated item references', () => {
+    const workbook = new WorkbookModel('pivot-invalid-calculated-item', 'Pivot Invalid Calculated Item');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Category', 'Sales'], ['North', 'North', 100], ['South', 'South', 50]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-invalid-calculated-item', { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    pivot.fieldCatalog = catalog;
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.calculatedItems = [{ fieldId: 'calculated-item:unknown', targetFieldId: region.fieldId, name: 'Unknown', formula: '=Missing+1' }];
+    assert.throws(() => computePivotResult(workbook, pivot), /unknown item/i);
+
+    pivot.layout.calculatedItems = [
+      { fieldId: 'calculated-item:a', targetFieldId: region.fieldId, name: 'A', formula: '=B+1' },
+      { fieldId: 'calculated-item:b', targetFieldId: region.fieldId, name: 'B', formula: '=A+1' },
+    ];
+    assert.throws(() => computePivotResult(workbook, pivot), /dependency cycle/i);
+
+    pivot.layout.calculatedItems = [{ fieldId: 'calculated-item:ambiguous', targetFieldId: region.fieldId, name: 'Ambiguous', formula: '=North+1' }];
+    assert.throws(() => computePivotResult(workbook, pivot), /ambiguous/i);
+  });
+
   it('plans star joins by source identity, is invariant to source order, and preserves provenance', () => {
     const workbook = relationalWorkbook();
     const first = relationalPivot(workbook, ['orders', 'customers', 'products']);

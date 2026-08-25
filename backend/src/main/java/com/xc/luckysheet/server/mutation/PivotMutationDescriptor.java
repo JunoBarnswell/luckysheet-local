@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Reducers for the persisted PivotDefinition contract; result trees remain derived. */
 final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
@@ -74,6 +76,13 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             "normal", "grand-percentage", "row-percentage", "column-percentage", "parent-percentage",
             "difference", "percentage-difference", "running-total", "rank", "index"
     );
+    private static final Set<String> CALCULATED_ITEM_FUNCTIONS = Set.of(
+            "SUM", "COUNT", "AVERAGE", "MIN", "MAX", "IF", "AND", "OR", "NOT", "ROUND", "ABS", "CONCAT", "LEFT", "RIGHT", "LEN"
+    );
+    private static final Pattern QUALIFIED_ITEM_REFERENCE = Pattern.compile("([A-Za-z_][A-Za-z0-9_.:-]*)\\s*\\[([^]]+)]");
+    private static final Pattern ITEM_TOKEN = Pattern.compile("[A-Za-z_][A-Za-z0-9_.:-]*");
+    private static final Pattern ITEM_NUMBER = Pattern.compile("(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?");
+    private static final Pattern WORKSHEET_CELL_REFERENCE = Pattern.compile("[A-Z]{1,3}[1-9][0-9]*", Pattern.CASE_INSENSITIVE);
     static final Set<String> IDS = Set.of("pivot.add", "pivot.remove", "pivot.update", "pivot.refresh");
 
     PivotMutationDescriptor(String id) {
@@ -229,7 +238,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         PivotSourceResolver.Resolution source = validateSource(root, pivot.get("source"));
         Set<String> fieldIds = validateFieldCatalog(pivot.get("fieldCatalog"));
         validateSourceFieldCatalog(pivot, fieldIds, source.fieldIds());
-        Set<String> effectiveFieldIds = validateCalculatedDefinitions(pivot.get("layout"), fieldIds);
+        Set<String> effectiveFieldIds = validateCalculatedDefinitions(pivot.get("layout"), fieldIds, pivot.get("fieldCatalog"));
         validateLayout(root, pivot.get("layout"), effectiveFieldIds);
         validateRefreshPolicy(pivot.get("refreshPolicy"));
         validatePresentation(pivot.get("presentation"));
@@ -475,9 +484,8 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         Set<String> calculated = new LinkedHashSet<>();
         JsonNode layout = pivot.get("layout");
         if (layout != null && layout.isObject()) {
-            for (String key : List.of("calculatedFields", "calculatedItems")) {
-                JsonNode entries = layout.get(key);
-                if (entries == null || !entries.isArray()) continue;
+            JsonNode entries = layout.get("calculatedFields");
+            if (entries != null && entries.isArray()) {
                 for (JsonNode entry : entries) if (entry.isObject() && entry.path("fieldId").isTextual()) calculated.add(entry.path("fieldId").asText());
             }
         }
@@ -726,22 +734,163 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
      * first, then validate item targets against the complete effective set so
      * one update can introduce and reference a calculated field atomically.
      */
-    private Set<String> validateCalculatedDefinitions(JsonNode rawLayout, Set<String> catalogFieldIds) {
+    private Set<String> validateCalculatedDefinitions(JsonNode rawLayout, Set<String> catalogFieldIds, JsonNode rawCatalog) {
         Set<String> effectiveFieldIds = new LinkedHashSet<>(catalogFieldIds);
+        Set<String> definitionIds = new LinkedHashSet<>(catalogFieldIds);
         if (rawLayout == null || !rawLayout.isObject()) return effectiveFieldIds;
         ObjectNode layout = (ObjectNode) rawLayout;
         List<ObjectNode> calculatedItems = new ArrayList<>();
-        registerCalculatedDefinitions(layout.get("calculatedFields"), false, effectiveFieldIds);
-        collectCalculatedDefinitions(layout.get("calculatedItems"), true, effectiveFieldIds, calculatedItems);
-        for (ObjectNode item : calculatedItems) requireField(effectiveFieldIds, item, "targetFieldId");
+        registerCalculatedDefinitions(layout.get("calculatedFields"), false, effectiveFieldIds, definitionIds);
+        collectCalculatedDefinitions(layout.get("calculatedItems"), true, effectiveFieldIds, definitionIds, calculatedItems);
+        Set<String> calculatedFieldIds = new LinkedHashSet<>();
+        JsonNode rawCalculatedFields = layout.get("calculatedFields");
+        if (rawCalculatedFields != null && rawCalculatedFields.isArray()) {
+            for (JsonNode value : rawCalculatedFields) if (value.isObject() && value.path("fieldId").isTextual()) calculatedFieldIds.add(value.path("fieldId").asText());
+        }
+        for (ObjectNode item : calculatedItems) {
+            if (calculatedFieldIds.contains(SnapshotMutationSupport.text(item, "targetFieldId"))) {
+                throw ServiceException.validation("Pivot calculated item target field cannot be a calculated field: " + item.path("targetFieldId").asText());
+            }
+            requireField(effectiveFieldIds, item, "targetFieldId");
+        }
+        validateCalculatedItemReferences(calculatedItems, rawCatalog);
         return effectiveFieldIds;
     }
 
-    private void registerCalculatedDefinitions(JsonNode raw, boolean item, Set<String> effectiveFieldIds) {
-        collectCalculatedDefinitions(raw, item, effectiveFieldIds, null);
+    /** Validate the item namespace before a definition can enter a snapshot. */
+    private void validateCalculatedItemReferences(List<ObjectNode> items, JsonNode rawCatalog) {
+        if (items.isEmpty()) return;
+        if (rawCatalog == null || !rawCatalog.isObject()) throw ServiceException.validation("Pivot calculated items require a field catalogue");
+        JsonNode rawFields = rawCatalog.get("fields");
+        if (rawFields == null || !rawFields.isArray()) throw ServiceException.validation("Pivot calculated items require a field catalogue");
+        Map<String, ObjectNode> fields = new LinkedHashMap<>();
+        Map<String, Set<String>> members = new LinkedHashMap<>();
+        boolean memberDomainAvailable = true;
+        for (JsonNode rawField : rawFields) {
+            if (!rawField.isObject()) throw ServiceException.validation("Pivot field must be an object");
+            ObjectNode field = (ObjectNode) rawField;
+            String fieldId = SnapshotMutationSupport.text(field, "fieldId");
+            fields.put(fieldId, field);
+            Set<String> values = new LinkedHashSet<>();
+            JsonNode rawValues = field.get("values");
+            if (rawValues == null) memberDomainAvailable = false;
+            if (rawValues != null && rawValues.isArray()) for (JsonNode value : rawValues) if (!value.isNull()) values.add(value.asText().toUpperCase());
+            members.put(fieldId, values);
+        }
+        if (!memberDomainAvailable) {
+            validateCalculatedItemCyclesWithoutMemberCatalog(items);
+            return;
+        }
+        Map<String, String> itemByMember = new LinkedHashMap<>();
+        for (ObjectNode item : items) {
+            String target = SnapshotMutationSupport.text(item, "targetFieldId");
+            if (!fields.containsKey(target)) throw ServiceException.validation("Pivot calculated item target field is invalid: " + target);
+            Set<String> fieldMembers = members.get(target);
+            String name = SnapshotMutationSupport.text(item, "name");
+            String normalizedName = name.toUpperCase();
+            if (!fieldMembers.add(normalizedName)) throw ServiceException.validation("Pivot calculated item member collides with source data: " + name);
+            String identity = target + "|" + normalizedName;
+            if (itemByMember.put(identity, SnapshotMutationSupport.text(item, "fieldId")) != null) {
+                throw ServiceException.validation("Pivot calculated item member is duplicated: " + name);
+            }
+        }
+        Map<String, List<String>> dependencies = new LinkedHashMap<>();
+        for (ObjectNode item : items) {
+            String itemId = SnapshotMutationSupport.text(item, "fieldId");
+            String target = SnapshotMutationSupport.text(item, "targetFieldId");
+            String formula = SnapshotMutationSupport.text(item, "formula").trim().replaceFirst("^=", "");
+            Set<String> occupied = new LinkedHashSet<>();
+            List<String> refs = new ArrayList<>();
+            Matcher qualified = QUALIFIED_ITEM_REFERENCE.matcher(formula);
+            while (qualified.find()) {
+                String fieldReference = qualified.group(1);
+                ObjectNode field = fields.values().stream()
+                        .filter(candidate -> fieldReference.equals(candidate.path("fieldId").asText()) || fieldReference.equals(candidate.path("name").asText()))
+                        .findFirst().orElseThrow(() -> ServiceException.validation("Pivot calculated item references unknown field: " + fieldReference));
+                String fieldId = field.path("fieldId").asText();
+                String member = resolveCalculatedItemMember(members.get(fieldId), qualified.group(2));
+                String dependency = itemByMember.get(fieldId + "|" + member.toUpperCase());
+                if (dependency != null && !refs.contains(dependency)) refs.add(dependency);
+                occupied.add(qualified.start() + ":" + qualified.end());
+            }
+            Matcher token = ITEM_TOKEN.matcher(formula);
+            while (token.find()) {
+                if (isOccupied(occupied, token.start(), token.end())) continue;
+                String value = token.group();
+                String suffix = formula.substring(token.end()).stripLeading();
+                if (suffix.startsWith("(")) {
+                    if (!CALCULATED_ITEM_FUNCTIONS.contains(value.toUpperCase())) throw ServiceException.validation("Pivot calculated item function is unsupported: " + value);
+                    continue;
+                }
+                if (CALCULATED_ITEM_FUNCTIONS.contains(value.toUpperCase()) || Set.of("TRUE", "FALSE").contains(value.toUpperCase())) continue;
+                if (value.matches("[A-Z]{1,3}[1-9][0-9]*")) throw ServiceException.validation("Pivot calculated item worksheet reference is unsupported: " + value);
+                List<String> candidateFields = fields.values().stream()
+                        .filter(field -> members.get(field.path("fieldId").asText()).contains(value.toUpperCase()))
+                        .map(field -> field.path("fieldId").asText()).toList();
+                if (candidateFields.size() != 1) throw ServiceException.validation(candidateFields.isEmpty()
+                        ? "Pivot calculated item references unknown item: " + value
+                        : "Pivot calculated item reference is ambiguous: " + value);
+                String dependency = itemByMember.get(candidateFields.get(0) + "|" + value.toUpperCase());
+                if (dependency != null && !refs.contains(dependency)) refs.add(dependency);
+            }
+            dependencies.put(itemId, refs);
+        }
+        Map<String, Integer> state = new HashMap<>();
+        for (String itemId : dependencies.keySet()) visitCalculatedItem(itemId, dependencies, state, new ArrayList<>());
     }
 
-    private void collectCalculatedDefinitions(JsonNode raw, boolean item, Set<String> effectiveFieldIds, List<ObjectNode> collected) {
+    private void validateCalculatedItemCyclesWithoutMemberCatalog(List<ObjectNode> items) {
+        Map<String, String> names = new LinkedHashMap<>();
+        for (ObjectNode item : items) names.put(SnapshotMutationSupport.text(item, "targetFieldId") + "|" + SnapshotMutationSupport.text(item, "name").toUpperCase(), SnapshotMutationSupport.text(item, "fieldId"));
+        Map<String, List<String>> dependencies = new LinkedHashMap<>();
+        for (ObjectNode item : items) {
+            String formula = SnapshotMutationSupport.text(item, "formula");
+            List<String> refs = new ArrayList<>();
+            Matcher token = ITEM_TOKEN.matcher(formula);
+            while (token.find()) {
+                String dependency = names.get(SnapshotMutationSupport.text(item, "targetFieldId") + "|" + token.group().toUpperCase());
+                if (dependency != null && !refs.contains(dependency)) refs.add(dependency);
+            }
+            dependencies.put(SnapshotMutationSupport.text(item, "fieldId"), refs);
+        }
+        Map<String, Integer> state = new HashMap<>();
+        for (String itemId : dependencies.keySet()) visitCalculatedItem(itemId, dependencies, state, new ArrayList<>());
+    }
+
+    private String resolveCalculatedItemMember(Set<String> members, String rawMember) {
+        if (members == null || !members.contains(rawMember.toUpperCase())) {
+            throw ServiceException.validation("Pivot calculated item references unknown item: " + rawMember);
+        }
+        return rawMember;
+    }
+
+    private boolean isOccupied(Set<String> ranges, int start, int end) {
+        return ranges.stream().anyMatch(range -> {
+            String[] bounds = range.split(":");
+            return start >= Integer.parseInt(bounds[0]) && end <= Integer.parseInt(bounds[1]);
+        });
+    }
+
+    private void visitCalculatedItem(String itemId, Map<String, List<String>> dependencies, Map<String, Integer> state, List<String> path) {
+        Integer current = state.get(itemId);
+        if (current != null && current == 2) return;
+        if (current != null && current == 1) throw ServiceException.validation("Pivot calculated item dependency cycle: " + String.join(" -> ", path) + " -> " + itemId);
+        state.put(itemId, 1);
+        for (String dependency : dependencies.getOrDefault(itemId, List.of())) visitCalculatedItem(dependency, dependencies, state, appendPath(path, itemId));
+        state.put(itemId, 2);
+    }
+
+    private List<String> appendPath(List<String> path, String value) {
+        List<String> next = new ArrayList<>(path);
+        next.add(value);
+        return next;
+    }
+
+    private void registerCalculatedDefinitions(JsonNode raw, boolean item, Set<String> effectiveFieldIds, Set<String> definitionIds) {
+        collectCalculatedDefinitions(raw, item, effectiveFieldIds, definitionIds, null);
+    }
+
+    private void collectCalculatedDefinitions(JsonNode raw, boolean item, Set<String> effectiveFieldIds, Set<String> definitionIds, List<ObjectNode> collected) {
         if (raw == null || raw.isNull()) return;
         if (!raw.isArray() || raw.size() > 10_000) throw ServiceException.validation("Pivot calculated definitions are invalid");
         for (JsonNode value : raw) {
@@ -750,15 +899,86 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             SnapshotMutationSupport.validateKnownKeys(definition, item ? Set.of("fieldId", "targetFieldId", "name", "formula") : Set.of("fieldId", "name", "formula"), item ? "Pivot calculated item" : "Pivot calculated field");
             String fieldId = SnapshotMutationSupport.text(definition, "fieldId");
             SnapshotMutationSupport.text(definition, "name");
-            SnapshotMutationSupport.text(definition, "formula");
-            if (!effectiveFieldIds.add(fieldId)) {
-                throw ServiceException.validation("Pivot calculated fieldId is duplicated or collides with the field catalogue: " + fieldId);
-            }
+            String formula = SnapshotMutationSupport.text(definition, "formula");
             if (item) {
+                // Calculated items are derived members of an existing Pivot
+                // field. Their identity must not become an effective source
+                // field used by rows, columns, filters, or Values.
+                if (!definitionIds.add(fieldId)) {
+                    throw ServiceException.validation("Pivot calculated itemId is duplicated or collides with the field catalogue: " + fieldId);
+                }
                 SnapshotMutationSupport.text(definition, "targetFieldId");
+                validateCalculatedItemFormulaGrammar(formula);
                 if (collected != null) collected.add(definition);
+            } else {
+                if (!definitionIds.add(fieldId)) {
+                    throw ServiceException.validation("Pivot calculated fieldId is duplicated or collides with the field catalogue: " + fieldId);
+                }
+                effectiveFieldIds.add(fieldId);
             }
         }
+    }
+
+    /**
+     * Validate the same intentionally small expression grammar used by the
+     * client planner: member references, qualified Field[Item] references,
+     * numeric literals, + - * /, and parentheses.  A formula that is valid
+     * JSON but belongs to the worksheet/formula namespace must not enter a
+     * persisted Pivot definition.
+     */
+    private void validateCalculatedItemFormulaGrammar(String rawFormula) {
+        String formula = rawFormula.trim();
+        if (formula.startsWith("=")) formula = formula.substring(1).trim();
+        if (formula.isBlank()) throw ServiceException.validation("Pivot calculated item formula is empty");
+        int offset = 0;
+        int depth = 0;
+        boolean expectsOperand = true;
+        while (offset < formula.length()) {
+            while (offset < formula.length() && Character.isWhitespace(formula.charAt(offset))) offset++;
+            if (offset >= formula.length()) break;
+            int start = offset;
+            char current = formula.charAt(offset);
+            if ("+-*/".indexOf(current) >= 0) {
+                if (expectsOperand && (current == '+' || current == '-')) { offset++; continue; }
+                if (expectsOperand) throw ServiceException.validation("Pivot calculated item operator is misplaced at " + start);
+                expectsOperand = true;
+                offset++;
+                continue;
+            }
+            if (current == '(') {
+                if (!expectsOperand) throw ServiceException.validation("Pivot calculated item opening parenthesis is misplaced at " + start);
+                depth++;
+                offset++;
+                continue;
+            }
+            if (current == ')') {
+                if (expectsOperand || depth == 0) throw ServiceException.validation("Pivot calculated item closing parenthesis is misplaced at " + start);
+                depth--;
+                expectsOperand = false;
+                offset++;
+                continue;
+            }
+            if (!expectsOperand) throw ServiceException.validation("Pivot calculated item operand is missing before " + start);
+            Matcher number = ITEM_NUMBER.matcher(formula).region(offset, formula.length());
+            if (number.lookingAt()) {
+                offset = number.end();
+                expectsOperand = false;
+                continue;
+            }
+            Matcher identifier = ITEM_TOKEN.matcher(formula).region(offset, formula.length());
+            if (!identifier.lookingAt()) throw ServiceException.validation("Pivot calculated item formula contains unsupported syntax at " + start);
+            String token = identifier.group();
+            if (WORKSHEET_CELL_REFERENCE.matcher(token).matches()) throw ServiceException.validation("Pivot calculated item worksheet reference is unsupported: " + token);
+            offset = identifier.end();
+            while (offset < formula.length() && Character.isWhitespace(formula.charAt(offset))) offset++;
+            if (offset < formula.length() && formula.charAt(offset) == '[') {
+                int closing = formula.indexOf(']', offset + 1);
+                if (closing < 0 || formula.substring(offset + 1, closing).trim().isBlank()) throw ServiceException.validation("Pivot calculated item qualified reference is invalid at " + start);
+                offset = closing + 1;
+            }
+            expectsOperand = false;
+        }
+        if (depth != 0 || expectsOperand) throw ServiceException.validation("Pivot calculated item formula is incomplete");
     }
 
     private void validateExpansion(JsonNode raw) {

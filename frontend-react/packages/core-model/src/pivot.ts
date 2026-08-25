@@ -21,6 +21,95 @@ export type PivotScalar = string | number | boolean | null | PivotErrorValue;
 export type PivotScalarType = 'text' | 'number' | 'boolean' | 'blank' | 'error';
 export const PIVOT_BLANK_LABEL = '(blank)' as const;
 
+/**
+ * The deliberately small, canonical grammar accepted by Pivot calculated
+ * items.  Item formulas are not worksheet formulas: they contain typed member
+ * references, numeric literals, arithmetic operators, and parentheses.  A
+ * qualified reference uses the field identity/label followed by `[member]`.
+ * Keeping the token spans lets each consumer resolve members without
+ * re-parsing or silently accepting worksheet-cell syntax.
+ */
+export type PivotCalculatedItemFormulaToken =
+  | { kind: 'number'; raw: string; start: number; end: number }
+  | { kind: 'item'; raw: string; start: number; end: number; fieldReference?: string; member: string }
+  | { kind: 'operator'; raw: '+' | '-' | '*' | '/'; start: number; end: number }
+  | { kind: 'parenthesis'; raw: '(' | ')'; start: number; end: number };
+
+const PIVOT_ITEM_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_.:-]*/;
+const PIVOT_ITEM_NUMBER = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+
+/** Parse and validate the canonical calculated-item grammar. */
+export function parsePivotCalculatedItemFormula(formula: string): PivotCalculatedItemFormulaToken[] {
+  if (typeof formula !== 'string') throw new Error('Pivot calculated item formula must be text');
+  const source = formula.trim().replace(/^=/, '').trim();
+  if (!source) throw new Error('Pivot calculated item formula is empty');
+  const tokens: PivotCalculatedItemFormulaToken[] = [];
+  let offset = 0;
+  let expectsOperand = true;
+  let depth = 0;
+  while (offset < source.length) {
+    while (/\s/.test(source[offset] ?? '')) offset += 1;
+    if (offset >= source.length) break;
+    const start = offset;
+    const character = source[offset]!;
+    if ('+-*/'.includes(character)) {
+      if (expectsOperand && (character === '+' || character === '-')) {
+        // Unary signs are represented by the same operator token.  The
+        // consumer's expression evaluator already supports this form.
+        tokens.push({ kind: 'operator', raw: character, start, end: ++offset });
+        continue;
+      }
+      if (expectsOperand) throw new Error(`Pivot calculated item operator is misplaced at ${start}`);
+      tokens.push({ kind: 'operator', raw: character as '+' | '-' | '*' | '/', start, end: ++offset });
+      expectsOperand = true;
+      continue;
+    }
+    if (character === '(') {
+      if (!expectsOperand) throw new Error(`Pivot calculated item opening parenthesis is misplaced at ${start}`);
+      tokens.push({ kind: 'parenthesis', raw: '(', start, end: ++offset });
+      depth += 1;
+      continue;
+    }
+    if (character === ')') {
+      if (expectsOperand || depth === 0) throw new Error(`Pivot calculated item closing parenthesis is misplaced at ${start}`);
+      tokens.push({ kind: 'parenthesis', raw: ')', start, end: ++offset });
+      depth -= 1;
+      expectsOperand = false;
+      continue;
+    }
+    if (!expectsOperand) throw new Error(`Pivot calculated item operand is missing before ${start}`);
+    const number = source.slice(offset).match(PIVOT_ITEM_NUMBER)?.[0];
+    if (number) {
+      offset += number.length;
+      tokens.push({ kind: 'number', raw: number, start, end: offset });
+      expectsOperand = false;
+      continue;
+    }
+    const identifier = source.slice(offset).match(PIVOT_ITEM_IDENTIFIER)?.[0];
+    if (identifier) {
+      offset += identifier.length;
+      while (/\s/.test(source[offset] ?? '')) offset += 1;
+      if (source[offset] === '[') {
+        const fieldReference = identifier;
+        const bracketStart = offset;
+        const closing = source.indexOf(']', bracketStart + 1);
+        if (closing < 0) throw new Error(`Pivot calculated item qualified reference is unterminated at ${start}`);
+        const member = source.slice(bracketStart + 1, closing).trim();
+        if (!member) throw new Error(`Pivot calculated item qualified reference has an empty member at ${start}`);
+        offset = closing + 1;
+        tokens.push({ kind: 'item', raw: source.slice(start, offset), start, end: offset, fieldReference, member });
+      } else {
+        tokens.push({ kind: 'item', raw: source.slice(start, offset), start, end: offset, member: identifier });
+      }
+      expectsOperand = false;
+      continue;
+    }
+    throw new Error(`Pivot calculated item formula contains unsupported syntax at ${start}`);
+  }
+  if (depth !== 0 || expectsOperand) throw new Error('Pivot calculated item formula is incomplete');
+  return tokens;
+}
+
 export function isPivotError(value: unknown): value is PivotErrorValue {
   return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'error'
     && typeof (value as { code?: unknown }).code === 'string';
@@ -533,9 +622,12 @@ export interface PivotCalculatedField {
 }
 
 export interface PivotCalculatedItem {
+  /** Stable identity of the derived member. This is not a source field. */
   fieldId: string;
+  /** Source field that owns the derived member. */
   targetFieldId: string;
   name: string;
+  /** Pivot-item formula; references members of Pivot fields, not worksheet cells. */
   formula: string;
 }
 

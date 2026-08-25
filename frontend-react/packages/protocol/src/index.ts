@@ -1,4 +1,4 @@
-import { createPivotCollator, normalizePivotRefreshPolicy, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
+import { createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   PivotDefinition,
@@ -454,12 +454,109 @@ function validatePivotSubtotal(value: unknown): void {
  * duplicate IDs, while the server validates its targets against the current
  * source catalogue when the patch is merged.
  */
+function validatePivotCalculatedItemReferences(
+  items: readonly Record<string, unknown>[],
+  fields: readonly Record<string, unknown>[],
+): void {
+  const functions = new Set(['SUM', 'COUNT', 'AVERAGE', 'MIN', 'MAX', 'IF', 'AND', 'OR', 'NOT', 'ROUND', 'ABS', 'CONCAT', 'LEFT', 'RIGHT', 'LEN']);
+  const membersByField = new Map<string, unknown[]>();
+  const fieldByReference = (reference: string): Record<string, unknown> | undefined => fields.find((field) => field.fieldId === reference || field.name === reference);
+  const memberDomainAvailable = fields.every((field) => Array.isArray(field.values));
+  for (const field of fields) membersByField.set(String(field.fieldId), Array.isArray(field.values) ? [...field.values] : []);
+  for (const item of items) {
+    const members = membersByField.get(String(item.targetFieldId));
+    if (!members) throw new Error(`Pivot calculated item target field is invalid: ${String(item.targetFieldId)}`);
+    if (members.some((member) => String(member) === String(item.name))) throw new Error(`Pivot calculated item member collides with source data: ${String(item.name)}`);
+    members.push(item.name);
+  }
+  const itemByMember = new Map<string, string>();
+  for (const item of items) itemByMember.set(`${String(item.targetFieldId)}|${String(item.name).toLocaleUpperCase()}`, String(item.fieldId));
+  if (!memberDomainAvailable) {
+    const dependencies = new Map<string, string[]>();
+    for (const item of items) {
+      const refs: string[] = [];
+      const targetPrefix = `${String(item.targetFieldId)}|`;
+      const token = /[A-Za-z_][A-Za-z0-9_.:-]*/g;
+      for (const match of String(item.formula).matchAll(token)) {
+        const dependency = itemByMember.get(`${targetPrefix}${match[0]!.toLocaleUpperCase()}`);
+        if (dependency && !refs.includes(dependency)) refs.push(dependency);
+      }
+      dependencies.set(String(item.fieldId), refs);
+    }
+    const state = new Map<string, 'visiting' | 'visited'>();
+    const visit = (id: string, path: string[]): void => {
+      if (state.get(id) === 'visited') return;
+      if (state.get(id) === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, id].join(' -> ')}`);
+      state.set(id, 'visiting');
+      for (const dependency of dependencies.get(id) ?? []) visit(dependency, [...path, id]);
+      state.set(id, 'visited');
+    };
+    for (const item of items) visit(String(item.fieldId), []);
+    return;
+  }
+  const dependencies = new Map<string, string[]>();
+  for (const item of items) {
+    // Keep the protocol boundary aligned with the runtime: worksheet
+    // functions, cell references, and arbitrary operators are not Pivot-item
+    // syntax.  Member resolution below still supplies the typed identity.
+    parsePivotCalculatedItemFormula(String(item.formula));
+    const formula = String(item.formula).trim().replace(/^=/, '');
+    const occupied: Array<{ start: number; end: number }> = [];
+    const references: string[] = [];
+    const add = (fieldId: string, member: string): void => {
+      const key = `${fieldId}|${member.toLocaleUpperCase()}`;
+      const itemId = itemByMember.get(key);
+      if (itemId && !references.includes(itemId)) references.push(itemId);
+    };
+    const resolveMember = (field: Record<string, unknown>, text: string): void => {
+      const candidates = (membersByField.get(String(field.fieldId)) ?? []).filter((member) => String(member).toLocaleUpperCase() === text.toLocaleUpperCase());
+      if (candidates.length !== 1) throw new Error(candidates.length ? `Pivot calculated item reference is ambiguous: ${text}` : `Pivot calculated item references unknown item: ${text}`);
+      add(String(field.fieldId), String(candidates[0]));
+    };
+    const qualified = /([A-Za-z_][A-Za-z0-9_.:-]*)\s*\[([^\]]+)\]/g;
+    for (let match = qualified.exec(formula); match; match = qualified.exec(formula)) {
+      const field = fieldByReference(match[1]!);
+      if (!field) throw new Error(`Pivot calculated item references unknown field: ${match[1]}`);
+      resolveMember(field, match[2]!);
+      occupied.push({ start: match.index, end: match.index + match[0].length });
+    }
+    const bare = /[A-Za-z_][A-Za-z0-9_.:-]*/g;
+    for (let match = bare.exec(formula); match; match = bare.exec(formula)) {
+      if (occupied.some((range) => match!.index >= range.start && match!.index < range.end)) continue;
+      const token = match[0]!;
+      const after = formula.slice(match.index + token.length).trimStart();
+      if (after.startsWith('(')) {
+        if (!functions.has(token.toUpperCase())) throw new Error(`Pivot calculated item function is unsupported: ${token}`);
+        continue;
+      }
+      if (functions.has(token.toUpperCase()) || ['TRUE', 'FALSE'].includes(token.toUpperCase())) continue;
+      if (/^[A-Z]{1,3}[1-9][0-9]*$/i.test(token)) throw new Error(`Pivot calculated item worksheet reference is unsupported: ${token}`);
+      const candidates = fields.flatMap((field) => (membersByField.get(String(field.fieldId)) ?? []).filter((member) => typeof member === 'string' && String(member).toLocaleUpperCase() === token.toLocaleUpperCase()).map(() => field));
+      if (candidates.length !== 1) throw new Error(candidates.length ? `Pivot calculated item reference is ambiguous: ${token}` : `Pivot calculated item references unknown item: ${token}`);
+      add(String(candidates[0]!.fieldId), token);
+    }
+    dependencies.set(String(item.fieldId), references);
+  }
+  const state = new Map<string, 'visiting' | 'visited'>();
+  const visit = (id: string, path: string[]): void => {
+    if (state.get(id) === 'visited') return;
+    if (state.get(id) === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, id].join(' -> ')}`);
+    state.set(id, 'visiting');
+    for (const dependency of dependencies.get(id) ?? []) visit(dependency, [...path, id]);
+    state.set(id, 'visited');
+  };
+  for (const item of items) visit(String(item.fieldId), []);
+}
+
 function validatePivotCalculatedDefinitions(
   layout: Record<string, unknown>,
   fieldIds?: ReadonlySet<string>,
+  catalogFields?: readonly Record<string, unknown>[],
 ): Set<string> {
   const effectiveFieldIds = new Set(fieldIds);
   const calculatedItems: Record<string, unknown>[] = [];
+  const calculatedFieldIds = new Set<string>();
+  const definitionIds = new Set(effectiveFieldIds);
   const validate = (raw: unknown, item: boolean): void => {
     if (raw === undefined || raw === null) return;
     if (!Array.isArray(raw) || raw.length > 10_000) throw new Error('Pivot calculated definitions are invalid');
@@ -473,11 +570,22 @@ function validatePivotCalculatedDefinitions(
       if (!isNonEmptyString(definition.fieldId) || !isNonEmptyString(definition.name) || !isNonEmptyString(definition.formula)) {
         throw new Error(item ? 'Pivot calculated item is invalid' : 'Pivot calculated field is invalid');
       }
-      if (effectiveFieldIds.has(definition.fieldId)) throw new Error(`Pivot calculated fieldId is duplicated or collides with the field catalogue: ${definition.fieldId}`);
-      effectiveFieldIds.add(definition.fieldId);
       if (item) {
+        // A calculated item owns a derived member identity, not a source
+        // field.  It must never enter the effective field universe used by
+        // rows, columns, filters, or Values.  Keep its identity in a
+        // separate namespace so it cannot collide with a source/calculated
+        // field or another item.
+        if (definitionIds.has(definition.fieldId)) throw new Error(`Pivot calculated itemId is duplicated or collides with the field catalogue: ${definition.fieldId}`);
+        definitionIds.add(definition.fieldId);
         if (!isNonEmptyString(definition.targetFieldId)) throw new Error('Pivot calculated item targetFieldId is invalid');
+        parsePivotCalculatedItemFormula(String(definition.formula));
         calculatedItems.push(definition);
+      } else {
+        if (definitionIds.has(definition.fieldId)) throw new Error(`Pivot calculated fieldId is duplicated or collides with the field catalogue: ${definition.fieldId}`);
+        definitionIds.add(definition.fieldId);
+        effectiveFieldIds.add(definition.fieldId);
+        calculatedFieldIds.add(String(definition.fieldId));
       }
     }
   };
@@ -486,8 +594,10 @@ function validatePivotCalculatedDefinitions(
   if (fieldIds) {
     for (const item of calculatedItems) {
       if (!effectiveFieldIds.has(String(item.targetFieldId))) throw new Error(`Pivot calculated item targetFieldId is invalid: ${String(item.targetFieldId)}`);
+      if (calculatedFieldIds.has(String(item.targetFieldId))) throw new Error(`Pivot calculated item target field cannot be a calculated field: ${String(item.targetFieldId)}`);
     }
   }
+  if (catalogFields) validatePivotCalculatedItemReferences(calculatedItems, catalogFields);
   return effectiveFieldIds;
 }
 
@@ -525,7 +635,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     || typeof layout.allowMultipleFiltersPerField !== 'boolean'
     || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showRowGrandTotals !== 'boolean' || typeof layout.showColumnGrandTotals !== 'boolean' || !['compact', 'outline', 'tabular'].includes(String(layout.reportLayout))) throw new Error('Pivot layout is invalid');
   validatePivotCollation(layout.collation);
-  const effectiveFieldIds = validatePivotCalculatedDefinitions(layout, fieldIds);
+  const effectiveFieldIds = validatePivotCalculatedDefinitions(layout, fieldIds, catalog.fields as unknown as readonly Record<string, unknown>[]);
   if (layout.expansion !== undefined) {
     const expansion = requireRecord(layout.expansion, 'Pivot expansion');
     validateExactKeys(expansion, ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'], 'Pivot expansion');
