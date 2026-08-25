@@ -34,6 +34,42 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rangePasteClearsABoundedSourceAndWritesTheTarget() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"value":"move"}}}}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"startRow":1,"startColumn":1,"values":[[{"value":"move"}]],"clearSource":true,
+                 "sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}}
+                """));
+
+        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var next = prepared.descriptor().apply(snapshot, mutation);
+
+        assertEquals(2, prepared.affectedRanges().size());
+        assertEquals(true, next.path("sheets").get(0).path("cells").path("0").isMissingNode());
+        assertEquals("move", next.path("sheets").get(0).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    @Test
+    void rangePasteRejectsAnOversizedSourceBeforeClearingCells() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"value":"keep"}}}}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"startRow":1,"startColumn":1,"values":[[{"value":"move"}]],"clearSource":true,
+                 "sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":100000,"startColumn":0,"endColumn":0}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals("keep", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+    }
+
+    @Test
     void internalRestoreCannotBeSubmittedByClient() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertThrows(ServiceException.class, () -> registry.require("workbook.restore", false));
