@@ -27,6 +27,7 @@ export type TokenKind =
   | 'left-bracket'
   | 'right-bracket'
   | 'at-sign'
+  | 'spill-operator'
   | 'table-specifier'
   | 'eof';
 
@@ -116,6 +117,9 @@ export function lexFormula(source: string): readonly Token[] {
         index += match[0].length;
         continue;
       }
+      tokens.push({ kind: 'spill-operator', lexeme: '#', span: { start: index, end: index + 1 } });
+      index += 1;
+      continue;
     }
 
     if (isWordStart(character)) {

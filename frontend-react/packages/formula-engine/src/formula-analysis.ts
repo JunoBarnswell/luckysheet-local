@@ -20,6 +20,9 @@ export function collectNameReferences(ast: FormulaAst): string[] {
       case 'unary-expression':
         visit(node.operand);
         return;
+      case 'spill-reference':
+        visit(node.operand);
+        return;
       case 'binary-expression':
         visit(node.left);
         visit(node.right);
@@ -48,6 +51,9 @@ export function formulaUsesVolatile(ast: FormulaAst): boolean {
         return;
       }
       case 'unary-expression':
+        visit(node.operand);
+        return;
+      case 'spill-reference':
         visit(node.operand);
         return;
       case 'binary-expression':

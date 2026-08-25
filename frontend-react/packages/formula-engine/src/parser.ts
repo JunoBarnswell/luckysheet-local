@@ -8,6 +8,7 @@ import type {
   NumberLiteralNode,
   ParsedCellReference,
   RangeReferenceNode,
+  SpillReferenceNode,
   SourceSpan,
   StringLiteralNode,
   TableReferenceNode,
@@ -139,25 +140,34 @@ class Parser {
   }
 
   private parseUnary(): FormulaAst {
-    if (this.check('plus') || this.check('minus')) {
+    if (this.check('plus') || this.check('minus') || this.check('at-sign')) {
       const operatorToken = this.advance();
       const operand = this.parseUnary();
       const node: UnaryExpressionNode = {
         type: 'unary-expression',
-        operator: operatorToken.kind === 'plus' ? '+' : '-',
+        operator: operatorToken.kind === 'plus' ? '+' : operatorToken.kind === 'minus' ? '-' : '@',
         operand,
         span: spanFrom(operatorToken.span, operand.span),
       };
       return node;
     }
     let expr = this.parsePrimary();
-    while (this.check('percent')) {
-      const percentToken = this.advance();
+    while (this.check('percent') || this.check('spill-operator')) {
+      const operatorToken = this.advance();
+      if (operatorToken.kind === 'spill-operator') {
+        const node: SpillReferenceNode = {
+          type: 'spill-reference',
+          operand: expr,
+          span: spanFrom(expr.span, operatorToken.span),
+        };
+        expr = node;
+        continue;
+      }
       const node: UnaryExpressionNode = {
         type: 'unary-expression',
         operator: '%',
         operand: expr,
-        span: spanFrom(expr.span, percentToken.span),
+        span: spanFrom(expr.span, operatorToken.span),
       };
       expr = node;
     }

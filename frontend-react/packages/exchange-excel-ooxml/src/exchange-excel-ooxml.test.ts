@@ -338,10 +338,10 @@ describe('exchange-excel-ooxml', () => {
     const workbook = new WorkbookModel('wb-dynamic-filter', 'Dynamic Filter');
     const generated = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     const worksheet = strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!);
-    const withType = (type: string): Uint8Array => zipXlsxPartsBuffer({
+    const withType = (type: string): ArrayBuffer => zipXlsxPartsBuffer({
       ...generated.packageGraph.parts,
       'xl/worksheets/sheet1.xml': strToU8(worksheet.replace('</worksheet>', `<autoFilter ref="A1:A2"><filterColumn colId="0"><dynamicFilter type="${type}"/></filterColumn></autoFilter></worksheet>`)),
-    });
+    } as Record<string, Uint8Array>);
 
     const supported = parseLoadedXlsx(loadOpcPackageGraph(withType('today'))).snapshot;
     assert.deepEqual(supported.sheets[0]?.autoFilter?.columns[0]?.criterion, { kind: 'dynamic', type: 'today' });
