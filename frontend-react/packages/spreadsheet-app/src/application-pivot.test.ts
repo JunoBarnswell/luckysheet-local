@@ -36,7 +36,8 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
         collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
         values: [{ fieldId: amount.fieldId, summarizeBy: 'sum' }],
         subtotalLocation: 'bottom',
-        showGrandTotals: true,
+        showRowGrandTotals: true,
+        showColumnGrandTotals: true,
         compact: true,
         repeatLabels: false,
         calculatedFields: [],
@@ -160,6 +161,26 @@ describe('WorkbookSession PivotTable integration', () => {
     const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
     assert.equal(dispatch.status, 'committed');
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
+  });
+
+  it('updates row and column grand-total state as one undoable layout mutation', async () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-grand-total-undo';
+    app.addPivot(pivot);
+    const nextLayout = structuredClone(pivot.layout);
+    nextLayout.showRowGrandTotals = false;
+    nextLayout.showColumnGrandTotals = true;
+    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
+    assert.equal(dispatch.status, 'committed');
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showRowGrandTotals, false);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showColumnGrandTotals, true);
+    app.undo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showRowGrandTotals, true);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showColumnGrandTotals, true);
+    app.redo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showRowGrandTotals, false);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showColumnGrandTotals, true);
   });
 
   it('persists Pivot style options through one reversible presentation update', async () => {

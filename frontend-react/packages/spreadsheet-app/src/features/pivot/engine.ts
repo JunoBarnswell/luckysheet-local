@@ -1330,7 +1330,20 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResul
   });
 }
 
-function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, prefix: string[] = []): PivotResultNode[] {
+function resultGrandTotalCell(rows: SourceRow[], values: PivotResultValueField[], nodePath: string[], subtotalFieldId?: string): PivotResultCell {
+  return {
+    id: `${nodePath.join('/') || 'root'}|grand-total:row`,
+    nodePath,
+    kind: 'grand-total',
+    columnPath: [],
+    sourceRowPaths: rows.flatMap((row) => row.paths),
+    values: values.map((value) => aggregatePivotValues(rows, value.sourceFieldId, subtotalFieldId === value.subtotalFieldId
+      ? value.subtotalFunction ?? value.summarizeBy
+      : value.summarizeBy)),
+  };
+}
+
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], showRowGrandTotals: boolean, fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, prefix: string[] = []): PivotResultNode[] {
   // A Pivot with no Row fields still owns one data row: the root aggregation
   // crossing every Column path and Values placement. Grand Total is a
   // separate axis total and must not stand in for this matrix row.
@@ -1346,6 +1359,7 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
       depth: 0,
       children: [],
       values: resultCells(rows, columns, values, path),
+      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(rows, values, path) } : {}),
       subtotal: false,
       sourceRowPaths: rows.flatMap((row) => row.paths),
     }];
@@ -1355,7 +1369,7 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
-    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, fieldCatalog, collator, path);
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, showRowGrandTotals, fieldCatalog, collator, path);
     const leaf = children.length === 0;
     const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
     return {
@@ -1369,6 +1383,7 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
       depth,
       children,
       values: resultCells(group.rows, columns, values, path, subtotal ? 'subtotal' : 'detail', subtotal ? placement.fieldId : undefined),
+      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(group.rows, values, path, subtotal ? placement.fieldId : undefined) } : {}),
       subtotal,
       sourceRowPaths: group.rows.flatMap((row) => row.paths),
     };
@@ -1406,6 +1421,18 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
     raw.set(tree.grandTotal, [...tree.grandTotal.values]);
     contexts.push({ cell: tree.grandTotal, columnIndex: 0, kind: 'grand-total' });
   }
+  for (const cell of tree.columnGrandTotals ?? []) {
+    raw.set(cell, [...cell.values]);
+    contexts.push({ cell, columnIndex: 0, kind: 'grand-total' });
+  }
+  const visitRowTotals = (nodes: PivotResultNode[]) => nodes.forEach((node) => {
+    if (node.rowGrandTotal) {
+      raw.set(node.rowGrandTotal, [...node.rowGrandTotal.values]);
+      contexts.push({ cell: node.rowGrandTotal, node, columnIndex: 0, kind: 'grand-total' });
+    }
+    visitRowTotals(node.children);
+  });
+  visitRowTotals(tree.rows);
 
   const rawValue = (cell: PivotResultCell | undefined, index: number): PivotScalar | null => cell ? raw.get(cell)?.[index] ?? null : null;
   const grandValues = tree.grandTotal ? raw.get(tree.grandTotal) ?? [] : [];
@@ -1529,20 +1556,21 @@ function computePivotResultFromTable(
   filtered = topItems(filtered, definition.layout.filters);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator) : [{ values: [], rows: filtered }];
   const resultFields = resultValueFields(definition.layout);
-  const grandTotal: PivotResultCell | null = definition.layout.showGrandTotals ? {
+  const grandTotal: PivotResultCell = {
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
     columnPath: [],
     values: resultFields.map((field) => aggregatePivotValues(filtered, field.sourceFieldId, field.summarizeBy)),
     sourceRowPaths: filtered.flatMap((row) => row.paths),
-  } : null;
+  };
   const tree: PivotResultTree = {
     schema: PIVOT_RESULT_TREE_SCHEMA,
     pivotId: definition.id,
     fields: definition.fieldCatalog,
     columnPaths: columns.map((column) => column.values),
     valueFields: resultFields,
-    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.fieldCatalog, collator),
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator),
+    columnGrandTotals: resultCells(filtered, columns, resultFields, [`${definition.id}|grand-total`], 'grand-total'),
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
@@ -1737,7 +1765,8 @@ function buildPivotGridProjectionCandidate(
   const cells: PivotProjectionCell[] = [];
   const rowHeaderCount = Math.max(definition.layout.rows.length, 1);
   const values = tree?.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
-  const valueColumnCount = Math.max(tree ? tree.columnPaths.length * values.length : values.length, 1);
+  const columnPathCount = Math.max(tree?.columnPaths.length ?? 0, 1);
+  const valueColumnCount = Math.max(columnPathCount * Math.max(values.length, 1) + (definition.layout.showRowGrandTotals ? Math.max(values.length, 1) : 0), 1);
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
@@ -1755,14 +1784,21 @@ function buildPivotGridProjectionCandidate(
     for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
   }
   const columnPaths = tree?.columnPaths ?? [];
-  for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
+  for (let columnIndex = 0; columnIndex < columnPathCount; columnIndex += 1) {
     const path = columnPaths[columnIndex] ?? [];
     for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
       const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
       const valueField = values[valueIndex];
       const valueCaption = valueField ? (valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)) : '';
       const label = path.length ? `${path.map(display).join(' / ')} ${valueCaption}`.trim() : valueCaption;
-      if (displayOptions.showFieldHeaders) cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
+      if (displayOptions.showFieldHeaders) cells.push(projectionCell(definition.id, row, column, 'column-header', path[0] ?? null, label, { columnPath: path, fieldId: definition.layout.columns[definition.layout.columns.length - 1]?.fieldId, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnPathCount - 1 }));
+    }
+  }
+  if (definition.layout.showRowGrandTotals && displayOptions.showFieldHeaders) {
+    for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
+      const valueField = values[valueIndex];
+      const column = rowHeaderCount + columnPathCount * Math.max(values.length, 1) + valueIndex;
+      cells.push(projectionCell(definition.id, row, column, 'column-header', null, valueField ? `Grand Total ${valueField.displayName ?? fieldName(valueField.fieldId, definition.fieldCatalog)}` : 'Grand Total', { captionKey: 'grand-total', isLastColumn: valueIndex === Math.max(values.length, 1) - 1 }));
     }
   }
   if (displayOptions.showFieldHeaders) row += 1;
@@ -1778,19 +1814,37 @@ function buildPivotGridProjectionCandidate(
         const kind: PivotProjectionCell['kind'] = axis === 0 && node.children.length && expansion.showButtons ? 'expand-toggle' : node.subtotal ? 'subtotal' : 'row-header';
         cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, expandable: node.children.length > 0, expanded: nodeExpanded(node, projectionLayout) }));
       }
-      for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
+      for (let columnIndex = 0; columnIndex < columnPathCount; columnIndex += 1) {
         const resultCell = node.values[columnIndex];
         for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
           const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
           const value = resultCell?.values[valueIndex] ?? null;
-          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value, displayOptions), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: columnIndex === Math.max(columnPaths.length, 1) - 1 }));
+          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value, displayOptions), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnPathCount - 1 }));
+        }
+      }
+      if (definition.layout.showRowGrandTotals) {
+        const resultCell = node.rowGrandTotal;
+        for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
+          const column = rowHeaderCount + columnPathCount * Math.max(values.length, 1) + valueIndex;
+          const value = resultCell?.values[valueIndex] ?? null;
+          cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: valueIndex === Math.max(values.length, 1) - 1 }));
         }
       }
       row += 1;
     }
-    if (tree.grandTotal) {
+    if (tree.grandTotal && definition.layout.showColumnGrandTotals) {
       cells.push(projectionCell(definition.id, row, 0, 'grand-total', null, 'Grand Total', { captionKey: 'grand-total', resultCellId: tree.grandTotal.id, sourceRowPaths: tree.grandTotal.sourceRowPaths }));
-      tree.grandTotal.values.forEach((value, index) => cells.push(projectionCell(definition.id, row, rowHeaderCount + index, 'grand-total', value, textForValue(value, displayOptions), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths })));
+      const columnGrandTotals = tree.columnGrandTotals ?? (tree.grandTotal ? [tree.grandTotal] : []);
+      columnGrandTotals.forEach((resultCell, columnIndex) => resultCell.values.forEach((value, valueIndex) => {
+        const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
+        cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions), { resultCellId: resultCell.id, columnPath: resultCell.columnPath, sourceRowPaths: resultCell.sourceRowPaths, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnGrandTotals.length - 1 && valueIndex === resultCell.values.length - 1 }));
+      }));
+      if (definition.layout.showRowGrandTotals) {
+        tree.grandTotal.values.forEach((value, valueIndex) => {
+          const column = rowHeaderCount + columnPathCount * Math.max(values.length, 1) + valueIndex;
+          cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths, isLastColumn: valueIndex === tree.grandTotal!.values.length - 1 }));
+        });
+      }
       row += 1;
     }
   } else {

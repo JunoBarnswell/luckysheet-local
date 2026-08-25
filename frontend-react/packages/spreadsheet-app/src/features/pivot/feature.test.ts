@@ -9,7 +9,7 @@ import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
 import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
 import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './engine';
 import { buildPivotWriteback } from './writeback';
-import { clearPivotFilterFamily, clearPivotFiltersForField, upsertPivotFilter } from './panel-state';
+import { clearPivotFilterFamily, clearPivotFiltersForField, setPivotColumnGrandTotals, setPivotRowGrandTotals, upsertPivotFilter } from './panel-state';
 
 function seedCrossSheetWorkbook(): WorkbookModel {
   const workbook = new WorkbookModel('pivot-feature-test', 'Pivot Feature');
@@ -346,6 +346,19 @@ describe('pivot feature contract', () => {
     assert.ok(pivot);
     const result = buildPivotWriteback(pivot, workbook);
     assert.equal(result.values.at(-1)?.[1]?.value, 30);
+  });
+
+  it('keeps Pivot panel row and column grand-total controls independent and typed', () => {
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    const rowOnly = setPivotRowGrandTotals(pivot.layout, false);
+    assert.equal(rowOnly.showRowGrandTotals, false);
+    assert.equal(rowOnly.showColumnGrandTotals, true);
+    const columnOnly = setPivotColumnGrandTotals(rowOnly, false);
+    assert.equal(columnOnly.showRowGrandTotals, false);
+    assert.equal(columnOnly.showColumnGrandTotals, false);
+    assert.throws(() => setPivotRowGrandTotals(pivot.layout, 'false' as never), /row grand-total state is invalid/);
+    assert.throws(() => setPivotColumnGrandTotals(pivot.layout, 1 as never), /column grand-total state is invalid/);
   });
 
   it('includes every instant on a timeline end date and excludes the next day', () => {

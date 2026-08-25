@@ -107,6 +107,18 @@ export function setPivotShowAs(layout: PivotLayout, fieldId: string, showAs: Piv
   return patchPivotValueField(layout, fieldId, { showAs });
 }
 
+/** Update the Excel row-grand-total column without changing column totals. */
+export function setPivotRowGrandTotals(layout: PivotLayout, enabled: boolean): PivotLayout {
+  if (typeof enabled !== 'boolean') throw new Error('Pivot row grand-total state is invalid');
+  return { ...layout, showRowGrandTotals: enabled };
+}
+
+/** Update the Excel column-grand-total row without changing row totals. */
+export function setPivotColumnGrandTotals(layout: PivotLayout, enabled: boolean): PivotLayout {
+  if (typeof enabled !== 'boolean') throw new Error('Pivot column grand-total state is invalid');
+  return { ...layout, showColumnGrandTotals: enabled };
+}
+
 export function setPivotGroup(layout: PivotLayout, axis: 'rows' | 'columns', fieldId: string, group: PivotGroup): PivotLayout {
   return axis === 'rows' ? patchPivotRowField(layout, fieldId, { group }) : patchPivotColumnField(layout, fieldId, { group });
 }

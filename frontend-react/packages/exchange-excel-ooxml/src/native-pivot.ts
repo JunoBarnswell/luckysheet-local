@@ -571,7 +571,8 @@ export function mapNativePivotDefinition(
     collation: { ...DEFAULT_PIVOT_COLLATION },
     values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
     subtotalLocation: table.subtotalLocation ?? 'bottom',
-    showGrandTotals: (table.showRowGrandTotals ?? true) || (table.showColumnGrandTotals ?? true),
+    showRowGrandTotals: table.showRowGrandTotals ?? true,
+    showColumnGrandTotals: table.showColumnGrandTotals ?? true,
     compact: table.compactData ?? table.fields.some((field) => field.compact === true),
     repeatLabels: table.repeatLabels ?? false,
     expansion: {
@@ -1331,7 +1332,7 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
     pivotFilters: buildNativePivotFilters(pivot, dataFields),
-    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact, multipleFieldFilters: pivot.layout.allowMultipleFiltersPerField,
+    showRowGrandTotals: pivot.layout.showRowGrandTotals, showColumnGrandTotals: pivot.layout.showColumnGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact, multipleFieldFilters: pivot.layout.allowMultipleFiltersPerField,
     ...(styleName ? { styleName } : {}),
     ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
     showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,

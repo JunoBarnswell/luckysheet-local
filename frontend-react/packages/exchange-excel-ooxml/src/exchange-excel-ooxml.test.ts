@@ -226,7 +226,7 @@ describe('exchange-excel-ooxml', () => {
         { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
       ] },
-      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
       presentation: {
         styleName: 'PivotStyleMedium4',
@@ -275,7 +275,7 @@ describe('exchange-excel-ooxml', () => {
       layout: {
         rows: [{ fieldId: 'date', group: { kind: 'date', unit: 'month', start: 45292, end: 45657 } }, { fieldId: 'category', group: { kind: 'manual', groups: [{ groupId: 'ab', name: 'AB', items: [createPivotMemberKey('A'), createPivotMemberKey('B')] }, { groupId: 'c', name: 'C', items: [createPivotMemberKey('C')] }] } }],
         columns: [{ fieldId: 'amount', group: { kind: 'number', interval: 10, start: 0, end: 100 } }],
-        filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false,
+        filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false,
       },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
@@ -311,7 +311,7 @@ describe('exchange-excel-ooxml', () => {
         { fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 1, values: ['1890-01-01T00:00:00Z', '2201-12-31T00:00:00Z'] },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 2 },
       ] },
-      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push(
@@ -420,7 +420,7 @@ describe('exchange-excel-ooxml', () => {
         ],
         allowMultipleFiltersPerField: true,
         collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
-        values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false,
+        values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false,
       },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
@@ -467,7 +467,7 @@ describe('exchange-excel-ooxml', () => {
     invalidSheet.pivots.push({
       schema: 'PivotDefinition', id: 'invalid-filter', source: { kind: 'worksheet-range', range: { sheetId: invalidSheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 } }, target: { sheetId: invalidSheet.id, anchor: { row: 4, column: 0 } },
       fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 }] },
-      layout: { rows: [], columns: [], filters: [{ kind: 'manual', family: 'manual', scope: 'report', fieldId: 'missing', mode: 'all', memberKeys: [] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [], columns: [], filters: [{ kind: 'manual', family: 'manual', scope: 'report', fieldId: 'missing', mode: 'all', memberKeys: [] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
     assert.throws(() => exportSnapshotToXlsxBuffer(invalidExport.snapshot()), /Pivot filter references missing field missing/);
@@ -481,7 +481,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.pivots.push({
       schema: 'PivotDefinition', id: 'invalid-timeline-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 } }, target: { sheetId: sheet.id, anchor: { row: 4, column: 0 } },
       fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 0, values: ['2024-01-01T00:00:00Z'] }] },
-      layout: { rows: [{ fieldId: 'date' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'date' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push({ id: 'invalid-timeline', sheetId: sheet.id, kind: 'timeline', anchor: { kind: 'one-cell', row: 8, column: 0 }, transform: { x: 0, y: 0, width: 420, height: 120 }, zIndex: 1, payloadId: 'invalid-timeline' });
@@ -505,7 +505,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.pivots.push({
       schema: 'PivotDefinition', id: 'typed-slicer-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 1 } }, target: { sheetId: sheet.id, anchor: { row: 8, column: 0 } },
       fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'member', name: 'Member', dataType: 'mixed', ordinal: 0, values: [1, '1', true, 'true', null] }, { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 }] },
-      layout: { rows: [{ fieldId: 'member' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'member' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push({ id: 'typed-slicer', sheetId: sheet.id, kind: 'slicer', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 220, height: 180 }, zIndex: 1, payloadId: 'typed-slicer-payload' });
@@ -538,7 +538,7 @@ describe('exchange-excel-ooxml', () => {
         { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
       ] },
-      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push({ id: 'pivot-chart-drawing', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 320, height: 220 }, zIndex: 1, payloadId: 'pivot-chart-payload' });
@@ -586,7 +586,7 @@ describe('exchange-excel-ooxml', () => {
       source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 } },
       target: { sheetId: sheet.id, anchor: { row: 3, column: 0 } },
       fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'value', name: 'Value', dataType: 'number', ordinal: 0 }] },
-      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'value', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'value', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
     });
     sheet.drawings.push({ id: 'invalid-pivot-chart', sheetId: sheet.id, kind: 'chart', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1, payloadId: 'invalid-pivot-chart' });
@@ -605,7 +605,7 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
-    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
+    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
     const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
@@ -625,6 +625,8 @@ describe('exchange-excel-ooxml', () => {
     ]);
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.preservedPivotFilters, [{ fieldIndex: 1, type: 'futureFilter', attributes: { fld: '1', type: 'futureFilter', id: '7', stringValue1: 'preserve' } }]);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.subtotalLocation, 'top');
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.showRowGrandTotals, false);
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.showColumnGrandTotals, true);
     assert.equal(imported.report.issues.find((issue) => issue.feature === 'pivot')?.status, 'editable');
     const exported = await exportXlsx({ snapshot: imported.snapshot, nativePackage: imported.nativePackage, fileName: 'native-pivot.xlsx', options: { compatibilityTarget: 'B' } });
     const output = loadOpcPackageGraph(exported.buffer);
@@ -637,6 +639,8 @@ describe('exchange-excel-ooxml', () => {
     assert.doesNotMatch(noFlagCacheXml, /refreshOnSave=/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /defaultSubtotal="0"/);
     const nativeAdvancedXml = strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!);
+    assert.match(nativeAdvancedXml, /rowGrandTotals="0"/);
+    assert.match(nativeAdvancedXml, /colGrandTotals="1"/);
     assert.match(nativeAdvancedXml, /sortType="descending"/);
     assert.match(nativeAdvancedXml, /<autoSortScope><pivotArea[^>]*dataOnly="0"/);
     assert.match(nativeAdvancedXml, /<pivotFilters count="4">/);
@@ -685,7 +689,7 @@ describe('exchange-excel-ooxml', () => {
     sheet.cells.set(0, 1, { value: 'Amount' });
     sheet.cells.set(1, 0, { value: 'A' });
     sheet.cells.set(1, 1, { value: 10 });
-    const layout = { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US' as const, sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false };
+    const layout = { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US' as const, sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false };
     const fields = { schema: 'PivotFieldCatalog' as const, fields: [
       { fieldId: 'category', name: 'Category', dataType: 'text' as const, ordinal: 0 },
       { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 },
@@ -710,7 +714,7 @@ describe('exchange-excel-ooxml', () => {
         filters: [{ kind: 'condition', family: 'value', fieldId: 'category', valueFieldId: 'amount', operator: 'greater-than', value: 5 }],
         allowMultipleFiltersPerField: true,
         collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
-        values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false,
+        values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false,
       },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });

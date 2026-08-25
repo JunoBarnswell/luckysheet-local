@@ -474,10 +474,10 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     fieldIds.add(field.fieldId);
   }
   const layout = requireRecord(pivot.layout, 'Pivot layout');
-  validateExactKeys(layout, ['rows', 'columns', 'filters', 'allowMultipleFiltersPerField', 'collation', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
+  validateExactKeys(layout, ['rows', 'columns', 'filters', 'allowMultipleFiltersPerField', 'collation', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showRowGrandTotals', 'showColumnGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
     || typeof layout.allowMultipleFiltersPerField !== 'boolean'
-    || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+    || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showRowGrandTotals !== 'boolean' || typeof layout.showColumnGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
   validatePivotCollation(layout.collation);
   if (layout.expansion !== undefined) {
     const expansion = requireRecord(layout.expansion, 'Pivot expansion');
