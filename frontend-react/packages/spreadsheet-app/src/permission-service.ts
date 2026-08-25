@@ -64,6 +64,7 @@ function protectionActionForCommand(commandId: string, action: PermissionAction)
   if (commandId === 'sheet.columns.insert') return 'insert-columns';
   if (commandId === 'sheet.columns.delete') return 'delete-columns';
   if (action === 'format') return 'format';
+  if (commandId.startsWith('sheetTable.style') || commandId.startsWith('pivot.')) return 'format';
   if (action === 'drawing') return 'edit-objects';
   if (commandId.startsWith('sheet.autoFilter') || commandId.startsWith('sheetTable.autoFilter')) return 'auto-filter';
   if (commandId.startsWith('data.sort') || commandId.startsWith('sheet.sort')) return 'sort';
@@ -80,6 +81,7 @@ function protectionActionForMutation(mutationId: string): ProtectionAction | und
   if (mutationId === 'autoFilter.set' || mutationId === 'autoFilter.remove' || mutationId === 'sheetTable.autoFilter.set') return 'auto-filter';
   if (mutationId.startsWith('drawing.') || mutationId.startsWith('chart.') || mutationId.startsWith('picture.')) return 'edit-objects';
   if (mutationId.startsWith('merge.')) return 'format';
+  if (mutationId.startsWith('sheetTable.style.') || mutationId.startsWith('pivot.')) return 'format';
   if (mutationId.startsWith('sheet.protect.')) return undefined;
   return 'edit-cell';
 }
@@ -140,7 +142,8 @@ export class PermissionService {
       return { allowed: true };
     }
 
-    return this.checkProtection(protectionActionForCommand(input.commandId, action), input.affectedRanges);
+    const allowsPendingSheet = input.commandId === 'pivot.create' || input.commandId === 'pivot.add' || input.commandId === 'pivot.drillDown';
+    return this.checkProtection(protectionActionForCommand(input.commandId, action), input.affectedRanges, allowsPendingSheet);
   }
 
   assertAllowed(input: PermissionCheckInput): void {
@@ -165,7 +168,8 @@ export class PermissionService {
     const action = mutation.id === 'cell.restore' && this.isFormatOnlyRestore(mutation.params)
       ? 'format'
       : protectionActionForMutation(mutation.id);
-    return action ? this.checkProtection(action, mutation.affectedRanges) : { allowed: true };
+    const allowsPendingSheet = mutation.id === 'pivot.add' || mutation.id === 'pivot.drilldown.add';
+    return action ? this.checkProtection(action, mutation.affectedRanges, allowsPendingSheet) : { allowed: true };
   }
 
   canSelectCell(sheetId: string, row: number, column: number): PermissionResult {
@@ -200,7 +204,7 @@ export class PermissionService {
     return JSON.stringify(currentContent) === JSON.stringify(previousContent);
   }
 
-  private checkProtection(action: ProtectionAction, affectedRanges: readonly RangeRef[]): PermissionResult {
+  private checkProtection(action: ProtectionAction, affectedRanges: readonly RangeRef[], allowPendingSheet = false): PermissionResult {
     if (!this.workbook) return { allowed: true };
     const rangesBySheet = new Map<string, RangeRef[]>();
     for (const range of affectedRanges) {
@@ -210,7 +214,11 @@ export class PermissionService {
     }
     const rules = this.workbook.getSheets().flatMap((candidate) => candidate.protectionRules);
     for (const [sheetId, ranges] of rangesBySheet) {
-      const sheet = this.workbook.getSheet(sheetId);
+      const sheet = this.workbook.sheets.get(sheetId);
+      if (!sheet) {
+        if (allowPendingSheet) continue;
+        return { allowed: false, reason: `Unknown protected worksheet: ${sheetId}` };
+      }
       const decision = protectionResolver.resolve({
         sheetId,
         rules,

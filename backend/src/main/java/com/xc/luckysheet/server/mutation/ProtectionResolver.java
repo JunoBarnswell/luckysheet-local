@@ -28,6 +28,7 @@ final class ProtectionResolver {
         if (action == null || action.isBlank()) throw ServiceException.validation("Protection action is required");
         if ("structure".equals(action)) action = "format";
         if ("drawing".equals(action)) action = "edit-objects";
+        if ("comment".equals(action)) action = "edit-cell";
         if ("print".equals(action)) return;
         if (!"edit-cell".equals(action) && !OPERATION_ACTIONS.contains(action)) {
             throw ServiceException.validation("Unknown protection action: " + action);
@@ -96,7 +97,8 @@ final class ProtectionResolver {
             for (JsonNode rule : rules) {
                 if (!rule.isObject() || !rule.path("locked").isBoolean()) continue;
                 String scope = rule.path("scope").asText();
-                if ("workbook".equals(scope) || (sameSheet && "sheet".equals(scope))) {
+                if ("workbook".equals(scope) || (sameSheet && "sheet".equals(scope)
+                        && target.sheetId().equals(rule.path("sheetId").asText()))) {
                     result.add(rule);
                 } else if (sameSheet && "range".equals(scope) && intersects(rule.get("range"), target)) {
                     result.add(rule);

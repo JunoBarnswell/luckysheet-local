@@ -169,7 +169,7 @@ export class ProtectionResolver {
               lockedCells += 1;
               return {
                 allowed: false,
-                reason: `Protected cell ${request.sheetId}!${row}:${column} is locked`,
+                reason: `Protected worksheet: protected cell ${request.sheetId}!${row}:${column} is locked`,
                 blockedBy: resolution.rules.find((rule) => rule.scope === 'range') ?? resolution.rules[0],
                 lockedCells,
                 unlockedCells,
