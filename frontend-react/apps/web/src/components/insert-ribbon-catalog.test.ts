@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import enUS from '../locales/en-US.json';
 import zhCN from '../locales/zh-CN.json';
 import { INSERT_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { getRibbonSurfaces } from '@react-sheets/spreadsheet-app';
 
 const variants = [
   ...INSERT_CHART_VARIANTS,
@@ -35,5 +36,16 @@ describe('INSERT variant catalog localization', () => {
 
   it('keeps English INSERT copy free of Chinese characters', () => {
     for (const variant of variants) assert.doesNotMatch(enUS.insertUi[variant.labelKey], /[\u3400-\u9fff]/, variant.id);
+  });
+
+  it('keeps every semantic INSERT group and surface reachable at every responsive breakpoint', () => {
+    const groups = ['insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls'] as const;
+    const breakpoints = ['wide', 'compact', 'narrow'] as const;
+    for (const group of groups) {
+      const byBreakpoint = breakpoints.map((breakpoint) => getRibbonSurfaces('insert', group, breakpoint).map((surface) => surface.id));
+      assert.ok(byBreakpoint.every((ids) => ids.length > 0), `${group} has no surface at one breakpoint`);
+      assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[1]), `${group} compact surface drift`);
+      assert.deepEqual(new Set(byBreakpoint[0]), new Set(byBreakpoint[2]), `${group} narrow surface drift`);
+    }
   });
 });
