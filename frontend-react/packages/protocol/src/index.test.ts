@@ -419,7 +419,9 @@ test('Pivot protocol preserves typed formula-error members and rejects unknown c
   validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'quarter', 'month'], startOfWeek: 1 } }] } });
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'year'] } }] } }), /date group is invalid/);
   validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'date', fieldId: 'member', operator: 'between', value: '2024-01-01', value2: '2024-12-31' }] } });
-    validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', valueId: `value:${'member'}`, operator: 'not-between', value: 10, value2: 20 }] } });
+  validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', valueId: `value:${'member'}`, operator: 'not-between', value: 10, value2: 20 }] } });
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', operator: 'greater-than', value: 10 }] } }), /value filter requires valueId/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', valueId: 'missing-placement', operator: 'greater-than', value: 10 }] } }), /placement identity is invalid/);
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'date', fieldId: 'member', operator: 'between', value: '2024-01-01' }] } }), /range filter requires two bounds/);
   assert.throws(() => validatePivotDefinition({ ...base, presentation: {
     styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },

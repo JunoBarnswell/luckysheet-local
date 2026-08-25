@@ -637,9 +637,11 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 String family = SnapshotMutationSupport.text(filter, "family");
                 if (!Set.of("label", "date", "value").contains(family)) throw ServiceException.validation("Pivot condition filter family is invalid");
                 requireField(fieldIds, filter);
-                if (filter.has("valueId")) {
+                if ("value".equals(family)) {
+                    if (!filter.has("valueId")) throw ServiceException.validation("Pivot value filter requires valueId");
                     requireValue(valueIds, filter, "valueId");
-                    if (!"value".equals(family)) throw ServiceException.validation("Pivot condition valueId requires the value filter family");
+                } else if (filter.has("valueId")) {
+                    throw ServiceException.validation("Pivot condition valueId requires the value filter family");
                 }
                 if (filter.has("scope") && !FILTER_SCOPES.contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot condition filter scope is invalid");
                 Set<String> operators = switch (family) {

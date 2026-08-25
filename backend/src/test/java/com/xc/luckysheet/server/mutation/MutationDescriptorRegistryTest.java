@@ -651,6 +651,12 @@ class MutationDescriptorRegistryTest {
         ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidAxis, WorkbookAclRole.EDITOR));
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(0, snapshot.path("sheets").get(0).path("pivots").size());
+
+        ObjectNode missingValuePlacementPivot = (ObjectNode) pivot.deepCopy();
+        ((ObjectNode) missingValuePlacementPivot.path("layout").path("filters").get(3)).remove("valueId");
+        OperationMutation missingValuePlacement = new OperationMutation("pivot.add", "sheet-1", missingValuePlacementPivot);
+        ServiceException missingValueError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, missingValuePlacement, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", missingValueError.code());
     }
 
     @Test

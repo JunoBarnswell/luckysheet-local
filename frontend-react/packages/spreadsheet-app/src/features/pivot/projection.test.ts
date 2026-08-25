@@ -526,6 +526,53 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
   });
 
+  it('filters Pivot items by the selected Values aggregate and preserves parent scope', () => {
+    const workbook = new WorkbookModel('pivot-value-filter', 'Pivot Value Filter');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Category', 'Sales'], ['North', 'A', 100], ['North', 'B', 300], ['South', 'A', 50], ['South', 'B', 200]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-value-filter', { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    const valueId = `value:${sales.fieldId}`;
+    pivot.fieldCatalog = catalog;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: category.fieldId }];
+    pivot.layout.values = [{ valueId, fieldId: sales.fieldId, summarizeBy: 'sum' }];
+
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: region.fieldId, scope: 'field', valueId, operator: 'greater-than', value: 300 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['North']);
+    assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 400);
+
+    const countValueId = `${valueId}:count`;
+    pivot.layout.values = [{ valueId, fieldId: sales.fieldId, summarizeBy: 'sum' }, { valueId: countValueId, fieldId: sales.fieldId, summarizeBy: 'count' }];
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: region.fieldId, scope: 'field', valueId: countValueId, operator: 'greater-than', value: 1 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['North', 'South']);
+    pivot.layout.values = [{ valueId, fieldId: sales.fieldId, summarizeBy: 'sum' }];
+
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: category.fieldId, scope: 'field', valueId, operator: 'greater-than', value: 150 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['North', 'South']);
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.flatMap((node) => node.children.map((child) => `${node.label}/${child.label}`)), ['North/B', 'South/B']);
+
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: category.fieldId, scope: 'report', valueId, operator: 'greater-than', value: 450 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['North', 'South']);
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.flatMap((node) => node.children.map((child) => `${node.label}/${child.label}`)), ['North/B', 'South/B']);
+
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: region.fieldId, scope: 'field', valueId, operator: 'between', value: 200, value2: 300 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['South']);
+
+    pivot.layout.values = [{ valueId, fieldId: sales.fieldId, summarizeBy: 'average' }];
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: region.fieldId, scope: 'field', valueId, operator: 'greater-than', value: 150 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['North']);
+    pivot.layout.filters = [{ kind: 'condition', family: 'value', fieldId: region.fieldId, scope: 'field', valueId, operator: 'not-between', value: 0, value2: 100 }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['North', 'South']);
+
+    const missingValuePlacement = { kind: 'condition', family: 'value', fieldId: region.fieldId, operator: 'greater-than', value: 10 } as unknown as PivotModel['layout']['filters'][number];
+    assert.throws(() => computePivotResult(workbook, { ...pivot, layout: { ...pivot.layout, filters: [missingValuePlacement] } }), /Unknown Pivot Values placement|requires valueId/);
+    assert.throws(() => computePivotResult(workbook, { ...pivot, layout: { ...pivot.layout, filters: [{ ...(missingValuePlacement as Record<string, unknown>), valueId: 'missing-placement' } as unknown as PivotModel['layout']['filters'][number]] } }), /Unknown Pivot Values placement/);
+  });
+
   it('projects one typed report summary per field and never hides active families as All', () => {
     const workbook = workbookWithData();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-report-summary', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
