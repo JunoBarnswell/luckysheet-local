@@ -354,7 +354,7 @@ function validatePivotSource(value: unknown): void {
 
 function validatePivotPresentation(value: unknown): asserts value is PivotPresentation {
   const presentation = requireRecord(value, 'Pivot presentation');
-  validateExactKeys(presentation, ['styleName', 'styleOptions'], 'Pivot presentation');
+  validateExactKeys(presentation, ['styleName', 'styleOptions', 'displayOptions'], 'Pivot presentation');
   if (presentation.styleName !== undefined && typeof presentation.styleName !== 'string') throw new Error('Pivot presentation styleName is invalid');
   const options = requireRecord(presentation.styleOptions, 'Pivot presentation styleOptions');
   validateExactKeys(options, ['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'], 'Pivot presentation styleOptions');
@@ -363,6 +363,15 @@ function validatePivotPresentation(value: unknown): asserts value is PivotPresen
     || typeof options.showRowStripes !== 'boolean'
     || typeof options.showColumnStripes !== 'boolean'
     || typeof options.showLastColumn !== 'boolean') throw new Error('Pivot presentation styleOptions are invalid');
+  if (presentation.displayOptions !== undefined) {
+    const display = requireRecord(presentation.displayOptions, 'Pivot presentation displayOptions');
+    validateExactKeys(display, ['fillEmptyCells', 'emptyCellText', 'showErrorValues', 'errorCellText', 'showFieldHeaders', 'autoFitColumnsOnUpdate'], 'Pivot presentation displayOptions');
+    if (typeof display.fillEmptyCells !== 'boolean' || typeof display.emptyCellText !== 'string'
+      || typeof display.showErrorValues !== 'boolean' || typeof display.errorCellText !== 'string'
+      || typeof display.showFieldHeaders !== 'boolean' || typeof display.autoFitColumnsOnUpdate !== 'boolean') {
+      throw new Error('Pivot presentation displayOptions are invalid');
+    }
+  }
 }
 
 function validatePivotCollation(value: unknown): void {

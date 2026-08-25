@@ -404,7 +404,7 @@ const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean'
   && (value.expansion === undefined || isPivotExpansion(value.expansion));
 const isPivotPresentation = (value: unknown): value is PivotPresentation => isRecord(value)
-  && Object.keys(value).every((key) => key === 'styleName' || key === 'styleOptions')
+  && Object.keys(value).every((key) => key === 'styleName' || key === 'styleOptions' || key === 'displayOptions')
   && (value.styleName === undefined || typeof value.styleName === 'string')
   && isRecord(value.styleOptions)
   && Object.keys(value.styleOptions).every((key) => ['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'].includes(key))
@@ -412,7 +412,15 @@ const isPivotPresentation = (value: unknown): value is PivotPresentation => isRe
   && typeof value.styleOptions.showColumnHeaders === 'boolean'
   && typeof value.styleOptions.showRowStripes === 'boolean'
   && typeof value.styleOptions.showColumnStripes === 'boolean'
-  && typeof value.styleOptions.showLastColumn === 'boolean';
+  && typeof value.styleOptions.showLastColumn === 'boolean'
+  && (value.displayOptions === undefined || (isRecord(value.displayOptions)
+    && Object.keys(value.displayOptions).every((key) => ['fillEmptyCells', 'emptyCellText', 'showErrorValues', 'errorCellText', 'showFieldHeaders', 'autoFitColumnsOnUpdate'].includes(key))
+    && typeof value.displayOptions.fillEmptyCells === 'boolean'
+    && typeof value.displayOptions.emptyCellText === 'string'
+    && typeof value.displayOptions.showErrorValues === 'boolean'
+    && typeof value.displayOptions.errorCellText === 'string'
+    && typeof value.displayOptions.showFieldHeaders === 'boolean'
+    && typeof value.displayOptions.autoFitColumnsOnUpdate === 'boolean'));
 const isPivotRefreshPolicy = (value: unknown): value is PivotDefinition['refreshPolicy'] => {
   if (!isRecord(value) || !['manual', 'on-open', 'on-change'].includes(String(value.mode)) || typeof value.preserveFormatting !== 'boolean' || typeof value.refreshOnLoad !== 'boolean') return false;
   try {

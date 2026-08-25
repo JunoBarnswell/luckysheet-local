@@ -228,7 +228,11 @@ describe('exchange-excel-ooxml', () => {
       ] },
       layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-      presentation: { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true } },
+      presentation: {
+        styleName: 'PivotStyleMedium4',
+        styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true },
+        displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: false, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false },
+      },
     });
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     assert.equal(output.packageGraph.nativePivotGraph?.caches.length, 1);
@@ -240,9 +244,15 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!), /<cacheSource type="worksheet">/);
     assert.match(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /pivotTableParts/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /name="PivotStyleMedium4" showRowHeaders="0" showColHeaders="1" showRowStripes="1" showColStripes="1" showLastColumn="1"/);
+    assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /showHeaders="0"/);
+    assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /showMissing="1" missingCaption="—" showError="0" errorCaption="ERR" preserveFormatting="1"/);
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
-    assert.deepEqual(imported.sheets[0]?.pivots[0]?.presentation, { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true } });
+    assert.deepEqual(imported.sheets[0]?.pivots[0]?.presentation, {
+      styleName: 'PivotStyleMedium4',
+      styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true },
+      displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: false, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: true },
+    });
   });
 
   it('round-trips date, numeric and manual Pivot cache grouping through native fieldGroup metadata', () => {

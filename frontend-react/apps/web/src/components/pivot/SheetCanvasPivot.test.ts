@@ -114,4 +114,17 @@ describe("SheetCanvas Pivot projection boundary", () => {
     assert.equal(striped.style?.background, '#e0ecff');
     assert.equal(striped.style?.bold, false);
   });
+
+  it('renders Pivot empty and error values through display options', () => {
+    const empty = { id: 'pivot-1|empty', pivotId: 'pivot-1', row: 1, column: 1, kind: 'value' as const, value: null, text: '—' };
+    const error = { id: 'pivot-1|error', pivotId: 'pivot-1', row: 1, column: 2, kind: 'value' as const, value: { kind: 'error' as const, code: '#N/A' as const }, text: 'ERR' };
+    const presentation = {
+      styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
+      displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: true, errorCellText: 'ERR', showFieldHeaders: true, autoFitColumnsOnUpdate: true },
+    };
+    assert.equal(pivotProjectionCellRenderData(empty, 'en-US', presentation).displayValue, '—');
+    const errorData = pivotProjectionCellRenderData(error, 'en-US', presentation);
+    assert.equal(errorData.displayValue, 'ERR');
+    assert.equal(errorData.invalid, true);
+  });
 });

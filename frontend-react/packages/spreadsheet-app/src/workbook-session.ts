@@ -46,7 +46,7 @@ import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } fro
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativePackageState } from '@react-sheets/exchange-excel-ooxml';
-import { computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
+import { buildPivotGridProjection, computePivotResult, computePivotResultFromBlockSource, getPivotFieldCatalog as buildPivotFieldCatalog, normalizePivotDefinition } from './features/pivot/engine';
 import {
   copyRangeToClipboardData,
   planSheetTableCreation,
@@ -2865,6 +2865,21 @@ export class WorkbookSession {
     const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
     if (!pivot) return;
     this.runCommand('pivot.refresh', { sheetId: this.activeSheetId, pivotId });
+    if (pivot.presentation?.displayOptions?.autoFitColumnsOnUpdate) this.autoFitPivotColumns(pivotId);
+  }
+  autoFitPivotColumns(pivotId: string): void {
+    const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
+    const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
+    if (!owner || !pivot) return;
+    const projection = buildPivotGridProjection(this.runtime.model, pivot, this.runtime.pivotResults[pivotId]);
+    const maxima = new Map<number, number>();
+    for (const cell of projection.cells) {
+      const column = projection.target.anchor.column + cell.column;
+      const text = cell.text ?? '';
+      maxima.set(column, Math.max(maxima.get(column) ?? 8, [...text].length * this.runtime.model.dimensionMetrics.maximumDigitWidthPx + 16));
+    }
+    const maximum = 255 * this.runtime.model.dimensionMetrics.maximumDigitWidthPx;
+    this.applyColumnWidths([...maxima].map(([column, widthPx]) => ({ column, widthPx: Math.min(maximum, Math.max(8, widthPx)) })));
   }
   removePivot(id: string): void {
     this.runCommand('pivot.remove', id);
