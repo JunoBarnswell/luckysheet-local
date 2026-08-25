@@ -97,6 +97,23 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(app.getClipboard()?.values[0]?.[0]?.value, 'materialize-me');
   });
 
+  it('keeps the private clipboard usable when external clipboard publication is unavailable', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'private-copy' } });
+    selectCell(app, 0, 0);
+    const historyDepth = app['runtime'].commands.getHistoryDepth();
+
+    const outcome = await app.copy();
+
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.privatePayloadStored, true);
+    assert.equal(app.getClipboard()?.values[0]?.[0]?.value, 'private-copy');
+    assert.equal(app.getUiSnapshot().clipboard.systemStatus, 'failed');
+    assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
+    assert.match(app.getUiSnapshot().notice, /external clipboard|unavailable|failed/i);
+  });
+
   it('formatCells applies number format through sheet.format.set', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

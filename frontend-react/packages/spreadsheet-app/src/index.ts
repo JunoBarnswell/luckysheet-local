@@ -5,9 +5,14 @@ export {
   resolveActorId,
   resolveShareToken,
   type WorkbookSessionOptions,
+  type DispatchOutcome,
+  type ClipboardExecutionOutcome,
+  type DispatchErrorCode,
+  CommandDispatchError,
   type DefinedNameCommandInput,
   type UiSnapshot,
 } from './workbook-session';
+export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
 export { useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
 export {
   registerSpreadsheetFeatures,

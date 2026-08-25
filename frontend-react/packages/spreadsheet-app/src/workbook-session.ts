@@ -47,7 +47,6 @@ import {
   defaultTotalsFunction,
   findSheetTableAt,
   findValidationRule,
-  formatTsv,
   groupsWithinRange,
   buildRowOutlineGroup,
   buildColumnOutlineGroup,
@@ -88,6 +87,7 @@ import {
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionState } from './selection-service';
 import { cellAddress, columnLabel } from './address';
+import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipboard-browser';
 import { buildCanvasSheetSnapshot, type CanvasSheetSnapshot } from './ui-snapshot';
 import {
   buildDrawingAdd,
@@ -235,6 +235,10 @@ export class CommandDispatchError extends Error {
 export type DispatchOutcome =
   | { status: 'committed'; result: CommandResult }
   | { status: 'rejected'; error: CommandDispatchError };
+
+export type ClipboardExecutionOutcome = SystemClipboardWriteOutcome & {
+  privatePayloadStored: boolean;
+};
 
 export interface UiSnapshot extends DesignerState {
   unitId: string;
@@ -433,6 +437,8 @@ export class WorkbookSession {
   private lifecycleGeneration = 0;
   private overrideTarget: { row: number; column: number } | null = null;
   private clipboardData: ClipboardPayload | null = null;
+  private clipboardSystemStatus: 'unknown' | 'published' | 'reduced' | 'failed' = 'unknown';
+  private clipboardSystemFormats: readonly string[] = [];
   private readonly materializingDataRegions = new Map<string, Promise<void>>();
   private pendingCommandCount = 0;
   private snapshotGeneration = 0;
@@ -841,7 +847,12 @@ export class WorkbookSession {
       } : null,
       activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
       ribbon: { activeTab: this.ribbonTab },
-      clipboard: { hasContent: Boolean(this.clipboardData), mode: this.clipboardData ? (this.clipboardData.transfer === 'move' ? 'cut' : 'copy') : null },
+      clipboard: {
+        hasContent: Boolean(this.clipboardData),
+        mode: this.clipboardData ? (this.clipboardData.transfer === 'move' ? 'cut' : 'copy') : null,
+        systemStatus: this.clipboardSystemStatus,
+        systemFormats: this.clipboardSystemFormats,
+      },
       undoRedo: { canUndo: undoEntries.length > 0, canRedo: redoEntries.length > 0, undoCount: undoEntries.length, redoCount: redoEntries.length },
       formatPainter: this.formatPainter?.mode ?? null,
       printLayout: this.printLayout,
@@ -3105,27 +3116,39 @@ export class WorkbookSession {
     await this.executeCommandAfterMaterialization('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(sheet.columnCount - sel.activeCell.column - 1, 8) });
   }
 
-  copy(): void {
-    void this.copyOrCut(false);
+  copy(): Promise<ClipboardExecutionOutcome> {
+    return this.copyOrCut(false);
   }
-  cut(): void {
-    void this.copyOrCut(true);
+  cut(): Promise<ClipboardExecutionOutcome> {
+    return this.copyOrCut(true);
   }
 
-  private async copyOrCut(move: boolean): Promise<void> {
+  private async copyOrCut(move: boolean): Promise<ClipboardExecutionOutcome> {
     const range = this.getPrimaryRange();
     try {
       await this.materializeDataRegions(this.dataRegionsIntersectingRanges(range.sheetId, [range]));
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : 'Clipboard source could not be prepared');
-      return;
+      const normalized = error instanceof Error ? error : new Error('Clipboard source could not be prepared');
+      this.notify(normalized.message);
+      return { status: 'failed', formats: [], error: normalized, privatePayloadStored: false };
     }
     const data = copyRangeToClipboardData(this.runtime.model, range);
     this.setClipboard({ ...data, transfer: move ? 'move' : 'copy' });
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(formatTsv(data.values)).catch(() => undefined);
+    this.clipboardSystemStatus = 'unknown';
+    this.clipboardSystemFormats = [];
+    const system = await writeSystemClipboard(data);
+    this.clipboardSystemStatus = system.status;
+    this.clipboardSystemFormats = [...system.formats];
+    const outcome: ClipboardExecutionOutcome = { ...system, privatePayloadStored: true };
+    if (outcome.status === 'published') {
+      this.notify(move ? 'Cut to clipboard' : 'Range copied');
+    } else if (outcome.status === 'reduced') {
+      const formats = outcome.formats.join(', ');
+      this.notify(`${move ? 'Cut' : 'Range copied'} internally; external clipboard formats: ${formats}`);
+    } else {
+      this.notify(`${move ? 'Cut' : 'Copy'} retained in this workbook; external clipboard publication failed: ${outcome.error.message}`);
     }
-    this.notify(move ? 'Cut to clipboard' : 'Range copied');
+    return outcome;
   }
   async paste(spec: PasteSpecialSpec = createPasteSpecialSpec()): Promise<DispatchOutcome> {
     const sel = this.selectionService.getState();

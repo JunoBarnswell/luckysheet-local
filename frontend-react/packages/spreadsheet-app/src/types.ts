@@ -93,6 +93,8 @@ export interface DialogState {
 export interface ClipboardState {
   hasContent: boolean;
   mode: 'copy' | 'cut' | null;
+  systemStatus: 'unknown' | 'published' | 'reduced' | 'failed';
+  systemFormats: readonly string[];
 }
 
 export interface UndoRedoState {
