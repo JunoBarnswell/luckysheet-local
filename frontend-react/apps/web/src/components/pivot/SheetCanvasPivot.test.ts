@@ -18,7 +18,7 @@ function projection(overrides: Partial<PivotGridProjection> = {}): PivotGridProj
     target: { sheetId: "sheet-1", anchor: { row: 4, column: 3 } },
     occupiedRange: { sheetId: "sheet-1", startRow: 4, endRow: 5, startColumn: 3, endColumn: 4 },
     cells: [{ id: "pivot-1|r0|c0", pivotId: "pivot-1", row: 0, column: 0, kind: "value", value: 42, text: "42", sourceRowPaths: [{ sheetId: "sheet-1", row: 7 }] }],
-    collision: { status: "clear", reasons: [], conflictingRanges: [] },
+    collision: { status: "clear", reasons: [], conflictingRanges: [], conflicts: [] },
     refresh: { status: "ready", revision: 0, sourceRevision: "source-1" },
     ...overrides,
   };
@@ -76,7 +76,7 @@ describe("SheetCanvas Pivot projection boundary", () => {
   });
 
   it("does not hit or render a colliding projection", () => {
-    const colliding = projection({ collision: { status: "collision", reasons: ["cell-data"], conflictingRanges: [] } });
+    const colliding = projection({ collision: { status: "collision", reasons: ["cell-data"], conflictingRanges: [], conflicts: [] } });
     const current = sheet(colliding);
     assert.equal(findPivotProjectionCell(current, 4, 3), null);
     assert.equal(resolvePivotProjectionHit(current, 4, 3), null);

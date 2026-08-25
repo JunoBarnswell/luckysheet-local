@@ -835,10 +835,37 @@ export interface PivotProjectionCell {
   expanded?: boolean;
 }
 
+export type PivotCollisionReason =
+  | 'cell-data'
+  | 'merge'
+  | 'pivot'
+  | 'unresolved-pivot'
+  | 'worksheet-bounds'
+  | 'sheet-table'
+  | 'data-region'
+  | 'conditional-format'
+  | 'data-validation'
+  | 'auto-filter'
+  | 'banded-rule'
+  | 'drawing'
+  | 'sparkline'
+  | 'spill'
+  | 'note'
+  | 'comment'
+  | 'hyperlink'
+  | 'protection';
+
+export interface PivotCollisionConflict {
+  reason: PivotCollisionReason;
+  range: RangeRef;
+  participantId?: string;
+}
+
 export interface PivotCollision {
   status: 'clear' | 'collision';
-  reasons: Array<'cell-data' | 'merge' | 'pivot' | 'worksheet-bounds'>;
+  reasons: PivotCollisionReason[];
   conflictingRanges: RangeRef[];
+  conflicts: PivotCollisionConflict[];
 }
 
 export type PivotRefreshStatus = 'idle' | 'refreshing' | 'ready' | 'stale' | 'error' | 'collision';
