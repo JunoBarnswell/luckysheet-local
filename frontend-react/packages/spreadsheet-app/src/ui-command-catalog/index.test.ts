@@ -135,6 +135,14 @@ describe('Ribbon UI command catalog', () => {
     });
   });
 
+  it('exposes Gantt contextual commands only for the active GanttSheet', () => {
+    const withoutGantt = context();
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('ganttFieldMapping'), withoutGantt), false);
+    const withGantt = context({ activeGanttSheet: { sheetId: 'sheet-gantt-1', viewId: 'table-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('ganttFieldMapping'), withGantt), true);
+    assert.deepEqual(buildRibbonCommand('ganttTimeline', withGantt), { type: 'intent', intent: { type: 'panel.open', panel: 'data' } });
+  });
+
   it('honors phase and permission context before building a command', () => {
     const disabled = context({ disabled: true });
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), disabled), false);

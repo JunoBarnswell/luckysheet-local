@@ -12,6 +12,7 @@ import type {
   WorksheetPane,
   AutoFilterModel,
   FilterCriterion,
+  GanttSheetDefinition,
   MergeSpan,
   OutlineGroup,
   PivotModel,
@@ -141,6 +142,7 @@ export interface CanvasSheetSnapshot {
   getFilterIconDomain: (column: number) => Array<{ iconSet: string; iconId: number }>;
   sheetTables: SheetTableModel[];
   tableSheet?: TableSheetDefinition;
+  ganttSheet?: GanttSheetDefinition;
   tabColor?: string;
   hidden?: boolean;
   /** Print preview only — bounded slice */
@@ -410,6 +412,7 @@ export function buildCanvasSheetSnapshot(
     },
     sheetTables: [...sheet.sheetTables],
     tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
+    ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
     previewRows,

@@ -23,7 +23,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             "cf.add", "cf.remove", "cf.clear",
             "dv.add", "dv.remove", "banded.set", "outline.set",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set",
-            "tableSheet.update"
+            "tableSheet.update", "ganttSheet.update"
     );
 
     SheetDataMutationDescriptor(String id) {
@@ -50,7 +50,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "banded.set" -> bandedRange(root, mutation.sheetId(), params);
             case "outline.set" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.add", "sheetTable.update" -> List.of(tableRange(root, mutation.sheetId(), params));
-            case "tableSheet.update" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
+            case "tableSheet.update", "ganttSheet.update" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
             case "sheetTable.remove", "sheetTable.autoFilter.set" -> List.of(existingTableRange(root, mutation.sheetId(), SnapshotMutationSupport.text(params, "tableId")));
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
         };
@@ -89,6 +89,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "outline.set" -> setOutline(root, sheet, mutation.sheetId(), params);
             case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params);
             case "tableSheet.update" -> updateTableSheet(root, sheet, mutation.sheetId(), params);
+            case "ganttSheet.update" -> updateGanttSheet(root, sheet, mutation.sheetId(), params);
             case "sheetTable.remove" -> removeSheetTable(sheet, params);
             case "sheetTable.autoFilter.set" -> setTableAutoFilter(root, sheet, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported sheet metadata mutation: " + id());
@@ -361,6 +362,45 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             }
         }
         sheet.set("tableSheet", definition.deepCopy());
+    }
+
+    private void updateGanttSheet(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+        SnapshotMutationSupport.requireEntitySheet(params, sheetId);
+        if (!"gantt-sheet".equals(sheet.path("kind").asText())) throw ServiceException.validation("GanttSheet definition targets a non-GanttSheet");
+        ObjectNode definition = SnapshotMutationSupport.requiredObject(params, "definition");
+        String viewId = SnapshotMutationSupport.text(definition, "viewId");
+        ObjectNode table = null;
+        for (JsonNode candidate : SnapshotMutationSupport.dataModelArray(root, "tables")) {
+            if (viewId.equals(candidate.path("id").asText()) && candidate.isObject()) { table = (ObjectNode) candidate; break; }
+        }
+        if (table == null) throw ServiceException.validation("GanttSheet binding table is unavailable: " + viewId);
+        Set<String> fieldIds = new java.util.HashSet<>();
+        for (JsonNode field : SnapshotMutationSupport.array(table, "fields")) fieldIds.add(SnapshotMutationSupport.text((ObjectNode) field, "id"));
+        ObjectNode mapping = SnapshotMutationSupport.requiredObject(definition, "fieldMap");
+        for (String key : List.of("id", "title", "start", "end", "progress")) {
+            String fieldId = SnapshotMutationSupport.text(mapping, key);
+            if (!fieldIds.contains(fieldId)) throw ServiceException.validation("GanttSheet field mapping is unavailable: " + key);
+        }
+        for (String key : List.of("parentId", "dependencies")) {
+            JsonNode field = mapping.get(key);
+            if (field != null && !field.isNull() && (!field.isTextual() || !fieldIds.contains(field.asText()))) throw ServiceException.validation("GanttSheet optional field mapping is unavailable: " + key);
+        }
+        ObjectNode calendar = SnapshotMutationSupport.requiredObject(definition, "calendar");
+        ArrayNode workingDays = SnapshotMutationSupport.requiredArray(calendar, "workingDays");
+        Set<Integer> days = new java.util.HashSet<>();
+        for (JsonNode day : workingDays) {
+            if (!day.isIntegralNumber() || day.intValue() < 0 || day.intValue() > 6 || !days.add(day.intValue())) throw ServiceException.validation("GanttSheet workingDays is invalid");
+        }
+        JsonNode startHour = calendar.get("dayStartHour");
+        JsonNode endHour = calendar.get("dayEndHour");
+        if (startHour == null || endHour == null || !startHour.isNumber() || !endHour.isNumber() || startHour.asDouble() < 0 || endHour.asDouble() > 24 || startHour.asDouble() >= endHour.asDouble()) throw ServiceException.validation("GanttSheet calendar hours are invalid");
+        ObjectNode timeline = SnapshotMutationSupport.requiredObject(definition, "timeline");
+        String unit = SnapshotMutationSupport.text(timeline, "unit");
+        if (!Set.of("day", "week", "month", "quarter").contains(unit)) throw ServiceException.validation("GanttSheet timeline unit is invalid");
+        for (String key : List.of("start", "end")) if (timeline.get(key) != null && !timeline.get(key).isTextual()) throw ServiceException.validation("GanttSheet timeline bound is invalid");
+        ObjectNode dependencyStyle = SnapshotMutationSupport.requiredObject(definition, "dependencyStyle");
+        if (SnapshotMutationSupport.text(dependencyStyle, "color").isBlank() || !dependencyStyle.path("width").isNumber() || dependencyStyle.path("width").asDouble() <= 0) throw ServiceException.validation("GanttSheet dependency style is invalid");
+        sheet.set("ganttSheet", definition.deepCopy());
     }
 
     private void validateTableSheetFieldList(ObjectNode definition, Set<String> visibleIds, String property) {

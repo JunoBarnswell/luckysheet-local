@@ -29,6 +29,7 @@ import type {
   DefinedNameModel,
   DataRelationship,
   TableSheetDefinition,
+  GanttSheetDefinition,
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
@@ -53,6 +54,7 @@ import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataModelPanel } from './panels/DataModelPanel';
 import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
+import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
 import { DefinedNamesPanel } from './panels/DefinedNamesPanel';
 import { SelectionPane, type DrawingSelectionMode } from './home/SelectionPane';
 import {
@@ -115,6 +117,7 @@ export interface FeatureSidebarProps {
   tables: readonly WorkbookTableModel[];
   relationships: readonly DataRelationship[];
   onUpdateTableSheet: (definition: TableSheetDefinition) => void;
+  onUpdateGanttSheet: (definition: GanttSheetDefinition) => void;
   onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
   onRemoveDataTable: (tableId: string) => Promise<void>;
   onCommand: (descriptor: CommandDescriptor) => void;
@@ -335,6 +338,7 @@ export function FeatureSidebar({
   tables,
   relationships,
   onUpdateTableSheet,
+  onUpdateGanttSheet,
   onReadDataRows,
   onRemoveDataTable,
   onCommand,
@@ -378,6 +382,8 @@ export function FeatureSidebar({
   const disabled = phase !== 'ready';
   const activePanelLabel = sheet.tableSheet && activePanel === 'data'
     ? localizeText(locale, 'TableSheet Designer')
+    : sheet.ganttSheet && activePanel === 'data'
+      ? localizeText(locale, 'GanttSheet Designer')
     : localizeText(locale, panels.find((panel) => panel.id === activePanel)?.label ?? 'Inspect');
 
   const columnLabelOf = (column: number): string => {
@@ -613,6 +619,8 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'data' ? (
           sheet.tableSheet ? (
             <TableSheetDesignerPanel definition={sheet.tableSheet} tables={tables} relationships={relationships} onUpdate={onUpdateTableSheet} />
+          ) : sheet.ganttSheet ? (
+            <GanttDesignerPanel definition={sheet.ganttSheet} tables={tables} onUpdate={onUpdateGanttSheet} />
           ) : (
             <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
           )

@@ -26,6 +26,10 @@
   "pivotAnalyze": "数据透视表分析",
   "pivotDesign": "数据透视表设计",
   "tableSheetDesign": "集算表设计",
+  "ganttTask": "甘特任务",
+  "ganttProject": "甘特项目",
+  "ganttView": "甘特视图",
+  "ganttFormat": "甘特格式",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -277,6 +281,10 @@
       "pivotAnalyze": "数据透视表",
       "pivotDesign": "数据透视表",
       "tableSheetDesign": "集算表"
+      ,"ganttTask": "甘特任务"
+      ,"ganttProject": "甘特项目"
+      ,"ganttView": "甘特视图"
+      ,"ganttFormat": "甘特格式"
     },
     "commands": {
       "settings": "选项",
@@ -374,6 +382,10 @@
       "pivotFieldList": "字段列表",
       "tableSheetFieldList": "字段列表",
       "tableSheetColumnSettings": "列设置",
+      "ganttFieldMapping": "任务字段",
+      "ganttCalendar": "日历",
+      "ganttTimeline": "时间轴",
+      "ganttDependencyStyle": "依赖样式",
       "chartBuilder": "图表构建器",
       "sparkline": "迷你图",
       "shapesLines": "形状与线条",

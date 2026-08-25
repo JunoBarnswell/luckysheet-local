@@ -1376,6 +1376,22 @@ export class WorkbookSession {
     this.emit();
   }
 
+  setActiveGanttSheetContext(sheetId: string | null, viewId?: string): void {
+    const sheet = sheetId ? this.runtime.model.getSheet(sheetId) : undefined;
+    const next: ActiveContext = sheet && sheet.kind === 'gantt-sheet' && sheet.ganttSheet
+      ? { kind: 'gantt-sheet', sheetId: sheet.id, viewId: viewId ?? sheet.ganttSheet.viewId }
+      : { kind: 'none' };
+    if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
+    this.activeContext = next;
+    if (next.kind === 'gantt-sheet') {
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'ganttTask';
+    } else if (['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'].includes(this.ribbonTab)) {
+      this.ribbonTab = 'home';
+    }
+    this.emit();
+  }
+
   setActiveDrawingContext(drawingId: string | null, sheetId = this.activeSheetId): void {
     const next: ActiveContext = drawingId === null ? { kind: 'none' } : { kind: 'drawing', sheetId, drawingId };
     if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
@@ -2240,9 +2256,13 @@ export class WorkbookSession {
       this.activeContext = { kind: 'table-sheet', sheetId: sheet.id, viewId: sheet.tableSheet.viewId };
       this.panels = { ...this.panels, active: 'data', open: true };
       this.ribbonTab = 'tableSheetDesign';
+    } else if (sheet.kind === 'gantt-sheet' && sheet.ganttSheet) {
+      this.activeContext = { kind: 'gantt-sheet', sheetId: sheet.id, viewId: sheet.ganttSheet.viewId };
+      this.panels = { ...this.panels, active: 'data', open: true };
+      this.ribbonTab = 'ganttTask';
     } else {
       this.activeContext = { kind: 'none' };
-      if (this.ribbonTab === 'tableSheetDesign') this.ribbonTab = 'home';
+      if (this.ribbonTab === 'tableSheetDesign' || ['ganttTask', 'ganttProject', 'ganttView', 'ganttFormat'].includes(this.ribbonTab)) this.ribbonTab = 'home';
     }
     this.runtime.drawing.deselect(sheetId);
     this.drawingSelectionMode = false;
@@ -2309,6 +2329,12 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (sheet.kind !== 'table-sheet') throw new Error('TableSheet designer requires a table-sheet');
     this.runCommand('tableSheet.update', { sheetId: this.activeSheetId, definition });
+  }
+
+  updateGanttSheetDefinition(definition: import('@react-sheets/core-model').GanttSheetDefinition): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    if (sheet.kind !== 'gantt-sheet') throw new Error('GanttSheet designer requires a gantt-sheet');
+    this.runCommand('ganttSheet.update', { sheetId: this.activeSheetId, definition });
   }
 
   applyBarcode(symbology: BarcodeSymbology = 'qr'): void {
