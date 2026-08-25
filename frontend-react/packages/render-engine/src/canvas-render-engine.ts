@@ -251,9 +251,19 @@ export class CanvasRenderEngine {
 
   setFloating(objects: readonly FloatingDrawable[], selectedId: string | null = null): void {
     this.assertActive();
+    const objectsChanged = objects !== this.floatables;
     this.floatables = objects;
     this.chrome.selectedFloatingId = selectedId;
-    this.invalidateChrome();
+    if (objectsChanged) {
+      // Floating drawables close over canonical sheet snapshots. When a source
+      // range changes (including a cross-sheet Camera source), the extensions
+      // layer must be repainted; chrome-only invalidation would leave a stale
+      // camera bitmap on screen.
+      this.forceFullRedraw = true;
+      this.requestRender();
+    } else {
+      this.invalidateChrome();
+    }
   }
 
   onViewportChanged(listener: () => void): () => void {

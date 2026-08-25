@@ -14,8 +14,17 @@ import type {
   WorkbookTableModel,
 } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import type { FloatingDrawable, Rect } from "@react-sheets/render-engine";
-import type { SheetSkeleton } from "@react-sheets/render-engine";
+import {
+  DEFAULT_RENDER_THEME,
+  SheetSkeleton,
+  drawCellLayer,
+  drawGridLayer,
+  type CellProvider,
+  type CellRenderData,
+  type FloatingDrawable,
+  type Rect,
+  type RenderPane,
+} from "@react-sheets/render-engine";
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
@@ -270,7 +279,149 @@ function dataChartSeries(
   return { categories, series };
 }
 
-function drawCameraOnCanvas(context: CanvasRenderingContext2D, payload: CameraDrawingPayload, bounds: Rect, getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined): void {
+export interface CameraSourceGeometry {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  firstRow: number;
+  lastRow: number;
+  firstColumn: number;
+  lastColumn: number;
+}
+
+const CAMERA_SURFACE_MAX_EDGE = 4096;
+const cameraSurfaceCache = new WeakMap<object, Map<string, HTMLCanvasElement>>();
+
+function cameraRangeKey(range: RangeRef): string {
+  return `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
+}
+
+export function resolveCameraSourceGeometry(source: CanvasSheetSnapshot, range: RangeRef): CameraSourceGeometry | null {
+  if (range.sheetId !== source.id
+    || !Number.isSafeInteger(range.startRow) || !Number.isSafeInteger(range.endRow)
+    || !Number.isSafeInteger(range.startColumn) || !Number.isSafeInteger(range.endColumn)
+    || range.startRow < 0 || range.startColumn < 0
+    || range.endRow < range.startRow || range.endColumn < range.startColumn
+    || range.endRow >= source.rowCount || range.endColumn >= source.columnCount) return null;
+  const skeleton = new SheetSkeleton({
+    rowCount: source.rowCount,
+    columnCount: source.columnCount,
+    defaultRowHeight: source.defaultRowHeightPx,
+    defaultColumnWidth: source.defaultColumnWidthPx,
+    rowHeights: new Map(Object.entries(source.rowHeightsPx).map(([key, value]) => [Number(key), value])),
+    columnWidths: new Map(Object.entries(source.columnWidthsPx).map(([key, value]) => [Number(key), value])),
+    hiddenRows: new Set(source.hiddenRows),
+    hiddenColumns: new Set(source.hiddenColumns),
+  });
+  let firstRow = range.startRow;
+  while (firstRow <= range.endRow && skeleton.isRowHidden(firstRow)) firstRow += 1;
+  let firstColumn = range.startColumn;
+  while (firstColumn <= range.endColumn && skeleton.isColumnHidden(firstColumn)) firstColumn += 1;
+  let lastRow = range.endRow;
+  while (lastRow >= range.startRow && skeleton.isRowHidden(lastRow)) lastRow -= 1;
+  let lastColumn = range.endColumn;
+  while (lastColumn >= range.startColumn && skeleton.isColumnHidden(lastColumn)) lastColumn -= 1;
+  if (firstRow > lastRow || firstColumn > lastColumn) return null;
+  const left = skeleton.getColumnLeft(firstColumn);
+  const top = skeleton.getRowTop(firstRow);
+  if (left < 0 || top < 0) return null;
+  let width = 0;
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) width += skeleton.getColumnWidth(column);
+  let height = 0;
+  for (let row = range.startRow; row <= range.endRow; row += 1) height += skeleton.getRowHeight(row);
+  return width > 0 && height > 0 ? { left, top, width, height, firstRow, lastRow, firstColumn, lastColumn } : null;
+}
+
+function cameraCellProvider(source: CanvasSheetSnapshot, range: RangeRef): CellProvider {
+  const merges = source.merges.filter((merge) => merge.range.endRow >= range.startRow
+    && merge.range.startRow <= range.endRow
+    && merge.range.endColumn >= range.startColumn
+    && merge.range.startColumn <= range.endColumn);
+  const mergeAt = (row: number, column: number) => merges.find((merge) => row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn);
+  return ({ row, column }): CellRenderData | undefined => {
+    const cell = source.getCell(row, column);
+    const merge = mergeAt(row, column);
+    if (!cell && !merge) return undefined;
+    const value: CellRenderData = {
+      value: cell?.value,
+      displayValue: cell?.displayValue,
+      formula: cell?.formula,
+      style: cell?.style,
+      editor: cell?.editor,
+      presentation: cell?.presentation,
+      hasComment: cell?.hasComment,
+      invalid: cell?.invalid,
+      overlay: cell?.overlay,
+    };
+    if (merge) {
+      value.merge = {
+        startRow: merge.range.startRow,
+        endRow: merge.range.endRow,
+        startColumn: merge.range.startColumn,
+        endColumn: merge.range.endColumn,
+        isAnchor: merge.anchor.row === row && merge.anchor.column === column,
+      };
+    }
+    return value;
+  };
+}
+
+function cameraSurface(source: CanvasSheetSnapshot, range: RangeRef): HTMLCanvasElement | null {
+  if (typeof document === 'undefined') return null;
+  const geometry = resolveCameraSourceGeometry(source, range);
+  if (!geometry) return null;
+  const key = cameraRangeKey(range);
+  let surfaces = cameraSurfaceCache.get(source);
+  if (!surfaces) {
+    surfaces = new Map();
+    cameraSurfaceCache.set(source, surfaces);
+  }
+  const cached = surfaces.get(key);
+  if (cached) return cached;
+  const scale = Math.min(1, CAMERA_SURFACE_MAX_EDGE / geometry.width, CAMERA_SURFACE_MAX_EDGE / geometry.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.ceil(geometry.width * scale));
+  canvas.height = Math.max(1, Math.ceil(geometry.height * scale));
+  const surfaceContext = canvas.getContext('2d');
+  if (!surfaceContext) return null;
+  const pane: RenderPane = {
+    id: 'main',
+    screenRect: { x: geometry.left, y: geometry.top, width: geometry.width, height: geometry.height },
+    contentOrigin: { x: geometry.left, y: geometry.top },
+    visibleRange: {
+      startRow: range.startRow,
+      endRow: range.endRow,
+      startColumn: range.startColumn,
+      endColumn: range.endColumn,
+    },
+  };
+  surfaceContext.save();
+  surfaceContext.scale(scale, scale);
+  surfaceContext.beginPath();
+  surfaceContext.rect(0, 0, geometry.width, geometry.height);
+  surfaceContext.clip();
+  surfaceContext.translate(-geometry.left, -geometry.top);
+  const skeleton = new SheetSkeleton({
+    rowCount: source.rowCount,
+    columnCount: source.columnCount,
+    defaultRowHeight: source.defaultRowHeightPx,
+    defaultColumnWidth: source.defaultColumnWidthPx,
+    rowHeights: new Map(Object.entries(source.rowHeightsPx).map(([entry, value]) => [Number(entry), value])),
+    columnWidths: new Map(Object.entries(source.columnWidthsPx).map(([entry, value]) => [Number(entry), value])),
+    hiddenRows: new Set(source.hiddenRows),
+    hiddenColumns: new Set(source.hiddenColumns),
+  });
+  const cellProvider = cameraCellProvider(source, range);
+  const options = { context: surfaceContext, skeleton, pane, visibleRange: pane.visibleRange, cellProvider, theme: DEFAULT_RENDER_THEME };
+  drawGridLayer(options);
+  drawCellLayer(options);
+  surfaceContext.restore();
+  surfaces.set(key, canvas);
+  return canvas;
+}
+
+export function drawCameraOnCanvas(context: CanvasRenderingContext2D, payload: CameraDrawingPayload, bounds: Rect, getSheet: (sheetId: string) => CanvasSheetSnapshot | undefined): void {
   const source = getSheet(payload.sourceRange.sheetId);
   context.save();
   context.fillStyle = '#ffffff';
@@ -281,23 +432,19 @@ function drawCameraOnCanvas(context: CanvasRenderingContext2D, payload: CameraDr
     context.restore();
     return;
   }
-  const rows = Math.max(1, payload.sourceRange.endRow - payload.sourceRange.startRow + 1);
-  const columns = Math.max(1, payload.sourceRange.endColumn - payload.sourceRange.startColumn + 1);
-  const rowHeight = bounds.height / rows;
-  const columnWidth = bounds.width / columns;
-  context.strokeStyle = '#d9e0e6';
-  context.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
-  context.textBaseline = 'middle';
-  context.fillStyle = '#1f2937';
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < columns; column += 1) {
-      const x = bounds.x + column * columnWidth;
-      const y = bounds.y + row * rowHeight;
-      context.strokeRect(x + 0.5, y + 0.5, columnWidth, rowHeight);
-      const value = source.getCell(payload.sourceRange.startRow + row, payload.sourceRange.startColumn + column)?.value ?? '';
-      context.fillText(value, x + 4, y + rowHeight / 2, Math.max(2, columnWidth - 8));
-    }
+  const surface = cameraSurface(source, payload.sourceRange);
+  if (!surface) {
+    context.fillStyle = '#b91c1c';
+    context.fillText('Invalid camera source range', bounds.x + 8, bounds.y + 18);
+    context.restore();
+    return;
   }
+  const scale = Math.min(bounds.width / surface.width, bounds.height / surface.height);
+  const width = surface.width * scale;
+  const height = surface.height * scale;
+  const x = bounds.x + (bounds.width - width) / 2;
+  const y = bounds.y + (bounds.height - height) / 2;
+  context.drawImage(surface, 0, 0, surface.width, surface.height, x, y, width, height);
   context.restore();
 }
 
