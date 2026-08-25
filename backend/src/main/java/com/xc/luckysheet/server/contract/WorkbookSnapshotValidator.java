@@ -48,6 +48,13 @@ public final class WorkbookSnapshotValidator {
             throw ServiceException.validation("Workbook snapshot dataModel is invalid");
         }
         java.util.Set<String> sheetIds = new java.util.HashSet<>();
+        java.util.Map<String, int[]> sheetDimensions = new java.util.HashMap<>();
+        for (JsonNode sheet : sheets) {
+            String sheetId = sheet.path("id").asText().trim();
+            if (!sheetId.isBlank() && sheet.path("rowCount").canConvertToInt() && sheet.path("columnCount").canConvertToInt()) {
+                sheetDimensions.put(sheetId, new int[]{sheet.path("rowCount").intValue(), sheet.path("columnCount").intValue()});
+            }
+        }
         java.util.Set<String> pivotIds = new java.util.HashSet<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
@@ -81,6 +88,12 @@ public final class WorkbookSnapshotValidator {
                     || "split".equals(sheet.path("pane").path("kind").asText()))) {
                 throw ServiceException.validation("Workbook snapshot sheet pixel geometry is invalid");
             }
+            sheet.path("drawingPayloads").fields().forEachRemaining(entry -> {
+                JsonNode payload = entry.getValue();
+                if ("camera".equals(payload.path("kind").asText())) {
+                    validateDrawingSourceRange(payload.get("sourceRange"), sheetDimensions, "Camera");
+                }
+            });
             JsonNode pane = sheet.path("pane");
             if (!"none".equals(pane.path("kind").asText())) {
                 String state = pane.path("state").asText();
@@ -138,7 +151,46 @@ public final class WorkbookSnapshotValidator {
                 }
             }
         }
+        java.util.Set<String> dataChartTableIds = new java.util.HashSet<>();
+        for (JsonNode sheet : sheets) sheet.path("drawingPayloads").forEach(payload -> {
+            if ("data-chart".equals(payload.path("kind").asText()) && "table".equals(payload.path("source").path("kind").asText())) {
+                dataChartTableIds.add(payload.path("source").path("tableId").asText());
+            }
+            if ("data-chart".equals(payload.path("kind").asText()) && "report-sheet".equals(payload.path("source").path("kind").asText())) {
+                validateDrawingSourceRange(payload.path("source").get("range"), sheetDimensions, "Data chart");
+            }
+        });
+        for (JsonNode table : dataModel.path("tables")) {
+            JsonNode sourceRange = table.get("sourceRange");
+            if (dataChartTableIds.contains(table.path("id").asText()) && sourceRange != null && !sourceRange.isNull()) {
+                validateDrawingSourceRange(sourceRange, sheetDimensions, "Data chart table");
+            }
+        }
         return snapshot;
+    }
+
+    private static void validateDrawingSourceRange(JsonNode value, java.util.Map<String, int[]> sheetDimensions, String label) {
+        if (value == null || !value.isObject()) throw ServiceException.validation(label + " source range is invalid");
+        int[] dimensions = sheetDimensions.get(value.path("sheetId").asText());
+        for (String coordinate : java.util.List.of("startRow", "endRow", "startColumn", "endColumn")) {
+            if (!value.path(coordinate).canConvertToInt() || value.path(coordinate).intValue() < 0) {
+                throw ServiceException.validation(label + " source range is invalid");
+            }
+        }
+        int startRow = value.path("startRow").intValue();
+        int endRow = value.path("endRow").intValue();
+        int startColumn = value.path("startColumn").intValue();
+        int endColumn = value.path("endColumn").intValue();
+        if (dimensions == null || startRow > endRow || startColumn > endColumn
+                || endRow >= dimensions[0] || endColumn >= dimensions[1]) {
+            throw ServiceException.validation(label + " source range is outside its worksheet bounds");
+        }
+        long rows = (long) endRow - startRow + 1;
+        long columns = (long) endColumn - startColumn + 1;
+        if (rows > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS || columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS
+                || rows * columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS) {
+            throw ServiceException.validation(label + " source range exceeds the rendering limit");
+        }
     }
 
     /** One-way migration used only when reading persisted v2 checkpoints. */

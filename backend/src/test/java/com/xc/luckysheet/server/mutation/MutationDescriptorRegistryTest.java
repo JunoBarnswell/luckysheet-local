@@ -428,6 +428,25 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void drawingReducerRejectsCameraRangesThatCanExhaustTheRenderer() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":1000,"columnCount":1000,"cells":{},"drawings":[],"drawingPayloads":{}}]}
+                """);
+        OperationMutation bounded = new OperationMutation("drawing.add", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","drawing":{"id":"bounded-camera","sheetId":"sheet-1","kind":"camera","payloadId":"bounded-payload","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":99,"startColumn":0,"endColumn":99},"refreshPolicy":"live"}}
+                """));
+        registry.prepare(snapshot, bounded, WorkbookAclRole.EDITOR);
+
+        OperationMutation add = new OperationMutation("drawing.add", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","drawing":{"id":"camera-1","sheetId":"sheet-1","kind":"camera","payloadId":"camera-payload","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":999,"startColumn":0,"endColumn":999},"refreshPolicy":"live"}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, add, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
     void printAndQueryRangeReducersPersistOnlyCanonicalDomainState() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

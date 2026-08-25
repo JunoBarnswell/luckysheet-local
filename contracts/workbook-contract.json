@@ -3,7 +3,8 @@
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
     "snapshotVersion": 5,
-    "maxNameLength": 255
+    "maxNameLength": 255,
+    "maxDrawingSourceCells": 100000
   },
   "errors": [
     "UNAUTHENTICATED",

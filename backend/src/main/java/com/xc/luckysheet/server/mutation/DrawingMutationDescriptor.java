@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -191,6 +192,16 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
         if (payloadKind.equals("chart") && !SnapshotMutationSupport.text(drawing, "payloadId").equals(SnapshotMutationSupport.text(payload, "chartId"))) {
             throw ServiceException.validation("Chart payload identity does not match drawing payloadId");
+        }
+        if (payloadKind.equals("camera")) {
+            ObjectNode range = SnapshotMutationSupport.requiredObject(payload, "sourceRange");
+            SnapshotMutationSupport.range(root, range);
+            long rows = (long) range.path("endRow").intValue() - range.path("startRow").intValue() + 1;
+            long columns = (long) range.path("endColumn").intValue() - range.path("startColumn").intValue() + 1;
+            if (rows > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS || columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS
+                    || rows * columns > GeneratedWorkbookContract.MAX_DRAWING_SOURCE_CELLS) {
+                throw ServiceException.validation("Camera source range exceeds the rendering limit");
+            }
         }
         if (payloadKind.equals("data-chart")) validateDataChartPayload(root, payload);
     }

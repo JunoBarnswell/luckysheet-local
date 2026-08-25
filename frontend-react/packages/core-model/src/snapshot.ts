@@ -1,6 +1,7 @@
 import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
+import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -23,6 +24,8 @@ export interface WorkbookSnapshot {
   cellStyleTemplates?: CellStyleTemplate[];
   sheets: SheetSnapshot[];
 }
+
+export { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 
 export interface WorkbookDimensionMetrics {
   normalFontFamily: string;
@@ -199,6 +202,9 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (!pivot.id.trim() || pivotIds.has(pivot.id)) throw new Error(`Pivot identity is duplicated or empty: ${pivot.id}`);
       pivotIds.add(pivot.id);
     }
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
+    }
   }
   for (const sheet of snapshot.sheets) {
     for (const drawing of sheet.drawings) {
@@ -215,6 +221,16 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
         }
       }
     }
+  }
+  const dataChartTableIds = new Set(snapshot.sheets.flatMap((sheet) => Object.values(sheet.drawingPayloads)
+    .flatMap((payload) => payload.kind === 'data-chart' && payload.source.kind === 'table' ? [payload.source.tableId] : [])));
+  for (const sheet of snapshot.sheets) {
+    for (const payload of Object.values(sheet.drawingPayloads)) {
+      if (payload.kind === 'data-chart' && payload.source.kind === 'report-sheet') validateDrawingSourceRange(payload.source.range, snapshot, 'Data chart');
+    }
+  }
+  for (const table of snapshot.dataModel.tables) {
+    if (table.sourceRange && dataChartTableIds.has(table.id)) validateDrawingSourceRange(table.sourceRange, snapshot, 'Data chart table');
   }
   const canonical = structuredClone(snapshot);
   canonical.cellStyleTemplates ??= [];
@@ -233,6 +249,21 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+function validateDrawingSourceRange(range: RangeRef, snapshot: WorkbookSnapshot, label: string): void {
+  const sheet = snapshot.sheets.find((candidate) => candidate.id === range.sheetId);
+  const validCoordinates = [range.startRow, range.endRow, range.startColumn, range.endColumn]
+    .every((coordinate) => Number.isSafeInteger(coordinate) && coordinate >= 0);
+  if (!sheet || !validCoordinates || range.startRow > range.endRow || range.startColumn > range.endColumn
+    || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) {
+    throw new Error(`${label} source range is outside its worksheet bounds`);
+  }
+  const rows = range.endRow - range.startRow + 1;
+  const columns = range.endColumn - range.startColumn + 1;
+  if (rows > MAX_DRAWING_SOURCE_CELLS || columns > MAX_DRAWING_SOURCE_CELLS || rows * columns > MAX_DRAWING_SOURCE_CELLS) {
+    throw new Error(`${label} source range exceeds the ${MAX_DRAWING_SOURCE_CELLS}-cell rendering limit`);
+  }
 }
 
 function rangesOverlap(left: RangeRef, right: RangeRef): boolean {

@@ -307,6 +307,8 @@ export {
   loadWorkbookFromSnapshot,
   createWorkbookSnapshot,
   migrateStoredWorkbookSnapshot,
+  assertCanonicalWorkbookSnapshot,
+  MAX_DRAWING_SOURCE_CELLS,
   type WorkbookSnapshot,
   type WorkbookDimensionMetrics,
 } from './snapshot';
