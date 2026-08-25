@@ -400,7 +400,7 @@ const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && Array.isArray(value.values)
   && typeof value.allowMultipleFiltersPerField === 'boolean'
   && isPivotCollation(value.collation)
-  && ['top', 'bottom', 'off'].includes(String(value.subtotalLocation)) && typeof value.showGrandTotals === 'boolean'
+  && ['top', 'bottom', 'off'].includes(String(value.subtotalLocation)) && typeof value.showRowGrandTotals === 'boolean' && typeof value.showColumnGrandTotals === 'boolean'
   && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean'
   && (value.expansion === undefined || isPivotExpansion(value.expansion));
 const isPivotPresentation = (value: unknown): value is PivotPresentation => isRecord(value)

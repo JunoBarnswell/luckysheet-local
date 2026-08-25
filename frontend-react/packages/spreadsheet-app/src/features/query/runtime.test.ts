@@ -31,7 +31,7 @@ function queryTargetPivot(sheetId: string) {
         { fieldId: 'query:field:1', name: 'B', dataType: 'number' as const, ordinal: 1 },
       ],
     },
-    layout: { rows: [], columns: [], values: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false, expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
+    layout: { rows: [], columns: [], values: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false, expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
 }

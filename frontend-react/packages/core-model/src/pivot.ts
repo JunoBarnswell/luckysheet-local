@@ -468,7 +468,10 @@ export interface PivotLayout {
   calculatedFields?: PivotCalculatedField[];
   calculatedItems?: PivotCalculatedItem[];
   subtotalLocation: PivotSubtotalLocation;
-  showGrandTotals: boolean;
+  /** Controls the grand-total column (totals across each row's columns). */
+  showRowGrandTotals: boolean;
+  /** Controls the grand-total row (totals across each column's rows). */
+  showColumnGrandTotals: boolean;
   compact: boolean;
   repeatLabels: boolean;
   expansion?: PivotExpansionState;
@@ -686,6 +689,8 @@ export interface PivotResultNode {
   depth: number;
   children: PivotResultNode[];
   values: PivotResultCell[];
+  /** Aggregate across every column path for this row node. */
+  rowGrandTotal?: PivotResultCell;
   subtotal: boolean;
   sourceRowPaths: PivotSourceRowPath[];
 }
@@ -697,6 +702,8 @@ export interface PivotResultTree {
   columnPaths: PivotScalar[][];
   valueFields?: PivotResultValueField[];
   rows: PivotResultNode[];
+  /** Per-column aggregates used by the grand-total row. */
+  columnGrandTotals?: PivotResultCell[];
   grandTotal: PivotResultCell | null;
   sourceRowPaths: PivotSourceRowPath[];
   sourceRevision?: string;

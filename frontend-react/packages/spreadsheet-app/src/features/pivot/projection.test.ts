@@ -60,7 +60,7 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
     target: { sheetId: 'sheet-1', anchor: { row: 10, column: 0 } },
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
-    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
   };
   const catalog = getPivotFieldCatalog(workbook, pivot);
   const region = catalog.fields.find((field) => field.name === 'Region')!;
@@ -133,7 +133,7 @@ describe('native PivotGridProjection contract', () => {
       target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
       fieldCatalog: { fields: [] },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
     };
     const catalog = getPivotFieldCatalog(workbook, pivot, formula);
     pivot.fieldCatalog = catalog;
@@ -539,7 +539,8 @@ describe('native PivotGridProjection contract', () => {
     pivot.layout.rows = [];
     pivot.layout.columns = [{ fieldId: month.fieldId }];
     pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
-    pivot.layout.showGrandTotals = true;
+    pivot.layout.showRowGrandTotals = true;
+    pivot.layout.showColumnGrandTotals = true;
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
 
     const tree = computePivotResult(workbook, pivot);
@@ -553,6 +554,40 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(Object.fromEntries(values.map((cell) => [cell.columnPath?.[0], cell.value])), { Jan: 10, Feb: 20, Mar: 30 });
     assert.equal(projection.cells.some((cell) => cell.text === 'Jan Sales'), true);
     assert.equal(projection.cells.some((cell) => cell.text === 'Grand Total'), true);
+  });
+
+  it('renders row and column grand totals independently and rejects the removed shared flag', () => {
+    const workbook = new WorkbookModel('pivot-grand-total-axes', 'Pivot Grand Total Axes');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Month', 'Amount'], ['East', 'Jan', 10], ['East', 'Feb', 20], ['West', 'Jan', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 };
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-grand-total-axes', sourceRange);
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const month = catalog.fields.find((field) => field.name === 'Month')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.columns = [{ fieldId: month.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.showRowGrandTotals = true;
+    pivot.layout.showColumnGrandTotals = false;
+    pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
+
+    const rowOnly = buildPivotGridProjection(workbook, pivot, computePivotResult(workbook, pivot));
+    assert.equal(rowOnly.cells.some((cell) => cell.kind === 'grand-total' && cell.row === 0), false);
+    assert.equal(rowOnly.cells.filter((cell) => cell.kind === 'grand-total').length, 2);
+    assert.equal(rowOnly.cells.some((cell) => cell.resultCellId?.endsWith('|grand-total:row')), true);
+
+    pivot.layout.showRowGrandTotals = false;
+    pivot.layout.showColumnGrandTotals = true;
+    const columnOnly = buildPivotGridProjection(workbook, pivot, computePivotResult(workbook, pivot));
+    assert.equal(columnOnly.cells.filter((cell) => cell.kind === 'grand-total').length, 3);
+    assert.equal(columnOnly.cells.filter((cell) => cell.kind === 'grand-total').some((cell) => cell.nodeId), false);
+
+    pivot.layout.showColumnGrandTotals = false;
+    const neither = buildPivotGridProjection(workbook, pivot, computePivotResult(workbook, pivot));
+    assert.equal(neither.cells.some((cell) => cell.kind === 'grand-total'), false);
   });
 
   it('keeps a collapsed parent visible while hiding only its descendants', () => {
@@ -674,7 +709,7 @@ describe('native PivotGridProjection contract', () => {
       layout: {
         rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const },
         values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
-        subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false,
+        subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
       },
     };
