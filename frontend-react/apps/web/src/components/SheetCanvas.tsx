@@ -32,12 +32,14 @@ import type {
   PivotSourceRowPath,
   PivotResultTree,
   PivotPresentation,
+  PivotReportFilterSummary,
+  PivotReportFilterSummaryEntry,
   PivotSort,
   RangeRef,
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
-import { DEFAULT_PIVOT_STYLE_OPTIONS, isPivotError } from "@react-sheets/core-model";
+import { DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { buildPivotGroupedFilterMembers, resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
@@ -237,6 +239,77 @@ export function isPivotValueCell(cell: PivotProjectionCell): boolean {
   return cell.kind === "value" || cell.kind === "subtotal" || cell.kind === "grand-total";
 }
 
+function pivotDynamicDateText(locale: Locale, dynamic: NonNullable<Extract<PivotReportFilterSummaryEntry, { kind: 'condition' }>['dynamic']>): string {
+  const key = dynamic === 'this-week' ? 'thisWeek'
+    : dynamic === 'last-week' ? 'lastWeek'
+      : dynamic === 'next-week' ? 'nextWeek'
+        : dynamic === 'this-month' ? 'thisMonth'
+          : dynamic === 'last-month' ? 'lastMonth'
+            : dynamic === 'next-month' ? 'nextMonth'
+              : dynamic === 'this-quarter' ? 'thisQuarter'
+                : dynamic === 'last-quarter' ? 'lastQuarter'
+                  : dynamic === 'next-quarter' ? 'nextQuarter'
+                    : dynamic === 'this-year' ? 'thisYear'
+                      : dynamic === 'last-year' ? 'lastYear'
+                        : dynamic === 'next-year' ? 'nextYear'
+                          : dynamic === 'year-to-date' ? 'yearToDate' : dynamic;
+  return pivotText(locale, key);
+}
+
+function pivotConditionOperatorText(locale: Locale, entry: Extract<PivotReportFilterSummaryEntry, { kind: 'condition' }>): string {
+  switch (entry.operator) {
+    case 'begins-with': return pivotText(locale, 'beginsWith');
+    case 'not-begins-with': return pivotText(locale, 'notBeginsWith');
+    case 'ends-with': return pivotText(locale, 'endsWith');
+    case 'not-ends-with': return pivotText(locale, 'notEndsWith');
+    case 'contains': return pivotText(locale, 'contains');
+    case 'not-contains': return pivotText(locale, 'notContains');
+    case 'between': return pivotText(locale, 'between');
+    case 'not-between': return pivotText(locale, 'notBetween');
+    case 'before': return pivotText(locale, 'before');
+    case 'after': return pivotText(locale, 'after');
+    case 'equals': return '=';
+    case 'not-equals': return '≠';
+    case 'greater-than': return '>';
+    case 'greater-or-equal': return '≥';
+    case 'less-than': return '<';
+    case 'less-or-equal': return '≤';
+    default: return '';
+  }
+}
+
+function pivotFilterFamilyText(locale: Locale, family: Extract<PivotReportFilterSummaryEntry, { kind: 'condition' }>['family']): string {
+  return pivotText(locale, family === 'label' ? 'labelFilter' : family === 'date' ? 'dateFilter' : 'valueFilter');
+}
+
+function pivotReportFilterEntryText(locale: Locale, entry: PivotReportFilterSummaryEntry): string | null {
+  if (!entry.active) return null;
+  if (entry.kind === 'manual') {
+    if (entry.mode === 'include' && entry.count === 1) return formatPivotMember(entry.memberValues[0] ?? null);
+    if (entry.mode === 'exclude') return pivotTemplate(locale, 'excludedItems', { count: entry.count });
+    return pivotTemplate(locale, 'selectedItems', { count: entry.count });
+  }
+  if (entry.kind === 'top-items') {
+    return pivotTemplate(locale, 'topItemsSummary', {
+      direction: pivotText(locale, entry.direction === 'top' ? 'top' : 'bottom'),
+      count: entry.count,
+      field: entry.valueFieldName,
+    });
+  }
+  const value = entry.dynamic
+    ? pivotDynamicDateText(locale, entry.dynamic)
+    : formatPivotMember(entry.value);
+  const upper = entry.value2 === undefined ? '' : `, ${formatPivotMember(entry.value2)}`;
+  return `${pivotFilterFamilyText(locale, entry.family)}: ${pivotConditionOperatorText(locale, entry)} ${value}${upper}`;
+}
+
+/** Localized visible/accessibility caption for a projected report filter. */
+export function pivotFilterSummaryText(summary: PivotReportFilterSummary, locale: Locale): string {
+  if (!summary.active) return `${summary.fieldName}: ${pivotText(locale, 'allItems')}`;
+  const entries = summary.entries.map((entry) => pivotReportFilterEntryText(locale, entry)).filter((entry): entry is string => Boolean(entry));
+  return `${summary.fieldName}: ${entries.join('; ') || pivotText(locale, 'allItems')}`;
+}
+
 interface PivotStylePalette {
   title: string;
   header: string;
@@ -259,7 +332,7 @@ function pivotStylePalette(styleName?: string): PivotStylePalette {
 /** Convert a derived projection cell to the render-engine cell contract. */
 export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US', presentation?: PivotPresentation): CellRenderData {
   const localizedText = cell.filterSummary
-    ? `${cell.filterSummary.fieldName}: ${cell.filterSummary.mode === 'all' ? pivotText(locale, 'allItems') : pivotTemplate(locale, 'selectedItems', { count: cell.filterSummary.count })}`
+    ? pivotFilterSummaryText(cell.filterSummary, locale)
     : cell.captionKey === 'row-labels'
     ? pivotText(locale, 'rowLabels')
     : cell.captionKey === 'grand-total'
@@ -957,7 +1030,8 @@ export function SheetCanvas({
               const rect = engineRef.current?.contentRangeToScreenRects({ startRow: row, endRow: row, startColumn: column, endColumn: column })[0];
               if (!rect || !cell.fieldId) return null;
               const fieldName = sheet.pivots.find((pivot) => pivot.id === projection.pivotId)?.fieldCatalog.fields.find((field) => field.fieldId === cell.fieldId)?.name ?? cell.fieldId;
-              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${fieldName}`} icon="chevron-down" iconOnly size="xs" variant="ghost" className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => setPivotFilterPopover({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height })} />;
+              const summaryLabel = cell.filterSummary ? pivotFilterSummaryText(cell.filterSummary, locale) : `${fieldName}: ${pivotText(locale, 'allItems')}`;
+              return <Button key={`${projection.pivotId}:${cell.id}:filter`} aria-label={`${pivotText(locale, 'filterValues')}: ${summaryLabel}`} icon="chevron-down" iconOnly size="xs" variant={cell.filterSummary?.active ? 'soft' : 'ghost'} className="absolute z-20 !h-4 !min-h-0 !w-4 rounded-none border border-[#9ba8b6] bg-white p-0 text-[#50606e]" style={{ left: rect.x + rect.width - 18, top: rect.y + 2 }} onClick={() => setPivotFilterPopover({ pivotId: projection.pivotId, fieldId: cell.fieldId!, scope: cell.kind === 'filter' ? 'report' : 'field', x: Math.max(2, Math.min(rect.x, (containerRef.current?.clientWidth ?? 320) - 304)), y: rect.y + rect.height })} />;
             }) : null}
           </Box>
 

@@ -15,6 +15,8 @@ import type {
   PivotModel,
   PivotProjectionCell,
   PivotRefreshState,
+  PivotReportFilterSummary,
+  PivotReportFilterSummaryEntry,
   PivotResultCell,
   PivotResultNode,
   PivotResultTree,
@@ -630,6 +632,57 @@ function resolveFieldId(reference: string | undefined, catalog: PivotFieldCatalo
 
 function fieldName(fieldId: string, catalog: PivotFieldCatalog): string {
   return catalog.fields.find((field) => field.fieldId === fieldId)?.name ?? fieldId;
+}
+
+/**
+ * Build the canonical, locale-independent summary for one report field.
+ * Report filters are grouped by field so allowing multiple filter families
+ * cannot silently select one family and render the others as `All`.
+ */
+export function summarizePivotReportFilters(
+  filters: readonly PivotFilter[],
+  catalog: PivotFieldCatalog,
+  fieldId: string,
+): PivotReportFilterSummary {
+  const fieldFilters = filters.filter((filter) => filter.fieldId === fieldId && (filter.scope ?? 'report') !== 'field');
+  const entries: PivotReportFilterSummaryEntry[] = fieldFilters.map((filter) => {
+    if (filter.kind === 'manual') {
+      const memberValues = filter.memberKeys.map((member) => pivotScalarFromMemberKey(member));
+      return {
+        kind: 'manual',
+        family: 'manual',
+        active: filter.mode === 'include' || memberValues.length > 0,
+        mode: filter.mode,
+        count: memberValues.length,
+        memberValues,
+      };
+    }
+    if (filter.kind === 'top-items') {
+      return {
+        kind: 'top-items',
+        family: 'top-items',
+        active: true,
+        count: filter.count,
+        direction: filter.direction,
+        valueFieldName: fieldName(filter.valueFieldId, catalog),
+      };
+    }
+    return {
+      kind: 'condition',
+      family: filter.family,
+      active: true,
+      operator: filter.operator,
+      value: filter.value,
+      ...(filter.value2 === undefined ? {} : { value2: filter.value2 }),
+      ...(filter.dynamic === undefined ? {} : { dynamic: filter.dynamic }),
+      ...(filter.valueFieldId === undefined ? {} : { valueFieldName: fieldName(filter.valueFieldId, catalog) }),
+    } as PivotReportFilterSummaryEntry;
+  });
+  return {
+    fieldName: fieldName(fieldId, catalog),
+    active: entries.some((entry) => entry.active),
+    entries,
+  };
 }
 
 function normalizePlacement(placement: PivotFieldPlacement, catalog: PivotFieldCatalog, valueFieldIds: ReadonlySet<string>): PivotFieldPlacement {
@@ -1559,11 +1612,14 @@ function buildPivotGridProjectionCandidate(
   let row = 0;
   cells.push(projectionCell(definition.id, row, 0, 'title', definition.id, definition.id));
   row += 1;
-  for (const filter of displayOptions.showFieldHeaders ? definition.layout.filters.filter((entry) => entry.scope !== 'field') : []) {
-    const selected = filter.kind === 'manual' && filter.mode !== 'all';
-    const count = selected ? filter.memberKeys.length : 0;
-    const filterText = selected ? `${fieldName(filter.fieldId, definition.fieldCatalog)}: ${count} selected` : `${fieldName(filter.fieldId, definition.fieldCatalog)}: All`;
-    cells.push(projectionCell(definition.id, row, 0, 'filter', filter.fieldId, filterText, { fieldId: filter.fieldId, filterSummary: { fieldName: fieldName(filter.fieldId, definition.fieldCatalog), mode: selected ? 'selected' : 'all', count } }));
+  const reportFilterFields = displayOptions.showFieldHeaders
+    ? [...new Set(definition.layout.filters.filter((entry) => entry.scope !== 'field').map((entry) => entry.fieldId))]
+    : [];
+  for (const fieldId of reportFilterFields) {
+    const filterSummary = summarizePivotReportFilters(definition.layout.filters, definition.fieldCatalog, fieldId);
+    // The semantic summary is rendered by the presentation layer.  Keep the
+    // projection text stable and locale-independent for export/replay.
+    cells.push(projectionCell(definition.id, row, 0, 'filter', fieldId, filterSummary.fieldName, { fieldId, filterSummary }));
     row += 1;
   }
   if (displayOptions.showFieldHeaders) {

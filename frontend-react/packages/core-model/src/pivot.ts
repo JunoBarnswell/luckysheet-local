@@ -304,6 +304,46 @@ export type PivotFilter =
     direction: 'top' | 'bottom';
   };
 
+/**
+ * The presentation-neutral state of one report-filter family.  This is
+ * deliberately derived from the persisted filter, rather than storing a
+ * localized caption or an internal field id in the projection.
+ */
+export type PivotReportFilterSummaryEntry =
+  | {
+    kind: 'manual';
+    family: 'manual';
+    active: boolean;
+    mode: 'all' | 'include' | 'exclude';
+    count: number;
+    memberValues: PivotScalar[];
+  }
+  | ({
+    kind: 'condition';
+    active: true;
+    value: PivotScalar;
+    value2?: PivotScalar;
+    dynamic?: PivotDynamicDateFilter;
+    valueFieldName?: string;
+  } & ({ family: 'label'; operator: PivotLabelFilterOperator }
+    | { family: 'date'; operator: PivotDateFilterOperator }
+    | { family: 'value'; operator: PivotValueFilterOperator }))
+  | {
+    kind: 'top-items';
+    family: 'top-items';
+    active: true;
+    count: number;
+    direction: 'top' | 'bottom';
+    valueFieldName: string;
+  };
+
+/** A grouped report-filter summary; one field can expose multiple families. */
+export interface PivotReportFilterSummary {
+  fieldName: string;
+  active: boolean;
+  entries: PivotReportFilterSummaryEntry[];
+}
+
 export type PivotShowAs =
   | { kind: 'normal' }
   | { kind: 'grand-percentage' }
@@ -617,7 +657,7 @@ export interface PivotProjectionCell {
   fieldId?: string;
   /** Locale-independent caption owned by the presentation layer. */
   captionKey?: 'row-labels' | 'grand-total' | 'loading';
-  filterSummary?: { fieldName: string; mode: 'all' | 'selected'; count: number };
+  filterSummary?: PivotReportFilterSummary;
   nodeId?: string;
   resultCellId?: string;
   columnPath?: PivotScalar[];
