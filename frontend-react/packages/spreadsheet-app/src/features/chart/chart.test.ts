@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
+import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
-import { resolveChartData, registerChartCommands, type ChartPayload } from './index';
+import { buildPivotChartData, resolveChartData, registerChartCommands, type ChartPayload } from './index';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
@@ -134,5 +134,62 @@ describe('chart feature', () => {
     remoteRuntime.applyRemoteMutations(operation);
     assert.equal(remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('remote-chart')?.kind, 'chart');
     assert.equal(remoteWorkbook.getSheet('sheet-1').drawings[0]?.kind, 'chart');
+  });
+
+  it('projects the complete Pivot row-path × column-path × values matrix', () => {
+    const member = (fieldId: string, value: string): string => `${fieldId}=${pivotMemberKey(createPivotMemberKey(value))}`;
+    const pivotTree: PivotResultTree = {
+      schema: 'PivotResultTree',
+      pivotId: 'matrix-pivot',
+      fields: {
+        fields: [
+          { fieldId: 'region', name: 'Region', dataType: 'text', ordinal: 0, values: ['East', 'West'] },
+          { fieldId: 'product', name: 'Product', dataType: 'text', ordinal: 1, values: ['Widget', 'Gadget'] },
+        ],
+      },
+      columnPaths: [['Jan'], ['Feb']],
+      valueFields: [
+        { fieldId: 'sales', sourceFieldId: 'sales', displayName: 'Sales', summarizeBy: 'sum' },
+        { fieldId: 'count', sourceFieldId: 'count', displayName: 'Orders', summarizeBy: 'count' },
+      ],
+      rows: [
+        {
+          kind: 'subtotal', key: 'East', label: 'East', depth: 0, subtotal: true,
+          path: [member('region', 'East')], children: [
+            { kind: 'leaf', key: 'Widget', label: 'Widget', depth: 1, subtotal: false, path: [member('region', 'East'), member('product', 'Widget')], children: [], values: [
+              { columnPath: ['Jan'], values: [10, 1], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [20, 2], sourceRowPaths: [] },
+            ], sourceRowPaths: [] },
+            { kind: 'leaf', key: 'Gadget', label: 'Gadget', depth: 1, subtotal: false, path: [member('region', 'East'), member('product', 'Gadget')], children: [], values: [
+              { columnPath: ['Jan'], values: [11, 3], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [21, 4], sourceRowPaths: [] },
+            ], sourceRowPaths: [] },
+          ], values: [], sourceRowPaths: [],
+        },
+        {
+          kind: 'subtotal', key: 'West', label: 'West', depth: 0, subtotal: true,
+          path: [member('region', 'West')], children: [
+            { kind: 'leaf', key: 'Widget', label: 'Widget', depth: 1, subtotal: false, path: [member('region', 'West'), member('product', 'Widget')], children: [], values: [
+              { columnPath: ['Jan'], values: [30, 5], sourceRowPaths: [] }, { columnPath: ['Feb'], values: [40, 6], sourceRowPaths: [] },
+            ], sourceRowPaths: [] },
+          ], values: [], sourceRowPaths: [],
+        },
+      ],
+      grandTotal: null,
+      sourceRowPaths: [],
+    };
+    const projected = buildPivotChartData(pivotTree);
+    assert.deepEqual(projected.categories.map((category) => category.label), ['East / Widget', 'East / Gadget', 'West / Widget']);
+    assert.deepEqual(projected.series.map((entry) => entry.name), ['Jan Sales', 'Jan Orders', 'Feb Sales', 'Feb Orders']);
+    assert.deepEqual(projected.series.map((entry) => entry.values), [[10, 11, 30], [1, 3, 5], [20, 21, 40], [2, 4, 6]]);
+    assert.notEqual(projected.categories[0]?.id, projected.categories[2]?.id);
+
+    const noRows: PivotResultTree = {
+      schema: 'PivotResultTree', pivotId: 'root-pivot', fields: { fields: [] }, columnPaths: [[]],
+      valueFields: [{ fieldId: 'amount', sourceFieldId: 'amount', displayName: 'Amount', summarizeBy: 'sum' }],
+      rows: [{ kind: 'leaf', key: null, label: 'Values', depth: 0, path: ['__root__'], children: [], subtotal: false, values: [{ columnPath: [], values: [null], sourceRowPaths: [] }], sourceRowPaths: [] }],
+      grandTotal: null, sourceRowPaths: [],
+    };
+    const rootProjection = buildPivotChartData(noRows);
+    assert.deepEqual(rootProjection.categories.map((category) => category.label), ['Values']);
+    assert.deepEqual(rootProjection.series[0]?.values, [null]);
   });
 });

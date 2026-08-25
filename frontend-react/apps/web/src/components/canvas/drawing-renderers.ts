@@ -14,6 +14,7 @@ import type {
   WorkbookTableModel,
 } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
+import { buildPivotChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
   SheetSkeleton,
@@ -31,6 +32,7 @@ const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#
 interface CanvasChartSeries {
   name: string;
   values: number[];
+  missing?: boolean[];
   color?: string;
   marker?: ChartMarkerModel;
   chartType?: Exclude<ChartDrawingPayload['chartType'], 'combo'>;
@@ -55,25 +57,20 @@ function getChartSeries(
     : undefined;
   if (payload.pivotId && !pivot) return { categories, series, brokenReference: `Pivot reference unavailable: ${payload.pivotId}` };
   if (pivot) {
-    const leaves: typeof pivot.rows = [];
-    const collect = (nodes: typeof pivot.rows): void => {
-      for (const node of nodes) {
-        if (node.children.length > 0) collect(node.children);
-        else leaves.push(node);
-      }
-    };
-    collect(pivot.rows);
-    const valueCount = pivot.rows[0]?.values[0]?.values.length ?? 0;
-    for (let index = 0; index < valueCount; index += 1) {
-      series.push({ name: payload.series?.[index]?.name ?? payload.elements.title ?? `Value ${index + 1}`, values: [], color: payload.series?.[index]?.color, marker: payload.series?.[index]?.marker, chartType: payload.series?.[index]?.chartType });
-    }
-    for (const node of leaves) {
-      categories.push(node.label);
-      const cell = node.values[0];
-      for (let index = 0; index < valueCount; index += 1) {
-        const numeric = Number(cell?.values[index]);
-        series[index]?.values.push(Number.isFinite(numeric) ? numeric : 0);
-      }
+    const pivotDefinition = sheets.flatMap((candidate) => candidate.pivots).find((candidate) => candidate.id === pivot.pivotId);
+    const projected = buildPivotChartData(pivot, pivotDefinition);
+    categories.push(...projected.categories.map((category) => category.label));
+    for (const [index, entry] of projected.series.entries()) {
+      const declared = payload.series?.[index];
+      const missing = entry.values.map((value) => typeof value !== 'number' || !Number.isFinite(value));
+      series.push({
+        name: declared?.name ?? entry.name,
+        values: entry.values.map((value) => typeof value === 'number' && Number.isFinite(value) ? value : 0),
+        missing,
+        color: declared?.color,
+        marker: declared?.marker,
+        chartType: declared?.chartType,
+      });
     }
     return { categories, series };
   }
@@ -530,7 +527,7 @@ function drawCanonicalChartOnCanvas(options: {
     context.fillStyle = elements.plotArea.fill;
     context.fillRect(plotLeft, plotTop, plotWidth, plotHeight);
   }
-  const allValues = series.flatMap((entry) => entry.values);
+  const allValues = series.flatMap((entry) => entry.values.filter((_value, index) => !entry.missing?.[index]));
   const maxValue = Math.max(1, ...allValues.map((value) => Math.abs(value)));
   const minValue = Math.min(0, ...allValues);
   const maxAxis = payload.stacked === "percent" ? 100 : elements.valueAxis?.maximum ?? Math.max(1, maxValue * 1.1);
