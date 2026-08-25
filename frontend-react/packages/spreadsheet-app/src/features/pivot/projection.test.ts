@@ -745,6 +745,32 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(aggregatePivotValues(rows, 'value', 'varp'), 8 / 9);
   });
 
+  it('keeps numeric-looking text out of every numeric summary', () => {
+    const rows = [
+      { values: { value: 10 } },
+      { values: { value: '10' } },
+      { values: { value: '$100' } },
+      { values: { value: '50%' } },
+      { values: { value: 0.5 } },
+      { values: { value: true } },
+      { values: { value: null } },
+    ];
+    assert.equal(aggregatePivotValues(rows, 'value', 'count'), 6);
+    assert.equal(aggregatePivotValues(rows, 'value', 'count-numbers'), 2);
+    assert.equal(aggregatePivotValues(rows, 'value', 'sum'), 10.5);
+    assert.equal(aggregatePivotValues(rows, 'value', 'average'), 5.25);
+    assert.equal(aggregatePivotValues(rows, 'value', 'min'), 0.5);
+    assert.equal(aggregatePivotValues(rows, 'value', 'max'), 10);
+    assert.equal(aggregatePivotValues(rows, 'value', 'product'), 5);
+    assert.equal(aggregatePivotValues(rows, 'value', 'stdev'), Math.sqrt(45.125));
+    assert.equal(aggregatePivotValues(rows, 'value', 'stdevp'), Math.sqrt(22.5625));
+    assert.equal(aggregatePivotValues(rows, 'value', 'var'), 45.125);
+    assert.equal(aggregatePivotValues(rows, 'value', 'varp'), 22.5625);
+    assert.equal(aggregatePivotValues(rows, 'value', 'distinct-count'), 6);
+    assert.equal(aggregatePivotValues([{ values: { value: '$100' } }], 'value', 'sum'), 0);
+    assert.equal(aggregatePivotValues([{ values: { value: '$100' } }], 'value', 'average'), null);
+  });
+
   it('returns a derived overlay, reports collisions, and supports hit testing without cell writeback', () => {
     const workbook = workbookWithData();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-overlay', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });

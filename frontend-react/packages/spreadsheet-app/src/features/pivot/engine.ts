@@ -50,6 +50,7 @@ import {
   normalizePivotRefreshPolicy,
   normalizePivotDisplayOptions,
   normalizePivotNumberFormat,
+  pivotNumericValue,
   pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
@@ -903,13 +904,6 @@ function applyCalculatedData(rows: SourceRow[], fields: PivotFieldDefinition[], 
   });
 }
 
-function toNumber(value: PivotScalar): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value !== 'string' || value.trim() === '') return null;
-  const parsed = Number(value.replace(/[$,%]/g, ''));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldDataType | undefined, collator: Intl.Collator): number {
   if (same(left, right)) return 0;
   if (left == null || left === '') return -1;
@@ -925,8 +919,8 @@ function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldData
     if (leftDate !== undefined && rightDate !== undefined) return leftDate - rightDate;
   }
   if (dataType === 'text') return collator.compare(String(left), String(right));
-  const leftNumber = toNumber(left);
-  const rightNumber = toNumber(right);
+  const leftNumber = pivotNumericValue(left);
+  const rightNumber = pivotNumericValue(right);
   if (leftNumber != null && rightNumber != null) return leftNumber - rightNumber;
   return collator.compare(String(left), String(right));
 }
@@ -942,7 +936,7 @@ export function aggregatePivotValues(rows: ReadonlyArray<{ values: Record<string
     if (raw != null && raw !== '') nonBlank += 1;
     if (isPivotError(raw)) errors.push(raw);
     if (raw != null && raw !== '') members.add(pivotMemberKey(createPivotMemberKey(raw)));
-    const number = toNumber(raw);
+    const number = pivotNumericValue(raw);
     if (number != null) numbers.push(number);
   }
   const firstError = errors[0];
@@ -994,7 +988,7 @@ function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
     return group.groups.find((candidate) => candidate.items.some((item) => pivotMemberKeyEquals(item, key)))?.name ?? value;
   }
   if (group.kind === 'number') {
-    const number = toNumber(value);
+    const number = pivotNumericValue(value);
     if (number == null) return value;
     if (!Number.isFinite(group.interval) || group.interval <= 0) throw new Error('Pivot number grouping interval must be positive');
     const start = group.start ?? 0;
@@ -1073,7 +1067,7 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   const dataType = placement ? fieldCatalog.fields.find((field) => field.fieldId === placement.fieldId)?.dataType : undefined;
   const result = [...map.values()].sort((left, right) => {
     if (placement?.sort?.by === 'value' && placement.sort.valueFieldId) {
-      return (toNumber(aggregatePivotValues(left.rows, placement.sort.valueFieldId, 'sum')) ?? 0) - (toNumber(aggregatePivotValues(right.rows, placement.sort.valueFieldId, 'sum')) ?? 0);
+      return (pivotNumericValue(aggregatePivotValues(left.rows, placement.sort.valueFieldId, 'sum')) ?? 0) - (pivotNumericValue(aggregatePivotValues(right.rows, placement.sort.valueFieldId, 'sum')) ?? 0);
     }
     for (let index = 0; index < left.values.length; index += 1) {
       const fieldType = fieldCatalog.fields.find((field) => field.fieldId === placements[index]?.fieldId)?.dataType ?? dataType;
@@ -1202,8 +1196,9 @@ function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Colla
   if (filter.kind === 'manual') return manualFilterMatches(rawValue, filter, placement?.group);
   if (filter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, filter, placement.group, collator) : dateFilterMatches(value, filter);
   if (filter.family === 'label') return labelFilterMatches(value, filter, collator);
-  const leftNumber = toNumber(value);
-  const rightNumber = toNumber(filter.value);
+  const leftNumber = pivotNumericValue(value);
+  const rightNumber = pivotNumericValue(filter.value);
+  const upperNumber = filter.value2 === undefined ? null : pivotNumericValue(filter.value2);
   const order = leftNumber != null && rightNumber != null ? leftNumber - rightNumber : compare(value, filter.value, undefined, collator);
   switch (filter.operator) {
     case 'equals': return same(value, filter.value);
@@ -1212,8 +1207,8 @@ function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Colla
     case 'greater-or-equal': return order >= 0;
     case 'less-than': return order < 0;
     case 'less-or-equal': return order <= 0;
-    case 'between': return filter.value2 !== undefined && order >= 0 && (toNumber(value) != null && toNumber(filter.value2) != null ? toNumber(value)! <= toNumber(filter.value2)! : compare(value, filter.value2, undefined, collator) <= 0);
-    case 'not-between': return filter.value2 !== undefined && !(order >= 0 && (toNumber(value) != null && toNumber(filter.value2) != null ? toNumber(value)! <= toNumber(filter.value2)! : compare(value, filter.value2, undefined, collator) <= 0));
+    case 'between': return filter.value2 !== undefined && order >= 0 && (leftNumber != null && upperNumber != null ? leftNumber <= upperNumber : compare(value, filter.value2, undefined, collator) <= 0);
+    case 'not-between': return filter.value2 !== undefined && !(order >= 0 && (leftNumber != null && upperNumber != null ? leftNumber <= upperNumber : compare(value, filter.value2, undefined, collator) <= 0));
     default: return false;
   }
 }
@@ -1232,7 +1227,7 @@ function topItems(rows: SourceRow[], filters: PivotFilter[]): SourceRow[] {
       bucket.push(row);
       buckets.set(key, bucket);
     }
-    const ranked = [...buckets.values()].sort((left, right) => (toNumber(aggregatePivotValues(left, valueFieldId, 'sum')) ?? 0) - (toNumber(aggregatePivotValues(right, valueFieldId, 'sum')) ?? 0));
+    const ranked = [...buckets.values()].sort((left, right) => (pivotNumericValue(aggregatePivotValues(left, valueFieldId, 'sum')) ?? 0) - (pivotNumericValue(aggregatePivotValues(right, valueFieldId, 'sum')) ?? 0));
     if (filter.direction === 'top') ranked.reverse();
     result = ranked.slice(0, filter.count).flat();
   }
@@ -1468,7 +1463,7 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
 
   const numericSum = (cells: PivotShowAsCellContext[], valueIndex: number, columnIndex: number): number => cells.reduce((sum, context) => {
     const cell = context.node?.values[columnIndex];
-    return sum + (toNumber(rawValue(cell, valueIndex)) ?? 0);
+    return sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0);
   }, 0);
 
   const transform = (
@@ -1508,16 +1503,16 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
     if (spec.kind === 'running-total') {
       if (spec.axis === 'column') {
         const values = context.node?.values.slice(0, context.columnIndex + 1) ?? [];
-        return values.reduce((sum, cell) => sum + (toNumber(rawValue(cell, valueIndex)) ?? 0), 0);
+        return values.reduce((sum, cell) => sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0), 0);
       }
       const series = rowSeries(context);
       const end = series.indexOf(context);
-      return end < 0 ? null : series.slice(0, end + 1).reduce((sum, candidate) => sum + (toNumber(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)) ?? 0), 0);
+      return end < 0 ? null : series.slice(0, end + 1).reduce((sum, candidate) => sum + (pivotNumericValue(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)) ?? 0), 0);
     }
     if (spec.kind === 'rank') {
       const series = spec.axis === 'column'
-        ? (context.node?.values ?? []).map((cell) => toNumber(rawValue(cell, valueIndex)))
-        : rowSeries(context).map((candidate) => toNumber(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)));
+        ? (context.node?.values ?? []).map((cell) => pivotNumericValue(rawValue(cell, valueIndex)))
+        : rowSeries(context).map((candidate) => pivotNumericValue(rawValue(candidate.node?.values[candidate.columnIndex], valueIndex)));
       const ranked = series.filter((value): value is number => value != null).sort((left, right) => spec.direction === 'ascending' ? left - right : right - left);
       const rank = ranked.findIndex((value) => value === current);
       return rank < 0 ? null : rank + 1;
@@ -1529,12 +1524,12 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
   for (const context of contexts) {
     for (const [valueIndex, field] of fields.entries()) {
       const spec = field.showAs ?? { kind: 'normal' as const };
-      const current = toNumber(rawValue(context.cell, valueIndex));
+      const current = pivotNumericValue(rawValue(context.cell, valueIndex));
       if (current == null || spec.kind === 'normal') continue;
-      const grand = toNumber(grandValues[valueIndex] ?? null);
+      const grand = pivotNumericValue(grandValues[valueIndex] ?? null);
       const rowTotal = context.kind === 'grand-total'
         ? (grand ?? current)
-        : context.node?.values.reduce((sum, cell) => sum + (toNumber(rawValue(cell, valueIndex)) ?? 0), 0) ?? 0;
+        : context.node?.values.reduce((sum, cell) => sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0), 0) ?? 0;
       const columnTotal = context.kind === 'grand-total'
         ? (grand ?? current)
         : numericSum(leafContexts, valueIndex, context.columnIndex);
@@ -1542,7 +1537,7 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[]): void {
       // is the only deterministic parent for a Pivot root member.
       const parentTotal = context.kind === 'grand-total'
         ? grand
-        : context.parent ? toNumber(rawValue(context.parent.values[context.columnIndex], valueIndex)) : grand;
+        : context.parent ? pivotNumericValue(rawValue(context.parent.values[context.columnIndex], valueIndex)) : grand;
       context.cell.values[valueIndex] = transform(spec, current, grand, rowTotal, columnTotal, parentTotal, context, valueIndex);
     }
   }
