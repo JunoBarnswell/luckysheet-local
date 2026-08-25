@@ -110,6 +110,13 @@ final class FormulaReferenceTransformer {
             ParsedReference parsed = parseQualifiedReference(formula, index);
             if (parsed == null) parsed = parseReference(formula, index, null, null);
             if (parsed == null) {
+                if (isSheetIdentifierStart(current)) {
+                    int end = index + 1;
+                    while (end < formula.length() && isSheetIdentifierPart(formula.charAt(end))) end += 1;
+                    output.append(formula, index, end);
+                    index = end;
+                    continue;
+                }
                 output.append(current);
                 index += 1;
                 continue;
