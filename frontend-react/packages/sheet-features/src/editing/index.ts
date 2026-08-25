@@ -15,6 +15,7 @@ import {
   copyRangeToClipboardData,
   parseClipboardPayload,
   shiftFormula,
+  type ClipboardTransfer,
   type ClipboardPayload,
 } from '../clipboard';
 
@@ -44,6 +45,7 @@ export interface PasteRangeParams {
   sheetId: string;
   targetOrigin: { row: number; column: number };
   clipboard: ClipboardPayload;
+  transfer: ClipboardTransfer;
   mode?: PasteMode;
 }
 
@@ -150,9 +152,10 @@ type PasteMutationParams = PasteRangeParams & {
 function isPasteMutation(value: unknown): value is PasteMutationParams {
   return isRecord(value) && typeof value.sheetId === 'string'
     && isRecord(value.targetOrigin) && Number.isInteger(value.startRow) && Number.isInteger(value.startColumn)
+    && (value.transfer === 'copy' || value.transfer === 'move')
+    && isRecord(value.clipboard) && value.clipboard.transfer === value.transfer
     && Array.isArray(value.values) && value.values.every((row) => Array.isArray(row) && row.every(isCellData))
-    && (value.sourceRange === undefined || isRange(value.sourceRange))
-    && (value.clearSource === undefined || typeof value.clearSource === 'boolean');
+    && (value.transfer === 'move' ? isRange(value.sourceRange) && value.clearSource === true : value.sourceRange === undefined && value.clearSource === false);
 }
 
 function pasteAffectedRanges(value: PasteMutationParams): RangeRef[] {
@@ -382,13 +385,16 @@ export function resolveGoToSpecial(
 
 function applyPasteCell(
   mode: PasteMode,
+  transfer: ClipboardTransfer,
   source: CellData,
   target: CellData | undefined,
   rowDelta: number,
   colDelta: number,
 ): CellData {
   const destination = target ? structuredClone(target) : { value: null };
-  const sourceFormula = source.formula ? shiftFormula(source.formula, rowDelta, colDelta) : undefined;
+  const sourceFormula = source.formula
+    ? transfer === 'move' ? source.formula : shiftFormula(source.formula, rowDelta, colDelta)
+    : undefined;
 
   if (mode === 'values') {
     // Values means values only: no formula, style, number format or cached
@@ -459,9 +465,12 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       const mode = params.mode ?? 'all';
       const sourceValues = parseClipboardPayload(params.clipboard);
       const sourceRange = params.clipboard.range;
-      const isCut = Boolean(params.clipboard.isCut);
-      if (isCut && (!sourceRange || sourceRange.sheetId.length === 0)) {
-        throw new Error('Cut clipboard payload must include a source range');
+      const transfer = params.transfer;
+      if (transfer !== 'copy' && transfer !== 'move' || params.clipboard.transfer !== transfer) {
+        throw new Error('Paste transfer must match the canonical clipboard transfer');
+      }
+      if (transfer === 'move' && (!sourceRange || sourceRange.sheetId.length === 0)) {
+        throw new Error('Move clipboard payload must include a source range');
       }
       if (mode === 'transpose') {
         const transposed: CellData[][] = [];
@@ -490,6 +499,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
               outRow.push(
                 applyPasteCell(
                   mode === 'transpose' ? 'all' : mode,
+                  transfer,
                   rowValues[columnOffset] ?? { value: null },
                   sheet.cells.get(row, column),
                   mode === 'transpose'
@@ -503,7 +513,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         }
         values.push(outRow);
       }
-      if (isCut && sourceRange) {
+      if (transfer === 'move' && sourceRange) {
         const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
         forEachCell(sourceSheet, sourceRange, (row, column, cell) => {
           sourcePrevious.push({ row, column, value: cell ? structuredClone(cell) : undefined });
@@ -520,9 +530,10 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
           values,
           startRow: params.targetOrigin.row,
           startColumn: params.targetOrigin.column,
+          transfer,
           mode: pasteMode,
-          sourceRange: isCut ? structuredClone(sourceRange) : undefined,
-          clearSource: isCut,
+          sourceRange: transfer === 'move' ? structuredClone(sourceRange) : undefined,
+          clearSource: transfer === 'move',
         },
         affectedRanges,
         inverse: [
@@ -542,7 +553,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
           })),
         ],
         apply: () => {
-          if (isCut && sourceRange) {
+          if (transfer === 'move' && sourceRange) {
             const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
             forEachCell(sourceSheet, sourceRange, (row, column) => sourceSheet.cells.delete(row, column));
           }

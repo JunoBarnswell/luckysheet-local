@@ -32,7 +32,7 @@ describe('WorkbookSession core editing integration', () => {
     });
     selectCell(app, 0, 0);
     const range = app.getPrimaryRange();
-    app.setClipboard({ ...copyRangeToClipboardData(app['runtime'].model, range), isCut: false });
+    app.setClipboard({ ...copyRangeToClipboardData(app['runtime'].model, range), transfer: 'copy' });
     selectCell(app, 0, 1);
     app.pasteSpecial('values');
 

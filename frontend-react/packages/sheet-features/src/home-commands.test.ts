@@ -97,7 +97,7 @@ test('range move and style preset are atomic and reversible', () => {
   const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   runtime.execute('sheet.range.move', { sheetId: sheet.id, sourceRange, targetOrigin: { row: 1, column: 1 } });
   assert.equal(sheet.cells.get(0, 0), undefined);
-  assert.equal(sheet.cells.get(1, 1)?.formula, '=C2');
+  assert.equal(sheet.cells.get(1, 1)?.formula, '=B1');
   runtime.undo();
   assert.equal(sheet.cells.get(0, 0)?.formula, '=B1');
   runtime.execute('sheet.style.preset.apply', { sheetId: sheet.id, ranges: [sourceRange], preset: 'good' });

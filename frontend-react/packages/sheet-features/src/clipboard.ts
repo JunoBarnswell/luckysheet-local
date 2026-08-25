@@ -12,6 +12,8 @@ export interface ClipboardRepresentation {
   data: string;
 }
 
+export type ClipboardTransfer = 'copy' | 'move';
+
 /**
  * Host-neutral clipboard contract.  A host may expose any subset of the
  * representations, but the command layer always consumes the normalized
@@ -22,7 +24,7 @@ export interface ClipboardRepresentation {
 export interface ClipboardPayload {
   range: RangeRef;
   values: CellData[][];
-  isCut?: boolean;
+  transfer: ClipboardTransfer;
   representations?: ClipboardRepresentation[];
   mime?: string;
   html?: string;
@@ -54,6 +56,7 @@ export function copyRangeToClipboardData(workbook: WorkbookModel, range: RangeRe
   return {
     range: structuredClone(range),
     values,
+    transfer: 'copy',
     representations: [
       { mime: CLIPBOARD_INTERNAL_MIME, data: internal },
       { mime: CLIPBOARD_HTML_MIME, data: html },

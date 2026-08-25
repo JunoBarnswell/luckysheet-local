@@ -178,6 +178,7 @@ test('clipboard payload carries provenance and paste modes preserve their contra
     sheetId: sheet.id,
     targetOrigin: { row: 0, column: 1 },
     clipboard: payload,
+    transfer: 'copy',
     mode: 'values',
   });
   assert.deepEqual(sheet.cells.get(0, 1), { value: 12 });
@@ -187,6 +188,7 @@ test('clipboard payload carries provenance and paste modes preserve their contra
     sheetId: sheet.id,
     targetOrigin: { row: 0, column: 1 },
     clipboard: payload,
+    transfer: 'copy',
     mode: 'formats',
   });
   assert.equal(sheet.cells.get(0, 1)?.value, 'keep');
@@ -201,6 +203,7 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
   const payload = {
     range: { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
     values: [],
+    transfer: 'copy' as const,
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
   assert.deepEqual(parseClipboardPayload(payload).map((row) => row.map((cell) => cell.value)), [[42, null]]);
@@ -287,7 +290,7 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
   assert.equal(sheet.cells.get(2, 0)?.value, 'anchor');
 });
 
-test('cut paste is one cross-sheet transaction and offsets formulas from source to target', () => {
+test('cut paste is one cross-sheet transaction and preserves formula references', () => {
   const workbook = new WorkbookModel('unit-cut', 'Cut');
   const target = workbook.addSheet('sheet-2', 'Target');
   const runtime = new CommandRuntime(workbook);
@@ -302,22 +305,82 @@ test('cut paste is one cross-sheet transaction and offsets formulas from source 
     startColumn: 1,
     endColumn: 1,
   });
-  payload.isCut = true;
+  payload.transfer = 'move';
   const result = runtime.execute('sheet.range.paste', {
     sheetId: target.id,
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
+    transfer: 'move',
   });
   assert.equal(result.mutationCount, 1);
   assert.equal(source.cells.get(1, 1), undefined);
-  assert.equal(target.cells.get(4, 4)?.formula, '=D4+$B$1');
+  assert.equal(target.cells.get(4, 4)?.formula, '=A1+$B$1');
   assert.equal(target.cells.get(4, 4)?.value, null);
   runtime.undo();
   assert.equal(source.cells.get(1, 1)?.formula, '=A1+$B$1');
   assert.equal(target.cells.get(4, 4)?.value, 'old');
   runtime.redo();
   assert.equal(source.cells.get(1, 1), undefined);
-  assert.equal(target.cells.get(4, 4)?.formula, '=D4+$B$1');
+  assert.equal(target.cells.get(4, 4)?.formula, '=A1+$B$1');
+});
+
+test('copy paste shifts relative references while preserving mixed and absolute references', () => {
+  const workbook = new WorkbookModel('unit-copy', 'Copy');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(1, 1, { value: null, formula: '=A1+$B$1+C$1+$D1' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 1,
+    endRow: 1,
+    startColumn: 1,
+    endColumn: 1,
+  });
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard: payload,
+    transfer: 'copy',
+  });
+  assert.equal(sheet.cells.get(4, 4)?.formula, '=D4+$B$1+F$1+$D4');
+  assert.equal(sheet.cells.get(1, 1)?.formula, '=A1+$B$1+C$1+$D1');
+});
+
+test('paste replay rejects a transfer mismatch before touching the workbook', () => {
+  const workbook = new WorkbookModel('unit-paste-contract', 'Paste Contract');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: null, formula: '=A1' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+  payload.transfer = 'move';
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'range.paste',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      targetOrigin: { row: 1, column: 1 },
+      clipboard: payload,
+      transfer: 'copy',
+      mode: 'all',
+      values: [[{ value: null, formula: '=A1' }]],
+      startRow: 1,
+      startColumn: 1,
+      sourceRange: structuredClone(payload.range),
+      clearSource: true,
+    },
+    affectedRanges: [],
+  }]), /Invalid mutation history/);
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
+  assert.equal(sheet.cells.get(1, 1), undefined);
 });
 
 test('range clear modes are independent and restore auxiliary metadata', () => {

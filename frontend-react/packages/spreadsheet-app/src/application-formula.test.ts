@@ -142,7 +142,8 @@ describe('WorkbookSession formula integration', () => {
     app.runCommand('sheet.range.paste', {
       sheetId,
       targetOrigin: { row: 1, column: 0 },
-      clipboard: { range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, values: [[{ value: 4 }]] },
+      clipboard: { range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, values: [[{ value: 4 }]], transfer: 'copy' },
+      transfer: 'copy',
       mode: 'all',
     });
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 0)?.value, 4);
