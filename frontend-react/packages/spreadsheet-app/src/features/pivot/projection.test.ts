@@ -415,6 +415,61 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(eastSubtotal?.values[0]?.values, [30, 15, 30]);
   });
 
+  it('applies grand percentages to detail, subtotal, and grand-total cells from one raw matrix', () => {
+    const workbook = new WorkbookModel('pivot-show-as-grand', 'Pivot Show As Grand');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'City', 'Amount'], ['East', 'Boston', 10], ['East', 'Austin', 20], ['West', 'Seattle', 40]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-show-as-grand', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const city = catalog.fields.find((field) => field.name === 'City')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'grand-percentage' } }];
+    const result = computePivotResult(workbook, pivot);
+    const east = result.rows.find((node) => node.label === 'East')!;
+    const west = result.rows.find((node) => node.label === 'West')!;
+    assert.equal(east.values[0]?.values[0], 30 / 70);
+    assert.equal(east.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 10 / 70);
+    assert.equal(east.children.find((node) => node.label === 'Austin')?.values[0]?.values[0], 20 / 70);
+    assert.equal(west.values[0]?.values[0], 40 / 70);
+    assert.equal(result.grandTotal?.values[0], 1);
+  });
+
+  it('uses subtotal peers for running total and rank instead of indexing a leaf-only series', () => {
+    const workbook = new WorkbookModel('pivot-show-as-subtotals', 'Pivot Show As Subtotals');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'City', 'Amount'], ['East', 'Boston', 10], ['East', 'Austin', 20], ['West', 'Seattle', 40]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-show-as-subtotals', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const city = catalog.fields.find((field) => field.name === 'City')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'running-total', axis: 'row' } }];
+    const running = computePivotResult(workbook, pivot);
+    const eastRunning = running.rows.find((node) => node.label === 'East')!;
+    const westRunning = running.rows.find((node) => node.label === 'West')!;
+    assert.equal(eastRunning.values[0]?.values[0], 30);
+    assert.equal(westRunning.values[0]?.values[0], 70);
+    assert.equal(eastRunning.children.find((node) => node.label === 'Austin')?.values[0]?.values[0], 20);
+    assert.equal(eastRunning.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 30);
+    assert.equal(running.grandTotal?.values[0], 70);
+
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'rank', axis: 'row', direction: 'descending' } }];
+    const ranked = computePivotResult(workbook, pivot);
+    const eastRank = ranked.rows.find((node) => node.label === 'East')!;
+    const westRank = ranked.rows.find((node) => node.label === 'West')!;
+    assert.equal(eastRank.values[0]?.values[0], 2);
+    assert.equal(westRank.values[0]?.values[0], 1);
+    assert.equal(eastRank.children.find((node) => node.label === 'Austin')?.values[0]?.values[0], 2);
+    assert.equal(eastRank.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 3);
+    assert.equal(ranked.grandTotal?.values[0], 1);
+    assert.equal(ranked.rows.flatMap((node) => [node, ...node.children]).flatMap((node) => node.values.flatMap((cell) => cell.values)).some((value) => value === 0), false);
+  });
+
   it('keeps a root data row for Columns plus Values when Rows is empty', () => {
     const workbook = new WorkbookModel('pivot-columns-only', 'Pivot Columns Only');
     const sheet = workbook.getSheet('sheet-1');
