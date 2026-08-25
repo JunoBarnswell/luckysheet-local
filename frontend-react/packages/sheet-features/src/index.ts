@@ -15,6 +15,7 @@ import type {
   DefinedNameModel,
   TableSheetDefinition,
   GanttSheetDefinition,
+  ReportSheetDefinition,
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -88,6 +89,11 @@ export interface TableSheetUpdateParams {
 export interface GanttSheetUpdateParams {
   sheetId: string;
   definition: GanttSheetDefinition;
+}
+
+export interface ReportSheetUpdateParams {
+  sheetId: string;
+  definition: ReportSheetDefinition;
 }
 
 export interface SetRangeValuesParams {
@@ -469,6 +475,38 @@ function normalizeGanttSheetDefinition(workbook: WorkbookModel, params: GanttShe
   return structuredClone(params.definition);
 }
 
+function isReportSheetDefinition(value: unknown): value is ReportSheetDefinition {
+  if (!isRecord(value) || typeof value.templateSheetId !== 'string' || (value.tableId !== undefined && typeof value.tableId !== 'string')
+    || !Array.isArray(value.bindings) || !isRecord(value.pagination) || !isRecord(value.layout) || !Array.isArray(value.dataEntry)) return false;
+  if (!['design', 'preview', 'paginated'].includes(String(value.renderMode))) return false;
+  if (value.pagination.enabled !== undefined && typeof value.pagination.enabled !== 'boolean') return false;
+  if (value.pagination.rowsPerPage !== undefined && (!Number.isInteger(value.pagination.rowsPerPage) || Number(value.pagination.rowsPerPage) <= 0)) return false;
+  if (value.pagination.repeatHeaderRows !== undefined && (!Array.isArray(value.pagination.repeatHeaderRows) || !value.pagination.repeatHeaderRows.every((row) => Number.isInteger(row) && row >= 0))) return false;
+  const layout = value.layout;
+  if (!['portrait', 'landscape'].includes(String(layout.orientation))) return false;
+  for (const key of ['marginTopPx', 'marginRightPx', 'marginBottomPx', 'marginLeftPx']) if (typeof layout[key] !== 'number' || !Number.isFinite(layout[key]) || layout[key] < 0) return false;
+  for (const raw of value.bindings) {
+    if (!isRecord(raw) || !isRecord(raw.cell) || !Number.isInteger(raw.cell.row) || !Number.isInteger(raw.cell.column) || Number(raw.cell.row) < 0 || Number(raw.cell.column) < 0 || typeof raw.expression !== 'string' || !raw.expression.trim() || !['static', 'field', 'formula', 'group', 'summary'].includes(String(raw.kind))) return false;
+    if (raw.direction !== undefined && !['vertical', 'horizontal'].includes(String(raw.direction))) return false;
+    if (raw.fill !== undefined && !['none', 'down', 'right'].includes(String(raw.fill))) return false;
+    if (raw.summary !== undefined && !['sum', 'count', 'average', 'min', 'max'].includes(String(raw.summary))) return false;
+  }
+  return value.dataEntry.every((entry) => isRecord(entry) && typeof entry.fieldId === 'string' && typeof entry.writable === 'boolean' && (entry.required === undefined || typeof entry.required === 'boolean'));
+}
+
+function normalizeReportSheetDefinition(workbook: WorkbookModel, params: ReportSheetUpdateParams): ReportSheetDefinition {
+  if (!isReportSheetDefinition(params.definition)) throw new Error('ReportSheet definition is invalid');
+  const sheet = workbook.getSheet(params.sheetId);
+  if (sheet.kind !== 'report-sheet' || !sheet.reportSheet) throw new Error('ReportSheet definition can only be updated on a report-sheet');
+  if (!workbook.sheets.has(params.definition.templateSheetId)) throw new Error(`ReportSheet template sheet is unavailable: ${params.definition.templateSheetId}`);
+  const table = params.definition.tableId ? workbook.dataModel.tables.get(params.definition.tableId) : undefined;
+  if (params.definition.tableId && !table) throw new Error(`ReportSheet binding table is unavailable: ${params.definition.tableId}`);
+  const fieldIds = new Set(table?.fields.map((field) => field.id) ?? []);
+  for (const binding of params.definition.bindings) if (['field', 'group', 'summary'].includes(binding.kind) && !fieldIds.has(binding.expression)) throw new Error(`ReportSheet binding field is unavailable: ${binding.expression}`);
+  if (params.definition.dataEntry.some((entry) => !fieldIds.has(entry.fieldId))) throw new Error('ReportSheet data-entry fields must belong to the binding table');
+  return structuredClone(params.definition);
+}
+
 function tableSheetAffectedRange(workbook: WorkbookModel, params: { sheetId: string }): RangeRef[] {
   const sheet = workbook.getSheet(params.sheetId);
   return [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
@@ -667,6 +705,20 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['ganttSheet.update'],
     },
   });
+  runtime.registry.registerMutation<ReportSheetUpdateParams>({
+    id: 'reportSheet.update',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isReportSheetDefinition(item.params.definition)) throw new Error('Invalid reportSheet.update mutation payload');
+      const params = item.params as ReportSheetUpdateParams;
+      context.workbook.getSheet(params.sheetId).reportSheet = normalizeReportSheetDefinition(context.workbook, params);
+    },
+    metadata: {
+      schema: { name: 'ReportSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isReportSheetDefinition(value.definition) },
+      permission: { capability: 'report-sheet.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
+      inverseIds: ['reportSheet.update'],
+    },
+  });
 
   runtime.registry.registerCommand<{ id: string }>({
     id: 'sheet.remove',
@@ -777,6 +829,28 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => { sheet.ganttSheet = structuredClone(definition); },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<ReportSheetUpdateParams>({
+    id: 'reportSheet.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined;
+      if (sheet.kind !== 'report-sheet' || !previous) throw new Error('ReportSheet definition can only be updated on a report-sheet');
+      const definition = normalizeReportSheetDefinition(context.workbook, params);
+      if (JSON.stringify(previous) === JSON.stringify(definition)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = tableSheetAffectedRange(context.workbook, params);
+      context.applyMutation({
+        id: 'reportSheet.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, definition },
+        affectedRanges,
+        inverse: [{ id: 'reportSheet.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, definition: previous }, affectedRanges }],
+        apply: () => { sheet.reportSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

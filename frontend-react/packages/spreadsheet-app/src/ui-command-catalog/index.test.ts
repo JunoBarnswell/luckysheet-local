@@ -143,6 +143,13 @@ describe('Ribbon UI command catalog', () => {
     assert.deepEqual(buildRibbonCommand('ganttTimeline', withGantt), { type: 'intent', intent: { type: 'panel.open', panel: 'data' } });
   });
 
+  it('exposes ReportSheet design commands only for the active ReportSheet', () => {
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('reportFieldBinding'), context()), false);
+    const withReport = context({ activeReportSheet: { sheetId: 'report-1', tableId: 'table-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('reportFieldBinding'), withReport), true);
+    assert.deepEqual(buildRibbonCommand('reportPagination', withReport), { type: 'intent', intent: { type: 'panel.open', panel: 'data' } });
+  });
+
   it('honors phase and permission context before building a command', () => {
     const disabled = context({ disabled: true });
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), disabled), false);

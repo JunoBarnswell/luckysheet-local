@@ -13,6 +13,7 @@ import type {
   AutoFilterModel,
   FilterCriterion,
   GanttSheetDefinition,
+  ReportSheetDefinition,
   MergeSpan,
   OutlineGroup,
   PivotModel,
@@ -143,6 +144,7 @@ export interface CanvasSheetSnapshot {
   sheetTables: SheetTableModel[];
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
+  reportSheet?: ReportSheetDefinition;
   tabColor?: string;
   hidden?: boolean;
   /** Print preview only — bounded slice */
@@ -252,7 +254,7 @@ export function buildCanvasSheetSnapshot(
 
   const resolveModelCell = (row: number, column: number): { cell?: CellData; owner: WorksheetModel; row: number; column: number } => {
     const local = cellResolver.resolve(sheet, row, column)?.cell;
-    if (local || row === 0 || !advancedTable?.sourceRange) return { cell: local, owner: sheet, row, column };
+    if (local || row === 0 || !advancedTable?.sourceRange || sheet.kind === 'report-sheet') return { cell: local, owner: sheet, row, column };
     const field = advancedTable.fields[column];
     const sourceSheet = workbook.sheets.get(advancedTable.sourceRange.sheetId);
     const sourceRow = advancedTable.sourceRange.startRow + row;
@@ -413,6 +415,7 @@ export function buildCanvasSheetSnapshot(
     sheetTables: [...sheet.sheetTables],
     tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
     ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,
+    reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
     tabColor: sheet.tabColor,
     hidden: sheet.hidden,
     previewRows,

@@ -108,7 +108,7 @@ class MutationDescriptorRegistryTest {
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
                 "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
-                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update",
+                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
@@ -170,6 +170,29 @@ class MutationDescriptorRegistryTest {
         assertEquals("day", updated.path("sheets").get(0).path("ganttSheet").path("timeline").path("unit").asText());
         var invalid = new OperationMutation("ganttSheet.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","definition":{"viewId":"tasks","fieldMap":{"id":"missing","title":"title","start":"start","end":"end","progress":"progress"},"calendar":{"workingDays":[1],"dayStartHour":9,"dayEndHour":18},"timeline":{"unit":"week"},"dependencyStyle":{"color":"#64748b","width":1}}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
+    }
+
+    @Test
+    void reportSheetUpdateValidatesTemplateBindingsAndWholeSheetRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"dataModel":{"tables":[{"id":"tasks","fields":[{"id":"title"}]}]},"sheets":[
+                  {"id":"template","kind":"worksheet","rowCount":20,"columnCount":8,"cells":{}},
+                  {"id":"report","kind":"report-sheet","rowCount":20,"columnCount":8,"cells":{},"reportSheet":{"templateSheetId":"template","tableId":"tasks","bindings":[],"pagination":{"enabled":true,"rowsPerPage":10,"repeatHeaderRows":[0]},"renderMode":"design","layout":{"orientation":"portrait","marginTopPx":24,"marginRightPx":24,"marginBottomPx":24,"marginLeftPx":24},"dataEntry":[]}}
+                ]}
+                """);
+        var update = new OperationMutation("reportSheet.update", "report", mapper.readTree("""
+                {"sheetId":"report","definition":{"templateSheetId":"template","tableId":"tasks","bindings":[{"cell":{"row":1,"column":0},"expression":"title","kind":"field","direction":"vertical","fill":"down"}],"pagination":{"enabled":true,"rowsPerPage":5,"repeatHeaderRows":[0]},"renderMode":"preview","layout":{"orientation":"landscape","marginTopPx":12,"marginRightPx":12,"marginBottomPx":12,"marginLeftPx":12},"dataEntry":[{"fieldId":"title","writable":true}]}}
+                """));
+        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        assertEquals(1, prepared.affectedRanges().size());
+        assertEquals(19, prepared.affectedRanges().getFirst().endRow());
+        var updated = registry.applyPublicMutations(snapshot, List.of(update));
+        assertEquals("preview", updated.path("sheets").get(1).path("reportSheet").path("renderMode").asText());
+        var invalid = new OperationMutation("reportSheet.update", "report", mapper.readTree("""
+                {"sheetId":"report","definition":{"templateSheetId":"template","tableId":"tasks","bindings":[{"cell":{"row":1,"column":0},"expression":"missing","kind":"field"}],"pagination":{"enabled":true,"rowsPerPage":5},"renderMode":"design","layout":{"orientation":"portrait","marginTopPx":0,"marginRightPx":0,"marginBottomPx":0,"marginLeftPx":0},"dataEntry":[]}}
                 """));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
     }

@@ -102,7 +102,24 @@ export interface GanttSheetDefinition {
 export interface ReportBinding {
   cell: { row: number; column: number };
   expression: string;
+  kind: 'static' | 'field' | 'formula' | 'group' | 'summary';
   direction?: 'vertical' | 'horizontal';
+  fill?: 'none' | 'down' | 'right';
+  summary?: 'sum' | 'count' | 'average' | 'min' | 'max';
+}
+
+export interface ReportLayoutDefinition {
+  orientation: 'portrait' | 'landscape';
+  marginTopPx: number;
+  marginRightPx: number;
+  marginBottomPx: number;
+  marginLeftPx: number;
+}
+
+export interface ReportDataEntryRule {
+  fieldId: string;
+  writable: boolean;
+  required?: boolean;
 }
 
 export interface ReportSheetDefinition {
@@ -110,4 +127,7 @@ export interface ReportSheetDefinition {
   tableId?: string;
   bindings: ReportBinding[];
   pagination: { enabled: boolean; rowsPerPage?: number; repeatHeaderRows?: number[] };
+  renderMode: 'design' | 'preview' | 'paginated';
+  layout: ReportLayoutDefinition;
+  dataEntry: ReportDataEntryRule[];
 }

@@ -30,6 +30,7 @@
   "ganttProject": "Gantt Project",
   "ganttView": "Gantt View",
   "ganttFormat": "Gantt Format",
+  "reportSheetDesign": "ReportSheet Design",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -285,6 +286,7 @@
       ,"ganttProject": "Gantt Project"
       ,"ganttView": "Gantt View"
       ,"ganttFormat": "Gantt Format"
+      ,"reportSheetDesign": "ReportSheet Design"
     },
     "commands": {
       "settings": "Options",
@@ -386,6 +388,10 @@
       "ganttCalendar": "Calendar",
       "ganttTimeline": "Timeline",
       "ganttDependencyStyle": "Dependency Style",
+      "reportFieldBinding": "Report Fields",
+      "reportRenderMode": "Render Mode",
+      "reportPagination": "Pagination",
+      "reportLayout": "Layout",
       "chartBuilder": "Chart Builder",
       "sparkline": "Sparkline",
       "shapesLines": "Shapes & Lines",

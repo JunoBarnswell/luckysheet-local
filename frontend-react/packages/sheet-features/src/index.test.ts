@@ -127,6 +127,25 @@ test('GanttSheet designer updates canonically, supports undo/redo, and rejects u
   assert.deepEqual(sheet.ganttSheet, before);
 });
 
+test('ReportSheet designer updates canonical bindings and render settings', () => {
+  const workbook = new WorkbookModel('unit-report-sheet-designer', 'ReportSheet Designer');
+  const table = { id: 'report-table-1', name: 'Rows', sourceSheetId: 'sheet-1', sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }, rowCount: 2, fields: [{ id: 'title', name: 'Title', ordinal: 0, type: 'text' as const }, { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' as const }], blockSize: 4096, blocks: [], revision: 0 };
+  workbook.addTable(table);
+  const definition = { templateSheetId: 'sheet-1', tableId: table.id, bindings: [], pagination: { enabled: true, rowsPerPage: 50, repeatHeaderRows: [0] }, renderMode: 'design' as const, layout: { orientation: 'portrait' as const, marginTopPx: 24, marginRightPx: 24, marginBottomPx: 24, marginLeftPx: 24 }, dataEntry: [] };
+  const sheet = workbook.addAdvancedSheet({ id: 'report-sheet-1', name: 'Report view', kind: 'report-sheet', reportSheet: definition });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const next = { ...definition, bindings: [{ cell: { row: 1, column: 0 }, expression: 'title', kind: 'field' as const, direction: 'vertical' as const, fill: 'down' as const }], renderMode: 'preview' as const, dataEntry: [{ fieldId: 'title', writable: true }] };
+  runtime.execute('reportSheet.update', { sheetId: sheet.id, definition: next });
+  assert.equal(sheet.reportSheet?.renderMode, 'preview');
+  assert.equal(sheet.reportSheet?.bindings[0]?.expression, 'title');
+  runtime.undo();
+  assert.equal(sheet.reportSheet?.renderMode, 'design');
+  const before = structuredClone(sheet.reportSheet);
+  assert.throws(() => runtime.execute('reportSheet.update', { sheetId: sheet.id, definition: { ...next, bindings: [{ ...next.bindings[0]!, expression: 'missing' }] } }), /binding field|unavailable|invalid/i);
+  assert.deepEqual(sheet.reportSheet, before);
+});
+
 test('sheet commands: range.clear, style.set, and merges', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd2', 'Commands2');
   const runtime = new CommandRuntime(workbook);

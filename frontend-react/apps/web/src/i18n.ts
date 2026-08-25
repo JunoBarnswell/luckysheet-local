@@ -36,6 +36,7 @@ export type MessageKey =
   | 'ganttProject'
   | 'ganttView'
   | 'ganttFormat'
+  | 'reportSheetDesign'
   | 'engineConnected'
   | 'searchWorkbook';
 
@@ -61,6 +62,7 @@ const textTranslations: Record<string, string> = {
   'Tables': '数据表',
   'TableSheet Designer': '集算表设计器',
   'GanttSheet Designer': '甘特表设计器',
+  'ReportSheet Designer': '报表设计器',
   'History': '历史',
   'Clipboard': '剪贴板',
   'Font': '字体',
