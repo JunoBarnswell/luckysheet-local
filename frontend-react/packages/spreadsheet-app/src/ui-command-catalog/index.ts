@@ -21,7 +21,9 @@ export type RibbonCatalogTabId =
   | 'ganttView'
   | 'ganttFormat'
   | 'reportSheetDesign'
-  | 'tableDesign';
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -68,7 +70,9 @@ export type RibbonGroupId =
   | 'ganttView'
   | 'ganttFormat'
   | 'reportSheetDesign'
-  | 'tableDesign';
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat';
 
 export type RibbonCommandId =
   | 'save'
@@ -232,7 +236,10 @@ export type RibbonCommandId =
   | 'tableFilterButton'
   | 'tableResize'
   | 'tableConvertToRange'
-  | 'tableStyle';
+  | 'tableStyle'
+  | 'chartElements'
+  | 'chartFormatPanel'
+  | 'chartSelectData';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -400,6 +407,7 @@ export interface RibbonCommandContext {
   activeGanttSheet?: { sheetId: string; viewId: string };
   activeReportSheet?: { sheetId: string; tableId?: string };
   activeTable?: { sheetId: string; tableId: string; table: SheetTableModel; resizeRange?: SheetTableModel['range'] };
+  activeChart?: { sheetId: string; chartId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
@@ -522,6 +530,8 @@ export const RIBBON_TEXT = {
     ganttFormat: 'groups.ganttFormat',
     reportSheetDesign: 'groups.reportSheetDesign',
     tableDesign: 'groups.tableDesign',
+    chartDesign: 'groups.chartDesign',
+    chartFormat: 'groups.chartFormat',
   },
   commands: {
     save: 'commands.save',
@@ -636,6 +646,9 @@ export const RIBBON_TEXT = {
     tableResize: 'commands.tableResize',
     tableConvertToRange: 'commands.tableConvertToRange',
     tableStyle: 'commands.tableStyle',
+    chartElements: 'commands.chartElements',
+    chartFormatPanel: 'commands.chartFormatPanel',
+    chartSelectData: 'commands.chartSelectData',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
     shapesLines: 'commands.shapesLines',
@@ -744,6 +757,8 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('ganttFormat', 'ganttFormat', 40),
   group('reportSheetDesign', 'reportSheetDesign', 10),
   group('tableDesign', 'tableDesign', 10),
+  group('chartDesign', 'chartDesign', 10),
+  group('chartFormat', 'chartFormat', 20),
 ] as const;
 
 const ribbonSurface = (
@@ -1181,6 +1196,18 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('tableStyle', 'tableDesign', 'tableDesign', RIBBON_TEXT.commands.tableStyle, () => ({ type: 'panel.open', panel: 'data' }), 'sparkles'),
     enabled: (context) => Boolean(context.activeTable),
+  },
+  {
+    ...intent('chartElements', 'chartDesign', 'chartDesign', RIBBON_TEXT.commands.chartElements, () => ({ type: 'panel.open', panel: 'chart' }), 'chart'),
+    enabled: (context) => Boolean(context.activeChart),
+  },
+  {
+    ...intent('chartSelectData', 'chartDesign', 'chartDesign', RIBBON_TEXT.commands.chartSelectData, () => ({ type: 'panel.open', panel: 'chart' }), 'table'),
+    enabled: (context) => Boolean(context.activeChart),
+  },
+  {
+    ...intent('chartFormatPanel', 'chartFormat', 'chartFormat', RIBBON_TEXT.commands.chartFormatPanel, () => ({ type: 'panel.open', panel: 'chart' }), 'sparkles'),
+    enabled: (context) => Boolean(context.activeChart),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

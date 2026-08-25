@@ -151,6 +151,7 @@ describe('structural operations', () => {
       sourceRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }],
       categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
       series: [{ name: 'Sales', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 } }],
+      elements: { hiddenData: 'show' },
     });
 
     StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });

@@ -11,7 +11,7 @@ export interface InsertVariantDefinition<T extends string> {
   readonly tooltipKey: InsertUiTextKey;
 }
 
-type ChartGalleryType = Exclude<ChartDrawingPayload['chartType'], 'doughnut'>;
+type ChartGalleryType = ChartDrawingPayload['chartType'];
 
 export const INSERT_CHART_VARIANTS = [
   { id: 'chart.column', value: 'column', icon: 'chart-column', labelKey: 'chartColumn', ariaLabelKey: 'chartColumn', tooltipKey: 'chartColumn' },
@@ -19,6 +19,7 @@ export const INSERT_CHART_VARIANTS = [
   { id: 'chart.line', value: 'line', icon: 'chart-line', labelKey: 'chartLine', ariaLabelKey: 'chartLine', tooltipKey: 'chartLine' },
   { id: 'chart.area', value: 'area', icon: 'chart-area', labelKey: 'chartArea', ariaLabelKey: 'chartArea', tooltipKey: 'chartArea' },
   { id: 'chart.pie', value: 'pie', icon: 'chart-pie', labelKey: 'chartPie', ariaLabelKey: 'chartPie', tooltipKey: 'chartPie' },
+  { id: 'chart.doughnut', value: 'doughnut', icon: 'chart-pie', labelKey: 'chartDoughnut', ariaLabelKey: 'chartDoughnut', tooltipKey: 'chartDoughnut' },
   { id: 'chart.scatter', value: 'scatter', icon: 'chart-scatter', labelKey: 'chartScatter', ariaLabelKey: 'chartScatter', tooltipKey: 'chartScatter' },
   { id: 'chart.combo', value: 'combo', icon: 'data-chart', labelKey: 'chartCombo', ariaLabelKey: 'chartCombo', tooltipKey: 'chartCombo' },
 ] as const satisfies readonly InsertVariantDefinition<ChartGalleryType>[];

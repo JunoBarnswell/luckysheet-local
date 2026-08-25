@@ -49,6 +49,7 @@ export function RibbonHost({
   commands,
 }: RibbonHostProps): ReactNode {
   const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
+  const activeChartDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'chart');
   return (
     <Ribbon
       activeTab={state.ribbon.activeTab}
@@ -76,6 +77,7 @@ export function RibbonHost({
           return table ? { sheetId: activeTableContext.sheetId, tableId: table.id, table, resizeRange } : undefined;
         })()
         : undefined}
+      activeChart={activeChartDrawing ? { sheetId: activeChartDrawing.sheetId, chartId: activeChartDrawing.payloadId } : undefined}
       locale={locale}
       onCommand={dispatchCommand}
       onSessionIntent={dispatchSessionIntent}

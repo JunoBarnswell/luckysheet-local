@@ -516,6 +516,7 @@ export function FeatureSidebar({
             sheetId={sheetId}
             drawings={drawings}
             drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
             defaultRange={selectionText}
             onCommand={onCommand}
           />

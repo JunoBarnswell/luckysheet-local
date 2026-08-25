@@ -1,45 +1,17 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import type { ChartDrawingPayload, DrawingObject, RangeRef, WorksheetModel } from '@react-sheets/core-model';
+import type { ChartAxisModel, ChartDrawingPayload, ChartSeriesModel, DrawingObject, RangeRef, WorksheetModel } from '@react-sheets/core-model';
 
 function sheetRange(sheetId: string) {
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
 }
 
 export type ChartType = ChartDrawingPayload['chartType'];
-export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
-export type ChartAxisScale = 'linear' | 'logarithmic';
-
-export interface ChartAxis {
-  id: string;
-  position: ChartAxisPosition;
-  title?: string;
-  scale?: ChartAxisScale;
-  minimum?: number;
-  maximum?: number;
-  majorUnit?: number;
-  numberFormat?: string;
-  crossesAt?: number;
-}
-
-export interface ChartSeries {
-  name: string;
-  range: RangeRef;
-  /** Scatter charts may provide explicit X/Y ranges while retaining range as the value range. */
-  xRange?: RangeRef;
-  yRange?: RangeRef;
-  color?: string;
-  chartType?: Exclude<ChartType, 'combo'>;
-  axis?: 'primary' | 'secondary';
-  smooth?: boolean;
-}
+export type ChartAxis = ChartAxisModel;
+export type ChartSeries = ChartSeriesModel;
 
 /** Canonical chart payload. It remains a DrawingPayload member and is stored by payloadId. */
 export type ChartPayload = Omit<ChartDrawingPayload, 'series'> & {
   series?: ChartSeries[];
-  categoryAxis?: ChartAxis;
-  valueAxis?: ChartAxis;
-  secondaryCategoryAxis?: ChartAxis;
-  secondaryValueAxis?: ChartAxis;
 };
 
 export interface ChartInsertParams {
@@ -64,7 +36,7 @@ export interface ChartSetTypeParams {
 export interface ChartSetLegendParams {
   sheetId: string;
   chartId: string;
-  legendPosition: NonNullable<ChartPayload['legendPosition']>;
+  legendPosition: NonNullable<ChartPayload['elements']['legend']>['position'];
 }
 
 export interface ChartSetDataLabelsParams {
@@ -88,6 +60,19 @@ export interface ChartSetAxesParams {
   valueAxis?: ChartAxis;
   secondaryCategoryAxis?: ChartAxis;
   secondaryValueAxis?: ChartAxis;
+}
+
+export interface ChartSetElementsParams {
+  sheetId: string;
+  chartId: string;
+  elements: Partial<ChartPayload['elements']>;
+}
+
+export interface ChartSetSeriesStyleParams {
+  sheetId: string;
+  chartId: string;
+  seriesName: string;
+  style: Partial<Pick<ChartSeries, 'color' | 'chartType' | 'axis' | 'smooth' | 'marker' | 'dataLabels' | 'trendline' | 'errorBars'>>;
 }
 
 export interface ChartSetSecondaryAxisParams {
@@ -120,9 +105,39 @@ function isAxis(value: unknown): value is ChartAxis {
   return typeof value.id === 'string'
     && ['top', 'bottom', 'left', 'right'].includes(String(value.position))
     && (value.scale === undefined || value.scale === 'linear' || value.scale === 'logarithmic')
+    && (value.visible === undefined || typeof value.visible === 'boolean')
     && (value.minimum === undefined || typeof value.minimum === 'number')
     && (value.maximum === undefined || typeof value.maximum === 'number')
-    && (value.majorUnit === undefined || typeof value.majorUnit === 'number');
+    && (value.majorUnit === undefined || typeof value.majorUnit === 'number')
+    && (value.minorUnit === undefined || typeof value.minorUnit === 'number')
+    && (value.majorGridlines === undefined || isGridlines(value.majorGridlines))
+    && (value.minorGridlines === undefined || isGridlines(value.minorGridlines));
+}
+
+function isGridlines(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.visible === 'boolean'
+    && (value.width === undefined || typeof value.width === 'number')
+    && (value.dash === undefined || ['solid', 'dash', 'dot'].includes(String(value.dash)));
+}
+
+function isElements(value: unknown): value is ChartPayload['elements'] {
+  if (!isRecord(value)) return false;
+  const legend = value.legend;
+  return (value.title === undefined || typeof value.title === 'string')
+    && (legend === undefined || (isRecord(legend) && typeof legend.visible === 'boolean' && ['top', 'bottom', 'left', 'right'].includes(String(legend.position))))
+    && (value.dataLabels === undefined || isDataLabels(value.dataLabels))
+    && (value.categoryAxis === undefined || isAxis(value.categoryAxis))
+    && (value.valueAxis === undefined || isAxis(value.valueAxis))
+    && (value.secondaryCategoryAxis === undefined || isAxis(value.secondaryCategoryAxis))
+    && (value.secondaryValueAxis === undefined || isAxis(value.secondaryValueAxis))
+    && (value.hiddenData === 'show' || value.hiddenData === 'hideRows' || value.hiddenData === 'hideColumns');
+}
+
+function isDataLabels(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.visible === 'boolean'
+    && (value.position === undefined || ['best-fit', 'center', 'inside-end', 'inside-base', 'outside-end'].includes(String(value.position)));
 }
 
 function isSeries(value: unknown): value is ChartSeries {
@@ -134,7 +149,11 @@ function isSeries(value: unknown): value is ChartSeries {
     && (series.yRange === undefined || isRange(series.yRange))
     && (series.chartType === undefined || ['column', 'bar', 'line', 'pie', 'doughnut', 'area', 'scatter'].includes(String(series.chartType)))
     && (series.axis === undefined || series.axis === 'primary' || series.axis === 'secondary')
-    && (series.smooth === undefined || typeof series.smooth === 'boolean');
+    && (series.smooth === undefined || typeof series.smooth === 'boolean')
+    && (series.marker === undefined || isRecord(series.marker))
+    && (series.dataLabels === undefined || isDataLabels(series.dataLabels))
+    && (series.trendline === undefined || isRecord(series.trendline))
+    && (series.errorBars === undefined || isRecord(series.errorBars));
 }
 
 function isChartPayload(value: unknown): value is ChartPayload {
@@ -147,11 +166,9 @@ function isChartPayload(value: unknown): value is ChartPayload {
     && Array.isArray(sourceRanges)
     && sourceRanges.every(isRange)
     && (series === undefined || (Array.isArray(series) && series.every(isSeries)))
+    && isElements(payload.elements)
     && (payload.categoryRange === undefined || isRange(payload.categoryRange))
-    && (payload.categoryAxis === undefined || isAxis(payload.categoryAxis))
-    && (payload.valueAxis === undefined || isAxis(payload.valueAxis))
-    && (payload.secondaryCategoryAxis === undefined || isAxis(payload.secondaryCategoryAxis))
-    && (payload.secondaryValueAxis === undefined || isAxis(payload.secondaryValueAxis));
+    && (payload.chartType !== 'combo' || (Array.isArray(series) && series.every((entry) => entry.chartType !== undefined)));
 }
 
 function validateChartPair(sheet: WorksheetModel, drawing: DrawingObject, payload: ChartPayload): void {
@@ -249,16 +266,30 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   commandIds.push('chart.update');
   runtime.registry.registerCommand<ChartSetTypeParams>({ id: 'chart.setType', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, chartType: input.chartType, stacked: input.stacked ?? payload.stacked })) });
   commandIds.push('chart.setType');
-  runtime.registry.registerCommand<ChartSetLegendParams>({ id: 'chart.setLegend', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, legendPosition: input.legendPosition })) });
+  runtime.registry.registerCommand<ChartSetLegendParams>({ id: 'chart.setLegend', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, legend: { visible: true, position: input.legendPosition } } })) });
   commandIds.push('chart.setLegend');
-  runtime.registry.registerCommand<ChartSetDataLabelsParams>({ id: 'chart.setDataLabels', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, showDataLabels: input.showDataLabels })) });
+  runtime.registry.registerCommand<ChartSetDataLabelsParams>({ id: 'chart.setDataLabels', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, dataLabels: { ...(payload.elements.dataLabels ?? { visible: false }), visible: input.showDataLabels } } })) });
   commandIds.push('chart.setDataLabels');
   runtime.registry.registerCommand<ChartSetSeriesParams>({ id: 'chart.setSeries', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, sourceRanges: structuredClone(input.sourceRanges), series: input.series ? structuredClone(input.series) : payload.series, categoryRange: input.categoryRange ? structuredClone(input.categoryRange) : payload.categoryRange })) });
   commandIds.push('chart.setSeries');
-  runtime.registry.registerCommand<ChartSetAxesParams>({ id: 'chart.setAxes', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, categoryAxis: input.categoryAxis ? structuredClone(input.categoryAxis) : payload.categoryAxis, valueAxis: input.valueAxis ? structuredClone(input.valueAxis) : payload.valueAxis, secondaryCategoryAxis: input.secondaryCategoryAxis ? structuredClone(input.secondaryCategoryAxis) : payload.secondaryCategoryAxis, secondaryValueAxis: input.secondaryValueAxis ? structuredClone(input.secondaryValueAxis) : payload.secondaryValueAxis })) });
+  runtime.registry.registerCommand<ChartSetAxesParams>({ id: 'chart.setAxes', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, categoryAxis: input.categoryAxis ? structuredClone(input.categoryAxis) : payload.elements.categoryAxis, valueAxis: input.valueAxis ? structuredClone(input.valueAxis) : payload.elements.valueAxis, secondaryCategoryAxis: input.secondaryCategoryAxis ? structuredClone(input.secondaryCategoryAxis) : payload.elements.secondaryCategoryAxis, secondaryValueAxis: input.secondaryValueAxis ? structuredClone(input.secondaryValueAxis) : payload.elements.secondaryValueAxis } })) });
   commandIds.push('chart.setAxes');
-  runtime.registry.registerCommand<ChartSetSecondaryAxisParams>({ id: 'chart.setSecondaryAxis', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, series: (payload.series ?? []).map((series) => series.name === input.seriesName ? { ...series, axis: input.enabled ? 'secondary' : 'primary' } : series) })) });
+  runtime.registry.registerCommand<ChartSetSecondaryAxisParams>({ id: 'chart.setSecondaryAxis', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    let found = false;
+    const series: ChartSeries[] = (payload.series ?? []).map((entry) => entry.name === input.seriesName ? (found = true, { ...entry, axis: (input.enabled ? 'secondary' : 'primary') as 'primary' | 'secondary' }) : entry);
+    if (!found) throw new Error(`Unknown chart series: ${input.seriesName}`);
+    return { ...payload, series };
+  }) });
   commandIds.push('chart.setSecondaryAxis');
+  runtime.registry.registerCommand<ChartSetElementsParams>({ id: 'chart.setElements', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, ...structuredClone(input.elements), legend: input.elements.legend ? structuredClone(input.elements.legend) : payload.elements.legend, dataLabels: input.elements.dataLabels ? structuredClone(input.elements.dataLabels) : payload.elements.dataLabels, categoryAxis: input.elements.categoryAxis ? structuredClone(input.elements.categoryAxis) : payload.elements.categoryAxis, valueAxis: input.elements.valueAxis ? structuredClone(input.elements.valueAxis) : payload.elements.valueAxis, secondaryCategoryAxis: input.elements.secondaryCategoryAxis ? structuredClone(input.elements.secondaryCategoryAxis) : payload.elements.secondaryCategoryAxis, secondaryValueAxis: input.elements.secondaryValueAxis ? structuredClone(input.elements.secondaryValueAxis) : payload.elements.secondaryValueAxis, plotArea: input.elements.plotArea ? structuredClone(input.elements.plotArea) : payload.elements.plotArea, chartArea: input.elements.chartArea ? structuredClone(input.elements.chartArea) : payload.elements.chartArea } })) });
+  commandIds.push('chart.setElements');
+  runtime.registry.registerCommand<ChartSetSeriesStyleParams>({ id: 'chart.setSeriesStyle', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
+    let found = false;
+    const series = (payload.series ?? []).map((entry) => entry.name === input.seriesName ? (found = true, { ...entry, ...structuredClone(input.style) }) : entry);
+    if (!found) throw new Error(`Unknown chart series: ${input.seriesName}`);
+    return { ...payload, series };
+  }) });
+  commandIds.push('chart.setSeriesStyle');
 
   runtime.registry.registerCommand<ChartRemoveParams>({
     id: 'chart.remove',
@@ -289,6 +320,7 @@ export const CHART_MUTATION_IDS = [] as const;
 export const CHART_COMMAND_IDS = [
   'chart.insert', 'chart.update', 'chart.remove', 'chart.setType', 'chart.setLegend',
   'chart.setDataLabels', 'chart.setSeries', 'chart.setAxes', 'chart.setSecondaryAxis',
+  'chart.setElements', 'chart.setSeriesStyle',
   'chart.insert.column', 'chart.insert.bar', 'chart.insert.line', 'chart.insert.area',
   'chart.insert.pie', 'chart.insert.doughnut', 'chart.insert.scatter', 'chart.insert.combo',
 ] as const;

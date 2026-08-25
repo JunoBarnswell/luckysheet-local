@@ -189,7 +189,7 @@ describe('drawing feature', () => {
       { kind: 'image', payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Image' } },
       { kind: 'shape', payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' } },
       { kind: 'textbox', payload: { kind: 'textbox', text: 'Text' } },
-      { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [] } },
+      { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [], elements: { hiddenData: 'show' } } },
       { kind: 'data-chart', payload: { kind: 'data-chart', tableId: 'table-kind', plots: [{ type: 'column', valueFieldId: 'value', aggregate: 'sum' }], config: {} } },
       { kind: 'camera', payload: { kind: 'camera', sourceRange: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, refreshPolicy: 'live' } },
       { kind: 'form-control', payload: { kind: 'form-control', controlType: 'button', value: false, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } } },

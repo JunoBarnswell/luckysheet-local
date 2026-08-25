@@ -233,18 +233,118 @@ export type P1ChartType =
   | 'scatter'
   | 'combo';
 
+export type ChartSeriesType = Exclude<P1ChartType, 'combo'>;
+export type ChartAxisPosition = 'top' | 'bottom' | 'left' | 'right';
+export type ChartAxisScale = 'linear' | 'logarithmic';
+export type ChartDataLabelPosition = 'best-fit' | 'center' | 'inside-end' | 'inside-base' | 'outside-end';
+
+export interface ChartAxisModel {
+  id: string;
+  position: ChartAxisPosition;
+  visible?: boolean;
+  title?: string;
+  scale?: ChartAxisScale;
+  minimum?: number;
+  maximum?: number;
+  majorUnit?: number;
+  minorUnit?: number;
+  numberFormat?: string;
+  crossesAt?: number;
+  majorGridlines?: ChartGridlineModel;
+  minorGridlines?: ChartGridlineModel;
+}
+
+export interface ChartGridlineModel {
+  visible: boolean;
+  color?: string;
+  width?: number;
+  dash?: 'solid' | 'dash' | 'dot';
+}
+
+export interface ChartAreaStyle {
+  fill?: string;
+  border?: string;
+  borderWidth?: number;
+  borderDash?: 'solid' | 'dash' | 'dot';
+}
+
+export interface ChartMarkerModel {
+  enabled: boolean;
+  shape?: 'circle' | 'square' | 'diamond' | 'triangle';
+  size?: number;
+  fill?: string;
+  border?: string;
+}
+
+export interface ChartTrendlineModel {
+  type: 'linear' | 'exponential' | 'polynomial' | 'moving-average';
+  order?: number;
+  period?: number;
+  color?: string;
+  width?: number;
+}
+
+export interface ChartErrorBarsModel {
+  type: 'fixed' | 'percentage' | 'standard-deviation' | 'standard-error' | 'custom';
+  value?: number;
+  plusRange?: RangeRef;
+  minusRange?: RangeRef;
+  color?: string;
+  width?: number;
+}
+
+export interface ChartDataLabelsModel {
+  visible: boolean;
+  showValue?: boolean;
+  showCategoryName?: boolean;
+  showSeriesName?: boolean;
+  showPercentage?: boolean;
+  position?: ChartDataLabelPosition;
+  numberFormat?: string;
+}
+
+export interface ChartSeriesModel {
+  name: string;
+  range: RangeRef;
+  xRange?: RangeRef;
+  yRange?: RangeRef;
+  color?: string;
+  chartType?: ChartSeriesType;
+  axis?: 'primary' | 'secondary';
+  smooth?: boolean;
+  marker?: ChartMarkerModel;
+  dataLabels?: ChartDataLabelsModel;
+  trendline?: ChartTrendlineModel;
+  errorBars?: ChartErrorBarsModel;
+}
+
+/** All chart semantics live in this value object; DrawingObject only owns placement. */
+export interface ChartElementModel {
+  title?: string;
+  legend?: {
+    visible: boolean;
+    position: 'top' | 'bottom' | 'left' | 'right';
+  };
+  dataLabels?: ChartDataLabelsModel;
+  categoryAxis?: ChartAxisModel;
+  valueAxis?: ChartAxisModel;
+  secondaryCategoryAxis?: ChartAxisModel;
+  secondaryValueAxis?: ChartAxisModel;
+  plotArea?: ChartAreaStyle;
+  chartArea?: ChartAreaStyle;
+  hiddenData: 'show' | 'hideRows' | 'hideColumns';
+}
+
 export interface ChartDrawingPayload {
   kind: 'chart';
   chartId: string;
   chartType: P1ChartType;
-  title?: string;
   pivotId?: string;
   sourceRanges: RangeRef[];
-  series?: Array<{ name: string; range: RangeRef; color?: string }>;
+  series?: ChartSeriesModel[];
   categoryRange?: RangeRef;
-  legendPosition?: 'top' | 'bottom' | 'left' | 'right' | 'none';
-  showDataLabels?: boolean;
   stacked?: 'none' | 'stacked' | 'percent';
+  elements: ChartElementModel;
 }
 
 /** A typed member filter owned by a floating Pivot slicer. */

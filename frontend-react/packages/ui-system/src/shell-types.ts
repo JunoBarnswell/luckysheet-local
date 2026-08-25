@@ -39,7 +39,9 @@ export type RibbonTabId =
   | 'ganttView'
   | 'ganttFormat'
   | 'reportSheetDesign'
-  | 'tableDesign';
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat';
 
 export const RIBBON_TAB_ORDER: readonly RibbonTabId[] = [
   'file',

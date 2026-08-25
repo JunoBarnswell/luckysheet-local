@@ -38,6 +38,8 @@ export type MessageKey =
   | 'ganttFormat'
   | 'reportSheetDesign'
   | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat'
   | 'engineConnected'
   | 'searchWorkbook';
 

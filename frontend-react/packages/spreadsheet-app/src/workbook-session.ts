@@ -2450,7 +2450,7 @@ export class WorkbookSession {
     }
     this.runCommand('chart.insert', buildChartInsertParams(drawing, payload));
     this.setDrawingSelection([drawing.id]);
-    this.notify(payload.title ? `Added chart "${payload.title}"` : `Added ${payload.chartType} chart`);
+    this.notify(payload.elements.title ? `Added chart "${payload.elements.title}"` : `Added ${payload.chartType} chart`);
     this.refresh();
   }
   insertChart(type: ChartDrawingPayload['chartType'] = 'column'): void {
@@ -2469,10 +2469,18 @@ export class WorkbookSession {
       kind: 'chart',
       chartId: payloadId,
       chartType: type,
-      title: 'Chart',
       sourceRanges: [{ ...range, sheetId: this.activeSheetId }],
-      legendPosition: 'bottom',
-      showDataLabels: false,
+      series: type === 'combo' ? [{ name: 'Series 1', range: { ...range, sheetId: this.activeSheetId }, chartType: 'column', axis: 'primary' }] : undefined,
+      elements: {
+        title: 'Chart',
+        legend: { visible: true, position: 'bottom' },
+        dataLabels: { visible: false },
+        hiddenData: 'show',
+        categoryAxis: { id: 'category', position: 'bottom', visible: true, majorGridlines: { visible: false } },
+        valueAxis: { id: 'value', position: 'left', visible: true, majorGridlines: { visible: true, color: '#e2e8f0', width: 1, dash: 'solid' } },
+        chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 },
+        plotArea: { fill: '#ffffff' },
+      },
     };
     this.addChart(drawing, payload);
   }
@@ -2485,17 +2493,25 @@ export class WorkbookSession {
       sheetId: this.activeSheetId,
       chartId,
       sourceRanges,
-      series: series?.map((entry) => ({ name: entry.name, range: entry.range, color: entry.color })),
+      series: series?.map((entry) => structuredClone(entry)),
       categoryRange,
     });
     this.refresh();
   }
-  setChartLegend(chartId: string, legendPosition: NonNullable<ChartDrawingPayload['legendPosition']>): void {
+  setChartLegend(chartId: string, legendPosition: NonNullable<ChartDrawingPayload['elements']['legend']>['position']): void {
     this.runCommand('chart.setLegend', { sheetId: this.activeSheetId, chartId, legendPosition });
     this.refresh();
   }
   setChartDataLabels(chartId: string, showDataLabels: boolean): void {
     this.runCommand('chart.setDataLabels', { sheetId: this.activeSheetId, chartId, showDataLabels });
+    this.refresh();
+  }
+  setChartElements(chartId: string, elements: Partial<ChartDrawingPayload['elements']>): void {
+    this.runCommand('chart.setElements', { sheetId: this.activeSheetId, chartId, elements });
+    this.refresh();
+  }
+  setChartSeriesStyle(chartId: string, seriesName: string, style: Partial<NonNullable<ChartDrawingPayload['series']>[number]>): void {
+    this.runCommand('chart.setSeriesStyle', { sheetId: this.activeSheetId, chartId, seriesName, style });
     this.refresh();
   }
   updateChartBounds(id: string, bounds: DrawingTransform): void {

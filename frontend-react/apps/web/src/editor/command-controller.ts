@@ -267,7 +267,7 @@ export function useEditorCommandController({
       if (!activePivot || !chart) return;
       const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
       const drawing: DrawingObject = { id: `drawing-${chartId}`, sheetId: activePivotSheetId, kind: "chart", payloadId: chartId, anchor: { kind: "absolute" }, transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 }, zIndex: 0 };
-      const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: chart.type, title: chart.title, sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [] };
+      const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: chart.type, sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [], elements: { title: chart.title, legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show' } };
       dispatchCommand({ commandId: "pivot.chart.create", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, drawing, payload } });
     },
   };
