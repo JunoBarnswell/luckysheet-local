@@ -295,6 +295,23 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(result.rows[0]?.children[0]?.values[0]?.values[0], 10);
   });
 
+  it('keeps multi-level date grouping and custom numeric bounds in the canonical result', () => {
+    const workbook = new WorkbookModel('pivot-grouping-levels', 'Pivot Grouping Levels');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Date', 'Amount'], [45292, 25], [45323, 75], [45657, 125]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-grouping-levels', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const date = pivot.fieldCatalog.fields.find((field) => field.name === 'Date')!;
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
+    pivot.layout.rows = [{ fieldId: date.fieldId, group: { kind: 'date', unit: 'year', units: ['year', 'quarter', 'month'] } }];
+    pivot.layout.columns = [{ fieldId: amount.fieldId, group: { kind: 'number', interval: 50, start: 0, end: 1000 } }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const result = computePivotResult(workbook, pivot);
+    assert.equal(result.rows[0]?.label, '2024 / 2024 Q1 / 2024-01');
+    assert.deepEqual(result.columnPaths, [[0], [50], [100]]);
+  });
+
   it('keeps numeric label sorting separate from explicit Values sorting', () => {
     const workbook = new WorkbookModel('pivot-numeric-sort', 'Pivot Numeric Sort');
     const sheet = workbook.getSheet('sheet-1');

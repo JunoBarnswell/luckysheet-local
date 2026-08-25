@@ -7,6 +7,7 @@ import type {
   PivotFieldPlacement,
   PivotFilter,
   PivotGroup,
+  PivotDateGroupUnit,
   PivotGridProjection,
   PivotHitTest,
   PivotLayout,
@@ -934,16 +935,20 @@ function pivotDate(value: PivotScalar): Date {
 }
 
 function dateGroupLabel(date: Date, group: Extract<PivotGroup, { kind: 'date' }>): PivotScalar {
-  if (group.unit === 'year') return date.getFullYear();
-  if (group.unit === 'quarter') return `${date.getFullYear()} Q${Math.floor(date.getMonth() / 3) + 1}`;
-  if (group.unit === 'month') return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-  if (group.unit === 'week') {
-    const startOfWeek = group.startOfWeek ?? 0;
-    const first = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-    const offset = (first.getUTCDay() - startOfWeek + 7) % 7;
-    return Math.floor((Math.floor((date.getTime() - first.getTime()) / 86_400_000) + offset) / 7) + 1;
-  }
-  return date.toISOString().slice(0, 10);
+  const units: PivotDateGroupUnit[] = group.units?.length ? group.units : [group.unit];
+  const labels = units.map((unit) => {
+    if (unit === 'year') return String(date.getFullYear());
+    if (unit === 'quarter') return `${date.getFullYear()} Q${Math.floor(date.getMonth() / 3) + 1}`;
+    if (unit === 'month') return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    if (unit === 'week') {
+      const startOfWeek = group.startOfWeek ?? 0;
+      const first = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+      const offset = (first.getUTCDay() - startOfWeek + 7) % 7;
+      return `W${Math.floor((Math.floor((date.getTime() - first.getTime()) / 86_400_000) + offset) / 7) + 1}`;
+    }
+    return date.toISOString().slice(0, 10);
+  });
+  return labels.length === 1 && units[0] === 'year' ? Number(labels[0]) : labels.join(' / ');
 }
 
 function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldCatalog: PivotFieldCatalog, collator: Intl.Collator): AxisGroup[] {

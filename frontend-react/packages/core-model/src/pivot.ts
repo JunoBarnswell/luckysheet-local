@@ -198,8 +198,10 @@ export interface PivotManualGroup {
   items: PivotMemberKey[];
 }
 
+export type PivotDateGroupUnit = 'year' | 'quarter' | 'month' | 'week' | 'day';
+
 export type PivotGroup =
-  | { kind: 'date'; unit: 'year' | 'quarter' | 'month' | 'week' | 'day'; startOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6; start?: PivotScalar; end?: PivotScalar; autoStart?: boolean; autoEnd?: boolean }
+  | { kind: 'date'; unit: PivotDateGroupUnit; units?: PivotDateGroupUnit[]; startOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6; start?: PivotScalar; end?: PivotScalar; autoStart?: boolean; autoEnd?: boolean }
   | { kind: 'number'; interval: number; start?: number; end?: number; autoStart?: boolean; autoEnd?: boolean }
   | { kind: 'manual'; groups: PivotManualGroup[] };
 
