@@ -276,6 +276,75 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...legacyReportLayout, compact: true, repeatLabels: false } as never }), /unsupported field: compact/);
 });
 
+test('Pivot calculated definitions extend the effective field set without catalog duplication', () => {
+  const base = {
+    schema: 'PivotDefinition' as const,
+    id: 'pivot-calculated-layout',
+    source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+    target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [{ fieldId: 'region', name: 'Region', dataType: 'text' as const, ordinal: 0 }, { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 }] },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
+    refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
+  };
+  const calculated = {
+    ...base,
+    layout: {
+      ...base.layout,
+      calculatedFields: [{ fieldId: 'calculated:margin', name: 'Margin', formula: '=amount*1.15' }],
+      calculatedItems: [{ fieldId: 'calculated-item:amount:premium', targetFieldId: 'amount', name: 'Premium', formula: '=amount*3' }],
+      rows: [{ fieldId: 'calculated:margin' }],
+      values: [{ fieldId: 'calculated:margin', summarizeBy: 'sum' as const }],
+    },
+  };
+  validatePivotDefinition(calculated);
+  assert.throws(() => validatePivotDefinition({
+    ...calculated,
+    layout: { ...calculated.layout, calculatedFields: [{ fieldId: 'amount', name: 'Shadow', formula: '=amount' }] },
+  }), /duplicated or collides/);
+  assert.throws(() => validatePivotDefinition({
+    ...calculated,
+    layout: { ...calculated.layout, calculatedItems: [{ fieldId: 'calculated-item:missing', targetFieldId: 'missing', name: 'Missing', formula: '=1' }] },
+  }), /targetFieldId is invalid/);
+  assert.throws(() => validatePivotDefinition({
+    ...calculated,
+    layout: { ...calculated.layout, calculatedFields: [{ fieldId: 'calculated:bad', name: 'Bad', formula: '', unsupported: true }] as never },
+  }), /unsupported field/);
+});
+
+test('Pivot layout-only update accepts a new calculated field without fieldCatalog', () => {
+  const envelope = {
+    schema: 'OperationEnvelope' as const,
+    operationId: 'pivot-calculated-layout-update',
+    unitId: 'unit-1',
+    clientSequence: 1,
+    baseRevision: 0,
+    mutations: [{
+      id: 'pivot.update',
+      sheetId: 'sheet-1',
+      params: {
+        sheetId: 'sheet-1',
+        pivotId: 'pivot-1',
+        layout: {
+          calculatedFields: [{ fieldId: 'calculated:margin', name: 'Margin', formula: '=amount*1.15' }],
+          calculatedItems: [],
+        },
+      },
+    }],
+    createdAt: new Date().toISOString(),
+  };
+  assert.deepEqual(validateOperationEnvelope(envelope), envelope);
+  assert.throws(() => validateOperationEnvelope({
+    ...envelope,
+    mutations: [{
+      ...envelope.mutations[0]!,
+      params: {
+        ...envelope.mutations[0]!.params,
+        layout: { calculatedFields: [{ fieldId: 'calculated:margin', name: 'Margin', formula: '=amount' }, { fieldId: 'calculated:margin', name: 'Duplicate', formula: '=amount' }] },
+      },
+    }],
+  }), /duplicated or collides/);
+});
+
 test('Pivot protocol preserves typed formula-error members and rejects unknown codes', () => {
   const base = {
     schema: 'PivotDefinition' as const,

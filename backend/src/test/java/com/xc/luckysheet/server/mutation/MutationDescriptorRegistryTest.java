@@ -530,6 +530,47 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void pivotLayoutOnlyUpdateAcceptsNewCalculatedFieldsWithoutWritingTheFieldCatalog() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[
+                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                ]}]}
+                """);
+        OperationMutation update = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[{"fieldId":"calculated:margin"}],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"fieldId":"calculated:margin","summarizeBy":"sum"}],"calculatedFields":[{"fieldId":"calculated:margin","name":"Margin","formula":"=amount*1.15"}],"calculatedItems":[{"fieldId":"calculated-item:amount:premium","targetFieldId":"sheet:sheet-1:column:1:range:0","name":"Premium","formula":"=amount*3"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
+                """));
+
+        JsonNode next = registry.applyPublicMutations(snapshot, List.of(update));
+        JsonNode pivot = next.path("sheets").get(0).path("pivots").get(0);
+        assertEquals("calculated:margin", pivot.path("layout").path("calculatedFields").get(0).path("fieldId").asText());
+        assertEquals("calculated-item:amount:premium", pivot.path("layout").path("calculatedItems").get(0).path("fieldId").asText());
+        assertEquals(2, pivot.path("fieldCatalog").path("fields").size());
+        assertEquals(false, pivot.path("fieldCatalog").path("fields").toString().contains("calculated:margin"));
+    }
+
+    @Test
+    void pivotCalculatedDefinitionsRejectCatalogCollisionsAndUnknownTargets() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{},"pivots":[
+                  {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                ]}]}
+                """);
+        OperationMutation collision = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"calculatedFields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Shadow","formula":"=1"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
+                """));
+        ServiceException collisionError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, collision, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", collisionError.code());
+
+        OperationMutation missingTarget = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"calculatedFields":[],"calculatedItems":[{"fieldId":"calculated-item:missing","targetFieldId":"missing","name":"Missing","formula":"=1"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
+                """));
+        ServiceException targetError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, missingTarget, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", targetError.code());
+    }
+
+    @Test
     void pivotSourceReferencesResolveEveryCanonicalEntityAndRejectDanglingIds() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
