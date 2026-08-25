@@ -4,6 +4,7 @@ import type {
   PivotFieldCatalog,
   PivotFieldDataType,
   PivotFieldDefinition,
+  PivotErrorValue,
   PivotFieldPlacement,
   PivotFilter,
   PivotGroup,
@@ -48,12 +49,14 @@ import {
   pivotMemberKey,
   normalizePivotRefreshPolicy,
   normalizePivotDisplayOptions,
+  normalizePivotNumberFormat,
   pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
 } from '@react-sheets/core-model';
 import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
 import { FormulaEngine, isFormulaError, type FormulaValue } from '@react-sheets/formula-engine';
+import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
 
 export interface PivotSourceRowInput {
@@ -728,7 +731,8 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
 function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog): PivotValueField {
   const fieldId = resolveFieldId(field.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot value field: ${field.fieldId}`);
-  return { ...field, fieldId, ...(field.baseFieldId ? { baseFieldId: resolveFieldId(field.baseFieldId, catalog) } : {}) };
+  const numberFormat = normalizePivotNumberFormat(field.numberFormat);
+  return { ...field, fieldId, ...(field.baseFieldId ? { baseFieldId: resolveFieldId(field.baseFieldId, catalog) } : {}), ...(numberFormat === undefined ? {} : { numberFormat }) };
 }
 
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
@@ -1667,9 +1671,16 @@ function normalizeExpansionForTree(expansion: PivotLayout['expansion'], tree: Pi
   };
 }
 
-function textForValue(value: PivotScalar, options = DEFAULT_PIVOT_DISPLAY_OPTIONS): string {
+function textForValue(value: PivotScalar, options = DEFAULT_PIVOT_DISPLAY_OPTIONS, numberFormat?: string): string {
   if (isPivotError(value)) return options.showErrorValues ? (options.errorCellText || value.code) : '';
   if (value == null || value === '') return options.fillEmptyCells ? options.emptyCellText : '';
+  return numberFormat ? formatPivotValue(value, numberFormat) : display(value);
+}
+
+function formatPivotValue(value: Exclude<PivotScalar, null | PivotErrorValue>, numberFormat: string): string {
+  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') {
+    return formatNumberValue(value, numberFormat);
+  }
   return display(value);
 }
 
@@ -1819,7 +1830,8 @@ function buildPivotGridProjectionCandidate(
         for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
           const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
           const value = resultCell?.values[valueIndex] ?? null;
-          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value, displayOptions), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnPathCount - 1 }));
+          const valueField = values[valueIndex];
+          cells.push(projectionCell(definition.id, row, column, node.subtotal ? 'subtotal' : 'value', value, textForValue(value, displayOptions, valueField?.numberFormat), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnPathCount - 1, ...(valueField?.numberFormat ? { numberFormat: valueField.numberFormat } : {}) }));
         }
       }
       if (definition.layout.showRowGrandTotals) {
@@ -1827,7 +1839,8 @@ function buildPivotGridProjectionCandidate(
         for (let valueIndex = 0; valueIndex < Math.max(values.length, 1); valueIndex += 1) {
           const column = rowHeaderCount + columnPathCount * Math.max(values.length, 1) + valueIndex;
           const value = resultCell?.values[valueIndex] ?? null;
-          cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: valueIndex === Math.max(values.length, 1) - 1 }));
+          const valueField = values[valueIndex];
+          cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions, valueField?.numberFormat), { nodeId: node.nodeId, resultCellId: resultCell?.id, columnPath: resultCell?.columnPath, sourceRowPaths: resultCell?.sourceRowPaths, isLastColumn: valueIndex === Math.max(values.length, 1) - 1, ...(valueField?.numberFormat ? { numberFormat: valueField.numberFormat } : {}) }));
         }
       }
       row += 1;
@@ -1837,12 +1850,14 @@ function buildPivotGridProjectionCandidate(
       const columnGrandTotals = tree.columnGrandTotals ?? (tree.grandTotal ? [tree.grandTotal] : []);
       columnGrandTotals.forEach((resultCell, columnIndex) => resultCell.values.forEach((value, valueIndex) => {
         const column = rowHeaderCount + columnIndex * Math.max(values.length, 1) + valueIndex;
-        cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions), { resultCellId: resultCell.id, columnPath: resultCell.columnPath, sourceRowPaths: resultCell.sourceRowPaths, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnGrandTotals.length - 1 && valueIndex === resultCell.values.length - 1 }));
+        const valueField = values[valueIndex];
+        cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions, valueField?.numberFormat), { resultCellId: resultCell.id, columnPath: resultCell.columnPath, sourceRowPaths: resultCell.sourceRowPaths, isLastColumn: !definition.layout.showRowGrandTotals && columnIndex === columnGrandTotals.length - 1 && valueIndex === resultCell.values.length - 1, ...(valueField?.numberFormat ? { numberFormat: valueField.numberFormat } : {}) }));
       }));
       if (definition.layout.showRowGrandTotals) {
         tree.grandTotal.values.forEach((value, valueIndex) => {
           const column = rowHeaderCount + columnPathCount * Math.max(values.length, 1) + valueIndex;
-          cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths, isLastColumn: valueIndex === tree.grandTotal!.values.length - 1 }));
+          const valueField = values[valueIndex];
+          cells.push(projectionCell(definition.id, row, column, 'grand-total', value, textForValue(value, displayOptions, valueField?.numberFormat), { resultCellId: tree.grandTotal?.id, sourceRowPaths: tree.grandTotal?.sourceRowPaths, isLastColumn: valueIndex === tree.grandTotal!.values.length - 1, ...(valueField?.numberFormat ? { numberFormat: valueField.numberFormat } : {}) }));
         });
       }
       row += 1;

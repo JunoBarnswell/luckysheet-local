@@ -331,6 +331,27 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(filterCells[0]?.filterSummary?.entries.length, 3);
   });
 
+  it('projects each value field with its canonical number format', () => {
+    const workbook = workbookWithData();
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-number-format', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', numberFormat: '#,##0.00' }];
+    const projection = buildPivotGridProjection(workbook, pivot);
+    const values = projection.cells.filter((cell) => cell.kind === 'value' || cell.kind === 'grand-total');
+    assert.ok(values.length > 0);
+    assert.equal(values[0]?.text, '15.00');
+    assert.equal(values[0]?.numberFormat, '#,##0.00');
+    assert.equal(values.at(-1)?.text, '35.00');
+    assert.throws(() => {
+      pivot.layout.values[0]!.numberFormat = '[Red';
+      buildPivotGridProjection(workbook, pivot);
+    }, /unterminated/);
+  });
+
   it('applies canonical date, numeric and manual grouping before axis aggregation', () => {
     const workbook = new WorkbookModel('pivot-grouping', 'Pivot Grouping');
     const sheet = workbook.getSheet('sheet-1');

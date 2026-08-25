@@ -437,6 +437,51 @@ export interface PivotValueField {
   showAs?: PivotShowAs;
 }
 
+/**
+ * Normalize the one persisted number-format contract for Pivot value fields.
+ *
+ * The format is an Excel format code, not display text.  Empty, malformed or
+ * control-character-containing codes are rejected at the model boundary so a
+ * renderer or OOXML writer cannot silently fall back to General.
+ */
+export function normalizePivotNumberFormat(input: unknown): string | undefined {
+  if (input === undefined) return undefined;
+  if (typeof input !== 'string') throw new Error('Pivot value field numberFormat must be a string');
+  const format = input.trim();
+  if (!format) throw new Error('Pivot value field numberFormat must not be empty');
+  if (format.length > 255 || /[\u0000-\u001f\u007f]/.test(format)) throw new Error('Pivot value field numberFormat is invalid');
+
+  let quoted = false;
+  let bracketed = false;
+  for (let index = 0; index < format.length; index += 1) {
+    const character = format[index]!;
+    if (quoted) {
+      if (character === '"') quoted = false;
+      continue;
+    }
+    if (bracketed) {
+      if (character === ']') bracketed = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === '[') {
+      bracketed = true;
+      continue;
+    }
+    if (character === ']') throw new Error('Pivot value field numberFormat has an unmatched bracket');
+    if (character === '\\') {
+      if (index + 1 >= format.length) throw new Error('Pivot value field numberFormat has a dangling escape');
+      index += 1;
+    }
+  }
+  if (quoted || bracketed) throw new Error('Pivot value field numberFormat is unterminated');
+  if (format.split(';').some((section) => section.trim().length === 0)) throw new Error('Pivot value field numberFormat has an empty section');
+  return format;
+}
+
 export interface PivotCalculatedField {
   fieldId: string;
   name: string;
@@ -733,6 +778,8 @@ export interface PivotProjectionCell {
   kind: PivotProjectionCellKind;
   value: PivotScalar;
   text: string;
+  /** Canonical Excel format used for value/subtotal/grand-total cells. */
+  numberFormat?: string;
   /** Canonical field identity for header/filter interactions. */
   fieldId?: string;
   /** Locale-independent caption owned by the presentation layer. */
@@ -811,6 +858,10 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
   }
   const canonical = structuredClone(input);
   if (typeof canonical.layout.allowMultipleFiltersPerField !== 'boolean') throw new Error(`Pivot ${input.id} is missing allowMultipleFiltersPerField`);
+  canonical.layout.values = canonical.layout.values.map((field) => {
+    const numberFormat = normalizePivotNumberFormat(field.numberFormat);
+    return { ...field, ...(numberFormat === undefined ? {} : { numberFormat }) };
+  });
   createPivotCollator(canonical.layout.collation);
   const identities = new Set<string>();
   for (const filter of canonical.layout.filters) {

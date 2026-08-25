@@ -226,7 +226,7 @@ describe('exchange-excel-ooxml', () => {
         { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
       ] },
-      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum', numberFormat: '0.000' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
       presentation: {
         styleName: 'PivotStyleMedium4',
@@ -246,13 +246,32 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /name="PivotStyleMedium4" showRowHeaders="0" showColHeaders="1" showRowStripes="1" showColStripes="1" showLastColumn="1"/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /showHeaders="0"/);
     assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /showMissing="1" missingCaption="—" showError="0" errorCaption="ERR" preserveFormatting="1"/);
+    assert.match(strFromU8(output.files['xl/pivotTables/pivotTable1.xml']!), /<dataField[^>]*numFmtId="164"/);
+    assert.match(strFromU8(output.files['xl/styles.xml']!), /<numFmt numFmtId="164" formatCode="0\.000"\/>/);
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
+    assert.equal(imported.sheets[0]?.pivots[0]?.layout.values[0]?.numberFormat, '0.000');
     assert.deepEqual(imported.sheets[0]?.pivots[0]?.presentation, {
       styleName: 'PivotStyleMedium4',
       styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true },
       displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: false, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: true },
     });
+  });
+
+  it('rejects malformed Pivot value number formats before native package mutation', () => {
+    const workbook = new WorkbookModel('wb-invalid-pivot-number-format', 'Invalid Pivot Number Format');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 10 });
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'invalid-pivot-number-format',
+      source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 } },
+      target: { sheetId: sheet.id, anchor: { row: 3, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 0 }] },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum', numberFormat: '[Red' }], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+    });
+    assert.throws(() => exportSnapshotToXlsxBuffer(workbook.snapshot()), /unterminated/);
   });
 
   it('round-trips date, numeric and manual Pivot cache grouping through native fieldGroup metadata', () => {
@@ -605,14 +624,16 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/pivotCache/pivotCacheRecords1.xml'] = strToU8('<?xml version="1.0"?><pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><s v="0"/><n v="10"/></r></pivotCacheRecords>');
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
-    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
+    parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum" numFmtId="2"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
     const imported = await importXlsx({ fileName: 'native-pivot.xlsx', buffer: zipXlsxPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.caches[0]?.fields[1]?.name, 'Amount');
     assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.field, 1);
+    assert.equal(imported.nativePackage.packageGraph.nativePivotGraph?.tables[0]?.dataFields[0]?.numberFormat, '0.00');
     assert.equal(imported.snapshot.sheets[0]?.pivots.length, 1);
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.source.kind, 'worksheet-range');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.rows[0]?.fieldId, 'native:cache:1:field:0');
+    assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.layout.values[0]?.numberFormat, '0.00');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.mode, 'manual');
     assert.equal(imported.snapshot.sheets[0]?.pivots[0]?.refreshPolicy.refreshOnLoad, false);
     assert.deepEqual(imported.snapshot.sheets[0]?.pivots[0]?.nativeMetadata?.cacheFlags, {});

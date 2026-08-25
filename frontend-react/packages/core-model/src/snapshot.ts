@@ -2,6 +2,7 @@ import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, Unit
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
+import { canonicalizePivotDefinition } from './pivot';
 
 /**
  * The single persisted/transport snapshot contract. Floating objects are
@@ -201,6 +202,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     for (const pivot of sheet.pivots) {
       if (!pivot.id.trim() || pivotIds.has(pivot.id)) throw new Error(`Pivot identity is duplicated or empty: ${pivot.id}`);
       pivotIds.add(pivot.id);
+      canonicalizePivotDefinition(pivot);
     }
     for (const payload of Object.values(sheet.drawingPayloads)) {
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');

@@ -171,6 +171,8 @@ export interface NativePivotDataField {
   name?: string;
   subtotal?: string;
   showDataAs?: string;
+  /** Canonical Excel format code represented by OOXML dataField@numFmtId. */
+  numberFormat?: string;
 }
 
 export interface NativePivotTableDefinition {
