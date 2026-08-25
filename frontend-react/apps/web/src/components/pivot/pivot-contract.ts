@@ -26,6 +26,11 @@ export type {
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
 export type PivotFieldPaneLayout = 'stacked' | 'side-by-side' | 'areas-2x2' | 'areas-1x4' | 'fields-only' | 'areas-only';
 export const PIVOT_FIELD_PANE_LAYOUTS: readonly PivotFieldPaneLayout[] = ['stacked', 'side-by-side', 'areas-2x2', 'areas-1x4', 'fields-only', 'areas-only'];
+export function defaultPivotFieldArea(field: Pick<PivotFieldDefinition, 'dataType'>): PivotFieldArea {
+  if (field.dataType === 'number') return 'values';
+  if (field.dataType === 'date') return 'columns';
+  return 'rows';
+}
 export type PivotSortDirection = 'none' | 'ascending' | 'descending';
 
 export type PivotFilterMode = 'all' | 'include' | 'exclude';
