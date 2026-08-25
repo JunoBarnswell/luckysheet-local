@@ -49,7 +49,7 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onToggleViewHeadings: () => undefined,
     onTogglePrintHeadings: () => undefined,
     onAutoSum: () => undefined,
-    onMergeCells: () => undefined,
+    onMerge: () => undefined,
     onFill: () => undefined,
     onFreezeAtPrimary: () => undefined,
     onCreateSheetTable: () => undefined,
@@ -124,6 +124,19 @@ describe('Ribbon UI command catalog', () => {
     if (pivotAction?.type === 'callback') pivotAction.invoke();
     assert.equal(createPivotDialogCalls, 1);
     assert.equal(buildRibbonCommand('tableSheet', current)?.type, 'callback');
+  });
+
+  it('routes all merge actions through the typed high-level callback', () => {
+    const operations: string[] = [];
+    const current = context({ actions: { ...context().actions, onMerge: (operation) => { operations.push(operation); } } });
+    for (const [command, operation] of [['mergeCenter', 'center'], ['mergeCells', 'cells'], ['mergeAcross', 'across'], ['unmergeCells', 'unmerge']] as const) {
+      const action = buildRibbonCommand(command, current);
+      assert.equal(action?.type, 'callback');
+      if (action?.type === 'callback') action.invoke();
+    }
+    assert.deepEqual(operations, ['center', 'cells', 'across', 'unmerge']);
+    const mergeSurfaces = getRibbonSurfaces('home', 'alignment', 'wide').filter((surface) => surface.menuId === 'control.merge-menu');
+    assert.deepEqual(mergeSurfaces.map((surface) => surface.commandId), ['mergeCenter', 'mergeCells', 'mergeAcross', 'unmergeCells']);
   });
 
   it('exposes TableSheet Designer commands only for the active bound TableSheet', () => {

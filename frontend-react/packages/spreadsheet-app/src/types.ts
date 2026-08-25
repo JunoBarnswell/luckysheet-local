@@ -88,6 +88,7 @@ export interface PanelState {
 
 export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'merge-confirm' | 'column-width' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture';
 export type CellShiftOperation = 'insert' | 'delete';
+export type MergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
 
 export type SheetDialogKind = 'rename' | 'tab-color' | 'delete';
 
@@ -101,6 +102,7 @@ export interface DialogState {
   active: DialogId | null;
   findQuery: string;
   mergeDiscardCount: number;
+  mergeOperation: MergeOperation;
   columnWidth: { columns: number[]; defaultMode: boolean } | null;
   sheet: SheetDialogState | null;
   cellShiftOperation: CellShiftOperation;

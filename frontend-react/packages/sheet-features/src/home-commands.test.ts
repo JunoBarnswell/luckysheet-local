@@ -163,6 +163,44 @@ test('merge center keeps the anchor, clears non-anchor contents, and undoes atom
   assert.equal(sheet.merges.length, 0);
 });
 
+test('merge cells preserves alignment while merge across merges each row without centering', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'r1' });
+  sheet.cells.set(0, 1, { value: 'discard-r1' });
+  sheet.cells.set(1, 0, { value: 'r2', style: { horizontalAlignment: 'left' } });
+  sheet.cells.set(1, 1, { value: 'discard-r2' });
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 };
+  runtime.execute('sheet.merge.cells', { sheetId: sheet.id, range });
+  assert.equal(sheet.cells.get(0, 0)?.style?.horizontalAlignment, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.value, null);
+  runtime.undo();
+  runtime.execute('sheet.merge.across', { sheetId: sheet.id, range });
+  assert.equal(sheet.merges.length, 2);
+  assert.equal(sheet.cells.get(1, 0)?.style?.horizontalAlignment, 'left');
+  assert.equal(sheet.cells.get(0, 0)?.style?.horizontalAlignment, undefined);
+  assert.equal(sheet.cells.get(1, 1)?.value, null);
+  runtime.undo();
+  assert.equal(sheet.merges.length, 0);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'discard-r2');
+});
+
+test('unmerge removes spans without resurrecting discarded content', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'anchor' });
+  sheet.cells.set(0, 1, { value: 'discarded' });
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 };
+  runtime.execute('sheet.merge.cells', { sheetId: sheet.id, range });
+  runtime.execute('sheet.merge.unmerge', { sheetId: sheet.id, range });
+  assert.equal(sheet.merges.length, 0);
+  assert.equal(sheet.cells.get(0, 0)?.value, 'anchor');
+  assert.equal(sheet.cells.get(0, 1)?.value, null);
+  runtime.undo();
+  assert.equal(sheet.merges.length, 1);
+  assert.equal(sheet.cells.get(0, 1)?.value, null);
+});
+
 test('dataRegion.materialize commits the prepared payload and restores it on undo', () => {
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);

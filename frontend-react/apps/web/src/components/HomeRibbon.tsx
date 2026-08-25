@@ -21,6 +21,7 @@ import {
   type RibbonControlId,
   type RibbonSurfaceBreakpoint,
   type RibbonSurfaceDefinition,
+  type RibbonMergeOperation,
 } from '@react-sheets/spreadsheet-app';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import type { Locale } from '../i18n';
@@ -44,7 +45,7 @@ export interface HomeRibbonProps {
   onEmitStyle: (style: Record<string, unknown>) => void;
   onBeginFormatPainter: (locked?: boolean) => void;
   formatPainterActive: boolean;
-  onMergeCells: () => void;
+  onMergeCells: (operation: RibbonMergeOperation) => void;
   onOpenColumnWidth: () => void;
   onAutoFitColumns: () => void;
   onHideColumns: () => void;
@@ -83,6 +84,7 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
     case 'hide-columns': return homeText(locale, 'hideColumns');
     case 'unhide-columns': return homeText(locale, 'unhideColumns');
     case 'default-column-width': return homeText(locale, 'defaultColumnWidth');
+    case 'merge-menu': return homeText(locale, 'mergeCenter');
   }
 }
 
@@ -185,6 +187,12 @@ export function HomeRibbon({
         };
         return <Button aria-label={label} title={label} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={actions[controlId]}>{label}</Button>;
       }
+      case 'merge-menu':
+        return <DropdownMenu align="left" trigger={menuTrigger('columns')}>
+          <Stack gap="none" className="min-w-[14rem] p-1">
+            {menuMembers('control.merge-menu').map((surface) => renderSurface(surface, 'menu'))}
+          </Stack>
+        </DropdownMenu>;
     }
   };
 
