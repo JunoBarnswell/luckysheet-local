@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { buildPivotSlicerItems } from './PivotSlicer';
-import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-member-filter';
+import { applyPivotManualMemberDelta, convertPivotManualFilterMode, pivotManualMemberSelected } from './pivot-member-filter';
 import { createPivotMemberKey, pivotMemberKey } from '@react-sheets/core-model';
 
 describe('PivotSlicer typed member items', () => {
@@ -49,5 +49,14 @@ describe('PivotSlicer typed member items', () => {
     const groupAll = applyPivotManualMemberDelta({ mode: 'all', memberKeys: [] }, [numeric, text], false);
     assert.equal(groupAll.memberKeys.length, 2);
     assert.equal(pivotManualMemberSelected(groupAll, createPivotMemberKey(true)), true);
+  });
+
+  it('keeps an all-to-exclude mode conversion compact for high-cardinality domains', () => {
+    const state = convertPivotManualFilterMode(
+      { mode: 'all', memberKeys: [] },
+      'exclude',
+      Array.from({ length: 20_001 }, (_, index) => createPivotMemberKey(`member-${index}`)),
+    );
+    assert.deepEqual(state, { mode: 'exclude', memberKeys: [] });
   });
 });
