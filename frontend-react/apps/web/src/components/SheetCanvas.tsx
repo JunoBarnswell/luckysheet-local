@@ -40,7 +40,7 @@ import type {
 import { DEFAULT_PIVOT_STYLE_OPTIONS, isPivotError } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { buildPivotGroupedFilterMembers, resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -1006,7 +1006,8 @@ export function SheetCanvas({
               fieldId: value.fieldId,
               label: value.displayName ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === value.fieldId)?.name ?? value.fieldId,
             })) ?? [];
-            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFields={valueFields} currentFilters={currentFilters} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort, family) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope, family); setPivotFilterPopover(null); }} /> : null;
+            const memberOptions = placement?.group ? buildPivotGroupedFilterMembers(field?.values ?? [], placement.group) : undefined;
+            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} memberOptions={memberOptions} valueFields={valueFields} currentFilters={currentFilters} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort, family) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope, family); setPivotFilterPopover(null); }} /> : null;
           })() : null}
 
           {fillPreview ? (

@@ -148,7 +148,7 @@ export {
   type ServerRestoreMutationParams,
 } from './features/history';
 export { CollaborationSession } from './collaboration';
-export { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision } from './features/pivot/engine';
+export { buildPivotGroupedFilterMembers, computePivotResult, getPivotFieldCatalog, getPivotRevisionKey, pivotResultMatchesLayoutAndFilter, pivotResultMatchesRevision, type PivotGroupedFilterMember } from './features/pivot/engine';
 export { buildGanttProjection, type GanttProjection, type GanttTaskProjection } from './features/gantt/projection';
 export { buildReportProjection, type ReportCellProjection, type ReportProjection } from './features/report/projection';
 export { cellAddress, columnLabel, parseAddress } from './address';
