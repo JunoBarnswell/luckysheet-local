@@ -130,6 +130,12 @@ export function insertText(locale: Locale, key: InsertUiTextKey): string {
   return localeBundles[locale].insertUi[key];
 }
 
+export type FilterUiTextKey = keyof typeof enUS.filterUi;
+
+export function filterText(locale: Locale, key: FilterUiTextKey): string {
+  return localeBundles[locale].filterUi[key];
+}
+
 export function formulaBarLabels(locale: Locale, phase: 'empty' | 'error' | 'loading' | 'ready') {
   const bundle = localeBundles[locale].formulaBar;
   return {

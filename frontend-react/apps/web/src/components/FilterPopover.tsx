@@ -1,13 +1,14 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, CheckToggle, Inline, Select, Stack, TextInput, Text, VirtualList } from '@react-sheets/ui-system';
-import type { DateGroupItem, FilterCriterion } from '@react-sheets/core-model';
+import type { DateGroupItem, FilterCriterion, FilterScalar } from '@react-sheets/core-model';
 import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
+import type { FilterDomainDescriptor, FilterFamily } from '@react-sheets/sheet-features';
+import { filterText, type FilterUiTextKey, type Locale } from '../i18n';
 
-export interface FilterPatch {
-  criterion?: FilterCriterion;
-}
+export interface FilterPatch { criterion?: FilterCriterion; }
 
 export interface FilterPopoverProps {
+  locale: Locale;
   column: number;
   x: number;
   y: number;
@@ -17,24 +18,46 @@ export interface FilterPopoverProps {
   onClose: () => void;
 }
 
-type FilterMode = 'values' | 'text' | 'number' | 'date' | 'color' | 'icon';
+type FilterMode = FilterFamily;
 type CustomOperator = 'equals' | 'notEquals' | 'lessThan' | 'lessThanOrEqual' | 'greaterThan' | 'greaterThanOrEqual' | 'contains' | 'notContains' | 'beginsWith' | 'endsWith';
 type FilterJoin = 'and' | 'or';
 type DateMode = 'condition' | 'dynamic';
 type DynamicType = 'today' | 'yesterday' | 'tomorrow' | 'thisWeek' | 'lastWeek' | 'nextWeek' | 'thisMonth' | 'lastMonth' | 'nextMonth' | 'thisQuarter' | 'lastQuarter' | 'nextQuarter' | 'thisYear' | 'lastYear' | 'nextYear' | 'yearToDate';
 
-function criterionValues(criterion: FilterCriterion | undefined): string[] {
-  return criterion?.kind === 'values' ? criterion.values.map((value) => String(value ?? '')) : [];
+const FILTER_MODES: readonly FilterMode[] = ['values', 'text', 'number', 'date', 'color', 'icon'];
+const TEXT_OPERATORS: readonly CustomOperator[] = ['equals', 'notEquals', 'contains', 'notContains', 'beginsWith', 'endsWith'];
+const ORDERED_OPERATORS: readonly CustomOperator[] = ['equals', 'notEquals', 'lessThan', 'lessThanOrEqual', 'greaterThan', 'greaterThanOrEqual'];
+const DYNAMIC_TYPES: readonly DynamicType[] = ['today', 'yesterday', 'tomorrow', 'thisWeek', 'lastWeek', 'nextWeek', 'thisMonth', 'lastMonth', 'nextMonth', 'thisQuarter', 'lastQuarter', 'nextQuarter', 'thisYear', 'lastYear', 'nextYear', 'yearToDate'];
+const modeTextKeys: Record<FilterMode, FilterUiTextKey> = { values: 'values', text: 'text', number: 'number', date: 'date', color: 'color', icon: 'icon' };
+const operatorTextKeys: Record<CustomOperator, FilterUiTextKey> = { equals: 'equals', notEquals: 'notEquals', lessThan: 'lessThan', lessThanOrEqual: 'lessThanOrEqual', greaterThan: 'greaterThan', greaterThanOrEqual: 'greaterThanOrEqual', contains: 'contains', notContains: 'notContains', beginsWith: 'beginsWith', endsWith: 'endsWith' };
+
+export interface FilterValueOption { key: string; label: string; value: FilterScalar; }
+
+export function filterScalarKey(value: FilterScalar): string { return JSON.stringify(value); }
+export function filterScalarLabel(value: FilterScalar): string { return value == null || value === '' ? '' : String(value); }
+export function filterModeOptions(descriptor: FilterDomainDescriptor): FilterMode[] { return FILTER_MODES.filter((mode) => descriptor.supportedFamilies.includes(mode)); }
+export function filterOperatorsFor(mode: FilterMode): readonly CustomOperator[] {
+  if (mode === 'text') return TEXT_OPERATORS;
+  if (mode === 'number' || mode === 'date') return ORDERED_OPERATORS;
+  return [];
+}
+
+function currentMode(descriptor: FilterDomainDescriptor, criterion: FilterCriterion | undefined): FilterMode {
+  if (descriptor.currentFamily && descriptor.supportedFamilies.includes(descriptor.currentFamily)) return descriptor.currentFamily;
+  const first = filterModeOptions(descriptor)[0];
+  if (!first) throw new Error('Filter domain has no supported family');
+  return first;
+}
+
+function currentCriterionValues(criterion: FilterCriterion | undefined): Set<string> {
+  return new Set(criterion?.kind === 'values' ? criterion.values.map(filterScalarKey) : []);
 }
 
 type DateGroupUnit = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
 type DateGroupNode = { key: string; group: DateGroupItem; unit: DateGroupUnit; depth: number; label: string };
 const dateGroupUnits: readonly DateGroupUnit[] = ['year', 'month', 'day', 'hour', 'minute', 'second'];
 
-function dateGroupKey(group: DateGroupItem): string {
-  return dateGroupUnits.filter((unit) => group[unit] !== undefined).map((unit) => `${unit}=${group[unit]}`).join('|');
-}
-
+function dateGroupKey(group: DateGroupItem): string { return dateGroupUnits.filter((unit) => group[unit] !== undefined).map((unit) => `${unit}=${group[unit]}`).join('|'); }
 function dateGroupLabel(group: DateGroupItem, unit: DateGroupUnit): string {
   if (unit === 'year') return `${group.year}`;
   if (unit === 'month') return `${group.year}-${String(group.month).padStart(2, '0')}`;
@@ -43,7 +66,6 @@ function dateGroupLabel(group: DateGroupItem, unit: DateGroupUnit): string {
   if (unit === 'minute') return `${dateGroupLabel(group, 'hour')}:${String(group.minute).padStart(2, '0')}`;
   return `${dateGroupLabel(group, 'minute')}:${String(group.second).padStart(2, '0')}`;
 }
-
 function buildDateGroupNodes(entries: Array<{ group: DateGroupItem }>, active: DateGroupItem[]): DateGroupNode[] {
   const groups = new Map<string, DateGroupItem>();
   const add = (source: DateGroupItem): void => {
@@ -63,18 +85,32 @@ function buildDateGroupNodes(entries: Array<{ group: DateGroupItem }>, active: D
   }).sort((left, right) => left.key.localeCompare(right.key));
 }
 
-/** Excel-style filter task surface. UI draft state is local; only OK emits a command payload. */
-export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }: FilterPopoverProps): React.ReactElement {
-  const values = useMemo(() => sheet.getFilterValueDomain(column), [column, sheet]);
-  const dateDomain = useMemo(() => sheet.getFilterDateDomain?.(column) ?? [], [column, sheet]);
-  const colors = useMemo(() => sheet.getFilterColorDomain(column), [column, sheet]);
-  const icons = useMemo(() => sheet.getFilterIconDomain(column), [column, sheet]);
+function dynamicLabel(locale: Locale, type: DynamicType): string { return filterText(locale, type); }
+export interface FilterPopoverViewport { width: number; height: number; }
+export interface FilterPopoverSize { width: number; height: number; }
+export function clampFilterPopoverSize(size: FilterPopoverSize, viewport: FilterPopoverViewport): FilterPopoverSize {
+  const maxWidth = Math.max(280, viewport.width - 16);
+  const maxHeight = Math.max(360, viewport.height - 16);
+  return { width: Math.min(maxWidth, Math.max(280, size.width)), height: Math.min(maxHeight, Math.max(360, size.height)) };
+}
+export function clampFilterPopoverPosition(x: number, y: number, size: FilterPopoverSize, viewport: FilterPopoverViewport): { left: number; top: number } {
+  return { left: Math.min(Math.max(4, x), Math.max(4, viewport.width - size.width - 4)), top: Math.min(Math.max(4, y), Math.max(4, viewport.height - size.height - 4)) };
+}
+function viewportBounds(width: number, height: number): { maxLeft: number; maxTop: number } {
+  if (typeof window === 'undefined') return { maxLeft: Number.POSITIVE_INFINITY, maxTop: Number.POSITIVE_INFINITY };
+  return { maxLeft: Math.max(4, window.innerWidth - width - 4), maxTop: Math.max(4, window.innerHeight - height - 4) };
+}
+
+/** Excel-style filter task surface. Draft and resize state remain transient; only Apply emits a canonical command payload. */
+export function FilterPopover({ locale, column, x, y, sheet, onApply, onSort, onClose }: FilterPopoverProps): React.ReactElement {
+  const descriptor = useMemo(() => sheet.getFilterDomainDescriptor(column), [column, sheet]);
   const currentCriterion = sheet.getFilterCriterion(column);
-  const [mode, setMode] = useState<FilterMode>(currentCriterion?.kind === 'custom' ? 'text' : currentCriterion?.kind === 'dynamic' ? 'date' : currentCriterion?.kind === 'top10' ? 'number' : currentCriterion?.kind === 'color' ? 'color' : currentCriterion?.kind === 'icon' ? 'icon' : 'values');
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(currentCriterion?.kind === 'values' ? criterionValues(currentCriterion) : values));
+  const modes = descriptor ? filterModeOptions(descriptor) : [];
+  const initialMode = descriptor && modes.length > 0 ? currentMode(descriptor, currentCriterion) : 'values';
+  const [mode, setMode] = useState<FilterMode>(initialMode);
+  const [selected, setSelected] = useState<Set<string>>(() => currentCriterionValues(currentCriterion));
   const [includeBlank, setIncludeBlank] = useState(currentCriterion?.kind === 'values' ? currentCriterion.includeBlank : false);
   const currentDateGroups = currentCriterion?.kind === 'values' ? currentCriterion.dateGroups ?? [] : [];
-  const dateGroupNodes = useMemo(() => buildDateGroupNodes(dateDomain, currentDateGroups), [currentDateGroups, dateDomain]);
   const [selectedDateGroups, setSelectedDateGroups] = useState<Set<string>>(() => new Set(currentDateGroups.map(dateGroupKey)));
   const [dateGroupsDirty, setDateGroupsDirty] = useState(false);
   const [search, setSearch] = useState('');
@@ -91,246 +127,129 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
   const [dynamicType, setDynamicType] = useState<DynamicType>(currentCriterion?.kind === 'dynamic' ? currentCriterion.type : 'today');
   const [dateMode, setDateMode] = useState<DateMode>(currentCriterion?.kind === 'dynamic' ? 'dynamic' : 'condition');
   const [colorTarget, setColorTarget] = useState<'cell' | 'font'>(currentCriterion?.kind === 'color' ? currentCriterion.target : 'cell');
-  const [color, setColor] = useState(currentCriterion?.kind === 'color' ? currentCriterion.style?.background ?? currentCriterion.style?.textColor ?? colors[0]?.color ?? '' : colors[0]?.color ?? '');
-  const [icon, setIcon] = useState(currentCriterion?.kind === 'icon' ? `${currentCriterion.iconSet}:${currentCriterion.iconId}` : icons[0] ? `${icons[0].iconSet}:${icons[0].iconId}` : '');
+  const [color, setColor] = useState(currentCriterion?.kind === 'color' ? currentCriterion.style?.background ?? currentCriterion.style?.textColor ?? '' : '');
+  const [icon, setIcon] = useState(currentCriterion?.kind === 'icon' ? `${currentCriterion.iconSet}:${currentCriterion.iconId}` : '');
+  const [size, setSize] = useState({ width: 320, height: 560 });
+  const resizeRef = useRef<{ pointerId: number; x: number; y: number; width: number; height: number } | null>(null);
 
-  const visibleValues = useMemo(
-    () => values.filter((value) => value.toLocaleLowerCase().includes(search.toLocaleLowerCase())),
-    [search, values],
-  );
-  const availableColors = useMemo(() => colors.filter((entry) => entry.target === colorTarget), [colorTarget, colors]);
-  const allVisibleSelected = visibleValues.length > 0 && visibleValues.every((value) => selected.has(value));
+  const valueOptions = useMemo<FilterValueOption[]>(() => (descriptor?.values ?? []).map((value) => ({ key: filterScalarKey(value), label: value === null || value === '' ? filterText(locale, 'blanks') : filterScalarLabel(value), value })), [descriptor, locale]);
+  const dateDomain = descriptor?.dateDomain ?? [];
+  const dateGroupNodes = useMemo(() => buildDateGroupNodes(dateDomain, currentDateGroups), [currentDateGroups, dateDomain]);
+  const visibleValues = useMemo(() => valueOptions.filter((option) => option.label.toLocaleLowerCase().includes(search.toLocaleLowerCase())), [search, valueOptions]);
+  const availableColors = useMemo(() => (descriptor?.colorDomain ?? []).filter((entry) => entry.target === colorTarget), [colorTarget, descriptor]);
+  const allVisibleSelected = visibleValues.length > 0 && visibleValues.every((option) => selected.has(option.key));
+  const activeMode = modes.includes(mode) ? mode : modes[0];
+  const operators = activeMode ? filterOperatorsFor(activeMode) : [];
+  const activeOperator = operators.includes(operator) ? operator : operators[0];
+  const activeSecondOperator = operators.includes(secondOperator) ? secondOperator : operators[0];
+  const { maxLeft, maxTop } = viewportBounds(size.width, size.height);
+  const left = Math.min(Math.max(4, x), maxLeft);
+  const topPosition = Math.min(Math.max(4, y), maxTop);
+
+  useEffect(() => {
+    if (!descriptor) return;
+    const nextValues = currentCriterionValues(currentCriterion);
+    setSelected(nextValues.size > 0 ? nextValues : new Set(descriptor.values.map(filterScalarKey)));
+    setIncludeBlank(currentCriterion?.kind === 'values' ? currentCriterion.includeBlank : false);
+    setSelectedDateGroups(new Set(currentDateGroups.map(dateGroupKey)));
+    setDateGroupsDirty(false);
+  }, [descriptor, currentCriterion, currentDateGroups]);
+
+  const beginResize = (event: React.PointerEvent<HTMLElement>): void => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, width: size.width, height: size.height };
+  };
+  const resize = (event: React.PointerEvent<HTMLElement>): void => {
+    const active = resizeRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    const viewport = typeof window === 'undefined' ? { width: 736, height: 736 } : { width: window.innerWidth, height: window.innerHeight };
+    setSize(clampFilterPopoverSize({ width: active.width + event.clientX - active.x, height: active.height + event.clientY - active.y }, viewport));
+  };
+  const endResize = (event: React.PointerEvent<HTMLElement>): void => { if (resizeRef.current?.pointerId === event.pointerId) resizeRef.current = null; };
 
   const apply = (): void => {
-    if (mode !== 'values') {
-      if (mode === 'number' && numberMode === 'top10') {
-        onApply({ criterion: { kind: 'top10', top, percent, rank: Math.max(1, Number(rank) || 1) } });
-        return;
+    if (!descriptor || !activeMode) return;
+    if (activeMode === 'number' && numberMode === 'top10') {
+      const numericRank = Number(rank);
+      if (!Number.isSafeInteger(numericRank) || numericRank <= 0) return;
+      onApply({ criterion: { kind: 'top10', top, percent, rank: numericRank } });
+      return;
+    }
+    if (activeMode === 'date' && dateMode === 'dynamic') {
+      if (!DYNAMIC_TYPES.includes(dynamicType)) return;
+      onApply({ criterion: { kind: 'dynamic', type: dynamicType } });
+      return;
+    }
+    if (activeMode === 'color') {
+      if (!color || !availableColors.some((entry) => entry.color === color)) return;
+      onApply({ criterion: { kind: 'color', target: colorTarget, dxfId: -1, style: colorTarget === 'cell' ? { background: color } : { textColor: color } } });
+      return;
+    }
+    if (activeMode === 'icon') {
+      const [iconSet, iconIdText] = icon.split(':');
+      const iconId = Number(iconIdText);
+      if (!iconSet || !Number.isSafeInteger(iconId) || !descriptor.iconDomain.some((entry) => entry.iconSet === iconSet && entry.iconId === iconId)) return;
+      onApply({ criterion: { kind: 'icon', iconSet, iconId } });
+      return;
+    }
+    if (activeMode !== 'values') {
+      if (!activeOperator || !operators.includes(activeOperator) || ((activeMode === 'date' || activeMode === 'number') && !operand.trim())) return;
+      const conditions: [{ operator: CustomOperator; value: string }, { operator: CustomOperator; value: string }?] = [{ operator: activeOperator, value: operand }];
+      if (useSecondCondition) {
+        if (!activeSecondOperator || !operators.includes(activeSecondOperator)) return;
+        conditions.push({ operator: activeSecondOperator, value: secondOperand });
       }
-      if (mode === 'date' && dateMode === 'dynamic') {
-        onApply({ criterion: { kind: 'dynamic', type: dynamicType } });
-        return;
-      }
-      if (mode === 'color') {
-        if (!color) return;
-        onApply({ criterion: { kind: 'color', target: colorTarget, dxfId: -1, style: colorTarget === 'cell' ? { background: color } : { textColor: color } } });
-        return;
-      }
-      if (mode === 'icon') {
-        const [iconSet, iconId] = icon.split(':');
-        if (!iconSet || !Number.isSafeInteger(Number(iconId))) return;
-        onApply({ criterion: { kind: 'icon', iconSet, iconId: Number(iconId) } });
-        return;
-      }
-      const conditions: [{ operator: CustomOperator; value: string }, { operator: CustomOperator; value: string }?] = [{ operator, value: operand }];
-      if (useSecondCondition) conditions.push({ operator: secondOperator, value: secondOperand });
       onApply({ criterion: { kind: 'custom', join, conditions } });
       return;
     }
-    const currentLiteralValues = new Map(currentCriterion?.kind === 'values' ? currentCriterion.values.map((value) => [String(value ?? ''), value] as const) : []);
-    const initialValues = currentCriterion?.kind === 'values' ? criterionValues(currentCriterion) : [];
-    const valuesUnchanged = currentCriterion?.kind === 'values'
-      && initialValues.length === selected.size
-      && initialValues.every((value) => selected.has(value))
-      && currentCriterion.includeBlank === includeBlank;
-    if (valuesUnchanged && !dateGroupsDirty) {
-      onApply({ criterion: structuredClone(currentCriterion) });
-      return;
-    }
-    const selectedValues = [...selected].flatMap((value) => {
-      if (value === '' && !currentLiteralValues.has(value)) return [];
-      return [currentLiteralValues.get(value) ?? value];
-    });
-    const dateGroups = dateGroupsDirty
-      ? dateGroupNodes.filter((node) => selectedDateGroups.has(node.key)).map((node) => structuredClone(node.group))
-      : currentDateGroups.map((group) => structuredClone(group));
-    const allLiteralsSelected = selectedValues.length === values.length && values.every((value) => selected.has(value));
-    const criterion = allLiteralsSelected && !includeBlank && dateGroups.length === 0
-      ? undefined
-      : { kind: 'values' as const, values: selectedValues, includeBlank, ...(dateGroups.length ? { dateGroups } : {}) };
+    const selectedValues = valueOptions.filter((option) => selected.has(option.key)).map((option) => option.value).filter((value) => value !== null && value !== '');
+    const literalOptions = valueOptions.filter((option) => option.value !== null && option.value !== '');
+    const allLiteralsSelected = selectedValues.length === literalOptions.length && literalOptions.every((option) => selected.has(option.key));
+    const dateGroups = dateGroupsDirty ? dateGroupNodes.filter((node) => selectedDateGroups.has(node.key)).map((node) => structuredClone(node.group)) : currentDateGroups.map((group) => structuredClone(group));
+    const criterion = allLiteralsSelected && !includeBlank && dateGroups.length === 0 ? undefined : { kind: 'values' as const, values: selectedValues, includeBlank, ...(dateGroups.length ? { dateGroups } : {}) };
     onApply({ criterion });
   };
 
   return (
-    <Box
-      className="fixed z-50 w-72 rounded-lg border border-slate-200 bg-white p-3 shadow-xl"
-      style={{ left: x, top: y }}
-      role="dialog"
-      aria-label={`Filter ${sheet.columns[column] ?? ''}`}
-    >
+    <Box className="fixed z-50 min-w-0 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border border-slate-200 bg-white p-3 shadow-xl" style={{ left, top: topPosition, width: size.width, height: size.height }} role="dialog" aria-label={filterText(locale, 'title').replace('{column}', sheet.columns[column] ?? '')} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } }} tabIndex={-1}>
       <Stack gap="sm">
-        <Text size="xs" weight="semibold">Filter column {sheet.columns[column]}</Text>
-        <Inline gap="xs">
-          <Button size="xs" variant="ghost" onClick={() => onSort(true)}>Sort A to Z</Button>
-          <Button size="xs" variant="ghost" onClick={() => onSort(false)}>Sort Z to A</Button>
-        </Inline>
-        <Inline gap="xs">
-          <Button size="xs" variant={mode === 'values' ? 'soft' : 'ghost'} onClick={() => setMode('values')}>Values</Button>
-          <Button size="xs" variant={mode === 'text' ? 'soft' : 'ghost'} onClick={() => setMode('text')}>Text</Button>
-          <Button size="xs" variant={mode === 'number' ? 'soft' : 'ghost'} onClick={() => setMode('number')}>Number</Button>
-          <Button size="xs" variant={mode === 'date' ? 'soft' : 'ghost'} onClick={() => setMode('date')}>Date</Button>
-          <Button size="xs" variant={mode === 'color' ? 'soft' : 'ghost'} onClick={() => setMode('color')}>Color</Button>
-          <Button size="xs" variant={mode === 'icon' ? 'soft' : 'ghost'} onClick={() => setMode('icon')}>Icon</Button>
-        </Inline>
-
-        {mode === 'color' ? (
-          <Stack gap="xs">
-            <Select sizeVariant="sm" aria-label="Filter color target" value={colorTarget} onChange={(event) => setColorTarget(event.target.value as 'cell' | 'font')}>
-              <option value="cell">Cell color</option>
-              <option value="font">Font color</option>
-            </Select>
-            <Select sizeVariant="sm" aria-label="Filter color" value={color} onChange={(event) => setColor(event.target.value)}>
-              {availableColors.map((entry) => <option key={`${entry.target}:${entry.color}`} value={entry.color}>{entry.color}</option>)}
-            </Select>
-          </Stack>
-        ) : mode === 'icon' ? (
-          <Select sizeVariant="sm" aria-label="Filter icon" value={icon} onChange={(event) => setIcon(event.target.value)}>
-            {icons.map((entry) => <option key={`${entry.iconSet}:${entry.iconId}`} value={`${entry.iconSet}:${entry.iconId}`}>{entry.iconSet} {entry.iconId}</option>)}
-          </Select>
-        ) : mode !== 'values' ? (
-          <Stack gap="xs">
-            {mode === 'number' ? (
-              <Select sizeVariant="sm" aria-label="Number filter mode" value={numberMode} onChange={(event) => setNumberMode(event.target.value as 'condition' | 'top10')}>
-                <option value="condition">Number condition</option>
-                <option value="top10">Top 10</option>
-              </Select>
-            ) : null}
-            {mode === 'date' ? (
-              <Select sizeVariant="sm" aria-label="Date filter mode" value={dateMode} onChange={(event) => setDateMode(event.target.value as DateMode)}>
-                <option value="condition">Date condition</option>
-                <option value="dynamic">Dynamic date</option>
-              </Select>
-            ) : null}
-            {mode === 'number' && numberMode === 'top10' ? (
-              <Inline gap="xs">
-                <Select sizeVariant="sm" aria-label="Top or bottom" value={top ? 'top' : 'bottom'} onChange={(event) => setTop(event.target.value === 'top')}>
-                  <option value="top">Top</option>
-                  <option value="bottom">Bottom</option>
-                </Select>
-                <TextInput aria-label="Top 10 rank" value={rank} onChange={(event) => setRank(event.target.value)} />
-                <CheckToggle checked={percent} label="%" onChange={(event) => setPercent(event.target.checked)} />
-              </Inline>
-            ) : mode === 'date' && dateMode === 'dynamic' ? (
-              <Select sizeVariant="sm" aria-label="Dynamic date filter" value={dynamicType} onChange={(event) => setDynamicType(event.target.value as DynamicType)}>
-                <option value="today">Today</option>
-                <option value="yesterday">Yesterday</option>
-                <option value="tomorrow">Tomorrow</option>
-                <option value="thisWeek">This week</option>
-                <option value="lastWeek">Last week</option>
-                <option value="nextWeek">Next week</option>
-                <option value="thisMonth">This month</option>
-                <option value="lastMonth">Last month</option>
-                <option value="nextMonth">Next month</option>
-                <option value="thisYear">This year</option>
-                <option value="lastYear">Last year</option>
-                <option value="nextYear">Next year</option>
-                <option value="yearToDate">Year to date</option>
-              </Select>
-            ) : (
-              <>
-            <Select sizeVariant="sm" aria-label="Custom filter operator" value={operator} onChange={(event) => setOperator(event.target.value as CustomOperator)}>
-              <option value="equals">Equals</option>
-              <option value="notEquals">Not equals</option>
-              {mode !== 'text' ? <option value="lessThan">Less than</option> : null}
-              {mode !== 'text' ? <option value="lessThanOrEqual">Less than or equal</option> : null}
-              {mode !== 'text' ? <option value="greaterThan">Greater than</option> : null}
-              {mode !== 'text' ? <option value="greaterThanOrEqual">Greater than or equal</option> : null}
-              <option value="contains">Contains</option>
-              <option value="notContains">Does not contain</option>
-              <option value="beginsWith">Begins with</option>
-              <option value="endsWith">Ends with</option>
-            </Select>
-            <TextInput aria-label="Custom filter value" placeholder={mode === 'date' ? 'YYYY-MM-DD' : 'Value'} value={operand} onChange={(event) => setOperand(event.target.value)} />
-            <CheckToggle checked={useSecondCondition} label="Use second condition" onChange={(event) => setUseSecondCondition(event.target.checked)} />
-            {useSecondCondition ? (
-              <>
-                <Select sizeVariant="sm" aria-label="Second custom filter operator" value={secondOperator} onChange={(event) => setSecondOperator(event.target.value as CustomOperator)}>
-                  <option value="equals">Equals</option>
-                  <option value="notEquals">Not equals</option>
-                  {mode !== 'text' ? <option value="lessThan">Less than</option> : null}
-                  {mode !== 'text' ? <option value="lessThanOrEqual">Less than or equal</option> : null}
-                  {mode !== 'text' ? <option value="greaterThan">Greater than</option> : null}
-                  {mode !== 'text' ? <option value="greaterThanOrEqual">Greater than or equal</option> : null}
-                  <option value="contains">Contains</option>
-                  <option value="notContains">Does not contain</option>
-                  <option value="beginsWith">Begins with</option>
-                  <option value="endsWith">Ends with</option>
-                </Select>
-                <TextInput aria-label="Second custom filter value" placeholder={mode === 'date' ? 'YYYY-MM-DD' : 'Value'} value={secondOperand} onChange={(event) => setSecondOperand(event.target.value)} />
-                <Select sizeVariant="sm" aria-label="Custom filter join" value={join} onChange={(event) => setJoin(event.target.value as FilterJoin)}>
-                  <option value="and">And</option>
-                  <option value="or">Or</option>
-                </Select>
-              </>
-            ) : null}
-              </>
-            )}
-          </Stack>
-        ) : (
+        <Text size="xs" weight="semibold">{filterText(locale, 'title').replace('{column}', sheet.columns[column] ?? '')}</Text>
+        <Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => onSort(true)}>{filterText(locale, 'sortAscending')}</Button><Button size="xs" variant="ghost" onClick={() => onSort(false)}>{filterText(locale, 'sortDescending')}</Button></Inline>
+        {!descriptor || modes.length === 0 ? <Text size="sm" tone="subtle">{filterText(locale, 'noModes')}</Text> : (
           <>
-            <TextInput
-              aria-label="Filter search"
-              placeholder="Search values"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            <CheckToggle
-              checked={allVisibleSelected}
-              label="Select All"
-              onChange={(event) => {
-                const next = new Set(selected);
-                visibleValues.forEach((value) => event.target.checked ? next.add(value) : next.delete(value));
-                if (visibleValues.includes('')) setIncludeBlank(event.target.checked);
-                setSelected(next);
-              }}
-            />
-            <VirtualList
-              className="rounded border border-slate-100 p-2"
-              height={224}
-              itemHeight={28}
-              items={visibleValues}
-              itemKey={(value) => value || '__blank__'}
-              renderItem={(value) => (
-                <CheckToggle
-                  checked={selected.has(value)}
-                  label={value === '' ? '(Blanks)' : value}
-                  onChange={(event) => {
-                    const next = new Set(selected);
-                    if (event.target.checked) next.add(value);
-                    else next.delete(value);
-                    if (value === '') setIncludeBlank(event.target.checked);
-                    setSelected(next);
-                  }}
-                />
-              )}
-            />
-            {dateGroupNodes.length > 0 ? (
-              <Stack gap="xs" className="rounded border border-slate-100 p-2">
-                <Text size="xs" weight="semibold">Date groups</Text>
-                {dateGroupNodes.map((node) => (
-                  <CheckToggle
-                    key={node.key}
-                    checked={selectedDateGroups.has(node.key)}
-                    label={`${'\u00a0'.repeat(node.depth * 2)}${node.label}`}
-                    onChange={(event) => {
-                      const next = new Set(selectedDateGroups);
-                      if (event.target.checked) next.add(node.key);
-                      else next.delete(node.key);
-                      setSelectedDateGroups(next);
-                      setDateGroupsDirty(true);
-                    }}
-                  />
-                ))}
+            <Inline gap="xs" className="flex-wrap">{modes.map((candidate) => <Button key={candidate} size="xs" variant={activeMode === candidate ? 'soft' : 'ghost'} onClick={() => setMode(candidate)} aria-label={filterText(locale, modeTextKeys[candidate])}>{filterText(locale, modeTextKeys[candidate])}</Button>)}</Inline>
+            {activeMode === 'color' ? (
+              <Stack gap="xs">
+                <Select sizeVariant="sm" aria-label={filterText(locale, 'filterColor')} value={colorTarget} onChange={(event) => setColorTarget(event.target.value as 'cell' | 'font')}><option value="cell">{filterText(locale, 'cellColor')}</option><option value="font">{filterText(locale, 'fontColor')}</option></Select>
+                <Select sizeVariant="sm" aria-label={filterText(locale, 'filterColor')} value={color} onChange={(event) => setColor(event.target.value)} disabled={availableColors.length === 0}>{availableColors.map((entry) => <option key={`${entry.target}:${entry.color}`} value={entry.color}>{entry.color}</option>)}</Select>
+                {availableColors.length === 0 ? <Text size="xs" tone="subtle">{filterText(locale, 'noColors')}</Text> : null}
               </Stack>
-            ) : null}
+            ) : activeMode === 'icon' ? (
+              <><Select sizeVariant="sm" aria-label={filterText(locale, 'filterIcon')} value={icon} onChange={(event) => setIcon(event.target.value)} disabled={descriptor.iconDomain.length === 0}>{descriptor.iconDomain.map((entry) => <option key={`${entry.iconSet}:${entry.iconId}`} value={`${entry.iconSet}:${entry.iconId}`}>{entry.iconSet} {entry.iconId}</option>)}</Select>{descriptor.iconDomain.length === 0 ? <Text size="xs" tone="subtle">{filterText(locale, 'noIcons')}</Text> : null}</>
+            ) : activeMode === 'values' ? (
+              <>
+                <TextInput aria-label={filterText(locale, 'searchValues')} placeholder={filterText(locale, 'searchValues')} value={search} onChange={(event) => setSearch(event.target.value)} />
+                <CheckToggle checked={allVisibleSelected} label={filterText(locale, 'selectAll')} onChange={(event) => { const next = new Set(selected); visibleValues.forEach((option) => event.target.checked ? next.add(option.key) : next.delete(option.key)); if (visibleValues.some((option) => option.value == null || option.value === '')) setIncludeBlank(event.target.checked); setSelected(next); }} />
+                <VirtualList className="rounded border border-slate-100 p-2" height={224} itemHeight={28} items={visibleValues} itemKey={(option) => option.key} renderItem={(option) => <CheckToggle checked={selected.has(option.key)} label={option.label} onChange={(event) => { const next = new Set(selected); if (event.target.checked) next.add(option.key); else next.delete(option.key); if (option.value == null || option.value === '') setIncludeBlank(event.target.checked); setSelected(next); }} />} />
+                {dateGroupNodes.length > 0 ? <Stack gap="xs" className="rounded border border-slate-100 p-2"><Text size="xs" weight="semibold">{filterText(locale, 'dateGroups')}</Text>{dateGroupNodes.map((node) => <CheckToggle key={node.key} checked={selectedDateGroups.has(node.key)} label={`${'\u00a0'.repeat(node.depth * 2)}${node.label}`} onChange={(event) => { const next = new Set(selectedDateGroups); if (event.target.checked) next.add(node.key); else next.delete(node.key); setSelectedDateGroups(next); setDateGroupsDirty(true); }} />)}</Stack> : null}
+              </>
+            ) : (
+              <Stack gap="xs">
+                {activeMode === 'number' ? <Select sizeVariant="sm" aria-label={filterText(locale, 'number')} value={numberMode} onChange={(event) => setNumberMode(event.target.value as 'condition' | 'top10')}><option value="condition">{filterText(locale, 'numberCondition')}</option><option value="top10">{filterText(locale, 'topBottom')}</option></Select> : null}
+                {activeMode === 'date' ? <Select sizeVariant="sm" aria-label={filterText(locale, 'date')} value={dateMode} onChange={(event) => setDateMode(event.target.value as DateMode)}><option value="condition">{filterText(locale, 'dateCondition')}</option><option value="dynamic">{filterText(locale, 'dynamicDate')}</option></Select> : null}
+                {activeMode === 'number' && numberMode === 'top10' ? <Inline gap="xs"><Select sizeVariant="sm" aria-label={filterText(locale, 'topBottom')} value={top ? 'top' : 'bottom'} onChange={(event) => setTop(event.target.value === 'top')}><option value="top">{filterText(locale, 'top')}</option><option value="bottom">{filterText(locale, 'bottom')}</option></Select><TextInput aria-label={filterText(locale, 'rank')} value={rank} onChange={(event) => setRank(event.target.value)} /><CheckToggle checked={percent} label={filterText(locale, 'percent')} onChange={(event) => setPercent(event.target.checked)} /></Inline> : activeMode === 'date' && dateMode === 'dynamic' ? <Select sizeVariant="sm" aria-label={filterText(locale, 'dynamicDate')} value={dynamicType} onChange={(event) => setDynamicType(event.target.value as DynamicType)}>{DYNAMIC_TYPES.map((type) => <option key={type} value={type}>{dynamicLabel(locale, type)}</option>)}</Select> : <>
+                  <Select sizeVariant="sm" aria-label={filterText(locale, 'customValue')} value={activeOperator ?? ''} onChange={(event) => setOperator(event.target.value as CustomOperator)}>{operators.map((candidate) => <option key={candidate} value={candidate}>{filterText(locale, operatorTextKeys[candidate])}</option>)}</Select>
+                  <TextInput aria-label={filterText(locale, 'customValue')} placeholder={filterText(locale, 'customValue')} value={operand} onChange={(event) => setOperand(event.target.value)} />
+                  <CheckToggle checked={useSecondCondition} label={filterText(locale, 'secondCondition')} onChange={(event) => setUseSecondCondition(event.target.checked)} />
+                  {useSecondCondition ? <><Select sizeVariant="sm" aria-label={filterText(locale, 'customValue')} value={activeSecondOperator ?? ''} onChange={(event) => setSecondOperator(event.target.value as CustomOperator)}>{operators.map((candidate) => <option key={candidate} value={candidate}>{filterText(locale, operatorTextKeys[candidate])}</option>)}</Select><TextInput aria-label={filterText(locale, 'customValue')} placeholder={filterText(locale, 'customValue')} value={secondOperand} onChange={(event) => setSecondOperand(event.target.value)} /><Select sizeVariant="sm" aria-label={filterText(locale, 'join')} value={join} onChange={(event) => setJoin(event.target.value as FilterJoin)}><option value="and">{filterText(locale, 'and')}</option><option value="or">{filterText(locale, 'or')}</option></Select></> : null}
+                </>}
+              </Stack>
+            )}
           </>
         )}
-
-        <Inline gap="sm" className="justify-end">
-          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button size="sm" variant="ghost" onClick={() => onApply({ criterion: undefined })}>Clear</Button>
-          <Button size="sm" variant="primary" onClick={apply}>OK</Button>
-        </Inline>
+        <Inline gap="sm" className="justify-end"><Button size="sm" variant="ghost" onClick={onClose}>{filterText(locale, 'cancel')}</Button><Button size="sm" variant="ghost" onClick={() => onApply({ criterion: undefined })}>{filterText(locale, 'clear')}</Button><Button size="sm" variant="primary" disabled={!descriptor || modes.length === 0} onClick={apply}>{filterText(locale, 'apply')}</Button></Inline>
+        <Box role="separator" aria-label={filterText(locale, 'resize')} aria-orientation="horizontal" className="h-2 w-full cursor-se-resize rounded bg-slate-100" onPointerDown={beginResize} onPointerMove={resize} onPointerUp={endResize} onPointerCancel={endResize} />
       </Stack>
     </Box>
   );

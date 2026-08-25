@@ -42,6 +42,7 @@ function sourceSnapshot(): CanvasSheetSnapshot {
     filterButtons: [],
     filterButtonStates: [],
     getFilterValueDomain: () => [],
+    getFilterDomainDescriptor: () => ({ column: 0, values: [], scalarTypes: [], dominantType: 'empty', hasBlank: false, dateDomain: [], dateHierarchy: [], colorDomain: [], iconDomain: [], supportedFamilies: ['values'] }),
     getFilterCriterion: () => undefined,
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],

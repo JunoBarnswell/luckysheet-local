@@ -156,4 +156,24 @@ describe('WorkbookSession data objects integration', () => {
     assert.equal(sheet.autoFilter?.columns[0]?.criterion, undefined);
     assert.equal(sheet.autoFilter?.columns[0]?.preservedXml, undefined);
   });
+
+  it('rejects criteria whose family or operator is absent from the resolved domain', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    app.runCommand('sheet.range.set', {
+      sheetId,
+      startRow: 0,
+      startColumn: 0,
+      values: [[{ value: 'Amount' }], [{ value: 10 }], [{ value: 20 }]],
+    });
+    app.applyFilter(0, { criterion: { kind: 'values', values: [10, 20], includeBlank: false } });
+    assert.throws(() => app.applyFilter(0, {
+      criterion: { kind: 'custom', join: 'and', conditions: [{ operator: 'contains', value: '1' }] },
+    }), /FILTER_(DOMAIN|OPERATOR)_MISMATCH/);
+    assert.throws(() => app.applyFilter(0, {
+      criterion: { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#ff0000' } },
+    }), /FILTER_DOMAIN_MISMATCH/);
+    assert.deepEqual(sheet.autoFilter?.columns[0]?.criterion, { kind: 'values', values: [10, 20], includeBlank: false });
+  });
 });
