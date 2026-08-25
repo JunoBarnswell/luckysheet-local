@@ -5,20 +5,18 @@ import type {
   DataSourceManifest,
   DrawingObject,
   AutoFilterModel,
-  FormulaErrorCode,
   RangeRef,
   SheetDataRegion,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { createFormulaError } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
 import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
-import { isFormulaError, isSpillChild, parseFormula, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
-import { parseCellText } from './text-input';
+import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
+import { parseReplacementValue, replacementCell, replaceFindText, type ReplacementValue } from './find-replace';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -82,66 +80,7 @@ export interface ReplaceRangeParams {
  * any cell mutation, so `0` cannot be confused with a failed/falsy parse and
  * every caller observes the same typed result.
  */
-export type ReplacementValue =
-  | { kind: 'empty'; value: null }
-  | { kind: 'text'; value: string }
-  | { kind: 'number'; value: number }
-  | { kind: 'boolean'; value: boolean }
-  | { kind: 'formula'; value: null; formula: string }
-  | { kind: 'error'; value: null; code: FormulaErrorCode };
-
-const REPLACEMENT_ERROR_CODES: ReadonlySet<string> = new Set([
-  '#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A',
-  '#CALC!', '#BLOCKED!', '#SPILL!', '#PARSE!', '#CYCLE!',
-]);
-
-/**
- * Parse the dialog text without looking at display formatting or the target
- * cell's previous value.  A leading apostrophe is the explicit text escape
- * used by the existing spreadsheet input semantics (`'0` remains text).
- */
-export function parseReplacementValue(text: string): ReplacementValue {
-  if (text === '') return { kind: 'empty', value: null };
-  if (text.startsWith("'")) return { kind: 'text', value: text.slice(1) };
-  if (text.startsWith('=')) {
-    try { parseFormula(text); }
-    catch (error) { throw new Error(`Invalid replacement formula: ${error instanceof Error ? error.message : String(error)}`); }
-    return { kind: 'formula', value: null, formula: text };
-  }
-  const upper = text.toUpperCase();
-  if (REPLACEMENT_ERROR_CODES.has(upper)) return { kind: 'error', value: null, code: upper as FormulaErrorCode };
-  const parsed = parseCellText(text);
-  if (typeof parsed.value === 'number') return { kind: 'number', value: parsed.value };
-  if (typeof parsed.value === 'boolean') return { kind: 'boolean', value: parsed.value };
-  if (parsed.value === null) return { kind: 'empty', value: null };
-  // parseCellText deliberately leaves an overflowing numeric literal as text;
-  // replacement must reject that input rather than persist a misleading text.
-  if (isNumericLiteral(text)) throw new Error(`Replacement number is not finite: ${text}`);
-  return { kind: 'text', value: parsed.value };
-}
-
-function isNumericLiteral(text: string): boolean {
-  return /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(text);
-}
-
-function replacementCell(cell: CellData, replacement: ReplacementValue): CellData {
-  if (replacement.kind === 'empty') throw new Error('Replacement text must not be empty');
-  const next = structuredClone(cell);
-  delete next.displayValue;
-  delete next.formula;
-  delete next.formulaMetadata;
-  delete next.formulaValue;
-  if (replacement.kind === 'formula') {
-    next.value = null;
-    next.formula = replacement.formula;
-  } else if (replacement.kind === 'error') {
-    next.value = null;
-    next.formulaValue = createFormulaError(replacement.code);
-  } else {
-    next.value = replacement.value;
-  }
-  return next;
-}
+export { parseReplacementValue, replacementCell, type ReplacementValue } from './find-replace';
 
 export interface FilterToggleParams {
   sheetId: string;
@@ -506,17 +445,12 @@ function applyFormatPainterMutation(params: FormatPainterMutationParams, context
 }
 
 function replaceText(original: string, params: ReplaceRangeParams): string | undefined {
-  const matchCase = params.matchCase ?? false;
-  const entireCell = params.entireCell ?? false;
-  if (entireCell) {
-    const equal = matchCase ? original === params.find : original.toLocaleLowerCase() === params.find.toLocaleLowerCase();
-    return equal ? params.replace : undefined;
-  }
-  if (!params.find) return undefined;
-  const escaped = params.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const expression = new RegExp(escaped, matchCase ? 'g' : 'gi');
-  if (!expression.test(original)) return undefined;
-  return original.replace(new RegExp(escaped, matchCase ? 'g' : 'gi'), params.replace);
+  return replaceFindText(original, {
+    query: params.find,
+    matchCase: params.matchCase,
+    entireCell: params.entireCell,
+    wildcard: false,
+  }, params.replace);
 }
 
 interface ReplaceCandidate {

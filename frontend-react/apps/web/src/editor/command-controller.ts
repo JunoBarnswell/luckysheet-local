@@ -411,7 +411,8 @@ export function useEditorCommandController({
       case "cells.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "insert" }); return true;
       case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "delete" }); return true;
       case "filter.toggle": session.applyFilterSelection(); return true;
-      case "find.open": case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace" }); return true;
+      case "find.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findMode: "find" }); return true;
+      case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findMode: "replace" }); return true;
       case "commandPalette.open": dispatchSessionIntent({ type: "command-palette.open" }); return true;
       case "name.goto": case "navigation.goto": dispatchSessionIntent({ type: "dialog.open", dialog: "goto" }); return true;
       case "ribbon.home.keyTips": session.setRibbonTab("home"); session.notify("Home shortcuts are active"); return true;

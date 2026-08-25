@@ -100,6 +100,8 @@ export function inferAffectedRanges(commandId: string, params: unknown, sheetId:
 
 const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.cell.set': 'edit-cell',
+  'find.replace': 'edit-cell',
+  'find.replaced': 'edit-cell',
   'sheet.range.set': 'edit-cell',
   'sheet.range.clear': 'edit-cell',
   'sheet.range.paste': 'edit-cell',
@@ -127,6 +129,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'comment.reply': 'comment',
   'comment.resolve': 'comment',
   'comment.remove': 'comment',
+  'comment.update': 'comment',
   'note.set': 'comment',
   'note.remove': 'comment',
   'note.visibility': 'comment',

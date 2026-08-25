@@ -64,11 +64,20 @@ import {
   getAutoFilterDomainDescriptor,
   validateFilterCriterionAgainstDomain,
   validationList,
+  findAtCursor,
+  findCursorFor,
+  planFind,
   type ClipboardPayload,
   type PasteSpecialSpec,
   createPasteSpecialSpec,
   type DataRegionMaterializeParams,
   type GoToSpecialKind,
+  type FindCursor,
+  type FindMatch,
+  type FindSearchOrder,
+  type FindSearchParams,
+  type FindSearchTarget,
+  type FindScope,
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
@@ -215,9 +224,11 @@ import type {
   SheetDialogState,
   UiSessionIntent,
   DialogState,
+  FindDialogMode,
   MergeOperation,
   UndoRedoState,
 } from './types';
+import type { FindReplaceParams } from './features/find-replace/commands';
 
 export interface WorkbookSessionOptions {
   unitId?: string;
@@ -246,6 +257,17 @@ export class CommandDispatchError extends Error {
 export type DispatchOutcome =
   | { status: 'committed'; result: CommandResult }
   | { status: 'rejected'; error: CommandDispatchError };
+
+export interface FindDialogParams {
+  query: string;
+  replace?: string;
+  searchOrder: FindSearchOrder;
+  matchCase: boolean;
+  entireCell: boolean;
+  wildcard: boolean;
+  scope: FindScope;
+  targets: readonly FindSearchTarget[];
+}
 
 export type ClipboardExecutionOutcome = SystemClipboardWriteOutcome & {
   privatePayloadStored: boolean;
@@ -449,7 +471,10 @@ export class WorkbookSession {
   private compatibilityReport: CompatibilityReport | null = null;
   /** The sole native package baseline paired with this workbook snapshot. */
   private nativePackage: NativePackageState | undefined;
-  private dialogs: DialogState = { active: null, findQuery: '', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, sheet: null, cellShiftOperation: 'insert' };
+  private dialogs: DialogState = { active: null, findQuery: '', findMode: 'replace', mergeDiscardCount: 0, mergeOperation: 'center', columnWidth: null, sheet: null, cellShiftOperation: 'insert' };
+  /** Search cursor is transient UI state; it never enters WorkbookModel/history. */
+  private findCursor: FindCursor | null = null;
+  private findCursorSignature = '';
   private pendingMerge: { range: RangeRef; operation: MergeOperation } | null = null;
   private inputMode: InputMode = 'grid';
   private focus: FocusState = { mode: 'grid', target: 'grid' };
@@ -1129,6 +1154,7 @@ export class WorkbookSession {
     return commandId === 'formula.autosum'
       || commandId === 'sheet.range.fill'
       || commandId === 'sheet.range.replace'
+      || commandId === 'find.replace'
       || commandId === 'sheet.range.move'
       || commandId === 'sheet.range.paste'
       || commandId === 'sheet.range.clear'
@@ -1230,7 +1256,7 @@ export class WorkbookSession {
         if (intent.notice) this.notify(intent.notice);
         return;
       case 'dialog.open':
-        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation);
+        this.openDialog(intent.dialog, intent.findQuery, intent.columnWidth, intent.sheet, intent.operation, intent.findMode);
         return;
       case 'dialog.close':
         this.closeActiveDialog();
@@ -1920,10 +1946,11 @@ export class WorkbookSession {
     this.emit();
   };
 
-  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert'): void {
+  openDialog(dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture', findQuery?: string, columnWidth?: { columns: number[]; defaultMode: boolean }, sheet?: SheetDialogState, operation: CellShiftOperation = 'insert', findMode: FindDialogMode = 'replace'): void {
     this.setFocusState('dialog', 'dialog');
     const active = dialog === 'sheet-rename' || dialog === 'sheet-tab-color' || dialog === 'sheet-delete' ? 'sheet-dialog' : dialog;
-    this.dialogs = { ...this.dialogs, active, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    this.dialogs = { ...this.dialogs, active, findMode: dialog === 'find-replace' ? findMode : this.dialogs.findMode, cellShiftOperation: dialog === 'shift-cells' ? operation : this.dialogs.cellShiftOperation, findQuery: dialog === 'find-replace' ? findQuery ?? '' : this.dialogs.findQuery, columnWidth: dialog === 'column-width' ? structuredClone(columnWidth ?? { columns: [], defaultMode: false }) : null, sheet: sheet ? structuredClone(sheet) : null };
+    if (dialog === 'find-replace') this.resetFindCursor();
     if (dialog === 'print-preview') {
       this.rebuildPrintSnapshot();
       this.panels = { ...this.panels, active: 'print', open: true };
@@ -1933,6 +1960,7 @@ export class WorkbookSession {
 
   closeActiveDialog(): void {
     if (!this.dialogs.active) return;
+    if (this.dialogs.active === 'find-replace') this.resetFindCursor();
     this.dialogs = { ...this.dialogs, active: null, columnWidth: null, sheet: null };
     this.setFocusState('grid', 'grid');
     this.emit();
@@ -1942,6 +1970,11 @@ export class WorkbookSession {
     if (!this.dialogs.sheet) return;
     this.dialogs = { ...this.dialogs, sheet: { ...this.dialogs.sheet, value } };
     this.emit();
+  }
+
+  private resetFindCursor(): void {
+    this.findCursor = null;
+    this.findCursorSignature = '';
   }
 
   closeFunctionWizard = (): void => {
@@ -1956,6 +1989,7 @@ export class WorkbookSession {
   };
   closeFindReplace = (): void => {
     if (this.dialogs.active === 'find-replace') this.dialogs = { ...this.dialogs, active: null, findQuery: '' };
+    this.resetFindCursor();
     this.setFocusState('grid', 'grid');
     this.emit();
   };
@@ -3499,21 +3533,94 @@ export class WorkbookSession {
     else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
   }
 
-  async findReplace(params: { find: string; replace: string; matchCase: boolean; entireCell: boolean; scope: 'sheet' | 'workbook' }): Promise<number> {
-    if (!params.find) return 0;
-    const command = {
+  private findParams(params: FindDialogParams): FindSearchParams {
+    if (!params.query) throw new Error('Find query must not be empty');
+    return {
       sheetId: this.activeSheetId,
-      range: this.getCurrentRegion(),
-      find: params.find,
-      replace: params.replace,
+      query: params.query,
+      searchOrder: params.searchOrder,
+      scope: params.scope,
+      ...(params.scope === 'selection' ? { range: normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId }) } : {}),
+      targets: params.targets,
       matchCase: params.matchCase,
       entireCell: params.entireCell,
-      scope: params.scope,
-      searchIn: 'both' as const,
+      wildcard: params.wildcard,
     };
-    const result = await this.executeCommandAfterMaterialization('sheet.range.replace', command);
-    this.notify(`${result.mutationCount} replacement(s) applied`);
-    return result.mutationCount;
+  }
+
+  private findSignature(params: FindDialogParams): string {
+    return JSON.stringify({ ...params, scope: params.scope, selection: params.scope === 'selection' ? this.getPrimaryRange() : undefined });
+  }
+
+  private planFindDialog(params: FindDialogParams): { result: ReturnType<typeof planFind>; signature: string } {
+    const signature = this.findSignature(params);
+    if (this.findCursorSignature !== signature) this.findCursor = null;
+    const result = planFind(this.runtime.model, this.findParams(params), (sheet, row, column) => {
+      const cell = this.readResolvedCell(sheet, row, column);
+      if (!cell) return undefined;
+      return cell.formulaValue === undefined ? cell.value : cell.formulaValue;
+    });
+    this.findCursorSignature = signature;
+    return { result, signature };
+  }
+
+  private focusFindMatch(match: FindMatch): void {
+    if (match.sheetId !== this.activeSheetId) this.selectSheet(match.sheetId);
+    this.selectionService.selectCell(cellAddress(match.row, match.column), { editing: Boolean(this.editSession.editingCell), insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref) });
+    this.syncDraftFromPrimary();
+    this.syncTableContextFromSelection();
+    this.emit();
+  }
+
+  findNext(params: FindDialogParams): number {
+    const { result } = this.planFindDialog(params);
+    const match = findAtCursor(result.matches, this.findCursor, 'next');
+    if (!match) { this.notify('No matches found'); return 0; }
+    this.findCursor = findCursorFor(match);
+    this.focusFindMatch(match);
+    this.notify(`Found and selected ${match.sheetId}!${match.row}:${match.column}`);
+    return 1;
+  }
+
+  findPrevious(params: FindDialogParams): number {
+    const { result } = this.planFindDialog(params);
+    const match = findAtCursor(result.matches, this.findCursor, 'previous');
+    if (!match) { this.notify('No matches found'); return 0; }
+    this.findCursor = findCursorFor(match);
+    this.focusFindMatch(match);
+    this.notify(`Found and selected ${match.sheetId}!${match.row}:${match.column}`);
+    return 1;
+  }
+
+  findAll(params: FindDialogParams): number {
+    const { result } = this.planFindDialog(params);
+    this.notify(`${result.total} match(es) found`);
+    return result.total;
+  }
+
+  async replaceOne(params: FindDialogParams): Promise<number> {
+    if (!params.replace) throw new Error('Replacement text must not be empty');
+    const { result } = this.planFindDialog(params);
+    const match = findAtCursor(result.matches, this.findCursor, 'next');
+    if (!match) { this.notify('No matches found'); return 0; }
+    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'one', matchKey: match.key };
+    const committed = await this.executeCommandAfterMaterialization('find.replace', command);
+    const remaining = result.matches.filter((entry) => entry.key !== match.key);
+    const next = findAtCursor(remaining, null, 'next');
+    this.findCursor = next ? findCursorFor(next) : null;
+    const count = typeof committed.event?.payload.count === 'number' ? committed.event.payload.count : committed.mutationCount;
+    this.notify(`${count} replacement(s) applied`);
+    return count;
+  }
+
+  async replaceAll(params: FindDialogParams): Promise<number> {
+    if (!params.replace) throw new Error('Replacement text must not be empty');
+    const command: FindReplaceParams = { ...this.findParams(params), replace: params.replace, mode: 'all' };
+    const committed = await this.executeCommandAfterMaterialization('find.replace', command);
+    this.resetFindCursor();
+    const count = typeof committed.event?.payload.count === 'number' ? committed.event.payload.count : committed.mutationCount;
+    this.notify(`${count} replacement(s) applied`);
+    return count;
   }
 
   insertRowsAtPrimary(count: number): void {

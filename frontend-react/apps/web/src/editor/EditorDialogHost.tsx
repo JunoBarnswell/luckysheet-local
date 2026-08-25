@@ -55,9 +55,14 @@ export function EditorDialogHost({
       <FindReplaceDialog
         open={state.dialogs.active === 'find-replace'}
         initialFind={state.dialogs.findQuery}
+        mode={state.dialogs.findMode}
         locale={locale}
         onClose={session.closeFindReplace.bind(session)}
-        onReplaceAll={(params) => session.findReplace(params)}
+        onFindNext={(params) => session.findNext(params)}
+        onFindPrevious={(params) => session.findPrevious(params)}
+        onFindAll={(params) => session.findAll(params)}
+        onReplace={(params) => session.replaceOne(params)}
+        onReplaceAll={(params) => session.replaceAll(params)}
       />
       <GoToDialog
         open={state.dialogs.active === 'goto'}

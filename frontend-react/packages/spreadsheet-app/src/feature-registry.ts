@@ -10,6 +10,7 @@ import { registerPivotControlFeature } from './features/pivot-controls';
 import { registerReviewFeature } from './features/review/commands';
 import { registerSparklineFeature } from './features/sparkline';
 import { registerInsertCommands } from './features/insert';
+import { registerFindReplaceFeature } from './features/find-replace/commands';
 
 export interface SpreadsheetFeatureManifest {
   id: string;
@@ -48,6 +49,7 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
   const pivotManifest = registerPivotFeature(runtime);
   const sparklineManifest = registerSparklineFeature(runtime);
   const reviewManifest = registerReviewFeature(runtime);
+  const findReplaceManifest = registerFindReplaceFeature(runtime);
   const insertCommandIds = registerInsertCommands(runtime);
   const platformCommandIds = registerPlatformFeatures(runtime);
 
@@ -61,6 +63,7 @@ export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRunt
     pivotManifest,
     sparklineManifest,
     reviewManifest,
+    findReplaceManifest,
     { id: 'insert', version: '1.0.0', commandIds: insertCommandIds, permissions: ['sheet.structure.write', 'sheet.format.write'] },
     {
       id: 'platform',
