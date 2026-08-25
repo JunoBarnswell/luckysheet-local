@@ -445,6 +445,52 @@ function validatePivotSubtotal(value: unknown): void {
   throw new Error('Pivot subtotal mode is unsupported');
 }
 
+/**
+ * Calculated fields and items are declared by the layout mutation itself.
+ * They are not required to be copied into the persisted source field
+ * catalogue.  Build the effective field set once so a full definition can
+ * validate both the definitions and every layout reference against the same
+ * ownership boundary.  A layout-only mutation can validate its own shape and
+ * duplicate IDs, while the server validates its targets against the current
+ * source catalogue when the patch is merged.
+ */
+function validatePivotCalculatedDefinitions(
+  layout: Record<string, unknown>,
+  fieldIds?: ReadonlySet<string>,
+): Set<string> {
+  const effectiveFieldIds = new Set(fieldIds);
+  const calculatedItems: Record<string, unknown>[] = [];
+  const validate = (raw: unknown, item: boolean): void => {
+    if (raw === undefined || raw === null) return;
+    if (!Array.isArray(raw) || raw.length > 10_000) throw new Error('Pivot calculated definitions are invalid');
+    for (const rawDefinition of raw) {
+      const definition = requireRecord(rawDefinition, item ? 'Pivot calculated item' : 'Pivot calculated field');
+      validateExactKeys(
+        definition,
+        item ? ['fieldId', 'targetFieldId', 'name', 'formula'] : ['fieldId', 'name', 'formula'],
+        item ? 'Pivot calculated item' : 'Pivot calculated field',
+      );
+      if (!isNonEmptyString(definition.fieldId) || !isNonEmptyString(definition.name) || !isNonEmptyString(definition.formula)) {
+        throw new Error(item ? 'Pivot calculated item is invalid' : 'Pivot calculated field is invalid');
+      }
+      if (effectiveFieldIds.has(definition.fieldId)) throw new Error(`Pivot calculated fieldId is duplicated or collides with the field catalogue: ${definition.fieldId}`);
+      effectiveFieldIds.add(definition.fieldId);
+      if (item) {
+        if (!isNonEmptyString(definition.targetFieldId)) throw new Error('Pivot calculated item targetFieldId is invalid');
+        calculatedItems.push(definition);
+      }
+    }
+  };
+  validate(layout.calculatedFields, false);
+  validate(layout.calculatedItems, true);
+  if (fieldIds) {
+    for (const item of calculatedItems) {
+      if (!effectiveFieldIds.has(String(item.targetFieldId))) throw new Error(`Pivot calculated item targetFieldId is invalid: ${String(item.targetFieldId)}`);
+    }
+  }
+  return effectiveFieldIds;
+}
+
 /** Rejects every non-canonical Pivot field at the transport boundary. */
 export function validatePivotDefinition(value: unknown): asserts value is PivotDefinition {
   const pivot = requireRecord(value, 'Pivot definition');
@@ -479,6 +525,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     || typeof layout.allowMultipleFiltersPerField !== 'boolean'
     || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showRowGrandTotals !== 'boolean' || typeof layout.showColumnGrandTotals !== 'boolean' || !['compact', 'outline', 'tabular'].includes(String(layout.reportLayout))) throw new Error('Pivot layout is invalid');
   validatePivotCollation(layout.collation);
+  const effectiveFieldIds = validatePivotCalculatedDefinitions(layout, fieldIds);
   if (layout.expansion !== undefined) {
     const expansion = requireRecord(layout.expansion, 'Pivot expansion');
     validateExactKeys(expansion, ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'], 'Pivot expansion');
@@ -489,12 +536,12 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   const validatePlacement = (rawPlacement: unknown): void => {
     const placement = requireRecord(rawPlacement, 'Pivot placement');
     validateExactKeys(placement, ['fieldId', 'sort', 'group', 'subtotal'], 'Pivot placement');
-    if (!isNonEmptyString(placement.fieldId) || !fieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
+    if (!isNonEmptyString(placement.fieldId) || !effectiveFieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
     if (placement.sort !== undefined) {
       const sort = requireRecord(placement.sort, 'Pivot sort');
       validateExactKeys(sort, ['direction', 'by', 'valueFieldId'], 'Pivot sort');
       if (!['ascending', 'descending'].includes(String(sort.direction)) || (sort.by !== undefined && !['label', 'value'].includes(String(sort.by)))) throw new Error('Pivot sort is invalid');
-      if (sort.valueFieldId !== undefined && (!isNonEmptyString(sort.valueFieldId) || !fieldIds.has(sort.valueFieldId))) throw new Error('Pivot sort valueFieldId is invalid');
+      if (sort.valueFieldId !== undefined && (!isNonEmptyString(sort.valueFieldId) || !effectiveFieldIds.has(sort.valueFieldId))) throw new Error('Pivot sort valueFieldId is invalid');
       if (sort.by === 'value' && sort.valueFieldId === undefined) throw new Error('Pivot value sort requires valueFieldId');
     }
     if (placement.group !== undefined) validatePivotGroup(placement.group);
@@ -506,7 +553,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   const filterFields = new Set<string>();
   for (const rawFilter of layout.filters) {
     const filter = requireRecord(rawFilter, 'Pivot filter');
-    if (!isNonEmptyString(filter.fieldId) || !fieldIds.has(filter.fieldId)) throw new Error('Pivot filter fieldId is invalid');
+    if (!isNonEmptyString(filter.fieldId) || !effectiveFieldIds.has(filter.fieldId)) throw new Error('Pivot filter fieldId is invalid');
     if (filter.kind === 'manual') {
       validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'mode', 'memberKeys'], 'Pivot manual filter');
       if (filter.family !== 'manual') throw new Error('Pivot manual filter family is invalid');
@@ -517,7 +564,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       validateExactKeys(filter, ['kind', 'family', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'value2', 'dynamic', 'wholeDay'], 'Pivot condition filter');
       if (!['label', 'date', 'value'].includes(String(filter.family))) throw new Error('Pivot condition filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
-      if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
+      if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !effectiveFieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
       const labelOperators = ['equals', 'not-equals', 'begins-with', 'not-begins-with', 'ends-with', 'not-ends-with', 'contains', 'not-contains', 'between', 'not-between', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'];
       const dateOperators = ['equals', 'not-equals', 'before', 'after', 'between', 'not-between'];
       const valueOperators = ['equals', 'not-equals', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal', 'between', 'not-between'];
@@ -535,7 +582,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
       if (filter.family !== 'top-items') throw new Error('Pivot top-items filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
-      if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
+      if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !effectiveFieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
     const scope = filter.scope ?? 'report';
     const identity = `${filter.fieldId}|${scope}|${String(filter.family)}`;
@@ -548,7 +595,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   for (const rawValue of layout.values) {
     const item = requireRecord(rawValue, 'Pivot value field');
     validateExactKeys(item, ['fieldId', 'summarizeBy', 'displayName', 'numberFormat', 'baseFieldId', 'baseItem', 'showAs'], 'Pivot value field');
-    if (!isNonEmptyString(item.fieldId) || !fieldIds.has(item.fieldId) || !['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'].includes(String(item.summarizeBy))) throw new Error('Pivot value field is invalid');
+    if (!isNonEmptyString(item.fieldId) || !effectiveFieldIds.has(item.fieldId) || !['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'].includes(String(item.summarizeBy))) throw new Error('Pivot value field is invalid');
   }
   const policy = requireRecord(pivot.refreshPolicy, 'Pivot refresh policy');
   validateExactKeys(policy, ['mode', 'preserveFormatting', 'refreshOnLoad'], 'Pivot refresh policy');
@@ -679,6 +726,7 @@ function validatePivotMutationParams(id: string, value: unknown): void {
     if (!isNonEmptyString(target.sheetId) || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0 || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0) throw new Error('Pivot update target is invalid');
   }
   if (params.presentation !== undefined) validatePivotPresentation(params.presentation);
+  if (params.layout !== undefined) validatePivotCalculatedDefinitions(requireRecord(params.layout, 'Pivot update layout'));
 }
 
 /** Validate the only snapshot representation accepted at the wire boundary. */

@@ -211,7 +211,8 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         PivotSourceResolver.Resolution source = validateSource(root, pivot.get("source"));
         Set<String> fieldIds = validateFieldCatalog(pivot.get("fieldCatalog"));
         validateSourceFieldCatalog(pivot, fieldIds, source.fieldIds());
-        validateLayout(root, pivot.get("layout"), fieldIds);
+        Set<String> effectiveFieldIds = validateCalculatedDefinitions(pivot.get("layout"), fieldIds);
+        validateLayout(root, pivot.get("layout"), effectiveFieldIds);
         validateRefreshPolicy(pivot.get("refreshPolicy"));
         validatePresentation(pivot.get("presentation"));
         validateNativeMetadata(pivot.get("nativeMetadata"));
@@ -508,8 +509,6 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             }
         }
         for (JsonNode value : layout.path("values")) validateValue(value, fieldIds);
-        validateCalculated(layout.get("calculatedFields"), fieldIds, false);
-        validateCalculated(layout.get("calculatedItems"), fieldIds, true);
         validateExpansion(layout.get("expansion"));
     }
 
@@ -614,17 +613,45 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         validateShowAs(value.get("showAs"));
     }
 
-    private void validateCalculated(JsonNode raw, Set<String> fieldIds, boolean item) {
+    /**
+     * Calculated definitions are layout-owned fields.  A layout-only update
+     * therefore cannot require the new definition id to already be present
+     * in the persisted source field catalogue.  Register every definition
+     * first, then validate item targets against the complete effective set so
+     * one update can introduce and reference a calculated field atomically.
+     */
+    private Set<String> validateCalculatedDefinitions(JsonNode rawLayout, Set<String> catalogFieldIds) {
+        Set<String> effectiveFieldIds = new LinkedHashSet<>(catalogFieldIds);
+        if (rawLayout == null || !rawLayout.isObject()) return effectiveFieldIds;
+        ObjectNode layout = (ObjectNode) rawLayout;
+        List<ObjectNode> calculatedItems = new ArrayList<>();
+        registerCalculatedDefinitions(layout.get("calculatedFields"), false, effectiveFieldIds);
+        collectCalculatedDefinitions(layout.get("calculatedItems"), true, effectiveFieldIds, calculatedItems);
+        for (ObjectNode item : calculatedItems) requireField(effectiveFieldIds, item, "targetFieldId");
+        return effectiveFieldIds;
+    }
+
+    private void registerCalculatedDefinitions(JsonNode raw, boolean item, Set<String> effectiveFieldIds) {
+        collectCalculatedDefinitions(raw, item, effectiveFieldIds, null);
+    }
+
+    private void collectCalculatedDefinitions(JsonNode raw, boolean item, Set<String> effectiveFieldIds, List<ObjectNode> collected) {
         if (raw == null || raw.isNull()) return;
         if (!raw.isArray() || raw.size() > 10_000) throw ServiceException.validation("Pivot calculated definitions are invalid");
         for (JsonNode value : raw) {
             if (!value.isObject()) throw ServiceException.validation("Pivot calculated definition must be an object");
             ObjectNode definition = (ObjectNode) value;
             SnapshotMutationSupport.validateKnownKeys(definition, item ? Set.of("fieldId", "targetFieldId", "name", "formula") : Set.of("fieldId", "name", "formula"), item ? "Pivot calculated item" : "Pivot calculated field");
-            requireField(fieldIds, definition);
-            if (item) requireField(fieldIds, definition, "targetFieldId");
+            String fieldId = SnapshotMutationSupport.text(definition, "fieldId");
             SnapshotMutationSupport.text(definition, "name");
             SnapshotMutationSupport.text(definition, "formula");
+            if (!effectiveFieldIds.add(fieldId)) {
+                throw ServiceException.validation("Pivot calculated fieldId is duplicated or collides with the field catalogue: " + fieldId);
+            }
+            if (item) {
+                SnapshotMutationSupport.text(definition, "targetFieldId");
+                if (collected != null) collected.add(definition);
+            }
         }
     }
 
