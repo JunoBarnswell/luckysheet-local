@@ -253,7 +253,11 @@ export function closeDialogDom() {
 
 export function mountPreviewPages(plan, instanceAttr) {
     $("#" + PREVIEW_ID).remove();
-    const $preview = $('<div class="luckysheet-print-preview ' + PRINT_CONTAINER_CLASS + '" id="' + PREVIEW_ID + '" data-ls-instance="' + instanceAttr + '" data-print-session="' + plan.session.id + '"></div>');
+    const $preview = $("<div></div>")
+        .addClass("luckysheet-print-preview " + PRINT_CONTAINER_CLASS)
+        .attr("id", PREVIEW_ID)
+        .attr("data-ls-instance", instanceAttr)
+        .attr("data-print-session", plan.session.id);
     plan.entries.forEach(function (entry, i) {
         const meta = {
             pageIndex: i,
