@@ -2364,7 +2364,14 @@ export class WorkbookSession {
     const pivotId = nextId('pivot');
     let targetSheetId: string;
     let targetPosition: { row: number; column: number };
-    let createdSheetId: string | undefined;
+    let destination: {
+      kind: 'new-sheet';
+      sheetId: string;
+      name: string;
+    } | {
+      kind: 'existing-sheet';
+      sheetId: string;
+    };
     if (params.destination.kind === 'new-sheet') {
       targetSheetId = nextId('sheet');
       targetPosition = { row: 0, column: 0 };
@@ -2372,69 +2379,49 @@ export class WorkbookSession {
       let suffix = 1;
       let targetName = 'PivotTable';
       while (names.has(targetName.toLocaleLowerCase())) targetName = `PivotTable${suffix++}`;
-      try {
-        this.runCommand('sheet.add', { id: targetSheetId, name: targetName });
-        createdSheetId = targetSheetId;
-      } catch (error) {
-        this.notify(error instanceof Error ? error.message : 'Could not create PivotTable worksheet');
-        return undefined;
-      }
+      destination = { kind: 'new-sheet', sheetId: targetSheetId, name: targetName };
     } else {
       targetSheetId = params.destination.sheetId;
       targetPosition = { ...params.destination.anchor };
-      try {
-        this.runtime.model.getSheet(targetSheetId);
-      } catch {
-        this.notify('PivotTable destination worksheet does not exist');
-        return undefined;
-      }
+      destination = { kind: 'existing-sheet', sheetId: targetSheetId };
     }
 
-    const blockRegion = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.find((region) => region.range.startRow === sourceRegion.startRow
-      && region.range.endRow === sourceRegion.endRow && region.range.startColumn === sourceRegion.startColumn && region.range.endColumn === sourceRegion.endColumn);
-    const source = params.source
-      ?? (blockRegion
-        ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
-        : { kind: 'worksheet-range' as const, range: { ...sourceRegion } });
-    const draft = {
-      schema: 'PivotDefinition' as const,
-      id: pivotId,
-      source,
-      target: { sheetId: targetSheetId, anchor: targetPosition },
-      fieldCatalog: { fields: [] },
-       refreshPolicy: { mode: 'manual' as const, preserveFormatting: true, refreshOnLoad: false },
-      layout: {
-        rows: [],
-        columns: [],
-        filters: [],
-        values: [],
-        calculatedFields: [],
-        calculatedItems: [],
-        showSubtotals: true,
-        showGrandTotals: true,
-        compact: true,
-        repeatLabels: false,
-        expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
-      },
-    } satisfies PivotDefinition;
-    const pivotDraft: PivotModel = draft;
-    const pivot: PivotModel = { ...pivotDraft, fieldCatalog: buildPivotFieldCatalog(this.runtime.model, pivotDraft) };
-    if (pivot.fieldCatalog.fields.length === 0) {
-      if (createdSheetId) this.runCommand('sheet.remove', { sheetId: createdSheetId });
-      this.notify('PivotTable source does not contain usable fields');
-      return undefined;
-    }
     try {
-      this.addPivot(pivot);
+      const blockRegion = this.runtime.model.getSheet(sourceRegion.sheetId).dataRegions.find((region) => region.range.startRow === sourceRegion.startRow
+        && region.range.endRow === sourceRegion.endRow && region.range.startColumn === sourceRegion.startColumn && region.range.endColumn === sourceRegion.endColumn);
+      const source = params.source
+        ?? (blockRegion
+          ? { kind: 'data-source' as const, dataSourceId: blockRegion.sourceId }
+          : { kind: 'worksheet-range' as const, range: { ...sourceRegion } });
+      const pivotDraft: PivotModel = {
+        schema: 'PivotDefinition',
+        id: pivotId,
+        source,
+        target: { sheetId: targetSheetId, anchor: targetPosition },
+        fieldCatalog: { fields: [] },
+        refreshPolicy: { mode: 'manual', preserveFormatting: true, refreshOnLoad: false },
+        layout: {
+          rows: [],
+          columns: [],
+          filters: [],
+          values: [],
+          calculatedFields: [],
+          calculatedItems: [],
+          showSubtotals: true,
+          showGrandTotals: true,
+          compact: true,
+          repeatLabels: false,
+          expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
+        },
+      };
+      const pivot: PivotModel = { ...pivotDraft, fieldCatalog: buildPivotFieldCatalog(this.runtime.model, pivotDraft) };
+      this.runCommand('pivot.create', { pivot, destination });
       this.activeSheetId = targetSheetId;
       this.selectionService.resetForSheet(targetSheetId);
-      this.panels = { ...this.panels, active: 'pivot', open: true };
+      this.setActivePivotContext(pivotId, targetSheetId);
       this.refresh();
       return pivotId;
     } catch (error) {
-      if (createdSheetId && this.runtime.model.sheets.has(createdSheetId)) {
-        try { this.runCommand('sheet.remove', { sheetId: createdSheetId }); } catch { /* keep original failure authoritative */ }
-      }
       this.notify(error instanceof Error ? error.message : 'Could not create PivotTable');
       return undefined;
     }
