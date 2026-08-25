@@ -7,6 +7,7 @@ import {
   pivotMemberKeyEquals,
   type PivotFieldDefinition,
   type PivotFilter,
+  type PivotFilterFamily,
   type PivotMemberKey,
   type PivotScalar,
   type PivotSort,
@@ -22,7 +23,7 @@ export interface PivotValueSortOption {
 }
 
 export interface PivotHeaderFilterPopoverProps {
-  currentFilter?: PivotFilter;
+  currentFilters: readonly PivotFilter[];
   currentSort?: PivotSort;
   field: PivotFieldDefinition;
   locale: Locale;
@@ -30,25 +31,27 @@ export interface PivotHeaderFilterPopoverProps {
   valueFields: readonly PivotValueSortOption[];
   x: number;
   y: number;
-  onApply: (filter: PivotFilter | undefined, sort: PivotSort | undefined) => void;
+  onApply: (filter: PivotFilter | undefined, sort: PivotSort | undefined, family: PivotFilterFamily | 'all') => void;
   onClose: () => void;
 }
 
 function member(value: PivotScalar): PivotMemberKey { return createPivotMemberKey(value); }
 
-export function PivotHeaderFilterPopover({ currentFilter, currentSort, field, locale, onApply, onClose, scope = 'field', valueFields, x, y }: PivotHeaderFilterPopoverProps) {
+export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, locale, onApply, onClose, scope = 'field', valueFields, x, y }: PivotHeaderFilterPopoverProps) {
   const values = field.values ?? [];
+  const manualFilter = currentFilters.find((filter) => filter.kind === 'manual' && filter.family === 'manual');
+  const conditionFilter = currentFilters.find((filter) => filter.kind === 'condition');
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<FilterMode>(currentFilter?.kind === 'condition' ? (field.dataType === 'number' ? 'value' : 'label') : 'values');
-  const [operator, setOperator] = useState<Extract<PivotFilter, { kind: 'condition' }>['operator']>(currentFilter?.kind === 'condition' ? currentFilter.operator : 'equals');
-  const [conditionValue, setConditionValue] = useState<PivotScalar>(currentFilter?.kind === 'condition' ? currentFilter.value : '');
+  const [mode, setMode] = useState<FilterMode>(conditionFilter?.family === 'value' || (field.dataType === 'number' && conditionFilter) ? 'value' : conditionFilter ? 'label' : 'values');
+  const [operator, setOperator] = useState<Extract<PivotFilter, { kind: 'condition' }>['operator']>(conditionFilter?.kind === 'condition' ? conditionFilter.operator : 'equals');
+  const [conditionValue, setConditionValue] = useState<PivotScalar>(conditionFilter?.kind === 'condition' ? conditionFilter.value : '');
   const [sort, setSort] = useState<PivotSort | undefined>(currentSort);
   const [showSortOptions, setShowSortOptions] = useState(false);
   const initialSelected = useMemo(() => {
-    if (currentFilter?.kind !== 'manual' || currentFilter.mode === 'all') return values.map(member);
-    if (currentFilter.mode === 'include') return currentFilter.memberKeys;
-    return values.map(member).filter((candidate) => !currentFilter.memberKeys.some((item) => pivotMemberKeyEquals(candidate, item)));
-  }, [currentFilter, values]);
+    if (!manualFilter || manualFilter.mode === 'all') return values.map(member);
+    if (manualFilter.mode === 'include') return manualFilter.memberKeys;
+    return values.map(member).filter((candidate) => !manualFilter.memberKeys.some((item) => pivotMemberKeyEquals(candidate, item)));
+  }, [manualFilter, values]);
   const [selected, setSelected] = useState<PivotMemberKey[]>(() => [...initialSelected]);
   const visibleValues = useMemo(() => values.filter((value) => formatPivotMember(value).toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, values]);
   const selectedHas = (value: PivotScalar) => selected.some((candidate) => pivotMemberKeyEquals(candidate, member(value)));
@@ -63,10 +66,11 @@ export function PivotHeaderFilterPopover({ currentFilter, currentSort, field, lo
     if (mode === 'values') {
       const filter: PivotFilter | undefined = selected.length === values.length
         ? undefined
-        : { kind: 'manual', scope, fieldId: field.fieldId, mode: 'include', memberKeys: [...selected] };
-      onApply(filter, sort);
+        : { kind: 'manual', family: 'manual', scope, fieldId: field.fieldId, mode: 'include', memberKeys: [...selected] };
+      onApply(filter, sort, 'manual');
     } else {
-      onApply({ kind: 'condition', scope, fieldId: field.fieldId, operator, value: conditionValue }, sort);
+      const family = mode === 'value' ? 'value' : field.dataType === 'date' ? 'date' : 'label';
+      onApply({ kind: 'condition', family, scope, fieldId: field.fieldId, operator, value: conditionValue }, sort, family);
     }
   };
 
@@ -77,7 +81,7 @@ export function PivotHeaderFilterPopover({ currentFilter, currentSort, field, lo
         <Button icon="sort" size="sm" variant="ghost" className="!h-9 !justify-start rounded-none px-4 text-[13px]" onClick={() => setSort({ direction: 'descending', by: 'label' })}>{pivotText(locale, 'descending')}</Button>
         <Button icon="sliders" size="sm" variant="ghost" className="!h-9 !justify-start rounded-none px-4 text-[13px]" onClick={() => setShowSortOptions((visible) => !visible)}>{pivotText(locale, 'otherSortOptions')}</Button>
         {showSortOptions ? <Stack gap="xs" className="border-b border-[#d7d7d7] px-3 py-2"><Inline gap="xs"><Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={sort?.by ?? 'label'} onChange={(event) => setSort(event.target.value === 'value' ? { direction: sort?.direction ?? 'ascending', by: 'value' } : { direction: sort?.direction ?? 'ascending', by: 'label' })}><option value="label">{pivotText(locale, 'labelFilter')}</option><option value="value" disabled={valueFields.length === 0}>{pivotText(locale, 'valueFilter')}</option></Select><Button size="xs" variant="ghost" onClick={() => setSort(undefined)}>{pivotText(locale, 'clearSort')}</Button></Inline>{sort?.by === 'value' ? <Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={sort.valueFieldId ?? ''} onChange={(event) => setSort({ direction: sort.direction, by: 'value', valueFieldId: event.target.value })}><option value="" disabled>{pivotText(locale, 'sortField')}</option>{valueFields.map((value) => <option key={value.fieldId} value={value.fieldId}>{value.label}</option>)}</Select> : null}</Stack> : null}
-        <Button icon="filter" disabled={!currentFilter} size="sm" variant="ghost" className="!h-9 !justify-start rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => { setMode('values'); setSelected(values.map(member)); }}>{pivotTemplate(locale, 'clearFieldFilter', { field: field.name })}</Button>
+        <Button icon="filter" disabled={currentFilters.length === 0} size="sm" variant="ghost" className="!h-9 !justify-start rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => onApply(undefined, sort, 'all')}>{pivotTemplate(locale, 'clearFieldFilter', { field: field.name })}</Button>
         <Button size="sm" variant={mode === 'label' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none px-4 text-[13px]" onClick={() => setMode('label')}><Text as="span" size="sm">{pivotText(locale, 'labelFilter')}</Text><Icon name="chevron-right" size="xs" /></Button>
         <Button size="sm" variant={mode === 'value' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => setMode('value')}><Text as="span" size="sm">{pivotText(locale, 'valueFilter')}</Text><Icon name="chevron-right" size="xs" /></Button>
         {mode !== 'values' ? (

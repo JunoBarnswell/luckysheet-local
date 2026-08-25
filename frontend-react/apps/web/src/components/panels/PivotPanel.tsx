@@ -38,7 +38,7 @@ function removeField(layout: PivotLayout, fieldId: string): PivotLayout {
 }
 function moveField(layout: PivotLayout, field: PivotFieldDefinition, area: Area, index: number): PivotLayout {
   const next = removeField(layout, field.fieldId);
-  if (area === 'filters') next.filters.splice(index, 0, { kind: 'manual', fieldId: field.fieldId, scope: 'report', mode: 'all', memberKeys: [] });
+  if (area === 'filters') next.filters.splice(index, 0, { kind: 'manual', family: 'manual', fieldId: field.fieldId, scope: 'report', mode: 'all', memberKeys: [] });
   else if (area === 'columns') next.columns.splice(index, 0, { fieldId: field.fieldId });
   else if (area === 'rows') next.rows.splice(index, 0, { fieldId: field.fieldId });
   else next.values.splice(index, 0, { fieldId: field.fieldId, summarizeBy: field.dataType === 'number' ? 'sum' : 'count' });
@@ -142,10 +142,9 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   };
   const filter = (fieldId: string, nextFilter: PivotManualFilterState) => {
     const next = cloneLayout(layout);
-    const index = next.filters.findIndex((entry) => entry.fieldId === fieldId);
-    const current = index >= 0 ? next.filters[index] : undefined;
-    const scope = rows.includes(fieldId) || columns.includes(fieldId) ? 'field' as const : current?.scope ?? 'report' as const;
-    const criterion = { kind: 'manual' as const, fieldId, scope, mode: nextFilter.mode, memberKeys: [...nextFilter.memberKeys] };
+    const scope = rows.includes(fieldId) || columns.includes(fieldId) ? 'field' as const : next.filters.find((entry) => entry.kind === 'manual' && entry.fieldId === fieldId)?.scope ?? 'report' as const;
+    const index = next.filters.findIndex((entry) => entry.kind === 'manual' && entry.fieldId === fieldId && (entry.scope ?? 'report') === scope);
+    const criterion = { kind: 'manual' as const, family: 'manual' as const, fieldId, scope, mode: nextFilter.mode, memberKeys: [...nextFilter.memberKeys] };
     if (index >= 0) next.filters[index] = criterion;
     else next.filters.push(criterion);
     applyLayout(next);

@@ -429,8 +429,9 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     fieldIds.add(field.fieldId);
   }
   const layout = requireRecord(pivot.layout, 'Pivot layout');
-  validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
+  validateExactKeys(layout, ['rows', 'columns', 'filters', 'allowMultipleFiltersPerField', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
+    || typeof layout.allowMultipleFiltersPerField !== 'boolean'
     || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
   if (layout.expansion !== undefined) {
     const expansion = requireRecord(layout.expansion, 'Pivot expansion');
@@ -455,26 +456,38 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   };
   layout.rows.forEach(validatePlacement);
   layout.columns.forEach(validatePlacement);
+  const filterIdentities = new Set<string>();
+  const filterFields = new Set<string>();
   for (const rawFilter of layout.filters) {
     const filter = requireRecord(rawFilter, 'Pivot filter');
     if (!isNonEmptyString(filter.fieldId) || !fieldIds.has(filter.fieldId)) throw new Error('Pivot filter fieldId is invalid');
     if (filter.kind === 'manual') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'scope', 'mode', 'memberKeys'], 'Pivot manual filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'mode', 'memberKeys'], 'Pivot manual filter');
+      if (filter.family !== 'manual') throw new Error('Pivot manual filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot manual filter scope is invalid');
       if (!['all', 'include', 'exclude'].includes(String(filter.mode)) || !Array.isArray(filter.memberKeys)) throw new Error('Pivot manual filter is invalid');
       filter.memberKeys.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual filter member ${String(index)}`));
     } else if (filter.kind === 'condition') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'wholeDay'], 'Pivot condition filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'wholeDay'], 'Pivot condition filter');
+      if (!['label', 'date', 'value'].includes(String(filter.family))) throw new Error('Pivot condition filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
       if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
       if (!['equals', 'not-equals', 'contains', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'].includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid');
       if (!(filter.value === null || ['string', 'number', 'boolean'].includes(typeof filter.value))) throw new Error('Pivot condition value is invalid');
       if (filter.wholeDay !== undefined && typeof filter.wholeDay !== 'boolean') throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
-      validateExactKeys(filter, ['kind', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      if (filter.family !== 'top-items') throw new Error('Pivot top-items filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
       if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
+    const scope = filter.scope ?? 'report';
+    const identity = `${filter.fieldId}|${scope}|${String(filter.family)}`;
+    if (filterIdentities.has(identity)) throw new Error('Pivot filter family is duplicated');
+    filterIdentities.add(identity);
+    const fieldScope = `${filter.fieldId}|${scope}`;
+    if (!layout.allowMultipleFiltersPerField && filterFields.has(fieldScope)) throw new Error('Pivot multiple filters per field are disabled');
+    filterFields.add(fieldScope);
   }
   for (const rawValue of layout.values) {
     const item = requireRecord(rawValue, 'Pivot value field');

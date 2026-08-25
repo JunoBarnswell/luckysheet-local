@@ -26,6 +26,7 @@ import type {
   DrawingPayload,
   PivotGridProjection,
   PivotFilter,
+  PivotFilterFamily,
   PivotHitTest,
   PivotProjectionCell,
   PivotSourceRowPath,
@@ -80,7 +81,7 @@ export interface SheetCanvasProps {
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
   onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
-  onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field') => void;
+  onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
   onCommitCell: (value: string) => void;
@@ -999,12 +1000,12 @@ export function SheetCanvas({
             const pivot = sheet.pivots.find((candidate) => candidate.id === pivotFilterPopover.pivotId);
             const field = pivot?.fieldCatalog.fields.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId);
             const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
-            const currentFilter = pivot?.layout.filters.find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope);
+            const currentFilters = pivot?.layout.filters.filter((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope) ?? [];
             const valueFields: PivotValueSortOption[] = pivot?.layout.values.map((value) => ({
               fieldId: value.fieldId,
               label: value.displayName ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === value.fieldId)?.name ?? value.fieldId,
             })) ?? [];
-            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFields={valueFields} currentFilter={currentFilter} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope); setPivotFilterPopover(null); }} /> : null;
+            return pivot && field ? <PivotHeaderFilterPopover locale={locale} scope={pivotFilterPopover.scope} x={pivotFilterPopover.x} y={pivotFilterPopover.y} field={field} valueFields={valueFields} currentFilters={currentFilters} currentSort={placement?.sort} onClose={() => setPivotFilterPopover(null)} onApply={(filter, sort, family) => { onApplyPivotFilter(pivot.id, field.fieldId, filter, sort, pivotFilterPopover.scope, family); setPivotFilterPopover(null); }} /> : null;
           })() : null}
 
           {fillPreview ? (

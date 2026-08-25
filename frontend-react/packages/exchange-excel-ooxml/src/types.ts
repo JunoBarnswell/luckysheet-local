@@ -189,6 +189,7 @@ export interface NativePivotTableDefinition {
   subtotalLocation?: 'top' | 'bottom' | 'off';
   repeatLabels?: boolean;
   compactData?: boolean;
+  multipleFieldFilters?: boolean;
   styleName?: string;
   styleOptions?: PivotStyleOptions;
   showButtons?: boolean;

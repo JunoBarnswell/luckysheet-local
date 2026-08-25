@@ -148,6 +148,7 @@ export function readNativePivotGraph(input: NativePivotReadInput): NativePivotGr
         ...optionalBoolean(definition.attrs.rowGrandTotals ?? definition.attrs.showRowGrandTotals, 'showRowGrandTotals'),
         ...optionalBoolean(definition.attrs.colGrandTotals ?? definition.attrs.showColumnGrandTotals, 'showColumnGrandTotals'),
         ...optionalBoolean(definition.attrs.compactData, 'compactData'),
+        ...optionalBoolean(definition.attrs.multipleFieldFilters, 'multipleFieldFilters'),
         ...optionalBoolean(definition.attrs.repeatAllLabels, 'repeatLabels'),
         ...optionalBoolean(definition.attrs.showDrill, 'showButtons'),
         subtotalLocation: definition.attrs.showSubtotals === '0' ? 'off' : definition.attrs.subtotalTop === '1' || definition.attrs.subtotalTop === 'true' ? 'top' : 'bottom',
@@ -438,9 +439,10 @@ export function mapNativePivotDefinition(
     rows: table.rowFields.map(placement),
     columns: table.columnFields.map(placement),
     filters: [
-      ...table.pageFields.map((index) => ({ kind: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
+      ...table.pageFields.map((index) => ({ kind: 'manual' as const, family: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
       ...mappedFilters.filters,
     ],
+    allowMultipleFiltersPerField: table.multipleFieldFilters ?? true,
     values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
     subtotalLocation: table.subtotalLocation ?? 'bottom',
     showGrandTotals: (table.showRowGrandTotals ?? true) || (table.showColumnGrandTotals ?? true),
@@ -1049,7 +1051,7 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     })),
     rowFields: rows, columnFields: columns, pageFields: pages, dataFields,
     pivotFilters: buildNativePivotFilters(pivot, dataFields),
-    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact,
+    showRowGrandTotals: pivot.layout.showGrandTotals, showColumnGrandTotals: pivot.layout.showGrandTotals, subtotalLocation: pivot.layout.subtotalLocation, repeatLabels: pivot.layout.repeatLabels, compactData: pivot.layout.compact, multipleFieldFilters: pivot.layout.allowMultipleFiltersPerField,
     ...(styleName ? { styleName } : {}),
     ...(styleOptions ? { styleOptions: structuredClone(styleOptions) } : {}),
     showButtons: pivot.layout.expansion?.showButtons ?? old?.showButtons ?? true,
@@ -1128,7 +1130,7 @@ function buildPivotTableXml(table: NativePivotTableDefinition): string {
   const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
   const style = table.styleName ? `<pivotTableStyleInfo name="${encodeXml(table.styleName)}" showRowHeaders="${styleOptions.showRowHeaders ? '1' : '0'}" showColHeaders="${styleOptions.showColumnHeaders ? '1' : '0'}" showRowStripes="${styleOptions.showRowStripes ? '1' : '0'}" showColStripes="${styleOptions.showColumnStripes ? '1' : '0'}" showLastColumn="${styleOptions.showLastColumn ? '1' : '0'}"/>` : '';
   const subtotalAttrs = table.subtotalLocation === 'off' ? ' showSubtotals="0"' : table.subtotalLocation === 'top' ? ' subtotalTop="1"' : ' subtotalTop="0"';
-  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
+  return withXmlDeclaration(`<pivotTableDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}" name="${encodeXml(table.name)}" cacheId="${table.cacheId}" rowGrandTotals="${table.showRowGrandTotals === false ? '0' : '1'}" colGrandTotals="${table.showColumnGrandTotals === false ? '0' : '1'}" compactData="${table.compactData === false ? '0' : '1'}" multipleFieldFilters="${table.multipleFieldFilters === false ? '0' : '1'}" showDrill="${table.showButtons === false ? '0' : '1'}"${subtotalAttrs}><location ref="${encodeXml(table.locationRef ?? 'A1')}" firstHeaderRow="1" firstDataRow="2" firstDataCol="1"/><pivotFields count="${table.fields.length}">${fields}</pivotFields><rowFields count="${table.rowFields.length}">${rows}</rowFields><colFields count="${table.columnFields.length}">${columns}</colFields>${table.pageFields.length ? `<pageFields count="${table.pageFields.length}">${pages}</pageFields>` : '<pageFields count="0"/>'}<dataFields count="${table.dataFields.length}">${data}</dataFields>${filters}${style}</pivotTableDefinition>`);
 }
 
 function buildAutoSortScopeXml(scope: NativePivotAutoSortScope): string {
@@ -1388,7 +1390,7 @@ function mapNativePivotFilters(
     const type = filter.type.toLowerCase();
     const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false): void => {
       if (!targetFieldId || (withMeasure && !measureFieldId)) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
-      mapped.push({ kind: 'condition', fieldId: targetFieldId, ...(withMeasure && measureFieldId ? { valueFieldId: measureFieldId } : {}), operator, value: conditionValue, scope: 'field', ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
+      mapped.push({ kind: 'condition', family: withMeasure ? 'value' : type.startsWith('date') ? 'date' : 'label', fieldId: targetFieldId, ...(withMeasure && measureFieldId ? { valueFieldId: measureFieldId } : {}), operator, value: conditionValue, scope: 'field', ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
     };
     if (type === 'captionequal' || type === 'dateequal') condition('equals');
     else if (type === 'captionnotequal' || type === 'datenotequal') condition('not-equals');
@@ -1406,7 +1408,7 @@ function mapNativePivotFilters(
     else if (type === 'valuetop10' || type === 'top10' || type === 'valuebottom10' || type === 'bottom10') {
       const count = typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
       if (!targetFieldId || !measureFieldId || !count || count < 1 || filter.percent) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
-      else mapped.push({ kind: 'top-items', fieldId: targetFieldId, valueFieldId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope: 'field' });
+      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueFieldId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope: 'field' });
     } else preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
   }
   return { filters: mapped, preserved };

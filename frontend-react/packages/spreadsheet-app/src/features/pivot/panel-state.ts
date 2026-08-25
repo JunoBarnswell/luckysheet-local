@@ -11,6 +11,7 @@ import type {
   RangeRef,
   WorkbookModel,
 } from '@react-sheets/core-model';
+import { allowsMultiplePivotFilters, pivotFilterIdentity } from '@react-sheets/core-model';
 import { computePivotResult, getPivotFieldCatalog, getPivotSourceRanges, normalizePivotDefinition } from './engine';
 
 export interface PivotPanelState {
@@ -112,9 +113,24 @@ export function setPivotGroup(layout: PivotLayout, axis: 'rows' | 'columns', fie
 
 export function upsertPivotFilter(layout: PivotLayout, filter: PivotFilter): PivotLayout {
   const fieldId = filter.fieldId;
-  const filters = layout.filters.filter((entry) => entry.fieldId !== fieldId);
+  const identity = pivotFilterIdentity(filter);
+  const filters = layout.filters.filter((entry) => {
+    if (pivotFilterIdentity(entry) === identity) return false;
+    if (!allowsMultiplePivotFilters(layout)
+      && entry.fieldId === fieldId
+      && (entry.scope ?? 'report') === (filter.scope ?? 'report')) return false;
+    return true;
+  });
   filters.push(structuredClone({ ...filter, fieldId }));
   return { ...layout, filters };
+}
+
+export function clearPivotFilterFamily(layout: PivotLayout, fieldId: string, family: PivotFilter['family'], scope: 'report' | 'field' = 'report'): PivotLayout {
+  return { ...layout, filters: layout.filters.filter((entry) => !(entry.fieldId === fieldId && entry.family === family && (entry.scope ?? 'report') === scope)) };
+}
+
+export function clearPivotFiltersForField(layout: PivotLayout, fieldId: string, scope?: 'report' | 'field'): PivotLayout {
+  return { ...layout, filters: layout.filters.filter((entry) => entry.fieldId !== fieldId || (scope !== undefined && (entry.scope ?? 'report') !== scope)) };
 }
 
 export interface PivotDrillDownTarget {
