@@ -55,7 +55,6 @@ import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import {
   buildPivotGridProjection,
-  computePivotResult,
   getLastValidPivotResult,
   pivotResultMatchesLayoutAndFilter,
   pivotResultMatchesRevision,
@@ -236,6 +235,7 @@ export function buildCanvasSheetSnapshot(
   cachedPivotResults: Readonly<Record<string, PivotResultTree>> = {},
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
   dateSystem: FilterDateSystem = '1900',
+  pivotErrors: Readonly<Record<string, string>> = {},
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
@@ -323,24 +323,20 @@ export function buildCanvasSheetSnapshot(
     const sourceState = pivotSourceState(pivot, dataContent);
     const runtimeResult = cachedPivotResults[pivot.id];
     const retainedResult = getLastValidPivotResult(workbook, pivot.id);
+    // A snapshot is a projection boundary, never a refresh authority.  A
+    // source-stale result is still renderable for every policy as long as its
+    // layout/filter contract matches; the coordinator decides if/when it is
+    // replaced.
     const reusable = (result: PivotResultTree | undefined) => pivotResultMatchesRevision(workbook, pivot, result, formula)
-      || (pivot.refreshPolicy.mode === 'manual' && pivotResultMatchesLayoutAndFilter(workbook, pivot, result, formula));
+      || pivotResultMatchesLayoutAndFilter(workbook, pivot, result, formula);
     let cachedResult = reusable(runtimeResult)
       ? runtimeResult
       : reusable(retainedResult)
         ? retainedResult
         : undefined;
-    if (!cachedResult && pivot.source.kind !== 'data-source') {
-      try {
-        cachedResult = computePivotResult(workbook, pivot, formula);
-      } catch {
-        // The projection builder emits an explicit error state for malformed
-        // synchronous definitions; it must not replace a retained result.
-      }
-    }
     if (cachedResult) pivotResults[pivot.id] = cachedResult;
     try {
-      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula });
+      pivotProjections[pivot.id] = buildPivotGridProjection(workbook, pivot, cachedResult, { sourceState, formula, refreshError: pivotErrors[pivot.id] });
       const retained = getLastValidPivotResult(workbook, pivot.id);
       if (!pivotResults[pivot.id] && reusable(retained)) pivotResults[pivot.id] = retained;
     } catch {

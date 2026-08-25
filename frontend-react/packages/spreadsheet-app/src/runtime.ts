@@ -44,6 +44,7 @@ export interface RuntimeHandlers {
   onAccessRole?: (role: WorkbookAclRole | null) => void;
   onPeersChange?: (peers: import('./types').PeerCursor[]) => void;
   onWorkspacePersisted?: () => void;
+  onDataSourceContentChanged?: (sourceId: string) => void;
 }
 
 export interface SpreadsheetRuntime {
@@ -56,11 +57,15 @@ export interface SpreadsheetRuntime {
   remoteConnected: boolean;
   remoteRevision: number;
   pendingMutations: MutationInfo[];
+  /** Mutation facts are drained by the refresh coordinator after each apply. */
+  pendingPivotMutations: MutationInfo[];
+  drainPivotMutations: () => MutationInfo[];
   detachers: Array<() => void>;
   handlers: RuntimeHandlers;
   ownOperationIds: Set<string>;
   nextClientSequence: number;
   pivotResults: Record<string, import('@react-sheets/core-model').PivotResultTree>;
+  pivotErrors: Record<string, string>;
   collab: CollabSocketClient | null;
   collabDispose: (() => void) | null;
   collaboration: CollaborationSession | null;
@@ -142,11 +147,18 @@ export function createSpreadsheetRuntime(options: {
     remoteConnected: false,
     remoteRevision: 0,
     pendingMutations: [],
+    pendingPivotMutations: [],
+    drainPivotMutations: () => {
+      const pending = runtime.pendingPivotMutations;
+      runtime.pendingPivotMutations = [];
+      return pending;
+    },
     detachers: [],
     handlers: {},
     ownOperationIds: new Set(),
     nextClientSequence: 0,
     pivotResults: {},
+    pivotErrors: {},
     collab: null,
     collabDispose: null,
     collaboration: null,
@@ -417,14 +429,11 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         assertNoSpillChildWrite(runtime.model, mutation);
       }
 
-      const changedSheet = runtime.model.getSheets().find((sheet) => sheet.id === mutation.sheetId);
+      runtime.pendingPivotMutations.push(structuredClone(mutation));
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
         || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore') {
         initializeDataContent(runtime);
-      }
-      for (const pivot of changedSheet?.pivots ?? []) {
-        delete runtime.pivotResults[pivot.id];
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
         if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
@@ -475,6 +484,10 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(
     runtime.commands.onHistoryReplay((source, entry) => {
       if (runtime.disposed) return;
+      // Undo/redo has no command-listener completion callback. Publish the
+      // replayed mutation facts through the same session coordinator boundary
+      // used by local and remote command application.
+      runtime.handlers.onMutationsApplied?.();
       if (!runtime.collaboration || entry.undo.length === 0) return;
       const operation = source === 'undo'
         ? runtime.collaboration.enqueueCompensatingMutations(
@@ -495,6 +508,7 @@ function detachCoreListeners(runtime: SpreadsheetRuntime): void {
   for (const detach of runtime.detachers) detach();
   runtime.detachers = [];
   runtime.pendingMutations = [];
+  runtime.pendingPivotMutations = [];
 }
 
 function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: WorkspaceRecord | null): void {
@@ -612,7 +626,10 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
       },
     });
     runtime.dataContentDetachers.push(query.subscribe(() => {
-      if (!runtime.disposed) runtime.handlers.onMutationsApplied?.();
+      if (!runtime.disposed) {
+        runtime.handlers.onDataSourceContentChanged?.(manifest.id);
+        runtime.handlers.onMutationsApplied?.();
+      }
     }));
     runtime.dataContent.set(manifest.id, query);
   }

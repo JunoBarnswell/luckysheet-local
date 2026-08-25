@@ -182,6 +182,50 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 2);
   });
 
+  it('keeps manual and on-open results stale until the explicit refresh command', () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-manual-policy';
+    pivot.refreshPolicy = { mode: 'manual', preserveFormatting: true, refreshOnLoad: false };
+    app.addPivot(pivot);
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 100 } });
+    const stale = app.getUiSnapshot().selectedSheet;
+    assert.equal(stale.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+    assert.equal(stale.pivotProjections[pivot.id]?.refresh.status, 'stale');
+
+    app.refreshPivot(pivot.id);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 120);
+
+    const onOpen = structuredClone(pivot);
+    onOpen.id = 'pivot-on-open-policy';
+    onOpen.target = { sheetId, anchor: { row: 12, column: 0 } };
+    onOpen.refreshPolicy = { mode: 'on-open', preserveFormatting: true, refreshOnLoad: true };
+    app.addPivot(onOpen);
+    app.runCommand('sheet.cell.set', { sheetId, row: 2, column: 1, value: { value: 200 } });
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[onOpen.id]?.grandTotal?.values[0], 120);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotProjections[onOpen.id]?.refresh.status, 'stale');
+  });
+
+  it('refreshes only intersecting on-change sources and supports refresh all explicitly', () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-on-change-policy';
+    app.addPivot(pivot);
+    const other = structuredClone(pivot);
+    other.id = 'pivot-manual-peer';
+    other.target = { sheetId, anchor: { row: 12, column: 0 } };
+    other.refreshPolicy = { mode: 'manual', preserveFormatting: true, refreshOnLoad: false };
+    app.addPivot(other);
+    app.runCommand('sheet.cell.set', { sheetId, row: 10, column: 1, value: { value: 999 } });
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 30);
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 1, value: { value: 40 } });
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[pivot.id]?.grandTotal?.values[0], 60);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[other.id]?.grandTotal?.values[0], 30);
+    app.runCommand('sheet.cell.set', { sheetId, row: 2, column: 1, value: { value: 50 } });
+    app.refreshAllPivots();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivotResults[other.id]?.grandTotal?.values[0], 90);
+  });
+
   it('updates row and column grand-total state as one undoable layout mutation', async () => {
     const app = new WorkbookSession();
     const { sheetId, pivot } = seed(app);

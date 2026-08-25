@@ -326,7 +326,7 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
     ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
   };
   assertPivotDefinition(context.workbook, next);
-  const projection = buildPivotGridProjection(context.workbook, next);
+  const projection = buildPivotGridProjection(context.workbook, next, undefined, { refreshAuthorized: true });
   if (projection.collision.status === 'collision') {
     throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
   }
@@ -586,7 +586,7 @@ function planPivotCreate(workbook: WorkbookModel, params: PivotCreateParams): Pi
   const canonical = structuredClone(normalizePivotDefinition(preflight, candidate));
   if (canonical.fieldCatalog.fields.length === 0) throw new Error('PivotTable source does not contain usable fields');
   assertPivotDefinition(preflight, canonical);
-  const projection = buildPivotGridProjection(preflight, canonical);
+  const projection = buildPivotGridProjection(preflight, canonical, undefined, { refreshAuthorized: true });
   if (projection.collision.status === 'collision') {
     throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
   }
@@ -602,7 +602,7 @@ function applyPivotAdd(context: CommandContext, params: PivotModel): void {
   const definition = normalizePivotDefinition(context.workbook, params);
   const canonical: PivotModel = structuredClone(definition);
   assertPivotDefinition(context.workbook, canonical);
-  const projection = buildPivotGridProjection(context.workbook, canonical);
+  const projection = buildPivotGridProjection(context.workbook, canonical, undefined, { refreshAuthorized: true });
   if (projection.collision.status === 'collision') {
     const details = projection.collision.conflicts.map((conflict) => `${conflict.reason}${conflict.participantId ? `:${conflict.participantId}` : ''}@${conflict.range.startRow}:${conflict.range.startColumn}-${conflict.range.endRow}:${conflict.range.endColumn}`).join('; ');
     throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}${details ? ` (${details})` : ''}`);

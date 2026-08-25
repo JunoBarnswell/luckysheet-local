@@ -112,6 +112,15 @@ export interface PivotProjectionOptions {
   sourceState?: PivotProjectionSourceState;
   /** The session's canonical FormulaEngine; required for live spill values. */
   formula?: FormulaEngine;
+  /**
+   * Projection is read-only by default.  Only the refresh coordinator or an
+   * explicit structural command may authorize a synchronous calculation.
+   * Keeping this opt-in prevents rendering from silently turning on-change
+   * and manual policies into the same eager behaviour.
+   */
+  refreshAuthorized?: boolean;
+  /** Explicit refresh failure retained alongside the last-valid projection. */
+  refreshError?: string;
 }
 
 interface LastValidPivotProjection {
@@ -2138,7 +2147,7 @@ function buildPivotGridProjectionCandidate(
       // intentional sync boundary error into a red error projection.
       loading = true;
     }
-  } else if (!tree) {
+  } else if (!tree && options.refreshAuthorized === true) {
     try {
       tree = computePivotResult(workbook, pivot, options.formula);
     } catch (cause) {
@@ -2295,11 +2304,10 @@ export function buildPivotGridProjection(
   const blockResultReady = pivot.source.kind === 'data-source'
     && options.sourceState?.availability === 'ready'
     && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula);
-  const staleManualResult = pivot.refreshPolicy.mode === 'manual'
-    && pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula)
+  const staleResult = pivotResultMatchesLayoutAndFilter(workbook, pivot, cachedResult, options.formula)
     && cachedResult.sourceRevision !== revision.sourceRevision;
-  let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult, options.formula) || staleManualResult || blockResultReady ? cachedResult : undefined;
-  if (!effectiveResult && pivot.source.kind !== 'data-source') {
+  let effectiveResult = pivotResultMatchesRevision(workbook, pivot, cachedResult, options.formula) || staleResult || blockResultReady ? cachedResult : undefined;
+  if (!effectiveResult && pivot.source.kind !== 'data-source' && options.refreshAuthorized === true) {
     try {
       effectiveResult = computePivotResult(workbook, pivot, options.formula);
     } catch {
@@ -2311,7 +2319,11 @@ export function buildPivotGridProjection(
   const last = cache?.get(pivot.id);
   const candidateTree = effectiveResult;
 
-  if (staleManualResult && candidate.collision.status === 'clear') {
+  if (options.refreshError && last && candidate.collision.status === 'clear') {
+    return projectionWithStatus(workbook, pivot, last, candidate.collision, 'error', options.refreshError, options.formula);
+  }
+
+  if (staleResult && !blockResultReady && candidate.collision.status === 'clear') {
     candidate.refresh = refreshState(workbook, pivot, candidate.collision, 'stale', undefined, options.formula);
     return candidate;
   }

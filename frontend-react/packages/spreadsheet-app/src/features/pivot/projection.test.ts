@@ -5,7 +5,7 @@ import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
   aggregatePivotValues,
   buildPivotGroupedFilterMembers,
-  buildPivotGridProjection,
+  buildPivotGridProjection as buildPivotGridProjectionCore,
   canonicalPivotMembers,
   computePivotResult,
   computePivotResultFromBlockSource,
@@ -20,12 +20,35 @@ import { patchPivotValueField } from './panel-state';
 import { buildPivotSlicerDrawing } from '../pivot-controls/helpers';
 import { createSpillEnvironment } from '../../formula-spill-sync';
 
+/** Existing projection tests model an explicit calculation request. */
+function buildPivotGridProjection(
+  workbook: WorkbookModel,
+  pivot: PivotModel,
+  cachedResult?: import('@react-sheets/core-model').PivotResultTree,
+  options: Parameters<typeof buildPivotGridProjectionCore>[3] = {},
+) {
+  return buildPivotGridProjectionCore(workbook, pivot, cachedResult, { refreshAuthorized: true, ...options });
+}
+
 function workbookWithData(): WorkbookModel {
   const workbook = new WorkbookModel('pivot-projection', 'Pivot Projection');
   const sheet = workbook.getSheet('sheet-1');
   [['Region', 'Amount'], ['East', 10], ['West', 20], ['East', 5]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
   return workbook;
 }
+
+it('does not calculate a Pivot from a read-only projection request', () => {
+  const workbook = workbookWithData();
+  const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-no-authority', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+  assert.ok(pivot);
+  const projection = buildPivotGridProjectionCore(workbook, pivot);
+  assert.equal(projection.refresh.status, 'refreshing');
+  assert.equal(projection.cells.some((cell) => cell.kind === 'loading'), true);
+  assert.equal(projection.cells.some((cell) => cell.kind === 'value'), false);
+  const authorized = buildPivotGridProjectionCore(workbook, pivot, undefined, { refreshAuthorized: true });
+  assert.equal(authorized.refresh.status, 'ready');
+  assert.equal(authorized.cells.some((cell) => cell.kind === 'value'), true);
+});
 
 it('keeps repeated source fields independent through Values placement identities', () => {
   const workbook = workbookWithData();
