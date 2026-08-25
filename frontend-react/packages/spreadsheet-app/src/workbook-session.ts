@@ -28,6 +28,8 @@ import type {
   PivotDefinition,
   RangeRef,
   ShapeDrawingPayload,
+  TextBoxDrawingPayload,
+  TextBoxTextFrame,
   SheetTableModel,
   SheetKind,
   SheetSnapshot,
@@ -39,6 +41,7 @@ import type {
   WorkbookSnapshot,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import { createDefaultTextBoxTextFrame } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
@@ -262,6 +265,8 @@ export interface UiSnapshot extends DesignerState {
   selectedFloatingId: string | null;
   selectedDrawingIds: readonly string[];
   drawingSelectionMode: boolean;
+  textBoxPlacement: boolean;
+  textBoxEdit: { sheetId: string; drawingId: string; draftText: string } | null;
   activeContext: ActiveContext;
   peers: PeerCursor[];
   collabStatus: 'connecting' | 'open' | 'closed';
@@ -401,6 +406,8 @@ export class WorkbookSession {
     return this.selectedDrawingIds[0] ?? null;
   }
   private drawingSelectionMode = false;
+  private textBoxPlacement = false;
+  private textBoxEdit: { sheetId: string; drawingId: string; draftText: string } | null = null;
   private activeContext: ActiveContext = { kind: 'none' };
   private peers: PeerCursor[] = [];
   private collabStatus: 'connecting' | 'open' | 'closed' = 'closed';
@@ -488,6 +495,8 @@ export class WorkbookSession {
     this.selectionService.resetForSheet(this.activeSheetId);
     this.editSession.cancel();
     this.formulaDraft = '';
+    this.textBoxPlacement = false;
+    this.textBoxEdit = null;
   }
 
   /**
@@ -505,6 +514,11 @@ export class WorkbookSession {
 
     const previousContext = this.activeContext;
     const activeSelection = this.runtime.drawing.getSelection(this.activeSheetId);
+    if (this.textBoxEdit) {
+      const editSheet = sheets.find((sheet) => sheet.id === this.textBoxEdit?.sheetId);
+      const editDrawing = editSheet?.drawings.find((drawing) => drawing.id === this.textBoxEdit?.drawingId);
+      if (!editDrawing || editDrawing.kind !== 'textbox') this.textBoxEdit = null;
+    }
     let contextRemoved = false;
     let nextContext = this.activeContext;
     const context = this.activeContext;
@@ -525,7 +539,7 @@ export class WorkbookSession {
       this.inputMode = 'grid';
       this.focus = { mode: 'grid', target: 'grid' };
     }
-    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'barcode' || this.panels.active === 'shape' || this.panels.active === 'picture')) {
+    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'barcode' || this.panels.active === 'shape' || this.panels.active === 'picture' || this.panels.active === 'textbox')) {
       this.panels = { ...this.panels, open: false };
     }
     if (contextRemoved && this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
@@ -844,6 +858,8 @@ export class WorkbookSession {
       selectedFloatingId: this.selectedFloatingId,
       selectedDrawingIds: [...this.selectedDrawingIds],
       drawingSelectionMode: this.drawingSelectionMode,
+      textBoxPlacement: this.textBoxPlacement,
+      textBoxEdit: this.textBoxEdit ? { ...this.textBoxEdit } : null,
       activeContext: this.activeContext,
       peers: this.peers,
       collabStatus: this.collabStatus,
@@ -2308,6 +2324,8 @@ export class WorkbookSession {
     this.selectionService.resetForSheet(sheetId);
     this.editSession.cancel();
     this.formulaDraft = '';
+    this.textBoxPlacement = false;
+    this.textBoxEdit = null;
     if (sheet.kind === 'table-sheet' && sheet.tableSheet) {
       this.activeContext = { kind: 'table-sheet', sheetId: sheet.id, viewId: sheet.tableSheet.viewId };
       this.panels = { ...this.panels, active: 'data', open: true };
@@ -2481,11 +2499,79 @@ export class WorkbookSession {
   }
 
   insertTextBox(): void {
+    this.textBoxPlacement = true;
+    this.textBoxEdit = null;
+    this.inputMode = 'grid';
+    this.focus = { mode: 'grid', target: 'grid' };
+    this.notify('在工作表上单击或拖动以放置文本框，按 Esc 取消');
+    this.emit();
+  }
+
+  cancelTextBoxPlacement(): void {
+    if (!this.textBoxPlacement) return;
+    this.textBoxPlacement = false;
+    this.emit();
+  }
+
+  placeTextBox(transform: DrawingTransform): void {
+    if (!this.textBoxPlacement) throw new Error('Text box placement is not active');
+    if (!Number.isFinite(transform.x) || !Number.isFinite(transform.y) || transform.width < 40 || transform.height < 30) {
+      throw new Error('Text box placement bounds are invalid');
+    }
     const payloadId = nextId('textbox');
-    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'textbox', anchor: { kind: 'absolute' }, transform: { x: 96, y: 96, width: 220, height: 72, rotation: 0 }, zIndex: 0, payloadId };
-    this.runCommand('drawing.add.textbox', { sheetId: this.activeSheetId, drawing, payload: { kind: 'textbox', text: '文本框', textColor: '#1f2937', fontSize: 14 } });
+    const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'textbox', anchor: { kind: 'absolute' }, transform: { ...transform, rotation: transform.rotation ?? 0 }, zIndex: 0, payloadId };
+    const payload: TextBoxDrawingPayload = { kind: 'textbox', text: '', textFrame: createDefaultTextBoxTextFrame() };
+    this.runCommand('drawing.add.textbox', { sheetId: this.activeSheetId, drawing, payload });
+    this.textBoxPlacement = false;
     this.setDrawingSelection([drawing.id]);
+    this.beginTextBoxEdit(drawing.id);
     this.notify('文本框已插入');
+    this.refresh();
+  }
+
+  beginTextBoxEdit(drawingId: string, initialText?: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
+    if (!drawing || drawing.kind !== 'textbox') throw new Error(`Unknown textbox: ${drawingId}`);
+    const payload = sheet.drawingPayloads.get(drawing.payloadId);
+    if (!payload || payload.kind !== 'textbox') throw new Error(`Missing textbox payload: ${drawing.payloadId}`);
+    this.textBoxEdit = { sheetId: this.activeSheetId, drawingId, draftText: initialText ?? payload.text };
+    this.setDrawingSelection([drawingId]);
+    this.inputMode = 'grid';
+    this.focus = { mode: 'grid', target: 'grid' };
+    this.emit();
+  }
+
+  setTextBoxDraft(value: string): void {
+    if (!this.textBoxEdit) return;
+    this.textBoxEdit = { ...this.textBoxEdit, draftText: value };
+    this.emit();
+  }
+
+  commitTextBoxEdit(): void {
+    const edit = this.textBoxEdit;
+    if (!edit) return;
+    const sheet = this.runtime.model.getSheet(edit.sheetId);
+    const drawing = sheet.drawings.find((entry) => entry.id === edit.drawingId);
+    const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+    if (!drawing || drawing.kind !== 'textbox' || !payload || payload.kind !== 'textbox') throw new Error(`Textbox edit target disappeared: ${edit.drawingId}`);
+    this.runCommand('drawing.textbox.update', { sheetId: edit.sheetId, drawingId: edit.drawingId, payload: { ...structuredClone(payload), text: edit.draftText } });
+    this.textBoxEdit = null;
+    this.refresh();
+  }
+
+  cancelTextBoxEdit(): void {
+    if (!this.textBoxEdit) return;
+    this.textBoxEdit = null;
+    this.emit();
+  }
+
+  updateTextBoxFrame(drawingId: string, textFrame: TextBoxTextFrame): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const drawing = sheet.drawings.find((entry) => entry.id === drawingId);
+    const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+    if (!drawing || drawing.kind !== 'textbox' || !payload || payload.kind !== 'textbox') throw new Error(`Unknown textbox: ${drawingId}`);
+    this.runCommand('drawing.textbox.update', { sheetId: this.activeSheetId, drawingId, payload: { ...structuredClone(payload), textFrame: structuredClone(textFrame) } });
     this.refresh();
   }
 
@@ -3545,6 +3631,7 @@ export class WorkbookSession {
       this.activeContext = { kind: 'none' };
       if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
       if (this.panels.active === 'formControl') this.panels = { ...this.panels, open: false };
+      if (this.panels.active === 'textbox') this.panels = { ...this.panels, open: false };
       if (this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
       this.emit();
       return;
@@ -3559,6 +3646,8 @@ export class WorkbookSession {
       this.ribbonTab = 'pictureFormat';
     } else if (selectedDrawing?.kind === 'form-control') {
       this.panels = { ...this.panels, active: 'formControl', open: true };
+    } else if (selectedDrawing?.kind === 'textbox') {
+      this.panels = { ...this.panels, active: 'textbox', open: true };
     }
     this.emit();
   }

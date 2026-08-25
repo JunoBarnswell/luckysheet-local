@@ -188,7 +188,7 @@ describe('drawing feature', () => {
     const payloads: Array<{ kind: DrawingObject['kind']; payload: DrawingPayload }> = [
       { kind: 'image', payload: { kind: 'image', src: 'data:image/png;base64,AA==', altText: 'Image' } },
       { kind: 'shape', payload: { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' } },
-      { kind: 'textbox', payload: { kind: 'textbox', text: 'Text' } },
+      { kind: 'textbox', payload: { kind: 'textbox', text: 'Text', textFrame: { fontFamily: 'Inter', fontSize: 14, bold: false, italic: false, underline: false, textColor: '#1f2937', horizontalAlignment: 'left', verticalAlignment: 'top', direction: 'horizontal', margin: { top: 8, right: 8, bottom: 8, left: 8 }, wrap: true, autofit: 'none' } } },
       { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [], elements: { hiddenData: 'show' } } },
       { kind: 'data-chart', payload: { kind: 'data-chart', source: { kind: 'table', tableId: 'table-kind' }, plotType: 'column', bindings: { values: [{ area: 'values', fieldId: 'value', aggregate: 'sum' }], category: [], details: [], color: [], size: [], tooltip: [], filter: [] }, inspector: { legendPosition: 'bottom', showDataLabels: false, showHiddenData: true, chartArea: { fill: '#fff', border: '#000', borderWidth: 1 }, plotArea: { fill: '#fff' }, axis: { showGridlines: true } } } },
       { kind: 'camera', payload: { kind: 'camera', sourceRange: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, refreshPolicy: 'live' } },
@@ -253,6 +253,31 @@ describe('drawing feature', () => {
     assert.equal(remotePayload.kind, 'image');
     assert.equal(remotePayload.altText, 'Accessible image');
     assert.deepEqual(remotePayload.crop, { left: 0.1, top: 0.2, right: 0.1, bottom: 0 });
+  });
+
+  it('uses the canonical text-frame update command and rejects the removed flat payload', () => {
+    const workbook = new WorkbookModel('drawing-textbox-test', 'Drawing Text Box');
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    const sheetId = 'sheet-1';
+    const frame = { fontFamily: 'Inter', fontSize: 14, bold: false, italic: false, underline: false, textColor: '#1f2937', horizontalAlignment: 'left' as const, verticalAlignment: 'top' as const, direction: 'horizontal' as const, margin: { top: 8, right: 8, bottom: 8, left: 8 }, wrap: true, autofit: 'none' as const };
+    runtime.execute('drawing.add.textbox', {
+      sheetId,
+      drawing: { id: 'draw-textbox', sheetId, kind: 'textbox', payloadId: 'textbox-payload', anchor: { kind: 'absolute' }, transform: { x: 10, y: 10, width: 180, height: 60, rotation: 0 }, zIndex: 0 },
+      payload: { kind: 'textbox', text: 'Before', textFrame: frame },
+    });
+    runtime.execute('drawing.textbox.update', { sheetId, drawingId: 'draw-textbox', payload: { kind: 'textbox', text: 'After', textFrame: { ...frame, horizontalAlignment: 'center', bold: true } } });
+    const payload = workbook.getSheet(sheetId).drawingPayloads.get('textbox-payload');
+    assert.equal(payload?.kind, 'textbox');
+    assert.equal(payload?.kind === 'textbox' ? payload.text : '', 'After');
+    assert.equal(payload?.kind === 'textbox' ? payload.textFrame.horizontalAlignment : '', 'center');
+    runtime.undo();
+    assert.equal((workbook.getSheet(sheetId).drawingPayloads.get('textbox-payload') as { text?: string } | undefined)?.text, 'Before');
+    assert.throws(() => runtime.execute('drawing.add.textbox', {
+      sheetId,
+      drawing: { id: 'draw-invalid-textbox', sheetId, kind: 'textbox', payloadId: 'invalid-textbox', anchor: { kind: 'absolute' }, transform: { x: 10, y: 10, width: 180, height: 60, rotation: 0 }, zIndex: 0 },
+      payload: { kind: 'textbox', text: 'legacy' },
+    }));
   });
 
   it('supports typed picture effects with fail-close validation and undo', () => {
