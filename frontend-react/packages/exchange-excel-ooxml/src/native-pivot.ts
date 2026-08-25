@@ -3,10 +3,13 @@ import type {
   CellData,
   PivotAggregateFunction,
   PivotDefinition,
+  PivotDateFilterOperator,
+  PivotDynamicDateFilter,
   PivotErrorValue,
   PivotFieldDataType,
   PivotFieldPlacement,
   PivotGroup,
+  PivotLabelFilterOperator,
   PivotLayout,
   PivotModel,
   PivotNativeCacheFlags,
@@ -14,6 +17,7 @@ import type {
   PivotNativeFilterMetadata,
   PivotRefreshPolicy,
   PivotScalar,
+  PivotValueFilterOperator,
   PivotSlicerDrawingPayload,
   PivotSource,
   PivotValueField,
@@ -1222,14 +1226,21 @@ function buildNativePivotFilters(pivot: PivotDefinition, dataFields: NativePivot
       if (measure < 0) throw new Error(`Pivot top-items filter references missing value field ${filter.valueFieldId}`);
       return [{ field, type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', measureField: measure, value1: filter.count, top: filter.direction === 'top', attributes: { fld: String(field), type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', iMeasureFld: String(measure), val: String(filter.count), top: filter.direction === 'top' ? '1' : '0' } }];
     }
-    const measure = filter.valueFieldId === undefined ? undefined : dataFieldIndex(filter.valueFieldId);
-    const type = filter.valueFieldId === undefined
-      ? ({ equals: 'captionEqual', 'not-equals': 'captionNotEqual', contains: 'captionContains', 'greater-than': 'captionGreaterThan', 'greater-or-equal': 'captionGreaterThanOrEqual', 'less-than': 'captionLessThan', 'less-or-equal': 'captionLessThanOrEqual' } as const)[filter.operator]
-      : filter.operator === 'contains' ? undefined
-        : ({ equals: 'valueEqual', 'not-equals': 'valueNotEqual', 'greater-than': 'valueGreaterThan', 'greater-or-equal': 'valueGreaterThanOrEqual', 'less-than': 'valueLessThan', 'less-or-equal': 'valueLessThanOrEqual' } as const)[filter.operator];
+    if (filter.family === 'date' && filter.dynamic) {
+      const dynamicTypes: Record<string, string> = { today: 'dateToday', yesterday: 'dateYesterday', tomorrow: 'dateTomorrow', 'this-week': 'dateThisWeek', 'last-week': 'dateLastWeek', 'next-week': 'dateNextWeek', 'this-month': 'dateThisMonth', 'last-month': 'dateLastMonth', 'next-month': 'dateNextMonth', 'this-quarter': 'dateThisQuarter', 'last-quarter': 'dateLastQuarter', 'next-quarter': 'dateNextQuarter', 'this-year': 'dateThisYear', 'last-year': 'dateLastYear', 'next-year': 'dateNextYear', 'year-to-date': 'dateYearToDate' };
+      const type = dynamicTypes[filter.dynamic];
+      if (!type) throw new Error(`Pivot dynamic date filter ${filter.dynamic} cannot be represented in native OOXML`);
+      return [{ field, type, attributes: { fld: String(field), type }, ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) }];
+    }
+    const isValueFilter = filter.family === 'value';
+    const measure = isValueFilter && filter.valueFieldId !== undefined ? dataFieldIndex(filter.valueFieldId) : undefined;
+    const captionTypes: Record<string, string | undefined> = { equals: 'captionEqual', 'not-equals': 'captionNotEqual', 'begins-with': 'captionBeginsWith', 'not-begins-with': 'captionNotBeginsWith', 'ends-with': 'captionEndsWith', 'not-ends-with': 'captionNotEndsWith', contains: 'captionContains', 'not-contains': 'captionNotContains', between: 'captionBetween', 'not-between': 'captionNotBetween', 'greater-than': 'captionGreaterThan', 'greater-or-equal': 'captionGreaterThanOrEqual', 'less-than': 'captionLessThan', 'less-or-equal': 'captionLessThanOrEqual' };
+    const dateTypes: Record<string, string | undefined> = { equals: 'dateEqual', 'not-equals': 'dateNotEqual', before: 'dateOlderThan', after: 'dateNewerThan', between: 'dateBetween', 'not-between': 'dateNotBetween' };
+    const valueTypes: Record<string, string | undefined> = { equals: 'valueEqual', 'not-equals': 'valueNotEqual', 'greater-than': 'valueGreaterThan', 'greater-or-equal': 'valueGreaterThanOrEqual', 'less-than': 'valueLessThan', 'less-or-equal': 'valueLessThanOrEqual', between: 'valueBetween', 'not-between': 'valueNotBetween' };
+    const type = isValueFilter ? valueTypes[filter.operator] : filter.family === 'date' ? dateTypes[filter.operator] : captionTypes[filter.operator];
     if (!type) throw new Error(`Pivot filter operator ${filter.operator} cannot be represented in native OOXML`);
-    if (filter.valueFieldId !== undefined && (measure === undefined || measure < 0)) throw new Error(`Pivot value filter references missing value field ${filter.valueFieldId}`);
-    return [{ field, type, ...(measure === undefined ? {} : { measureField: measure }), ...(typeof filter.value === 'string' && filter.valueFieldId === undefined ? { stringValue1: filter.value } : { value1: filter.value }), ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }), attributes: { fld: String(field), type, ...(measure === undefined ? {} : { iMeasureFld: String(measure) }) } }];
+    if (isValueFilter && (filter.valueFieldId === undefined || measure === undefined || measure < 0)) throw new Error(`Pivot value filter references missing value field ${filter.valueFieldId ?? filter.fieldId}`);
+    return [{ field, type, ...(measure === undefined ? {} : { measureField: measure }), ...(typeof filter.value === 'string' && !isValueFilter ? { stringValue1: filter.value } : { value1: filter.value }), ...(filter.value2 === undefined ? {} : typeof filter.value2 === 'string' && !isValueFilter ? { stringValue2: filter.value2 } : { value2: filter.value2 }), ...(filter.family === 'date' && filter.wholeDay !== undefined ? { wholeDay: filter.wholeDay } : {}), attributes: { fld: String(field), type, ...(measure === undefined ? {} : { iMeasureFld: String(measure) }) } }];
   });
   const preserved = pivot.nativeMetadata?.preservedPivotFilters?.map((filter) => ({ field: filter.fieldIndex, type: filter.type, attributes: { ...filter.attributes } })) ?? [];
   return [...filters, ...preserved];
@@ -1436,23 +1447,42 @@ function mapNativePivotFilters(
     const measureFieldId = valueFieldId(filter.measureField);
     const value = filter.value1 ?? filter.stringValue1;
     const type = filter.type.toLowerCase();
-    const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false): void => {
+    const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false, upperValue: PivotScalar | undefined = filter.value2, dynamic: PivotDynamicDateFilter | undefined = undefined): void => {
       if (!targetFieldId || (withMeasure && !measureFieldId)) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
-      mapped.push({ kind: 'condition', family: withMeasure ? 'value' : type.startsWith('date') ? 'date' : 'label', fieldId: targetFieldId, ...(withMeasure && measureFieldId ? { valueFieldId: measureFieldId } : {}), operator, value: conditionValue, scope: 'field', ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
+      if (withMeasure) mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, ...(measureFieldId ? { valueFieldId: measureFieldId } : {}), operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope: 'field' });
+      else if (type.startsWith('date')) mapped.push({ kind: 'condition', family: 'date', fieldId: targetFieldId, operator: operator as PivotDateFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), ...(dynamic === undefined ? {} : { dynamic }), scope: 'field', ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
+      else mapped.push({ kind: 'condition', family: 'label', fieldId: targetFieldId, operator: operator as PivotLabelFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope: 'field' });
     };
     if (type === 'captionequal' || type === 'dateequal') condition('equals');
     else if (type === 'captionnotequal' || type === 'datenotequal') condition('not-equals');
     else if (type === 'captioncontains') condition('contains');
-    else if (type === 'captiongreaterthan' || type === 'datenewerthan') condition('greater-than');
-    else if (type === 'captiongreaterthanorequal' || type === 'datenewerthanorequal') condition('greater-or-equal');
-    else if (type === 'captionlessthan' || type === 'dateolderthan') condition('less-than');
-    else if (type === 'captionlessthanorequal' || type === 'dateolderthanorequal') condition('less-or-equal');
+    else if (type === 'captionnotcontains') condition('not-contains');
+    else if (type === 'captionbeginswith') condition('begins-with');
+    else if (type === 'captionnotbeginswith') condition('not-begins-with');
+    else if (type === 'captionendswith') condition('ends-with');
+    else if (type === 'captionnotendswith') condition('not-ends-with');
+    else if (type === 'captionbetween') condition('between');
+    else if (type === 'captionnotbetween') condition('not-between');
+    else if (type === 'captiongreaterthan') condition('greater-than');
+    else if (type === 'captiongreaterthanorequal') condition('greater-or-equal');
+    else if (type === 'captionlessthan') condition('less-than');
+    else if (type === 'captionlessthanorequal') condition('less-or-equal');
+    else if (type === 'datenewerthan') condition('after');
+    else if (type === 'dateolderthan') condition('before');
+    else if (type === 'datebetween') condition('between');
+    else if (type === 'datenotbetween') condition('not-between');
+    else if (type === 'datetoday' || type === 'dateyesterday' || type === 'datetomorrow' || type === 'datethisweek' || type === 'datelastweek' || type === 'datenextweek' || type === 'datethismonth' || type === 'datelastmonth' || type === 'datenextmonth' || type === 'datethisquarter' || type === 'datelastquarter' || type === 'datenextquarter' || type === 'datethisyear' || type === 'datelastyear' || type === 'datenextyear' || type === 'dateyeartodate') {
+      const dynamic: Record<string, PivotDynamicDateFilter> = { datetoday: 'today', dateyesterday: 'yesterday', datetomorrow: 'tomorrow', datethisweek: 'this-week', datelastweek: 'last-week', datenextweek: 'next-week', datethismonth: 'this-month', datelastmonth: 'last-month', datenextmonth: 'next-month', datethisquarter: 'this-quarter', datelastquarter: 'last-quarter', datenextquarter: 'next-quarter', datethisyear: 'this-year', datelastyear: 'last-year', datenextyear: 'next-year', dateyeartodate: 'year-to-date' };
+      condition('between', null, false, undefined, dynamic[type]);
+    }
     else if (type === 'valueequal') condition('equals', value ?? null, true);
     else if (type === 'valuenotequal') condition('not-equals', value ?? null, true);
     else if (type === 'valuegreaterthan') condition('greater-than', value ?? null, true);
     else if (type === 'valuegreaterthanorequal') condition('greater-or-equal', value ?? null, true);
     else if (type === 'valuelessthan') condition('less-than', value ?? null, true);
     else if (type === 'valuelessthanorequal') condition('less-or-equal', value ?? null, true);
+    else if (type === 'valuebetween') condition('between', value ?? null, true);
+    else if (type === 'valuenotbetween') condition('not-between', value ?? null, true);
     else if (type === 'valuetop10' || type === 'top10' || type === 'valuebottom10' || type === 'bottom10') {
       const count = typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
       if (!targetFieldId || !measureFieldId || !count || count < 1 || filter.percent) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });

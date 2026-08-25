@@ -984,6 +984,82 @@ function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { 
   return filter.mode === 'include' ? included : !included;
 }
 
+function dynamicDateBounds(kind: NonNullable<Extract<PivotFilter, { kind: 'condition'; family: 'date' }>['dynamic']>, now = Date.now()): [number, number] {
+  const today = new Date(Math.floor(now / 86_400_000) * 86_400_000);
+  const startOfWeek = new Date(today);
+  startOfWeek.setUTCDate(today.getUTCDate() - ((today.getUTCDay() + 6) % 7));
+  const startOfMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const startOfQuarter = new Date(Date.UTC(today.getUTCFullYear(), Math.floor(today.getUTCMonth() / 3) * 3, 1));
+  const startOfYear = new Date(Date.UTC(today.getUTCFullYear(), 0, 1));
+  const shift = (base: Date, months: number, days = 0): [number, number] => {
+    const start = new Date(base);
+    start.setUTCMonth(start.getUTCMonth() + months);
+    start.setUTCDate(start.getUTCDate() + days);
+    const end = new Date(start);
+    if (months === 0) end.setUTCDate(end.getUTCDate() + 1);
+    else end.setUTCMonth(end.getUTCMonth() + months);
+    return [start.getTime(), end.getTime()];
+  };
+  if (kind === 'today') return [today.getTime(), today.getTime() + 86_400_000];
+  if (kind === 'yesterday') return shift(today, 0, -1);
+  if (kind === 'tomorrow') return shift(today, 0, 1);
+  if (kind === 'this-week') return [startOfWeek.getTime(), startOfWeek.getTime() + 7 * 86_400_000];
+  if (kind === 'last-week') return [startOfWeek.getTime() - 7 * 86_400_000, startOfWeek.getTime()];
+  if (kind === 'next-week') return [startOfWeek.getTime() + 7 * 86_400_000, startOfWeek.getTime() + 14 * 86_400_000];
+  if (kind === 'this-month') return [startOfMonth.getTime(), new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)).getTime()];
+  if (kind === 'last-month') return [new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1)).getTime(), startOfMonth.getTime()];
+  if (kind === 'next-month') return [new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)).getTime(), new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 2, 1)).getTime()];
+  if (kind === 'this-quarter') return [startOfQuarter.getTime(), new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() + 3, 1)).getTime()];
+  if (kind === 'last-quarter') return [new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() - 3, 1)).getTime(), startOfQuarter.getTime()];
+  if (kind === 'next-quarter') return [new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() + 3, 1)).getTime(), new Date(Date.UTC(today.getUTCFullYear(), startOfQuarter.getUTCMonth() + 6, 1)).getTime()];
+  if (kind === 'this-year') return [startOfYear.getTime(), new Date(Date.UTC(today.getUTCFullYear() + 1, 0, 1)).getTime()];
+  if (kind === 'last-year') return [new Date(Date.UTC(today.getUTCFullYear() - 1, 0, 1)).getTime(), startOfYear.getTime()];
+  if (kind === 'next-year') return [new Date(Date.UTC(today.getUTCFullYear() + 1, 0, 1)).getTime(), new Date(Date.UTC(today.getUTCFullYear() + 2, 0, 1)).getTime()];
+  return [startOfYear.getTime(), today.getTime() + 86_400_000];
+}
+
+function dateFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'date' }>): boolean {
+  const instant = pivotTimelineInstant(value);
+  if (instant === undefined) return false;
+  if (filter.dynamic) {
+    const [start, end] = dynamicDateBounds(filter.dynamic);
+    return instant >= start && instant < end;
+  }
+  const first = pivotTimelineInstant(filter.value);
+  const second = filter.value2 === undefined ? undefined : pivotTimelineInstant(filter.value2);
+  if (first === undefined || ((filter.operator === 'between' || filter.operator === 'not-between') && second === undefined)) return false;
+  const left = filter.wholeDay ? Math.floor(instant / 86_400_000) : instant;
+  const right = filter.wholeDay ? Math.floor(first / 86_400_000) : first;
+  if (filter.operator === 'equals') return left === right;
+  if (filter.operator === 'not-equals') return left !== right;
+  if (filter.operator === 'before') return left < right;
+  if (filter.operator === 'after') return left > right;
+  const upper = filter.wholeDay ? Math.floor(second! / 86_400_000) : second!;
+  const inside = left >= Math.min(right, upper) && left <= Math.max(right, upper);
+  return filter.operator === 'between' ? inside : !inside;
+}
+
+function labelFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'label' }>, collator: Intl.Collator): boolean {
+  const text = String(value ?? '');
+  const operand = String(filter.value ?? '');
+  if (filter.operator === 'equals') return text === operand;
+  if (filter.operator === 'not-equals') return text !== operand;
+  if (filter.operator === 'begins-with') return text.startsWith(operand);
+  if (filter.operator === 'not-begins-with') return !text.startsWith(operand);
+  if (filter.operator === 'ends-with') return text.endsWith(operand);
+  if (filter.operator === 'not-ends-with') return !text.endsWith(operand);
+  if (filter.operator === 'contains') return text.includes(operand);
+  if (filter.operator === 'not-contains') return !text.includes(operand);
+  const order = collator.compare(text, operand);
+  if (filter.operator === 'greater-than') return order > 0;
+  if (filter.operator === 'greater-or-equal') return order >= 0;
+  if (filter.operator === 'less-than') return order < 0;
+  if (filter.operator === 'less-or-equal') return order <= 0;
+  const upper = String(filter.value2 ?? '');
+  const inside = collator.compare(text, operand) >= 0 && collator.compare(text, upper) <= 0;
+  return filter.operator === 'between' ? inside : !inside;
+}
+
 function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator): boolean {
   const fieldId = filter.fieldId;
   const value = filter.kind === 'condition' && filter.valueFieldId
@@ -991,18 +1067,21 @@ function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Colla
     : row.values[fieldId] ?? null;
   if (filter.kind === 'top-items') return true;
   if (filter.kind === 'manual') return manualFilterMatches(value, filter);
+  if (filter.family === 'date') return dateFilterMatches(value, filter);
+  if (filter.family === 'label') return labelFilterMatches(value, filter, collator);
   const leftNumber = toNumber(value);
   const rightNumber = toNumber(filter.value);
   const order = leftNumber != null && rightNumber != null ? leftNumber - rightNumber : compare(value, filter.value, undefined, collator);
   switch (filter.operator) {
     case 'equals': return same(value, filter.value);
     case 'not-equals': return !same(value, filter.value);
-    case 'contains': return String(value ?? '').includes(String(filter.value ?? ''));
     case 'greater-than': return order > 0;
     case 'greater-or-equal': return order >= 0;
     case 'less-than': return order < 0;
     case 'less-or-equal': return order <= 0;
-    default: return assertNever(filter.operator);
+    case 'between': return filter.value2 !== undefined && order >= 0 && (toNumber(value) != null && toNumber(filter.value2) != null ? toNumber(value)! <= toNumber(filter.value2)! : compare(value, filter.value2, undefined, collator) <= 0);
+    case 'not-between': return filter.value2 !== undefined && !(order >= 0 && (toNumber(value) != null && toNumber(filter.value2) != null ? toNumber(value)! <= toNumber(filter.value2)! : compare(value, filter.value2, undefined, collator) <= 0));
+    default: return false;
   }
 }
 

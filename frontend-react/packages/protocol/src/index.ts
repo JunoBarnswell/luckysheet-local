@@ -514,13 +514,23 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       if (!['all', 'include', 'exclude'].includes(String(filter.mode)) || !Array.isArray(filter.memberKeys)) throw new Error('Pivot manual filter is invalid');
       filter.memberKeys.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual filter member ${String(index)}`));
     } else if (filter.kind === 'condition') {
-      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'wholeDay'], 'Pivot condition filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'value2', 'dynamic', 'wholeDay'], 'Pivot condition filter');
       if (!['label', 'date', 'value'].includes(String(filter.family))) throw new Error('Pivot condition filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
       if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !fieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
-      if (!['equals', 'not-equals', 'contains', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'].includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid');
+      const labelOperators = ['equals', 'not-equals', 'begins-with', 'not-begins-with', 'ends-with', 'not-ends-with', 'contains', 'not-contains', 'between', 'not-between', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'];
+      const dateOperators = ['equals', 'not-equals', 'before', 'after', 'between', 'not-between'];
+      const valueOperators = ['equals', 'not-equals', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal', 'between', 'not-between'];
+      const operators = filter.family === 'label' ? labelOperators : filter.family === 'date' ? dateOperators : valueOperators;
+      if (!operators.includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid for its family');
+      if (filter.family !== 'value' && filter.valueFieldId !== undefined) throw new Error('Pivot condition valueFieldId is only valid for value filters');
       validatePivotScalar(filter.value, 'Pivot condition value');
-      if (filter.wholeDay !== undefined && typeof filter.wholeDay !== 'boolean') throw new Error('Pivot condition wholeDay is invalid');
+      if (filter.value2 !== undefined) validatePivotScalar(filter.value2, 'Pivot condition upper value');
+      const dynamicDates = ['today', 'yesterday', 'tomorrow', 'this-week', 'last-week', 'next-week', 'this-month', 'last-month', 'next-month', 'this-quarter', 'last-quarter', 'next-quarter', 'this-year', 'last-year', 'next-year', 'year-to-date'];
+      if (filter.dynamic !== undefined && (filter.family !== 'date' || !dynamicDates.includes(String(filter.dynamic)))) throw new Error('Pivot dynamic date filter is invalid');
+      if ((filter.operator === 'between' || filter.operator === 'not-between') && filter.value2 === undefined && filter.dynamic === undefined) throw new Error('Pivot range filter requires two bounds');
+      if (filter.family === 'date' && filter.dynamic !== undefined && !['equals', 'between'].includes(String(filter.operator))) throw new Error('Pivot dynamic date operator is invalid');
+      if (filter.wholeDay !== undefined && (filter.family !== 'date' || typeof filter.wholeDay !== 'boolean')) throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
       validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
       if (filter.family !== 'top-items') throw new Error('Pivot top-items filter family is invalid');

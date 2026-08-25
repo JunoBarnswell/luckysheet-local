@@ -221,6 +221,11 @@ export interface PivotFieldPlacement {
 /** The independent predicate family used to identify a Pivot filter slot. */
 export type PivotFilterFamily = 'manual' | 'label' | 'date' | 'value' | 'top-items';
 
+export type PivotLabelFilterOperator = 'equals' | 'not-equals' | 'begins-with' | 'not-begins-with' | 'ends-with' | 'not-ends-with' | 'contains' | 'not-contains' | 'between' | 'not-between' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
+export type PivotDateFilterOperator = 'equals' | 'not-equals' | 'before' | 'after' | 'between' | 'not-between';
+export type PivotValueFilterOperator = 'equals' | 'not-equals' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal' | 'between' | 'not-between';
+export type PivotDynamicDateFilter = 'today' | 'yesterday' | 'tomorrow' | 'this-week' | 'last-week' | 'next-week' | 'this-month' | 'last-month' | 'next-month' | 'this-quarter' | 'last-quarter' | 'next-quarter' | 'this-year' | 'last-year' | 'next-year' | 'year-to-date';
+
 /** Persisted document-owned text collation. It must never be inferred from a host locale. */
 export interface PivotCollation {
   locale: string;
@@ -246,19 +251,49 @@ export type PivotManualFilter = {
   memberKeys: PivotMemberKey[];
 };
 
+export interface PivotLabelFilter {
+  kind: 'condition';
+  family: 'label';
+  fieldId: string;
+  valueFieldId?: string;
+  scope?: 'report' | 'field';
+  operator: PivotLabelFilterOperator;
+  value: PivotScalar;
+  value2?: PivotScalar;
+  dynamic?: PivotDynamicDateFilter;
+}
+
+export interface PivotDateFilter {
+  kind: 'condition';
+  family: 'date';
+  fieldId: string;
+  valueFieldId?: string;
+  scope?: 'report' | 'field';
+  operator: PivotDateFilterOperator;
+  value: PivotScalar;
+  value2?: PivotScalar;
+  dynamic?: PivotDynamicDateFilter;
+  wholeDay?: boolean;
+}
+
+export interface PivotValueFilter {
+  kind: 'condition';
+  family: 'value';
+  fieldId: string;
+  /** Optional measure identity for native value filters. */
+  valueFieldId?: string;
+  scope?: 'report' | 'field';
+  operator: PivotValueFilterOperator;
+  value: PivotScalar;
+  value2?: PivotScalar;
+  dynamic?: PivotDynamicDateFilter;
+}
+
 export type PivotFilter =
   | PivotManualFilter
-  | {
-    kind: 'condition';
-    family: 'label' | 'date' | 'value';
-    fieldId: string;
-    /** Optional measure identity for native value filters. */
-    valueFieldId?: string;
-    scope?: 'report' | 'field';
-    operator: 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'greater-or-equal' | 'less-than' | 'less-or-equal';
-    value: PivotScalar;
-    wholeDay?: boolean;
-  }
+  | PivotLabelFilter
+  | PivotDateFilter
+  | PivotValueFilter
   | {
     kind: 'top-items';
     family: 'top-items';
