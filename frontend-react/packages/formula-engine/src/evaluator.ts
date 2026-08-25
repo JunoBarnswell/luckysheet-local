@@ -1,4 +1,4 @@
-import type { BinaryOperator, CellAddress, FormulaAst } from './ast';
+import type { BinaryOperator, CellAddress, FormulaAst, SpillReferenceNode } from './ast';
 import { formatFormula } from './ast-format';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
@@ -12,6 +12,10 @@ export interface FormulaEvaluationContext {
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;
+  /** Resolve a dynamic-array anchor to its current spill range. */
+  readSpillRange?(address: CellAddress): RangeDependency | undefined;
+  /** Read a projected value from a dynamic-array spill cell. */
+  readSpillValue?(address: CellAddress): FormulaValue | undefined;
   /** 定义名称解析:返回 undefined 视为 #NAME? */
   resolveName?(name: string): FormulaValue | undefined;
   /** 结构化表引用解析 */
@@ -88,8 +92,11 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
     case 'range-reference':
       result = { kind: 'range', range: resolveRangeReference(node, context.currentCell) };
       break;
+    case 'spill-reference':
+      result = evaluateSpillReference(node, context);
+      break;
     case 'unary-expression':
-      result = evaluateUnary(node.operator, evaluateNode(node.operand, context, trace));
+      result = evaluateUnary(node.operator, evaluateNode(node.operand, context, trace), context);
       break;
     case 'binary-expression':
       result = evaluateBinary(
@@ -127,14 +134,34 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
   return result;
 }
 
-function evaluateUnary(operator: '+' | '-' | '%', operand: EvaluationValue): FormulaValue {
+function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
   if (isFormulaError(operand)) return operand;
+  if (operator === '@' && isEvaluationRange(operand)) {
+    const { start, end } = operand.range;
+    const row = context.currentCell.row >= start.row && context.currentCell.row <= end.row ? context.currentCell.row : start.row;
+    const column = context.currentCell.column >= start.column && context.currentCell.column <= end.column ? context.currentCell.column : start.column;
+    const address = { sheetId: start.sheetId, row, column };
+    return context.readSpillValue?.(address) ?? context.readCell(address);
+  }
   if (isEvaluationRange(operand)) return createFormulaError('#VALUE!', 'A range cannot be used with a unary operator');
   const number = toNumber(operand);
   if (isFormulaError(number)) return number;
   if (operator === '-') return -number;
   if (operator === '%') return number / 100;
   return number;
+}
+
+function evaluateSpillReference(node: SpillReferenceNode, context: FormulaEvaluationContext): EvaluationValue {
+  const operand = node.operand;
+  const anchor = operand.type === 'cell-reference'
+    ? resolveCellReference(operand.reference, context.currentCell)
+    : operand.type === 'range-reference'
+      ? resolveRangeReference(operand, context.currentCell).start
+      : undefined;
+  if (!anchor) return createFormulaError('#REF!', 'Spill operator expects a cell or range reference');
+  context.readCell(anchor);
+  const range = context.readSpillRange?.(anchor);
+  return range ? { kind: 'range', range } : createFormulaError('#REF!', 'Reference does not resolve to a spill range');
 }
 
 function evaluateBinary(

@@ -46,7 +46,8 @@ function precedence(node: FormulaAst): number {
         case '/': return 4;
         case '^': return 5;
       }
-    case 'unary-expression': return 6;
+    case 'unary-expression':
+    case 'spill-reference': return 6;
     default: return 7;
   }
 }
@@ -89,6 +90,9 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       break;
     case 'range-reference':
       content = formatNode(node.start) + ':' + formatNode(node.end);
+      break;
+    case 'spill-reference':
+      content = formatNode(node.operand, precedence(node)) + '#';
       break;
     case 'name-reference':
       content = node.name;

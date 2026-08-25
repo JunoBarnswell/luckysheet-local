@@ -8,6 +8,7 @@ import {
   parseTsv,
   parseClipboardPayload,
   shiftFormula,
+  FormulaRelocationError,
   copyRangeToClipboardData,
 } from './index';
 
@@ -154,6 +155,8 @@ test('clipboard: TSV format, parse, and formula shifting', () => {
   assert.equal(parsed[2]?.[1]?.formula, '=SUM(B2:B2)');
 
   assert.equal(shiftFormula('=A1+$B$1+C$1+$D1', 2, 3), '=D3+$B$1+F$1+$D3');
+  assert.equal(shiftFormula('=SUM(A2#)', 1, 1), '=SUM(B3#)');
+  assert.throws(() => shiftFormula('=A1+', 1, 1), FormulaRelocationError);
 });
 
 test('clipboard payload carries provenance and paste modes preserve their contracts', () => {
@@ -381,6 +384,30 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
   }]), /Invalid mutation history/);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(1, 1), undefined);
+});
+
+test('copy paste rejects a malformed formula before creating a mutation', () => {
+  const workbook = new WorkbookModel('unit-paste-fail-close', 'Paste Fail Close');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: null, formula: '=A1+' });
+  sheet.cells.set(1, 1, { value: 'unchanged' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+  assert.throws(() => runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 1, column: 1 },
+    clipboard: payload,
+    transfer: 'copy',
+  }), FormulaRelocationError);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'unchanged');
+  assert.equal(runtime.getHistoryDepth().undo, 0);
 });
 
 test('range clear modes are independent and restore auxiliary metadata', () => {

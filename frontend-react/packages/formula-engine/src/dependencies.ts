@@ -56,6 +56,9 @@ function visit(
     case 'unary-expression':
       visit(node.operand, owner, dependencies, seen, sheetTables);
       return;
+    case 'spill-reference':
+      visit(node.operand, owner, dependencies, seen, sheetTables);
+      return;
     case 'binary-expression':
       visit(node.left, owner, dependencies, seen, sheetTables);
       visit(node.right, owner, dependencies, seen, sheetTables);

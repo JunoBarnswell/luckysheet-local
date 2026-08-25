@@ -69,9 +69,16 @@ export interface RangeReferenceNode {
   readonly parenthesized?: boolean;
 }
 
+export interface SpillReferenceNode {
+  readonly type: 'spill-reference';
+  readonly operand: FormulaAst;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
 export interface UnaryExpressionNode {
   readonly type: 'unary-expression';
-  readonly operator: '+' | '-' | '%';
+  readonly operator: '+' | '-' | '%' | '@';
   readonly operand: FormulaAst;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
@@ -134,6 +141,7 @@ export type FormulaAst =
   | CellReferenceNode
   | InvalidReferenceNode
   | RangeReferenceNode
+  | SpillReferenceNode
   | NameReferenceNode
   | TableReferenceNode
   | UnaryExpressionNode

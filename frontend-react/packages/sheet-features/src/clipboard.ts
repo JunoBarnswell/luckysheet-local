@@ -14,6 +14,21 @@ export interface ClipboardRepresentation {
 
 export type ClipboardTransfer = 'copy' | 'move';
 
+export class FormulaRelocationError extends Error {
+  readonly code = 'FORMULA_RELOCATION_FAILED';
+
+  constructor(
+    readonly formula: string,
+    readonly rowOffset: number,
+    readonly columnOffset: number,
+    cause: unknown,
+  ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Formula relocation failed for ${formula}: ${detail}`);
+    this.name = 'FormulaRelocationError';
+  }
+}
+
 /**
  * Host-neutral clipboard contract.  A host may expose any subset of the
  * representations, but the command layer always consumes the normalized
@@ -196,16 +211,12 @@ function decodeHtml(value: string): string {
     .replaceAll('&amp;', '&');
 }
 
-/**
- * Shift relative references for copy/fill/paste using the formula AST. A
- * formula that is not understood by the parser is preserved verbatim; it is
- * never rewritten by a lossy regular expression.
- */
+/** Shift relative references for copy/fill/paste using the canonical formula AST. */
 export function shiftFormula(formula: string, rowOffset: number, colOffset: number): string {
   if (!formula.trim().startsWith('=')) return formula;
   try {
     return formatFormula(offsetAst(parseFormula(formula), rowOffset, colOffset));
-  } catch {
-    return formula;
+  } catch (error) {
+    throw new FormulaRelocationError(formula, rowOffset, colOffset, error);
   }
 }

@@ -30,6 +30,8 @@ export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMappe
     case 'table-reference':
     case 'invalid-reference':
       return node;
+    case 'spill-reference':
+      return { ...node, operand: mapAstReferences(node.operand, mapper) };
     case 'cell-reference': {
       const mapped = mapper(node.reference);
       return mapped === undefined
