@@ -11,6 +11,8 @@ import type {
   PivotPresentation,
   PivotDisplayOptions,
   PivotRefreshPolicy,
+  PivotTimelineLevel,
+  PivotTimelinePeriod,
   PivotSubtotalDefinition,
   PivotSlicerItemProjection,
   PivotSlicerSettings,
@@ -30,6 +32,8 @@ export type {
   PivotPresentation,
   PivotDisplayOptions,
   PivotRefreshPolicy,
+  PivotTimelineLevel,
+  PivotTimelinePeriod,
   PivotSubtotalDefinition,
   PivotSlicerItemProjection,
   PivotSlicerSettings,
@@ -77,6 +81,17 @@ export interface PivotTimelineControl {
   fieldId: string;
   start?: string;
   end?: string;
+  level: PivotTimelineLevel;
+  selectionLevel: PivotTimelineLevel;
+  showHeader: boolean;
+  showSelectionLabel: boolean;
+  showTimeLevel: boolean;
+  showHorizontalScrollbar: boolean;
+  scrollPosition?: string;
+  bounds: PivotTimelinePeriod;
+  filterType: import('@react-sheets/core-model').PivotTimelineFilterType;
+  caption?: string;
+  styleName?: string;
   connectedPivotIds?: readonly string[];
 }
 
@@ -112,6 +127,11 @@ export interface PivotPanelCallbacks {
   onSlicerFilterChange?: (slicerId: string, filter: PivotManualFilterState) => void;
   onTimelineChange: (fieldId: string | undefined) => void;
   onTimelineRangeChange?: (timelineId: string, start: string, end: string) => void;
+  onTimelineLevelChange?: (timelineId: string, level: PivotTimelineLevel) => void;
+  onTimelineWindowChange?: (timelineId: string, scrollPosition: string) => void;
+  onTimelineDisplayChange?: (timelineId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>) => void;
+  onTimelineCaptionChange?: (timelineId: string, caption: string) => void;
+  onTimelineStyleChange?: (timelineId: string, styleName: string) => void;
   onPivotChartChange: (chart: { type: 'column' | 'bar' | 'line' | 'pie'; title: string } | undefined) => void;
 }
 

@@ -1,5 +1,5 @@
 import type { Column, RangeRef, Row, SheetId } from './index';
-import type { FormulaErrorCode } from './domain';
+import type { FormulaErrorCode, PivotTimelineLevel } from './domain';
 
 /**
  * Pivot is a derived view over workbook data. The definition below is the
@@ -96,6 +96,68 @@ export function normalizePivotTimelinePeriod(period: { start?: string; end?: str
     ...(start === undefined ? {} : { start }),
     ...(endDay === undefined ? {} : { endExclusive: endDay + PIVOT_DAY_MS }),
   };
+}
+
+export interface PivotTimelineTile {
+  key: string;
+  start: string;
+  end: string;
+  label: string;
+  hasData: boolean;
+}
+
+function timelineTileStart(instant: number, level: PivotTimelineLevel): Date {
+  const date = new Date(Math.floor(instant / PIVOT_DAY_MS) * PIVOT_DAY_MS);
+  if (level === 'years') date.setUTCMonth(0, 1);
+  else if (level === 'quarters') date.setUTCMonth(Math.floor(date.getUTCMonth() / 3) * 3, 1);
+  else if (level === 'months') date.setUTCDate(1);
+  else date.setUTCHours(0, 0, 0, 0);
+  return date;
+}
+
+function nextTimelineTileStart(start: Date, level: PivotTimelineLevel): Date {
+  const next = new Date(start.getTime());
+  if (level === 'years') next.setUTCFullYear(next.getUTCFullYear() + 1);
+  else if (level === 'quarters') next.setUTCMonth(next.getUTCMonth() + 3);
+  else if (level === 'months') next.setUTCMonth(next.getUTCMonth() + 1);
+  else next.setUTCDate(next.getUTCDate() + 1);
+  return next;
+}
+
+function timelineTileLabel(start: Date, level: PivotTimelineLevel): string {
+  const year = start.getUTCFullYear();
+  if (level === 'years') return String(year);
+  if (level === 'quarters') return `${year} Q${Math.floor(start.getUTCMonth() / 3) + 1}`;
+  const month = String(start.getUTCMonth() + 1).padStart(2, '0');
+  if (level === 'months') return `${year}-${month}`;
+  return `${year}-${month}-${String(start.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Build contiguous, data-aware period tiles from the canonical Pivot date values. */
+export function buildPivotTimelineTiles(values: readonly PivotScalar[], level: PivotTimelineLevel): PivotTimelineTile[] {
+  if (!['years', 'quarters', 'months', 'days'].includes(level)) throw new Error(`Invalid Pivot timeline level: ${String(level)}`);
+  const instants = values.map(pivotTimelineInstant).filter((value): value is number => value !== undefined && Number.isFinite(value));
+  if (instants.length === 0) return [];
+  const first = timelineTileStart(Math.min(...instants), level);
+  const last = timelineTileStart(Math.max(...instants), level);
+  const dataKeys = new Set(instants.map((instant) => timelineTileStart(instant, level).getTime()));
+  const tiles: PivotTimelineTile[] = [];
+  let cursor = first;
+  let guard = 0;
+  while (cursor.getTime() <= last.getTime() && guard < 10_000) {
+    const next = nextTimelineTileStart(cursor, level);
+    tiles.push({
+      key: `${level}:${cursor.toISOString().slice(0, 10)}`,
+      start: cursor.toISOString().slice(0, 10),
+      end: new Date(next.getTime() - PIVOT_DAY_MS).toISOString().slice(0, 10),
+      label: timelineTileLabel(cursor, level),
+      hasData: dataKeys.has(cursor.getTime()),
+    });
+    cursor = next;
+    guard += 1;
+  }
+  if (guard >= 10_000) throw new Error('Pivot timeline period range exceeds the supported bound');
+  return tiles;
 }
 
 /** One presentation rule for Pivot members across grid, filters, and controls. */

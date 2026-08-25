@@ -15,7 +15,7 @@ import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
 import { ColumnDimensionController } from './column-dimension-controller';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
-import { pivotMemberKey, pivotTimelineInstant } from '@react-sheets/core-model';
+import { buildPivotTimelineTiles, pivotMemberKey } from '@react-sheets/core-model';
 import type { PivotControlAction } from '../components/canvas/drawing-renderers';
 
 const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module) => ({ default: module.SheetCanvas })));
@@ -209,29 +209,29 @@ export function EditorShell({
                   if (payload?.kind !== 'timeline') return;
                   const tree = state.selectedSheet.pivotResults[payload.pivotId];
                   const values = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId)?.values ?? [];
-                  const periods = [...new Set(values
-                    .map((value) => {
-                      const instant = pivotTimelineInstant(value);
-                      return instant === undefined ? undefined : new Date(instant).toISOString().slice(0, 10);
-                    })
-                    .filter((value): value is string => Boolean(value)))].sort();
+                  const periods = buildPivotTimelineTiles(values, payload.level)
+                    .filter((period) => (!payload.bounds.start || period.end >= payload.bounds.start) && (!payload.bounds.end || period.start <= payload.bounds.end));
                   if (action.kind === 'timeline-period') {
                     session.setPivotTimelinePeriod(drawingId, action.start, action.end);
+                  } else if (action.kind === 'timeline-level') {
+                    session.setPivotTimelineLevel(drawingId, action.level);
                   } else if (periods.length > 0 && (action.kind === 'timeline-scroll' || action.kind === 'timeline-handle')) {
-                    const currentStart = payload.period.start ? periods.indexOf(payload.period.start) : 0;
-                    const currentEnd = payload.period.end ? periods.indexOf(payload.period.end) : currentStart;
                     if (action.kind === 'timeline-scroll') {
-                      const delta = action.direction;
-                      const nextStart = Math.max(0, Math.min(periods.length - 1, (currentStart < 0 ? 0 : currentStart) + delta));
-                      const nextEnd = Math.max(nextStart, Math.min(periods.length - 1, (currentEnd < 0 ? nextStart : currentEnd) + delta));
-                      session.setPivotTimelinePeriod(drawingId, periods[nextStart], periods[nextEnd]);
+                      const currentStart = payload.scrollPosition ? Math.max(0, periods.findIndex((period) => period.start >= payload.scrollPosition!)) : 0;
+                      const width = Math.min(8, periods.length);
+                      const nextStart = Math.max(0, Math.min(periods.length - width, currentStart + action.direction * width));
+                      const nextPosition = periods[nextStart]?.start;
+                      if (nextPosition) session.setPivotTimelineWindow(drawingId, nextPosition);
                     } else if (action.edge === 'start') {
-                      const nextStart = Math.max(0, Math.min(currentEnd < 0 ? periods.length - 1 : currentEnd, (currentStart < 0 ? 0 : currentStart) - 1));
-                      session.setPivotTimelinePeriod(drawingId, periods[nextStart], periods[Math.max(nextStart, currentEnd < 0 ? nextStart : currentEnd)]);
+                      const currentStart = payload.period.start ? Math.max(0, periods.findIndex((period) => period.start >= payload.period.start!)) : 0;
+                      const currentEnd = payload.period.end ? Math.max(currentStart, periods.findIndex((period) => period.end >= payload.period.end!)) : currentStart;
+                      const nextStart = Math.max(0, Math.min(currentEnd, currentStart - 1));
+                      session.setPivotTimelinePeriod(drawingId, periods[nextStart]?.start, periods[Math.max(nextStart, currentEnd)]?.end);
                     } else {
-                      const startIndex = Math.max(0, currentStart < 0 ? 0 : currentStart);
-                      const nextEnd = Math.min(periods.length - 1, (currentEnd < 0 ? startIndex : currentEnd) + 1);
-                      session.setPivotTimelinePeriod(drawingId, periods[startIndex], periods[nextEnd]);
+                      const startIndex = payload.period.start ? Math.max(0, periods.findIndex((period) => period.start >= payload.period.start!)) : 0;
+                      const currentEnd = payload.period.end ? Math.max(startIndex, periods.findIndex((period) => period.end >= payload.period.end!)) : startIndex;
+                      const nextEnd = Math.min(periods.length - 1, currentEnd + 1);
+                      session.setPivotTimelinePeriod(drawingId, periods[startIndex]?.start, periods[nextEnd]?.end);
                     }
                   }
                 }}

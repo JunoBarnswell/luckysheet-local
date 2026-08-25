@@ -1,4 +1,5 @@
-import { Button, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { Button, CheckToggle, Inline, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
+import { buildPivotTimelineTiles, type PivotScalar, type PivotTimelineDrawingPayload, type PivotTimelineLevel, type PivotTimelinePeriod } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { pivotText } from './pivot-localization';
 
@@ -7,17 +8,60 @@ export interface PivotTimelineProps {
   locale: Locale;
   start?: string;
   end?: string;
+  values?: readonly PivotScalar[];
+  level: PivotTimelineLevel;
+  showHeader: boolean;
+  showSelectionLabel: boolean;
+  showTimeLevel: boolean;
+  showHorizontalScrollbar: boolean;
+  bounds: PivotTimelinePeriod;
+  scrollPosition?: string;
+  caption?: string;
+  styleName?: string;
   disabled?: boolean;
   onChange: (start: string, end: string) => void;
   onClear: () => void;
+  onLevelChange: (level: PivotTimelineLevel) => void;
+  onWindowChange: (scrollPosition: string) => void;
+  onDisplayChange: (display: Pick<PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>) => void;
+  onCaptionChange: (caption: string) => void;
+  onStyleChange: (styleName: string) => void;
 }
 
-export function PivotTimeline({ disabled = false, end = '', fieldLabel, locale, onChange, onClear, start = '' }: PivotTimelineProps) {
+export function PivotTimeline({ bounds, caption, disabled = false, end = '', fieldLabel, level, locale, onCaptionChange, onChange, onClear, onDisplayChange, onLevelChange, onStyleChange, onWindowChange, scrollPosition, showHeader, showHorizontalScrollbar, showSelectionLabel, showTimeLevel, start = '', styleName = 'TimelineStyleLight2', values = [] }: PivotTimelineProps) {
+  const tiles = buildPivotTimelineTiles(values, level);
+  const boundedTiles = tiles.filter((tile) => (!bounds.start || tile.end >= bounds.start) && (!bounds.end || tile.start <= bounds.end));
+  const windowStartIndex = scrollPosition ? Math.max(0, boundedTiles.findIndex((tile) => tile.start >= scrollPosition)) : 0;
+  const visibleTiles = boundedTiles.slice(windowStartIndex, windowStartIndex + 8);
+  const selected = (tile: { start: string; end: string }) => (!start || tile.end >= start) && (!end || tile.start <= end);
+  const shiftWindow = (direction: -1 | 1) => {
+    if (boundedTiles.length === 0) return;
+    const width = Math.min(8, boundedTiles.length);
+    const nextStart = Math.max(0, Math.min(boundedTiles.length - width, windowStartIndex + direction * width));
+    const nextPosition = boundedTiles[nextStart]?.start;
+    if (nextPosition) onWindowChange(nextPosition);
+  };
   return (
     <Stack gap="xs" className="rounded-lg border border-violet-100 bg-violet-50/30 p-2">
-      <Text size="xs" weight="semibold">{pivotText(locale, 'timelineTitle')} · {fieldLabel}</Text>
-      <Inline gap="xs"><TextInput type="date" aria-label={pivotText(locale, 'timelineStart')} disabled={disabled} value={start} onChange={(event) => onChange(event.target.value, end)} /><TextInput type="date" aria-label={pivotText(locale, 'timelineEnd')} disabled={disabled} value={end} onChange={(event) => onChange(start, event.target.value)} /></Inline>
-      <Button disabled={disabled} size="xs" variant="ghost" onClick={onClear}>{pivotText(locale, 'clearTimeline')}</Button>
+      {showHeader ? <Text size="xs" weight="semibold">{caption || pivotText(locale, 'timelineTitle')} · {fieldLabel}</Text> : null}
+      <Inline gap="xs" className="items-center">
+        {showTimeLevel ? <Select aria-label={pivotText(locale, 'timelineLevel')} disabled={disabled} sizeVariant="sm" value={level} onChange={(event) => onLevelChange(event.target.value as PivotTimelineLevel)}><option value="years">{pivotText(locale, 'years')}</option><option value="quarters">{pivotText(locale, 'quarters')}</option><option value="months">{pivotText(locale, 'months')}</option><option value="days">{pivotText(locale, 'days')}</option></Select> : null}
+        <Select aria-label={pivotText(locale, 'timelineStyle')} disabled={disabled} sizeVariant="sm" value={styleName} onChange={(event) => onStyleChange(event.target.value)}><option value="TimelineStyleLight2">{pivotText(locale, 'styleLight')}</option><option value="TimelineStyleMedium2">{pivotText(locale, 'styleMedium')}</option><option value="TimelineStyleDark2">{pivotText(locale, 'styleDark')}</option></Select>
+        <TextInput aria-label={pivotText(locale, 'timelineCaption')} disabled={disabled} value={caption} placeholder={fieldLabel} onChange={(event) => onCaptionChange(event.target.value)} />
+      </Inline>
+      <Inline gap="xs" className="items-center">
+        {showHorizontalScrollbar ? <Button disabled={disabled || tiles.length === 0} size="xs" variant="ghost" onClick={() => shiftWindow(-1)} aria-label={pivotText(locale, 'timelinePrevious')}>‹</Button> : null}
+        <Inline gap="none" className="min-w-0 flex-1 overflow-hidden">
+          {visibleTiles.map((tile) => <Button key={tile.key} disabled={disabled} size="xs" variant={selected(tile) ? 'soft' : 'ghost'} className="min-w-[3.5rem] rounded-none px-1 text-[10px]" aria-pressed={selected(tile)} onClick={() => onChange(tile.start, tile.end)}>{tile.label}</Button>)}
+        </Inline>
+        {showHorizontalScrollbar ? <Button disabled={disabled || tiles.length === 0} size="xs" variant="ghost" onClick={() => shiftWindow(1)} aria-label={pivotText(locale, 'timelineNext')}>›</Button> : null}
+      </Inline>
+      {showSelectionLabel ? <Text size="xs" tone="muted">{start || end ? `${start || '…'} — ${end || '…'}` : pivotText(locale, 'timelineAllPeriods')}</Text> : null}
+      <Inline gap="xs" className="flex-wrap">
+        <CheckToggle checked={showHeader} label={pivotText(locale, 'timelineHeader')} onChange={(event) => onDisplayChange({ showHeader: event.target.checked, showSelectionLabel, showTimeLevel, showHorizontalScrollbar })} />
+        <CheckToggle checked={showSelectionLabel} label={pivotText(locale, 'timelineSelection')} onChange={(event) => onDisplayChange({ showHeader, showSelectionLabel: event.target.checked, showTimeLevel, showHorizontalScrollbar })} />
+      </Inline>
+      <Inline gap="xs"><TextInput type="date" aria-label={pivotText(locale, 'timelineStart')} disabled={disabled} value={start} onChange={(event) => onChange(event.target.value, end)} /><TextInput type="date" aria-label={pivotText(locale, 'timelineEnd')} disabled={disabled} value={end} onChange={(event) => onChange(start, event.target.value)} /><Button disabled={disabled} size="xs" variant="ghost" onClick={onClear}>{pivotText(locale, 'clearTimeline')}</Button></Inline>
     </Stack>
   );
 }

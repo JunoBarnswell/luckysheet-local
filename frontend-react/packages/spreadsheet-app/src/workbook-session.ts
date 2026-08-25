@@ -2862,6 +2862,31 @@ export class WorkbookSession {
     this.runCommand('pivot.control.timeline.period.set', { sheetId: sheet.id, drawingId, period: { ...(start ? { start } : {}), ...(end ? { end } : {}) } });
     this.refresh();
   }
+  setPivotTimelineLevel(drawingId: string, level: import('@react-sheets/core-model').PivotTimelineLevel): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.timeline.level.set', { sheetId: sheet.id, drawingId, level });
+    this.refresh();
+  }
+  setPivotTimelineWindow(drawingId: string, scrollPosition: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.timeline.window.set', { sheetId: sheet.id, drawingId, scrollPosition });
+    this.refresh();
+  }
+  setPivotTimelineDisplay(drawingId: string, display: Pick<import('@react-sheets/core-model').PivotTimelineDrawingPayload, 'showHeader' | 'showSelectionLabel' | 'showTimeLevel' | 'showHorizontalScrollbar'>): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.timeline.display.set', { sheetId: sheet.id, drawingId, ...display });
+    this.refresh();
+  }
+  setPivotTimelineCaption(drawingId: string, caption: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.timeline.caption.set', { sheetId: sheet.id, drawingId, caption });
+    this.refresh();
+  }
+  setPivotTimelineStyle(drawingId: string, styleName: string): void {
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.runCommand('pivot.control.timeline.style.set', { sheetId: sheet.id, drawingId, styleName });
+    this.refresh();
+  }
   refreshPivot(pivotId: string): void {
     const pivot = this.runtime.model.getSheet(this.activeSheetId).pivots.find((entry) => entry.id === pivotId);
     if (!pivot) return;
