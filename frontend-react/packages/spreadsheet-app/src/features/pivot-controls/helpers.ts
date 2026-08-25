@@ -110,7 +110,21 @@ export function buildPivotSlicerDrawing(
 }
 
 export function buildPivotTimelineDrawing(
-  input: PivotControlDrawingInput & { period?: PivotTimelinePeriod; style?: PivotControlStyle },
+  input: PivotControlDrawingInput & {
+    period?: PivotTimelinePeriod;
+    style?: PivotControlStyle;
+    level?: PivotTimelineDrawingPayload['level'];
+    selectionLevel?: PivotTimelineDrawingPayload['selectionLevel'];
+    showHeader?: boolean;
+    showSelectionLabel?: boolean;
+    showTimeLevel?: boolean;
+    showHorizontalScrollbar?: boolean;
+    scrollPosition?: string;
+    bounds?: PivotTimelinePeriod;
+    filterType?: PivotTimelineDrawingPayload['filterType'];
+    caption?: string;
+    styleName?: string;
+  },
 ): { drawing: DrawingObject; payload: PivotTimelineDrawingPayload } {
   return {
     drawing: {
@@ -128,6 +142,17 @@ export function buildPivotTimelineDrawing(
       pivotId: input.pivotId,
       fieldId: input.fieldId,
       period: createPivotTimelinePeriod(input.period),
+      level: input.level ?? 'months',
+      selectionLevel: input.selectionLevel ?? input.level ?? 'months',
+      showHeader: input.showHeader ?? true,
+      showSelectionLabel: input.showSelectionLabel ?? true,
+      showTimeLevel: input.showTimeLevel ?? true,
+      showHorizontalScrollbar: input.showHorizontalScrollbar ?? true,
+      ...(input.scrollPosition === undefined ? {} : { scrollPosition: input.scrollPosition }),
+      bounds: createPivotTimelinePeriod(input.bounds),
+      filterType: input.filterType ?? 'unknown',
+      ...(input.caption === undefined ? {} : { caption: input.caption }),
+      styleName: input.styleName ?? 'TimelineStyleLight2',
       style: createPivotControlStyle(input.style),
       ...(input.connectedPivotIds?.length ? { connectedPivotIds: [...new Set(input.connectedPivotIds)] } : {}),
     },

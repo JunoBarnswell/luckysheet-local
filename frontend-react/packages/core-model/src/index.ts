@@ -268,6 +268,8 @@ export type {
   FormControlType,
   PivotControlFilter,
   PivotTimelinePeriod,
+  PivotTimelineLevel,
+  PivotTimelineFilterType,
   PivotControlStyle,
   PivotSlicerSettings,
   PivotSlicerDrawingPayload,
