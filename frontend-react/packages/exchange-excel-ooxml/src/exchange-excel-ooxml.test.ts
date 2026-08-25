@@ -52,6 +52,7 @@ describe('exchange-excel-ooxml', () => {
       chartId: 'chart-payload',
       chartType: 'line',
       sourceRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
+      elements: { hiddenData: 'show' },
     });
     sheet.drawingPayloads.set('image-payload', { kind: 'image', src: 'data:image/png;base64,AA==' });
 

@@ -21,7 +21,9 @@ export type RibbonTabId =
   | 'ganttView'
   | 'ganttFormat'
   | 'reportSheetDesign'
-  | 'tableDesign';
+  | 'tableDesign'
+  | 'chartDesign'
+  | 'chartFormat';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'

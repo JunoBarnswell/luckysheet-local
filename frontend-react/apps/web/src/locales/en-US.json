@@ -32,6 +32,8 @@
   "ganttFormat": "Gantt Format",
   "reportSheetDesign": "ReportSheet Design",
   "tableDesign": "Table Design",
+  "chartDesign": "Chart Design",
+  "chartFormat": "Chart Format",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -56,6 +58,7 @@
     "chartLine": "Line",
     "chartArea": "Area",
     "chartPie": "Pie",
+    "chartDoughnut": "Doughnut",
     "chartScatter": "Scatter",
     "chartCombo": "Combo",
     "sparkline": "Sparkline",
@@ -289,6 +292,8 @@
       ,"ganttFormat": "Gantt Format"
       ,"reportSheetDesign": "ReportSheet Design"
       ,"tableDesign": "Table Design"
+      ,"chartDesign": "Chart Design"
+      ,"chartFormat": "Chart Format"
     },
     "commands": {
       "settings": "Options",
@@ -405,6 +410,9 @@
       "tableResize": "Resize Table",
       "tableConvertToRange": "Convert to Range",
       "tableStyle": "Table Styles",
+      "chartElements": "Chart Elements",
+      "chartFormatPanel": "Format Chart",
+      "chartSelectData": "Select Data",
       "chartBuilder": "Chart Builder",
       "sparkline": "Sparkline",
       "shapesLines": "Shapes & Lines",

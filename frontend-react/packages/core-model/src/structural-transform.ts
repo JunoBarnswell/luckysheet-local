@@ -398,7 +398,14 @@ function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, p
     if (payload.kind !== 'chart') continue;
     payload.sourceRanges = payload.sourceRanges.filter(shiftRange);
     if (payload.categoryRange) shiftRange(payload.categoryRange);
-    payload.series = payload.series?.filter((series) => shiftRange(series.range));
+    payload.series = payload.series?.filter((series) => {
+      const valid = shiftRange(series.range);
+      if (series.xRange) shiftRange(series.xRange);
+      if (series.yRange) shiftRange(series.yRange);
+      if (series.errorBars?.plusRange) shiftRange(series.errorBars.plusRange);
+      if (series.errorBars?.minusRange) shiftRange(series.errorBars.minusRange);
+      return valid;
+    });
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') shiftRange(pivot.source.range);
@@ -709,7 +716,13 @@ function shiftChartPayloads(sheet: WorksheetModel, axis: 'row' | 'column', at: n
     if (payload.kind !== 'chart') continue;
     for (const range of payload.sourceRanges) shiftRangeRef(range, axis, at, count, direction);
     if (payload.categoryRange) shiftRangeRef(payload.categoryRange, axis, at, count, direction);
-    for (const series of payload.series ?? []) shiftRangeRef(series.range, axis, at, count, direction);
+    for (const series of payload.series ?? []) {
+      shiftRangeRef(series.range, axis, at, count, direction);
+      if (series.xRange) shiftRangeRef(series.xRange, axis, at, count, direction);
+      if (series.yRange) shiftRangeRef(series.yRange, axis, at, count, direction);
+      if (series.errorBars?.plusRange) shiftRangeRef(series.errorBars.plusRange, axis, at, count, direction);
+      if (series.errorBars?.minusRange) shiftRangeRef(series.errorBars.minusRange, axis, at, count, direction);
+    }
   }
 }
 
@@ -963,7 +976,13 @@ function applyMoveRange(
     if (payload.kind !== 'chart') continue;
     for (const range of payload.sourceRanges) relocate(range);
     if (payload.categoryRange) relocate(payload.categoryRange);
-    for (const series of payload.series ?? []) relocate(series.range);
+    for (const series of payload.series ?? []) {
+      relocate(series.range);
+      if (series.xRange) relocate(series.xRange);
+      if (series.yRange) relocate(series.yRange);
+      if (series.errorBars?.plusRange) relocate(series.errorBars.plusRange);
+      if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
+    }
   }
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') relocate(pivot.source.range);
@@ -1120,7 +1139,13 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
     if (payload.kind !== 'chart') continue;
     for (const range of payload.sourceRanges) validateRange(range, 'chart source');
     if (payload.categoryRange) validateRange(payload.categoryRange, 'chart category source');
-    for (const series of payload.series ?? []) validateRange(series.range, 'chart series source');
+    for (const series of payload.series ?? []) {
+      validateRange(series.range, 'chart series source');
+      if (series.xRange) validateRange(series.xRange, 'chart x source');
+      if (series.yRange) validateRange(series.yRange, 'chart y source');
+      if (series.errorBars?.plusRange) validateRange(series.errorBars.plusRange, 'chart error bar plus source');
+      if (series.errorBars?.minusRange) validateRange(series.errorBars.minusRange, 'chart error bar minus source');
+    }
   }
   for (const drawing of sheet.drawings) {
     if (drawing.anchor.kind === 'absolute' || drawing.anchor.row === undefined || drawing.anchor.column === undefined) continue;

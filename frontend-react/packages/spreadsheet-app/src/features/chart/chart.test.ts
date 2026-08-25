@@ -31,19 +31,22 @@ describe('chart feature', () => {
       kind: 'chart',
       chartId: 'chart-1',
       chartType: 'combo',
-      title: 'Revenue',
       sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 2 }],
       series: [
         { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 1, endColumn: 1 }, chartType: 'column', axis: 'primary', color: '#2563eb' },
         { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 2, endColumn: 2 }, chartType: 'line', axis: 'secondary', color: '#dc2626', smooth: true },
       ],
       categoryRange: { sheetId: 'sheet-1', startRow: 1, endRow: 4, startColumn: 0, endColumn: 0 },
-      categoryAxis: { id: 'x', position: 'bottom', title: 'Month' },
-      valueAxis: { id: 'y', position: 'left', title: 'Revenue', minimum: 0, maximum: 1000, majorUnit: 100 },
-      secondaryValueAxis: { id: 'y2', position: 'right', title: 'Margin', minimum: 0, maximum: 1, scale: 'linear' },
-      legendPosition: 'bottom',
-      showDataLabels: true,
       stacked: 'none',
+      elements: {
+        title: 'Revenue',
+        legend: { visible: true, position: 'bottom' },
+        dataLabels: { visible: true },
+        hiddenData: 'show',
+        categoryAxis: { id: 'x', position: 'bottom', title: 'Month' },
+        valueAxis: { id: 'y', position: 'left', title: 'Revenue', minimum: 0, maximum: 1000, majorUnit: 100 },
+        secondaryValueAxis: { id: 'y2', position: 'right', title: 'Margin', minimum: 0, maximum: 1, scale: 'linear' },
+      },
     };
     runtime.execute('chart.insert', chartPair('sheet-1', 'chart-1', payload));
     const sheet = workbook.getSheet('sheet-1');
@@ -59,12 +62,20 @@ describe('chart feature', () => {
     assert.equal((sheet.drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'primary');
     assert.equal(runtime.redo(), true);
 
+    runtime.execute('chart.setElements', { sheetId: 'sheet-1', chartId: 'chart-1', elements: { hiddenData: 'hideRows', plotArea: { fill: '#f8fafc' }, valueAxis: { id: 'y', position: 'left', minimum: 0, maximum: 2000, majorGridlines: { visible: false } } } });
+    runtime.execute('chart.setSeriesStyle', { sheetId: 'sheet-1', chartId: 'chart-1', seriesName: 'Revenue', style: { marker: { enabled: true, shape: 'circle', size: 6 }, trendline: { type: 'linear', color: '#2563eb' } } });
+    const edited = sheet.drawingPayloads.get('chart-1') as ChartPayload;
+    assert.equal(edited.elements.hiddenData, 'hideRows');
+    assert.equal(edited.elements.valueAxis?.majorGridlines?.visible, false);
+    assert.equal(edited.series?.[0]?.marker?.shape, 'circle');
+
     const remoteWorkbook = new WorkbookModel('chart-feature-test', 'Chart Feature');
     const remoteRuntime = new CommandRuntime(remoteWorkbook);
     registerDrawingFeature(remoteRuntime);
     registerChartCommands(remoteRuntime);
     remoteRuntime.applyRemoteMutations(runtime.getUndoEntries().flatMap((entry) => entry.redo));
     assert.equal((remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('chart-1') as ChartPayload).series?.[0]?.axis, 'secondary');
+    assert.equal((remoteWorkbook.getSheet('sheet-1').drawingPayloads.get('chart-1') as ChartPayload).elements.hiddenData, 'hideRows');
   });
 
   it('supports local range data, scatter series, pivot result data and remote replay', () => {
@@ -82,6 +93,7 @@ describe('chart feature', () => {
       chartId: 'scatter-1',
       chartType: 'scatter',
       sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }],
+      elements: { hiddenData: 'show' },
       series: [
         { name: 'Revenue', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 1, endColumn: 1 }, chartType: 'scatter', axis: 'primary' },
         { name: 'Margin', range: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 2, endColumn: 2 }, chartType: 'scatter', axis: 'secondary' },

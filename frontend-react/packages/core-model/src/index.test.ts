@@ -83,8 +83,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     kind: 'chart',
     chartId: 'chart-1',
     chartType: 'column',
-    title: 'Revenue',
     sourceRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 5, startColumn: 0, endColumn: 2 }],
+    elements: { title: 'Revenue', hiddenData: 'show' },
   });
   sheet.drawings.push({
     id: 'shape-1',
@@ -133,7 +133,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restoredSheet.rowHeightsPx[0], 40);
   assert.equal(restoredSheet.drawings.length, 2);
   assert.equal(restoredSheet.drawingPayloads.get('chart-1')?.kind, 'chart');
-  assert.equal((restoredSheet.drawingPayloads.get('chart-1') as { title?: string }).title, 'Revenue');
+  assert.equal((restoredSheet.drawingPayloads.get('chart-1') as { elements?: { title?: string } }).elements?.title, 'Revenue');
   assert.equal(restoredSheet.drawingPayloads.get('shape-1')?.kind, 'shape');
   assert.equal(restoredSheet.drawings.find((drawing) => drawing.id === 'shape-1')?.visible, false);
   assert.equal(restoredSheet.sparklines.length, 1);

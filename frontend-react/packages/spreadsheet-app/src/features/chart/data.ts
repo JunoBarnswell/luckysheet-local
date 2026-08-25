@@ -19,11 +19,15 @@ function cellValue(sheet: WorksheetModel, row: number, column: number): PivotSca
   return sheet.cells.get(row, column)?.value ?? null;
 }
 
-function rangeValues(sheet: WorksheetModel, range: { startRow: number; endRow: number; startColumn: number; endColumn: number }): PivotScalar[][] {
+function rangeValues(sheet: WorksheetModel, range: { startRow: number; endRow: number; startColumn: number; endColumn: number }, hiddenData: ChartPayload['elements']['hiddenData'] = 'show'): PivotScalar[][] {
   const rows: PivotScalar[][] = [];
   for (let row = range.startRow; row <= range.endRow; row += 1) {
+    if (hiddenData === 'hideRows' && sheet.hiddenRows.has(row)) continue;
     const values: PivotScalar[] = [];
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) values.push(cellValue(sheet, row, column));
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      if (hiddenData === 'hideColumns' && sheet.hiddenColumns.has(column)) continue;
+      values.push(cellValue(sheet, row, column));
+    }
     rows.push(values);
   }
   return rows;
@@ -38,20 +42,20 @@ function resolveRangeData(workbook: WorkbookModel, payload: ChartPayload): Resol
   const firstRange = payload.sourceRanges[0];
   if (!firstRange) return { categories: [], series: [], source: 'range' };
   const firstSheet = workbook.getSheet(firstRange.sheetId);
-  const firstRows = rangeValues(firstSheet, firstRange);
+  const firstRows = rangeValues(firstSheet, firstRange, payload.elements.hiddenData);
   const declaredSeries = payload.series ?? [];
   const firstXRange = declaredSeries.find((entry) => entry.xRange)?.xRange;
   const categories = payload.categoryRange
-    ? rangeValues(workbook.getSheet(payload.categoryRange.sheetId), payload.categoryRange).map((row) => row[0] ?? null)
+    ? rangeValues(workbook.getSheet(payload.categoryRange.sheetId), payload.categoryRange, payload.elements.hiddenData).map((row) => row[0] ?? null)
     : firstXRange
-      ? rangeValues(workbook.getSheet(firstXRange.sheetId), firstXRange).slice(1).map((row) => row[0] ?? null)
+      ? rangeValues(workbook.getSheet(firstXRange.sheetId), firstXRange, payload.elements.hiddenData).slice(1).map((row) => row[0] ?? null)
     : firstRows.slice(1).map((row) => row[0] ?? null);
 
   const series: ResolvedChartSeries[] = [];
   if (declaredSeries.length > 0) {
     for (const declared of declaredSeries) {
       const valueRange = declared.yRange ?? declared.range;
-      const rows = rangeValues(workbook.getSheet(valueRange.sheetId), valueRange);
+      const rows = rangeValues(workbook.getSheet(valueRange.sheetId), valueRange, payload.elements.hiddenData);
       series.push({
         name: declared.name || seriesName(workbook.getSheet(valueRange.sheetId), valueRange, 'Series'),
         values: rows.slice(1).map((row) => row[0] ?? null),
@@ -65,7 +69,7 @@ function resolveRangeData(workbook: WorkbookModel, payload: ChartPayload): Resol
 
   for (const range of payload.sourceRanges) {
     const sheet = workbook.getSheet(range.sheetId);
-    const rows = rangeValues(sheet, range);
+    const rows = rangeValues(sheet, range, payload.elements.hiddenData);
     const width = range.endColumn - range.startColumn + 1;
     if (width <= 1) {
       series.push({ name: seriesName(sheet, range, `Series ${series.length + 1}`), values: rows.slice(1).map((row) => row[0] ?? null), axis: 'primary' });

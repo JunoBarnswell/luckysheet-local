@@ -32,6 +32,8 @@
   "ganttFormat": "甘特格式",
   "reportSheetDesign": "报表设计",
   "tableDesign": "表格设计",
+  "chartDesign": "图表设计",
+  "chartFormat": "图表格式",
   "engineConnected": "引擎已连接",
   "searchWorkbook": "搜索工作簿",
   "formulaBar": {
@@ -56,6 +58,7 @@
     "chartLine": "折线图",
     "chartArea": "面积图",
     "chartPie": "饼图",
+    "chartDoughnut": "圆环图",
     "chartScatter": "散点图",
     "chartCombo": "组合图",
     "sparkline": "迷你图",
@@ -289,6 +292,8 @@
       ,"ganttFormat": "甘特格式"
       ,"reportSheetDesign": "报表设计"
       ,"tableDesign": "表格设计"
+      ,"chartDesign": "图表设计"
+      ,"chartFormat": "图表格式"
     },
     "commands": {
       "settings": "选项",
@@ -405,6 +410,9 @@
       "tableResize": "调整表格大小",
       "tableConvertToRange": "转换为区域",
       "tableStyle": "表格样式",
+      "chartElements": "图表元素",
+      "chartFormatPanel": "设置图表格式",
+      "chartSelectData": "选择数据",
       "chartBuilder": "图表构建器",
       "sparkline": "迷你图",
       "shapesLines": "形状与线条",
