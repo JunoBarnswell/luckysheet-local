@@ -1,6 +1,7 @@
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { AppPhase, SidebarPanelId, UiSessionIntent } from '../types';
 import type { BarcodeSymbology, DataChartPlotType, SheetTableModel } from '@react-sheets/core-model';
+import { transformNumberFormatPrecision } from '@react-sheets/number-format';
 
 export type RibbonCatalogTabId =
   | 'file'
@@ -980,17 +981,23 @@ const styleCommand = (
   active,
 });
 
-/** Structured number-format adjustment used by the Ribbon decimal controls. */
-export function adjustRibbonDecimalPlaces(current: string | undefined, delta: number): string {
-  const source = current && current !== 'general' ? current : '0';
-  const percent = source.includes('%');
-  const currency = source.includes('$');
-  const comma = source.includes(',');
-  const match = source.match(/\.([0#?]+)/);
-  const decimals = Math.max(0, Math.min(30, (match?.[1]?.length ?? 0) + delta));
-  const integer = currency ? '$#,##0' : comma ? '#,##0' : '0';
-  return `${integer}${decimals > 0 ? `.${'0'.repeat(decimals)}` : ''}${percent ? '%' : ''}`;
-}
+const precisionStyleCommand = (
+  id: RibbonCommandId,
+  labelKey: RibbonTextKey,
+  icon: RibbonIconName,
+  delta: 1 | -1,
+): CommandDefinition => ({
+  ...command(id, 'home', 'number', 'sheet.style.set', labelKey, icon),
+  build: (context) => {
+    const result = transformNumberFormatPrecision(context.cellStyle.numberFormat, delta);
+    if (!result.ok) return undefined;
+    return { type: 'command', descriptor: { commandId: 'sheet.style.set', params: { style: { numberFormat: result.format } } } };
+  },
+  enabled: (context) => {
+    const result = transformNumberFormatPrecision(context.cellStyle.numberFormat, delta);
+    return result.ok && !context.disabled && (!context.canExecute || context.canExecute('sheet.style.set', { style: { numberFormat: result.format } }));
+  },
+});
 
 export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('save', 'file', 'workbook', RIBBON_TEXT.commands.save, (context) => context.actions.onSave()),
@@ -1052,8 +1059,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   command('numberFormatPercent', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatPercent, 'percent', { style: { numberFormat: '0%' } }),
   command('numberFormatComma', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatComma, 'comma', { style: { numberFormat: '#,##0' } }),
   command('numberFormatDecimal', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatDecimal, 'decimal-increase', { style: { numberFormat: '0.00' } }),
-  styleCommand('numberFormatDecimalIncrease', RIBBON_TEXT.commands.numberFormatDecimalIncrease, 'decimal-increase', (context) => ({ numberFormat: adjustRibbonDecimalPlaces(context.cellStyle.numberFormat, 1) }), undefined, 'number'),
-  styleCommand('numberFormatDecimalDecrease', RIBBON_TEXT.commands.numberFormatDecimalDecrease, 'decimal-decrease', (context) => ({ numberFormat: adjustRibbonDecimalPlaces(context.cellStyle.numberFormat, -1) }), undefined, 'number'),
+  precisionStyleCommand('numberFormatDecimalIncrease', RIBBON_TEXT.commands.numberFormatDecimalIncrease, 'decimal-increase', 1),
+  precisionStyleCommand('numberFormatDecimalDecrease', RIBBON_TEXT.commands.numberFormatDecimalDecrease, 'decimal-decrease', -1),
   command('insertRowHome', 'home', 'cells', 'sheet.rows.insert', RIBBON_TEXT.commands.insertRowHome, 'rows', { count: 1 }),
   command('insertColumnHome', 'home', 'cells', 'sheet.columns.insert', RIBBON_TEXT.commands.insertColumnHome, 'columns', { count: 1 }),
   command('deleteRow', 'home', 'cells', 'sheet.rows.delete', RIBBON_TEXT.commands.deleteRow, 'rows', { count: 1 }),

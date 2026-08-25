@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { formatValue } from './index';
+import { formatValue, transformNumberFormatPrecision } from './index';
 
 describe('number-format', () => {
   it('formats thousands separator', () => {
@@ -25,5 +25,42 @@ describe('number-format', () => {
   it('uses general formatting without a format code', () => {
     assert.equal(formatValue(3.5), '3.5');
     assert.equal(formatValue(1000), '1000');
+  });
+
+  it('changes only decimal placeholders in ordinary numeric formats', () => {
+    assert.deepEqual(transformNumberFormatPrecision('#,##0', 1), { ok: true, format: '#,##0.0', decimalPlaces: 1 });
+    assert.deepEqual(transformNumberFormatPrecision('$#,##0.00', -1), { ok: true, format: '$#,##0.0', decimalPlaces: 1 });
+    assert.deepEqual(transformNumberFormatPrecision('0.00%', 1), { ok: true, format: '0.000%', decimalPlaces: 3 });
+    assert.deepEqual(transformNumberFormatPrecision('0.0E+00', -1), { ok: true, format: '0E+00', decimalPlaces: 0 });
+  });
+
+  it('preserves sections, colors, conditions, quoted literals, and locale markers', () => {
+    assert.deepEqual(
+      transformNumberFormatPrecision('[Red]#,##0;[Blue]-#,##0', 1),
+      { ok: true, format: '[Red]#,##0.0;[Blue]-#,##0.0', decimalPlaces: 1 },
+    );
+    assert.deepEqual(
+      transformNumberFormatPrecision('[>=100]"USD "#,##0.00;[Red]"USD "#,##0.00', -1),
+      { ok: true, format: '[>=100]"USD "#,##0.0;[Red]"USD "#,##0.0', decimalPlaces: 1 },
+    );
+    assert.deepEqual(
+      transformNumberFormatPrecision('[$-409]$#,##0.00;[Red]-[$-409]$#,##0.00', -1),
+      { ok: true, format: '[$-409]$#,##0.0;[Red]-[$-409]$#,##0.0', decimalPlaces: 1 },
+    );
+    assert.deepEqual(
+      transformNumberFormatPrecision('0.00;[Red]-0.00;"zero";@', -1),
+      { ok: true, format: '0.0;[Red]-0.0;"zero";@', decimalPlaces: 1 },
+    );
+  });
+
+  it('fails closed for date, time, fraction, general, malformed, and boundary formats', () => {
+    assert.equal(transformNumberFormatPrecision('yyyy-mm-dd', 1).ok, false);
+    assert.equal(transformNumberFormatPrecision('h:mm:ss', -1).ok, false);
+    assert.equal(transformNumberFormatPrecision('# ?/?', 1).ok, false);
+    assert.equal(transformNumberFormatPrecision('general', 1).ok, false);
+    assert.equal(transformNumberFormatPrecision('0.00"unterminated', 1).ok, false);
+    assert.equal(transformNumberFormatPrecision('0.00', -1).ok, true);
+    assert.equal(transformNumberFormatPrecision('0', -1).ok, false);
+    assert.equal(transformNumberFormatPrecision(`0.${'0'.repeat(30)}`, 1).ok, false);
   });
 });

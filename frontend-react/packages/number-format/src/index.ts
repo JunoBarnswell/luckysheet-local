@@ -12,6 +12,17 @@ export interface FormatSection {
   readonly hasTextPlaceholder: boolean;
 }
 
+export type NumberFormatPrecisionFailure =
+  | 'missing-format'
+  | 'invalid-delta'
+  | 'unsupported-format'
+  | 'precision-limit'
+  | 'no-change';
+
+export type NumberFormatPrecisionResult =
+  | { readonly ok: true; readonly format: string; readonly decimalPlaces: number }
+  | { readonly ok: false; readonly reason: NumberFormatPrecisionFailure };
+
 export type FormatToken =
   | { kind: 'literal'; text: string }
   | { kind: 'space'; widthChar: string }
@@ -52,6 +63,239 @@ export function parseSections(format: string): FormatSection[] {
     }
   }
   return sections.length > 0 ? sections : [{ tokens: [], hasTextPlaceholder: false }];
+}
+
+interface PrecisionToken {
+  readonly kind: 'digit' | 'decimal' | 'date' | 'text' | 'fraction' | 'exponent' | 'unsupported';
+  readonly start: number;
+  readonly end: number;
+}
+
+interface PrecisionSectionAnalysis {
+  readonly source: string;
+  readonly tokens: readonly PrecisionToken[];
+  readonly digitTokens: readonly PrecisionToken[];
+  readonly decimalToken?: PrecisionToken;
+  readonly decimalStart?: number;
+  readonly decimalEnd?: number;
+  readonly decimalPlaces: number;
+  readonly exponentToken?: PrecisionToken;
+  readonly unsupported: boolean;
+}
+
+/**
+ * Splits an Excel format code without treating semicolons inside quoted,
+ * escaped, or bracketed metadata as section separators. The raw section text
+ * is retained so precision changes can leave every unrelated byte untouched.
+ */
+function splitPrecisionSections(format: string): string[] | undefined {
+  const sections: string[] = [];
+  let sectionStart = 0;
+  let quoted = false;
+  let bracketed = false;
+
+  for (let index = 0; index < format.length; index += 1) {
+    const character = format[index] ?? '';
+    if (quoted) {
+      if (character === '"') quoted = false;
+      continue;
+    }
+    if (bracketed) {
+      if (character === ']') bracketed = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === '[') {
+      bracketed = true;
+      continue;
+    }
+    if (character === '\\') {
+      if (index + 1 >= format.length) return undefined;
+      index += 1;
+      continue;
+    }
+    if (character === ';') {
+      sections.push(format.slice(sectionStart, index));
+      sectionStart = index + 1;
+    }
+  }
+
+  if (quoted || bracketed) return undefined;
+  sections.push(format.slice(sectionStart));
+  return sections;
+}
+
+function precisionTokenize(section: string): { tokens: PrecisionToken[]; invalid: boolean } {
+  const tokens: PrecisionToken[] = [];
+  let invalid = false;
+
+  for (let index = 0; index < section.length;) {
+    const character = section[index] ?? '';
+    if (character === '"') {
+      const end = section.indexOf('"', index + 1);
+      if (end < 0) return { tokens, invalid: true };
+      index = end + 1;
+      continue;
+    }
+    if (character === '\\' || character === '_' || character === '*') {
+      if (index + 1 >= section.length) return { tokens, invalid: true };
+      index += 2;
+      continue;
+    }
+    if (character === '[') {
+      const end = section.indexOf(']', index + 1);
+      if (end < 0) return { tokens, invalid: true };
+      index = end + 1;
+      continue;
+    }
+    if (character === '@') {
+      tokens.push({ kind: 'text', start: index, end: index + 1 });
+      index += 1;
+      continue;
+    }
+    if (character === '0' || character === '#' || character === '?') {
+      tokens.push({ kind: 'digit', start: index, end: index + 1 });
+      index += 1;
+      continue;
+    }
+    if (character === '.') {
+      tokens.push({ kind: 'decimal', start: index, end: index + 1 });
+      index += 1;
+      continue;
+    }
+    if (character === '/') {
+      tokens.push({ kind: 'fraction', start: index, end: index + 1 });
+      index += 1;
+      continue;
+    }
+
+    const ampm = section.slice(index).match(/^AM\/PM/i) ?? section.slice(index).match(/^A\/P/i);
+    if (ampm) {
+      tokens.push({ kind: 'date', start: index, end: index + ampm[0].length });
+      index += ampm[0].length;
+      continue;
+    }
+    if ('ymdhs'.includes(character.toLowerCase())) {
+      let end = index + 1;
+      while (end < section.length && section[end]?.toLowerCase() === character.toLowerCase()) end += 1;
+      tokens.push({ kind: 'date', start: index, end });
+      index = end;
+      continue;
+    }
+    if (character === 'E' || character === 'e') {
+      tokens.push({ kind: 'exponent', start: index, end: index + 1 });
+      index += 1;
+      continue;
+    }
+    if (/[A-Za-z]/.test(character)) {
+      tokens.push({ kind: 'unsupported', start: index, end: index + 1 });
+      invalid = true;
+      index += 1;
+      continue;
+    }
+
+    // Currency signs, grouping commas, signs, parentheses, percent signs,
+    // spaces, and other punctuation are preserved as raw literals.
+    index += 1;
+  }
+
+  return { tokens, invalid };
+}
+
+function analyzePrecisionSection(source: string): PrecisionSectionAnalysis {
+  const tokenized = precisionTokenize(source);
+  const tokens = tokenized.tokens;
+  const digitTokens = tokens.filter((token) => token.kind === 'digit');
+  const decimalTokens = tokens.filter((token) => token.kind === 'decimal');
+  const exponentTokens = tokens.filter((token) => token.kind === 'exponent');
+  const dateToken = tokens.some((token) => token.kind === 'date');
+  const textToken = tokens.some((token) => token.kind === 'text');
+  const unsupportedToken = tokens.some((token) => token.kind === 'unsupported');
+  const fraction = tokens.some((token) => token.kind === 'fraction');
+  const decimalToken = decimalTokens.length === 1 ? decimalTokens[0] : undefined;
+  const exponentToken = exponentTokens.length === 1 ? exponentTokens[0] : undefined;
+  let unsupported = tokenized.invalid || decimalTokens.length > 1 || exponentTokens.length > 1 || dateToken || unsupportedToken || fraction;
+  if (textToken && digitTokens.length > 0) unsupported = true;
+
+  if (exponentToken) {
+    const mantissaDigits = digitTokens.filter((token) => token.end <= exponentToken.start);
+    const exponentDigits = digitTokens.filter((token) => token.start > exponentToken.end);
+    const exponentText = source.slice(exponentToken.end);
+    if (mantissaDigits.length === 0 || exponentDigits.length === 0 || !/^[+-]?[0#?]+$/.test(exponentText)) unsupported = true;
+  }
+
+  if (decimalToken && exponentToken && decimalToken.start > exponentToken.start) unsupported = true;
+  const decimalStart = decimalToken?.start;
+  const decimalEnd = decimalToken?.end;
+  let decimalPlaces = 0;
+  if (decimalEnd !== undefined) {
+    let cursor = decimalEnd;
+    while (cursor < source.length && '0#?'.includes(source[cursor] ?? '')) {
+      decimalPlaces += 1;
+      cursor += 1;
+    }
+    if (decimalPlaces === 0) unsupported = true;
+  }
+
+  return { source, tokens, digitTokens, decimalToken, decimalStart, decimalEnd, decimalPlaces, exponentToken, unsupported };
+}
+
+function transformPrecisionSection(section: PrecisionSectionAnalysis, delta: number): { source: string; changed: boolean; decimalPlaces: number } | undefined {
+  if (section.unsupported || section.digitTokens.length === 0) return { source: section.source, changed: false, decimalPlaces: 0 };
+  if (delta < 0 && section.decimalPlaces === 0) return { source: section.source, changed: false, decimalPlaces: 0 };
+  const nextPlaces = section.decimalPlaces + delta;
+  if (nextPlaces < 0 || nextPlaces > 30) return undefined;
+
+  const insertionPoint = section.decimalEnd !== undefined
+    ? section.decimalEnd + section.decimalPlaces
+    : (section.exponentToken?.start ?? section.digitTokens[section.digitTokens.length - 1]!.end);
+  if (delta > 0) {
+    const source = section.decimalEnd === undefined
+      ? `${section.source.slice(0, insertionPoint)}.${'0'.repeat(delta)}${section.source.slice(insertionPoint)}`
+      : `${section.source.slice(0, insertionPoint)}${'0'.repeat(delta)}${section.source.slice(insertionPoint)}`;
+    return { source, changed: true, decimalPlaces: nextPlaces };
+  }
+  if (section.decimalStart === undefined || section.decimalEnd === undefined) return undefined;
+  const removeStart = section.decimalEnd + section.decimalPlaces - 1;
+  const removeEnd = section.decimalEnd + section.decimalPlaces;
+  if (nextPlaces === 0) {
+    return { source: `${section.source.slice(0, section.decimalStart)}${section.source.slice(removeEnd)}`, changed: true, decimalPlaces: 0 };
+  }
+  return { source: `${section.source.slice(0, removeStart)}${section.source.slice(removeEnd)}`, changed: true, decimalPlaces: nextPlaces };
+}
+
+/**
+ * Applies a decimal precision delta while preserving every unrelated part of
+ * an Excel number-format code. Unsupported families fail closed.
+ */
+export function transformNumberFormatPrecision(format: string | undefined, delta: number): NumberFormatPrecisionResult {
+  if (!format || format.trim().length === 0) return { ok: false, reason: 'missing-format' };
+  if (!Number.isInteger(delta) || delta === 0) return { ok: false, reason: 'invalid-delta' };
+  if (format.trim().toLowerCase() === 'general') return { ok: false, reason: 'unsupported-format' };
+
+  const sections = splitPrecisionSections(format);
+  if (!sections) return { ok: false, reason: 'unsupported-format' };
+  const analyses = sections.map(analyzePrecisionSection);
+  if (analyses.some((section) => section.unsupported)) return { ok: false, reason: 'unsupported-format' };
+  if (!analyses.some((section) => section.digitTokens.length > 0)) return { ok: false, reason: 'unsupported-format' };
+  if (analyses.some((section) => section.digitTokens.length > 0 && section.decimalPlaces + delta > 30)) return { ok: false, reason: 'precision-limit' };
+  if (analyses.some((section) => section.digitTokens.length > 0 && delta < 0 && section.decimalPlaces > 0 && section.decimalPlaces + delta < 0)) return { ok: false, reason: 'precision-limit' };
+
+  let changed = false;
+  let decimalPlaces = 0;
+  const transformed: string[] = [];
+  for (const section of analyses) {
+    const result = transformPrecisionSection(section, delta);
+    if (!result) return { ok: false, reason: delta > 0 ? 'precision-limit' : 'unsupported-format' };
+    transformed.push(result.source);
+    changed ||= result.changed;
+    if (section.digitTokens.length > 0) decimalPlaces = Math.max(decimalPlaces, result.decimalPlaces);
+  }
+  if (!changed) return { ok: false, reason: delta < 0 ? 'no-change' : 'precision-limit' };
+  return { ok: true, format: transformed.join(';'), decimalPlaces };
 }
 
 function scanToken(format: string, start: number): { token: FormatToken; next: number } | undefined {
