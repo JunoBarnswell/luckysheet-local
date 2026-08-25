@@ -777,11 +777,13 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode sort = (ObjectNode) raw;
         SnapshotMutationSupport.validateKnownKeys(sort, Set.of("direction", "by", "valueId"), label);
         if (!Set.of("ascending", "descending").contains(SnapshotMutationSupport.text(sort, "direction"))) throw ServiceException.validation(label + " direction is invalid");
-        if (sort.has("by") && !Set.of("label", "value").contains(SnapshotMutationSupport.text(sort, "by"))) throw ServiceException.validation(label + " by is invalid");
-        if (sort.has("valueId")) requireValue(valueIds, sort, "valueId");
-        if ("value".equals(sort.path("by").asText()) && !sort.has("valueId")) {
+        String by = SnapshotMutationSupport.text(sort, "by");
+        if (!Set.of("label", "value").contains(by)) throw ServiceException.validation(label + " by is invalid");
+        if ("value".equals(by) && !sort.has("valueId")) {
             throw ServiceException.validation(label + " requires valueId for value sorting");
         }
+        if ("label".equals(by) && sort.has("valueId")) throw ServiceException.validation(label + " label sorting cannot carry valueId");
+        if (sort.has("valueId")) requireValue(valueIds, sort, "valueId");
     }
 
     private void validateGroup(JsonNode raw) {

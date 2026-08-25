@@ -540,9 +540,9 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     if (placement.sort !== undefined) {
       const sort = requireRecord(placement.sort, 'Pivot sort');
       validateExactKeys(sort, ['direction', 'by', 'valueId'], 'Pivot sort');
-      if (!['ascending', 'descending'].includes(String(sort.direction)) || (sort.by !== undefined && !['label', 'value'].includes(String(sort.by)))) throw new Error('Pivot sort is invalid');
-      if (sort.valueId !== undefined && !isNonEmptyString(sort.valueId)) throw new Error('Pivot sort valueId is invalid');
-      if (sort.by === 'value' && sort.valueId === undefined) throw new Error('Pivot value sort requires valueId');
+      if (!['ascending', 'descending'].includes(String(sort.direction)) || !['label', 'value'].includes(String(sort.by))) throw new Error('Pivot sort is invalid');
+      if (sort.by === 'value' && !isNonEmptyString(sort.valueId)) throw new Error('Pivot value sort requires valueId');
+      if (sort.by === 'label' && sort.valueId !== undefined) throw new Error('Pivot label sort cannot carry valueId');
     }
     if (placement.group !== undefined) validatePivotGroup(placement.group);
     if (placement.subtotal !== undefined) validatePivotSubtotal(placement.subtotal);

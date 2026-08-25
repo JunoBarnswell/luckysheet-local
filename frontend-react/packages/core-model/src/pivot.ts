@@ -304,11 +304,9 @@ export type PivotGroup =
   | { kind: 'number'; interval: number; start?: number; end?: number; autoStart?: boolean; autoEnd?: boolean }
   | { kind: 'manual'; groups: PivotManualGroup[] };
 
-export type PivotSort = {
-  direction: 'ascending' | 'descending';
-  by?: 'label' | 'value';
-  valueId?: string;
-};
+export type PivotSort =
+  | { direction: 'ascending' | 'descending'; by: 'label' }
+  | { direction: 'ascending' | 'descending'; by: 'value'; valueId: string };
 
 export interface PivotFieldPlacement {
   fieldId: string;
@@ -943,8 +941,16 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
   createPivotCollator(canonical.layout.collation);
   const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
   for (const placement of [...canonical.layout.rows, ...canonical.layout.columns]) {
-    if (placement.sort?.by === 'value' && (!placement.sort.valueId || !valueIds.has(placement.sort.valueId))) {
+    const sort = placement.sort;
+    if (!sort) continue;
+    if (!['ascending', 'descending'].includes(sort.direction) || !['label', 'value'].includes(sort.by)) {
+      throw new Error(`Pivot ${input.id} has an invalid sort definition`);
+    }
+    if (sort.by === 'value' && !valueIds.has(sort.valueId)) {
       throw new Error(`Pivot ${input.id} has an invalid value sort placement identity`);
+    }
+    if (sort.by === 'label' && Object.prototype.hasOwnProperty.call(sort, 'valueId')) {
+      throw new Error(`Pivot ${input.id} label sort cannot carry a Values placement identity`);
     }
   }
   const identities = new Set<string>();

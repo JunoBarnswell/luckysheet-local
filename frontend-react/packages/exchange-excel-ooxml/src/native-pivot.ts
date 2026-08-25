@@ -1296,7 +1296,9 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
       } : {};
     }
     const preserved = pivot.nativeMetadata?.preservedAutoSortScopes?.find((candidate) => candidate.fieldIndex === index);
-    const valueFieldPlacement = sort.valueId === undefined ? undefined : pivot.layout.values.find((value) => value.valueId === sort.valueId);
+    if (sort.by === 'value' && !sort.valueId) throw new Error(`Pivot value sort for field ${index} is missing a Values placement identity`);
+    const valueFieldPlacement = sort.by === 'value' ? pivot.layout.values.find((value) => value.valueId === sort.valueId) : undefined;
+    if (sort.by === 'value' && !valueFieldPlacement) throw new Error(`Pivot value sort for field ${index} references an unknown Values placement`);
     const valuePlacementIndex = valueFieldPlacement ? pivot.layout.values.findIndex((value) => value.valueId === valueFieldPlacement.valueId) : -1;
     const valueField = valuePlacementIndex < 0 ? undefined : dataFields[valuePlacementIndex];
     return {

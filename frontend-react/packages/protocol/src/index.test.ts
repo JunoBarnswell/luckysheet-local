@@ -317,6 +317,18 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     ...base.layout,
     rows: [{ fieldId: 'region', sort: { direction: 'ascending', by: 'value', valueId: 'amount' } }],
   } }), /placement identity is invalid/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    rows: [{ fieldId: 'region', sort: { direction: 'ascending', by: 'value' } }],
+  } as never }), /requires valueId/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    rows: [{ fieldId: 'region', sort: { direction: 'ascending', by: 'label', valueId: 'value:amount' } }],
+  } as never }), /cannot carry valueId/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    rows: [{ fieldId: 'region', sort: { direction: 'ascending' } }],
+  } as never }), /Pivot sort is invalid/);
   const topItems = {
     ...base,
     layout: {
