@@ -143,6 +143,28 @@ describe('pivot controls as floating drawing objects', () => {
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.transform, { x: 40, y: 50, width: 300, height: 80 });
   });
 
+  it('rejects an invalid or reversed timeline period before writing history', () => {
+    const { workbook, runtime } = createRuntime();
+    const timeline = buildPivotTimelineDrawing({
+      drawingId: 'timeline-invalid-period',
+      payloadId: 'timeline-invalid-period-payload',
+      sheetId: 'sheet-1',
+      pivotId: 'pivot-sales',
+      fieldId: 'field-date',
+      transform: { x: 10, y: 20, width: 300, height: 80 },
+      zIndex: 1,
+    });
+    runtime.execute('pivot.control.timeline.create', timeline);
+    const before = structuredClone(workbook.getSheet('sheet-1').drawingPayloads.get(timeline.drawing.payloadId));
+    assert.throws(() => runtime.execute('pivot.control.timeline.period.set', {
+      sheetId: 'sheet-1',
+      drawingId: timeline.drawing.id,
+      period: { start: '2026-03-31', end: '2026-01-01' },
+    }), /start must not be after end/);
+    assert.deepEqual(workbook.getSheet('sheet-1').drawingPayloads.get(timeline.drawing.payloadId), before);
+    assert.equal(runtime.getUndoEntries().length, 1);
+  });
+
   it('rejects a control payload without the canonical owned state', () => {
     const { runtime } = createRuntime();
     assert.throws(() => runtime.execute('drawing.add.slicer', {

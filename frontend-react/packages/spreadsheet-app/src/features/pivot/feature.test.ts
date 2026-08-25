@@ -347,6 +347,43 @@ describe('pivot feature contract', () => {
     assert.equal(result.values.at(-1)?.[1]?.value, 30);
   });
 
+  it('includes every instant on a timeline end date and excludes the next day', () => {
+    const workbook = new WorkbookModel('pivot-timeline-boundary', 'Pivot Timeline Boundary');
+    const sheet = workbook.getSheet('sheet-1');
+    [
+      ['Date', 'Amount'],
+      ['2026-08-25T00:00:00', 10],
+      ['2026-08-25T12:00:00', 20],
+      ['2026-08-25T23:59:59', 30],
+      ['2026-08-26T00:00:00', 40],
+    ].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-timeline-boundary', {
+      sheetId: 'sheet-1', startRow: 0, endRow: 4, startColumn: 0, endColumn: 1,
+    });
+    assert.ok(pivot);
+    const dateField = pivot.fieldCatalog.fields.find((field) => field.name === 'Date');
+    const amountField = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount');
+    assert.ok(dateField);
+    assert.ok(amountField);
+    pivot.layout.rows = [];
+    pivot.layout.columns = [];
+    pivot.layout.values = [{ fieldId: amountField.fieldId, summarizeBy: 'sum' }];
+    sheet.pivots.push(pivot);
+    const timeline = buildPivotTimelineDrawing({
+      drawingId: 'timeline-boundary',
+      payloadId: 'timeline-boundary-payload',
+      sheetId: 'sheet-1',
+      pivotId: pivot.id,
+      fieldId: dateField.fieldId,
+      period: { start: '2026-08-25', end: '2026-08-25' },
+      transform: { x: 10, y: 20, width: 300, height: 80 },
+      zIndex: 1,
+    });
+    sheet.drawings.push(timeline.drawing);
+    sheet.drawingPayloads.set(timeline.drawing.payloadId, timeline.payload);
+    assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 60);
+  });
+
   it('rejects unknown fields once a source header exists', () => {
     const workbook = seedCrossSheetWorkbook();
     const runtime = new CommandRuntime(workbook);

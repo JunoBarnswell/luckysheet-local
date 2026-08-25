@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CellMatrix, WorkbookModel } from './index';
+import {
+  CellMatrix,
+  normalizePivotTimelinePeriod,
+  pivotTimelineInstant,
+  WorkbookModel,
+} from './index';
 import { assertCanonicalWorkbookSnapshot } from './snapshot';
 
 test('CellMatrix keeps empty logical space sparse', () => {
@@ -20,6 +25,18 @@ test('CellMatrix keeps empty logical space sparse', () => {
   assert.equal(matrix.has(100_000, 4), false);
   assert.equal(matrix.count(), 0);
   assert.equal(cloned.has(100_000, 4), true);
+});
+
+test('Pivot timeline dates use deterministic half-open civil-day bounds', () => {
+  const bounds = normalizePivotTimelinePeriod({ start: '2026-08-25', end: '2026-08-25' });
+  const dayStart = Date.UTC(2026, 7, 25);
+  assert.deepEqual(bounds, { start: dayStart, endExclusive: dayStart + 86_400_000 });
+  assert.equal(pivotTimelineInstant('2026-08-25T10:30:00'), Date.UTC(2026, 7, 25, 10, 30));
+  assert.equal(pivotTimelineInstant('2026-08-25T10:30:00Z'), Date.UTC(2026, 7, 25, 10, 30));
+  assert.equal(pivotTimelineInstant('2026-08-25T10:30:00+02:00'), Date.UTC(2026, 7, 25, 8, 30));
+  assert.throws(() => normalizePivotTimelinePeriod({ start: '2026-08-26', end: '2026-08-25' }), /start must not be after end/);
+  assert.throws(() => normalizePivotTimelinePeriod({ start: '2026-02-29' }), /Invalid Pivot timeline start date/);
+  assert.equal(pivotTimelineInstant('not-a-date'), undefined);
 });
 
 test('WorksheetModel handles merges and anchors properly', () => {

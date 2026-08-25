@@ -13,6 +13,78 @@ export type PivotScalar = string | number | boolean | null;
 export type PivotScalarType = 'text' | 'number' | 'boolean' | 'blank';
 export const PIVOT_BLANK_LABEL = '(blank)' as const;
 
+/** One civil day in the canonical UTC calendar used by Pivot timelines. */
+export const PIVOT_DAY_MS = 86_400_000;
+
+export interface PivotTimelinePeriodBounds {
+  /** Inclusive start instant at 00:00:00 UTC for the selected start day. */
+  start?: number;
+  /** Exclusive instant at 00:00:00 UTC immediately after the selected end day. */
+  endExclusive?: number;
+}
+
+const PIVOT_TIMELINE_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+function parsePivotTimelineString(value: string): number | undefined {
+  const match = PIVOT_TIMELINE_DATE_PATTERN.exec(value.trim());
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4] ?? 0);
+  const minute = Number(match[5] ?? 0);
+  const second = Number(match[6] ?? 0);
+  const millisecond = match[7] ? Number(match[7].padEnd(3, '0')) : 0;
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59 || millisecond > 999) return undefined;
+
+  // Date.UTC maps years 0..99 to 1900..1999. Constructing through setters
+  // keeps the full four-digit year and lets the round-trip validate leap days.
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, millisecond);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day
+    || date.getUTCHours() !== hour || date.getUTCMinutes() !== minute || date.getUTCSeconds() !== second
+    || date.getUTCMilliseconds() !== millisecond) return undefined;
+
+  const zone = match[8];
+  if (!zone || zone === 'Z') return date.getTime();
+  const offsetHours = Number(zone.slice(1, 3));
+  const offsetMinutes = Number(zone.slice(-2));
+  if (offsetHours > 23 || offsetMinutes > 59) return undefined;
+  const offset = (offsetHours * 60 + offsetMinutes) * 60_000;
+  return date.getTime() + (zone[0] === '+' ? -offset : offset);
+}
+
+/** Parse a Pivot date value without relying on browser-local Date parsing. */
+export function pivotTimelineInstant(value: PivotScalar): number | undefined {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined;
+    return Date.UTC(1899, 11, 30) + value * PIVOT_DAY_MS;
+  }
+  return typeof value === 'string' ? parsePivotTimelineString(value) : undefined;
+}
+
+function timelineDayStart(value: string, label: 'start' | 'end'): number | undefined {
+  const instant = pivotTimelineInstant(value);
+  if (instant === undefined || !Number.isFinite(instant)) {
+    throw new Error(`Invalid Pivot timeline ${label} date: ${value}`);
+  }
+  return Math.floor(instant / PIVOT_DAY_MS) * PIVOT_DAY_MS;
+}
+
+/** Normalize an inclusive date-only period to one deterministic half-open interval. */
+export function normalizePivotTimelinePeriod(period: { start?: string; end?: string }): PivotTimelinePeriodBounds {
+  const start = period.start === undefined ? undefined : timelineDayStart(period.start, 'start');
+  const endDay = period.end === undefined ? undefined : timelineDayStart(period.end, 'end');
+  if (start !== undefined && endDay !== undefined && start > endDay) {
+    throw new Error(`Pivot timeline period start must not be after end: ${period.start} > ${period.end}`);
+  }
+  return {
+    ...(start === undefined ? {} : { start }),
+    ...(endDay === undefined ? {} : { endExclusive: endDay + PIVOT_DAY_MS }),
+  };
+}
+
 /** One presentation rule for Pivot members across grid, filters, and controls. */
 export function formatPivotMember(value: PivotScalar): string {
   return value === null || value === '' ? PIVOT_BLANK_LABEL : String(value);

@@ -36,11 +36,14 @@ import {
   DEFAULT_PIVOT_STYLE_OPTIONS,
   createPivotMemberKey,
   formatPivotMember,
+  normalizePivotTimelinePeriod,
   pivotMemberKey,
   normalizePivotRefreshPolicy,
+  pivotTimelineInstant,
   pivotMemberKeyEquals,
   pivotScalarFromMemberKey,
 } from '@react-sheets/core-model';
+import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
 import { FormulaEngine, type FormulaValue } from '@react-sheets/formula-engine';
 
 export interface PivotSourceRowInput {
@@ -890,15 +893,14 @@ function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload): boole
   return filter.mode === 'include' ? included : !included;
 }
 
-function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload): boolean {
+function matchesTimeline(row: SourceRow, timeline: PivotTimelineDrawingPayload, bounds: PivotTimelinePeriodBounds): boolean {
   const fieldId = timeline.fieldId;
   const raw = row.values[fieldId];
   if (raw == null || raw === '') return false;
-  const date = new Date(String(raw));
-  if (Number.isNaN(date.getTime())) return false;
-  const start = timeline.period.start ? new Date(timeline.period.start).getTime() : Number.NEGATIVE_INFINITY;
-  const end = timeline.period.end ? new Date(timeline.period.end).getTime() : Number.POSITIVE_INFINITY;
-  return date.getTime() >= start && date.getTime() <= end;
+  const instant = pivotTimelineInstant(raw);
+  if (instant === undefined) return false;
+  return instant >= (bounds.start ?? Number.NEGATIVE_INFINITY)
+    && instant < (bounds.endExclusive ?? Number.POSITIVE_INFINITY);
 }
 
 function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: PivotModel): SourceRow[] {
@@ -914,7 +916,9 @@ function matchesControls(workbook: WorkbookModel, rows: SourceRow[], pivot: Pivo
       else if (payload.kind === 'timeline') timelines.push(payload);
     }
   }
-  return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer)) && timelines.every((timeline) => matchesTimeline(row, timeline)));
+  const timelineBounds = timelines.map((timeline) => normalizePivotTimelinePeriod(timeline.period));
+  return rows.filter((row) => slicers.every((slicer) => matchesSlicer(row, slicer))
+    && timelines.every((timeline, index) => matchesTimeline(row, timeline, timelineBounds[index]!)));
 }
 
 function resultValueFields(layout: PivotLayout): PivotResultValueField[] {
