@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { copyRangeToClipboardData } from '@react-sheets/sheet-features';
+import { copyRangeToClipboardData, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { WorkbookSession } from './workbook-session';
 
 function selectCell(app: WorkbookSession, row: number, column: number): void {
@@ -34,7 +34,7 @@ describe('WorkbookSession core editing integration', () => {
     const range = app.getPrimaryRange();
     app.setClipboard({ ...copyRangeToClipboardData(app['runtime'].model, range), transfer: 'copy' });
     selectCell(app, 0, 1);
-    app.pasteSpecial('values');
+    app.pasteSpecial(createPasteSpecialSpec({ content: 'values', formatting: 'none', metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false } }));
 
     const target = app['runtime'].model.getSheet(sheetId).cells.get(0, 1);
     assert.equal(target?.value, 42);

@@ -56,10 +56,11 @@ import {
   resolveActiveAutoFilter,
   resolveFilterOwner,
   validationList,
-  type ClipboardData,
+  type ClipboardPayload,
+  type PasteSpecialSpec,
+  createPasteSpecialSpec,
   type DataRegionMaterializeParams,
   type GoToSpecialKind,
-  type PasteMode,
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
@@ -414,7 +415,7 @@ export class WorkbookSession {
   private disposed = false;
   private lifecycleGeneration = 0;
   private overrideTarget: { row: number; column: number } | null = null;
-  private clipboardData: ClipboardData | null = null;
+  private clipboardData: ClipboardPayload | null = null;
   private readonly materializingDataRegions = new Map<string, Promise<void>>();
   private snapshotGeneration = 0;
   private cachedUiSnapshot: UiSnapshot | null = null;
@@ -828,7 +829,7 @@ export class WorkbookSession {
       await this.materializeDataRegions(regions);
       this.runCommand(commandId, params);
       if (commandId === 'sheet.range.paste' && params && typeof params === 'object'
-        && !Array.isArray(params) && (params as { clipboard?: ClipboardData }).clipboard?.transfer === 'move') {
+        && !Array.isArray(params) && (params as { clipboard?: ClipboardPayload }).clipboard?.transfer === 'move') {
         this.clearClipboard();
       }
     } catch (error) {
@@ -1173,11 +1174,11 @@ export class WorkbookSession {
     this.syncDraftFromPrimary();
   }
 
-  getClipboard(): ClipboardData | null {
+  getClipboard(): ClipboardPayload | null {
     return this.clipboardData;
   }
 
-  setClipboard(data: ClipboardData | null): void {
+  setClipboard(data: ClipboardPayload | null): void {
     this.clipboardData = data;
   }
 
@@ -1667,8 +1668,8 @@ export class WorkbookSession {
     this.setFocusState('grid', 'grid');
     this.emit();
   };
-  pasteSpecial(mode: PasteMode): void {
-    this.paste(mode);
+  pasteSpecial(spec: PasteSpecialSpec): void {
+    this.paste(spec);
     this.closePasteSpecial();
   };
   setShowPrintPreview = (open: boolean): void => {
@@ -3038,7 +3039,7 @@ export class WorkbookSession {
     }
     this.notify(move ? 'Cut to clipboard' : 'Range copied');
   }
-  paste(mode: PasteMode = 'all'): void {
+  paste(spec: PasteSpecialSpec = createPasteSpecialSpec()): void {
     const sel = this.selectionService.getState();
     const internal = this.clipboardData;
     if (internal) {
@@ -3047,7 +3048,7 @@ export class WorkbookSession {
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
         transfer: internal.transfer,
-        mode,
+        spec,
       } });
       // The command owns source clearing. Keep the clipboard payload usable if
       // a data-region preparation fails, rather than losing a pending cut.
@@ -3062,17 +3063,25 @@ export class WorkbookSession {
     }
     void navigator.clipboard.readText().then((text) => {
       if (!text) return;
-      const clipboard: ClipboardData = {
+      const clipboard: ClipboardPayload = {
         range: this.getPrimaryRange(),
         values: parseTsv(text),
         transfer: 'copy',
+        rangeMetadata: {
+          columnWidths: [],
+          validations: [],
+          conditionalFormats: [],
+          notes: [],
+          comments: [],
+          hyperlinks: [],
+        },
       };
       this.dispatch({ commandId: 'sheet.range.paste', params: {
         sheetId: this.activeSheetId,
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard,
         transfer: 'copy',
-        mode,
+        spec,
       } });
       this.syncDraftFromPrimary();
       this.notify('Pasted from clipboard');

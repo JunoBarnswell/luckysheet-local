@@ -1,12 +1,17 @@
 import type {
   CellData,
   CellStyle,
+  CellHyperlink,
+  CellNote,
+  CommentThread,
+  ConditionalFormatRule,
+  DataValidationRule,
   WorksheetPane,
   RangeRef,
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
+import { columnLabel, noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -17,9 +22,10 @@ import {
   shiftFormula,
   type ClipboardTransfer,
   type ClipboardPayload,
+  type PasteSpecialSpec,
+  isPasteSpecialSpecSupported,
 } from '../clipboard';
 
-export type PasteMode = 'all' | 'values' | 'formats' | 'formulas' | 'transpose';
 export type FreezePreset = 'none' | 'firstRow' | 'firstColumn' | 'both';
 export type GoToSpecialKind =
   | 'blanks'
@@ -46,7 +52,7 @@ export interface PasteRangeParams {
   targetOrigin: { row: number; column: number };
   clipboard: ClipboardPayload;
   transfer: ClipboardTransfer;
-  mode?: PasteMode;
+  spec: PasteSpecialSpec;
 }
 
 export interface CutPasteRangeParams extends PasteRangeParams {
@@ -142,27 +148,92 @@ function isSheetViewMutation(value: unknown): value is SheetViewParams {
 }
 
 type PasteMutationParams = PasteRangeParams & {
-  values: CellData[][];
-  startRow: number;
-  startColumn: number;
+  sourceExtent: { rows: number; columns: number };
   sourceRange?: RangeRef;
   clearSource?: boolean;
+  snapshot: PasteSnapshot;
+  sourceSnapshot?: PasteSnapshot;
 };
+
+interface CellSnapshot {
+  row: number;
+  column: number;
+  value?: CellData;
+}
+
+interface MetadataSnapshot<T> {
+  key: string;
+  value?: T;
+}
+
+interface PasteSnapshot {
+  cells: CellSnapshot[];
+  notes?: MetadataSnapshot<CellNote>[];
+  hyperlinks?: MetadataSnapshot<CellHyperlink>[];
+  commentCells?: string[];
+  comments?: CommentThread[];
+  validations?: DataValidationRule[];
+  conditionalFormats?: ConditionalFormatRule[];
+  columnWidths?: Array<{ column: number; widthPx?: number }>;
+}
 
 function isPasteMutation(value: unknown): value is PasteMutationParams {
   return isRecord(value) && typeof value.sheetId === 'string'
-    && isRecord(value.targetOrigin) && Number.isInteger(value.startRow) && Number.isInteger(value.startColumn)
+    && isRecord(value.targetOrigin) && Number.isInteger(value.targetOrigin.row) && Number.isInteger(value.targetOrigin.column)
     && (value.transfer === 'copy' || value.transfer === 'move')
     && isRecord(value.clipboard) && value.clipboard.transfer === value.transfer
-    && Array.isArray(value.values) && value.values.every((row) => Array.isArray(row) && row.every(isCellData))
-    && (value.transfer === 'move' ? isRange(value.sourceRange) && value.clearSource === true : value.sourceRange === undefined && value.clearSource === false);
+    && isRecord(value.clipboard.rangeMetadata)
+    && Array.isArray(value.clipboard.rangeMetadata.columnWidths)
+    && Array.isArray(value.clipboard.rangeMetadata.validations)
+    && Array.isArray(value.clipboard.rangeMetadata.conditionalFormats)
+    && Array.isArray(value.clipboard.rangeMetadata.notes)
+    && Array.isArray(value.clipboard.rangeMetadata.comments)
+    && Array.isArray(value.clipboard.rangeMetadata.hyperlinks)
+    && isPasteSpecialSpec(value.spec)
+    && isPasteSpecialSpecSupported(value.spec)
+    && isRecord(value.sourceExtent) && Number.isInteger(value.sourceExtent.rows) && Number.isInteger(value.sourceExtent.columns)
+    && isPasteSnapshot(value.snapshot)
+    && (value.sourceSnapshot === undefined || isPasteSnapshot(value.sourceSnapshot))
+    && (value.transfer === 'move'
+      ? isRange(value.sourceRange) && value.clearSource === true && (value.sourceRange.sheetId === value.sheetId || isPasteSnapshot(value.sourceSnapshot))
+      : value.sourceRange === undefined && value.clearSource === false && value.sourceSnapshot === undefined);
 }
 
 function pasteAffectedRanges(value: PasteMutationParams): RangeRef[] {
-  const width = Math.max(1, ...value.values.map((row) => row.length));
-  const ranges = [{ sheetId: value.sheetId, startRow: value.startRow, endRow: value.startRow + Math.max(0, value.values.length - 1), startColumn: value.startColumn, endColumn: value.startColumn + width - 1 }];
+  const rowCount = value.spec.transpose ? value.sourceExtent.columns : value.sourceExtent.rows;
+  const columnCount = value.spec.transpose ? value.sourceExtent.rows : value.sourceExtent.columns;
+  const ranges = [{ sheetId: value.sheetId, startRow: value.targetOrigin.row, endRow: value.targetOrigin.row + Math.max(0, rowCount - 1), startColumn: value.targetOrigin.column, endColumn: value.targetOrigin.column + Math.max(0, columnCount - 1) }];
   if (value.clearSource && value.sourceRange) ranges.push(structuredClone(value.sourceRange));
   return ranges;
+}
+
+function isPasteSpecialSpec(value: unknown): value is PasteSpecialSpec {
+  if (!isRecord(value)) return false;
+  const metadata = value.metadata;
+  return (value.content === 'none' || value.content === 'all' || value.content === 'values' || value.content === 'formulas')
+    && (value.formatting === 'all' || value.formatting === 'none' || value.formatting === 'number-format' || value.formatting === 'source-formatting' || value.formatting === 'all-except-borders' || value.formatting === 'source-theme')
+    && isRecord(metadata)
+    && typeof metadata.commentsNotes === 'boolean'
+    && typeof metadata.validation === 'boolean'
+    && typeof metadata.columnWidths === 'boolean'
+    && typeof metadata.conditionalFormats === 'boolean'
+    && typeof metadata.hyperlinks === 'boolean'
+    && (value.operation === 'none' || value.operation === 'add' || value.operation === 'subtract' || value.operation === 'multiply' || value.operation === 'divide')
+    && typeof value.skipBlanks === 'boolean'
+    && typeof value.transpose === 'boolean'
+    && typeof value.link === 'boolean';
+}
+
+function isPasteSnapshot(value: unknown): value is PasteSnapshot {
+  if (!isRecord(value) || !Array.isArray(value.cells)) return false;
+  return value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
+    && (value.notes === undefined || Array.isArray(value.notes))
+    && (value.hyperlinks === undefined || Array.isArray(value.hyperlinks))
+    && (value.commentCells === undefined || Array.isArray(value.commentCells))
+    && (value.comments === undefined || Array.isArray(value.comments))
+    && (value.validations === undefined || Array.isArray(value.validations))
+    && (value.conditionalFormats === undefined || Array.isArray(value.conditionalFormats))
+    && (value.columnWidths === undefined || Array.isArray(value.columnWidths));
 }
 
 function isCellShiftMutation(value: unknown): value is CellShiftParams {
@@ -384,39 +455,298 @@ export function resolveGoToSpecial(
 }
 
 function applyPasteCell(
-  mode: PasteMode,
+  spec: PasteSpecialSpec,
   transfer: ClipboardTransfer,
   source: CellData,
   target: CellData | undefined,
   rowDelta: number,
   colDelta: number,
-): CellData {
+  sourceAddress: string,
+): CellData | undefined {
   const destination = target ? structuredClone(target) : { value: null };
+  const sourceIsBlank = source.value === null || source.value === undefined;
+  if (spec.skipBlanks && sourceIsBlank && !source.formula) return undefined;
+  if (spec.link) {
+    return { value: null, formula: `=${sourceAddress}` };
+  }
+  if (spec.content === 'none' && spec.operation === 'none') {
+    if (spec.formatting === 'none') return undefined;
+    if (spec.formatting === 'source-theme') throw new Error('Paste source theme is unavailable for this workbook');
+    return {
+      ...destination,
+      style: spec.formatting === 'all-except-borders' && source.style
+        ? { ...structuredClone(source.style), borders: destination.style?.borders }
+        : source.style ? structuredClone(source.style) : destination.style,
+      numberFormat: spec.formatting === 'number-format' || spec.formatting === 'source-formatting' || spec.formatting === 'all' ? source.numberFormat : destination.numberFormat,
+    };
+  }
   const sourceFormula = source.formula
     ? transfer === 'move' ? source.formula : shiftFormula(source.formula, rowDelta, colDelta)
     : undefined;
 
-  if (mode === 'values') {
+  if (spec.operation !== 'none') {
+    if (sourceFormula || target?.formula) throw new Error('Paste arithmetic cannot operate on formula cells');
+    const sourceValue = source.value;
+    const targetValue = target?.value;
+    if (sourceIsBlank && spec.skipBlanks) return undefined;
+    if (typeof sourceValue !== 'number' || (targetValue !== null && targetValue !== undefined && typeof targetValue !== 'number')) {
+      throw new Error(`Paste arithmetic ${spec.operation} requires numeric source and target values`);
+    }
+    const left = typeof targetValue === 'number' ? targetValue : 0;
+    const right = sourceValue;
+    if (spec.operation === 'divide' && right === 0) throw new Error('Paste arithmetic divide cannot use zero');
+    const value = spec.operation === 'add' ? left + right
+      : spec.operation === 'subtract' ? left - right
+        : spec.operation === 'multiply' ? left * right
+          : left / right;
+    return { ...destination, value, formula: undefined };
+  }
+
+  if (spec.content === 'values') {
     // Values means values only: no formula, style, number format or cached
     // display metadata may leak into the destination.
-    return { value: source.value ?? null };
+    const next: CellData = { value: source.value ?? null };
+    if (spec.formatting === 'number-format') next.numberFormat = source.numberFormat;
+    if (spec.formatting === 'source-formatting' || spec.formatting === 'all') next.style = source.style ? structuredClone(source.style) : undefined;
+    if (spec.formatting === 'all-except-borders' && source.style) next.style = { ...structuredClone(source.style), borders: destination.style?.borders };
+    if (spec.formatting === 'source-theme') throw new Error('Paste source theme is unavailable for this workbook');
+    return next;
   }
-  if (mode === 'formats') {
+  if (spec.content === 'formulas') {
+    if (!sourceFormula) return { ...destination, value: source.value ?? null, formula: undefined };
     return {
       ...destination,
-      style: source.style ? structuredClone(source.style) : undefined,
+      value: null,
+      formula: sourceFormula,
+      formulaValue: undefined,
+      ...(spec.formatting === 'none' ? { style: destination.style, numberFormat: destination.numberFormat } : {}),
+      ...(spec.formatting === 'number-format' ? { numberFormat: source.numberFormat } : {}),
+      ...(spec.formatting === 'source-formatting' || spec.formatting === 'all' ? { style: source.style ? structuredClone(source.style) : undefined } : {}),
+      ...(spec.formatting === 'all-except-borders' && source.style ? { style: { ...structuredClone(source.style), borders: destination.style?.borders } } : {}),
+    };
+  }
+  if (spec.formatting === 'none') {
+    return { ...destination, value: source.value ?? null, formula: sourceFormula };
+  }
+  if (spec.formatting === 'number-format') {
+    return {
+      ...destination,
+      value: source.value ?? null,
+      formula: sourceFormula,
       numberFormat: source.numberFormat,
     };
   }
-  if (mode === 'formulas') {
-    if (!sourceFormula) {
-      return { ...destination, value: source.value ?? null, formula: undefined };
-    }
-    return { ...destination, value: null, formula: sourceFormula };
-  }
   const next = structuredClone(source);
   if (sourceFormula) next.formula = sourceFormula;
+  if (spec.formatting === 'all-except-borders' && next.style) {
+    next.style = { ...next.style, borders: destination.style?.borders };
+  }
+  if (spec.formatting === 'source-theme') throw new Error('Paste source theme is unavailable for this workbook');
   return next;
+}
+
+function rangeContains(range: RangeRef, row: number, column: number): boolean {
+  return row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn;
+}
+
+function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
+    && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
+}
+
+function assertPastePreconditions(workbook: WorkbookModel, params: PasteRangeParams, sourceValues: CellData[][]): RangeRef {
+  const sheet = workbook.getSheet(params.sheetId);
+  if (!Number.isInteger(params.targetOrigin.row) || !Number.isInteger(params.targetOrigin.column)
+    || params.targetOrigin.row < 0 || params.targetOrigin.column < 0) throw new Error('Paste target origin is invalid');
+  const sourceRange = params.clipboard.range;
+  const sourceSheet = workbook.getSheet(sourceRange.sheetId);
+  const sourceRows = sourceValues.length;
+  const sourceColumns = Math.max(0, ...sourceValues.map((row) => row.length));
+  if (sourceRows === 0 || sourceColumns === 0) throw new Error('Clipboard payload contains no cells');
+  if (sourceValues.some((row) => row.length !== sourceColumns)) throw new Error('Clipboard payload must be rectangular');
+  const targetRange: RangeRef = {
+    sheetId: params.sheetId,
+    startRow: params.targetOrigin.row,
+    endRow: params.targetOrigin.row + Math.max(0, (params.spec.transpose ? sourceColumns : sourceRows) - 1),
+    startColumn: params.targetOrigin.column,
+    endColumn: params.targetOrigin.column + Math.max(0, (params.spec.transpose ? sourceRows : sourceColumns) - 1),
+  };
+  if (targetRange.endRow >= sheet.rowCount || targetRange.endColumn >= sheet.columnCount) throw new Error('Paste exceeds worksheet bounds');
+  if (sourceRange.sheetId.length === 0 || sourceRange.startRow < 0 || sourceRange.startColumn < 0) throw new Error('Clipboard source range is invalid');
+  if (sourceRange.endRow >= sourceSheet.rowCount || sourceRange.endColumn >= sourceSheet.columnCount) throw new Error('Clipboard source range exceeds worksheet bounds');
+  if (params.spec.formatting === 'source-theme' && !params.clipboard.rangeMetadata.themeIdentity) throw new Error('Paste source theme is unavailable for this clipboard payload');
+  if (!isPasteSpecialSpecSupported(params.spec, params.clipboard)) throw new Error('Paste Special option is not supported by the canonical workbook model');
+  if (params.spec.metadata.validation && params.clipboard.rangeMetadata.validations.length === 0 && params.spec.content === 'all') {
+    // Empty metadata is a valid no-op; the branch is intentionally explicit so
+    // malformed hosts cannot omit the metadata envelope.
+    if (!params.clipboard.rangeMetadata) throw new Error('Clipboard range metadata is required');
+  }
+  const protectedRange = sheet.protectionRules.find((rule) => rule.locked && rule.range && rangesIntersect(rule.range, targetRange));
+  if (protectedRange) throw new Error(`Paste target is protected by ${protectedRange.id}`);
+  if (params.transfer === 'move' && sourceRange.sheetId === params.sheetId && rangesIntersect(sourceRange, targetRange)) {
+    throw new Error('Cut source and target ranges may not overlap');
+  }
+  return targetRange;
+}
+
+function keyFor(row: number, column: number): string {
+  return `${row}:${column}`;
+}
+
+function snapshotCells(sheet: WorksheetModel, ranges: RangeRef[]): CellSnapshot[] {
+  const output: CellSnapshot[] = [];
+  const seen = new Set<string>();
+  for (const range of ranges) {
+    for (let row = range.startRow; row <= range.endRow; row += 1) {
+      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+        const key = keyFor(row, column);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const value = sheet.cells.get(row, column);
+        output.push({ row, column, ...(value ? { value: structuredClone(value) } : {}) });
+      }
+    }
+  }
+  return output;
+}
+
+function snapshotMetadata(sheet: WorksheetModel, ranges: RangeRef[], include: PasteSpecialSpec['metadata']): Pick<PasteSnapshot, 'notes' | 'hyperlinks' | 'commentCells' | 'comments'> {
+  const contains = (row: number, column: number) => ranges.some((range) => rangeContains(range, row, column));
+  const coveredKeys = ranges.flatMap((range) => {
+    const keys: string[] = [];
+    for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) keys.push(keyFor(row, column));
+    return keys;
+  });
+  const notes = include.commentsNotes ? coveredKeys.map((key) => ({ key, value: sheet.notes.get(key) ? structuredClone(sheet.notes.get(key)!) : undefined })) : undefined;
+  const hyperlinks = include.hyperlinks ? coveredKeys.map((key) => ({ key, value: sheet.hyperlinks.get(key) ? structuredClone(sheet.hyperlinks.get(key)!) : undefined })) : undefined;
+  const commentCells = include.commentsNotes ? coveredKeys : undefined;
+  const comments = include.commentsNotes ? sheet.commentThreads.filter((thread) => contains(thread.row, thread.column)).map((thread) => structuredClone(thread)) : undefined;
+  return { notes, hyperlinks, commentCells, comments };
+}
+
+function applyPasteSnapshot(sheet: WorksheetModel, snapshot: PasteSnapshot): void {
+  for (const cell of snapshot.cells) {
+    if (cell.value) sheet.cells.set(cell.row, cell.column, structuredClone(cell.value));
+    else sheet.cells.delete(cell.row, cell.column);
+  }
+  if (snapshot.notes) {
+    for (const entry of snapshot.notes) {
+      if (entry.value) sheet.notes.set(entry.key, structuredClone(entry.value));
+      else sheet.notes.delete(entry.key);
+    }
+  }
+  if (snapshot.hyperlinks) {
+    for (const entry of snapshot.hyperlinks) {
+      if (entry.value) sheet.hyperlinks.set(entry.key, structuredClone(entry.value));
+      else sheet.hyperlinks.delete(entry.key);
+    }
+  }
+  if (snapshot.comments || snapshot.commentCells) {
+    const covered = new Set(snapshot.commentCells ?? snapshot.comments?.map((entry) => keyFor(entry.row, entry.column)) ?? []);
+    const retained = sheet.commentThreads.filter((entry) => !covered.has(keyFor(entry.row, entry.column)));
+    sheet.commentThreads.length = 0;
+    sheet.commentThreads.push(...retained, ...structuredClone(snapshot.comments ?? []));
+  }
+  if (snapshot.validations) {
+    sheet.dataValidations.length = 0;
+    sheet.dataValidations.push(...structuredClone(snapshot.validations));
+  }
+  if (snapshot.conditionalFormats) {
+    sheet.conditionalFormats.length = 0;
+    sheet.conditionalFormats.push(...structuredClone(snapshot.conditionalFormats));
+  }
+  if (snapshot.columnWidths) {
+    for (const entry of snapshot.columnWidths) {
+      if (entry.widthPx === undefined) delete sheet.columnWidthsPx[entry.column];
+      else sheet.columnWidthsPx[entry.column] = entry.widthPx;
+    }
+  }
+}
+
+function remapRange(range: RangeRef, source: RangeRef, target: RangeRef, targetSheetId: string, transpose: boolean): RangeRef {
+  if (transpose) {
+    return {
+      sheetId: targetSheetId,
+      startRow: target.startRow + (range.startColumn - source.startColumn),
+      endRow: target.startRow + (range.endColumn - source.startColumn),
+      startColumn: target.startColumn + (range.startRow - source.startRow),
+      endColumn: target.startColumn + (range.endRow - source.startRow),
+    };
+  }
+  return {
+    sheetId: targetSheetId,
+    startRow: target.startRow + (range.startRow - source.startRow),
+    endRow: target.startRow + (range.endRow - source.startRow),
+    startColumn: target.startColumn + (range.startColumn - source.startColumn),
+    endColumn: target.startColumn + (range.endColumn - source.startColumn),
+  };
+}
+
+function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParams, targetRange: RangeRef, after: PasteSnapshot): void {
+  const source = params.clipboard.range;
+  const sourceSheet = workbook.getSheet(source.sheetId);
+  const targetSheet = workbook.getSheet(params.sheetId);
+  const metadata = params.clipboard.rangeMetadata;
+  if (params.spec.metadata.commentsNotes) {
+    const notes = after.notes ?? [];
+    for (const entry of metadata.notes) {
+      const row = targetRange.startRow + entry.rowOffset;
+      const column = targetRange.startColumn + entry.columnOffset;
+      notes.push({ key: keyFor(row, column), value: structuredClone(entry.value) });
+    }
+    after.notes = notes;
+    const comments = after.comments ?? [];
+    for (const entry of metadata.comments) {
+      comments.push({ ...structuredClone(entry.value), sheetId: params.sheetId, row: targetRange.startRow + entry.rowOffset, column: targetRange.startColumn + entry.columnOffset });
+    }
+    after.comments = comments;
+  }
+  if (params.spec.metadata.hyperlinks) {
+    const hyperlinks = after.hyperlinks ?? [];
+    for (const entry of metadata.hyperlinks) {
+      hyperlinks.push({ key: keyFor(targetRange.startRow + entry.rowOffset, targetRange.startColumn + entry.columnOffset), value: structuredClone(entry.value) });
+    }
+    after.hyperlinks = hyperlinks;
+  }
+  if (params.spec.metadata.validation) {
+    const targetRules = (after.validations ?? []).filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, targetRange))
+      && !(params.transfer === 'move' && source.sheetId === params.sheetId && rule.ranges.some((range) => rangesIntersect(range, source))));
+    const sourceRules = metadata.validations.map((rule) => ({
+      ...structuredClone(rule),
+      id: `${rule.id}@paste:${targetRange.startRow}:${targetRange.startColumn}`,
+      sheetId: params.sheetId,
+      ranges: rule.ranges.map((range) => remapRange(range, source, targetRange, params.sheetId, params.spec.transpose)),
+    }));
+    after.validations = [...targetRules, ...sourceRules];
+  }
+  if (params.spec.metadata.conditionalFormats) {
+    const targetRules = (after.conditionalFormats ?? []).filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, targetRange))
+      && !(params.transfer === 'move' && source.sheetId === params.sheetId && rule.ranges.some((range) => rangesIntersect(range, source))));
+    const sourceRules = metadata.conditionalFormats.map((rule) => ({
+      ...structuredClone(rule),
+      id: `${rule.id}@paste:${targetRange.startRow}:${targetRange.startColumn}`,
+      sheetId: params.sheetId,
+      ranges: rule.ranges.map((range) => remapRange(range, source, targetRange, params.sheetId, params.spec.transpose)),
+    }));
+    after.conditionalFormats = [...targetRules, ...sourceRules];
+  }
+  if (params.spec.metadata.columnWidths) {
+    after.columnWidths = metadata.columnWidths.map((entry) => ({
+      column: targetRange.startColumn + entry.offset,
+      widthPx: entry.widthPx,
+    }));
+    if (params.transfer === 'move') {
+      after.columnWidths.push(...metadata.columnWidths.map((entry) => ({ column: source.startColumn + entry.offset, widthPx: undefined })));
+    }
+  }
+  if (params.transfer === 'move' && source.sheetId === params.sheetId) {
+    if (after.notes) for (const entry of metadata.notes) after.notes.push({ key: keyFor(source.startRow + entry.rowOffset, source.startColumn + entry.columnOffset) });
+    if (after.hyperlinks) for (const entry of metadata.hyperlinks) after.hyperlinks.push({ key: keyFor(source.startRow + entry.rowOffset, source.startColumn + entry.columnOffset) });
+    if (after.comments) after.comments = after.comments.filter((entry) => !rangeContains(source, entry.row, entry.column));
+  }
+  // Keep the source read in the planner so malformed cross-sheet references
+  // fail before the mutation is registered.
+  if (!sourceSheet || !targetSheet) throw new Error('Clipboard source or paste target sheet is unavailable');
 }
 
 export function registerEditingCommands(runtime: CommandRuntime): void {
@@ -426,35 +756,17 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     if (!isPasteMutation(item.params)) throw new Error('Invalid range.paste mutation payload');
     const params = item.params;
     const targetSheet = context.workbook.getSheet(params.sheetId);
-    const sourceSheet = params.sourceRange
-      ? context.workbook.getSheet(params.sourceRange.sheetId)
-      : undefined;
-    const sourceCells = params.clearSource && params.sourceRange && sourceSheet
-      ? sourceSheet.cells.extractRegion(
-        params.sourceRange.startRow,
-        params.sourceRange.endRow,
-        params.sourceRange.startColumn,
-        params.sourceRange.endColumn,
-      )
-      : [];
-    for (const entry of sourceCells) {
-      // A source region is extracted before target writes, so overlapping
-      // same-sheet cuts never erase the newly-pasted values.
-      sourceSheet!.cells.delete(entry.row, entry.column);
-    }
-    for (let rowOffset = 0; rowOffset < params.values.length; rowOffset++) {
-      const rowValues = params.values[rowOffset] ?? [];
-      for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset++) {
-        const value = rowValues[columnOffset];
-        if (value) targetSheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
-      }
+    applyPasteSnapshot(targetSheet, params.snapshot);
+    if (params.sourceRange && params.sourceRange.sheetId !== params.sheetId) {
+      const sourceSheet = context.workbook.getSheet(params.sourceRange.sheetId);
+      if (params.sourceSnapshot) applyPasteSnapshot(sourceSheet, params.sourceSnapshot);
     }
     },
     metadata: {
       schema: { name: 'PasteMutation', validate: isPasteMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: pasteAffectedRanges, mode: 'declared' },
-      inverseIds: ['cell.restore'],
+      inverseIds: ['range.paste'],
     },
   });
 
@@ -462,7 +774,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     id: 'sheet.range.paste',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const mode = params.mode ?? 'all';
+      if (!isPasteSpecialSpec(params.spec)) throw new Error('Paste Special requires a canonical specification');
       const sourceValues = parseClipboardPayload(params.clipboard);
       const sourceRange = params.clipboard.range;
       const transfer = params.transfer;
@@ -472,7 +784,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       if (transfer === 'move' && (!sourceRange || sourceRange.sheetId.length === 0)) {
         throw new Error('Move clipboard payload must include a source range');
       }
-      if (mode === 'transpose') {
+      const targetRange = assertPastePreconditions(context.workbook, params, sourceValues);
+      if (params.spec.transpose) {
         const transposed: CellData[][] = [];
         const src = sourceValues;
         for (let c = 0; c < (src[0]?.length ?? 0); c++) {
@@ -482,86 +795,123 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         // calculation; transpose is a presentation of the same payload.
         (sourceValues as CellData[][]).splice(0, sourceValues.length, ...transposed);
       }
-      const previous: Array<{ row: number; column: number; value?: CellData }> = [];
-      const sourcePrevious: Array<{ row: number; column: number; value?: CellData }> = [];
-      const affectedRanges: RangeRef[] = [];
-      const values: CellData[][] = [];
       const sourceRow = sourceRange?.startRow ?? 0;
       const sourceColumn = sourceRange?.startColumn ?? 0;
+      const sourceSheetName = context.workbook.getSheet(sourceRange.sheetId).name.replaceAll("'", "''");
+      const rowCount = sourceValues.length;
+      const columnCount = Math.max(0, ...sourceValues.map((row) => row.length));
+      const targetRows = params.spec.transpose ? columnCount : rowCount;
+      const targetColumns = params.spec.transpose ? rowCount : columnCount;
+      const targetCellRange: RangeRef = {
+        sheetId: params.sheetId,
+        startRow: params.targetOrigin.row,
+        endRow: params.targetOrigin.row + Math.max(0, targetRows - 1),
+        startColumn: params.targetOrigin.column,
+        endColumn: params.targetOrigin.column + Math.max(0, targetColumns - 1),
+      };
+      const affectedRanges: RangeRef[] = [structuredClone(targetCellRange)];
+      if (transfer === 'move' && sourceRange) affectedRanges.push(structuredClone(sourceRange));
+      const touchedRanges = transfer === 'move' && sourceRange && sourceRange.sheetId === params.sheetId ? [targetCellRange, sourceRange] : [targetCellRange];
+      const before: PasteSnapshot = {
+        cells: snapshotCells(sheet, touchedRanges),
+        ...snapshotMetadata(sheet, touchedRanges, params.spec.metadata),
+        ...(params.spec.metadata.validation ? { validations: structuredClone(sheet.dataValidations) } : {}),
+        ...(params.spec.metadata.conditionalFormats ? { conditionalFormats: structuredClone(sheet.conditionalFormats) } : {}),
+        ...(params.spec.metadata.columnWidths ? { columnWidths: Array.from({ length: targetColumns }, (_, index) => ({ column: params.targetOrigin.column + index, widthPx: sheet.columnWidthsPx[params.targetOrigin.column + index] })) } : {}),
+      };
+      const sourceSheet = transfer === 'move' ? context.workbook.getSheet(sourceRange!.sheetId) : undefined;
+      const sourceBefore = transfer === 'move' && sourceRange && sourceRange.sheetId !== params.sheetId && sourceSheet
+        ? {
+          cells: snapshotCells(sourceSheet, [sourceRange]),
+          ...snapshotMetadata(sourceSheet, [sourceRange], params.spec.metadata),
+          ...(params.spec.metadata.validation ? { validations: structuredClone(sourceSheet.dataValidations) } : {}),
+          ...(params.spec.metadata.conditionalFormats ? { conditionalFormats: structuredClone(sourceSheet.conditionalFormats) } : {}),
+          ...(params.spec.metadata.columnWidths ? { columnWidths: Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, index) => ({ column: sourceRange.startColumn + index, widthPx: sourceSheet.columnWidthsPx[sourceRange.startColumn + index] })) } : {}),
+        }
+        : undefined;
+      const after: PasteSnapshot = {
+        cells: structuredClone(before.cells),
+        ...(before.notes ? { notes: structuredClone(before.notes) } : {}),
+        ...(before.hyperlinks ? { hyperlinks: structuredClone(before.hyperlinks) } : {}),
+        ...(before.commentCells ? { commentCells: structuredClone(before.commentCells) } : {}),
+        ...(before.comments ? { comments: structuredClone(before.comments) } : {}),
+        ...(before.validations ? { validations: structuredClone(before.validations) } : {}),
+        ...(before.conditionalFormats ? { conditionalFormats: structuredClone(before.conditionalFormats) } : {}),
+        ...(before.columnWidths ? { columnWidths: structuredClone(before.columnWidths) } : {}),
+      };
+      const sourceAfter = sourceBefore ? {
+        cells: sourceBefore.cells.map((entry) => ({ row: entry.row, column: entry.column })),
+        ...(sourceBefore.notes ? { notes: sourceBefore.notes.map((entry) => ({ key: entry.key })) } : {}),
+        ...(sourceBefore.hyperlinks ? { hyperlinks: sourceBefore.hyperlinks.map((entry) => ({ key: entry.key })) } : {}),
+        ...(sourceBefore.commentCells ? { commentCells: sourceBefore.commentCells, comments: [] } : {}),
+        ...(sourceBefore.validations ? { validations: sourceBefore.validations.filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, sourceRange!))) } : {}),
+        ...(sourceBefore.conditionalFormats ? { conditionalFormats: sourceBefore.conditionalFormats.filter((rule) => !rule.ranges.some((range) => rangesIntersect(range, sourceRange!))) } : {}),
+        ...(sourceBefore.columnWidths ? { columnWidths: sourceBefore.columnWidths.map((entry) => ({ column: entry.column, widthPx: undefined })) } : {}),
+      } : undefined;
+      const afterCells = new Map(after.cells.map((entry) => [keyFor(entry.row, entry.column), entry]));
+      const setAfterCell = (row: number, column: number, value: CellData | undefined) => {
+        afterCells.set(keyFor(row, column), { row, column, ...(value ? { value: structuredClone(value) } : {}) });
+      };
       for (let rowOffset = 0; rowOffset < sourceValues.length; rowOffset++) {
         const rowValues = sourceValues[rowOffset] ?? [];
-        const outRow: CellData[] = [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset++) {
-          const row = params.targetOrigin.row + rowOffset;
-          const column = params.targetOrigin.column + columnOffset;
-          previous.push({ row, column, value: sheet.cells.get(row, column) });
-          affectedRanges.push({ sheetId: params.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column });
-              outRow.push(
-                applyPasteCell(
-                  mode === 'transpose' ? 'all' : mode,
-                  transfer,
-                  rowValues[columnOffset] ?? { value: null },
-                  sheet.cells.get(row, column),
-                  mode === 'transpose'
-                    ? params.targetOrigin.row + rowOffset - sourceRow - columnOffset
-                    : params.targetOrigin.row - sourceRow,
-                  mode === 'transpose'
-                    ? params.targetOrigin.column + columnOffset - sourceColumn - rowOffset
-                    : params.targetOrigin.column - sourceColumn,
-                ),
-              );
+          const source = rowValues[columnOffset] ?? { value: null };
+          const row = params.targetOrigin.row + (params.spec.transpose ? columnOffset : rowOffset);
+          const column = params.targetOrigin.column + (params.spec.transpose ? rowOffset : columnOffset);
+          const sourceAddress = `'${sourceSheetName}'!${columnLabel(sourceColumn + columnOffset)}${sourceRow + rowOffset + 1}`;
+          let next = applyPasteCell(
+            params.spec,
+            transfer,
+            source,
+            sheet.cells.get(row, column),
+            params.spec.transpose ? row - sourceRow - columnOffset : params.targetOrigin.row - sourceRow,
+            params.spec.transpose ? column - sourceColumn - rowOffset : params.targetOrigin.column - sourceColumn,
+            sourceAddress,
+          );
+          if (params.spec.metadata.commentsNotes && (source.note || source.comment)) {
+            next ??= structuredClone(sheet.cells.get(row, column) ?? { value: null });
+            if (source.note) next.note = structuredClone(source.note);
+            if (source.comment) next.comment = structuredClone(source.comment);
+          }
+          if (params.spec.metadata.hyperlinks && (source.hyperlink || source.hyperlinkDetail)) {
+            next ??= structuredClone(sheet.cells.get(row, column) ?? { value: null });
+            if (source.hyperlink) next.hyperlink = source.hyperlink;
+            if (source.hyperlinkDetail) next.hyperlinkDetail = structuredClone(source.hyperlinkDetail);
+          }
+          if (next !== undefined) setAfterCell(row, column, next);
         }
-        values.push(outRow);
       }
-      if (transfer === 'move' && sourceRange) {
-        const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
-        forEachCell(sourceSheet, sourceRange, (row, column, cell) => {
-          sourcePrevious.push({ row, column, value: cell ? structuredClone(cell) : undefined });
-          affectedRanges.push({ sheetId: sourceRange.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column });
-        });
+      if (transfer === 'move' && sourceRange && sourceRange.sheetId === params.sheetId) {
+        forEachCell(sheet, sourceRange, (row, column) => setAfterCell(row, column, undefined));
       }
-      const pasteMode = mode === 'transpose' ? 'all' : mode;
+      after.cells = [...afterCells.values()];
+      applyPasteMetadataPlan(context.workbook, params, targetRange, after);
       context.applyMutation({
         id: 'range.paste',
         unitId: context.workbook.unitId,
         sheetId: params.sheetId,
         params: {
           ...params,
-          values,
-          startRow: params.targetOrigin.row,
-          startColumn: params.targetOrigin.column,
+          sourceExtent: { rows: rowCount, columns: columnCount },
           transfer,
-          mode: pasteMode,
           sourceRange: transfer === 'move' ? structuredClone(sourceRange) : undefined,
           clearSource: transfer === 'move',
+          snapshot: after,
+          ...(sourceAfter ? { sourceSnapshot: sourceAfter } : {}),
         },
         affectedRanges,
-        inverse: [
-          ...previous.map((item) => ({
-            id: 'cell.restore' as const,
-            unitId: context.workbook.unitId,
-            sheetId: params.sheetId,
-            params: { sheetId: params.sheetId, row: item.row, column: item.column, previous: item.value },
-            affectedRanges: [{ sheetId: params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
-          })),
-          ...sourcePrevious.map((item) => ({
-            id: 'cell.restore' as const,
-            unitId: context.workbook.unitId,
-            sheetId: sourceRange?.sheetId ?? params.sheetId,
-            params: { sheetId: sourceRange?.sheetId ?? params.sheetId, row: item.row, column: item.column, previous: item.value },
-            affectedRanges: [{ sheetId: sourceRange?.sheetId ?? params.sheetId, startRow: item.row, endRow: item.row, startColumn: item.column, endColumn: item.column }],
-          })),
-        ],
+        inverse: [{
+          id: 'range.paste',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { ...params, sourceExtent: { rows: rowCount, columns: columnCount }, sourceRange: transfer === 'move' ? structuredClone(sourceRange) : undefined, clearSource: transfer === 'move', snapshot: before, ...(sourceBefore ? { sourceSnapshot: sourceBefore } : {}) },
+          affectedRanges,
+        }],
         apply: () => {
-          if (transfer === 'move' && sourceRange) {
+          applyPasteSnapshot(sheet, after);
+          if (transfer === 'move' && sourceRange && sourceRange.sheetId !== params.sheetId) {
             const sourceSheet = context.workbook.getSheet(sourceRange.sheetId);
-            forEachCell(sourceSheet, sourceRange, (row, column) => sourceSheet.cells.delete(row, column));
-          }
-          for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {
-            for (let columnOffset = 0; columnOffset < (values[rowOffset]?.length ?? 0); columnOffset++) {
-              const cell = values[rowOffset]![columnOffset]!;
-              sheet.cells.set(params.targetOrigin.row + rowOffset, params.targetOrigin.column + columnOffset, cell);
-            }
+            if (sourceAfter) applyPasteSnapshot(sourceSheet, sourceAfter);
           }
         },
       });
