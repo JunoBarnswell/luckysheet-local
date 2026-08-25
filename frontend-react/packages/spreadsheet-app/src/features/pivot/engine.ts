@@ -57,7 +57,7 @@ import {
   pivotScalarFromMemberKey,
 } from '@react-sheets/core-model';
 import type { PivotTimelinePeriodBounds } from '@react-sheets/core-model';
-import { FormulaEngine, isFormulaError, type FormulaValue } from '@react-sheets/formula-engine';
+import { collectNameReferences, FormulaEngine, isFormulaError, parseFormula, type FormulaValue } from '@react-sheets/formula-engine';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
 
@@ -867,9 +867,20 @@ function columnLabel(index: number): string {
 
 const formulaFunctions = new Set(['SUM', 'COUNT', 'AVERAGE', 'MIN', 'MAX', 'IF', 'AND', 'OR', 'NOT', 'ROUND', 'ABS', 'CONCAT', 'LEFT', 'RIGHT', 'LEN']);
 
-function rewriteCalculatedFormula(formula: string, fields: string[]): string {
+type PivotCalculatedField = NonNullable<PivotLayout['calculatedFields']>[number];
+
+interface CalculatedFieldPlan {
+  fields: SourceField[];
+  definitions: Map<string, PivotCalculatedField>;
+  ordered: PivotCalculatedField[];
+}
+
+function rewriteCalculatedFormula(formula: string, fields: SourceField[]): string {
   let rewritten = formula.trim().replace(/^=/, '');
-  fields.map((field, index) => ({ field, index })).sort((left, right) => right.field.length - left.field.length).forEach(({ field, index }) => {
+  fields.flatMap((field, index) => [
+    { field: field.name, index },
+    { field: field.fieldId, index },
+  ]).filter(({ field }) => field.length > 0).sort((left, right) => right.field.length - left.field.length).forEach(({ field, index }) => {
     const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const reference = `${columnLabel(index)}1`;
     rewritten = rewritten.replace(new RegExp(`\\[${escaped}\\]`, 'g'), reference);
@@ -886,20 +897,15 @@ function calculateRowFormula(row: SourceRow, formula: string, fields: SourceFiel
     const value = row.values[field.fieldId] ?? null;
     engine.setValue({ sheetId: 'pivot', row: 0, column: index }, isPivotError(value) ? null : value);
   });
-  engine.setFormula({ sheetId: 'pivot', row: 1, column: 0 }, rewriteCalculatedFormula(formula, fields.map((field) => field.name)));
+  engine.setFormula({ sheetId: 'pivot', row: 1, column: 0 }, rewriteCalculatedFormula(formula, fields));
   return formulaScalar(engine.getCellValue({ sheetId: 'pivot', row: 1, column: 0 }));
 }
 
-function applyCalculatedData(rows: SourceRow[], fields: PivotFieldDefinition[], calculatedFields: PivotLayout['calculatedFields'] = [], calculatedItems: PivotLayout['calculatedItems'] = []): SourceRow[] {
-  if (!calculatedFields.length && !calculatedItems.length) return rows;
+function applyCalculatedItems(rows: SourceRow[], fields: PivotFieldDefinition[], calculatedItems: PivotLayout['calculatedItems'] = []): SourceRow[] {
+  if (!calculatedItems.length) return rows;
   const currentFields: SourceField[] = fields.map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
   return rows.map((row) => {
     const values = { ...row.values };
-    for (const calculated of calculatedFields) {
-      const fieldId = calculated.fieldId;
-      values[fieldId] = calculateRowFormula({ ...row, values }, calculated.formula, currentFields);
-      currentFields.push({ fieldId, name: calculated.name, ordinal: currentFields.length, dataType: 'mixed' });
-    }
     for (const calculated of calculatedItems) {
       const fieldId = calculated.fieldId;
       const targetFieldId = resolveFieldId(calculated.targetFieldId, { fields: currentFields.map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType ?? 'mixed' })) });
@@ -908,6 +914,112 @@ function applyCalculatedData(rows: SourceRow[], fields: PivotFieldDefinition[], 
     }
     return { ...row, values };
   });
+}
+
+function calculatedFieldReferenceIds(formula: string, fields: SourceField[], definitions: Map<string, PivotCalculatedField>, ownerId: string): string[] {
+  let ast;
+  try {
+    ast = parseFormula(rewriteCalculatedFormula(formula, fields));
+  } catch (error) {
+    const bracketReference = formula.match(/\[([^\]]+)\]/)?.[1];
+    if (bracketReference && !fields.some((field) => field.name.toUpperCase() === bracketReference.toUpperCase() || field.fieldId.toUpperCase() === bracketReference.toUpperCase())) {
+      throw new Error(`Pivot calculated field references unknown field: ${bracketReference}`, { cause: error });
+    }
+    throw new Error(`Pivot calculated field formula is invalid: ${ownerId}`, { cause: error });
+  }
+  const fieldReferences = new Map<string, string>();
+  for (const field of fields) {
+    for (const fieldName of [field.fieldId, field.name]) {
+      const key = fieldName.toUpperCase();
+      const previous = fieldReferences.get(key);
+      if (previous && previous !== field.fieldId) throw new Error(`Pivot calculated field reference is ambiguous: ${fieldName}`);
+      fieldReferences.set(key, field.fieldId);
+    }
+  }
+  const references: string[] = [];
+  for (const field of fields) {
+    for (const fieldName of [field.fieldId, field.name]) {
+      const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const referenced = new RegExp(`\\[${escaped}\\]`, 'i').test(formula)
+        || (!formulaFunctions.has(fieldName.toUpperCase()) && new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'i').test(formula));
+      if (referenced && definitions.has(field.fieldId) && !references.includes(field.fieldId)) references.push(field.fieldId);
+    }
+  }
+  for (const name of collectNameReferences(ast)) {
+    const fieldId = fieldReferences.get(name.toUpperCase());
+    if (!fieldId) throw new Error(`Pivot calculated field references unknown field: ${name}`);
+  }
+  return references;
+}
+
+function createCalculatedFieldPlan(fields: PivotFieldDefinition[], calculatedFields: PivotLayout['calculatedFields'] = [], calculatedItems: PivotLayout['calculatedItems'] = []): CalculatedFieldPlan {
+  const calculatedItemIds = new Set((calculatedItems ?? []).map((field) => field.fieldId));
+  const descriptors: SourceField[] = fields
+    .filter((field) => !calculatedItemIds.has(field.fieldId))
+    .map((field) => ({ fieldId: field.fieldId, name: field.name, ordinal: field.ordinal, dataType: field.dataType }));
+  const definitions = new Map<string, PivotCalculatedField>();
+  for (const calculated of calculatedFields ?? []) {
+    if (definitions.has(calculated.fieldId)) throw new Error(`Pivot calculated field is duplicated: ${calculated.fieldId}`);
+    if (!calculated.name.trim() || !calculated.formula.trim()) throw new Error(`Pivot calculated field definition is invalid: ${calculated.fieldId}`);
+    definitions.set(calculated.fieldId, calculated);
+    if (!descriptors.some((field) => field.fieldId === calculated.fieldId)) {
+      descriptors.push({ fieldId: calculated.fieldId, name: calculated.name, ordinal: descriptors.length, dataType: 'mixed' });
+    }
+  }
+  const dependencies = new Map<string, string[]>();
+  for (const calculated of definitions.values()) dependencies.set(calculated.fieldId, calculatedFieldReferenceIds(calculated.formula, descriptors, definitions, calculated.fieldId));
+  const state = new Map<string, 'visiting' | 'visited'>();
+  const ordered: PivotCalculatedField[] = [];
+  const visit = (fieldId: string, path: string[]): void => {
+    const current = state.get(fieldId);
+    if (current === 'visited') return;
+    if (current === 'visiting') throw new Error(`Pivot calculated field dependency cycle: ${[...path, fieldId].join(' -> ')}`);
+    state.set(fieldId, 'visiting');
+    for (const dependency of dependencies.get(fieldId) ?? []) visit(dependency, [...path, fieldId]);
+    state.set(fieldId, 'visited');
+    ordered.push(definitions.get(fieldId)!);
+  };
+  for (const calculated of definitions.values()) visit(calculated.fieldId, []);
+  return { fields: descriptors, definitions, ordered };
+}
+
+interface CalculatedFieldEvaluator {
+  has(fieldId: string): boolean;
+  evaluate(rows: ReadonlyArray<SourceRow>, fieldId: string): PivotScalar | null;
+}
+
+function createCalculatedFieldEvaluator(plan: CalculatedFieldPlan): CalculatedFieldEvaluator {
+  const calculatedIds = new Set(plan.definitions.keys());
+  const evaluate = (rows: ReadonlyArray<SourceRow>, fieldId: string): PivotScalar | null => {
+    if (!calculatedIds.has(fieldId)) return null;
+    const engine = new FormulaEngine({ defaultSheetId: 'pivot-summary' });
+    const values = new Map<string, PivotScalar | null>();
+    plan.fields.forEach((field, index) => {
+      if (!calculatedIds.has(field.fieldId)) {
+        const value = aggregatePivotValues(rows, field.fieldId, 'sum');
+        values.set(field.fieldId, value);
+        engine.setValue({ sheetId: 'pivot-summary', row: 0, column: index }, isPivotError(value) ? null : value);
+      }
+    });
+    for (const calculated of plan.ordered) {
+      const index = plan.fields.findIndex((field) => field.fieldId === calculated.fieldId);
+      if (index < 0) throw new Error(`Pivot calculated field descriptor is missing: ${calculated.fieldId}`);
+      const address = { sheetId: 'pivot-summary', row: 1, column: index };
+      engine.setFormula(address, rewriteCalculatedFormula(calculated.formula, plan.fields));
+      const value = formulaScalar(engine.getCellValue(address));
+      values.set(calculated.fieldId, value);
+      engine.setValue({ sheetId: 'pivot-summary', row: 0, column: index }, isPivotError(value) ? null : value);
+    }
+    return values.get(fieldId) ?? null;
+  };
+  return { has: (fieldId) => calculatedIds.has(fieldId), evaluate };
+}
+
+function toNumber(value: PivotScalar): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = Number(value.replace(/[$,%]/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function compare(left: PivotScalar, right: PivotScalar, dataType: PivotFieldDataType | undefined, collator: Intl.Collator): number {
@@ -1330,7 +1442,12 @@ function resultValueFields(layout: PivotLayout): PivotResultValueField[] {
   });
 }
 
-function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string): PivotResultCell[] {
+function resultValue(rows: ReadonlyArray<SourceRow>, value: PivotResultValueField, operation: PivotAggregateFunction, calculatedFields?: CalculatedFieldEvaluator): PivotScalar {
+  if (calculatedFields?.has(value.sourceFieldId)) return calculatedFields.evaluate(rows, value.sourceFieldId);
+  return aggregatePivotValues(rows, value.sourceFieldId, operation);
+}
+
+function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResultValueField[], nodePath: string[], kind: PivotResultCell['kind'] = 'detail', subtotalFieldId?: string, calculatedFields?: CalculatedFieldEvaluator): PivotResultCell[] {
   return columns.map((column, columnIndex) => {
     const nodeRows = new Set(rows);
     const columnRows = column.rows.filter((candidate) => nodeRows.has(candidate));
@@ -1340,27 +1457,27 @@ function resultCells(rows: SourceRow[], columns: AxisGroup[], values: PivotResul
       kind,
       columnPath: column.values,
       sourceRowPaths: columnRows.flatMap((row) => row.paths),
-      values: values.map((value) => aggregatePivotValues(columnRows, value.sourceFieldId, kind === 'subtotal' && value.subtotalFieldId === subtotalFieldId
+      values: values.map((value) => resultValue(columnRows, value, kind === 'subtotal' && value.subtotalFieldId === subtotalFieldId
         ? value.subtotalFunction ?? value.summarizeBy
-        : value.summarizeBy)),
+        : value.summarizeBy, calculatedFields)),
     };
   });
 }
 
-function resultGrandTotalCell(rows: SourceRow[], values: PivotResultValueField[], nodePath: string[], subtotalFieldId?: string): PivotResultCell {
+function resultGrandTotalCell(rows: SourceRow[], values: PivotResultValueField[], nodePath: string[], subtotalFieldId?: string, calculatedFields?: CalculatedFieldEvaluator): PivotResultCell {
   return {
     id: `${nodePath.join('/') || 'root'}|grand-total:row`,
     nodePath,
     kind: 'grand-total',
     columnPath: [],
     sourceRowPaths: rows.flatMap((row) => row.paths),
-    values: values.map((value) => aggregatePivotValues(rows, value.sourceFieldId, subtotalFieldId === value.subtotalFieldId
+    values: values.map((value) => resultValue(rows, value, subtotalFieldId === value.subtotalFieldId
       ? value.subtotalFunction ?? value.summarizeBy
-      : value.summarizeBy)),
+      : value.summarizeBy, calculatedFields)),
   };
 }
 
-function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], showRowGrandTotals: boolean, fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, prefix: string[] = []): PivotResultNode[] {
+function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth: number, columns: AxisGroup[], values: PivotResultValueField[], subtotalLocation: PivotLayout['subtotalLocation'], showRowGrandTotals: boolean, fieldCatalog: PivotFieldCatalog, collator: Intl.Collator, calculatedFields?: CalculatedFieldEvaluator, prefix: string[] = []): PivotResultNode[] {
   // A Pivot with no Row fields still owns one data row: the root aggregation
   // crossing every Column path and Values placement. Grand Total is a
   // separate axis total and must not stand in for this matrix row.
@@ -1375,8 +1492,8 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
       label: 'Values',
       depth: 0,
       children: [],
-      values: resultCells(rows, columns, values, path),
-      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(rows, values, path) } : {}),
+      values: resultCells(rows, columns, values, path, 'detail', undefined, calculatedFields),
+      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(rows, values, path, undefined, calculatedFields) } : {}),
       subtotal: false,
       sourceRowPaths: rows.flatMap((row) => row.paths),
     }];
@@ -1386,7 +1503,7 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
     const fieldId = placement.fieldId;
     const member = createPivotMemberKey(group.values[0] ?? null);
     const path = [...prefix, `${fieldId}=${pivotMemberKey(member)}`];
-    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, showRowGrandTotals, fieldCatalog, collator, path);
+    const children = resultNodes(group.rows, placements, depth + 1, columns, values, subtotalLocation, showRowGrandTotals, fieldCatalog, collator, calculatedFields, path);
     const leaf = children.length === 0;
     const subtotal = !leaf && subtotalLocation !== 'off' && placement.subtotal?.mode !== 'none';
     return {
@@ -1399,8 +1516,8 @@ function resultNodes(rows: SourceRow[], placements: PivotFieldPlacement[], depth
       label: display(group.values[0] ?? null),
       depth,
       children,
-      values: resultCells(group.rows, columns, values, path, subtotal ? 'subtotal' : 'detail', subtotal ? placement.fieldId : undefined),
-      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(group.rows, values, path, subtotal ? placement.fieldId : undefined) } : {}),
+      values: resultCells(group.rows, columns, values, path, subtotal ? 'subtotal' : 'detail', subtotal ? placement.fieldId : undefined, calculatedFields),
+      ...(showRowGrandTotals ? { rowGrandTotal: resultGrandTotalCell(group.rows, values, path, subtotal ? placement.fieldId : undefined, calculatedFields) } : {}),
       subtotal,
       sourceRowPaths: group.rows.flatMap((row) => row.paths),
     };
@@ -1558,11 +1675,33 @@ function computePivotResultFromTable(
   formula?: FormulaEngine,
 ): PivotResultTree {
   const collator = createPivotCollator(definition.layout.collation);
-  const rows = applyCalculatedData(rawTable.rows, definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
+  const calculatedFieldIds = new Set((definition.layout.calculatedFields ?? []).map((field) => field.fieldId));
+  const calculatedItemIds = new Set((definition.layout.calculatedItems ?? []).map((field) => field.fieldId));
+  const structuralReferences: string[] = [
+    ...definition.layout.rows.map((entry) => entry.fieldId),
+    ...definition.layout.columns.map((entry) => entry.fieldId),
+    ...definition.layout.filters.flatMap((filter) => {
+      if (filter.kind === 'top-items') return [filter.fieldId, filter.valueFieldId];
+      if (filter.kind === 'condition' && filter.valueFieldId !== undefined) return [filter.fieldId, filter.valueFieldId];
+      return [filter.fieldId];
+    }),
+  ];
+  const calculatedStructuralReference = structuralReferences.find((field) => calculatedFieldIds.has(field));
+  if (calculatedStructuralReference) throw new Error(`Pivot calculated field is only valid in Values: ${calculatedStructuralReference}`);
+  const calculatedItemStructuralReference = structuralReferences.find((field) => calculatedItemIds.has(field));
+  if (calculatedItemStructuralReference) throw new Error(`Pivot calculated item is only valid in Values: ${calculatedItemStructuralReference}`);
+  const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
+  const calculatedFields = createCalculatedFieldEvaluator(calculatedPlan);
+  const baseFields = definition.fieldCatalog.fields.filter((field) => !calculatedFieldIds.has(field.fieldId) && !calculatedItemIds.has(field.fieldId));
+  const rows = applyCalculatedItems(rawTable.rows, baseFields, definition.layout.calculatedItems);
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
-    ...definition.layout.filters.flatMap((filter) => filter.kind === 'top-items' || (filter.kind === 'condition' && filter.valueFieldId) ? [filter.fieldId, filter.valueFieldId] : [filter.fieldId]),
+    ...definition.layout.filters.flatMap((filter) => {
+      if (filter.kind === 'top-items') return [filter.fieldId, filter.valueFieldId];
+      if (filter.kind === 'condition' && filter.valueFieldId !== undefined) return [filter.fieldId, filter.valueFieldId];
+      return [filter.fieldId];
+    }),
     ...definition.layout.values.map((entry) => entry.fieldId),
   ];
   const known = new Set([...definition.fieldCatalog.fields.map((field) => field.fieldId), ...(definition.layout.calculatedFields ?? []).map((field) => field.fieldId), ...(definition.layout.calculatedItems ?? []).map((field) => field.fieldId)]);
@@ -1577,7 +1716,7 @@ function computePivotResultFromTable(
     id: `${definition.id}|grand-total`,
     kind: 'grand-total',
     columnPath: [],
-    values: resultFields.map((field) => aggregatePivotValues(filtered, field.sourceFieldId, field.summarizeBy)),
+    values: resultFields.map((field) => resultValue(filtered, field, field.summarizeBy, calculatedFields)),
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
   const tree: PivotResultTree = {
@@ -1586,8 +1725,8 @@ function computePivotResultFromTable(
     fields: definition.fieldCatalog,
     columnPaths: columns.map((column) => column.values),
     valueFields: resultFields,
-    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator),
-    columnGrandTotals: resultCells(filtered, columns, resultFields, [`${definition.id}|grand-total`], 'grand-total'),
+    rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator, calculatedFields),
+    columnGrandTotals: resultCells(filtered, columns, resultFields, [`${definition.id}|grand-total`], 'grand-total', undefined, calculatedFields),
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => row.paths),
   };
