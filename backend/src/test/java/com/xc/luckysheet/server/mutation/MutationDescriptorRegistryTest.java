@@ -914,4 +914,34 @@ class MutationDescriptorRegistryTest {
         assertEquals(1, sheet.path("conditionalFormats").get(0).path("ranges").get(0).path("startRow").asInt());
         assertEquals(3, sheet.path("conditionalFormats").get(0).path("ranges").get(1).path("startRow").asInt());
     }
+
+    @Test
+    void tableDataBodySortUsesCanonicalFormulaOrderWithoutMovingHeaderOrTableOwner() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":6,"columnCount":3,
+                  "cells":{"0":{"0":{"value":"Calculated"},"1":{"value":"Row"}},"1":{"0":{"value":20},"1":{"value":"twenty"}},"2":{"0":{"value":5},"1":{"value":"five"}},"3":{"0":{"value":10},"1":{"value":"ten"}}},
+                  "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                  "autoFilter":null,"sheetTables":[{"id":"table-1","sheetId":"sheet-1","name":"SortTable","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":false,"showBandedColumns":false,"showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"both","autoFilter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"columns":{}},"columns":[{"id":"calculated","name":"Calculated"},{"id":"row","name":"Row"}]}],
+                  "notes":[],"commentThreads":[],"hyperlinks":[],"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"spillRanges":[],"protectionRules":[]} ]}
+                """);
+        OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,3,1]}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode sheet = current.path("sheets").get(0);
+        assertEquals("Calculated", sheet.path("cells").path("0").path("0").path("value").asText());
+        assertEquals("five", sheet.path("cells").path("1").path("1").path("value").asText());
+        assertEquals("ten", sheet.path("cells").path("2").path("1").path("value").asText());
+        assertEquals("twenty", sheet.path("cells").path("3").path("1").path("value").asText());
+        assertEquals(0, sheet.path("sheetTables").get(0).path("range").path("startRow").asInt());
+        assertEquals(3, sheet.path("sheetTables").get(0).path("range").path("endRow").asInt());
+        assertEquals(0, sheet.path("sheetTables").get(0).path("autoFilter").path("range").path("startRow").asInt());
+
+        OperationMutation duplicate = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[1,1,3]}
+                """));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate));
+    }
 }

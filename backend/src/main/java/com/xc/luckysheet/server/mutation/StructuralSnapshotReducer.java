@@ -227,6 +227,18 @@ final class StructuralSnapshotReducer {
         return row >= range.startRow() && row <= range.endRow() && column >= range.startColumn() && column <= range.endColumn();
     }
 
+    /** A table's header/total rows are not part of a data-body sort permutation. */
+    private static boolean isTableBodyPermutation(ObjectNode table, RangeRef range) {
+        JsonNode tableRange = table.get("range");
+        if (tableRange == null || !table.path("hasHeaderRow").asBoolean(false)) return false;
+        int totalOffset = table.path("hasTotalRow").asBoolean(false) ? 1 : 0;
+        return range.sheetId().equals(tableRange.path("sheetId").asText())
+                && range.startRow() == tableRange.path("startRow").asInt() + 1
+                && range.endRow() == tableRange.path("endRow").asInt() - totalOffset
+                && range.startColumn() == tableRange.path("startColumn").asInt()
+                && range.endColumn() == tableRange.path("endColumn").asInt();
+    }
+
     private static void validateDeletePreservation(ObjectNode root, ObjectNode target, FormulaReferenceTransformer.Axis axis, int at, int count) {
         int end = at + count - 1;
         for (JsonNode sparkline : SnapshotMutationSupport.array(target, "sparklines")) {
@@ -694,8 +706,9 @@ final class StructuralSnapshotReducer {
             JsonNode tableRange = table.get("range");
             if (tableRange == null || !range.sheetId().equals(tableRange.path("sheetId").asText())) continue;
             boolean intersects = tableRange.path("startRow").asInt() <= range.endRow() && tableRange.path("endRow").asInt() >= range.startRow();
-            if (intersects && !(tableRange.path("startRow").asInt() == range.startRow() && tableRange.path("endRow").asInt() == range.endRow())) {
-                throw ServiceException.validation("Row permutation requires the complete sheet table range");
+            boolean completeTable = tableRange.path("startRow").asInt() == range.startRow() && tableRange.path("endRow").asInt() == range.endRow();
+            if (intersects && !completeTable && !isTableBodyPermutation((ObjectNode) table, range)) {
+                throw ServiceException.validation("Row permutation requires the complete sheet table range or its data body");
             }
         }
         JsonNode outline = sheet.get("outline");
@@ -762,7 +775,13 @@ final class StructuralSnapshotReducer {
         }
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) writeSingleRange(filter.get("range"), range, rowMap, "auto filter");
-        for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) writeSingleRange(requireObject(table, "Sheet table").get("range"), range, rowMap, "sheet table");
+        for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {
+            ObjectNode table = requireObject(rawTable, "Sheet table");
+            if (!isTableBodyPermutation(table, range)) {
+                writeSingleRange(table.get("range"), range, rowMap, "sheet table");
+                if (table.has("autoFilter")) writeSingleRange(table.get("autoFilter").path("range"), range, rowMap, "sheet table filter");
+            }
+        }
         for (JsonNode rawPivot : SnapshotMutationSupport.array(sheet, "pivots")) {
             ObjectNode pivot = requireObject(rawPivot, "Pivot");
             SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
@@ -920,7 +939,13 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) for (JsonNode item : requireObject(raw, "Data validation").path("ranges")) remapRangeExact(item, range, rowMap);
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) requireSingleRange(filter.get("range"), range, rowMap, "auto filter");
-        for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) requireSingleRange(requireObject(table, "Sheet table").get("range"), range, rowMap, "sheet table");
+        for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {
+            ObjectNode table = requireObject(rawTable, "Sheet table");
+            if (!isTableBodyPermutation(table, range)) {
+                requireSingleRange(table.get("range"), range, rowMap, "sheet table");
+                if (table.has("autoFilter")) requireSingleRange(table.get("autoFilter").path("range"), range, rowMap, "sheet table filter");
+            }
+        }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, rowMap, "pivot source"));
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, rowMap, "merge");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), range, rowMap, "protection rule");

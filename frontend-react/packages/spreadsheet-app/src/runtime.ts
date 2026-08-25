@@ -197,8 +197,28 @@ export function createSpreadsheetRuntime(options: {
     },
   });
   runtime.checkpointWorkspace = () => checkpointWorkspace(runtime);
+  installCommandCellValueResolver(runtime);
   attachCoreListeners(runtime);
   return runtime;
+}
+
+/** Keep command-side sorting on the same formula/spill value authority as the canvas. */
+function installCommandCellValueResolver(runtime: SpreadsheetRuntime): void {
+  runtime.commands.setCellValueResolver((sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    const spillValue = runtime.formula.getSpillValueAt(sheet.id, row, column);
+    if (spillValue !== undefined) return spillValue;
+    const cell = sheet.cells.get(row, column);
+    if (cell?.formula !== undefined) {
+      const result = runtime.formula.getCellResult(address);
+      if (result === undefined) throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
+      return result.value;
+    }
+    if (runtime.formula.getCellResult(address) !== undefined) {
+      return runtime.formula.getCellValue(address);
+    }
+    return cell?.formulaValue ?? cell?.value ?? null;
+  });
 }
 
 const FORMULA_SYNC_MUTATIONS = new Set([
@@ -214,6 +234,7 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'cells.inserted',
   'cells.deleted',
   'cells.inserted.restore',
+  'rows.permuted',
   'cells.deleted.restore',
   'rows.inserted',
   'rows.deleted',
@@ -601,6 +622,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.commands = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
   runtime.formula = rebuildFormulaEngine(workbook);
+  installCommandCellValueResolver(runtime);
   runtime.formulaAudit.setFormula(runtime.formula);
   registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);
   attachCoreListeners(runtime);

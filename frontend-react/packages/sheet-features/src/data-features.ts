@@ -24,7 +24,9 @@ import {
   mapAstReferences,
   parseFormula,
   type ParsedCellReference,
+  type FormulaError,
   type FormulaValue,
+  type ScalarValue,
 } from "@react-sheets/formula-engine";
 
 // ---------- 基础 ----------
@@ -86,6 +88,7 @@ function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationPa
     && Number(candidate.startColumn) >= 0 && Number(candidate.endColumn) >= Number(candidate.startColumn)
     && Array.isArray(params.sourceRows)
     && params.sourceRows.length === Number(candidate.endRow) - Number(candidate.startRow) + 1
+    && new Set(params.sourceRows).size === params.sourceRows.length
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
 }
 
@@ -1334,16 +1337,69 @@ export interface SubtotalParams {
   functionName: 'SUM' | 'COUNT' | 'AVERAGE';
 }
 
-function compareSortValues(left: CellData['value'], right: CellData['value']): number {
-  if (left === right) return 0;
-  if (left == null) return 1;
-  if (right == null) return -1;
-  if (typeof left === 'number' && typeof right === 'number') return left - right;
-  if (typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
-  return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
+/** A resolved scalar only; array/range formula results are not sortable. */
+export type SortCellValue = ScalarValue | FormulaError;
+
+// Sorting has no workbook-owned locale field, so use one explicit collation
+// for local execution and avoid host/browser locale drift. Excel date serials
+// remain numbers and therefore never pass through textual formatting.
+const SORT_COLLATOR = new Intl.Collator('en-US', { numeric: true, sensitivity: 'base' });
+
+function normalizeSortCellValue(value: unknown): SortCellValue {
+  if (Array.isArray(value)) {
+    if (value.length === 1 && Array.isArray(value[0]) && value[0].length === 1) return normalizeSortCellValue(value[0][0]);
+    throw new Error('Sort key cannot be an unresolved array result');
+  }
+  if (value === undefined || value === null) return null;
+  if (isFormulaError(value)) return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('Sort key contains a non-finite numeric result');
+    return value;
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  throw new Error(`Sort key has unsupported resolved value type: ${typeof value}`);
 }
 
-function sortedSourceRows(sheet: WorksheetModel, params: DataSortParams): number[] {
+function sortValueKind(value: SortCellValue): number {
+  if (value === null) return 5;
+  if (isFormulaError(value)) return 4;
+  if (typeof value === 'number') return 0;
+  if (typeof value === 'boolean') return 1;
+  return 2;
+}
+
+export function compareSortValues(left: SortCellValue, right: SortCellValue): number {
+  if (left === right) return 0;
+  const leftKind = sortValueKind(left);
+  const rightKind = sortValueKind(right);
+  if (leftKind !== rightKind) return leftKind - rightKind;
+  if (left === null || right === null) return 0;
+  if (isFormulaError(left) && isFormulaError(right)) return SORT_COLLATOR.compare(left.code, right.code);
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  if (typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
+  return SORT_COLLATOR.compare(String(left), String(right));
+}
+
+export function resolveSortCellValue(
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
+): SortCellValue {
+  const cell = sheet.cells.get(row, column);
+  const resolved = resolver?.(sheet, row, column);
+  if (resolved !== undefined) return normalizeSortCellValue(resolved);
+  if (cell?.formula !== undefined && cell.formulaValue === undefined) {
+    throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
+  }
+  return normalizeSortCellValue(cell?.formulaValue ?? cell?.value ?? null);
+}
+
+function sortedSourceRows(
+  sheet: WorksheetModel,
+  params: DataSortParams,
+  resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
+): number[] {
   const range = normalizeRangeRef(params.range);
   const startRow = (params.hasHeader ?? false) ? range.startRow + 1 : range.startRow;
   if (startRow > range.endRow) return [];
@@ -1356,8 +1412,8 @@ function sortedSourceRows(sheet: WorksheetModel, params: DataSortParams): number
   rows.sort((leftRow, rightRow) => {
     for (const criterion of params.criteria) {
       const result = compareSortValues(
-        sheet.cells.get(leftRow, criterion.column)?.value ?? null,
-        sheet.cells.get(rightRow, criterion.column)?.value ?? null,
+        resolveSortCellValue(sheet, leftRow, criterion.column, resolver),
+        resolveSortCellValue(sheet, rightRow, criterion.column, resolver),
       );
       if (result !== 0) return criterion.ascending ? result : -result;
     }
@@ -1540,7 +1596,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       assertNoDataRegionIntersection(sheet, range, 'Sort');
       if (params.criteria.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const sourceRows = sortedSourceRows(sheet, { ...params, range });
+      const sourceRows = sortedSourceRows(sheet, { ...params, range }, context.resolveCellValue);
       if (sourceRows.length <= 1 || sourceRows.every((row, offset) => row === range.startRow + (params.hasHeader ? 1 : 0) + offset)) {
         return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       }
