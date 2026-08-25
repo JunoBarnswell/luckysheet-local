@@ -5,6 +5,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import {
   computeConditionalOverlays,
   computeFilterHiddenRows,
+  createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
   registerSheetCommands,
   normalizeAutoFilterModel,
@@ -192,6 +193,124 @@ test('AutoFilter color and icon criteria use native cell metadata or imported di
   assert.deepEqual([...computeFilterHiddenRows(sheet)], [2, 3]);
   sheet.autoFilter.columns[0]!.criterion = { kind: 'icon', iconSet: '3TrafficLights1', iconId: 2 };
   assert.deepEqual([...computeFilterHiddenRows(sheet)], [1, 2]);
+});
+
+test('AutoFilter color criteria consume the effective conditional-format fill/font without materializing CellData styles', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Fill' });
+  sheet.cells.set(0, 1, { value: 'Font' });
+  sheet.cells.set(1, 0, { value: 10, style: { background: '#0000ff' } });
+  sheet.cells.set(1, 1, { value: 10 });
+  sheet.cells.set(2, 0, { value: 1 });
+  sheet.cells.set(2, 1, { value: 1 });
+  sheet.cells.set(3, 0, { value: 20 });
+  sheet.cells.set(3, 1, { value: 20 });
+  commands.execute('sheet.cf.add', {
+    sheetId: sheet.id,
+    rule: {
+      id: 'effective-filter-color',
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }],
+      type: 'highlight',
+      operator: 'greaterThan',
+      value1: 5,
+      priority: 1,
+      style: { background: '#ff0000', textColor: '#00ff00' },
+    },
+  });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+    columns: {
+      0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#ff0000' } } },
+      1: { column: 1, showButton: true, hiddenButton: false, criterion: { kind: 'color', target: 'font', dxfId: -1, style: { textColor: '#00FF00' } } },
+    },
+  });
+
+  assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [2]);
+  assert.equal(sheet.cells.get(1, 0)?.style?.background, '#0000ff', 'the conditional result must remain a projection');
+  assert.equal(sheet.cells.get(2, 0)?.style, undefined, 'CF-only color must not be materialized into CellData');
+  const visual = createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet))(1, 0, sheet.cells.get(1, 0));
+  assert.equal(visual.style.background, '#ff0000', 'CF fill overrides direct fill in the effective visual');
+  assert.equal(visual.style.textColor, '#00ff00');
+});
+
+test('AutoFilter color matching follows conditional-format priority, stopIfTrue, color scales, and value changes', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Status' });
+  sheet.cells.set(1, 0, { value: 10 });
+  sheet.cells.set(2, 0, { value: 1 });
+  commands.execute('sheet.cf.add', {
+    sheetId: sheet.id,
+    rule: {
+      id: 'winner', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'greaterThan', value1: 5, priority: 1, stopIfTrue: true,
+      style: { background: '#00ff00' },
+    },
+  });
+  commands.execute('sheet.cf.add', {
+    sheetId: sheet.id,
+    rule: {
+      id: 'loser', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'greaterThan', value1: 0, priority: 2,
+      style: { background: '#ff0000' },
+    },
+  });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#00ff00' } } } },
+  });
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], [2]);
+  sheet.cells.set(1, 0, { value: 0 });
+  assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [1, 2]);
+
+  sheet.cells.set(1, 0, { value: 0 });
+  sheet.cells.set(2, 0, { value: 10 });
+  sheet.conditionalFormats.length = 0;
+  commands.execute('sheet.cf.add', {
+    sheetId: sheet.id,
+    rule: {
+      id: 'scale', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
+      type: 'colorScale', priority: 1, minColor: '#000000', maxColor: '#ffffff',
+    },
+  });
+  sheet.autoFilter.columns[0]!.criterion = { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#ffffff' } };
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], [1]);
+});
+
+test('Worksheet and Sheet Table AutoFilter color criteria share the effective visual resolver', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Color' });
+  sheet.cells.set(1, 0, { value: 10 });
+  sheet.cells.set(2, 0, { value: 1 });
+  commands.execute('sheet.cf.add', {
+    sheetId: sheet.id,
+    rule: {
+      id: 'table-color', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'greaterThan', value1: 5, priority: 1, style: { background: '#abcdef' },
+    },
+  });
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 };
+  sheet.sheetTables.push({
+    id: 'table-color', sheetId: sheet.id, name: 'ColorTable', range,
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+    columns: [{ id: 'color', name: 'Color' }],
+    autoFilter: normalizeAutoFilterModel({
+      sheetId: sheet.id, range,
+      columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#ABCDEF' } } } },
+    }),
+  });
+  assert.deepEqual([...computeFilterHiddenRows(sheet)], [2]);
+  assert.equal(sheet.cells.get(1, 0)?.style, undefined);
 });
 
 test('Validation supports custom AST, formula-backed list, time/date, multi-select and non-blocking alerts', () => {

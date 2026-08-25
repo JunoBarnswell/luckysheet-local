@@ -1,5 +1,6 @@
 import type {
   CellData,
+  CellStyle,
   ConditionalFormatRule,
   DataValidationRule,
   AutoFilterColumn,
@@ -313,6 +314,55 @@ export interface ConditionalOverlay {
   icon?: "up" | "down" | "flat";
 }
 
+/**
+ * The visual state used by AutoFilter color/icon criteria.
+ *
+ * This is deliberately a projection, not a CellData mutation.  Direct cell
+ * style is composed with the currently winning conditional-format overlay in
+ * the same order used by the canvas renderer; native filter metadata remains
+ * available for OOXML identities which cannot be reconstructed from a CSS
+ * color alone.
+ */
+export interface EffectiveFilterVisual {
+  style: Partial<CellStyle>;
+  nativeColor?: NonNullable<CellData['filterMetadata']>['color'];
+  nativeIcon?: NonNullable<CellData['filterMetadata']>['icon'];
+}
+
+export type FilterVisualResolver = (row: number, column: number, cell?: CellData) => EffectiveFilterVisual;
+
+export function resolveEffectiveFilterVisual(
+  cell: CellData | undefined,
+  overlay?: ConditionalOverlay,
+  presentation?: Partial<CellStyle>,
+): EffectiveFilterVisual {
+  const style: Partial<CellStyle> = {
+    ...(cell?.style ?? {}),
+    ...(presentation ?? {}),
+    ...(overlay?.style ?? {}),
+  };
+  const nativeColor = cell?.filterMetadata?.color;
+  if (nativeColor?.value !== undefined) {
+    if (nativeColor.target === 'cell' && style.background === undefined) style.background = nativeColor.value;
+    if (nativeColor.target === 'font' && style.textColor === undefined) style.textColor = nativeColor.value;
+  }
+  // The renderer gives a color-scale result precedence over both the direct
+  // fill and a differential style.  Keep that precedence in the filter
+  // projection so a color filter observes the rendered color.
+  if (overlay?.colorScale !== undefined) style.background = overlay.colorScale;
+  return {
+    style,
+    nativeColor,
+    nativeIcon: cell?.filterMetadata?.icon,
+  };
+}
+
+export function createEffectiveFilterVisualResolver(
+  overlays: ReadonlyMap<string, ConditionalOverlay> = new Map(),
+): FilterVisualResolver {
+  return (row, column, cell) => resolveEffectiveFilterVisual(cell, overlays.get(`${row}:${column}`));
+}
+
 function cellText(cell: CellData | undefined): string {
   if (!cell || cell.value == null) return "";
   return String(cell.value);
@@ -602,8 +652,14 @@ function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
   return structuredClone(criterion);
 }
 
-export function computeFilterHiddenRows(sheet: WorksheetModel, readCell: FilterCellReader = (row, column) => sheet.cells.get(row, column), dateSystem: FilterDateSystem = '1900'): Set<number> {
+export function computeFilterHiddenRows(
+  sheet: WorksheetModel,
+  readCell: FilterCellReader = (row, column) => sheet.cells.get(row, column),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): Set<number> {
   const hidden = new Set<number>();
+  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
   let filters: import('@react-sheets/core-model').AutoFilterModel[] = [];
   try {
     filters = resolveAutoFilters(sheet).map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter));
@@ -619,14 +675,14 @@ export function computeFilterHiddenRows(sheet: WorksheetModel, readCell: FilterC
       && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
     const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
     const rows = Array.from({ length: Math.max(0, endRow - filter.range.startRow) }, (_, index) => filter.range.startRow + 1 + index);
-    const top10Matches = buildTop10Matches(filter, rows, readCell, dateSystem);
+    const top10Matches = buildTop10Matches(filter, rows, readCell, dateSystem, resolveVisual);
     for (const row of rows) {
       const visible = Object.values(filter.columns).every((entry) => {
         const criterion = entry.criterion;
         if (!criterion) return true;
         const cell = readCell(row, entry.column);
         if (criterion.kind === 'top10') return top10Matches.get(entry.column)?.has(row) ?? false;
-        return matchesFilterCriterion(cell?.value ?? null, cellText(cell), criterion, cell, dateSystem);
+        return matchesFilterCriterion(cell?.value ?? null, cellText(cell), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
       });
       if (!visible) hidden.add(row);
     }
@@ -639,7 +695,14 @@ export function computeFilterHiddenRows(sheet: WorksheetModel, readCell: FilterC
  * criterion is deliberately ignored while all other column criteria remain
  * active, matching Excel's filter menu recovery semantics.
  */
-export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number, readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn), dateSystem: FilterDateSystem = '1900'): string[] {
+export function getAutoFilterValueDomain(
+  sheet: WorksheetModel,
+  column: number,
+  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): string[] {
+  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
   const filter = resolveAutoFilters(sheet)
     .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
     .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
@@ -653,7 +716,7 @@ export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number, 
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
       const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell, dateSystem);
+      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
     });
     if (!otherColumnsMatch) continue;
     const cell = readCell(row, column);
@@ -662,7 +725,14 @@ export function getAutoFilterValueDomain(sheet: WorksheetModel, column: number, 
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
-function matchesFilterCriterion(value: unknown, text: string, criterion: FilterCriterion, cell?: CellData, dateSystem: FilterDateSystem = '1900'): boolean {
+function matchesFilterCriterion(
+  value: unknown,
+  text: string,
+  criterion: FilterCriterion,
+  cell?: CellData,
+  dateSystem: FilterDateSystem = '1900',
+  visual?: EffectiveFilterVisual,
+): boolean {
   if (criterion.kind === 'values') {
     if (criterion.dateGroups?.length) {
       const date = toFilterDate(value, text, dateSystem);
@@ -679,17 +749,20 @@ function matchesFilterCriterion(value: unknown, text: string, criterion: FilterC
   if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem);
   if (criterion.kind === 'top10') return true;
   if (criterion.kind === 'color' || criterion.kind === 'icon') {
-    // Visual criteria are resolved against native cell metadata when present.
-    // A package that has not materialized that metadata must fail closed rather
-    // than silently converting a visual filter into an unfiltered one.
-    return criterion.kind === 'color'
-      ? cell?.filterMetadata?.color?.dxfId === criterion.dxfId
-        || Boolean(criterion.style && (criterion.target === 'cell'
-          ? criterion.style.background !== undefined && cell?.style?.background === criterion.style.background
-          : criterion.style.textColor !== undefined && cell?.style?.textColor === criterion.style.textColor))
-      : cell?.filterMetadata?.icon?.iconSet === criterion.iconSet && cell.filterMetadata.icon.iconId === criterion.iconId;
+    const effective = visual ?? resolveEffectiveFilterVisual(cell);
+    if (criterion.kind === 'color') {
+      const nativeMatches = criterion.dxfId >= 0 && effective.nativeColor?.dxfId === criterion.dxfId;
+      const expected = criterion.target === 'cell' ? criterion.style?.background : criterion.style?.textColor;
+      const actual = criterion.target === 'cell' ? effective.style.background : effective.style.textColor;
+      return nativeMatches || (expected !== undefined && colorsEqual(actual, expected));
+    }
+    return effective.nativeIcon?.iconSet === criterion.iconSet && effective.nativeIcon.iconId === criterion.iconId;
   }
   return true;
+}
+
+function colorsEqual(left: string | undefined, right: string): boolean {
+  return left !== undefined && left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
 }
 
 function dateMatchesGroup(date: Date, group: import('@react-sheets/core-model').DateGroupItem): boolean {
@@ -706,6 +779,7 @@ function buildTop10Matches(
   rows: number[],
   readCell: FilterCellReader,
   dateSystem: FilterDateSystem,
+  visualResolver: FilterVisualResolver,
 ): Map<number, Set<number>> {
   const result = new Map<number, Set<number>>();
   for (const entry of Object.values(filter.columns)) {
@@ -716,7 +790,7 @@ function buildTop10Matches(
       const cell = readCell(row, other.column);
       return other.criterion.kind === 'top10'
         ? true
-        : matchesFilterCriterion(cell?.value ?? null, cellText(cell), other.criterion, cell, dateSystem);
+        : matchesFilterCriterion(cell?.value ?? null, cellText(cell), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell));
     }));
     const numeric = eligible
       .map((row) => ({ row, value: numericFilterValue(readCell(row, entry.column)?.value, cellText(readCell(row, entry.column))) }))
