@@ -1957,13 +1957,8 @@ function drawingBelongsToPivot(workbook: WorkbookModel, drawing: WorksheetModel[
   const payload = workbook.getSheet(drawing.sheetId).drawingPayloads.get(drawing.payloadId);
   if (!payload || !('pivotId' in payload)) return false;
   if (payload.pivotId === pivotId) return true;
-  if (!('connections' in payload) || !Array.isArray(payload.connections)) return false;
-  return payload.connections.some((connection) => (
-    typeof connection === 'object'
-    && connection !== null
-    && 'pivotId' in connection
-    && connection.pivotId === pivotId
-  ));
+  if (payload.kind !== 'slicer' && payload.kind !== 'timeline') return false;
+  return payload.connections?.some((connection) => connection.pivotId === pivotId) === true;
 }
 
 export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel, range: RangeRef): import('@react-sheets/core-model').PivotCollision {
@@ -2005,9 +2000,10 @@ export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel,
   for (const drawing of sheet.drawings) {
     if (drawingBelongsToPivot(workbook, drawing, pivot.id)) continue;
     const candidate = drawingAnchorRange(sheet.id, drawing.anchor);
-    if (!candidate) {
-      addConflict('drawing', wholeSheet, drawing.id);
-    } else if (rangesIntersect(range, candidate)) {
+    // Absolute floating drawings have no worksheet-cell occupancy. Only a
+    // verifiable one-cell/two-cell anchor participates in structural overlap;
+    // never invent a whole-sheet range from pixel-only geometry.
+    if (candidate && rangesIntersect(range, candidate)) {
       addConflict('drawing', candidate, drawing.id);
     }
   }
