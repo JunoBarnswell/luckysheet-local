@@ -170,6 +170,11 @@ test('AutoFilter evaluates Top10 and dynamic date criteria against canonical row
     columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'dynamic', type: 'today' } } },
   });
   assert.deepEqual([...computeFilterHiddenRows(sheet)], [2]);
+
+  assert.throws(() => normalizeAutoFilterModel({
+    ...sheet.autoFilter!,
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'dynamic', type: 'attackerUnknown' as 'today' } } },
+  }), /UNSUPPORTED_FEATURE: dynamic AutoFilter type "attackerUnknown" is not supported/);
 });
 
 test('AutoFilter color and icon criteria use native cell metadata or imported differential style', () => {

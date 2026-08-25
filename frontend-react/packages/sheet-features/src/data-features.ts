@@ -10,7 +10,7 @@ import type {
   WorksheetModel,
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
-import { StructuralTransform, applyRowPermutation, columnLabel, validatePermutationMetadata } from "@react-sheets/core-model";
+import { StructuralTransform, applyRowPermutation, columnLabel, isDynamicFilterType, validatePermutationMetadata } from "@react-sheets/core-model";
 import { resolveAutoFilters } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
@@ -598,6 +598,7 @@ function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
     return structuredClone(criterion);
   }
   if (criterion.kind === 'top10' && (!Number.isSafeInteger(criterion.rank) || criterion.rank <= 0)) throw new Error('Top10 filter rank must be positive');
+  if (criterion.kind === 'dynamic' && !isDynamicFilterType(criterion.type)) throw new Error(`UNSUPPORTED_FEATURE: dynamic AutoFilter type "${String(criterion.type)}" is not supported`);
   return structuredClone(criterion);
 }
 
