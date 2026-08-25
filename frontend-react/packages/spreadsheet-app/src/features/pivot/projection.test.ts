@@ -330,6 +330,25 @@ describe('native PivotGridProjection contract', () => {
     assert.throws(() => computePivotResult(workbook, pivot), /requires a valueFieldId/);
   });
 
+  it('evaluates typed label and date filter families with range predicates', () => {
+    const workbook = new WorkbookModel('pivot-filter-families', 'Pivot Filter Families');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Name', 'Date', 'Amount'], ['Alice', '2024-01-10', 10], ['Bob', '2024-06-10', 20], ['Avery', '2025-01-10', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-filter-families', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const name = pivot.fieldCatalog.fields.find((field) => field.name === 'Name')!;
+    const date = pivot.fieldCatalog.fields.find((field) => field.name === 'Date')!;
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
+    pivot.layout.rows = [{ fieldId: name.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.filters = [{ kind: 'condition', family: 'label', fieldId: name.fieldId, operator: 'begins-with', value: 'A' }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['Alice', 'Avery']);
+    pivot.layout.rows = [{ fieldId: date.fieldId }];
+    pivot.layout.filters = [{ kind: 'condition', family: 'date', fieldId: date.fieldId, operator: 'between', value: '2024-01-01', value2: '2024-12-31' }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024-01-10', '2024-06-10']);
+  });
+
   it('keeps subtotal ownership per row field and expands custom subtotal functions', () => {
     const workbook = new WorkbookModel('pivot-subtotals', 'Pivot Subtotals');
     const sheet = workbook.getSheet('sheet-1');

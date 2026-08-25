@@ -286,6 +286,9 @@ test('Pivot protocol preserves typed formula-error members and rejects unknown c
   } });
   validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'quarter', 'month'], startOfWeek: 1 } }] } });
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'year'] } }] } }), /date group is invalid/);
+  validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'date', fieldId: 'member', operator: 'between', value: '2024-01-01', value2: '2024-12-31' }] } });
+  validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', valueFieldId: 'member', operator: 'not-between', value: 10, value2: 20 }] } });
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'date', fieldId: 'member', operator: 'between', value: '2024-01-01' }] } }), /range filter requires two bounds/);
   assert.throws(() => validatePivotDefinition({ ...base, presentation: {
     styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },
     displayOptions: { fillEmptyCells: true, emptyCellText: '—', showErrorValues: true, errorCellText: 'ERR', showFieldHeaders: false, autoFitColumnsOnUpdate: false, unsupported: true },
