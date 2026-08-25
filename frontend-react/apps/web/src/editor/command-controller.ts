@@ -119,7 +119,7 @@ export function useEditorCommandController({
     ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connectedPivotIds: record.payload.connectedPivotIds }]
     : []);
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, connectedPivotIds: record.payload.connectedPivotIds }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, level: record.payload.level, selectionLevel: record.payload.selectionLevel, showHeader: record.payload.showHeader, showSelectionLabel: record.payload.showSelectionLabel, showTimeLevel: record.payload.showTimeLevel, showHorizontalScrollbar: record.payload.showHorizontalScrollbar, scrollPosition: record.payload.scrollPosition, bounds: record.payload.bounds, filterType: record.payload.filterType, caption: record.payload.caption, styleName: record.payload.styleName, connectedPivotIds: record.payload.connectedPivotIds }]
     : []);
 
   const buildTotalRowCommand = (): CommandDescriptor | undefined => {
@@ -289,6 +289,11 @@ export function useEditorCommandController({
     },
     onSlicerFilterChange: (slicerId, filter) => session.setPivotSlicerFilter(slicerId, filter.mode, filter.memberKeys),
     onTimelineRangeChange: (timelineId, start, end) => session.setPivotTimelinePeriod(timelineId, start || undefined, end || undefined),
+    onTimelineLevelChange: (timelineId, level) => session.setPivotTimelineLevel(timelineId, level),
+    onTimelineWindowChange: (timelineId, bounds) => session.setPivotTimelineWindow(timelineId, bounds),
+    onTimelineDisplayChange: (timelineId, display) => session.setPivotTimelineDisplay(timelineId, display),
+    onTimelineCaptionChange: (timelineId, caption) => session.setPivotTimelineCaption(timelineId, caption),
+    onTimelineStyleChange: (timelineId, styleName) => session.setPivotTimelineStyle(timelineId, styleName),
     onPivotChartChange: (chart) => {
       if (!activePivot || !chart) return;
       const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;

@@ -3,7 +3,7 @@ import {
   formatPivotMember,
   pivotMemberKey,
   pivotScalarFromMemberKey,
-  pivotTimelineInstant,
+  buildPivotTimelineTiles,
 } from "@react-sheets/core-model";
 import type {
   ChartDrawingPayload,
@@ -19,6 +19,7 @@ import type {
   PivotSlicerItemProjection,
   PivotSlicerDrawingPayload,
   PivotTimelineDrawingPayload,
+  PivotTimelineLevel,
   RangeRef,
   SparklineModel,
   WorkbookTableModel,
@@ -43,7 +44,8 @@ export type PivotControlAction =
   | { kind: 'slicer-clear' }
   | { kind: 'timeline-period'; start: string; end: string }
   | { kind: 'timeline-handle'; edge: 'start' | 'end' }
-  | { kind: 'timeline-scroll'; direction: -1 | 1 };
+  | { kind: 'timeline-scroll'; direction: -1 | 1 }
+  | { kind: 'timeline-level'; level: PivotTimelineLevel };
 
 const CHART_PALETTE = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4"];
 
@@ -854,17 +856,16 @@ function pivotControlMembers(drawingId: string, payload: PivotSlicerDrawingPaylo
   return [...members.values()];
 }
 
-function pivotTimelinePeriods(payload: PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): Array<{ start: string; end: string }> {
-  const values = pivotControlMembers('', payload, pivotResults)
-    .map((entry) => pivotTimelineInstant(entry.value) === undefined ? undefined : new Date(pivotTimelineInstant(entry.value)!).toISOString().slice(0, 10))
-    .filter((value): value is string => Boolean(value));
-  return [...new Set(values)].sort().map((value) => ({ start: value, end: value }));
+function pivotTimelinePeriods(payload: PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): ReturnType<typeof buildPivotTimelineTiles> {
+  const values = pivotControlMembers('', payload, pivotResults).map((entry) => entry.value);
+  const tiles = buildPivotTimelineTiles(values, payload.level);
+  return tiles.filter((tile) => (!payload.bounds.start || tile.end >= payload.bounds.start) && (!payload.bounds.end || tile.start <= payload.bounds.end));
 }
 
 function pivotControlHitTest(
   payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload,
   members: readonly PivotControlMember[],
-  periods: readonly { start: string; end: string }[],
+  periods: readonly ReturnType<typeof buildPivotTimelineTiles>[number][],
   point: { x: number; y: number },
   bounds: Rect,
 ): import('@react-sheets/render-engine').FloatingControlHit | null {
@@ -883,8 +884,12 @@ function pivotControlHitTest(
     const member = index >= 0 && index < visibleMembers.length ? visibleMembers[index] : undefined;
     return member ? { action: 'pivot.slicer.member', data: { kind: 'slicer-member', memberKey: member.key } satisfies PivotControlAction } : null;
   }
-  if (point.y <= headerHeight && point.x < 74) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: -1 } satisfies PivotControlAction };
-  if (point.y <= headerHeight && point.x >= Math.max(0, bounds.width - 74)) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: 1 } satisfies PivotControlAction };
+  if (payload.showHeader && point.y <= headerHeight && point.x < 74) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: -1 } satisfies PivotControlAction };
+  if (payload.showHeader && point.y <= headerHeight && point.x >= Math.max(0, bounds.width - 74)) return { action: 'pivot.timeline.scroll', data: { kind: 'timeline-scroll', direction: 1 } satisfies PivotControlAction };
+  if (payload.showHeader && payload.showTimeLevel && point.y <= headerHeight && point.x >= 86 && point.x < 180) {
+    const levels: PivotTimelineLevel[] = ['years', 'quarters', 'months', 'days'];
+    return { action: 'pivot.timeline.level', data: { kind: 'timeline-level', level: levels[(levels.indexOf(payload.level) + 1) % levels.length]! } satisfies PivotControlAction };
+  }
   if (point.y > headerHeight && point.y < bounds.height - 8 && point.x <= 12) return { action: 'pivot.timeline.handle', data: { kind: 'timeline-handle', edge: 'start' } satisfies PivotControlAction };
   if (point.y > headerHeight && point.y < bounds.height - 8 && point.x >= bounds.width - 12) return { action: 'pivot.timeline.handle', data: { kind: 'timeline-handle', edge: 'end' } satisfies PivotControlAction };
   const trackWidth = Math.max(1, bounds.width - 24);
@@ -898,7 +903,7 @@ function drawPivotControlOnCanvas(options: {
   payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
   bounds: Rect;
   members: readonly PivotControlMember[];
-  periods: readonly { start: string; end: string }[];
+  periods: readonly ReturnType<typeof buildPivotTimelineTiles>[number][];
 }): void {
   const { context, payload, bounds, members, periods } = options;
   const style = payload.style;
@@ -908,13 +913,18 @@ function drawPivotControlOnCanvas(options: {
   context.lineWidth = 1;
   context.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
   context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  const headerHeight = payload.kind === 'timeline' ? (payload.showHeader ? Math.min(26, bounds.height) : 0) : Math.min(26, bounds.height);
   context.fillStyle = style.accentColor;
-  const headerHeight = payload.kind === 'slicer' && !payload.settings.showHeader ? 0 : Math.min(26, bounds.height);
-  if (headerHeight > 0) context.fillRect(bounds.x, bounds.y, bounds.width, headerHeight);
+  const effectiveHeaderHeight = payload.kind === 'slicer' && !payload.settings.showHeader ? 0 : headerHeight;
+  if (effectiveHeaderHeight > 0) context.fillRect(bounds.x, bounds.y, bounds.width, effectiveHeaderHeight);
   context.fillStyle = style.textColor;
   context.font = `600 ${style.fontSize}px Segoe UI, sans-serif`;
   context.textBaseline = "middle";
-  if (headerHeight > 0) context.fillText(payload.kind === "slicer" ? payload.settings.caption : `Timeline · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
+  if (payload.kind === 'slicer') context.fillText(`Slicer · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
+  else if (headerHeight > 0) {
+    context.fillText(`${payload.caption || 'Timeline'} · ${payload.fieldId}`, bounds.x + 8, bounds.y + Math.min(13, bounds.height / 2), Math.max(10, bounds.width - 16));
+    if (payload.showTimeLevel) context.fillText(payload.level, bounds.x + 88, bounds.y + Math.min(13, bounds.height / 2), 82);
+  }
   context.font = `${style.fontSize}px Segoe UI, sans-serif`;
   if (payload.kind === "slicer") {
     const visibleMembers = members.filter((member) => payload.settings.showNoDataItems || member.hasData);
@@ -947,21 +957,29 @@ function drawPivotControlOnCanvas(options: {
     }
   } else {
     const detail = `${payload.period.start ?? "Start"} — ${payload.period.end ?? "End"}`;
-    context.fillText(detail, bounds.x + 8, bounds.y + Math.min(bounds.height - 12, 44), Math.max(10, bounds.width - 16));
-    const trackY = bounds.y + Math.max(30, bounds.height - 22);
+    const contentTop = bounds.y + headerHeight;
+    if (payload.showSelectionLabel) context.fillText(detail, bounds.x + 8, contentTop + Math.min(18, Math.max(12, bounds.height - headerHeight - 12)), Math.max(10, bounds.width - 16));
+    const trackY = bounds.y + Math.max(headerHeight + 28, bounds.height - (payload.showHorizontalScrollbar ? 22 : 10));
     context.strokeStyle = style.border;
     context.beginPath();
     context.moveTo(bounds.x + 12, trackY);
     context.lineTo(bounds.x + Math.max(12, bounds.width - 12), trackY);
     context.stroke();
-    periods.slice(0, Math.max(0, Math.floor((bounds.width - 24) / 24))).forEach((period, index) => {
-      const x = bounds.x + 12 + (index + 0.5) * ((bounds.width - 24) / Math.max(1, Math.min(periods.length, Math.floor((bounds.width - 24) / 24))));
+    const visibleCount = Math.min(periods.length, Math.max(1, Math.floor((bounds.width - 24) / 24)));
+    periods.slice(0, visibleCount).forEach((period, index) => {
+      const x = bounds.x + 12 + (index + 0.5) * ((bounds.width - 24) / Math.max(1, visibleCount));
       context.fillStyle = style.textColor;
       context.fillRect(x - 2, trackY - 3, 4, 6);
+      if (period.start >= (payload.period.start ?? '') && period.start <= (payload.period.end ?? '\uffff')) {
+        context.fillStyle = style.selectedFill ?? '#bfdbfe';
+        context.fillRect(x - 10, trackY - 6, 20, 12);
+      }
     });
-    context.fillStyle = style.accentColor;
-    context.fillRect(bounds.x + 8, trackY - 7, 4, 14);
-    context.fillRect(bounds.x + Math.max(8, bounds.width - 12), trackY - 7, 4, 14);
+    if (payload.showHorizontalScrollbar) {
+      context.fillStyle = style.accentColor;
+      context.fillRect(bounds.x + 8, trackY - 7, 4, 14);
+      context.fillRect(bounds.x + Math.max(8, bounds.width - 12), trackY - 7, 4, 14);
+    }
   }
   context.restore();
 }

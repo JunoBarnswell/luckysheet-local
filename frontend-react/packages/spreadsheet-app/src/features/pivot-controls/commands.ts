@@ -7,6 +7,7 @@ import type {
   PivotSlicerDrawingPayload,
   PivotSlicerSettings,
   PivotTimelineDrawingPayload,
+  PivotTimelineLevel,
   PivotTimelinePeriod,
   WorksheetModel,
 } from '@react-sheets/core-model';
@@ -50,6 +51,40 @@ export interface PivotTimelinePeriodSetParams {
   sheetId: string;
   drawingId: string;
   period: PivotTimelinePeriod;
+}
+
+export interface PivotTimelineLevelSetParams {
+  sheetId: string;
+  drawingId: string;
+  level: PivotTimelineLevel;
+}
+
+export interface PivotTimelineWindowSetParams {
+  sheetId: string;
+  drawingId: string;
+  bounds: PivotTimelinePeriod;
+  scrollPosition?: string;
+}
+
+export interface PivotTimelineDisplaySetParams {
+  sheetId: string;
+  drawingId: string;
+  showHeader: boolean;
+  showSelectionLabel: boolean;
+  showTimeLevel: boolean;
+  showHorizontalScrollbar: boolean;
+}
+
+export interface PivotTimelineCaptionSetParams {
+  sheetId: string;
+  drawingId: string;
+  caption: string;
+}
+
+export interface PivotTimelineStyleSetParams {
+  sheetId: string;
+  drawingId: string;
+  styleName: string;
 }
 
 export interface PivotControlStyleSetParams {
@@ -188,6 +223,11 @@ export const PIVOT_CONTROL_COMMAND_IDS = [
   'pivot.control.timeline.create',
   'pivot.control.slicer.filter.set',
   'pivot.control.timeline.period.set',
+  'pivot.control.timeline.level.set',
+  'pivot.control.timeline.window.set',
+  'pivot.control.timeline.display.set',
+  'pivot.control.timeline.caption.set',
+  'pivot.control.timeline.style.set',
   'pivot.control.style.set',
   'pivot.control.slicer.settings.set',
   'pivot.control.connections.set',
@@ -218,6 +258,55 @@ export function registerPivotControlCommands(runtime: CommandRuntime): string[] 
     execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
       if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
       return { ...payload, period: createPivotTimelinePeriod(params.period) };
+    }),
+  });
+  runtime.registry.registerCommand<PivotTimelineLevelSetParams>({
+    id: 'pivot.control.timeline.level.set',
+    execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
+      if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
+      if (!['years', 'quarters', 'months', 'days'].includes(params.level)) throw new Error(`Invalid timeline level: ${params.level}`);
+      return { ...payload, level: params.level };
+    }),
+  });
+  runtime.registry.registerCommand<PivotTimelineWindowSetParams>({
+    id: 'pivot.control.timeline.window.set',
+    execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
+      if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
+      const bounds = createPivotTimelinePeriod(params.bounds);
+      if (params.scrollPosition !== undefined) createPivotTimelinePeriod({ start: params.scrollPosition });
+      return { ...payload, bounds, ...(params.scrollPosition === undefined ? {} : { scrollPosition: params.scrollPosition }) };
+    }),
+  });
+  runtime.registry.registerCommand<PivotTimelineDisplaySetParams>({
+    id: 'pivot.control.timeline.display.set',
+    execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
+      if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
+      if (typeof params.showHeader !== 'boolean' || typeof params.showSelectionLabel !== 'boolean' || typeof params.showTimeLevel !== 'boolean' || typeof params.showHorizontalScrollbar !== 'boolean') {
+        throw new Error(`Invalid timeline display state: ${params.drawingId}`);
+      }
+      return {
+        ...payload,
+        showHeader: params.showHeader,
+        showSelectionLabel: params.showSelectionLabel,
+        showTimeLevel: params.showTimeLevel,
+        showHorizontalScrollbar: params.showHorizontalScrollbar,
+      };
+    }),
+  });
+  runtime.registry.registerCommand<PivotTimelineCaptionSetParams>({
+    id: 'pivot.control.timeline.caption.set',
+    execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
+      if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
+      if (typeof params.caption !== 'string') throw new Error(`Invalid timeline caption: ${params.drawingId}`);
+      return { ...payload, caption: params.caption };
+    }),
+  });
+  runtime.registry.registerCommand<PivotTimelineStyleSetParams>({
+    id: 'pivot.control.timeline.style.set',
+    execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
+      if (payload.kind !== 'timeline') throw new Error(`Drawing is not a timeline: ${params.drawingId}`);
+      if (!/^TimelineStyle(?:Light|Medium|Dark)\d+$/.test(params.styleName)) throw new Error(`Invalid timeline style: ${params.styleName}`);
+      return { ...payload, styleName: params.styleName };
     }),
   });
   runtime.registry.registerCommand<PivotControlStyleSetParams>({

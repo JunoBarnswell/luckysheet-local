@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CellMatrix,
+  buildPivotTimelineTiles,
   normalizePivotTimelinePeriod,
   pivotTimelineInstant,
   WorkbookModel,
@@ -55,6 +56,18 @@ test('Pivot timeline dates use deterministic half-open civil-day bounds', () => 
   assert.throws(() => normalizePivotTimelinePeriod({ start: '2026-08-26', end: '2026-08-25' }), /start must not be after end/);
   assert.throws(() => normalizePivotTimelinePeriod({ start: '2026-02-29' }), /Invalid Pivot timeline start date/);
   assert.equal(pivotTimelineInstant('not-a-date'), undefined);
+});
+
+test('Pivot timeline tiles provide canonical Years, Quarters, Months and Days levels', () => {
+  const values = ['2024-01-15', '2024-04-02', '2025-01-01'];
+  assert.deepEqual(buildPivotTimelineTiles(values, 'years').map((tile) => [tile.label, tile.hasData]), [['2024', true], ['2025', true]]);
+  assert.deepEqual(buildPivotTimelineTiles(values, 'quarters').map((tile) => tile.label), ['2024 Q1', '2024 Q2', '2024 Q3', '2024 Q4', '2025 Q1']);
+  assert.deepEqual(buildPivotTimelineTiles(values, 'months').map((tile) => tile.label), ['2024-01', '2024-02', '2024-03', '2024-04', '2024-05', '2024-06', '2024-07', '2024-08', '2024-09', '2024-10', '2024-11', '2024-12', '2025-01']);
+  const days = buildPivotTimelineTiles(values, 'days');
+  assert.equal(days[0]?.label, '2024-01-15');
+  assert.equal(days.at(-1)?.label, '2025-01-01');
+  assert.equal(days.some((tile) => tile.label === '2024-01-16' && !tile.hasData), true);
+  assert.throws(() => buildPivotTimelineTiles(values, 'invalid' as never), /Invalid Pivot timeline level/);
 });
 
 test('WorksheetModel handles merges and anchors properly', () => {

@@ -157,6 +157,35 @@ describe('pivot controls as floating drawing objects', () => {
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.transform, { x: 40, y: 50, width: 300, height: 80 });
   });
 
+  it('persists canonical timeline level/window/display/caption/style through typed commands and rejects invalid levels', () => {
+    const { workbook, runtime } = createRuntime();
+    const timeline = buildPivotTimelineDrawing({
+      drawingId: 'timeline-state-drawing',
+      payloadId: 'timeline-state-payload',
+      sheetId: 'sheet-1',
+      pivotId: 'pivot-sales',
+      fieldId: 'field-date',
+      transform: { x: 10, y: 20, width: 300, height: 80 },
+      zIndex: 1,
+    });
+    runtime.execute('pivot.control.timeline.create', { sheetId: 'sheet-1', ...timeline });
+    runtime.execute('pivot.control.timeline.level.set', { sheetId: 'sheet-1', drawingId: timeline.drawing.id, level: 'quarters' });
+    runtime.execute('pivot.control.timeline.window.set', { sheetId: 'sheet-1', drawingId: timeline.drawing.id, bounds: { start: '2024-01-01', end: '2024-12-31' }, scrollPosition: '2024-01-01' });
+    runtime.execute('pivot.control.timeline.display.set', { sheetId: 'sheet-1', drawingId: timeline.drawing.id, showHeader: true, showSelectionLabel: false, showTimeLevel: true, showHorizontalScrollbar: false });
+    runtime.execute('pivot.control.timeline.caption.set', { sheetId: 'sheet-1', drawingId: timeline.drawing.id, caption: 'Fiscal timeline' });
+    runtime.execute('pivot.control.timeline.style.set', { sheetId: 'sheet-1', drawingId: timeline.drawing.id, styleName: 'TimelineStyleDark2' });
+    const payload = workbook.getSheet('sheet-1').drawingPayloads.get(timeline.drawing.payloadId);
+    assert.equal(payload?.kind, 'timeline');
+    if (payload?.kind !== 'timeline') throw new Error('Expected timeline payload');
+    assert.equal(payload.level, 'quarters');
+    assert.deepEqual(payload.bounds, { start: '2024-01-01', end: '2024-12-31' });
+    assert.equal(payload.showSelectionLabel, false);
+    assert.equal(payload.scrollPosition, '2024-01-01');
+    assert.equal(payload.caption, 'Fiscal timeline');
+    assert.equal(payload.styleName, 'TimelineStyleDark2');
+    assert.throws(() => runtime.execute('pivot.control.timeline.level.set', { sheetId: 'sheet-1', drawingId: timeline.drawing.id, level: 'invalid' }), /Invalid timeline level/);
+  });
+
   it('rejects an invalid or reversed timeline period before writing history', () => {
     const { workbook, runtime } = createRuntime();
     const timeline = buildPivotTimelineDrawing({
