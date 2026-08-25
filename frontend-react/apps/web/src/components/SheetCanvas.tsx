@@ -30,11 +30,13 @@ import type {
   PivotProjectionCell,
   PivotSourceRowPath,
   PivotResultTree,
+  PivotPresentation,
   PivotSort,
   RangeRef,
   SparklineModel,
   WorkbookTableModel,
 } from "@react-sheets/core-model";
+import { DEFAULT_PIVOT_STYLE_OPTIONS } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
 import { resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
@@ -233,8 +235,27 @@ export function isPivotValueCell(cell: PivotProjectionCell): boolean {
   return cell.kind === "value" || cell.kind === "subtotal" || cell.kind === "grand-total";
 }
 
+interface PivotStylePalette {
+  title: string;
+  header: string;
+  value: string;
+  stripe: string;
+  total: string;
+  accent: string;
+  text: string;
+  border: string;
+}
+
+function pivotStylePalette(styleName?: string): PivotStylePalette {
+  const name = styleName?.toLocaleLowerCase() ?? '';
+  if (name.includes('dark')) return { title: '#1f4e78', header: '#5b9bd5', value: '#ffffff', stripe: '#d9eaf7', total: '#bdd7ee', accent: '#2f75b5', text: '#102a43', border: '#7f9db9' };
+  if (name.includes('medium')) return { title: '#4472c4', header: '#d9e2f3', value: '#ffffff', stripe: '#edf3f9', total: '#d9e2f3', accent: '#b4c7e7', text: '#1f2937', border: '#9fbad0' };
+  if (name.includes('light') || name.length === 0) return { title: '#dbeafe', header: '#f1f5f9', value: '#ffffff', stripe: '#f8fafc', total: '#eff6ff', accent: '#e0ecff', text: '#1e293b', border: '#cbd5e1' };
+  return { title: '#e2e8f0', header: '#f1f5f9', value: '#ffffff', stripe: '#f8fafc', total: '#e2e8f0', accent: '#dbeafe', text: '#1e293b', border: '#cbd5e1' };
+}
+
 /** Convert a derived projection cell to the render-engine cell contract. */
-export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US'): CellRenderData {
+export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale: Locale = 'en-US', presentation?: PivotPresentation): CellRenderData {
   const localizedText = cell.filterSummary
     ? `${cell.filterSummary.fieldName}: ${cell.filterSummary.mode === 'all' ? pivotText(locale, 'allItems') : pivotTemplate(locale, 'selectedItems', { count: cell.filterSummary.count })}`
     : cell.captionKey === 'row-labels'
@@ -247,24 +268,32 @@ export function pivotProjectionCellRenderData(cell: PivotProjectionCell, locale:
   const text = cell.kind === "expand-toggle"
     ? `${cell.expanded ? "▾" : "▸"} ${localizedText}`
     : localizedText;
+  const options = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(presentation?.styleOptions ?? {}) };
+  const palette = pivotStylePalette(presentation?.styleName);
+  const headerStyled = cell.kind === 'column-header'
+    ? (cell.column === 0 ? options.showRowHeaders : options.showColumnHeaders)
+    : false;
+  const striped = isPivotValueCell(cell) && ((options.showRowStripes && cell.row % 2 === 0) || (options.showColumnStripes && cell.column % 2 === 0));
   const style: NonNullable<CellRenderData["style"]> = {
     background: cell.kind === "title"
-      ? "#dbeafe"
+      ? palette.title
       : cell.kind === "column-header" || cell.kind === "filter"
-        ? "#f1f5f9"
+        ? headerStyled ? palette.header : palette.value
         : cell.kind === "grand-total"
-          ? "#eff6ff"
+          ? palette.total
           : cell.kind === "subtotal"
-            ? "#f8fafc"
-            : "#ffffff",
-    textColor: cell.kind === "error" ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : "#1e293b",
-    bold: cell.kind === "title" || cell.kind === "column-header" || cell.kind === "subtotal" || cell.kind === "grand-total",
+            ? palette.total
+            : cell.isLastColumn && options.showLastColumn
+              ? palette.accent
+              : striped ? palette.stripe : palette.value,
+    textColor: cell.kind === "error" ? "#b91c1c" : cell.kind === "loading" ? "#92400e" : palette.text,
+    bold: cell.kind === "title" || headerStyled || cell.kind === "subtotal" || cell.kind === "grand-total",
     italic: cell.kind === "filter",
     horizontalAlignment: isPivotValueCell(cell) ? "right" : "left",
     verticalAlignment: "middle",
     wrapText: cell.kind === "loading" || cell.kind === "error",
     borders: {
-      bottom: { color: "#cbd5e1", style: cell.kind === "grand-total" ? "double" : "thin" },
+      bottom: { color: palette.border, style: cell.kind === "grand-total" ? "double" : "thin" },
     },
   };
   return {
@@ -390,7 +419,7 @@ export function SheetCanvas({
 
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
     const pivotCell = findPivotProjectionCell(sheet, row, column);
-    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale);
+    if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
 
     const cell = sheet.getCell(row, column);
     const merge = findMerge(row, column);

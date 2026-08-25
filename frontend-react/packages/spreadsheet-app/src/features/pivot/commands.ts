@@ -7,6 +7,7 @@ import type {
   PivotGroup,
   PivotLayout,
   PivotModel,
+  PivotPresentation,
   PivotShowAs,
   ChartDrawingPayload,
   DrawingObject,
@@ -33,6 +34,7 @@ export interface PivotUpdateParams {
   fieldCatalog?: PivotDefinition['fieldCatalog'];
   refreshPolicy?: PivotDefinition['refreshPolicy'];
   nativeMetadata?: PivotDefinition['nativeMetadata'];
+  presentation?: PivotPresentation;
   layout?: PivotLayout;
 }
 
@@ -209,6 +211,7 @@ function applyPivotUpdate(context: CommandContext, params: PivotUpdateParams): v
     fieldCatalog: structuredClone(params.fieldCatalog ?? current.fieldCatalog),
     layout: structuredClone(params.layout ?? current.layout),
     refreshPolicy: structuredClone(params.refreshPolicy ?? current.refreshPolicy),
+    presentation: structuredClone(params.presentation ?? current.presentation),
     ...(params.nativeMetadata ?? current.nativeMetadata ? { nativeMetadata: structuredClone(params.nativeMetadata ?? current.nativeMetadata) } : {}),
   };
   assertPivotDefinition(context.workbook, next);
@@ -229,6 +232,7 @@ function previousPivotUpdate(pivot: PivotModel): PivotUpdateParams {
     fieldCatalog: structuredClone(definition.fieldCatalog),
     refreshPolicy: structuredClone(definition.refreshPolicy),
     ...(definition.nativeMetadata ? { nativeMetadata: structuredClone(definition.nativeMetadata) } : {}),
+    ...(definition.presentation ? { presentation: structuredClone(definition.presentation) } : {}),
     layout: structuredClone(pivot.layout),
   };
 }
@@ -246,6 +250,16 @@ const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && Array.isArray(value.values)
   && typeof value.showSubtotals === 'boolean' && typeof value.showGrandTotals === 'boolean'
   && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean';
+const isPivotPresentation = (value: unknown): value is PivotPresentation => isRecord(value)
+  && Object.keys(value).every((key) => key === 'styleName' || key === 'styleOptions')
+  && (value.styleName === undefined || typeof value.styleName === 'string')
+  && isRecord(value.styleOptions)
+  && Object.keys(value.styleOptions).every((key) => ['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'].includes(key))
+  && typeof value.styleOptions.showRowHeaders === 'boolean'
+  && typeof value.styleOptions.showColumnHeaders === 'boolean'
+  && typeof value.styleOptions.showRowStripes === 'boolean'
+  && typeof value.styleOptions.showColumnStripes === 'boolean'
+  && typeof value.styleOptions.showLastColumn === 'boolean';
 const isPivotWorksheetSource = (value: unknown): boolean => {
   if (!isRecord(value)) return false;
   if (value.kind === 'worksheet-range') return isRange(value.range);
@@ -267,7 +281,8 @@ const isPivotModel = (value: unknown): value is PivotModel => isRecord(value)
     && Number.isSafeInteger(value.target.anchor.row) && Number(value.target.anchor.row) >= 0
     && Number.isSafeInteger(value.target.anchor.column) && Number(value.target.anchor.column) >= 0
   && isRecord(value.fieldCatalog) && Array.isArray(value.fieldCatalog.fields)
-  && isRecord(value.refreshPolicy) && ['manual', 'on-open', 'on-change'].includes(String(value.refreshPolicy.mode));
+  && isRecord(value.refreshPolicy) && ['manual', 'on-open', 'on-change'].includes(String(value.refreshPolicy.mode))
+  && (value.presentation === undefined || isPivotPresentation(value.presentation));
 const isPivotCreateDestination = (value: unknown): value is PivotCreateDestination => {
   if (!isRecord(value) || !isNonEmptyString(value.kind) || !isNonEmptyString(value.sheetId)) return false;
   if (value.kind === 'existing-sheet') return Object.keys(value).every((key) => key === 'kind' || key === 'sheetId');
@@ -283,7 +298,8 @@ const isPivotUpdate = (value: unknown): value is PivotUpdateParams => isRecord(v
   && (value.source === undefined || isPivotSource(value.source))
   && (value.target === undefined || (isRecord(value.target) && isNonEmptyString(value.target.sheetId) && isRecord(value.target.anchor)))
   && (value.layout === undefined || isPivotLayout(value.layout))
-  && ['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'].some((key) => value[key] !== undefined);
+  && (value.presentation === undefined || isPivotPresentation(value.presentation))
+  && ['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'].some((key) => value[key] !== undefined);
 const isPivotDrillDown = (value: unknown): value is PivotDrillDownParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
   && typeof value.label === 'string' && isNonEmptyString(value.targetSheetId)

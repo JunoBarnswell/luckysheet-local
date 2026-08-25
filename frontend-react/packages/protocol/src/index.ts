@@ -1,6 +1,7 @@
 import type {
   DataSourceManifest,
   PivotDefinition,
+  PivotPresentation,
   RangeRef,
   SheetDataRegion,
   TableScalar,
@@ -283,12 +284,26 @@ function validatePivotSource(value: unknown): void {
   throw new Error('Pivot source kind is unsupported');
 }
 
+function validatePivotPresentation(value: unknown): asserts value is PivotPresentation {
+  const presentation = requireRecord(value, 'Pivot presentation');
+  validateExactKeys(presentation, ['styleName', 'styleOptions'], 'Pivot presentation');
+  if (presentation.styleName !== undefined && typeof presentation.styleName !== 'string') throw new Error('Pivot presentation styleName is invalid');
+  const options = requireRecord(presentation.styleOptions, 'Pivot presentation styleOptions');
+  validateExactKeys(options, ['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'], 'Pivot presentation styleOptions');
+  if (typeof options.showRowHeaders !== 'boolean'
+    || typeof options.showColumnHeaders !== 'boolean'
+    || typeof options.showRowStripes !== 'boolean'
+    || typeof options.showColumnStripes !== 'boolean'
+    || typeof options.showLastColumn !== 'boolean') throw new Error('Pivot presentation styleOptions are invalid');
+}
+
 /** Rejects every non-canonical Pivot field at the transport boundary. */
 export function validatePivotDefinition(value: unknown): asserts value is PivotDefinition {
   const pivot = requireRecord(value, 'Pivot definition');
-  validateExactKeys(pivot, ['schema', 'id', 'source', 'target', 'fieldCatalog', 'layout', 'refreshPolicy', 'nativeMetadata'], 'Pivot definition');
+  validateExactKeys(pivot, ['schema', 'id', 'source', 'target', 'fieldCatalog', 'layout', 'refreshPolicy', 'nativeMetadata', 'presentation'], 'Pivot definition');
   if (pivot.schema !== 'PivotDefinition' || !isNonEmptyString(pivot.id)) throw new Error('Pivot definition identity is invalid');
   validatePivotSource(pivot.source);
+  if (pivot.presentation !== undefined) validatePivotPresentation(pivot.presentation);
   const target = requireRecord(pivot.target, 'Pivot target');
   validateExactKeys(target, ['sheetId', 'anchor'], 'Pivot target');
   const anchor = requireRecord(target.anchor, 'Pivot target anchor');
@@ -453,9 +468,9 @@ function validatePivotMutationParams(id: string, value: unknown): void {
   }
   if (id !== 'pivot.update') return;
   const params = requireRecord(value, 'Pivot update');
-  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'], 'Pivot update');
+  validateExactKeys(params, ['sheetId', 'pivotId', 'source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'], 'Pivot update');
   if (!isNonEmptyString(params.sheetId) || !isNonEmptyString(params.pivotId)) throw new Error('Pivot update identity is invalid');
-  if (!['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'layout'].some((key) => params[key] !== undefined)) throw new Error('Pivot update has no canonical change');
+  if (!['source', 'target', 'fieldCatalog', 'refreshPolicy', 'nativeMetadata', 'presentation', 'layout'].some((key) => params[key] !== undefined)) throw new Error('Pivot update has no canonical change');
   if (params.source !== undefined) validatePivotSource(params.source);
   if (params.target !== undefined) {
     const target = requireRecord(params.target, 'Pivot update target');
@@ -463,6 +478,7 @@ function validatePivotMutationParams(id: string, value: unknown): void {
     const anchor = requireRecord(target.anchor, 'Pivot update target anchor');
     if (!isNonEmptyString(target.sheetId) || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0 || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0) throw new Error('Pivot update target is invalid');
   }
+  if (params.presentation !== undefined) validatePivotPresentation(params.presentation);
 }
 
 /** Validate the only snapshot representation accepted at the wire boundary. */

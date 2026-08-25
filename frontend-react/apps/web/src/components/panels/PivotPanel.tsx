@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
-import type { PivotFieldDefinition, PivotFieldPlacement, PivotLayout, PivotModel, PivotValueField } from '@react-sheets/core-model';
+import { DEFAULT_PIVOT_STYLE_OPTIONS, type PivotFieldDefinition, type PivotFieldPlacement, type PivotLayout, type PivotModel, type PivotPresentation, type PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
 import { PivotActions } from '../pivot/PivotActions';
 import { PivotCalculatedEditor } from '../pivot/PivotCalculatedEditor';
@@ -153,6 +153,14 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const sort = (fieldId: string, nextSort: Parameters<NonNullable<PivotPanelCallbacks['onSortChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, sort: nextSort } : entry) });
   const group = (fieldId: string, nextGroup: Parameters<NonNullable<PivotPanelCallbacks['onGroupChange']>>[1]) => applyLayout({ ...cloneLayout(layout), rows: layout.rows.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry), columns: layout.columns.map((entry) => entry.fieldId === fieldId ? { ...entry, group: nextGroup } : entry) });
   const valueChange = (value: PivotValueField) => applyLayout({ ...cloneLayout(layout), values: layout.values.map((entry) => entry.fieldId === value.fieldId ? value : entry) });
+  const presentation: PivotPresentation = {
+    ...(pivot.presentation?.styleName ? { styleName: pivot.presentation.styleName } : {}),
+    styleOptions: { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(pivot.presentation?.styleOptions ?? {}) },
+  };
+  const updatePresentation = (patch: Partial<PivotPresentation['styleOptions']> & { styleName?: string }) => {
+    const { styleName, ...options } = patch;
+    callbacks?.onPresentationChange?.({ ...(styleName ?? presentation.styleName ? { styleName: styleName ?? presentation.styleName } : {}), styleOptions: { ...presentation.styleOptions, ...options } });
+  };
 
   return (
     <Panel className="flex h-full min-h-0 flex-col rounded-none border-0 bg-white shadow-none" data-testid="pivot-field-list">
@@ -167,6 +175,17 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
             {PIVOT_FIELD_PANE_LAYOUTS.map((mode) => <option key={mode} value={mode}>{pivotText(locale, fieldPaneLayoutLabels[mode])}</option>)}
           </Select>
         </Inline>
+        <Stack gap="xs" className="shrink-0 rounded border border-slate-200 p-2">
+          <Text size="sm" weight="medium">{pivotText(locale, 'pivotStyle')}</Text>
+          <Select aria-label={pivotText(locale, 'pivotStyle')} sizeVariant="sm" value={presentation.styleName ?? 'PivotStyleLight16'} disabled={disabled} onChange={(event) => updatePresentation({ styleName: event.target.value })}>
+            <option value="PivotStyleLight16">{pivotText(locale, 'styleLight')}</option>
+            <option value="PivotStyleMedium4">{pivotText(locale, 'styleMedium')}</option>
+            <option value="PivotStyleDark2">{pivotText(locale, 'styleDark')}</option>
+          </Select>
+          <Inline gap="sm" className="flex-wrap">
+            {(['showRowHeaders', 'showColumnHeaders', 'showRowStripes', 'showColumnStripes', 'showLastColumn'] as const).map((option) => <CheckToggle key={option} label={pivotText(locale, option === 'showRowHeaders' ? 'rowHeaders' : option === 'showColumnHeaders' ? 'columnHeaders' : option === 'showRowStripes' ? 'bandedRows' : option === 'showColumnStripes' ? 'bandedColumns' : 'lastColumn')} checked={presentation.styleOptions[option]} disabled={disabled} onChange={(event) => updatePresentation({ [option]: event.target.checked })} />)}
+          </Inline>
+        </Stack>
         <Box className={`min-h-0 min-w-0 flex flex-1 ${sideBySide ? 'flex-row' : 'flex-col'} gap-2`}>
           {showFields ? (
             <Box className="min-h-0 min-w-0 flex flex-col" style={sideBySide ? { width: `${showAreas ? fieldPaneSplit : 100}%` } : { flexBasis: `${showAreas ? fieldPaneSplit : 100}%` }}>
