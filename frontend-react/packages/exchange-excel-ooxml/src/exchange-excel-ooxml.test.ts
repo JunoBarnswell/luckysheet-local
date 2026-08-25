@@ -306,6 +306,29 @@ describe('exchange-excel-ooxml', () => {
     assert.ok(!removedDrawing || !/category[_-]slicer|date[_-]timeline/.test(strFromU8(removedDrawing)));
   });
 
+  it('keeps native Slicer selections typed when member labels collide', () => {
+    const workbook = new WorkbookModel('wb-typed-slicer', 'Typed Slicer');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [["Member", "Amount"], [1, 10], ["1", 20], [true, 30], ["true", 40], [null, 50]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'typed-slicer-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 1 } }, target: { sheetId: sheet.id, anchor: { row: 8, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'member', name: 'Member', dataType: 'mixed', ordinal: 0, values: [1, '1', true, 'true', null] }, { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 }] },
+      layout: { rows: [{ fieldId: 'member' }], columns: [], filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    sheet.drawings.push({ id: 'typed-slicer', sheetId: sheet.id, kind: 'slicer', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 220, height: 180 }, zIndex: 1, payloadId: 'typed-slicer-payload' });
+    sheet.drawingPayloads.set('typed-slicer-payload', { kind: 'slicer', pivotId: 'typed-slicer-pivot', fieldId: 'member', filter: { mode: 'include', memberKeys: [createPivotMemberKey('1')] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const cacheXml = strFromU8(output.files['xl/slicerCaches/slicerCache1.xml']!);
+    assert.match(cacheXml, /<i x="0"\/>/);
+    assert.match(cacheXml, /<i x="1" s="1"\/>/);
+    const imported = parseLoadedXlsx(output).snapshot;
+    const payload = Object.values(imported.sheets[0]?.drawingPayloads ?? {}).find((entry) => entry.kind === 'slicer');
+    assert.equal(payload?.kind, 'slicer');
+    if (!payload || payload.kind !== 'slicer') throw new Error('Typed Slicer payload is missing');
+    assert.deepEqual(payload.filter.memberKeys, [createPivotMemberKey('1')]);
+  });
+
   it('writes canonical PivotCharts as native chart parts linked to the PivotTable', async () => {
     const workbook = new WorkbookModel('wb-native-pivot-chart', 'Native PivotChart');
     const sheet = workbook.getSheet(workbook.primarySheetId);

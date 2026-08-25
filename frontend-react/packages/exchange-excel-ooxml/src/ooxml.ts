@@ -17,7 +17,7 @@ import type {
   RangeRef,
   WorksheetPane,
 } from '@react-sheets/core-model';
-import { isDynamicFilterType } from '@react-sheets/core-model';
+import { createPivotMemberKey, isDynamicFilterType } from '@react-sheets/core-model';
 import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
@@ -754,7 +754,11 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
     const payloadId = control.id;
     if (control.kind === 'slicer') {
       const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === control.fieldId);
-      const memberKeys = (control.selectedItemIndexes ?? []).flatMap((index) => field?.values?.[index] === undefined ? [] : [nativeMemberKey(field.values[index] ?? null)]);
+      const memberKeys = (control.selectedItemIndexes ?? []).map((index) => {
+        const value = field?.values?.[index];
+        if (!field || value === undefined) throw new Error(`Native Slicer ${control.id} selected item index ${index} is outside field ${control.fieldId} member domain`);
+        return createPivotMemberKey(value);
+      });
       sheet.drawingPayloads[payloadId] = {
         kind: 'slicer',
         pivotId: control.pivotId,
@@ -784,13 +788,6 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
     };
     sheet.drawings.push(drawing);
   }
-}
-
-function nativeMemberKey(value: string | number | boolean | null): { type: 'text' | 'number' | 'boolean' | 'blank'; value: string | number | boolean | null } {
-  if (value === null || value === '') return { type: 'blank', value: null };
-  if (typeof value === 'number') return { type: 'number', value };
-  if (typeof value === 'boolean') return { type: 'boolean', value };
-  return { type: 'text', value };
 }
 
 function parseSheetTables(

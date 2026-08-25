@@ -11,6 +11,12 @@ export const PIVOT_GRID_PROJECTION_SCHEMA = 'PivotGridProjection' as const;
 
 export type PivotScalar = string | number | boolean | null;
 export type PivotScalarType = 'text' | 'number' | 'boolean' | 'blank';
+export const PIVOT_BLANK_LABEL = '(blank)' as const;
+
+/** One presentation rule for Pivot members across grid, filters, and controls. */
+export function formatPivotMember(value: PivotScalar): string {
+  return value === null || value === '' ? PIVOT_BLANK_LABEL : String(value);
+}
 
 /** A member key keeps `1`, `"1"`, `true`, and blank members distinct. */
 export interface PivotMemberKey {

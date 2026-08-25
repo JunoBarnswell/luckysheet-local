@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Box, Button, CheckToggle, Icon, Inline, Panel, ScrollArea, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
 import {
   createPivotMemberKey,
+  formatPivotMember,
   pivotMemberKey,
   pivotMemberKeyEquals,
   type PivotFieldDefinition,
@@ -44,7 +45,7 @@ export function PivotHeaderFilterPopover({ currentFilter, currentSort, field, lo
     return values.map(member).filter((candidate) => !currentFilter.memberKeys.some((item) => pivotMemberKeyEquals(candidate, item)));
   }, [currentFilter, values]);
   const [selected, setSelected] = useState<PivotMemberKey[]>(() => [...initialSelected]);
-  const visibleValues = useMemo(() => values.filter((value) => String(value ?? '').toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, values]);
+  const visibleValues = useMemo(() => values.filter((value) => formatPivotMember(value).toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, values]);
   const selectedHas = (value: PivotScalar) => selected.some((candidate) => pivotMemberKeyEquals(candidate, member(value)));
   const setVisible = (checked: boolean) => {
     const visible = visibleValues.map(member);
@@ -89,7 +90,7 @@ export function PivotHeaderFilterPopover({ currentFilter, currentSort, field, lo
             </Inline>
             <ScrollArea className="h-[210px] border border-[#c8c8c8] p-2">
               <Stack gap="none">
-                {visibleValues.map((value) => <Box key={pivotMemberKey(member(value))} className="py-1"><CheckToggle checkedTone="dark" className="text-[13px]" label={String(value ?? '')} checked={selectedHas(value)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, member(value)] : current.filter((candidate) => !pivotMemberKeyEquals(candidate, member(value))))} /></Box>)}
+                {visibleValues.map((value) => <Box key={pivotMemberKey(member(value))} className="py-1"><CheckToggle checkedTone="dark" className="text-[13px]" label={formatPivotMember(value)} checked={selectedHas(value)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, member(value)] : current.filter((candidate) => !pivotMemberKeyEquals(candidate, member(value))))} /></Box>)}
               </Stack>
             </ScrollArea>
           </Stack>
