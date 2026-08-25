@@ -150,6 +150,10 @@ function remapCellMap<T>(source: ReadonlyMap<string, T>, plan: RowPermutationPla
 export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPermutationPlan): void {
   const range = plan.range;
   if (range.sheetId !== sheet.id || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
+  // Detect cell-owner collisions before any cell record is cleared. Notes and
+  // hyperlinks are single-owner maps, so a collision is an atomic rejection.
+  remapCellMap(sheet.notes, plan);
+  remapCellMap(sheet.hyperlinks, plan);
   for (const merge of sheet.merges) {
     if (!rangesIntersect(merge.range, range)) continue;
     if (!(merge.range.startRow >= range.startRow && merge.range.endRow <= range.endRow)) throw new Error('Sort cannot partially intersect a merged range');
