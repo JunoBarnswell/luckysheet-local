@@ -603,7 +603,10 @@ function applyPivotAdd(context: CommandContext, params: PivotModel): void {
   const canonical: PivotModel = structuredClone(definition);
   assertPivotDefinition(context.workbook, canonical);
   const projection = buildPivotGridProjection(context.workbook, canonical);
-  if (projection.collision.status === 'collision') throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
+  if (projection.collision.status === 'collision') {
+    const details = projection.collision.conflicts.map((conflict) => `${conflict.reason}${conflict.participantId ? `:${conflict.participantId}` : ''}@${conflict.range.startRow}:${conflict.range.startColumn}-${conflict.range.endRow}:${conflict.range.endColumn}`).join('; ');
+    throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}${details ? ` (${details})` : ''}`);
+  }
   context.workbook.getSheet(definition.target.sheetId).pivots.push(canonical);
 }
 
@@ -938,6 +941,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
       const projection = buildPivotGridProjection(context.workbook, pivot);
       if (projection.refresh.status === 'error') throw new Error(projection.refresh.error ?? 'PivotTable refresh failed');
+      if (projection.refresh.status === 'collision') throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
       return { operationId: context.operationId, mutationCount: 0, affectedRanges: [projection.occupiedRange] };
     },
   });

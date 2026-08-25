@@ -9,6 +9,7 @@ import {
   canonicalPivotMembers,
   computePivotResult,
   computePivotResultFromBlockSource,
+  detectPivotCollision,
   getPivotFieldCatalog,
   getPivotSourceRanges,
   hitTestPivotProjection,
@@ -894,6 +895,99 @@ describe('native PivotGridProjection contract', () => {
     const hit = hitTestPivotProjection(projection, 0, 0);
     assert.equal(hit.pivotId, pivot.id);
     assert.equal(hit.kind, 'cell');
+  });
+
+  it('reserves the complete derived footprint of every Pivot instead of only its anchor', () => {
+    const workbook = workbookWithData();
+    const sheet = workbook.getSheet('sheet-1');
+    const first = buildPivotModel(workbook, sheet.id, 'pivot-footprint-a', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    const second = buildPivotModel(workbook, sheet.id, 'pivot-footprint-b', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(first && second);
+    first.target = { sheetId: sheet.id, anchor: { row: 5, column: 0 } };
+    second.target = { sheetId: sheet.id, anchor: { row: 7, column: 0 } };
+    sheet.pivots.push(first);
+    const firstProjection = buildPivotGridProjection(workbook, first);
+    assert.equal(firstProjection.collision.status, 'clear');
+    sheet.pivots.push(second);
+    const collision = buildPivotGridProjection(workbook, second);
+    assert.equal(collision.collision.status, 'collision');
+    assert.equal(collision.collision.reasons.includes('pivot'), true);
+    assert.deepEqual(collision.collision.conflicts.find((entry) => entry.participantId === first.id)?.range, firstProjection.occupiedRange);
+    assert.equal(collision.collision.conflictingRanges.some((range) => range.startRow === firstProjection.occupiedRange.startRow && range.endRow === firstProjection.occupiedRange.endRow), true);
+  });
+
+  it('keeps the last-valid projection when a layout expansion would overlap another Pivot, then allows a free move', () => {
+    const workbook = new WorkbookModel('pivot-footprint-refresh', 'Pivot Footprint Refresh');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Category', 'Amount'], ['East', 'Widget', 10], ['East', 'Gadget', 20], ['West', 'Widget', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const first = buildPivotModel(workbook, sheet.id, 'pivot-footprint-expand', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    const second = buildPivotModel(workbook, sheet.id, 'pivot-footprint-stable', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(first && second);
+    const catalog = getPivotFieldCatalog(workbook, first);
+    first.fieldCatalog = catalog;
+    second.fieldCatalog = structuredClone(catalog);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    first.layout.rows = [{ fieldId: region.fieldId }];
+    first.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    second.layout.rows = [{ fieldId: region.fieldId }];
+    second.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    first.target = { sheetId: sheet.id, anchor: { row: 5, column: 0 } };
+    sheet.pivots.push(first);
+    const initial = buildPivotGridProjection(workbook, first);
+    assert.equal(initial.collision.status, 'clear');
+    second.target = { sheetId: sheet.id, anchor: { row: initial.occupiedRange.endRow + 1, column: 0 } };
+    sheet.pivots.push(second);
+    assert.equal(buildPivotGridProjection(workbook, second).collision.status, 'clear');
+    first.layout.rows = [{ fieldId: region.fieldId }, { fieldId: category.fieldId }];
+    const expanded = buildPivotGridProjection(workbook, first);
+    assert.equal(expanded.collision.status, 'collision');
+    assert.equal(expanded.collision.reasons.includes('pivot'), true);
+    assert.deepEqual(expanded.cells, initial.cells);
+    assert.deepEqual(expanded.occupiedRange, initial.occupiedRange);
+    first.target = { sheetId: sheet.id, anchor: { row: 5, column: 10 } };
+    const moved = buildPivotGridProjection(workbook, first);
+    assert.equal(moved.collision.status, 'clear');
+    assert.equal(moved.occupiedRange.startColumn, 10);
+  });
+
+  it('fails closed for occupied structures, anchored objects, protection, and worksheet bounds', () => {
+    const workbook = workbookWithData();
+    const sheet = workbook.getSheet('sheet-1');
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-structure-collision', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    pivot.target = { sheetId: sheet.id, anchor: { row: 5, column: 0 } };
+    const clear = buildPivotGridProjection(workbook, pivot);
+    assert.equal(clear.collision.status, 'clear');
+    sheet.sheetTables.push({ id: 'table-collision', sheetId: sheet.id, name: 'TableCollision', range: structuredClone(clear.occupiedRange), hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false, showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none', columns: [] });
+    sheet.drawings.push({ id: 'drawing-collision', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'two-cell', row: clear.occupiedRange.startRow, column: clear.occupiedRange.startColumn, endRow: clear.occupiedRange.startRow + 1, endColumn: clear.occupiedRange.startColumn + 1 }, transform: { x: 0, y: 0, width: 100, height: 40 }, zIndex: 1, payloadId: 'drawing-collision-payload' });
+    sheet.drawingPayloads.set('drawing-collision-payload', { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' });
+    sheet.protectionRules.push({ id: 'protection-collision', scope: 'range', sheetId: sheet.id, range: structuredClone(clear.occupiedRange), locked: true, allow: {} });
+    const blocked = buildPivotGridProjection(workbook, pivot);
+    assert.equal(blocked.collision.status, 'collision');
+    assert.equal(blocked.collision.reasons.includes('sheet-table'), true);
+    assert.equal(blocked.collision.reasons.includes('drawing'), true);
+    assert.equal(blocked.collision.reasons.includes('protection'), true);
+    assert.equal(blocked.collision.conflicts.some((entry) => entry.participantId === 'table-collision'), true);
+    pivot.target = { sheetId: sheet.id, anchor: { row: sheet.rowCount - 1, column: 0 } };
+    const outOfBounds = detectPivotCollision(workbook, pivot, { sheetId: sheet.id, startRow: sheet.rowCount - 1, endRow: sheet.rowCount, startColumn: 0, endColumn: 1 });
+    assert.equal(outOfBounds.reasons.includes('worksheet-bounds'), true);
+  });
+
+  it('rejects an existing Pivot with no verifiable current or last-valid footprint', () => {
+    const workbook = workbookWithData();
+    const sheet = workbook.getSheet('sheet-1');
+    const candidate = buildPivotModel(workbook, sheet.id, 'pivot-known', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    const unresolved = buildPivotModel(workbook, sheet.id, 'pivot-unresolved', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(candidate && unresolved);
+    unresolved.source = { kind: 'data-source', dataSourceId: 'missing-source' };
+    candidate.target = { sheetId: sheet.id, anchor: { row: 5, column: 10 } };
+    sheet.pivots.push(unresolved);
+    const collision = buildPivotGridProjection(workbook, candidate);
+    assert.equal(collision.collision.status, 'collision');
+    assert.equal(collision.collision.reasons.includes('unresolved-pivot'), true);
+    assert.equal(collision.collision.conflicts.some((entry) => entry.participantId === unresolved.id), true);
   });
 
   it('rejects a stale layout result, localizes field captions, and preserves source-stale manual results', () => {

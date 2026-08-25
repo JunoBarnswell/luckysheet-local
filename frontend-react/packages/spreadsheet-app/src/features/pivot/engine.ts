@@ -1883,31 +1883,163 @@ function projectionRange(target: PivotTarget, rowCount: number, columnCount: num
   return { sheetId: target.sheetId, startRow: target.anchor.row, endRow: target.anchor.row + Math.max(rowCount - 1, 0), startColumn: target.anchor.column, endColumn: target.anchor.column + Math.max(columnCount - 1, 0) };
 }
 
+interface PivotFootprint {
+  pivotId: string;
+  range: RangeRef;
+  source: 'current' | 'last-valid';
+}
+
+function occupiedRangeForDefinition(definition: PivotDefinition, tree?: PivotResultTree): RangeRef {
+  const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
+  const rowHeaderCount = definition.layout.reportLayout === 'compact' ? 1 : Math.max(definition.layout.rows.length, 1);
+  const values = tree?.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
+  const columnPathCount = Math.max(tree?.columnPaths.length ?? 0, 1);
+  const valueColumnCount = Math.max(columnPathCount * Math.max(values.length, 1) + (definition.layout.showRowGrandTotals ? Math.max(values.length, 1) : 0), 1);
+  let row = 1;
+  const reportFilterFields = displayOptions.showFieldHeaders
+    ? [...new Set(definition.layout.filters.filter((entry) => entry.scope !== 'field').map((entry) => entry.fieldId))]
+    : [];
+  row += reportFilterFields.length;
+  if (displayOptions.showFieldHeaders) row += 1;
+  if (tree) {
+    const flat = flattenNodes(tree.rows, { ...definition.layout, expansion: normalizeExpansionForTree(definition.layout.expansion, tree) });
+    row += flat.filter((item) => item.visible).length;
+    if (tree.grandTotal && definition.layout.showColumnGrandTotals) row += 1;
+  } else {
+    row += 1;
+  }
+  return projectionRange(definition.target, Math.max(row, 1), Math.max(valueColumnCount + rowHeaderCount, 1));
+}
+
+function resolvePivotFootprint(workbook: WorkbookModel, pivot: PivotModel): PivotFootprint | undefined {
+  const last = lastValidPivotProjections.get(workbook)?.get(pivot.id);
+  const targetMatches = last
+    && last.projection.target.sheetId === pivot.target.sheetId
+    && last.projection.target.anchor.row === pivot.target.anchor.row
+    && last.projection.target.anchor.column === pivot.target.anchor.column;
+  if (last && targetMatches && pivotResultMatchesRevision(workbook, pivot, last.result)) {
+    return { pivotId: pivot.id, range: structuredClone(last.projection.occupiedRange), source: 'current' };
+  }
+  if (last && targetMatches && pivot.refreshPolicy.mode === 'manual' && pivotResultMatchesLayoutAndFilter(workbook, pivot, last.result)) {
+    return { pivotId: pivot.id, range: structuredClone(last.projection.occupiedRange), source: 'last-valid' };
+  }
+  if (pivot.source.kind === 'data-source') return last ? { pivotId: pivot.id, range: structuredClone(last.projection.occupiedRange), source: 'last-valid' } : undefined;
+  try {
+    const definition = normalizePivotDefinition(workbook, pivot);
+    return { pivotId: pivot.id, range: occupiedRangeForDefinition(definition, computePivotResult(workbook, pivot)), source: 'current' };
+  } catch {
+    return last ? { pivotId: pivot.id, range: structuredClone(last.projection.occupiedRange), source: 'last-valid' } : undefined;
+  }
+}
+
+function cellMetadataRange(sheetId: string, key: string): RangeRef | undefined {
+  const [row, column] = key.split(':').map(Number);
+  if (typeof row !== 'number' || typeof column !== 'number' || !Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0) return undefined;
+  return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
+}
+
+function drawingAnchorRange(sheetId: string, anchor: { kind: string; row?: number; column?: number; endRow?: number; endColumn?: number }): RangeRef | undefined {
+  const row = anchor.row;
+  const column = anchor.column;
+  if (typeof row !== 'number' || typeof column !== 'number' || !Number.isSafeInteger(row) || !Number.isSafeInteger(column)) return undefined;
+  const endRow = anchor.endRow;
+  const endColumn = anchor.endColumn;
+  return {
+    sheetId,
+    startRow: row,
+    endRow: typeof endRow === 'number' && Number.isSafeInteger(endRow) ? Math.max(row, endRow) : row,
+    startColumn: column,
+    endColumn: typeof endColumn === 'number' && Number.isSafeInteger(endColumn) ? Math.max(column, endColumn) : column,
+  };
+}
+
+function drawingBelongsToPivot(workbook: WorkbookModel, drawing: WorksheetModel['drawings'][number], pivotId: string): boolean {
+  const payload = workbook.getSheet(drawing.sheetId).drawingPayloads.get(drawing.payloadId);
+  if (!payload || !('pivotId' in payload)) return false;
+  if (payload.pivotId === pivotId) return true;
+  if (!('connections' in payload) || !Array.isArray(payload.connections)) return false;
+  return payload.connections.some((connection) => (
+    typeof connection === 'object'
+    && connection !== null
+    && 'pivotId' in connection
+    && connection.pivotId === pivotId
+  ));
+}
+
 export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel, range: RangeRef): import('@react-sheets/core-model').PivotCollision {
   const sheet = workbook.getSheet(range.sheetId);
-  const reasons = new Set<import('@react-sheets/core-model').PivotCollision['reasons'][number]>();
+  const reasons = new Set<import('@react-sheets/core-model').PivotCollisionReason>();
   const conflictingRanges: RangeRef[] = [];
-  if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) reasons.add('worksheet-bounds');
+  const conflicts: import('@react-sheets/core-model').PivotCollisionConflict[] = [];
+  const addConflict = (reason: import('@react-sheets/core-model').PivotCollisionReason, conflictRange: RangeRef, participantId?: string): void => {
+    const normalized = structuredClone(conflictRange);
+    reasons.add(reason);
+    if (!conflictingRanges.some((existing) => existing.sheetId === normalized.sheetId && existing.startRow === normalized.startRow && existing.endRow === normalized.endRow && existing.startColumn === normalized.startColumn && existing.endColumn === normalized.endColumn)) {
+      conflictingRanges.push(normalized);
+    }
+    if (!conflicts.some((existing) => existing.reason === reason && existing.participantId === participantId && existing.range.sheetId === normalized.sheetId && existing.range.startRow === normalized.startRow && existing.range.endRow === normalized.endRow && existing.range.startColumn === normalized.startColumn && existing.range.endColumn === normalized.endColumn)) {
+      conflicts.push({ reason, range: normalized, ...(participantId ? { participantId } : {}) });
+    }
+  };
+  const wholeSheet = { sheetId: sheet.id, startRow: 0, endRow: Math.max(sheet.rowCount - 1, 0), startColumn: 0, endColumn: Math.max(sheet.columnCount - 1, 0) };
+  if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) addConflict('worksheet-bounds', range);
   sheet.cells.forEach((_cell, row, column) => {
-    if (row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn) reasons.add('cell-data');
+    if (row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn) {
+      addConflict('cell-data', { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
+    }
   });
   for (const merge of sheet.merges) {
-    if (rangesIntersect(range, merge.range)) {
-      reasons.add('merge');
-      conflictingRanges.push(structuredClone(merge.range));
+    if (rangesIntersect(range, merge.range)) addConflict('merge', merge.range);
+  }
+  for (const table of sheet.sheetTables) if (rangesIntersect(range, table.range)) addConflict('sheet-table', table.range, table.id);
+  for (const region of sheet.dataRegions) if (rangesIntersect(range, region.range)) addConflict('data-region', region.range, region.id);
+  for (const rule of sheet.conditionalFormats) for (const candidate of rule.ranges) if (rangesIntersect(range, candidate)) addConflict('conditional-format', candidate, rule.id);
+  for (const rule of sheet.dataValidations) for (const candidate of rule.ranges) if (rangesIntersect(range, candidate)) addConflict('data-validation', candidate, rule.id);
+  if (sheet.autoFilter && rangesIntersect(range, sheet.autoFilter.range)) addConflict('auto-filter', sheet.autoFilter.range);
+  if (sheet.bandedRule && rangesIntersect(range, sheet.bandedRule.range)) addConflict('banded-rule', sheet.bandedRule.range);
+  for (const spill of sheet.spillRanges) if (rangesIntersect(range, spill.range)) addConflict('spill', spill.range);
+  for (const sparkline of sheet.sparklines) {
+    const candidate = { sheetId: sheet.id, startRow: sparkline.anchor.row, endRow: sparkline.anchor.row, startColumn: sparkline.anchor.column, endColumn: sparkline.anchor.column };
+    if (rangesIntersect(range, candidate)) addConflict('sparkline', candidate, sparkline.id);
+  }
+  for (const drawing of sheet.drawings) {
+    if (drawingBelongsToPivot(workbook, drawing, pivot.id)) continue;
+    const candidate = drawingAnchorRange(sheet.id, drawing.anchor);
+    if (!candidate) {
+      addConflict('drawing', wholeSheet, drawing.id);
+    } else if (rangesIntersect(range, candidate)) {
+      addConflict('drawing', candidate, drawing.id);
     }
   }
-  for (const candidate of sheet.pivots) {
-    if (candidate.id === pivot.id) continue;
-    const target = getPivotTarget(candidate);
-    if (target.sheetId !== range.sheetId) continue;
-    const candidateRange = { sheetId: target.sheetId, startRow: target.anchor.row, endRow: target.anchor.row, startColumn: target.anchor.column, endColumn: target.anchor.column };
-    if (rangesIntersect(range, candidateRange)) {
-      reasons.add('pivot');
-      conflictingRanges.push(candidateRange);
+  for (const [key] of sheet.notes) {
+    const candidate = cellMetadataRange(sheet.id, key);
+    if (candidate && rangesIntersect(range, candidate)) addConflict('note', candidate, key);
+  }
+  for (const [key] of sheet.hyperlinks) {
+    const candidate = cellMetadataRange(sheet.id, key);
+    if (candidate && rangesIntersect(range, candidate)) addConflict('hyperlink', candidate, key);
+  }
+  for (const comment of sheet.commentThreads) {
+    const candidate = { sheetId: sheet.id, startRow: comment.row, endRow: comment.row, startColumn: comment.column, endColumn: comment.column };
+    if (rangesIntersect(range, candidate)) addConflict('comment', candidate, comment.id);
+  }
+  for (const rule of sheet.protectionRules) {
+    if (!rule.locked) continue;
+    const candidate = rule.range ?? wholeSheet;
+    if (rangesIntersect(range, candidate)) addConflict('protection', candidate, rule.id);
+  }
+  for (const ownerSheet of workbook.getSheets()) {
+    for (const candidate of ownerSheet.pivots) {
+      if (candidate.id === pivot.id || getPivotTarget(candidate).sheetId !== range.sheetId) continue;
+      const footprint = resolvePivotFootprint(workbook, candidate);
+      if (!footprint) {
+        addConflict('unresolved-pivot', wholeSheet, candidate.id);
+      } else if (rangesIntersect(range, footprint.range)) {
+        addConflict('pivot', footprint.range, candidate.id);
+      }
     }
   }
-  return { status: reasons.size ? 'collision' : 'clear', reasons: [...reasons], conflictingRanges };
+  return { status: reasons.size ? 'collision' : 'clear', reasons: [...reasons], conflictingRanges, conflicts };
 }
 
 function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
@@ -1926,7 +2058,7 @@ function refreshState(workbook: WorkbookModel, pivot: PivotModel, collision: imp
 }
 
 export function getPivotRefreshState(workbook: WorkbookModel, pivot: PivotModel, collision?: import('@react-sheets/core-model').PivotCollision, status: PivotRefreshState['status'] = 'ready', error?: string): PivotRefreshState {
-  const effectiveCollision = collision ?? { status: 'clear' as const, reasons: [], conflictingRanges: [] };
+  const effectiveCollision = collision ?? { status: 'clear' as const, reasons: [], conflictingRanges: [], conflicts: [] };
   return refreshState(workbook, pivot, effectiveCollision, status, error);
 }
 
@@ -1938,8 +2070,8 @@ function buildPivotGridProjectionCandidate(
   options: PivotProjectionOptions = {},
 ): PivotGridProjection {
   const definition = normalizePivotDefinition(workbook, pivot, options.formula);
-  const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
   const target = definition.target;
+  const displayOptions = normalizePivotDisplayOptions(definition.presentation?.displayOptions);
   let tree: PivotResultTree | undefined = cachedResult;
   let error: string | undefined;
   let loading = false;
@@ -2064,7 +2196,7 @@ function buildPivotGridProjectionCandidate(
     cells.push(projectionCell(definition.id, row, 0, error ? 'error' : 'loading', null, error ?? 'Loading PivotTable', error ? {} : { captionKey: 'loading' }));
     row += 1;
   }
-  const occupiedRange = projectionRange(target, Math.max(row, 1), Math.max(valueColumnCount + rowHeaderCount, 1));
+  const occupiedRange = occupiedRangeForDefinition(definition, tree);
   const collision = detectPivotCollision(workbook, pivot, occupiedRange);
   return {
     schema: PIVOT_GRID_PROJECTION_SCHEMA,

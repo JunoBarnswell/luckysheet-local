@@ -138,6 +138,25 @@ describe('pivot feature contract', () => {
     assert.equal(runtime.getUndoEntries().length, 0);
   });
 
+  it('rejects a Pivot add collision before mutating the worksheet or history', () => {
+    const workbook = new WorkbookModel('pivot-command-collision', 'Pivot Command Collision');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Amount'], ['East', 10], ['West', 20], ['East', 5]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerPivotFeature(runtime);
+    const first = buildPivotModel(workbook, sheet.id, 'pivot-command-first', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    const second = buildPivotModel(workbook, sheet.id, 'pivot-command-second', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(first && second);
+    first.target = { sheetId: sheet.id, anchor: { row: 5, column: 0 } };
+    second.target = { sheetId: sheet.id, anchor: { row: 7, column: 0 } };
+    runtime.execute('pivot.add', first);
+    const before = snapshotWithStableCollectionOrder(workbook);
+    assert.throws(() => runtime.execute('pivot.add', second), /Pivot target collision:.*pivot/);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+    assert.equal(runtime.getUndoEntries().length, 1);
+  });
+
   it('rolls back the destination worksheet when a later mutation listener fails', () => {
     const workbook = seedCrossSheetWorkbook();
     const runtime = new CommandRuntime(workbook);
