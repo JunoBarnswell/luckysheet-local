@@ -84,6 +84,40 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(exported.fileName, 'roundtrip.xlsx');
   });
 
+  it('materializes icon filter metadata from the numeric cells in its conditional-format range', async () => {
+    const workbook = new WorkbookModel('wb-icon-filter', 'Icon Filter');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 10 });
+    sheet.cells.set(2, 0, { value: 20 });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    output.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(output.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace(
+      '</worksheet>',
+      '<conditionalFormatting sqref="A2:A3"><cfRule type="iconSet" priority="1"><iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="percent" val="50"/><cfvo type="percent" val="100"/></iconSet></cfRule></conditionalFormatting><autoFilter ref="A1:A3"><filterColumn colId="0"><iconFilter iconSet="3TrafficLights1" iconId="1"/></filterColumn></autoFilter></worksheet>',
+    ));
+
+    const imported = await importXlsx({ fileName: 'icon-filter.xlsx', buffer: zipXlsxPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+
+    assert.deepEqual(imported.snapshot.sheets[0]?.cells['1']?.['0']?.filterMetadata?.icon, { iconSet: '3TrafficLights1', iconId: 0 });
+    assert.deepEqual(imported.snapshot.sheets[0]?.cells['2']?.['0']?.filterMetadata?.icon, { iconSet: '3TrafficLights1', iconId: 2 });
+  });
+
+  it('bounds icon filter metadata work by materialized cells for a full-sheet conditional-format range', async () => {
+    const workbook = new WorkbookModel('wb-icon-filter-full-sheet', 'Icon Filter Full Sheet');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Amount' });
+    sheet.cells.set(1, 0, { value: 10 });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    output.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(output.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace(
+      '</worksheet>',
+      '<conditionalFormatting sqref="A1:XFD1048576"><cfRule type="iconSet" priority="1"><iconSet iconSet="3TrafficLights1"><cfvo type="percent" val="0"/><cfvo type="percent" val="50"/><cfvo type="percent" val="100"/></iconSet></cfRule></conditionalFormatting><autoFilter ref="A1:A2"><filterColumn colId="0"><iconFilter iconSet="3TrafficLights1" iconId="0"/></filterColumn></autoFilter></worksheet>',
+    ));
+
+    const imported = await importXlsx({ fileName: 'full-sheet-icon-filter.xlsx', buffer: zipXlsxPartsBuffer(output.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+
+    assert.deepEqual(imported.snapshot.sheets[0]?.cells['1']?.['0']?.filterMetadata?.icon, { iconSet: '3TrafficLights1', iconId: 0 });
+  });
+
   it('round-trips worksheet tables and emits table relationship/content-type parts', async () => {
     const workbook = new WorkbookModel('wb-table', 'Table');
     const sheet = workbook.getSheet(workbook.primarySheetId);
