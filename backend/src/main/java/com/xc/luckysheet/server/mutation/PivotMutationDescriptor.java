@@ -53,7 +53,21 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     );
     private static final Set<String> FIELD_TYPES = Set.of("text", "number", "date", "boolean", "mixed");
     private static final Set<String> FILTER_KINDS = Set.of("manual", "condition", "top-items");
+    private static final Set<String> FILTER_SCOPES = Set.of("report", "field");
     private static final Set<String> MANUAL_MODES = Set.of("all", "include", "exclude");
+    private static final Set<String> LABEL_FILTER_OPERATORS = Set.of(
+            "equals", "not-equals", "begins-with", "not-begins-with", "ends-with", "not-ends-with",
+            "contains", "not-contains", "between", "not-between", "greater-than", "greater-or-equal",
+            "less-than", "less-or-equal"
+    );
+    private static final Set<String> DATE_FILTER_OPERATORS = Set.of("equals", "not-equals", "before", "after", "between", "not-between");
+    private static final Set<String> VALUE_FILTER_OPERATORS = Set.of(
+            "equals", "not-equals", "greater-than", "greater-or-equal", "less-than", "less-or-equal", "between", "not-between"
+    );
+    private static final Set<String> DYNAMIC_DATE_FILTERS = Set.of(
+            "today", "yesterday", "tomorrow", "this-week", "last-week", "next-week", "this-month", "last-month", "next-month",
+            "this-quarter", "last-quarter", "next-quarter", "this-year", "last-year", "next-year", "year-to-date"
+    );
     private static final Set<String> SHOW_AS_KINDS = Set.of(
             "normal", "grand-percentage", "row-percentage", "column-percentage", "parent-percentage",
             "difference", "percentage-difference", "running-total", "rank", "index"
@@ -115,6 +129,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void add(ObjectNode root, String sheetId, ArrayNode pivots, ObjectNode pivot) {
+        canonicalizeFilterScopes(pivot);
         validatePivot(root, sheetId, pivot);
         String id = SnapshotMutationSupport.text(pivot, "id");
         for (JsonNode sheet : SnapshotMutationSupport.sheets(root)) {
@@ -163,6 +178,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         validateIdParams(params, UPDATE_KEYS, "pivot.update");
         ObjectNode current = SnapshotMutationSupport.requireById(pivots, pivotId(params), "Pivot");
         ObjectNode next = updatedPivot(current, params);
+        canonicalizeFilterScopes(next);
         validatePivot(root, sheetId, next);
         pivots.set(SnapshotMutationSupport.indexById(pivots, pivotId(params)), next);
     }
@@ -467,6 +483,47 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
     }
 
+    /**
+     * Materializes the one canonical scope value at the persistence boundary.
+     * An omitted scope is field-scoped only when its field is placed on rows or
+     * columns; all other omitted scopes are report-scoped.
+     */
+    private void canonicalizeFilterScopes(ObjectNode pivot) {
+        JsonNode rawLayout = pivot.get("layout");
+        if (rawLayout == null || !rawLayout.isObject()) return;
+        ObjectNode layout = (ObjectNode) rawLayout;
+        JsonNode rawRows = layout.get("rows");
+        JsonNode rawColumns = layout.get("columns");
+        JsonNode rawFilters = layout.get("filters");
+        if (rawFilters == null || !rawFilters.isArray()) return;
+        Set<String> axisFieldIds = new LinkedHashSet<>();
+        for (JsonNode placements : new JsonNode[]{rawRows, rawColumns}) {
+            if (placements == null || !placements.isArray()) continue;
+            for (JsonNode placement : placements) {
+                if (placement.isObject() && placement.path("fieldId").isTextual()) axisFieldIds.add(placement.path("fieldId").asText());
+            }
+        }
+        for (JsonNode rawFilter : rawFilters) {
+            if (!rawFilter.isObject()) continue;
+            ObjectNode filter = (ObjectNode) rawFilter;
+            if (!filter.has("scope") && filter.path("fieldId").isTextual()) {
+                filter.put("scope", axisFieldIds.contains(filter.path("fieldId").asText()) ? "field" : "report");
+            }
+        }
+    }
+
+    private String filterScope(ObjectNode filter, Set<String> axisFieldIds) {
+        String fieldId = SnapshotMutationSupport.text(filter, "fieldId");
+        String scope = filter.has("scope")
+                ? SnapshotMutationSupport.text(filter, "scope")
+                : (axisFieldIds.contains(fieldId) ? "field" : "report");
+        if (!FILTER_SCOPES.contains(scope)) throw ServiceException.validation("Pivot filter scope is invalid");
+        if ("field".equals(scope) && !axisFieldIds.contains(fieldId)) {
+            throw ServiceException.validation("Pivot field filter must target a row or column field");
+        }
+        return scope;
+    }
+
     private void validateLayout(ObjectNode root, JsonNode raw, Set<String> fieldIds) {
         if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot layout is required");
         ObjectNode layout = (ObjectNode) raw;
@@ -489,17 +546,23 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 || !Set.of("compact", "outline", "tabular").contains(reportLayout.asText())) {
             throw ServiceException.validation("Pivot layout reportLayout is invalid");
         }
-        for (JsonNode placement : layout.path("rows")) validatePlacement(placement, fieldIds, "Pivot row field");
-        for (JsonNode placement : layout.path("columns")) validatePlacement(placement, fieldIds, "Pivot column field");
+        Set<String> axisFieldIds = new LinkedHashSet<>();
+        for (JsonNode placement : layout.path("rows")) {
+            validatePlacement(placement, fieldIds, "Pivot row field");
+            axisFieldIds.add(SnapshotMutationSupport.text((ObjectNode) placement, "fieldId"));
+        }
+        for (JsonNode placement : layout.path("columns")) {
+            validatePlacement(placement, fieldIds, "Pivot column field");
+            axisFieldIds.add(SnapshotMutationSupport.text((ObjectNode) placement, "fieldId"));
+        }
         Set<String> filterIdentities = new LinkedHashSet<>();
         Set<String> filterFields = new LinkedHashSet<>();
         for (JsonNode filter : layout.path("filters")) {
             validateFilter(filter, fieldIds);
             ObjectNode object = (ObjectNode) filter;
             String fieldId = SnapshotMutationSupport.text(object, "fieldId");
-            String scope = object.has("scope") ? SnapshotMutationSupport.text(object, "scope") : "report";
+            String scope = filterScope(object, axisFieldIds);
             String family = SnapshotMutationSupport.text(object, "family");
-            if (!Set.of("report", "field").contains(scope)) throw ServiceException.validation("Pivot filter scope is invalid");
             if (!filterIdentities.add(fieldId + "|" + scope + "|" + family)) {
                 throw ServiceException.validation("Pivot filter family is duplicated: " + fieldId + "|" + scope + "|" + family);
             }
@@ -554,30 +617,48 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "scope", "mode", "memberKeys"), "Pivot manual filter");
                 if (!"manual".equals(SnapshotMutationSupport.text(filter, "family"))) throw ServiceException.validation("Pivot manual filter family is invalid");
                 requireField(fieldIds, filter);
-                if (filter.has("scope") && !Set.of("report", "field").contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot manual filter scope is invalid");
+                if (filter.has("scope") && !FILTER_SCOPES.contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot manual filter scope is invalid");
                 String mode = SnapshotMutationSupport.text(filter, "mode");
                 if (!MANUAL_MODES.contains(mode)) throw ServiceException.validation("Pivot manual filter mode is invalid");
                 validateMemberValues(filter.get("memberKeys"), "Pivot manual filter memberKeys");
                 if ("all".equals(mode) && filter.path("memberKeys").size() != 0) throw ServiceException.validation("Pivot manual filter all mode cannot contain memberKeys");
             }
             case "condition" -> {
-                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "valueFieldId", "scope", "operator", "value", "wholeDay"), "Pivot condition filter");
+                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "valueFieldId", "scope", "operator", "value", "value2", "dynamic", "wholeDay"), "Pivot condition filter");
                 String family = SnapshotMutationSupport.text(filter, "family");
                 if (!Set.of("label", "date", "value").contains(family)) throw ServiceException.validation("Pivot condition filter family is invalid");
                 requireField(fieldIds, filter);
                 if (filter.has("valueFieldId")) requireField(fieldIds, filter, "valueFieldId");
-                if (filter.has("scope") && !Set.of("report", "field").contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot condition filter scope is invalid");
-                if (!Set.of("equals", "not-equals", "contains", "greater-than", "greater-or-equal", "less-than", "less-or-equal").contains(SnapshotMutationSupport.text(filter, "operator"))) {
+                if (filter.has("scope") && !FILTER_SCOPES.contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot condition filter scope is invalid");
+                Set<String> operators = switch (family) {
+                    case "label" -> LABEL_FILTER_OPERATORS;
+                    case "date" -> DATE_FILTER_OPERATORS;
+                    case "value" -> VALUE_FILTER_OPERATORS;
+                    default -> Set.of();
+                };
+                String operator = SnapshotMutationSupport.text(filter, "operator");
+                if (!operators.contains(operator)) {
                     throw ServiceException.validation("Pivot condition filter operator is invalid");
                 }
                 if (!isScalar(filter.get("value"))) throw ServiceException.validation("Pivot condition filter value is invalid");
+                if (filter.has("value2") && !isScalar(filter.get("value2"))) throw ServiceException.validation("Pivot condition filter upper value is invalid");
+                if (filter.has("dynamic") && (!"date".equals(family) || !DYNAMIC_DATE_FILTERS.contains(SnapshotMutationSupport.text(filter, "dynamic")))) {
+                    throw ServiceException.validation("Pivot dynamic date filter is invalid");
+                }
+                if (("between".equals(operator) || "not-between".equals(operator))
+                        && !filter.has("value2") && !filter.has("dynamic")) {
+                    throw ServiceException.validation("Pivot range filter requires two bounds");
+                }
+                if (filter.has("dynamic") && !Set.of("equals", "between").contains(operator)) {
+                    throw ServiceException.validation("Pivot dynamic date operator is invalid");
+                }
                 if (filter.has("wholeDay") && !filter.get("wholeDay").isBoolean()) throw ServiceException.validation("Pivot condition filter wholeDay is invalid");
             }
             case "top-items" -> {
                 SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "scope", "count", "valueFieldId", "direction"), "Pivot top-items filter");
                 if (!"top-items".equals(SnapshotMutationSupport.text(filter, "family"))) throw ServiceException.validation("Pivot top-items filter family is invalid");
                 requireField(fieldIds, filter);
-                if (filter.has("scope") && !Set.of("report", "field").contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot top-items filter scope is invalid");
+                if (filter.has("scope") && !FILTER_SCOPES.contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot top-items filter scope is invalid");
                 JsonNode count = filter.get("count");
                 if (count == null || !count.isIntegralNumber() || count.intValue() < 1) throw ServiceException.validation("Pivot top-items count is invalid");
                 if (!Set.of("top", "bottom").contains(SnapshotMutationSupport.text(filter, "direction"))) throw ServiceException.validation("Pivot top-items direction is invalid");

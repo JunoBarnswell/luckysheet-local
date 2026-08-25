@@ -408,9 +408,9 @@ describe('native PivotGridProjection contract', () => {
     pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.allowMultipleFiltersPerField = true;
     pivot.layout.filters = [
-      { kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'all', memberKeys: [] },
-      { kind: 'condition', family: 'label', fieldId: region.fieldId, operator: 'begins-with', value: 'E' },
-      { kind: 'top-items', family: 'top-items', fieldId: region.fieldId, count: 1, valueFieldId: amount.fieldId, direction: 'top' },
+      { kind: 'manual', family: 'manual', scope: 'report', fieldId: region.fieldId, mode: 'all', memberKeys: [] },
+      { kind: 'condition', family: 'label', fieldId: region.fieldId, scope: 'report', operator: 'begins-with', value: 'E' },
+      { kind: 'top-items', family: 'top-items', scope: 'report', fieldId: region.fieldId, count: 1, valueFieldId: amount.fieldId, direction: 'top' },
     ];
     const summary = summarizePivotReportFilters(pivot.layout.filters, catalog, region.fieldId);
     assert.equal(summary.fieldName, 'Region');

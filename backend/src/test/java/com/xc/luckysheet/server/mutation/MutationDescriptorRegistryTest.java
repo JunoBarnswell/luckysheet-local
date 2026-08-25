@@ -571,6 +571,51 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void pivotFiltersPersistCanonicalScopesAndRejectInvalidAxisScope() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,
+                  "cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}},"2":{"0":{"value":"West"},"1":{"value":18}}},"pivots":[]}]}
+                """);
+        String region = "sheet:sheet-1:column:0:range:0";
+        String amount = "sheet:sheet-1:column:1:range:0";
+        ObjectNode pivot = (ObjectNode) mapper.readTree("""
+                {"schema":"PivotDefinition","id":"pivot-filter-scope","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":1}},
+                 "target":{"sheetId":"sheet-1","anchor":{"row":5,"column":3}},
+                 "fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"%s","name":"Region","dataType":"text","ordinal":0},{"fieldId":"%s","name":"Amount","dataType":"number","ordinal":1}]},
+                 "layout":{"rows":[{"fieldId":"%s"}],"columns":[],"filters":[
+                   {"kind":"manual","family":"manual","fieldId":"%s","mode":"all","memberKeys":[]},
+                   {"kind":"condition","family":"label","fieldId":"%s","scope":"report","operator":"begins-with","value":"E"},
+                   {"kind":"top-items","family":"top-items","fieldId":"%s","scope":"field","count":1,"valueFieldId":"%s","direction":"top"},
+                   {"kind":"condition","family":"value","fieldId":"%s","operator":"between","value":10,"value2":50,"valueFieldId":"%s"}],
+                   "allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},
+                   "values":[{"fieldId":"%s","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},
+                 "refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
+                """.formatted(region, amount, region, region, region, region, amount, amount, amount, amount));
+        OperationMutation add = new OperationMutation("pivot.add", "sheet-1", pivot);
+        JsonNode current = registry.applyPublicMutations(snapshot, List.of(add));
+        JsonNode filters = current.path("sheets").get(0).path("pivots").get(0).path("layout").path("filters");
+        assertEquals("field", filters.get(0).path("scope").asText());
+        assertEquals("report", filters.get(1).path("scope").asText());
+        assertEquals("field", filters.get(2).path("scope").asText());
+        assertEquals("report", filters.get(3).path("scope").asText());
+
+        ObjectNode invalidScopePivot = (ObjectNode) pivot.deepCopy();
+        ((ObjectNode) invalidScopePivot.path("layout").path("filters").get(0)).put("scope", "workspace");
+        OperationMutation invalidScope = new OperationMutation("pivot.add", "sheet-1", invalidScopePivot);
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidScope, WorkbookAclRole.EDITOR));
+        assertEquals(0, snapshot.path("sheets").get(0).path("pivots").size());
+
+        ObjectNode invalidAxisPivot = (ObjectNode) pivot.deepCopy();
+        ObjectNode nonAxisFilter = (ObjectNode) invalidAxisPivot.path("layout").path("filters").get(3);
+        nonAxisFilter.put("scope", "field");
+        OperationMutation invalidAxis = new OperationMutation("pivot.add", "sheet-1", invalidAxisPivot);
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidAxis, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(0, snapshot.path("sheets").get(0).path("pivots").size());
+    }
+
+    @Test
     void pivotSourceReferencesResolveEveryCanonicalEntityAndRejectDanglingIds() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

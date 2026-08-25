@@ -274,6 +274,17 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, reportLayout: 'invalid' as never } }), /Pivot layout is invalid/);
   const { reportLayout: _reportLayout, ...legacyReportLayout } = base.layout;
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...legacyReportLayout, compact: true, repeatLabels: false } as never }), /unsupported field: compact/);
+  validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    filters: [
+      { kind: 'manual', family: 'manual', fieldId: 'region', scope: 'field', mode: 'all', memberKeys: [] },
+      { kind: 'condition', family: 'label', fieldId: 'region', scope: 'report', operator: 'begins-with', value: 'E' },
+    ],
+  } });
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    filters: [{ kind: 'manual', family: 'manual', fieldId: 'amount', scope: 'field', mode: 'all', memberKeys: [] }],
+  } }), /row or column field/);
 });
 
 test('Pivot calculated definitions extend the effective field set without catalog duplication', () => {
