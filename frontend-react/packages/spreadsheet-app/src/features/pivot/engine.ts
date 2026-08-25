@@ -606,7 +606,16 @@ function normalizeFieldCatalog(sourceTableValue: SourceTable, persisted?: PivotF
     const values = sourceTableValue.rows.map((row) => row.values[field.fieldId] ?? null);
     const persistedField = persisted?.fields.find((candidate) => candidate.fieldId === field.fieldId);
     const fieldId = persistedField?.fieldId ?? field.fieldId ?? `field:${ordinal}`;
-    return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: [...new Map(values.filter((value) => value != null).map((value) => [pivotMemberKey(createPivotMemberKey(value)), value])).values()].slice(0, 10_000) };
+    const members = [...new Map(values.map((value) => {
+      // Empty text and null are one semantic blank member. Keep that identity
+      // in the catalogue even when the UI preview reaches its display bound.
+      const canonical = value === '' ? null : value;
+      return [pivotMemberKey(createPivotMemberKey(canonical)), canonical] as const;
+    })).values()];
+    const preview = members.slice(0, 10_000);
+    const blank = members.find((value) => createPivotMemberKey(value).type === 'blank');
+    if (blank !== undefined && !preview.some((value) => pivotMemberKey(createPivotMemberKey(value)) === pivotMemberKey(createPivotMemberKey(blank)))) preview.push(blank);
+    return { fieldId, name: field.name, dataType: inferType(values), ordinal, values: preview };
   });
   return { schema: 'PivotFieldCatalog', fields };
 }
