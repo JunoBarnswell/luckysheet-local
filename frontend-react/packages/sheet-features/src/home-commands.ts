@@ -10,6 +10,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
+import { protectionResolver } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, type DataSortParams } from './data-features';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
@@ -304,13 +305,16 @@ function assertSafeAutoSumTarget(sheet: WorksheetModel, target: { row: number; c
   if (sheet.spillRanges.some((spill) => isSpillChild(spill, target.row, target.column))) {
     throw new Error(`AutoSum target ${sheet.id}!${target.row}:${target.column} is a formula spill child`);
   }
-  for (const rule of sheet.protectionRules) {
-    if (!rule.locked || rule.allowedActions?.includes('edit-cell')) continue;
-    const covers = rule.scope === 'workbook'
-      || (rule.scope === 'sheet' && rule.sheetId === sheet.id)
-      || (rule.scope === 'range' && rule.range !== undefined && rangesIntersect(rule.range, targetRange));
-    if (covers) throw new Error(`AutoSum target ${sheet.id}!${target.row}:${target.column} is protected`);
-  }
+  const decision = protectionResolver.resolve({
+    sheetId: sheet.id,
+    rules: sheet.protectionRules,
+    ranges: [targetRange],
+    action: 'edit-cell',
+    rowCount: sheet.rowCount,
+    columnCount: sheet.columnCount,
+    readCellStyle: (row, column) => sheet.cells.get(row, column)?.style,
+  });
+  if (!decision.allowed) throw new Error(decision.reason ?? `AutoSum target ${sheet.id}!${target.row}:${target.column} is protected`);
 }
 
 function isValidAutoSumParams(value: unknown): value is AutoSumParams {

@@ -134,7 +134,9 @@ public class MutationDescriptorRegistry {
             throw ServiceException.forbidden("Workbook role " + descriptor.requiredRole().wireValue() + " is required for mutation " + mutation.id());
         }
         List<RangeRef> ranges = descriptor.affectedRanges(snapshot, mutation);
-        if (descriptor.checksProtection() && role != WorkbookAclRole.OWNER) assertUnlocked(snapshot, ranges, descriptor.protectionAction());
+        if (descriptor.checksProtection() && role != WorkbookAclRole.OWNER) {
+            ProtectionResolver.assertAllowed(snapshot, ranges, descriptor.protectionAction());
+        }
         return new MutationPreparation(descriptor, ranges);
     }
 
@@ -196,43 +198,6 @@ public class MutationDescriptorRegistry {
                 throw new IllegalStateException("Remote contract mutation has no accepted server reducer: " + entry.getKey());
             }
         }
-    }
-
-    private void assertUnlocked(JsonNode snapshot, List<RangeRef> ranges, String action) {
-        if (ranges.isEmpty()) return;
-        ObjectNode root = SnapshotMutationSupport.root(snapshot);
-        for (JsonNode sheet : SnapshotMutationSupport.sheets(root)) {
-            if (!sheet.isObject()) continue;
-            JsonNode rules = sheet.path("protectionRules");
-            if (!rules.isArray()) continue;
-            for (JsonNode rule : rules) {
-                if (!rule.isObject() || !rule.path("locked").asBoolean(false) || allows(rule, action)) continue;
-                for (RangeRef range : ranges) {
-                    if (covers(rule, range)) throw ServiceException.forbidden("Protected area blocks mutation " + action);
-                }
-            }
-        }
-    }
-
-    private boolean allows(JsonNode rule, String action) {
-        JsonNode actions = rule.path("allowedActions");
-        if (!actions.isArray()) return false;
-        for (JsonNode item : actions) if (action.equals(item.asText())) return true;
-        return false;
-    }
-
-    private boolean covers(JsonNode rule, RangeRef range) {
-        String scope = rule.path("scope").asText();
-        if ("workbook".equals(scope)) return true;
-        if ("sheet".equals(scope)) return range.sheetId().equals(rule.path("sheetId").asText());
-        if (!"range".equals(scope)) return false;
-        JsonNode protectedRange = rule.get("range");
-        return protectedRange != null && protectedRange.isObject()
-                && range.sheetId().equals(protectedRange.path("sheetId").asText())
-                && range.startRow() <= protectedRange.path("endRow").asInt(-1)
-                && range.endRow() >= protectedRange.path("startRow").asInt(Integer.MAX_VALUE)
-                && range.startColumn() <= protectedRange.path("endColumn").asInt(-1)
-                && range.endColumn() >= protectedRange.path("startColumn").asInt(Integer.MAX_VALUE);
     }
 
     private static abstract class BaseDescriptor implements MutationDescriptor {

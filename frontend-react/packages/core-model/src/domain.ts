@@ -892,8 +892,6 @@ export interface ProtectionRule {
   passwordHash?: string;
   locked: boolean;
   allow: ProtectionAllow;
-  /** 兼容 M10 权限检查的动作白名单 */
-  allowedActions?: string[];
 }
 
 export type StructuralOpKind =

@@ -3,6 +3,7 @@ import type {
   FilterCellValue,
   CellEditorConfig,
   CellStyle,
+  ProtectionAllow,
   CellStyleTemplate,
   BarcodeSymbology,
   CameraDrawingPayload,
@@ -43,7 +44,7 @@ import type {
   WorkbookSnapshot,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { createDefaultTextBoxTextFrame, resolveFilterCellValue } from '@react-sheets/core-model';
+import { createDefaultTextBoxTextFrame, protectionResolver, resolveFilterCellValue } from '@react-sheets/core-model';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type { AuthTokenProvider, GuestShareRole, RevisionRecord, ServerQueryRequest, ShareTokenProvider } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
@@ -357,6 +358,8 @@ const HOME_STYLE_KEYS: readonly HomeStyleKey[] = [
   'wrapText',
   'numberFormat',
   'borders',
+  'locked',
+  'formulaHidden',
 ];
 const HOME_STYLE_SCAN_LIMIT = 10_000;
 
@@ -527,6 +530,11 @@ export class WorkbookSession {
     });
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
+    this.runtime.commands.setMutationGuard((mutation) => {
+      this.permission.syncFromWorkbook(this.runtime.model);
+      const result = this.permission.checkMutation(mutation);
+      if (!result.allowed) throw new Error(result.reason ?? 'Protected worksheet rejected the mutation');
+    });
     this.automationWorkerFactory = automationWorkerFactory;
     this.xlsxExecution = xlsxExecution;
     this.permission.setOnline(!this.runtime.localOnly);
@@ -915,6 +923,18 @@ export class WorkbookSession {
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
     const activeEdit = this.editSession.active;
+    const activeModelSheet = this.runtime.model.getSheet(this.activeSheetId);
+    const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
+    const activeFormulaHidden = protectionResolver.isFormulaHidden(
+      activeModelSheet.protectionRules,
+      activeModelSheet.id,
+      selection.activeCell.row,
+      selection.activeCell.column,
+      activeModelCell?.style,
+    );
+    const visibleActiveEdit = activeEdit && activeFormulaHidden
+      ? { ...activeEdit, currentDraft: '', originalFormula: undefined }
+      : activeEdit;
     const activeDrawing = this.selectedFloatingId
       ? selectedSheet.drawings.find((drawing) => drawing.id === this.selectedFloatingId)
       : undefined;
@@ -931,7 +951,7 @@ export class WorkbookSession {
       activeSheetId: this.activeSheetId,
       panels: { ...this.panels },
       ribbonTab: this.ribbonTab,
-      formulaDraft: this.formulaDraft,
+      formulaDraft: activeFormulaHidden ? '' : this.formulaDraft,
       editingCell: this.editSession.editingCell,
       zoom: this.zoom,
       sheets,
@@ -966,13 +986,13 @@ export class WorkbookSession {
       backstage: { ...this.backstage },
       inputMode: this.inputMode,
       focus: { ...this.focus },
-      editSession: activeEdit ? {
-        sheetId: activeEdit.sheetId,
-        cell: { row: activeEdit.row, column: activeEdit.column },
-        originalValue: activeEdit.originalValue?.value ?? null,
-        ...(activeEdit.originalFormula !== undefined ? { originalFormula: activeEdit.originalFormula } : {}),
-        draftText: activeEdit.currentDraft,
-        mode: activeEdit.originalFormula || activeEdit.currentDraft.startsWith('=') ? 'formula' : 'value',
+      editSession: visibleActiveEdit ? {
+        sheetId: visibleActiveEdit.sheetId,
+        cell: { row: visibleActiveEdit.row, column: visibleActiveEdit.column },
+        originalValue: activeFormulaHidden ? null : visibleActiveEdit.originalValue?.value ?? null,
+        ...(visibleActiveEdit.originalFormula !== undefined ? { originalFormula: visibleActiveEdit.originalFormula } : {}),
+        draftText: visibleActiveEdit.currentDraft,
+        mode: visibleActiveEdit.originalFormula || visibleActiveEdit.currentDraft.startsWith('=') ? 'formula' : 'value',
         source: this.focus.target === 'formula-bar' ? 'formulaBar' : 'cell',
       } : null,
       activeObject: activeDrawing ? { kind: activeDrawing.kind, id: activeDrawing.id } : null,
@@ -1368,7 +1388,7 @@ export class WorkbookSession {
     return this.permission.getShareRole();
   }
 
-  protectSelection(allowedActions: string[] = ['format']): void {
+  protectSelection(allow: ProtectionAllow = { formatCells: true }): void {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
     const rule = {
       id: nextId('protect'),
@@ -1376,8 +1396,7 @@ export class WorkbookSession {
       sheetId: this.activeSheetId,
       range,
       locked: true,
-      allow: {},
-      allowedActions,
+      allow: structuredClone(allow),
     };
     this.runCommand('sheet.protect.set', { sheetId: this.activeSheetId, rule });
     this.notify('Selection protected');
@@ -1851,6 +1870,16 @@ export class WorkbookSession {
       const base = mutation.params && typeof mutation.params === 'object' && !Array.isArray(mutation.params)
         ? mutation.params as Record<string, unknown>
         : {};
+      if (mutation.id === 'cell.restore' && this.permission.isFormatOnlyRestore(mutation.params)) {
+        return canExecuteCommand(
+          this.permission,
+          this.runtime.model,
+          'sheet.style.set',
+          { ...base, style: (base.previous && typeof base.previous === 'object' && !Array.isArray(base.previous)) ? (base.previous as Record<string, unknown>).style : undefined },
+          this.actorId,
+          mutation.sheetId,
+        ).allowed;
+      }
       return canExecuteCommand(
         this.permission,
         this.runtime.model,
@@ -2036,8 +2065,10 @@ export class WorkbookSession {
 
   syncDraftFromPrimary(): void {
     const sel = this.selectionService.getState();
-    const cell = this.readResolvedCell(this.runtime.model.getSheet(this.activeSheetId), sel.activeCell.row, sel.activeCell.column);
-    this.formulaDraft = cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
+    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const cell = this.readResolvedCell(sheet, sel.activeCell.row, sel.activeCell.column);
+    const hidden = protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, sel.activeCell.row, sel.activeCell.column, cell?.style);
+    this.formulaDraft = hidden ? '' : cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
     this.emit();
   }
 
@@ -2053,6 +2084,16 @@ export class WorkbookSession {
   }
 
   selectCell(address: string): void {
+    const parsed = parseRangeReference(address);
+    const target = parsed && parsed.startRow === parsed.endRow && parsed.startColumn === parsed.endColumn ? parsed : undefined;
+    if (target) {
+      this.permission.syncFromWorkbook(this.runtime.model);
+      const selectionPermission = this.permission.canSelectCell(this.activeSheetId, target.startRow, target.startColumn);
+      if (!selectionPermission.allowed) {
+        this.notify(selectionPermission.reason ?? 'Protected worksheet does not allow selecting this cell');
+        return;
+      }
+    }
     const changed = this.selectionService.selectCell(address, {
       editing: Boolean(this.editSession.editingCell),
       insertRef: (ref) => this.setFormulaDraft(this.formulaDraft + ref),
@@ -2368,6 +2409,10 @@ export class WorkbookSession {
       }
     }
     const cell = this.readResolvedCell(canonicalSheet, canonicalTarget.row, canonicalTarget.column);
+    if (protectionResolver.isFormulaHidden(canonicalSheet.protectionRules, canonicalSheet.id, canonicalTarget.row, canonicalTarget.column, cell?.style)) {
+      this.notify('This formula is hidden while the worksheet is protected');
+      return false;
+    }
     this.editSession.begin({
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,

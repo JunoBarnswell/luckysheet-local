@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { WorkbookModel } from '@react-sheets/core-model';
 import { PermissionService } from './permission-service';
 
 test('PermissionService blocks viewer from editing cells', () => {
@@ -43,18 +44,20 @@ test('PermissionService blocks locked range', () => {
   const perm = new PermissionService();
   perm.applyServerAccess('editor');
   perm.setOnline(true);
-  perm.setRangeRules([{
+  const workbook = new WorkbookModel('wb', 'Protection');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.protectionRules.push({
     id: 'r1',
     scope: 'range',
-    sheetId: 's1',
-    range: { sheetId: 's1', startRow: 0, endRow: 10, startColumn: 0, endColumn: 5 },
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 10, startColumn: 0, endColumn: 5 },
     locked: true,
     allow: {},
-    allowedActions: ['format'],
-  }]);
+  });
+  perm.syncFromWorkbook(workbook);
   const result = perm.canCheck({
     commandId: 'sheet.cell.set',
-    affectedRanges: [{ sheetId: 's1', startRow: 2, endRow: 2, startColumn: 1, endColumn: 1 }],
+    affectedRanges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 1, endColumn: 1 }],
     actor: { actorId: 'user-1' },
   });
   assert.equal(result.allowed, false);

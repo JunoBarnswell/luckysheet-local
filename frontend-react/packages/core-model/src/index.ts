@@ -16,6 +16,7 @@ import type {
   OutlineModel,
   SpillRange,
   ProtectionRule,
+  ProtectionAllow,
   DefinedNameModel,
   DefinedNameScope,
 } from './domain';
@@ -283,6 +284,7 @@ export type {
   SpillRange,
   SpillState,
   ProtectionRule,
+  ProtectionAllow,
   DefinedNameModel,
   DefinedNameScope,
   ProtectionScope,
@@ -307,6 +309,7 @@ export {
   isFormControlDrawingPayload,
 } from './domain';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export { ProtectionResolver, protectionResolver, type ProtectionAction, type ProtectionCellResolution, type ProtectionDecision, type ProtectionResolveRequest } from './protection';
 export {
   canonicalExcelDateDayOfWeek,
   canonicalExcelDateFromParts,

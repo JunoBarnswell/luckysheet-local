@@ -588,8 +588,10 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     }
 
     private static String protectionAction(String id) {
-        if (id.startsWith("sheetTable") || id.startsWith("tableSheet") || id.equals("sheet.reordered")) return "structure";
-        if (id.startsWith("cf") || id.startsWith("dv") || id.equals("banded.set") || id.equals("outline.set")) return "format";
-        return "edit-cell";
+        if (id.startsWith("autoFilter")) return "auto-filter";
+        if (id.startsWith("cf") || id.startsWith("dv") || id.equals("banded.set") || id.equals("outline.set")
+                || id.startsWith("sheetTable") || id.startsWith("tableSheet")) return "format";
+        if (id.equals("sheet.reordered")) return "edit-cell";
+        return "format";
     }
 }

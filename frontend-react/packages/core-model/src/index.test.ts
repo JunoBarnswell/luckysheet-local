@@ -283,3 +283,4 @@ test('persists print documents and redacted query definitions in the workbook sn
     connectorConfig: { apiKey: 'secret' },
   }), /redacted/);
 });
+import './protection.test';

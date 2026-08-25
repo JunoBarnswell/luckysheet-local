@@ -106,6 +106,10 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.range.clear': 'edit-cell',
   'sheet.range.paste': 'edit-cell',
   'sheet.style.set': 'format',
+  'sheet.style.setMulti': 'format',
+  'sheet.style.setMultiRange': 'format',
+  'sheet.format.set': 'format',
+  'sheet.numberFormat.apply': 'format',
   'sheet.style.toggle': 'format',
   'sheet.cellTemplate.apply': 'format',
   'sheet.cellEditor.set': 'format',
@@ -120,6 +124,16 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'sheet.rows.delete': 'structure',
   'sheet.columns.insert': 'structure',
   'sheet.columns.delete': 'structure',
+  'sheet.sort.multi': 'structure',
+  'data.sort.quick': 'structure',
+  'data.sort.rows': 'structure',
+  'data.sort.reapply': 'structure',
+  'sheet.autoFilter.toggle': 'structure',
+  'sheet.autoFilter.set': 'structure',
+  'sheet.autoFilter.sort': 'structure',
+  'sheet.autoFilter.clearCriteria': 'structure',
+  'sheet.autoFilter.reapply': 'structure',
+  'sheetTable.autoFilter.set': 'structure',
   'sheet.row.hide': 'structure',
   'sheet.column.hide': 'structure',
   'sheet.protect.set': 'protect',
@@ -218,25 +232,7 @@ export function buildPermissionCapabilities(role: ShareRole): PermissionCapabili
 }
 
 export function syncProtectionRulesFromWorkbook(permission: PermissionService, workbook: WorkbookModel): void {
-  const rangeRules: ProtectionRule[] = [];
-  const sheetRules = new Map<string, ProtectionRule[]>();
-  for (const sheet of workbook.getSheets()) {
-    for (const rule of sheet.protectionRules) {
-      if (rule.scope === 'range') {
-        rangeRules.push(rule);
-        continue;
-      }
-      if (rule.scope === 'sheet') {
-        const existing = sheetRules.get(sheet.id) ?? [];
-        existing.push(rule);
-        sheetRules.set(sheet.id, existing);
-      }
-    }
-  }
-  permission.setRangeRules(rangeRules);
-  for (const sheet of workbook.getSheets()) {
-    permission.setSheetRules(sheet.id, sheetRules.get(sheet.id) ?? []);
-  }
+  permission.syncFromWorkbook(workbook);
 }
 
 export function canExecuteCommand(
@@ -265,7 +261,10 @@ export function findProtectionRuleCoveringRange(
 ): ProtectionRule | undefined {
   const sheet = workbook.getSheet(sheetId);
   return sheet.protectionRules.find((rule) => {
-    if (!rule.locked || rule.scope !== 'range' || !rule.range) return false;
+    if (!rule.locked) return false;
+    if (rule.scope === 'workbook') return true;
+    if (rule.scope === 'sheet') return rule.sheetId === range.sheetId;
+    if (!rule.range) return false;
     return rule.range.sheetId === range.sheetId
       && rule.range.startRow <= range.startRow
       && rule.range.endRow >= range.endRow

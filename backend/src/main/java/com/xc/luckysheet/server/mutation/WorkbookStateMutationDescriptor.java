@@ -208,6 +208,6 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     }
 
     private static String action(String id) {
-        return id.startsWith("print.") ? "print" : id.startsWith("table.") ? "structure" : "edit-cell";
+        return id.startsWith("print.") ? "print" : id.startsWith("table.") ? "format" : "edit-cell";
     }
 }
