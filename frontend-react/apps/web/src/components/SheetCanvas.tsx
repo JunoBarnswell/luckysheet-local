@@ -45,6 +45,7 @@ import type { ColumnDimensionController } from '../editor/column-dimension-contr
 import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover } from './pivot/PivotHeaderFilterPopover';
+import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
 
 export interface SheetCanvasProps {
   locale: Locale;
@@ -366,14 +367,14 @@ export function SheetCanvas({
     [sheet.rowCount, sheet.columnCount, sheet.defaultRowHeightPx, sheet.defaultColumnWidthPx, sheet.rowHeightsPx, sheet.columnWidthsPx, sheet.hiddenRows, sheet.hiddenColumns, zoomFactor],
   );
 
+  const findMerge = useMemo(() => createMergeSpatialIndex(sheet.merges), [sheet.merges]);
+
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
     const pivotCell = findPivotProjectionCell(sheet, row, column);
     if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale);
 
     const cell = sheet.getCell(row, column);
-    const merge = sheet.merges.find((span) =>
-      row >= span.range.startRow && row <= span.range.endRow
-      && column >= span.range.startColumn && column <= span.range.endColumn);
+    const merge = findMerge(row, column);
     // Empty cells inside a merge still need a render record so the grid layer
     // can suppress the merge's internal boundaries. Returning undefined here
     // made blank merged areas look like ordinary cells.
@@ -417,7 +418,7 @@ export function SheetCanvas({
           }
         : undefined,
     };
-  }, [locale, sheet, showFormulas]);
+  }, [findMerge, locale, sheet, showFormulas]);
 
   const pivotStatusProjections = useMemo(
     () => Object.values(sheet.pivotProjections).filter((projection) =>
