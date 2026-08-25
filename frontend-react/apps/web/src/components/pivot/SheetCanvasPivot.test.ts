@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import type { PivotGridProjection } from "@react-sheets/core-model";
+import type { PivotGridProjection, PivotReportFilterSummary } from "@react-sheets/core-model";
 import {
   findPivotProjectionCell,
   isPivotValueCell,
+  pivotFilterSummaryText,
   pivotProjectionCellRenderData,
   resolvePivotProjectionHit,
 } from "../SheetCanvas";
@@ -97,6 +98,28 @@ describe("SheetCanvas Pivot projection boundary", () => {
     const cell = { id: 'pivot-1|caption', pivotId: 'pivot-1', row: 0, column: 0, kind: 'column-header' as const, value: null, text: 'Row Labels', captionKey: 'row-labels' as const };
     assert.equal(pivotProjectionCellRenderData(cell, 'zh-CN').displayValue, '行标签');
     assert.equal(pivotProjectionCellRenderData(cell, 'en-US').displayValue, 'Row Labels');
+  });
+
+  it('renders localized, family-aware report summaries and keeps All only for inactive filters', () => {
+    const all: PivotReportFilterSummary = { fieldName: 'Region', active: false, entries: [{ kind: 'manual', family: 'manual', active: false, mode: 'all', count: 0, memberValues: [] }] };
+    assert.equal(pivotFilterSummaryText(all, 'en-US'), 'Region: All');
+    const active: PivotReportFilterSummary = {
+      fieldName: 'Region',
+      active: true,
+      entries: [
+        { kind: 'manual', family: 'manual', active: false, mode: 'all', count: 0, memberValues: [] },
+        { kind: 'condition', family: 'label', active: true, operator: 'begins-with', value: 'N' },
+        { kind: 'condition', family: 'date', active: true, operator: 'between', value: '2024-01-01', value2: '2024-12-31' },
+        { kind: 'top-items', family: 'top-items', active: true, direction: 'top', count: 3, valueFieldName: 'Amount' },
+      ],
+    };
+    const text = pivotFilterSummaryText(active, 'en-US');
+    assert.match(text, /Region:/);
+    assert.match(text, /Begins With/);
+    assert.match(text, /Between/);
+    assert.match(text, /Top 3 by Amount/);
+    assert.doesNotMatch(text, /Region: All/);
+    assert.match(pivotFilterSummaryText(active, 'zh-CN'), /标签筛选/);
   });
 
   it('resolves Pivot presentation style and options instead of using one fixed palette', () => {

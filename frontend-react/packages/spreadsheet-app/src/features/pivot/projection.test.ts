@@ -11,6 +11,7 @@ import {
   getPivotFieldCatalog,
   getPivotSourceRanges,
   hitTestPivotProjection,
+  summarizePivotReportFilters,
 } from './engine';
 import { buildPivotModel } from './helpers';
 import { createSpillEnvironment } from '../../formula-spill-sync';
@@ -273,6 +274,35 @@ describe('native PivotGridProjection contract', () => {
     const fieldFiltered = buildPivotGridProjection(workbook, pivot);
     assert.equal(fieldFiltered.cells.some((cell) => cell.kind === 'filter'), false);
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
+  });
+
+  it('projects one typed report summary per field and never hides active families as All', () => {
+    const workbook = workbookWithData();
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-report-summary', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.allowMultipleFiltersPerField = true;
+    pivot.layout.filters = [
+      { kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'all', memberKeys: [] },
+      { kind: 'condition', family: 'label', fieldId: region.fieldId, operator: 'begins-with', value: 'E' },
+      { kind: 'top-items', family: 'top-items', fieldId: region.fieldId, count: 1, valueFieldId: amount.fieldId, direction: 'top' },
+    ];
+    const summary = summarizePivotReportFilters(pivot.layout.filters, catalog, region.fieldId);
+    assert.equal(summary.fieldName, 'Region');
+    assert.equal(summary.active, true);
+    assert.equal(summary.entries.length, 3);
+    assert.equal(summary.entries[0]?.kind, 'manual');
+    assert.equal(summary.entries[1]?.kind, 'condition');
+    assert.equal(summary.entries[2]?.kind, 'top-items');
+    const projection = buildPivotGridProjection(workbook, pivot);
+    const filterCells = projection.cells.filter((cell) => cell.kind === 'filter');
+    assert.equal(filterCells.length, 1);
+    assert.equal(filterCells[0]?.filterSummary?.active, true);
+    assert.equal(filterCells[0]?.filterSummary?.entries.length, 3);
   });
 
   it('applies canonical date, numeric and manual grouping before axis aggregation', () => {
