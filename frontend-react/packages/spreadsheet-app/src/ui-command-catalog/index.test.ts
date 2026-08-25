@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
+import { transformNumberFormatPrecision } from '@react-sheets/number-format';
 import {
   buildRibbonCommand,
-  adjustRibbonDecimalPlaces,
   getRibbonSurfaces,
   getRibbonCommandDefinition,
   getRibbonGroupDefinition,
@@ -194,10 +194,24 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(INSERT_RIBBON_SURFACES.some((surface) => surface.id.includes('quick')), false);
   });
 
-  it('adjusts decimals structurally without touching formatted cell text', () => {
-    assert.equal(adjustRibbonDecimalPlaces('general', 1), '0.0');
-    assert.equal(adjustRibbonDecimalPlaces('$#,##0.00', -1), '$#,##0.0');
-    assert.equal(adjustRibbonDecimalPlaces('0%', 2), '0.00%');
+  it('adjusts decimals through the canonical number-format transformer', () => {
+    assert.deepEqual(transformNumberFormatPrecision('$#,##0.00', -1), { ok: true, format: '$#,##0.0', decimalPlaces: 1 });
+    assert.deepEqual(transformNumberFormatPrecision('0%', 1), { ok: true, format: '0.0%', decimalPlaces: 1 });
+    assert.equal(transformNumberFormatPrecision('general', 1).ok, false);
+  });
+
+  it('does not build a style mutation for an unsupported active format', () => {
+    const dateContext = context({ cellStyle: { numberFormat: 'yyyy-mm-dd' } });
+    assert.equal(buildRibbonCommand('numberFormatDecimalIncrease', dateContext), undefined);
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('numberFormatDecimalIncrease'), dateContext), false);
+  });
+
+  it('builds one canonical style mutation without flattening custom sections', () => {
+    const result = buildRibbonCommand('numberFormatDecimalIncrease', context({ cellStyle: { numberFormat: '[Red]#,##0;[Blue]-#,##0' } }));
+    assert.deepEqual(result, {
+      type: 'command',
+      descriptor: { commandId: 'sheet.style.set', params: { style: { numberFormat: '[Red]#,##0.0;[Blue]-#,##0.0' } } },
+    });
   });
 
   it('builds the complete alignment grid as canonical style commands', () => {
