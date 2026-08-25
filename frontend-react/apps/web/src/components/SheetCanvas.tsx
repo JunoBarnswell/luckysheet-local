@@ -79,6 +79,7 @@ export interface SheetCanvasProps {
   getPivotContextMenuItems?: (hit: ResolvedContextHit) => readonly ContextMenuItem[];
   /** Opens a real details-sheet flow for a Pivot value/double-click or menu action. */
   onPivotShowDetails: (request: PivotShowDetailsRequest) => void;
+  onPivotExpansionToggle: (pivotId: string, nodeId: string) => void;
   onApplyPivotFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field') => void;
   onSelectionChange: (selection: SelectionState) => void;
   onMovePrimary: (rowDelta: number, columnDelta: number, opts?: { extend?: boolean }) => void;
@@ -333,6 +334,7 @@ export function SheetCanvas({
   onPivotContextHit,
   getPivotContextMenuItems,
   onPivotShowDetails,
+  onPivotExpansionToggle,
   onApplyPivotFilter,
   onSelectionChange,
   onMovePrimary,
@@ -558,6 +560,7 @@ export function SheetCanvas({
     onJumpEdge,
     onMovePrimary,
     onPivotContextHit,
+    onPivotExpansionToggle,
     onPivotResolve: resolvePivotProjectionHit,
     onPivotShowDetails,
     onResizeColumn: (column, widthPx) => columnDimensions.resizeBoundary(column, widthPx),

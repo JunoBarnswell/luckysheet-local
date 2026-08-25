@@ -328,6 +328,13 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   validateExactKeys(layout, ['rows', 'columns', 'filters', 'values', 'calculatedFields', 'calculatedItems', 'showSubtotals', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
     || typeof layout.showSubtotals !== 'boolean' || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+  if (layout.expansion !== undefined) {
+    const expansion = requireRecord(layout.expansion, 'Pivot expansion');
+    validateExactKeys(expansion, ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'], 'Pivot expansion');
+    if (!Array.isArray(expansion.expandedNodeIds) || !expansion.expandedNodeIds.every(isNonEmptyString)
+      || !Array.isArray(expansion.collapsedNodeIds) || !expansion.collapsedNodeIds.every(isNonEmptyString)
+      || typeof expansion.showButtons !== 'boolean') throw new Error('Pivot expansion is invalid');
+  }
   const validatePlacement = (rawPlacement: unknown): void => {
     const placement = requireRecord(rawPlacement, 'Pivot placement');
     validateExactKeys(placement, ['fieldId', 'sort', 'group'], 'Pivot placement');

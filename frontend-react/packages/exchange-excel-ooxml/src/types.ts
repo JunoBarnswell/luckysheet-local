@@ -106,6 +106,7 @@ export interface NativePivotTableField {
   axis?: 'row' | 'column' | 'page' | 'data';
   compact?: boolean;
   outline?: boolean;
+  collapsedItemIndexes?: number[];
 }
 
 export interface NativePivotDataField {
@@ -134,6 +135,7 @@ export interface NativePivotTableDefinition {
   compactData?: boolean;
   styleName?: string;
   styleOptions?: PivotStyleOptions;
+  showButtons?: boolean;
   pivotId?: string;
 }
 

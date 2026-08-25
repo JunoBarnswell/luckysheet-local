@@ -927,14 +927,16 @@ export function computePivotResultFromBlockSource(
   return structuredClone(computePivotResultFromTable(workbook, pivot, definition, source, sourceRevision));
 }
 
-function nodeVisible(node: PivotResultNode, layout: PivotLayout, ancestorsVisible: boolean): boolean {
-  if (!ancestorsVisible) return false;
+function nodeExpanded(node: PivotResultNode, layout: PivotLayout): boolean {
+  if (!node.children.length) return false;
+  const nodeId = node.nodeId ?? '';
   const expansion = layout.expansion;
-  if (!expansion || !node.children.length) return true;
-  if (expansion.collapsedNodeIds.includes(node.nodeId ?? '')) return false;
-  // An empty expanded set means the default Excel state (all nodes expanded);
-  // once the user explicitly records paths, only those paths remain open.
-  return expansion.expandedNodeIds.length === 0 || expansion.expandedNodeIds.includes(node.nodeId ?? '') || node.depth === 0;
+  if (!expansion) return true;
+  // Expansion state controls traversal, never the existence of the current
+  // row.  A collapsed node remains visible while only its descendants are
+  // omitted from the projection. Explicit expanded IDs are retained as
+  // stable overrides for restored/native Pivot state; the default is open.
+  return !expansion.collapsedNodeIds.includes(nodeId) || expansion.expandedNodeIds.includes(nodeId);
 }
 
 interface FlatNode {
@@ -947,11 +949,30 @@ function flattenNodes(nodes: PivotResultNode[], layout: PivotLayout, labels: str
   const output: FlatNode[] = [];
   for (const node of nodes) {
     const currentLabels = [...labels, node.label];
-    const visible = nodeVisible(node, layout, parentVisible);
+    const visible = parentVisible;
     output.push({ node, labels: currentLabels, visible });
-    if (visible && node.children.length) output.push(...flattenNodes(node.children, layout, currentLabels, true));
+    if (visible && nodeExpanded(node, layout)) output.push(...flattenNodes(node.children, layout, currentLabels, true));
   }
   return output;
+}
+
+function pivotNodeIds(nodes: readonly PivotResultNode[], target = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    if (node.nodeId) target.add(node.nodeId);
+    pivotNodeIds(node.children, target);
+  }
+  return target;
+}
+
+function normalizeExpansionForTree(expansion: PivotLayout['expansion'], tree: PivotResultTree): NonNullable<PivotLayout['expansion']> {
+  const known = pivotNodeIds(tree.rows);
+  const source = expansion ?? { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true };
+  const dedupeKnown = (ids: readonly string[]) => [...new Set(ids.filter((id) => known.has(id)))];
+  return {
+    expandedNodeIds: dedupeKnown(source.expandedNodeIds),
+    collapsedNodeIds: dedupeKnown(source.collapsedNodeIds),
+    showButtons: source.showButtons,
+  };
 }
 
 function textForValue(value: PivotScalar): string {
@@ -1074,14 +1095,16 @@ function buildPivotGridProjectionCandidate(
   }
   row += 1;
   if (tree) {
-    const flat = flattenNodes(tree.rows, definition.layout);
+    const expansion = normalizeExpansionForTree(definition.layout.expansion, tree);
+    const projectionLayout: PivotLayout = { ...definition.layout, expansion };
+    const flat = flattenNodes(tree.rows, projectionLayout);
     for (const item of flat) {
       if (!item.visible) continue;
       const node = item.node;
       for (let axis = 0; axis < rowHeaderCount; axis += 1) {
         const label = item.labels[axis] ?? (axis === 0 ? node.label : '');
-        const kind: PivotProjectionCell['kind'] = axis === 0 && node.children.length && definition.layout.expansion?.showButtons ? 'expand-toggle' : node.subtotal ? 'subtotal' : 'row-header';
-        cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, expandable: node.children.length > 0, expanded: node.children.length > 0 && !definition.layout.expansion?.collapsedNodeIds.includes(node.nodeId ?? '') }));
+        const kind: PivotProjectionCell['kind'] = axis === 0 && node.children.length && expansion.showButtons ? 'expand-toggle' : node.subtotal ? 'subtotal' : 'row-header';
+        cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, expandable: node.children.length > 0, expanded: nodeExpanded(node, projectionLayout) }));
       }
       for (let columnIndex = 0; columnIndex < Math.max(columnPaths.length, 1); columnIndex += 1) {
         const resultCell = node.values[columnIndex];

@@ -18,7 +18,7 @@ import {
   type WorkbookSession,
 } from "@react-sheets/spreadsheet-app";
 import { parseRangeInput } from "../domain/range-input";
-import type { PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
+import type { PivotExpansionCommand, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
 import type { Locale } from '../i18n';
 import { pivotText } from '../components/pivot/pivot-localization';
 
@@ -248,6 +248,12 @@ export function useEditorCommandController({
     onLayoutChange: (layout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), compact: layout === "compact", repeatLabels: layout === "tabular" }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
     onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
+    onExpansionCommand: (command: PivotExpansionCommand) => {
+      if (!activePivot) return;
+      const base = { sheetId: activePivotSheetId, pivotId: activePivot.id };
+      if (command.kind === 'expand-field' || command.kind === 'collapse-field') dispatchCommand({ commandId: 'pivot.expansion.field', params: { ...base, fieldId: command.fieldId, expanded: command.kind === 'expand-field' } });
+      else if (command.kind === 'toggle-buttons') dispatchCommand({ commandId: 'pivot.expansion.buttons', params: { ...base, showButtons: command.showButtons } });
+    },
     onSlicerChange: (fieldId, enabled) => {
       if (!activePivot) return;
       if (enabled) session.createPivotSlicerControl(activePivot.id, fieldId);
