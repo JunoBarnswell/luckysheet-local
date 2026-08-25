@@ -48,6 +48,7 @@ import { ChartPanel } from './panels/ChartPanel';
 import { DataChartPanel } from './panels/DataChartPanel';
 import { BarcodePanel } from './panels/BarcodePanel';
 import { PivotPanel } from './panels/PivotPanel';
+import { SlicerEditorPanel } from './panels/SlicerEditorPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
 import { TextBoxEditorPanel } from './panels/TextBoxEditorPanel';
 import { FormControlPanel } from './panels/FormControlPanel';
@@ -194,6 +195,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'dataChart', label: 'Data Chart', icon: 'data-chart' },
   { id: 'barcode', label: 'Barcode', icon: 'barcode' },
   { id: 'pivot', label: 'Pivot', icon: 'table-pivot' },
+  { id: 'slicer', label: 'Slicer', icon: 'sliders' },
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
@@ -525,6 +527,9 @@ export function FeatureSidebar({
             onSetHyperlink={onSetHyperlink}
             onRemoveHyperlink={onRemoveHyperlink}
           />
+        ) : null}
+        {phase === 'ready' && activePanel === 'slicer' ? (
+          <SlicerEditorPanel sheetId={sheetId} drawings={drawings} drawingPayloads={drawingPayloads} selectedDrawingIds={selectedDrawingIds} onCommand={onCommand} />
         ) : null}
         {phase === 'ready' && activePanel === 'chart' ? (
           <ChartPanel

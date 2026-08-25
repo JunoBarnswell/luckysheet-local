@@ -318,7 +318,7 @@ describe('exchange-excel-ooxml', () => {
       { id: 'category-slicer', sheetId: sheet.id, kind: 'slicer', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 220, height: 180 }, zIndex: 1, payloadId: 'category-slicer' },
       { id: 'date-timeline', sheetId: sheet.id, kind: 'timeline', anchor: { kind: 'one-cell', row: 10, column: 0 }, transform: { x: 0, y: 0, width: 420, height: 120 }, zIndex: 1, payloadId: 'date-timeline' },
     );
-    sheet.drawingPayloads.set('category-slicer', { kind: 'slicer', pivotId: 'control-pivot', fieldId: 'category', filter: { mode: 'all', memberKeys: [] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
+    sheet.drawingPayloads.set('category-slicer', { kind: 'slicer', pivotId: 'control-pivot', fieldId: 'category', filter: { mode: 'all', memberKeys: [] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' }, settings: { showHeader: true, caption: 'Category', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 } });
     sheet.drawingPayloads.set('date-timeline', { kind: 'timeline', pivotId: 'control-pivot', fieldId: 'date', period: { start: '2024-01-01T00:00:00Z', end: '2024-12-31T00:00:00Z' }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     assert.ok(output.files['xl/slicerCaches/slicerCache1.xml']);
@@ -367,7 +367,7 @@ describe('exchange-excel-ooxml', () => {
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
     });
     sheet.drawings.push({ id: 'typed-slicer', sheetId: sheet.id, kind: 'slicer', anchor: { kind: 'one-cell', row: 0, column: 4 }, transform: { x: 0, y: 0, width: 220, height: 180 }, zIndex: 1, payloadId: 'typed-slicer-payload' });
-    sheet.drawingPayloads.set('typed-slicer-payload', { kind: 'slicer', pivotId: 'typed-slicer-pivot', fieldId: 'member', filter: { mode: 'include', memberKeys: [createPivotMemberKey('1')] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
+    sheet.drawingPayloads.set('typed-slicer-payload', { kind: 'slicer', pivotId: 'typed-slicer-pivot', fieldId: 'member', filter: { mode: 'include', memberKeys: [createPivotMemberKey('1')] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' }, settings: { showHeader: true, caption: 'Member', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 } });
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     const cacheXml = strFromU8(output.files['xl/slicerCaches/slicerCache1.xml']!);
     assert.match(cacheXml, /<i x="0"\/>/);

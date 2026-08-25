@@ -188,11 +188,21 @@ export function EditorShell({
                       session.setPivotSlicerFilter(drawingId, 'all', []);
                     } else if (action.kind === 'slicer-member') {
                       const existing = payload.filter.memberKeys;
-                      const selected = existing.some((entry) => pivotMemberKey(entry) === pivotMemberKey(action.memberKey));
-                      const memberKeys = selected
-                        ? existing.filter((entry) => pivotMemberKey(entry) !== pivotMemberKey(action.memberKey))
-                        : [...existing, action.memberKey];
-                      session.setPivotSlicerFilter(drawingId, memberKeys.length > 0 ? 'include' : 'all', memberKeys);
+                      if (payload.settings.multiSelect === false) {
+                        session.setPivotSlicerFilter(drawingId, 'include', [action.memberKey]);
+                      } else if (payload.filter.mode === 'exclude') {
+                        const currentlySelected = !existing.some((entry) => pivotMemberKey(entry) === pivotMemberKey(action.memberKey));
+                        const nextExcluded = currentlySelected
+                          ? [...existing, action.memberKey]
+                          : existing.filter((entry) => pivotMemberKey(entry) !== pivotMemberKey(action.memberKey));
+                        session.setPivotSlicerFilter(drawingId, nextExcluded.length > 0 ? 'exclude' : 'all', nextExcluded);
+                      } else {
+                        const selected = payload.filter.mode === 'include' && existing.some((entry) => pivotMemberKey(entry) === pivotMemberKey(action.memberKey));
+                        const memberKeys = selected
+                          ? existing.filter((entry) => pivotMemberKey(entry) !== pivotMemberKey(action.memberKey))
+                          : [...existing, action.memberKey];
+                        session.setPivotSlicerFilter(drawingId, memberKeys.length > 0 ? 'include' : 'all', memberKeys);
+                      }
                     }
                     return;
                   }
@@ -263,13 +273,17 @@ export function EditorShell({
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
                 onFloatingSelect={(hit, mode) => {
+                  const drawing = hit ? state.selectedSheet.drawings.find((entry) => entry.id === hit.id) : undefined;
+                  const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
                   if (hit && mode === 'replace' && !state.drawingSelectionMode) {
-                    const drawing = state.selectedSheet.drawings.find((entry) => entry.id === hit.id);
-                    const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
                     if (payload?.kind === 'form-control') {
                       dispatchCommand({ commandId: 'formControl.activate', params: { sheetId: state.activeSheetId, drawingId: hit.id } });
                       return;
                     }
+                  }
+                  if (payload?.kind === 'slicer' && mode === 'replace') {
+                    session.setPanelOpen(true);
+                    dispatchSessionIntent({ type: 'panel.open', panel: 'slicer' });
                   }
                   session.setDrawingSelection(hit ? [hit.id] : [], mode);
                 }}

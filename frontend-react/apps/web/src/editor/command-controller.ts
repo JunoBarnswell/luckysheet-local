@@ -116,7 +116,7 @@ export function useEditorCommandController({
   const activePivotSourceRange = activePivot?.source.kind === "worksheet-range" ? activePivot.source.range : undefined;
   const pivotControlRecords = activePivot ? session.listPivotControls(activePivot.id) : [];
   const pivotSlicerControls = pivotControlRecords.flatMap((record) => record.payload.kind === "slicer"
-    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, connectedPivotIds: record.payload.connectedPivotIds }]
+    ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, mode: record.payload.filter.mode, memberKeys: record.payload.filter.memberKeys, settings: record.payload.settings, items: state.selectedSheet.pivotResults[record.payload.pivotId]?.slicerItems?.[record.drawing.id] ?? [], connectedPivotIds: record.payload.connectedPivotIds }]
     : []);
   const pivotTimelineControls = pivotControlRecords.flatMap((record) => record.payload.kind === "timeline"
     ? [{ id: record.drawing.id, pivotId: record.payload.pivotId, fieldId: record.payload.fieldId, start: record.payload.period.start, end: record.payload.period.end, connectedPivotIds: record.payload.connectedPivotIds }]

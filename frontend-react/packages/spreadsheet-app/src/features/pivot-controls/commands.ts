@@ -5,6 +5,7 @@ import type {
   PivotControlFilter,
   PivotControlStyle,
   PivotSlicerDrawingPayload,
+  PivotSlicerSettings,
   PivotTimelineDrawingPayload,
   PivotTimelinePeriod,
   WorksheetModel,
@@ -18,6 +19,7 @@ import type { DrawingAddParams, DrawingPayloadUpdateParams } from '../drawing/co
 import {
   createPivotControlFilter,
   createPivotControlStyle,
+  createPivotSlicerSettings,
   createPivotTimelinePeriod,
   findPivotControlRecord,
 } from './helpers';
@@ -54,6 +56,12 @@ export interface PivotControlStyleSetParams {
   sheetId: string;
   drawingId: string;
   style: PivotControlStyle;
+}
+
+export interface PivotSlicerSettingsSetParams {
+  sheetId: string;
+  drawingId: string;
+  settings: PivotSlicerSettings;
 }
 
 export interface PivotControlConnectionsSetParams {
@@ -181,6 +189,7 @@ export const PIVOT_CONTROL_COMMAND_IDS = [
   'pivot.control.slicer.filter.set',
   'pivot.control.timeline.period.set',
   'pivot.control.style.set',
+  'pivot.control.slicer.settings.set',
   'pivot.control.connections.set',
 ] as const;
 
@@ -217,6 +226,13 @@ export function registerPivotControlCommands(runtime: CommandRuntime): string[] 
       ...payload,
       style: createPivotControlStyle(params.style),
     })),
+  });
+  runtime.registry.registerCommand<PivotSlicerSettingsSetParams>({
+    id: 'pivot.control.slicer.settings.set',
+    execute: (params, context) => executePayloadUpdate(params.sheetId, params.drawingId, context, (payload) => {
+      if (payload.kind !== 'slicer') throw new Error(`Drawing is not a slicer: ${params.drawingId}`);
+      return { ...payload, settings: createPivotSlicerSettings(params.settings) };
+    }),
   });
   runtime.registry.registerCommand<PivotControlConnectionsSetParams>({
     id: 'pivot.control.connections.set',

@@ -12,6 +12,8 @@ import type {
   PivotDisplayOptions,
   PivotRefreshPolicy,
   PivotSubtotalDefinition,
+  PivotSlicerItemProjection,
+  PivotSlicerSettings,
 } from '@react-sheets/core-model';
 import type { ReactNode } from 'react';
 
@@ -29,6 +31,8 @@ export type {
   PivotDisplayOptions,
   PivotRefreshPolicy,
   PivotSubtotalDefinition,
+  PivotSlicerItemProjection,
+  PivotSlicerSettings,
 };
 
 export type PivotFieldArea = 'filters' | 'columns' | 'rows' | 'values';
@@ -62,6 +66,8 @@ export interface PivotSlicerControl {
   fieldId: string;
   mode: PivotFilterMode;
   memberKeys: readonly PivotMemberKey[];
+  settings: PivotSlicerSettings;
+  items: readonly PivotSlicerItemProjection[];
   connectedPivotIds?: readonly string[];
 }
 
