@@ -306,6 +306,21 @@ function applySparklineRemove(context: CommandContext, params: SparklineRemovePa
   if (!removeById(sheet.sparklines, params.sparklineId)) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
 }
 
+function sameSparklineValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((value, index) => sameSparklineValue(value, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = [...new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)])]
+    .filter((key) => leftRecord[key] !== undefined || rightRecord[key] !== undefined)
+    .sort();
+  return keys.every((key) => sameSparklineValue(leftRecord[key], rightRecord[key]));
+}
+
 function applySparklineUpdate(context: CommandContext, params: SparklineUpdateParams): void {
   const sparkline = context.workbook.getSheet(params.sheetId).sparklines.find((entry) => entry.id === params.sparklineId);
   if (!sparkline) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
@@ -461,6 +476,11 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
       if (!sparkline) throw new Error(`Unknown sparkline: ${params.sparklineId}`);
       const previous = structuredClone(sparkline);
       const affectedRanges = sheetRange(params.sheetId);
+      const next = { ...structuredClone(sparkline), ...structuredClone(params.patch), sheetId: params.sheetId };
+      validateSparklineState(context, next);
+      if (sameSparklineValue(previous, next)) {
+        return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      }
       context.applyMutation({
         id: 'sparkline.update',
         unitId: context.workbook.unitId,

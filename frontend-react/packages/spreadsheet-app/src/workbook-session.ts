@@ -2798,14 +2798,6 @@ export class WorkbookSession {
         params,
       ),
     );
-    const stylePatch: Partial<SparklineModel> = {};
-    if (params.color) stylePatch.color = params.color;
-    if (params.negativeColor) stylePatch.negativeColor = params.negativeColor;
-    if (params.highlightMax != null) stylePatch.highlightMax = params.highlightMax;
-    if (params.highlightMin != null) stylePatch.highlightMin = params.highlightMin;
-    if (Object.keys(stylePatch).length > 0) {
-      this.runCommand('sparkline.update', { sheetId: this.activeSheetId, sparklineId, patch: stylePatch });
-    }
     this.notify(`Sparkline inserted at row ${params.location.row + 1}`);
     this.refresh();
     return sparklineId;
