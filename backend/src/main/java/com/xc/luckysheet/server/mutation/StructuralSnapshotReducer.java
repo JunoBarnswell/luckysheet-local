@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -42,6 +43,7 @@ final class StructuralSnapshotReducer {
         setDimension(target, axis, direction == FormulaReferenceTransformer.Direction.INSERT ? limit + count : Math.max(1, limit - count));
         shiftAllMetadata(root, target, sheetId, axis, at, count, direction);
         rewriteAxisFormulas(root, target, axis, at, count, direction);
+        AutoFilterOwnershipValidator.resolveOwners(target, sheetId);
     }
 
     static void shiftCells(ObjectNode root, String sheetId, RangeRef source, String operation, String axis, RangeRef affectedBand) {
@@ -74,6 +76,7 @@ final class StructuralSnapshotReducer {
         rewriteAxisFormulas(root, sheet, "row".equals(axis) ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN,
                 "row".equals(axis) ? selection.startRow() : selection.startColumn(), count,
                 "insert".equals(operation) ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE);
+        AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
     }
 
     private static void shiftCellBandAnchors(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
@@ -136,6 +139,7 @@ final class StructuralSnapshotReducer {
         validatePermutationMetadataExact(sheet, selected, mapping);
         remapPermutedCells(sheet, selected, mapping);
         remapPermutationMetadata(sheet, selected, mapping);
+        AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
     }
 
     private static void validateAxisBounds(int limit, int maximum, int at, int count, FormulaReferenceTransformer.Direction direction) {
