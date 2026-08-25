@@ -2758,8 +2758,7 @@ export class WorkbookSession {
           subtotalLocation: 'bottom',
           showRowGrandTotals: true,
           showColumnGrandTotals: true,
-          compact: true,
-          repeatLabels: false,
+          reportLayout: 'compact',
           expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
         },
       };
@@ -3733,7 +3732,7 @@ export class WorkbookSession {
       target: { sheetId: range.sheetId, anchor: { row: 0, column: 0 } },
       fieldCatalog: { fields: [] },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [], expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact', calculatedFields: [], calculatedItems: [], expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true } },
     };
     return buildPivotFieldCatalog(this.runtime.model, pivot).fields;
   }

@@ -28,7 +28,7 @@ export interface PivotPanelProps {
 }
 
 function cloneLayout(layout: PivotLayout): PivotLayout { return structuredClone(layout); }
-function layoutMode(layout: PivotLayout): 'compact' | 'outline' | 'tabular' { return layout.compact ? 'compact' : layout.repeatLabels ? 'tabular' : 'outline'; }
+function layoutMode(layout: PivotLayout): 'compact' | 'outline' | 'tabular' { return layout.reportLayout; }
 function removeField(layout: PivotLayout, fieldId: string): PivotLayout {
   const next = cloneLayout(layout);
   next.filters = next.filters.filter((field) => field.fieldId !== fieldId);

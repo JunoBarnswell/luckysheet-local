@@ -60,7 +60,7 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
     target: { sheetId: 'sheet-1', anchor: { row: 10, column: 0 } },
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
-    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
   };
   const catalog = getPivotFieldCatalog(workbook, pivot);
   const region = catalog.fields.find((field) => field.name === 'Region')!;
@@ -72,6 +72,45 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
 }
 
 describe('native PivotGridProjection contract', () => {
+  it('renders compact, outline, and tabular report layouts with distinct canonical row semantics', () => {
+    const workbook = new WorkbookModel('pivot-report-layouts', 'Pivot Report Layouts');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Category', 'Amount'], ['East', 'Widget', 10], ['East', 'Gadget', 20], ['West', 'Widget', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, sheet.id, 'pivot-report-layouts', { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    pivot.fieldCatalog = catalog;
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: category.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.subtotalLocation = 'bottom';
+    pivot.layout.showRowGrandTotals = false;
+    const result = computePivotResult(workbook, pivot);
+    const projectionFor = (reportLayout: 'compact' | 'outline' | 'tabular') => {
+      const candidate = structuredClone(pivot);
+      candidate.layout.reportLayout = reportLayout;
+      return buildPivotGridProjection(workbook, candidate, result);
+    };
+    const compact = projectionFor('compact');
+    const outline = projectionFor('outline');
+    const tabular = projectionFor('tabular');
+    const headers = (projection: ReturnType<typeof buildPivotGridProjection>) => projection.cells.filter((cell) => cell.kind === 'column-header').map((cell) => cell.text);
+    assert.deepEqual(headers(compact).slice(0, 2), ['Row Labels', 'Amount']);
+    assert.deepEqual(headers(outline).slice(0, 3), ['Region', 'Category', 'Amount']);
+    assert.deepEqual(headers(tabular).slice(0, 3), ['Region', 'Category', 'Amount']);
+    assert.equal(compact.occupiedRange.endColumn - compact.occupiedRange.startColumn, 1);
+    assert.equal(outline.occupiedRange.endColumn - outline.occupiedRange.startColumn, 2);
+    assert.equal(tabular.occupiedRange.endColumn - tabular.occupiedRange.startColumn, 2);
+    const rowHeaders = (projection: ReturnType<typeof buildPivotGridProjection>) => projection.cells.filter((cell) => cell.kind === 'row-header' || cell.kind === 'expand-toggle').map((cell) => [cell.row, cell.column, cell.text]);
+    assert.ok(rowHeaders(compact).some(([, column, text]) => column === 0 && text === 'East / Gadget'));
+    assert.ok(rowHeaders(tabular).some(([, column, text]) => column === 0 && text === 'East'));
+    assert.ok(rowHeaders(tabular).some(([, column, text]) => column === 1 && text === 'Gadget'));
+    assert.ok(rowHeaders(outline).some(([, column, text]) => column === 0 && text === 'East'));
+    assert.ok(rowHeaders(outline).some(([, column, text]) => column === 1 && text === 'Gadget'));
+  });
+
   it('projects selected and has-data states independently after another Slicer filters the source', () => {
     const workbook = new WorkbookModel('pivot-slicer-projection', 'Pivot Slicer Projection');
     const sheet = workbook.getSheet('sheet-1');
@@ -133,7 +172,7 @@ describe('native PivotGridProjection contract', () => {
       target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
       fieldCatalog: { fields: [] },
       refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
-      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
     };
     const catalog = getPivotFieldCatalog(workbook, pivot, formula);
     pivot.fieldCatalog = catalog;
@@ -762,7 +801,7 @@ describe('native PivotGridProjection contract', () => {
       layout: {
         rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const },
         values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
-        subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, compact: true, repeatLabels: false,
+        subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
       },
     };

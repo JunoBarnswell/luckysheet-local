@@ -736,6 +736,7 @@ function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog)
 }
 
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
+  if (!['compact', 'outline', 'tabular'].includes(layout.reportLayout)) throw new Error('Pivot report layout is invalid');
   const values = layout.values.map((entry) => normalizeValueField(entry, catalog));
   const valueFieldIds = new Set(values.map((entry) => entry.fieldId));
   const filters = layout.filters.map((entry) => normalizeFilter(entry, catalog));
@@ -1652,6 +1653,25 @@ function flattenNodes(nodes: PivotResultNode[], layout: PivotLayout, labels: str
   return output;
 }
 
+/**
+ * Resolve the row-header projection from the one canonical report layout.
+ * The result tree is shared by all layouts; only this presentation boundary
+ * decides whether hierarchy is compacted, repeated, or shown as an outline.
+ */
+function projectionRowLabels(item: FlatNode, layout: PivotLayout, rowHeaderCount: number): string[] {
+  if (layout.reportLayout === 'compact') {
+    const label = item.labels.filter((entry) => entry.length > 0).join(' / ');
+    return [label || item.node.label];
+  }
+  if (layout.reportLayout === 'tabular') {
+    return Array.from({ length: rowHeaderCount }, (_, axis) => item.labels[axis] ?? '');
+  }
+  // Outline mode deliberately does not repeat an ancestor label on detail
+  // rows. Subtotal rows own the label for their field and child rows occupy
+  // the following lines, which is the distinction from tabular mode.
+  return Array.from({ length: rowHeaderCount }, (_, axis) => axis === item.node.depth ? item.node.label : '');
+}
+
 function pivotNodeIds(nodes: readonly PivotResultNode[], target = new Set<string>()): Set<string> {
   for (const node of nodes) {
     if (node.nodeId) target.add(node.nodeId);
@@ -1774,7 +1794,7 @@ function buildPivotGridProjectionCandidate(
     loading = true;
   }
   const cells: PivotProjectionCell[] = [];
-  const rowHeaderCount = Math.max(definition.layout.rows.length, 1);
+  const rowHeaderCount = definition.layout.reportLayout === 'compact' ? 1 : Math.max(definition.layout.rows.length, 1);
   const values = tree?.valueFields ?? definition.layout.values.map((field) => ({ ...field, sourceFieldId: field.fieldId }));
   const columnPathCount = Math.max(tree?.columnPaths.length ?? 0, 1);
   const valueColumnCount = Math.max(columnPathCount * Math.max(values.length, 1) + (definition.layout.showRowGrandTotals ? Math.max(values.length, 1) : 0), 1);
@@ -1792,7 +1812,13 @@ function buildPivotGridProjectionCandidate(
     row += 1;
   }
   if (displayOptions.showFieldHeaders) {
-    for (let index = 0; index < rowHeaderCount; index += 1) cells.push(projectionCell(definition.id, row, index, 'column-header', null, index === 0 ? 'Row Labels' : '', { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId: definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId }));
+    for (let index = 0; index < rowHeaderCount; index += 1) {
+      const fieldId = definition.layout.rows[index]?.fieldId ?? definition.layout.rows[0]?.fieldId;
+      const label = definition.layout.reportLayout === 'compact'
+        ? 'Row Labels'
+        : fieldId ? fieldName(fieldId, definition.fieldCatalog) : 'Row Labels';
+      cells.push(projectionCell(definition.id, row, index, 'column-header', null, label, { ...(index === 0 ? { captionKey: 'row-labels' as const } : {}), fieldId }));
+    }
   }
   const columnPaths = tree?.columnPaths ?? [];
   for (let columnIndex = 0; columnIndex < columnPathCount; columnIndex += 1) {
@@ -1820,10 +1846,11 @@ function buildPivotGridProjectionCandidate(
     for (const item of flat) {
       if (!item.visible) continue;
       const node = item.node;
+      const labels = projectionRowLabels(item, definition.layout, rowHeaderCount);
       for (let axis = 0; axis < rowHeaderCount; axis += 1) {
-        const label = item.labels[axis] ?? (axis === 0 ? node.label : '');
+        const label = labels[axis] ?? '';
         const kind: PivotProjectionCell['kind'] = axis === 0 && node.children.length && expansion.showButtons ? 'expand-toggle' : node.subtotal ? 'subtotal' : 'row-header';
-        cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, expandable: node.children.length > 0, expanded: nodeExpanded(node, projectionLayout) }));
+        cells.push(projectionCell(definition.id, row, axis, kind, axis === 0 ? node.key : null, label, { nodeId: node.nodeId, fieldId: definition.layout.rows[axis]?.fieldId ?? definition.layout.rows[0]?.fieldId, expandable: node.children.length > 0, expanded: nodeExpanded(node, projectionLayout) }));
       }
       for (let columnIndex = 0; columnIndex < columnPathCount; columnIndex += 1) {
         const resultCell = node.values[columnIndex];

@@ -38,8 +38,7 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
         subtotalLocation: 'bottom',
         showRowGrandTotals: true,
         showColumnGrandTotals: true,
-        compact: true,
-        repeatLabels: false,
+        reportLayout: 'compact',
         calculatedFields: [],
         calculatedItems: [],
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
@@ -201,6 +200,22 @@ describe('WorkbookSession PivotTable integration', () => {
     app.redo();
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showRowGrandTotals, false);
     assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.showColumnGrandTotals, true);
+  });
+
+  it('persists and restores the canonical report layout through undo and redo', async () => {
+    const app = new WorkbookSession();
+    const { sheetId, pivot } = seed(app);
+    pivot.id = 'pivot-report-layout-undo';
+    app.addPivot(pivot);
+    const nextLayout = structuredClone(pivot.layout);
+    nextLayout.reportLayout = 'tabular';
+    const dispatch = await app.dispatch({ commandId: 'pivot.update', params: { sheetId, pivotId: pivot.id, layout: nextLayout } });
+    assert.equal(dispatch.status, 'committed');
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.reportLayout, 'tabular');
+    app.undo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.reportLayout, 'compact');
+    app.redo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.layout.reportLayout, 'tabular');
   });
 
   it('persists Pivot style options through one reversible presentation update', async () => {

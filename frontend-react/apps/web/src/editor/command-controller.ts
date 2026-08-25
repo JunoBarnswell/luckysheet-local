@@ -310,7 +310,7 @@ export function useEditorCommandController({
     onSubtotalChange: (fieldId, subtotal) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), rows: activePivot.layout.rows.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field), columns: activePivot.layout.columns.map((field) => field.fieldId === fieldId ? { ...field, subtotal } : field) }); },
     onSubtotalLocationChange: (subtotalLocation) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), subtotalLocation }); },
     onRefresh: () => { if (activePivot) session.refreshPivot(activePivot.id); },
-    onLayoutChange: (layout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), compact: layout === "compact", repeatLabels: layout === "tabular" }); },
+    onLayoutChange: (reportLayout) => { if (activePivot) updatePivotLayout({ ...cloneLayout(activePivot.layout), reportLayout }); },
     onLayoutReplace: (layout) => { if (activePivot) updatePivotLayout(cloneLayout(layout)); },
     onPresentationChange: (presentation) => { if (activePivot) dispatchCommand({ commandId: 'pivot.update', params: { sheetId: activePivotSheetId, pivotId: activePivot.id, presentation: structuredClone(presentation) } }); },
     onDisplayOptionsChange: (displayOptions: PivotDisplayOptions) => {

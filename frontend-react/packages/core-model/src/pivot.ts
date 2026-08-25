@@ -215,6 +215,12 @@ export type PivotSubtotalDefinition =
 
 export type PivotSubtotalLocation = 'top' | 'bottom' | 'off';
 
+/**
+ * Canonical Excel PivotTable report layout.  This is intentionally one
+ * semantic value: compact, outline, and tabular are not independent flags.
+ */
+export type PivotReportLayout = 'compact' | 'outline' | 'tabular';
+
 export interface PivotSourceRelationship {
   id: string;
   left: { sourceId: string; fieldId: string };
@@ -517,8 +523,8 @@ export interface PivotLayout {
   showRowGrandTotals: boolean;
   /** Controls the grand-total row (totals across each column's rows). */
   showColumnGrandTotals: boolean;
-  compact: boolean;
-  repeatLabels: boolean;
+  /** Controls the row-field presentation and label repetition semantics. */
+  reportLayout: PivotReportLayout;
   expansion?: PivotExpansionState;
 }
 

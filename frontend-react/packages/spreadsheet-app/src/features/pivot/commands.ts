@@ -396,12 +396,13 @@ const isPivotCollation = (value: unknown): boolean => {
   }
 };
 const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
+  && Object.keys(value).every((key) => ['rows', 'columns', 'filters', 'allowMultipleFiltersPerField', 'collation', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showRowGrandTotals', 'showColumnGrandTotals', 'reportLayout', 'expansion'].includes(key))
   && Array.isArray(value.rows) && Array.isArray(value.columns) && Array.isArray(value.filters)
   && Array.isArray(value.values)
   && typeof value.allowMultipleFiltersPerField === 'boolean'
   && isPivotCollation(value.collation)
   && ['top', 'bottom', 'off'].includes(String(value.subtotalLocation)) && typeof value.showRowGrandTotals === 'boolean' && typeof value.showColumnGrandTotals === 'boolean'
-  && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean'
+  && ['compact', 'outline', 'tabular'].includes(String(value.reportLayout))
   && (value.expansion === undefined || isPivotExpansion(value.expansion));
 const isPivotPresentation = (value: unknown): value is PivotPresentation => isRecord(value)
   && Object.keys(value).every((key) => key === 'styleName' || key === 'styleOptions' || key === 'displayOptions')

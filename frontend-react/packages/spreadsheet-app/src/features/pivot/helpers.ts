@@ -20,7 +20,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
     layout: {
       rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { ...DEFAULT_PIVOT_COLLATION }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true,
-      compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [],
+      reportLayout: 'compact', calculatedFields: [], calculatedItems: [],
     },
   } satisfies PivotModel;
   const catalog = getPivotFieldCatalog(workbook, draft);
@@ -44,8 +44,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     subtotalLocation: 'bottom',
     showRowGrandTotals: true,
     showColumnGrandTotals: true,
-    compact: true,
-    repeatLabels: false,
+    reportLayout: 'compact',
     calculatedFields: [],
     calculatedItems: [],
     expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
