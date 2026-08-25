@@ -102,3 +102,22 @@ test('dynamic array functions: FILTER no match returns #CALC!', () => {
   if (!isFormulaError(result)) throw new Error('expected error');
   assert.equal(result.code, '#CALC!');
 });
+
+test('generated dynamic arrays accept output at the cell limit', () => {
+  const engine = new FormulaEngine();
+  const sequence = engine.setFormula('A1', '=SEQUENCE(1000,100)').value;
+  assert.ok(isArrayValue(sequence));
+  assert.equal(sequence.length, 1000);
+  assert.equal(sequence[0]?.length, 100);
+});
+
+test('generated dynamic arrays reject output above the cell limit before allocation', () => {
+  const engine = new FormulaEngine();
+  for (const formula of ['=SEQUENCE(100000000,100000000)', '=RANDARRAY(100000000,100000000)']) {
+    const result = engine.setFormula('A1', formula).value;
+    assert.ok(isFormulaError(result));
+    if (!isFormulaError(result)) throw new Error('expected error');
+    assert.equal(result.code, '#VALUE!');
+    assert.match(result.message ?? '', /output exceeds the 100000-cell limit/);
+  }
+});

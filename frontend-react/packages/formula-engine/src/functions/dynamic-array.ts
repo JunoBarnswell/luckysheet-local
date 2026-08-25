@@ -1,5 +1,17 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 
+const MAX_GENERATED_ARRAY_CELLS = 100_000;
+
+function validateGeneratedArraySize(functionName: string, rows: number, columns: number): FormulaValue | undefined {
+  if (rows > MAX_GENERATED_ARRAY_CELLS || columns > Math.floor(MAX_GENERATED_ARRAY_CELLS / rows)) {
+    return createFormulaError(
+      '#VALUE!',
+      `${functionName} output exceeds the ${MAX_GENERATED_ARRAY_CELLS}-cell limit`,
+    );
+  }
+  return undefined;
+}
+
 function to2DArray(val: FormulaValue | undefined): FormulaValue[][] {
   if (val === undefined || val === null) return [[]];
   if (Array.isArray(val)) {
@@ -151,6 +163,8 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[]) => For
     const step = Number(args[3] ?? 1);
     if (!Number.isFinite(rows) || rows < 1) return createFormulaError('#VALUE!', 'SEQUENCE rows must be >= 1');
     if (!Number.isFinite(columns) || columns < 1) return createFormulaError('#VALUE!', 'SEQUENCE columns must be >= 1');
+    const sizeError = validateGeneratedArraySize('SEQUENCE', rows, columns);
+    if (sizeError) return sizeError;
     const result: FormulaValue[][] = [];
     let value = start;
     for (let row = 0; row < rows; row++) {
@@ -290,6 +304,8 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[]) => For
     const whole = args[4] === true || args[4] === 1;
     if (!Number.isFinite(rows) || rows < 1) return createFormulaError('#VALUE!', 'RANDARRAY rows must be >= 1');
     if (!Number.isFinite(columns) || columns < 1) return createFormulaError('#VALUE!', 'RANDARRAY columns must be >= 1');
+    const sizeError = validateGeneratedArraySize('RANDARRAY', rows, columns);
+    if (sizeError) return sizeError;
     const result: FormulaValue[][] = [];
     for (let row = 0; row < rows; row++) {
       const line: FormulaValue[] = [];
