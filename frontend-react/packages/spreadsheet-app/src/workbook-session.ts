@@ -2454,7 +2454,26 @@ export class WorkbookSession {
     const active = this.selectionService.getState().activeCell;
     const payloadId = nextId('form-control');
     const drawing: DrawingObject = { id: nextId('drawing'), sheetId: this.activeSheetId, kind: 'form-control', anchor: { kind: 'one-cell', row: active.row, column: active.column }, transform: { x: 96, y: 96, width: 140, height: 32, rotation: 0 }, zIndex: 0, payloadId };
-    const payload: FormControlDrawingPayload = { kind: 'form-control', controlType, text: controlType === 'button' ? '按钮' : controlType, cellLink: { sheetId: this.activeSheetId, row: active.row, column: active.column }, value: false, enabled: true, style: { fill: '#ffffff', border: '#7b8794', textColor: '#1f2937', fontSize: 12 } };
+    const style = { fill: '#ffffff', border: '#7b8794', textColor: '#1f2937', fontSize: 12 };
+    const cellLink = { sheetId: this.activeSheetId, row: active.row, column: active.column };
+    const inputRange = { sheetId: this.activeSheetId, startRow: active.row, endRow: Math.min(this.runtime.model.getSheet(this.activeSheetId).rowCount - 1, active.row + 4), startColumn: active.column, endColumn: active.column };
+    const payload: FormControlDrawingPayload = controlType === 'button'
+      ? { kind: 'form-control', controlType, text: '按钮', value: null, action: { kind: 'event', eventId: nextId('button-click') }, enabled: true, style }
+      : controlType === 'group-box'
+        ? { kind: 'form-control', controlType, text: '组合框', value: null, groupId: payloadId, enabled: true, style }
+        : controlType === 'label'
+          ? { kind: 'form-control', controlType, text: '标签', value: null, enabled: true, style }
+          : controlType === 'spin-button'
+            ? { kind: 'form-control', controlType, text: '微调框', value: 0, minValue: 0, maxValue: 100, step: 1, cellLink, enabled: true, style }
+            : controlType === 'scrollbar'
+              ? { kind: 'form-control', controlType, text: '滚动条', value: 0, minValue: 0, maxValue: 100, step: 1, pageChange: 10, cellLink, enabled: true, style }
+              : controlType === 'list-box'
+                ? { kind: 'form-control', controlType, text: '列表框', value: null, inputRange, selectionType: 'single', selectedIndices: [], cellLink, enabled: true, style }
+                : controlType === 'combo-box'
+                  ? { kind: 'form-control', controlType, text: '组合框', value: null, inputRange, dropDownLines: 8, cellLink, enabled: true, style }
+                  : controlType === 'checkbox'
+                    ? { kind: 'form-control', controlType, text: '复选框', value: false, cellLink, enabled: true, style }
+                    : { kind: 'form-control', controlType, text: '选项按钮', value: false, cellLink, enabled: true, style };
     this.runCommand('drawing.add.form-control', { sheetId: this.activeSheetId, drawing, payload });
     this.setDrawingSelection([drawing.id]);
     this.notify('控件已插入');
@@ -3525,6 +3544,7 @@ export class WorkbookSession {
       this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
       this.activeContext = { kind: 'none' };
       if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
+      if (this.panels.active === 'formControl') this.panels = { ...this.panels, open: false };
       if (this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
       this.emit();
       return;
@@ -3537,6 +3557,8 @@ export class WorkbookSession {
     if (selectedDrawing?.kind === 'image') {
       this.panels = { ...this.panels, active: 'picture', open: true };
       this.ribbonTab = 'pictureFormat';
+    } else if (selectedDrawing?.kind === 'form-control') {
+      this.panels = { ...this.panels, active: 'formControl', open: true };
     }
     this.emit();
   }

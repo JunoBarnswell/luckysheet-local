@@ -460,7 +460,12 @@ function drawFormControlOnCanvas(context: CanvasRenderingContext2D, payload: For
   context.textAlign = payload.controlType === 'label' ? 'left' : 'center';
   context.textBaseline = 'middle';
   const prefix = payload.controlType === 'checkbox' ? (payload.value ? '☑ ' : '☐ ') : payload.controlType === 'option-button' ? (payload.value ? '◉ ' : '○ ') : '';
-  context.fillText(`${prefix}${payload.text ?? payload.controlType}`, payload.controlType === 'label' ? bounds.x + 5 : bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(4, bounds.width - 10));
+  const valueLabel = payload.controlType === 'spin-button' || payload.controlType === 'scrollbar'
+    ? ` (${payload.value})`
+    : payload.controlType === 'list-box' || payload.controlType === 'combo-box'
+      ? (payload.value ? `: ${payload.value}` : '')
+      : '';
+  context.fillText(`${prefix}${payload.text ?? payload.controlType}${valueLabel}`, payload.controlType === 'label' ? bounds.x + 5 : bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, Math.max(4, bounds.width - 10));
   context.restore();
 }
 

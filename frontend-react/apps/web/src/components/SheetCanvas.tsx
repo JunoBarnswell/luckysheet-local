@@ -657,6 +657,15 @@ export function SheetCanvas({
       return;
     }
     const local = canvasInteraction.localPointOf(event);
+    const floatingHit = engine.hitTestFloating(local);
+    if (floatingHit) {
+      // Context-menu interaction selects a control/object; activation is only
+      // allowed on an unmodified primary pointer click.
+      onFloatingSelect(floatingHit, 'add');
+      setContextHit(null);
+      setContextMenu({ x: event.clientX, y: event.clientY, open: true });
+      return;
+    }
     const headerHit = engine.headerHitAtLocal(local);
     setContextHit(headerHit?.kind === 'row' || headerHit?.kind === 'col'
       ? resolveContextHit({
@@ -743,7 +752,7 @@ export function SheetCanvas({
       }
     }
     setContextMenu({ x: event.clientX, y: event.clientY, open: true });
-  }, [canvasInteraction.localPointOf, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
+  }, [canvasInteraction.localPointOf, onFloatingSelect, onPivotContextHit, onSelectAll, onSelectionChange, phase, selection, sheet, sheetId, skeleton]);
 
   // ---------- 编辑器定位(随滚动更新) ----------
 

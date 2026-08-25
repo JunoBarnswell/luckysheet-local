@@ -191,4 +191,83 @@ describe('insert feature', () => {
     const restored = workbook.getSheet('sheet-1').drawingPayloads.get('data-payload');
     assert.equal(restored?.kind === 'data-chart' ? restored.inspector.title : undefined, 'Sales');
   });
+
+  it('enforces typed form controls, numeric bounds, explicit list selection, option groups, and button events', () => {
+    const workbook = new WorkbookModel('form-control-command-test', 'Form Controls');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'Alpha' });
+    sheet.cells.set(1, 0, { value: 'Beta' });
+    const add = (drawingId: string, payloadId: string, payload: any, x = 0, y = 0, height = 24) => runtime.execute('drawing.add.form-control', {
+      sheetId: 'sheet-1',
+      drawing: { id: drawingId, sheetId: 'sheet-1', kind: 'form-control', payloadId, anchor: { kind: 'absolute' }, transform: { x, y, width: 80, height, rotation: 0 }, zIndex: 0 },
+      payload,
+    });
+    const style = { fill: '#fff', border: '#000', textColor: '#000' };
+    add('group', 'group-payload', { kind: 'form-control', controlType: 'group-box', text: 'Group', value: null, groupId: 'group-1', enabled: true, style }, 0, 0, 100);
+    add('option-a', 'option-a-payload', { kind: 'form-control', controlType: 'option-button', text: 'A', value: false, cellLink: { sheetId: 'sheet-1', row: 2, column: 0 }, enabled: true, style }, 10, 10);
+    add('option-b', 'option-b-payload', { kind: 'form-control', controlType: 'option-button', text: 'B', value: false, cellLink: { sheetId: 'sheet-1', row: 3, column: 0 }, enabled: true, style }, 10, 40);
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'option-a' });
+    assert.equal((sheet.drawingPayloads.get('option-a-payload') as any).value, true);
+    assert.equal((sheet.drawingPayloads.get('option-b-payload') as any).value, false);
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'option-b' });
+    assert.equal((sheet.drawingPayloads.get('option-a-payload') as any).value, false);
+    assert.equal((sheet.drawingPayloads.get('option-b-payload') as any).value, true);
+    assert.equal(sheet.cells.get(2, 0)?.value, false);
+    assert.equal(sheet.cells.get(3, 0)?.value, true);
+
+    add('spin', 'spin-payload', { kind: 'form-control', controlType: 'spin-button', value: 0, minValue: 0, maxValue: 5, step: 2, cellLink: { sheetId: 'sheet-1', row: 4, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'spin' });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'spin' });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'spin' });
+    assert.equal((sheet.drawingPayloads.get('spin-payload') as any).value, 5);
+    assert.equal(sheet.cells.get(4, 0)?.value, 5);
+    assert.equal(runtime.undo(), true);
+    assert.equal((sheet.drawingPayloads.get('spin-payload') as any).value, 4);
+    assert.equal(runtime.redo(), true);
+    assert.equal((sheet.drawingPayloads.get('spin-payload') as any).value, 5);
+
+    add('list', 'list-payload', { kind: 'form-control', controlType: 'list-box', value: null, inputRange: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }, selectionType: 'single', selectedIndices: [], cellLink: { sheetId: 'sheet-1', row: 5, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'list', selection: { indices: [1] } });
+    assert.equal((sheet.drawingPayloads.get('list-payload') as any).value, 'Beta');
+    assert.equal(sheet.cells.get(5, 0)?.value, 'Beta');
+    const beforeInvalidSelection = workbook.snapshot();
+    assert.throws(() => runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'list', selection: { indices: [4] } }), /outside input range/);
+    assert.deepEqual(workbook.snapshot(), beforeInvalidSelection);
+
+    add('checkbox', 'checkbox-payload', { kind: 'form-control', controlType: 'checkbox', value: false, cellLink: { sheetId: 'sheet-1', row: 6, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'checkbox' });
+    assert.equal((sheet.drawingPayloads.get('checkbox-payload') as any).value, true);
+    assert.equal(sheet.cells.get(6, 0)?.value, true);
+    add('scrollbar', 'scrollbar-payload', { kind: 'form-control', controlType: 'scrollbar', value: 0, minValue: 0, maxValue: 20, step: 2, pageChange: 10, cellLink: { sheetId: 'sheet-1', row: 7, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'scrollbar', increment: 'page' });
+    assert.equal((sheet.drawingPayloads.get('scrollbar-payload') as any).value, 10);
+    add('combo', 'combo-payload', { kind: 'form-control', controlType: 'combo-box', value: null, inputRange: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }, dropDownLines: 4, cellLink: { sheetId: 'sheet-1', row: 8, column: 0 }, enabled: true, style });
+    runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'combo', selection: { indices: [0] } });
+    assert.equal((sheet.drawingPayloads.get('combo-payload') as any).value, 'Alpha');
+    add('label', 'label-payload', { kind: 'form-control', controlType: 'label', text: 'Static', value: null, enabled: true, style });
+
+    add('button', 'button-payload', { kind: 'form-control', controlType: 'button', value: null, action: { kind: 'event', eventId: 'save' }, enabled: true, style });
+    const eventResult = runtime.execute('formControl.activate', { sheetId: 'sheet-1', drawingId: 'button' });
+    assert.deepEqual(eventResult.event, { type: 'form-control.button.click', payload: { sheetId: 'sheet-1', drawingId: 'button', eventId: 'save' } });
+    assert.equal(eventResult.mutationCount, 0);
+  });
+
+  it('rejects legacy or malformed form-control payloads before storage mutation', () => {
+    const workbook = new WorkbookModel('form-control-rejection-test', 'Form Controls');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerDrawingFeature(runtime);
+    registerInsertCommands(runtime);
+    const before = workbook.snapshot();
+    assert.throws(() => runtime.execute('drawing.add.form-control', {
+      sheetId: 'sheet-1',
+      drawing: { id: 'legacy', sheetId: 'sheet-1', kind: 'form-control', payloadId: 'legacy-payload', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 80, height: 24, rotation: 0 }, zIndex: 0 },
+      payload: { kind: 'form-control', controlType: 'button', value: false, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } },
+    }), /Invalid drawing payload/);
+    assert.deepEqual(workbook.snapshot(), before);
+  });
 });

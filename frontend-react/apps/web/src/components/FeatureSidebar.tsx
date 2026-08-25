@@ -49,6 +49,7 @@ import { DataChartPanel } from './panels/DataChartPanel';
 import { BarcodePanel } from './panels/BarcodePanel';
 import { PivotPanel } from './panels/PivotPanel';
 import { ShapeEditorPanel } from './panels/ShapeEditorPanel';
+import { FormControlPanel } from './panels/FormControlPanel';
 import { PicturePanel } from './panels/PicturePanel';
 import { SparklinePanel } from './panels/SparklinePanel';
 import { ConditionalFormatPanel } from './panels/ConditionalFormatPanel';
@@ -195,6 +196,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'formulaAudit', label: 'Formula Audit', icon: 'function' },
   { id: 'definedNames', label: 'Names', icon: 'function' },
   { id: 'shape', label: 'Shape', icon: 'shape-square' },
+  { id: 'formControl', label: 'Form Control', icon: 'sliders' },
   { id: 'picture', label: 'Picture', icon: 'picture' },
   { id: 'selectionPane', label: 'Selection', icon: 'shape-square' },
   { id: 'sparkline', label: 'Spark', icon: 'sparkline' },
@@ -577,6 +579,15 @@ export function FeatureSidebar({
             sheetId={sheetId}
             drawings={drawings}
             drawingPayloads={drawingPayloads}
+            onCommand={onCommand}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'formControl' ? (
+          <FormControlPanel
+            sheetId={sheetId}
+            drawings={drawings}
+            drawingPayloads={drawingPayloads}
+            selectedDrawingIds={selectedDrawingIds}
             onCommand={onCommand}
           />
         ) : null}

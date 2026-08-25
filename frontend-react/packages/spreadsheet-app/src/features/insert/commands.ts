@@ -1,5 +1,5 @@
-import { BARCODE_SYMBOLOGIES, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
-import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
+import { BARCODE_SYMBOLOGIES, isFormControlDrawingPayload, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlCellLink, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import type { CommandContext, CommandResult, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface AdvancedSheetCreateParams {
   sheet: SheetSnapshot;
@@ -44,7 +44,20 @@ export interface PictureConvertToFloatingParams {
   transform?: DrawingObject['transform'];
 }
 
-export interface FormControlActivateParams { sheetId: string; drawingId: string }
+export interface FormControlActivateParams {
+  sheetId: string;
+  drawingId: string;
+  /** List/Combo selection is explicit; a missing selection is a deliberate no-op. */
+  selection?: { indices: number[] };
+  /** Scrollbars can advance by one step or one page. */
+  increment?: 'step' | 'page';
+}
+
+export interface FormControlUpdateParams {
+  sheetId: string;
+  drawingId: string;
+  payload: FormControlDrawingPayload;
+}
 
 function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: CommandContext) {
   if (!['table-sheet', 'gantt-sheet', 'report-sheet'].includes(params.sheet.kind)) throw new Error('Advanced sheet kind is invalid');
@@ -365,43 +378,172 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
   });
   runtime.registry.registerCommand<PictureConvertToCellParams>({ id: 'picture.convertToCell', execute: executePictureConvertToCell });
   runtime.registry.registerCommand<PictureConvertToFloatingParams>({ id: 'picture.convertToFloating', execute: executePictureConvertToFloating });
-  runtime.registry.registerCommand<FormControlActivateParams>({
-    id: 'formControl.activate',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
-      const before = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
-      if (!drawing || before?.kind !== 'form-control' || !before.enabled) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const after: FormControlDrawingPayload = structuredClone(before);
-      if (after.controlType === 'checkbox' || after.controlType === 'option-button') after.value = !Boolean(after.value);
-      else if (after.controlType === 'spin-button' || after.controlType === 'scrollbar') after.value = Number(after.value ?? 0) + 1;
-      else if ((after.controlType === 'list-box' || after.controlType === 'combo-box') && after.inputRange) {
-        const values: string[] = [];
-        const source = context.workbook.getSheet(after.inputRange.sheetId);
-        for (let row = after.inputRange.startRow; row <= after.inputRange.endRow; row += 1) for (let column = after.inputRange.startColumn; column <= after.inputRange.endColumn; column += 1) {
-          const value = source.cells.get(row, column)?.value;
-          if (value != null) values.push(String(value));
-        }
-        if (values.length) after.value = values[(Math.max(-1, values.indexOf(String(after.value ?? ''))) + 1) % values.length]!;
-      } else return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const affectedRanges: RangeRef[] = after.cellLink ? [{ sheetId: after.cellLink.sheetId, startRow: after.cellLink.row, endRow: after.cellLink.row, startColumn: after.cellLink.column, endColumn: after.cellLink.column }] : [{ sheetId: params.sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
-      context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after }, affectedRanges,
-        inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: after, after: before }, affectedRanges }],
-        apply: () => sheet.drawingPayloads.set(drawing.payloadId, structuredClone(after)),
-      });
-      let mutationCount = 1;
-      if (after.cellLink) {
-        const linkedSheet = context.workbook.getSheet(after.cellLink.sheetId);
-        const previous = structuredClone(linkedSheet.cells.get(after.cellLink.row, after.cellLink.column));
-        const next: CellData = { ...(previous ?? { value: null }), value: after.value as CellData['value'] };
-        context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: after.cellLink.sheetId, params: { sheetId: after.cellLink.sheetId, row: after.cellLink.row, column: after.cellLink.column, value: next }, affectedRanges,
-          inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: after.cellLink.sheetId, params: { sheetId: after.cellLink.sheetId, row: after.cellLink.row, column: after.cellLink.column, previous }, affectedRanges }],
-          apply: () => linkedSheet.cells.set(after.cellLink!.row, after.cellLink!.column, structuredClone(next)),
-        });
-        mutationCount += 1;
-      }
-      return { operationId: context.operationId, mutationCount, affectedRanges };
-    },
+  runtime.registry.registerCommand<FormControlUpdateParams>({ id: 'formControl.update', execute: executeFormControlUpdate });
+  runtime.registry.registerCommand<FormControlActivateParams>({ id: 'formControl.activate', execute: executeFormControlActivate });
+  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'dataChart.update', 'cell.image.apply', 'picture.convertToCell', 'picture.convertToFloating', 'formControl.update', 'formControl.activate'];
+}
+
+function formControlAnchorRange(sheetId: string, drawing: DrawingObject): RangeRef {
+  return drawing.anchor.kind === 'absolute'
+    ? { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
+    : { sheetId, startRow: drawing.anchor.row ?? 0, endRow: drawing.anchor.row ?? 0, startColumn: drawing.anchor.column ?? 0, endColumn: drawing.anchor.column ?? 0 };
+}
+
+function formControlCellRange(sheetId: string, row: number, column: number): RangeRef {
+  return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
+}
+
+function assertFormControlPayload(payload: unknown): asserts payload is FormControlDrawingPayload {
+  if (!isFormControlDrawingPayload(payload)) throw new Error('Form control payload is invalid for its controlType');
+}
+
+function linkedCellOf(payload: FormControlDrawingPayload): FormControlCellLink | undefined {
+  return 'cellLink' in payload ? payload.cellLink : undefined;
+}
+
+function assertFormControlRange(context: CommandContext, range: RangeRef): void {
+  const sheet = context.workbook.getSheet(range.sheetId);
+  if (range.startRow < 0 || range.endRow >= sheet.rowCount || range.startColumn < 0 || range.endColumn >= sheet.columnCount) {
+    throw new Error('Form control input range is outside worksheet bounds');
+  }
+}
+
+function readFormControlValues(context: CommandContext, range: RangeRef): string[] {
+  assertFormControlRange(context, range);
+  const source = context.workbook.getSheet(range.sheetId);
+  const values: string[] = [];
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const cell = source.cells.get(row, column);
+      values.push(String(cell?.displayValue ?? cell?.value ?? ''));
+    }
+  }
+  return values;
+}
+
+function clampFormControlValue(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function drawingContainsPoint(drawing: DrawingObject, x: number, y: number): boolean {
+  const { transform } = drawing;
+  return x >= transform.x && x <= transform.x + transform.width && y >= transform.y && y <= transform.y + transform.height;
+}
+
+function optionGroupKey(sheet: WorksheetModel, drawing: DrawingObject, payload: Extract<FormControlDrawingPayload, { controlType: 'option-button' }>): string {
+  if (payload.groupId) return `group:${payload.groupId}`;
+  const centerX = drawing.transform.x + drawing.transform.width / 2;
+  const centerY = drawing.transform.y + drawing.transform.height / 2;
+  const containingGroup = sheet.drawings
+    .map((entry) => ({ entry, payload: sheet.drawingPayloads.get(entry.payloadId) }))
+    .filter((entry): entry is { entry: DrawingObject; payload: Extract<FormControlDrawingPayload, { controlType: 'group-box' }> } => entry.payload?.kind === 'form-control' && entry.payload.controlType === 'group-box' && drawingContainsPoint(entry.entry, centerX, centerY))
+    .sort((left, right) => (left.entry.transform.width * left.entry.transform.height) - (right.entry.transform.width * right.entry.transform.height))[0];
+  return containingGroup ? `group-box:${containingGroup.payload.groupId}` : `option:${drawing.id}`;
+}
+
+function linkValueMutations(
+  context: CommandContext,
+  linkedValues: Array<{ sheetId: string; row: number; column: number; value: string | number | boolean | null }>,
+  affectedRanges: RangeRef[],
+): number {
+  let mutationCount = 0;
+  for (const linked of linkedValues) {
+    const linkedSheet = context.workbook.getSheet(linked.sheetId);
+    if (linked.row < 0 || linked.row >= linkedSheet.rowCount || linked.column < 0 || linked.column >= linkedSheet.columnCount) throw new Error('Form control linked cell is outside worksheet bounds');
+    const previous = structuredClone(linkedSheet.cells.get(linked.row, linked.column));
+    const next: CellData = { ...(previous ?? { value: null }), value: linked.value };
+    const cellRange = formControlCellRange(linked.sheetId, linked.row, linked.column);
+    affectedRanges.push(cellRange);
+    context.applyMutation({ id: 'cell.set', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, value: next }, affectedRanges: [cellRange],
+      inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: linked.sheetId, params: { sheetId: linked.sheetId, row: linked.row, column: linked.column, previous }, affectedRanges: [cellRange] }],
+      apply: () => linkedSheet.cells.set(linked.row, linked.column, structuredClone(next)),
+    });
+    mutationCount += 1;
+  }
+  return mutationCount;
+}
+
+function executeFormControlUpdate(params: FormControlUpdateParams, context: CommandContext): CommandResult {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
+  const before = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+  if (!drawing || before?.kind !== 'form-control') throw new Error(`Unknown form-control drawing: ${params.drawingId}`);
+  assertFormControlPayload(params.payload);
+  if (params.payload.controlType !== before.controlType) throw new Error('Form control type cannot change after insertion');
+  const updatedCellLink = linkedCellOf(params.payload);
+  if (updatedCellLink) {
+    const linkedSheet = context.workbook.getSheet(updatedCellLink.sheetId);
+    if (updatedCellLink.row >= linkedSheet.rowCount || updatedCellLink.column >= linkedSheet.columnCount) throw new Error('Form control linked cell is outside worksheet bounds');
+  }
+  if ('inputRange' in params.payload) assertFormControlRange(context, params.payload.inputRange);
+  const affectedRanges = updatedCellLink
+    ? [formControlCellRange(updatedCellLink.sheetId, updatedCellLink.row, updatedCellLink.column)]
+    : [formControlAnchorRange(params.sheetId, drawing)];
+  context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before, after: params.payload }, affectedRanges,
+    inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: drawing.payloadId, before: params.payload, after: before }, affectedRanges }],
+    apply: () => sheet.drawingPayloads.set(drawing.payloadId, structuredClone(params.payload)),
   });
-  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'dataChart.update', 'cell.image.apply', 'picture.convertToCell', 'picture.convertToFloating', 'formControl.activate'];
+  return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+}
+
+function executeFormControlActivate(params: FormControlActivateParams, context: CommandContext): CommandResult {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
+  const before = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+  if (!drawing || before?.kind !== 'form-control') throw new Error(`Unknown form-control drawing: ${params.drawingId}`);
+  assertFormControlPayload(before);
+  if (!before.enabled) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+  if (before.controlType === 'button') return { operationId: context.operationId, mutationCount: 0, affectedRanges: [], event: { type: 'form-control.button.click', payload: { sheetId: params.sheetId, drawingId: drawing.id, eventId: before.action.eventId } } };
+  if ((before.controlType === 'list-box' || before.controlType === 'combo-box') && !params.selection) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+
+  const affectedRanges: RangeRef[] = [];
+  const linkedValues: Array<{ sheetId: string; row: number; column: number; value: string | number | boolean | null }> = [];
+  const payloadUpdates: Array<{ drawing: DrawingObject; before: FormControlDrawingPayload; after: FormControlDrawingPayload }> = [];
+  let after: FormControlDrawingPayload = structuredClone(before);
+
+  if (before.controlType === 'checkbox') after.value = !before.value;
+  else if (before.controlType === 'spin-button' || before.controlType === 'scrollbar') {
+    const increment = before.controlType === 'scrollbar' && params.increment === 'page' ? before.pageChange : before.step;
+    after.value = clampFormControlValue(before.value + increment, before.minValue, before.maxValue);
+  } else if (before.controlType === 'list-box' || before.controlType === 'combo-box') {
+    const values = readFormControlValues(context, before.inputRange);
+    const indices = params.selection!.indices;
+    if (!Array.isArray(indices) || !indices.every((index) => Number.isSafeInteger(index) && index >= 0 && index < values.length)) throw new Error('Form control selection is outside input range');
+    if (before.controlType === 'list-box') {
+      if (before.selectionType === 'single' && indices.length > 1) throw new Error('Single-selection list box accepts one selected index');
+      const listAfter = after as Extract<FormControlDrawingPayload, { controlType: 'list-box' }>;
+      listAfter.selectedIndices = [...new Set(indices)].sort((left, right) => left - right);
+      listAfter.value = listAfter.selectedIndices.length ? listAfter.selectedIndices.map((index: number) => values[index]!).join(', ') : null;
+    } else {
+      if (indices.length !== 1) throw new Error('Combo box requires exactly one selected index');
+      after.value = values[indices[0]!] ?? null;
+    }
+  } else if (before.controlType === 'option-button') {
+    after.value = true;
+    const key = optionGroupKey(sheet, drawing, before);
+    for (const candidate of sheet.drawings) {
+      const candidatePayload = sheet.drawingPayloads.get(candidate.payloadId);
+      if (candidatePayload?.kind !== 'form-control' || candidatePayload.controlType !== 'option-button' || optionGroupKey(sheet, candidate, candidatePayload) !== key) continue;
+      const nextPayload: FormControlDrawingPayload = { ...candidatePayload, value: candidate.id === drawing.id };
+      if (nextPayload.value === candidatePayload.value) continue;
+      payloadUpdates.push({ drawing: candidate, before: candidatePayload, after: nextPayload });
+    }
+  } else return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+
+  if (payloadUpdates.length === 0) {
+    if (after.value === before.value && (after.controlType !== 'list-box' || ('selectedIndices' in after && 'selectedIndices' in before && after.selectedIndices.join(',') === before.selectedIndices.join(',')))) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+    payloadUpdates.push({ drawing, before, after });
+  }
+  for (const update of payloadUpdates) {
+    const updateCellLink = linkedCellOf(update.after);
+    if (updateCellLink) linkedValues.push({ ...updateCellLink, value: update.after.value });
+    const payloadRange = updateCellLink ? formControlCellRange(updateCellLink.sheetId, updateCellLink.row, updateCellLink.column) : formControlAnchorRange(params.sheetId, update.drawing);
+    affectedRanges.push(payloadRange);
+    context.applyMutation({ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: update.drawing.payloadId, before: update.before, after: update.after }, affectedRanges: [payloadRange],
+      inverse: [{ id: 'drawing.payload.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, payloadId: update.drawing.payloadId, before: update.after, after: update.before }, affectedRanges: [payloadRange] }],
+      apply: () => sheet.drawingPayloads.set(update.drawing.payloadId, structuredClone(update.after)),
+    });
+  }
+  const mutationCount = payloadUpdates.length + linkValueMutations(context, linkedValues, affectedRanges);
+  return { operationId: context.operationId, mutationCount, affectedRanges };
 }

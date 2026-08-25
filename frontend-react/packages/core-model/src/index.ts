@@ -247,6 +247,18 @@ export type {
   DataChartFieldBinding,
   DataChartInspectorModel,
   CameraDrawingPayload,
+  FormControlStyle,
+  FormControlCellLink,
+  FormControlAction,
+  ButtonFormControlPayload,
+  SpinButtonFormControlPayload,
+  ListBoxFormControlPayload,
+  ComboBoxFormControlPayload,
+  CheckboxFormControlPayload,
+  OptionButtonFormControlPayload,
+  GroupBoxFormControlPayload,
+  LabelFormControlPayload,
+  ScrollbarFormControlPayload,
   FormControlDrawingPayload,
   FormControlType,
   PivotControlFilter,
@@ -280,6 +292,7 @@ export {
   isPivotControlStyle,
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
+  isFormControlDrawingPayload,
 } from './domain';
 export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
 export { applyRowPermutation, validatePermutationMetadata, type RowPermutation } from './data-transform';

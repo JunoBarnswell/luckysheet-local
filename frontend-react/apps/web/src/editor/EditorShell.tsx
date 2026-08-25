@@ -213,7 +213,7 @@ export function EditorShell({
                 drawingSelectionMode={state.drawingSelectionMode}
                 onExitDrawingSelectionMode={() => session.setDrawingSelectionMode(false)}
                 onFloatingSelect={(hit, mode) => {
-                  if (hit && !state.drawingSelectionMode) {
+                  if (hit && mode === 'replace' && !state.drawingSelectionMode) {
                     const drawing = state.selectedSheet.drawings.find((entry) => entry.id === hit.id);
                     const payload = drawing ? state.selectedSheet.drawingPayloads.get(drawing.payloadId) : undefined;
                     if (payload?.kind === 'form-control') {

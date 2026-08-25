@@ -137,6 +137,7 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'picture.convertToCell': 'drawing',
   'picture.convertToFloating': 'drawing',
   'dataChart.create': 'drawing',
+  'formControl.update': 'drawing',
   'formControl.activate': 'drawing',
 };
 

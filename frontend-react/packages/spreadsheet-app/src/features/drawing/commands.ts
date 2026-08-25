@@ -9,6 +9,7 @@ import type {
   WorksheetModel,
 } from '@react-sheets/core-model';
 import {
+  isFormControlDrawingPayload,
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
 } from '@react-sheets/core-model';
@@ -162,7 +163,8 @@ function isAnchor(value: unknown): value is DrawingObject['anchor'] {
 function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (!objectParams(value)) return false;
   if (value.kind === 'image') return isImagePayload(value);
-  if (['shape', 'chart', 'data-chart', 'camera', 'textbox', 'form-control'].includes(String(value.kind))) return true;
+  if (value.kind === 'form-control') return isFormControlDrawingPayload(value);
+  if (['shape', 'chart', 'data-chart', 'camera', 'textbox'].includes(String(value.kind))) return true;
   return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
 }
 
