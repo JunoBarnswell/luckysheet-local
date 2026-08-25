@@ -137,6 +137,7 @@
     "pasteAllExceptBorders": "All except borders",
     "pasteSourceTheme": "All using source theme (unsupported)",
     "pasteCommentsNotes": "Comments and notes",
+    "cells": "Cells",
     "pasteValidation": "Validation",
     "pasteColumnWidths": "Source column widths",
     "pasteConditionalFormats": "Conditional formats",

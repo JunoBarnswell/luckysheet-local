@@ -24,7 +24,7 @@ import {
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import type { Locale } from '../i18n';
 import { translateRibbonText } from '../i18n';
-import { homeText } from './home/home-localization';
+import { HOME_CELLS_ACTIONS, HOME_NUMBER_FORMAT_OPTIONS, homeText } from './home/home-localization';
 
 export interface HomeRibbonCommandOptions {
   className?: string;
@@ -110,6 +110,13 @@ export function HomeRibbon({
   const compact = breakpoint === 'compact';
   const dense = layout.width < 1800;
   const narrow = breakpoint === 'narrow';
+  const cellActionHandlers = {
+    columnWidth: onOpenColumnWidth,
+    autoFitColumnWidth: onAutoFitColumns,
+    hideColumns: onHideColumns,
+    unhideColumns: onUnhideColumns,
+    defaultColumnWidth: onOpenDefaultColumnWidth,
+  } as const;
 
   if (narrow) {
     const menu = (group: 'history' | 'clipboard' | 'font' | 'alignment' | 'number' | 'styles' | 'cells' | 'editing') => (
@@ -219,7 +226,7 @@ export function HomeRibbon({
           <Stack gap="xs" className="px-1 pt-2">
             <Select aria-label={translateRibbonText(locale, 'groups.number')} disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
               {mixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
-              <option value="general">常规</option><option value="$#,##0">货币</option><option value="0%">百分比</option><option value="#,##0">千位分隔</option><option value="0.00">小数</option>
+              {HOME_NUMBER_FORMAT_OPTIONS.map(({ value, labelKey }) => <option key={value} value={value}>{homeText(locale, labelKey)}</option>)}
             </Select>
             <Inline gap="none" className="h-8">
               {command('number.currency', { iconOnly: true, className: '!h-8 !min-h-0 !w-8 !rounded-none text-[#2572bc]' })}
@@ -254,17 +261,13 @@ export function HomeRibbon({
 
         <HomeGroup className={compact ? 'w-[72px]' : 'w-[220px]'} group="cells">
           {compact ? (
-            <DropdownMenu align="left" trigger={<Button aria-label="Cells" icon="columns" iconOnly size="sm" variant="ghost" className="m-5 !h-10 !w-10 rounded-none" />}>
+            <DropdownMenu align="left" trigger={<Button aria-label={homeText(locale, 'cells')} title={homeText(locale, 'cells')} icon="columns" iconOnly size="sm" variant="ghost" className="m-5 !h-10 !w-10 rounded-none" />}>
               <Stack gap="none" className="min-w-[13rem] p-1">
                 {renderCommand('insertCells', { className: 'w-full justify-start' })}
                 {renderCommand('deleteCells', { className: 'w-full justify-start' })}
                 {renderCommand('insertColumnHome', { className: 'w-full justify-start' })}
                 {renderCommand('deleteColumn', { className: 'w-full justify-start' })}
-                <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>列宽…</Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={onAutoFitColumns}>自动调整列宽</Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={onHideColumns}>隐藏列</Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={onUnhideColumns}>取消隐藏列</Button>
-                <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenDefaultColumnWidth}>默认列宽…</Button>
+                {HOME_CELLS_ACTIONS.map(({ id, labelKey }) => <Button key={id} aria-label={homeText(locale, labelKey)} title={homeText(locale, labelKey)} size="sm" variant="ghost" className="justify-start" onClick={cellActionHandlers[id as keyof typeof cellActionHandlers]}>{homeText(locale, labelKey)}</Button>)}
               </Stack>
             </DropdownMenu>
           ) : (
@@ -277,7 +280,7 @@ export function HomeRibbon({
               </DropdownMenu>
               <DropdownMenu align="left" trigger={<Tile aria-label={homeText(locale, 'format')} icon="columns" type="button">{homeText(locale, 'format')}</Tile>}>
                 <Stack gap="none" className="min-w-[13rem] p-1">
-                  <Button size="sm" variant="ghost" className="justify-start" onClick={onOpenColumnWidth}>{homeText(locale, 'columnWidth')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onAutoFitColumns}>{homeText(locale, 'autoFitColumnWidth')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onHideColumns}>{homeText(locale, 'hideColumns')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onUnhideColumns}>{homeText(locale, 'unhideColumns')}</Button><Button size="sm" variant="ghost" className="justify-start" onClick={onOpenDefaultColumnWidth}>{homeText(locale, 'defaultColumnWidth')}</Button>
+                  {HOME_CELLS_ACTIONS.map(({ id, labelKey }) => <Button key={id} aria-label={homeText(locale, labelKey)} title={homeText(locale, labelKey)} size="sm" variant="ghost" className="justify-start" onClick={cellActionHandlers[id as keyof typeof cellActionHandlers]}>{homeText(locale, labelKey)}</Button>)}
                 </Stack>
               </DropdownMenu>
             </Inline>
