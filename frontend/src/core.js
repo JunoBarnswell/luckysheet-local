@@ -27,6 +27,7 @@ import { zoomInitial } from "./controllers/zoom";
 // import { printInitial } from "./controllers/print";
 import method from "./global/method";
 import { createWorkbookContext, generateInstanceId } from "./store/context";
+import { validateInstanceId } from "./store/instanceId";
 import { createUnit, listUnits, getUnit, focusUnit, withInstance } from "./store/registry";
 import { bindContainerFocus, setFocusHook } from "./store/domScope";
 import scopedJQuery from "./store/jqueryScope";
@@ -62,6 +63,7 @@ luckysheet = common_extend(api, luckysheet);
 // legacy create() wrapper (void) or the explicit createInstance() API.
 function createWorkbook(setting) {
     setting = setting || {};
+    const instanceId = validateInstanceId(setting.instanceId || generateInstanceId());
     if (typeof window !== "undefined" && window.jQuery && window.$ !== scopedJQuery) {
         window.$ = scopedJQuery;
     }
@@ -73,7 +75,6 @@ function createWorkbook(setting) {
         }
     }
 
-    const instanceId = setting.instanceId || generateInstanceId();
     if (getUnit(instanceId)) {
         method.destroy(instanceId);
     }

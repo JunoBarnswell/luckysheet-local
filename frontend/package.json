@@ -56,7 +56,7 @@
     "release": "standard-version",
     "prettier": "npx prettier --check .",
     "prettier:fix": "npx prettier -w .",
-    "test:unit": "node tests/regression/run-sparse-grid.cjs && node tests/regression/filter-phase3.mjs && node tests/regression/print-layout.mjs",
+    "test:unit": "node tests/regression/run-sparse-grid.cjs && node tests/regression/filter-phase3.mjs && node tests/regression/print-layout.mjs && node tests/regression/instance-id-security.mjs",
     "test:regression": "npm run test:unit"
   },
   "files": [
