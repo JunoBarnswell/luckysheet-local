@@ -32,9 +32,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Set<String> TARGET_KEYS = Set.of("sheetId", "anchor");
     private static final Set<String> FIELD_KEYS = Set.of("fieldId", "name", "dataType", "ordinal", "values");
     private static final Set<String> LAYOUT_KEYS = Set.of(
-            "rows", "columns", "filters", "values", "calculatedFields", "calculatedItems",
+            "rows", "columns", "filters", "allowMultipleFiltersPerField", "collation", "values", "calculatedFields", "calculatedItems",
             "subtotalLocation", "showGrandTotals", "compact", "repeatLabels", "expansion"
     );
+    private static final Set<String> COLLATION_KEYS = Set.of("locale", "sensitivity", "numeric", "caseFirst");
     private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group", "subtotal");
     private static final Set<String> VALUE_KEYS = Set.of(
             "fieldId", "summarizeBy", "displayName", "numberFormat", "baseFieldId", "baseItem", "showAs"
@@ -442,6 +443,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         for (String key : List.of("rows", "columns", "filters", "values")) {
             if (!layout.path(key).isArray()) throw ServiceException.validation("Pivot layout " + key + " must be an array");
         }
+        if (!layout.path("allowMultipleFiltersPerField").isBoolean()) {
+            throw ServiceException.validation("Pivot layout allowMultipleFiltersPerField must be a boolean");
+        }
+        validateCollation(layout.get("collation"));
         if (!layout.path("subtotalLocation").isTextual() || !Set.of("top", "bottom", "off").contains(layout.path("subtotalLocation").asText())) {
             throw ServiceException.validation("Pivot layout subtotalLocation is invalid");
         }
@@ -450,7 +455,23 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
         for (JsonNode placement : layout.path("rows")) validatePlacement(placement, fieldIds, "Pivot row field");
         for (JsonNode placement : layout.path("columns")) validatePlacement(placement, fieldIds, "Pivot column field");
-        for (JsonNode filter : layout.path("filters")) validateFilter(filter, fieldIds);
+        Set<String> filterIdentities = new LinkedHashSet<>();
+        Set<String> filterFields = new LinkedHashSet<>();
+        for (JsonNode filter : layout.path("filters")) {
+            validateFilter(filter, fieldIds);
+            ObjectNode object = (ObjectNode) filter;
+            String fieldId = SnapshotMutationSupport.text(object, "fieldId");
+            String scope = object.has("scope") ? SnapshotMutationSupport.text(object, "scope") : "report";
+            String family = SnapshotMutationSupport.text(object, "family");
+            if (!Set.of("report", "field").contains(scope)) throw ServiceException.validation("Pivot filter scope is invalid");
+            if (!filterIdentities.add(fieldId + "|" + scope + "|" + family)) {
+                throw ServiceException.validation("Pivot filter family is duplicated: " + fieldId + "|" + scope + "|" + family);
+            }
+            if (!layout.path("allowMultipleFiltersPerField").asBoolean()
+                    && !filterFields.add(fieldId + "|" + scope)) {
+                throw ServiceException.validation("Multiple Pivot filters are disabled for " + fieldId + "|" + scope);
+            }
+        }
         for (JsonNode value : layout.path("values")) validateValue(value, fieldIds);
         validateCalculated(layout.get("calculatedFields"), fieldIds, false);
         validateCalculated(layout.get("calculatedItems"), fieldIds, true);
@@ -496,30 +517,54 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if (!FILTER_KINDS.contains(kind)) throw ServiceException.validation("Pivot filter kind is invalid");
         switch (kind) {
             case "manual" -> {
-                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "fieldId", "mode", "memberKeys"), "Pivot manual filter");
+                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "scope", "mode", "memberKeys"), "Pivot manual filter");
+                if (!"manual".equals(SnapshotMutationSupport.text(filter, "family"))) throw ServiceException.validation("Pivot manual filter family is invalid");
                 requireField(fieldIds, filter);
+                if (filter.has("scope") && !Set.of("report", "field").contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot manual filter scope is invalid");
                 String mode = SnapshotMutationSupport.text(filter, "mode");
                 if (!MANUAL_MODES.contains(mode)) throw ServiceException.validation("Pivot manual filter mode is invalid");
                 validateMemberValues(filter.get("memberKeys"), "Pivot manual filter memberKeys");
                 if ("all".equals(mode) && filter.path("memberKeys").size() != 0) throw ServiceException.validation("Pivot manual filter all mode cannot contain memberKeys");
             }
             case "condition" -> {
-                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "fieldId", "operator", "value"), "Pivot condition filter");
+                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "valueFieldId", "scope", "operator", "value", "wholeDay"), "Pivot condition filter");
+                String family = SnapshotMutationSupport.text(filter, "family");
+                if (!Set.of("label", "date", "value").contains(family)) throw ServiceException.validation("Pivot condition filter family is invalid");
                 requireField(fieldIds, filter);
+                if (filter.has("valueFieldId")) requireField(fieldIds, filter, "valueFieldId");
+                if (filter.has("scope") && !Set.of("report", "field").contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot condition filter scope is invalid");
                 if (!Set.of("equals", "not-equals", "contains", "greater-than", "greater-or-equal", "less-than", "less-or-equal").contains(SnapshotMutationSupport.text(filter, "operator"))) {
                     throw ServiceException.validation("Pivot condition filter operator is invalid");
                 }
                 if (!isScalar(filter.get("value"))) throw ServiceException.validation("Pivot condition filter value is invalid");
+                if (filter.has("wholeDay") && !filter.get("wholeDay").isBoolean()) throw ServiceException.validation("Pivot condition filter wholeDay is invalid");
             }
             case "top-items" -> {
-                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "fieldId", "count", "valueFieldId", "direction"), "Pivot top-items filter");
+                SnapshotMutationSupport.validateKnownKeys(filter, Set.of("kind", "family", "fieldId", "scope", "count", "valueFieldId", "direction"), "Pivot top-items filter");
+                if (!"top-items".equals(SnapshotMutationSupport.text(filter, "family"))) throw ServiceException.validation("Pivot top-items filter family is invalid");
                 requireField(fieldIds, filter);
+                if (filter.has("scope") && !Set.of("report", "field").contains(SnapshotMutationSupport.text(filter, "scope"))) throw ServiceException.validation("Pivot top-items filter scope is invalid");
                 JsonNode count = filter.get("count");
                 if (count == null || !count.isIntegralNumber() || count.intValue() < 1) throw ServiceException.validation("Pivot top-items count is invalid");
                 if (!Set.of("top", "bottom").contains(SnapshotMutationSupport.text(filter, "direction"))) throw ServiceException.validation("Pivot top-items direction is invalid");
                 requireField(fieldIds, filter, "valueFieldId");
             }
             default -> throw ServiceException.validation("Pivot filter kind is invalid");
+        }
+    }
+
+    private void validateCollation(JsonNode raw) {
+        if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot collation is required");
+        ObjectNode collation = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(collation, COLLATION_KEYS, "Pivot collation");
+        String locale = SnapshotMutationSupport.text(collation, "locale");
+        if (locale.isBlank()) throw ServiceException.validation("Pivot collation locale is invalid");
+        if (!Set.of("base", "accent", "case", "variant").contains(SnapshotMutationSupport.text(collation, "sensitivity"))) {
+            throw ServiceException.validation("Pivot collation sensitivity is invalid");
+        }
+        if (!collation.path("numeric").isBoolean()) throw ServiceException.validation("Pivot collation numeric must be a boolean");
+        if (!Set.of("upper", "lower", "false").contains(SnapshotMutationSupport.text(collation, "caseFirst"))) {
+            throw ServiceException.validation("Pivot collation caseFirst is invalid");
         }
     }
 
