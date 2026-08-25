@@ -1,4 +1,4 @@
-import { WorkbookModel, type RangeRef } from '@react-sheets/core-model';
+import { WorkbookModel, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -100,6 +100,8 @@ export interface Mutation<P = unknown> extends MutationInfo<P> {
 export interface CommandContext {
   readonly workbook: WorkbookModel;
   readonly operationId: string;
+  /** Optional canonical worksheet-value authority supplied by the host runtime. */
+  readonly resolveCellValue?: (sheet: WorksheetModel, row: number, column: number) => unknown;
   applyMutation<P>(mutation: Mutation<P>): void;
   recordOperation<P>(operation: Operation<P>, params: P): OperationResult;
 }
@@ -508,11 +510,16 @@ export class CommandRuntime {
   private readonly mutationListeners: MutationListener[] = [];
   private readonly commandListeners: CommandListener[] = [];
   private readonly historyReplayListeners: HistoryReplayListener[] = [];
+  private cellValueResolver?: (sheet: WorksheetModel, row: number, column: number) => unknown;
 
   constructor(
     readonly workbook: WorkbookModel,
     readonly registry = new CommandRegistry(),
   ) {}
+
+  setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void {
+    this.cellValueResolver = resolver;
+  }
 
   onMutation(listener: MutationListener): () => void {
     this.mutationListeners.push(listener);
@@ -562,6 +569,7 @@ export class CommandRuntime {
     const context: CommandContext = {
       workbook: this.workbook,
       operationId,
+      resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
       applyMutation: (mutation) => {
         if (mutation.unitId !== this.workbook.unitId) {
           throw new Error(`Mutation unit mismatch: expected ${this.workbook.unitId}, received ${mutation.unitId}`);
@@ -702,6 +710,7 @@ export class CommandRuntime {
       const replayContext: CommandContext = {
         workbook: this.workbook,
         operationId: createOperationId(),
+        resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
         applyMutation: () => {
           throw new Error('Nested mutation application is not allowed during mutation replay');
         },

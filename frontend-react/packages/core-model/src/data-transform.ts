@@ -38,6 +38,16 @@ function inRange(range: RangeRef, row: number, column: number): boolean {
   return range.startRow <= row && row <= range.endRow && range.startColumn <= column && column <= range.endColumn;
 }
 
+/** A table's header/total rows are not part of a data-body sort permutation. */
+function isTableBodyPermutation(table: WorksheetModel['sheetTables'][number], range: RangeRef): boolean {
+  const bodyEnd = table.range.endRow - (table.hasTotalRow ? 1 : 0);
+  return table.hasHeaderRow
+    && range.startRow === table.range.startRow + 1
+    && range.endRow === bodyEnd
+    && range.startColumn === table.range.startColumn
+    && range.endColumn === table.range.endColumn;
+}
+
 function rangesIntersect(a: RangeRef, b: RangeRef): boolean {
   return a.sheetId === b.sheetId && a.startRow <= b.endRow && b.startRow <= a.endRow && a.startColumn <= b.endColumn && b.startColumn <= a.endColumn;
 }
@@ -161,10 +171,11 @@ export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPerm
   }
   for (const table of sheet.sheetTables) {
     if (rangesIntersect(table.range, range)) {
-      if (!(table.range.startRow === range.startRow && table.range.endRow === range.endRow)) throw new Error('Sort requires the complete table row range');
-      remapSingleRange(`table ${table.id}`, table.range, plan);
+      const completeTable = table.range.startRow === range.startRow && table.range.endRow === range.endRow;
+      if (!completeTable && !isTableBodyPermutation(table, range)) throw new Error('Sort requires the complete table row range or its data body');
+      if (completeTable) remapSingleRange(`table ${table.id}`, table.range, plan);
     }
-    if (table.autoFilter) remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
+    if (table.autoFilter && !isTableBodyPermutation(table, range)) remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
   }
   for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start <= range.endRow && group.end >= range.startRow && !(group.start >= range.startRow && group.end <= range.endRow)) throw new Error('Sort cannot partially intersect an outline group');
   for (const drawing of sheet.drawings) remapDrawingAnchor(drawing, plan);
@@ -204,7 +215,13 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) rule.ranges = remapRangeList(rule.ranges, plan);
   for (const rule of sheet.dataValidations) if (rule.listSource?.kind === 'range') rule.listSource.range = remapSingleRange(`validation ${rule.id} source`, rule.listSource.range, plan);
   if (sheet.autoFilter) sheet.autoFilter.range = remapSingleRange('auto filter', sheet.autoFilter.range, plan);
-  for (const table of sheet.sheetTables) { table.range = remapSingleRange(`table ${table.id}`, table.range, plan); if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan); }
+  for (const table of sheet.sheetTables) {
+    const bodyPermutation = isTableBodyPermutation(table, range);
+    if (!bodyPermutation) {
+      table.range = remapSingleRange(`table ${table.id}`, table.range, plan);
+      if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
+    }
+  }
   for (const pivot of sheet.pivots) { if (pivot.source.kind === 'worksheet-range') pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan); if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan); if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan); }
   for (const merge of sheet.merges) { merge.range = remapSingleRange('merge', merge.range, plan); if (inRange(range, merge.anchor.row, merge.anchor.column)) merge.anchor.row = remapRow(merge.anchor.row, plan); }
   for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }

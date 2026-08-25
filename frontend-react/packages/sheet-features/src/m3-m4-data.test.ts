@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
+import { createFormulaError } from '@react-sheets/formula-engine';
 import {
   computeConditionalOverlays,
   computeFilterHiddenRows,
@@ -14,6 +15,7 @@ import {
   validationList,
   validateDataInput,
 } from './index';
+import { compareSortValues, resolveSortCellValue } from './data-features';
 
 function runtime(): { workbook: WorkbookModel; commands: CommandRuntime } {
   const workbook = new WorkbookModel('m3-m4', 'M3/M4');
@@ -21,6 +23,150 @@ function runtime(): { workbook: WorkbookModel; commands: CommandRuntime } {
   registerSheetCommands(commands);
   return { workbook, commands };
 }
+
+test('sorting uses resolved formula results, keeps stable ties, and replays/undoes as one permutation', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  commands.execute('sheet.range.set', {
+    sheetId: sheet.id,
+    startRow: 0,
+    startColumn: 0,
+    values: [
+      [{ value: 'Calculated' }, { value: 'Stable row' }],
+      [{ formula: '=B2+10', value: null }, { value: 'first' }],
+      [{ formula: '=B3+10', value: null }, { value: 'second' }],
+      [{ formula: '=B4+10', value: null }, { value: 'third' }],
+    ],
+  });
+  const beforeSort = workbook.snapshot();
+  const formulaResults = new Map([[1, 20], [2, 5], [3, 5]]);
+  commands.setCellValueResolver((_currentSheet, row, column) => column === 0 ? formulaResults.get(row) ?? null : undefined);
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.equal(commands.getHistoryDepth().undo, 2, 'the setup write and sort are separate commands');
+  const sortEntry = commands.getUndoEntries().at(-1)!;
+  assert.equal(sortEntry.redo.length, 1);
+  assert.deepEqual((sortEntry.redo[0]?.params as { sourceRows: number[] }).sourceRows, [2, 3, 1]);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'second');
+  assert.equal(sheet.cells.get(2, 1)?.value, 'third');
+  assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(beforeSort);
+  const remoteCommands = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteCommands);
+  remoteCommands.applyRemoteMutations(sortEntry.redo);
+  const currentSheetSnapshot = workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
+  const remoteSheetSnapshot = remoteWorkbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
+  assert.deepEqual(remoteSheetSnapshot?.cells, currentSheetSnapshot?.cells);
+
+  assert.equal(commands.undo(), true);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(2, 1)?.value, 'second');
+  assert.equal(sheet.cells.get(3, 1)?.value, 'third');
+  assert.equal(commands.redo(), true);
+  assert.equal(sheet.cells.get(1, 1)?.value, 'second');
+  assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+});
+
+test('sort keys retain canonical typed formula results and reject unresolved values', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { formula: '=1+1', value: null, formulaValue: 2 });
+  assert.equal(resolveSortCellValue(sheet, 1, 0), 2);
+  sheet.cells.set(2, 0, { formula: '=A1', value: null });
+  assert.throws(() => resolveSortCellValue(sheet, 2, 0), /formula result unavailable/);
+  assert.equal(compareSortValues(2, 10) < 0, true);
+  assert.equal(compareSortValues(true, 'true') < 0, true);
+  assert.equal(compareSortValues(createFormulaError('#N/A', 'missing'), null) < 0, true);
+  assert.equal(compareSortValues(createFormulaError('#DIV/0!', 'zero'), createFormulaError('#N/A', 'missing')) < 0, true);
+  assert.equal(compareSortValues(5, 5), 0);
+  assert.throws(
+    () => resolveSortCellValue(sheet, 1, 0, () => [[2, 3]]),
+    /unresolved array result/,
+  );
+  assert.throws(
+    () => resolveSortCellValue(sheet, 1, 0, () => Number.POSITIVE_INFINITY),
+    /non-finite numeric result/,
+  );
+});
+
+test('rows.permuted rejects a tampered duplicate source order before changing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  const before = workbook.snapshot();
+  assert.throws(() => commands.applyRemoteMutations([{
+    id: 'rows.permuted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 },
+      sourceRows: [1, 1],
+    },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 16_383 }],
+  }]), /Invalid mutation history/);
+  assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('Home, worksheet AutoFilter, and table sorting share the resolved-value owner', () => {
+  const seed = (): { workbook: WorkbookModel; commands: CommandRuntime } => {
+    const next = runtime();
+    const sheet = next.workbook.getSheet(next.workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Calculated' });
+    sheet.cells.set(0, 1, { value: 'Row' });
+    sheet.cells.set(1, 0, { formula: '=B2', value: null });
+    sheet.cells.set(1, 1, { value: 'twenty' });
+    sheet.cells.set(2, 0, { formula: '=B3', value: null });
+    sheet.cells.set(2, 1, { value: 'five' });
+    sheet.cells.set(3, 0, { formula: '=B4', value: null });
+    sheet.cells.set(3, 1, { value: 'ten' });
+    const formulaResults = new Map([[1, 20], [2, 5], [3, 10]]);
+    next.commands.setCellValueResolver((_sheet, row, column) => column === 0 ? formulaResults.get(row) ?? null : undefined);
+    return next;
+  };
+  const assertSorted = (commands: CommandRuntime, workbook: WorkbookModel): void => {
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    assert.deepEqual([1, 2, 3].map((row) => sheet.cells.get(row, 1)?.value), ['five', 'ten', 'twenty']);
+    assert.equal(commands.getHistoryDepth().undo > 0, true);
+  };
+
+  for (const command of ['data.sort.quick', 'sheet.sort.multi'] as const) {
+    const { workbook, commands } = seed();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 };
+    if (command === 'data.sort.quick') commands.execute(command, { sheetId: sheet.id, range, sortColumn: 0, ascending: true, hasHeader: true });
+    else commands.execute(command, { sheetId: sheet.id, range, criteria: [{ column: 0, ascending: true }], hasHeader: true });
+    assertSorted(commands, workbook);
+  }
+
+  for (const owner of ['worksheet', 'table'] as const) {
+    const { workbook, commands } = seed();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 };
+    const filter = normalizeAutoFilterModel({ sheetId: sheet.id, range, columns: {} });
+    if (owner === 'worksheet') {
+      sheet.autoFilter = filter;
+    } else {
+      commands.execute('sheetTable.add', {
+        id: 'table-sort', sheetId: sheet.id, name: 'SortTable', range, hasHeaderRow: true, hasTotalRow: false,
+        showBandedRows: false, showBandedColumns: false, showFirstColumn: false, showLastColumn: false,
+        showFilterButton: true, autoExpand: 'both', columns: [{ id: 'calculated', name: 'Calculated' }, { id: 'row', name: 'Row' }],
+      });
+      commands.execute('sheetTable.autoFilter.set', { sheetId: sheet.id, tableId: 'table-sort', autoFilter: filter });
+    }
+    commands.execute('sheet.autoFilter.sort', { sheetId: sheet.id, column: 0, ascending: true });
+    assertSorted(commands, workbook);
+  }
+});
 
 test('scoped defined names survive command undo and snapshot round-trip', () => {
   const { workbook, commands } = runtime();
