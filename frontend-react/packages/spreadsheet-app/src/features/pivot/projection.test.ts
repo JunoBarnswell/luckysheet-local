@@ -370,6 +370,66 @@ describe('native PivotGridProjection contract', () => {
     assert.ok(pivot.fieldCatalog.fields.every((field) => field.fieldId.length > 0));
   });
 
+  it('evaluates calculated fields against each Pivot summary bucket instead of source records', () => {
+    const workbook = new WorkbookModel('pivot-calculated-summary', 'Pivot Calculated Summary');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Sales', 'Units'], ['East', 10, 2], ['East', 20, 3], ['West', 5, 4]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-calculated-summary', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const calculatedId = 'calculated:revenue';
+    pivot.layout.rows = [{ fieldId: region.fieldId }];
+    pivot.layout.values = [{ fieldId: calculatedId, summarizeBy: 'sum' }];
+    pivot.layout.calculatedFields = [{ fieldId: calculatedId, name: 'Revenue', formula: '=Sales*Units' }];
+
+    const result = computePivotResult(workbook, pivot);
+    assert.deepEqual(result.rows.map((node) => [node.label, node.values[0]?.values[0]]), [['East', 150], ['West', 20]]);
+    assert.equal(result.grandTotal?.values[0], 315);
+  });
+
+  it('resolves calculated-field dependencies in summary order and supports bracketed field references', () => {
+    const workbook = new WorkbookModel('pivot-calculated-dependencies', 'Pivot Calculated Dependencies');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Region', 'Sales', 'Units'], ['East', 10, 2], ['East', 20, 3]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-calculated-dependencies', { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const revenue = 'calculated:revenue';
+    const adjusted = 'calculated:adjusted';
+    pivot.layout.values = [{ fieldId: adjusted, summarizeBy: 'sum' }, { fieldId: revenue, summarizeBy: 'sum' }];
+    pivot.layout.calculatedFields = [
+      { fieldId: adjusted, name: 'Adjusted', formula: '=[Revenue]+10' },
+      { fieldId: revenue, name: 'Revenue', formula: '=[Sales]*[Units]' },
+    ];
+    const result = computePivotResult(workbook, pivot);
+    assert.deepEqual(result.grandTotal?.values, [160, 150]);
+  });
+
+  it('rejects unknown, cyclic, and structural calculated-field references before producing a result', () => {
+    const workbook = workbookWithData();
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-invalid-calculated', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const region = catalog.fields.find((field) => field.name === 'Region')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    const calculated = 'calculated:invalid';
+    pivot.layout.values = [{ fieldId: calculated, summarizeBy: 'sum' }];
+    pivot.layout.calculatedFields = [{ fieldId: calculated, name: 'Invalid', formula: '=Missing+1' }];
+    assert.throws(() => computePivotResult(workbook, pivot), /unknown field/i);
+
+    pivot.layout.calculatedFields = [
+      { fieldId: 'calculated:a', name: 'A', formula: '=B+1' },
+      { fieldId: 'calculated:b', name: 'B', formula: '=A+1' },
+    ];
+    pivot.layout.values = [{ fieldId: 'calculated:a', summarizeBy: 'sum' }];
+    assert.throws(() => computePivotResult(workbook, pivot), /dependency cycle/i);
+
+    pivot.layout.calculatedFields = [{ fieldId: calculated, name: 'Invalid', formula: `=${amount.fieldId}+1` }];
+    pivot.layout.rows = [{ fieldId: calculated }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    assert.throws(() => computePivotResult(workbook, pivot), /only valid in Values/i);
+  });
+
   it('plans star joins by source identity, is invariant to source order, and preserves provenance', () => {
     const workbook = relationalWorkbook();
     const first = relationalPivot(workbook, ['orders', 'customers', 'products']);
