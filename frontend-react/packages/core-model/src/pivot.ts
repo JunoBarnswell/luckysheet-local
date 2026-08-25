@@ -91,8 +91,8 @@ export interface PivotManualGroup {
 }
 
 export type PivotGroup =
-  | { kind: 'date'; unit: 'year' | 'quarter' | 'month' | 'week' | 'day'; startOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6 }
-  | { kind: 'number'; interval: number; start?: number; end?: number }
+  | { kind: 'date'; unit: 'year' | 'quarter' | 'month' | 'week' | 'day'; startOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6; start?: PivotScalar; end?: PivotScalar; autoStart?: boolean; autoEnd?: boolean }
+  | { kind: 'number'; interval: number; start?: number; end?: number; autoStart?: boolean; autoEnd?: boolean }
   | { kind: 'manual'; groups: PivotManualGroup[] };
 
 export type PivotSort = {

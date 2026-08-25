@@ -81,11 +81,31 @@ export type NativePivotSource =
   | { kind: 'worksheet-range'; sheetName: string; sheetPart?: string; ref: string }
   | { kind: 'table'; tableName: string; sheetName?: string; sheetPart?: string };
 
+export type NativePivotScalar = string | number | boolean | null;
+
+export interface NativePivotFieldRange {
+  groupBy?: string;
+  start?: NativePivotScalar;
+  end?: NativePivotScalar;
+  interval?: number;
+  autoStart?: boolean;
+  autoEnd?: boolean;
+}
+
+export interface NativePivotFieldGroup {
+  base?: number;
+  parent?: number;
+  range?: NativePivotFieldRange;
+  discreteIndexes?: number[];
+  groupItems?: NativePivotScalar[];
+}
+
 export interface NativePivotCacheField {
   index: number;
   name: string;
   dataType?: 'string' | 'number' | 'date' | 'boolean' | 'error' | 'mixed';
   sharedItems?: Array<string | number | boolean | null>;
+  fieldGroup?: NativePivotFieldGroup;
 }
 
 export interface NativePivotCacheDefinition {

@@ -640,12 +640,30 @@ function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
     const result = start + Math.floor((number - start) / group.interval) * group.interval;
     return group.end !== undefined && result > group.end ? group.end : result;
   }
-  const date = new Date(String(value));
+  const date = pivotDate(value);
   if (Number.isNaN(date.getTime())) return value;
+  const start = group.start === undefined ? undefined : pivotDate(group.start);
+  const end = group.end === undefined ? undefined : pivotDate(group.end);
+  if (start && !Number.isNaN(start.getTime()) && date < start) return group.autoStart ? dateGroupLabel(start, group) : value;
+  if (end && !Number.isNaN(end.getTime()) && date > end) return group.autoEnd ? dateGroupLabel(end, group) : value;
+  return dateGroupLabel(date, group);
+}
+
+function pivotDate(value: PivotScalar): Date {
+  if (typeof value === 'number' && Number.isFinite(value)) return new Date(Date.UTC(1899, 11, 30) + value * 86_400_000);
+  return new Date(String(value));
+}
+
+function dateGroupLabel(date: Date, group: Extract<PivotGroup, { kind: 'date' }>): PivotScalar {
   if (group.unit === 'year') return date.getFullYear();
   if (group.unit === 'quarter') return `${date.getFullYear()} Q${Math.floor(date.getMonth() / 3) + 1}`;
   if (group.unit === 'month') return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-  if (group.unit === 'week') return Math.ceil((((date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) / 86400000) + date.getDay() + 1) / 7);
+  if (group.unit === 'week') {
+    const startOfWeek = group.startOfWeek ?? 0;
+    const first = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    const offset = (first.getUTCDay() - startOfWeek + 7) % 7;
+    return Math.floor((Math.floor((date.getTime() - first.getTime()) / 86_400_000) + offset) / 7) + 1;
+  }
   return date.toISOString().slice(0, 10);
 }
 

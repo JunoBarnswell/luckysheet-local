@@ -297,6 +297,41 @@ function validatePivotPresentation(value: unknown): asserts value is PivotPresen
     || typeof options.showLastColumn !== 'boolean') throw new Error('Pivot presentation styleOptions are invalid');
 }
 
+function validatePivotGroup(value: unknown): void {
+  const group = requireRecord(value, 'Pivot group');
+  if (group.kind === 'date') {
+    validateExactKeys(group, ['kind', 'unit', 'startOfWeek', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot date group');
+    if (!['year', 'quarter', 'month', 'week', 'day'].includes(String(group.unit))
+      || (group.startOfWeek !== undefined && (!Number.isInteger(group.startOfWeek) || Number(group.startOfWeek) < 0 || Number(group.startOfWeek) > 6))
+      || (group.start !== undefined && !['string', 'number'].includes(typeof group.start))
+      || (group.end !== undefined && !['string', 'number'].includes(typeof group.end))
+      || (group.autoStart !== undefined && typeof group.autoStart !== 'boolean')
+      || (group.autoEnd !== undefined && typeof group.autoEnd !== 'boolean')) throw new Error('Pivot date group is invalid');
+    return;
+  }
+  if (group.kind === 'number') {
+    validateExactKeys(group, ['kind', 'interval', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot number group');
+    if (typeof group.interval !== 'number' || !Number.isFinite(group.interval) || group.interval <= 0
+      || (group.start !== undefined && (typeof group.start !== 'number' || !Number.isFinite(group.start)))
+      || (group.end !== undefined && (typeof group.end !== 'number' || !Number.isFinite(group.end)))
+      || (group.autoStart !== undefined && typeof group.autoStart !== 'boolean')
+      || (group.autoEnd !== undefined && typeof group.autoEnd !== 'boolean')) throw new Error('Pivot number group is invalid');
+    return;
+  }
+  if (group.kind === 'manual') {
+    validateExactKeys(group, ['kind', 'groups'], 'Pivot manual group');
+    if (!Array.isArray(group.groups)) throw new Error('Pivot manual group is invalid');
+    for (const raw of group.groups) {
+      const entry = requireRecord(raw, 'Pivot manual group entry');
+      validateExactKeys(entry, ['groupId', 'name', 'items'], 'Pivot manual group entry');
+      if (!isNonEmptyString(entry.groupId) || typeof entry.name !== 'string' || !Array.isArray(entry.items)) throw new Error('Pivot manual group entry is invalid');
+      entry.items.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual group item ${String(index)}`));
+    }
+    return;
+  }
+  throw new Error('Pivot group kind is unsupported');
+}
+
 /** Rejects every non-canonical Pivot field at the transport boundary. */
 export function validatePivotDefinition(value: unknown): asserts value is PivotDefinition {
   const pivot = requireRecord(value, 'Pivot definition');
@@ -339,6 +374,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     const placement = requireRecord(rawPlacement, 'Pivot placement');
     validateExactKeys(placement, ['fieldId', 'sort', 'group'], 'Pivot placement');
     if (!isNonEmptyString(placement.fieldId) || !fieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
+    if (placement.group !== undefined) validatePivotGroup(placement.group);
   };
   layout.rows.forEach(validatePlacement);
   layout.columns.forEach(validatePlacement);

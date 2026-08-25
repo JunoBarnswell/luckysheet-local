@@ -49,6 +49,27 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
   });
 
+  it('applies canonical date, numeric and manual grouping before axis aggregation', () => {
+    const workbook = new WorkbookModel('pivot-grouping', 'Pivot Grouping');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Date', 'Amount', 'Category'], [45292, 10, 'A'], [45323, 20, 'B'], [45657, 30, 'C']].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-grouping', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const date = catalog.fields.find((field) => field.name === 'Date')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    const category = catalog.fields.find((field) => field.name === 'Category')!;
+    pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
+    pivot.layout.rows = [{ fieldId: date.fieldId, group: { kind: 'date', unit: 'year' } }, { fieldId: category.fieldId, group: { kind: 'manual', groups: [{ groupId: 'ab', name: 'AB', items: [{ type: 'text', value: 'A' }, { type: 'text', value: 'B' }] }] } }];
+    pivot.layout.columns = [{ fieldId: amount.fieldId, group: { kind: 'number', interval: 10, start: 0 } }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const result = computePivotResult(workbook, pivot);
+    assert.equal(result.rows[0]?.label, '2024');
+    assert.equal(result.rows[0]?.children[0]?.label, 'AB');
+    assert.equal(result.columnPaths[0]?.[0], 10);
+    assert.equal(result.rows[0]?.children[0]?.values[0]?.values[0], 10);
+  });
+
   it('keeps a root data row for Columns plus Values when Rows is empty', () => {
     const workbook = new WorkbookModel('pivot-columns-only', 'Pivot Columns Only');
     const sheet = workbook.getSheet('sheet-1');
