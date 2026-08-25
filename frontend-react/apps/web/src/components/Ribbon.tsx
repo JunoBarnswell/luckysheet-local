@@ -320,6 +320,7 @@ export function Ribbon({
     onToggleViewHeadings,
     onTogglePrintHeadings,
     onAutoSum,
+    onMergeCells,
     onFill,
     onFreezeAtPrimary,
     onCreateSheetTable,

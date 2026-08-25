@@ -364,6 +364,7 @@ export interface RibbonCommandActions {
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
+  onMergeCells: () => void;
   onFill: (direction: 'down' | 'right') => void;
   onFreezeAtPrimary: () => void;
   onCreateSheetTable: () => void;
@@ -468,6 +469,8 @@ export interface RibbonSurfaceDefinition {
   readonly appearance: RibbonSurfaceAppearance;
   readonly breakpoints: readonly RibbonSurfaceBreakpoint[];
   readonly overflowTarget?: RibbonGroupId;
+  /** Optional typed overflow menu owner. Members are rendered through this surface. */
+  readonly menuId?: string;
   readonly ariaLabel?: string;
 }
 
@@ -480,9 +483,15 @@ export type RibbonControlId =
   | 'font-decrease'
   | 'font-color'
   | 'fill-color'
-  | 'borders'
-  | 'vertical-alignment'
-  | 'number-format';
+  | 'number-format'
+  | 'cells-insert-menu'
+  | 'cells-delete-menu'
+  | 'cells-format-menu'
+  | 'column-width'
+  | 'auto-fit-column-width'
+  | 'hide-columns'
+  | 'unhide-columns'
+  | 'default-column-width';
 
 export interface RibbonControlDefinition {
   readonly id: RibbonControlId;
@@ -785,21 +794,23 @@ const ribbonSurface = (
   commandId: RibbonCommandId | undefined,
   breakpoints: readonly RibbonSurfaceBreakpoint[] = ['wide', 'compact', 'narrow'],
   overflowTarget?: RibbonGroupId,
-): RibbonSurfaceDefinition => ({ id, tab, group, order, appearance, commandId, breakpoints, overflowTarget });
+  menuId?: string,
+): RibbonSurfaceDefinition => ({ id, tab, group, order, appearance, commandId, breakpoints, overflowTarget, menuId });
 
 const homeControl = (
   id: RibbonControlId,
   group: RibbonGroupId,
   order: number,
   breakpoints: readonly RibbonSurfaceBreakpoint[] = ['wide', 'compact', 'narrow'],
-): RibbonSurfaceDefinition => ({ id: `control.${id}`, tab: 'home', group, controlId: id, order, appearance: 'small', breakpoints });
+  menuId?: string,
+): RibbonSurfaceDefinition => ({ id: `control.${id}`, tab: 'home', group, controlId: id, order, appearance: 'small', breakpoints, menuId });
 
 /** Single render catalogue for the Home tab. Components must not invent
  * command placements independently from this declaration. */
 export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
-  ribbonSurface('home', 'history.undo', 'history', 10, 'large', 'undo', ['wide', 'compact']),
-  ribbonSurface('home', 'history.redo', 'history', 20, 'large', 'redo', ['wide', 'compact']),
-  ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste', ['wide', 'compact']),
+  ribbonSurface('home', 'history.undo', 'history', 10, 'large', 'undo'),
+  ribbonSurface('home', 'history.redo', 'history', 20, 'large', 'redo'),
+  ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste'),
   ribbonSurface('home', 'clipboard.cut', 'clipboard', 20, 'small', 'cut'),
   ribbonSurface('home', 'clipboard.copy', 'clipboard', 30, 'small', 'copy'),
   homeControl('format-painter', 'clipboard', 40),
@@ -813,9 +824,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.underline', 'font', 70, 'small', 'underline'),
   ribbonSurface('home', 'font.strikethrough', 'font', 80, 'small', 'strikethrough'),
   ribbonSurface('home', 'font.borders', 'font', 85, 'small', 'allBorders'),
-  homeControl('borders', 'font', 90),
+  homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
-  homeControl('vertical-alignment', 'alignment', 10),
   ribbonSurface('home', 'alignment.left', 'alignment', 20, 'small', 'alignLeft'),
   ribbonSurface('home', 'alignment.center', 'alignment', 30, 'small', 'alignCenter'),
   ribbonSurface('home', 'alignment.right', 'alignment', 40, 'small', 'alignRight'),
@@ -834,15 +844,26 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.decimal', 'number', 50, 'small', 'numberFormatDecimal'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
-  ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.table', 'styles', 20, 'tile', 'formatAsTable', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.format-cells', 'styles', 30, 'tile', 'formatCells', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.validation', 'styles', 40, 'tile', 'dataValidation', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.template', 'styles', 50, 'tile', 'cellTemplate', ['wide', 'compact']),
-  ribbonSurface('home', 'styles.editor', 'styles', 60, 'tile', 'cellEditor', ['wide', 'compact']),
-  ribbonSurface('home', 'cells.insert', 'cells', 10, 'split', 'insertRowHome'),
-  ribbonSurface('home', 'cells.delete', 'cells', 20, 'split', 'deleteRow'),
-  ribbonSurface('home', 'cells.format', 'cells', 30, 'split', 'insertCells'),
+  ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat'),
+  ribbonSurface('home', 'styles.table', 'styles', 20, 'tile', 'formatAsTable'),
+  ribbonSurface('home', 'styles.format-cells', 'styles', 30, 'tile', 'formatCells'),
+  ribbonSurface('home', 'styles.validation', 'styles', 40, 'tile', 'dataValidation'),
+  ribbonSurface('home', 'styles.template', 'styles', 50, 'tile', 'cellTemplate'),
+  ribbonSurface('home', 'styles.editor', 'styles', 60, 'tile', 'cellEditor'),
+  homeControl('cells-insert-menu', 'cells', 10),
+  homeControl('cells-delete-menu', 'cells', 20),
+  homeControl('cells-format-menu', 'cells', 30),
+  ribbonSurface('home', 'cells.insert-row', 'cells', 40, 'menu', 'insertRowHome', ['wide', 'compact', 'narrow'], undefined, 'control.cells-insert-menu'),
+  ribbonSurface('home', 'cells.insert-column', 'cells', 41, 'menu', 'insertColumnHome', ['wide', 'compact', 'narrow'], undefined, 'control.cells-insert-menu'),
+  ribbonSurface('home', 'cells.insert-cells', 'cells', 42, 'menu', 'insertCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-insert-menu'),
+  ribbonSurface('home', 'cells.delete-row', 'cells', 50, 'menu', 'deleteRow', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
+  ribbonSurface('home', 'cells.delete-column', 'cells', 51, 'menu', 'deleteColumn', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
+  ribbonSurface('home', 'cells.delete-cells', 'cells', 52, 'menu', 'deleteCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
+  homeControl('column-width', 'cells', 60, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('auto-fit-column-width', 'cells', 61, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('hide-columns', 'cells', 62, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('unhide-columns', 'cells', 63, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('default-column-width', 'cells', 64, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
   ribbonSurface('home', 'editing.autosum', 'editing', 60, 'small', 'autoSum'),
   ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
   ribbonSurface('home', 'editing.fill-right', 'editing', 66, 'small', 'fillRight'),
@@ -1052,7 +1073,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   styleCommand('indentDecrease', RIBBON_TEXT.commands.indentDecrease, 'indent-decrease', (context) => ({ indent: Math.max(0, Number(context.cellStyle.indent ?? 0) - 1) }), undefined, 'alignment'),
   styleCommand('wrapText', RIBBON_TEXT.commands.wrapText, 'wrap-text', (context) => ({ wrapText: !context.cellStyle.wrapText }), (context) => Boolean(context.cellStyle.wrapText)),
   styleCommand('textOrientation', RIBBON_TEXT.commands.textOrientation, 'type', (context) => ({ textRotate: context.cellStyle.textRotate === 45 ? 0 : 45 }), (context) => Boolean(context.cellStyle.textRotate), 'alignment'),
-  command('mergeCells', 'home', 'alignment', 'sheet.merge.set', RIBBON_TEXT.commands.mergeCells, 'merge-cells'),
+  callback('mergeCells', 'home', 'alignment', RIBBON_TEXT.commands.mergeCells, (context) => context.actions.onMergeCells(), 'merge-cells'),
   intent('formatCells', 'home', 'number', RIBBON_TEXT.commands.formatCells, () => ({ type: 'dialog.open', dialog: 'format-cells' }), 'table'),
   command('numberFormatGeneral', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatGeneral, undefined, { style: { numberFormat: 'general' } }),
   command('numberFormatCurrency', 'home', 'number', 'sheet.style.set', RIBBON_TEXT.commands.numberFormatCurrency, 'dollar-sign', { style: { numberFormat: '$#,##0' } }),
