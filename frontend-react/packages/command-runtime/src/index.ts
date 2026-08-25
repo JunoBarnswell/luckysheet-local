@@ -65,6 +65,11 @@ export interface CommandResult {
   operationId: string;
   mutationCount: number;
   affectedRanges: RangeRef[];
+  /** Typed domain event emitted by commands that intentionally have no model mutation. */
+  event?: {
+    type: string;
+    payload: Record<string, unknown>;
+  };
 }
 
 /** The sole UI, script and host intent contract for a domain command. */

@@ -192,7 +192,7 @@ describe('drawing feature', () => {
       { kind: 'chart', payload: { kind: 'chart', chartId: 'payload-kind-3', chartType: 'column', sourceRanges: [], elements: { hiddenData: 'show' } } },
       { kind: 'data-chart', payload: { kind: 'data-chart', source: { kind: 'table', tableId: 'table-kind' }, plotType: 'column', bindings: { values: [{ area: 'values', fieldId: 'value', aggregate: 'sum' }], category: [], details: [], color: [], size: [], tooltip: [], filter: [] }, inspector: { legendPosition: 'bottom', showDataLabels: false, showHiddenData: true, chartArea: { fill: '#fff', border: '#000', borderWidth: 1 }, plotArea: { fill: '#fff' }, axis: { showGridlines: true } } } },
       { kind: 'camera', payload: { kind: 'camera', sourceRange: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, refreshPolicy: 'live' } },
-      { kind: 'form-control', payload: { kind: 'form-control', controlType: 'button', value: false, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } } },
+      { kind: 'form-control', payload: { kind: 'form-control', controlType: 'button', value: null, action: { kind: 'event', eventId: 'button-click' }, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } } },
       { kind: 'slicer', payload: { kind: 'slicer', pivotId: 'pivot-kind', fieldId: 'field-kind', filter: { mode: 'all', memberKeys: [] }, style } },
       { kind: 'timeline', payload: { kind: 'timeline', pivotId: 'pivot-kind', fieldId: 'field-kind', period: {}, style } },
     ];

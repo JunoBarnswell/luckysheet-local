@@ -242,20 +242,170 @@ export interface CameraDrawingPayload {
 
 export type FormControlType = 'button' | 'spin-button' | 'list-box' | 'combo-box' | 'checkbox' | 'option-button' | 'group-box' | 'label' | 'scrollbar';
 
-export interface FormControlDrawingPayload {
+export interface FormControlStyle {
+  fill: string;
+  border: string;
+  textColor: string;
+  fontSize?: number;
+}
+
+export interface FormControlCellLink {
+  sheetId: SheetId;
+  row: Row;
+  column: Column;
+}
+
+export interface FormControlAction {
+  kind: 'event';
+  eventId: string;
+}
+
+interface FormControlBase {
   kind: 'form-control';
-  controlType: FormControlType;
   text?: string;
-  cellLink?: { sheetId: SheetId; row: Row; column: Column };
-  inputRange?: RangeRef;
-  value: string | number | boolean | null;
   enabled: boolean;
-  style: {
-    fill: string;
-    border: string;
-    textColor: string;
-    fontSize?: number;
-  };
+  style: FormControlStyle;
+}
+
+interface FormControlLinkedBase extends FormControlBase {
+  cellLink?: FormControlCellLink;
+}
+
+export interface ButtonFormControlPayload extends FormControlBase {
+  controlType: 'button';
+  value: null;
+  action: FormControlAction;
+}
+
+export interface SpinButtonFormControlPayload extends FormControlLinkedBase {
+  controlType: 'spin-button';
+  value: number;
+  minValue: number;
+  maxValue: number;
+  step: number;
+}
+
+export interface ListBoxFormControlPayload extends FormControlLinkedBase {
+  controlType: 'list-box';
+  value: string | null;
+  inputRange: RangeRef;
+  selectionType: 'single' | 'multiple';
+  selectedIndices: number[];
+}
+
+export interface ComboBoxFormControlPayload extends FormControlLinkedBase {
+  controlType: 'combo-box';
+  value: string | null;
+  inputRange: RangeRef;
+  dropDownLines: number;
+}
+
+export interface CheckboxFormControlPayload extends FormControlLinkedBase {
+  controlType: 'checkbox';
+  value: boolean;
+}
+
+export interface OptionButtonFormControlPayload extends FormControlLinkedBase {
+  controlType: 'option-button';
+  value: boolean;
+  groupId?: string;
+}
+
+export interface GroupBoxFormControlPayload extends FormControlBase {
+  controlType: 'group-box';
+  value: null;
+  groupId: string;
+}
+
+export interface LabelFormControlPayload extends FormControlBase {
+  controlType: 'label';
+  value: null;
+}
+
+export interface ScrollbarFormControlPayload extends FormControlLinkedBase {
+  controlType: 'scrollbar';
+  value: number;
+  minValue: number;
+  maxValue: number;
+  step: number;
+  pageChange: number;
+}
+
+export type FormControlDrawingPayload =
+  | ButtonFormControlPayload
+  | SpinButtonFormControlPayload
+  | ListBoxFormControlPayload
+  | ComboBoxFormControlPayload
+  | CheckboxFormControlPayload
+  | OptionButtonFormControlPayload
+  | GroupBoxFormControlPayload
+  | LabelFormControlPayload
+  | ScrollbarFormControlPayload;
+
+const isFormPayloadRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isRangeRef = (value: unknown): value is RangeRef => {
+  if (!isFormPayloadRecord(value)) return false;
+  const startRow = value.startRow as number;
+  const endRow = value.endRow as number;
+  const startColumn = value.startColumn as number;
+  const endColumn = value.endColumn as number;
+  return typeof value.sheetId === 'string' && value.sheetId.length > 0
+    && Number.isSafeInteger(startRow) && Number.isSafeInteger(endRow)
+    && Number.isSafeInteger(startColumn) && Number.isSafeInteger(endColumn)
+    && startRow >= 0 && endRow >= startRow
+    && startColumn >= 0 && endColumn >= startColumn;
+};
+const isCellLink = (value: unknown): value is FormControlCellLink => {
+  if (!isFormPayloadRecord(value)) return false;
+  const row = value.row as number;
+  const column = value.column as number;
+  return typeof value.sheetId === 'string' && value.sheetId.length > 0
+    && Number.isSafeInteger(row) && Number.isSafeInteger(column)
+    && row >= 0 && column >= 0;
+};
+
+/** Canonical runtime validator shared by drawing storage and form-control commands. */
+export function isFormControlDrawingPayload(value: unknown): value is FormControlDrawingPayload {
+  if (!isFormPayloadRecord(value) || value.kind !== 'form-control' || typeof value.controlType !== 'string'
+    || typeof value.enabled !== 'boolean' || !isFormPayloadRecord(value.style)
+    || typeof value.style.fill !== 'string' || typeof value.style.border !== 'string' || typeof value.style.textColor !== 'string'
+    || (value.style.fontSize !== undefined && (!isFiniteNumber(value.style.fontSize) || value.style.fontSize <= 0))) return false;
+  if (value.text !== undefined && typeof value.text !== 'string') return false;
+  if (value.cellLink !== undefined && !isCellLink(value.cellLink)) return false;
+  switch (value.controlType) {
+    case 'button':
+      return value.value === null && isFormPayloadRecord(value.action) && value.action.kind === 'event'
+        && typeof value.action.eventId === 'string' && value.action.eventId.length > 0
+        && value.cellLink === undefined;
+    case 'spin-button':
+      return isFiniteNumber(value.value) && isFiniteNumber(value.minValue) && isFiniteNumber(value.maxValue)
+        && isFiniteNumber(value.step) && (value.minValue as number) <= (value.maxValue as number) && (value.step as number) > 0
+        && (value.value as number) >= (value.minValue as number) && (value.value as number) <= (value.maxValue as number);
+    case 'scrollbar':
+      return isFiniteNumber(value.value) && isFiniteNumber(value.minValue) && isFiniteNumber(value.maxValue)
+        && isFiniteNumber(value.step) && isFiniteNumber(value.pageChange) && (value.minValue as number) <= (value.maxValue as number)
+        && (value.step as number) > 0 && (value.pageChange as number) > 0 && (value.value as number) >= (value.minValue as number) && (value.value as number) <= (value.maxValue as number);
+    case 'list-box': {
+      if ((value.value !== null && typeof value.value !== 'string') || !isRangeRef(value.inputRange)
+        || !['single', 'multiple'].includes(String(value.selectionType)) || !Array.isArray(value.selectedIndices)) return false;
+      if (!value.selectedIndices.every((index) => Number.isSafeInteger(index) && index >= 0)) return false;
+      return value.selectionType === 'multiple' || value.selectedIndices.length <= 1;
+    }
+    case 'combo-box':
+      return (value.value === null || typeof value.value === 'string') && isRangeRef(value.inputRange)
+        && Number.isSafeInteger(value.dropDownLines) && (value.dropDownLines as number) >= 1 && (value.dropDownLines as number) <= 100;
+    case 'checkbox':
+      return typeof value.value === 'boolean';
+    case 'option-button':
+      return typeof value.value === 'boolean' && (value.groupId === undefined || (typeof value.groupId === 'string' && value.groupId.length > 0));
+    case 'group-box':
+      return value.value === null && typeof value.groupId === 'string' && value.groupId.length > 0 && value.cellLink === undefined;
+    case 'label':
+      return value.value === null && value.cellLink === undefined;
+    default:
+      return false;
+  }
 }
 
 export type P1ChartType =
