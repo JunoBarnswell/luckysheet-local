@@ -293,7 +293,7 @@ public class MutationDescriptorRegistry {
             List<RangeRef> ranges = new ArrayList<>();
             RangeRef target = SnapshotMutationSupport.matrixRange(root, mutation.sheetId(), params);
             if (target != null) ranges.add(target);
-            if ("range.paste".equals(id()) && params.path("clearSource").asBoolean(false)) ranges.add(SnapshotMutationSupport.range(root, params.get("sourceRange")));
+            if ("range.paste".equals(id()) && params.path("clearSource").asBoolean(false)) ranges.add(requireBoundedSourceRange(root, params));
             return List.copyOf(ranges);
         }
 
@@ -317,7 +317,7 @@ public class MutationDescriptorRegistry {
         private void writeRange(ObjectNode root, ObjectNode targetSheet, String sheetId, ObjectNode params, boolean supportsCut) {
             SnapshotMutationSupport.Matrix matrix = SnapshotMutationSupport.matrix(root, sheetId, params);
             if (supportsCut && params.path("clearSource").asBoolean(false)) {
-                RangeRef source = SnapshotMutationSupport.range(root, params.get("sourceRange"));
+                RangeRef source = requireBoundedSourceRange(root, params);
                 SnapshotMutationSupport.clearCells(SnapshotMutationSupport.sheet(root, source.sheetId()), source);
             }
             for (int rowOffset = 0; rowOffset < matrix.values().size(); rowOffset++) {
@@ -402,6 +402,12 @@ public class MutationDescriptorRegistry {
             RangeRef range = SnapshotMutationSupport.range(root, params.get("range"));
             SnapshotMutationSupport.requireSheet(range, sheetId);
             if (SnapshotMutationSupport.cellCount(range) > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Range is too large");
+            return range;
+        }
+
+        private RangeRef requireBoundedSourceRange(ObjectNode root, ObjectNode params) {
+            RangeRef range = SnapshotMutationSupport.range(root, params.get("sourceRange"));
+            if (SnapshotMutationSupport.cellCount(range) > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste source range is too large");
             return range;
         }
     }
