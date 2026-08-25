@@ -221,7 +221,8 @@ describe('native PivotGridProjection contract', () => {
     const workbook = new WorkbookModel('pivot-local-name', 'Pivot Local Name');
     const local = workbook.addSheet('sheet-2', 'Sheet 2');
     workbook.setDefinedName({ name: 'SalesData', formula: '=Sheet1!A1:B2', scope: 'sheet', sheetId: 'sheet-1' });
-    workbook.setDefinedName({ name: 'SalesData', formula: "='Sheet 2'!C1:D2", scope: 'sheet', sheetId: local.id });
+    workbook.setDefinedName({ name: 'SalesData', formula: '=C1:D2', scope: 'sheet', sheetId: local.id });
+    workbook.setDefinedName({ name: 'WorkbookOnly', formula: '=Sheet1!A1:B2', scope: 'workbook' });
     const implicitLocal: PivotModel = {
       schema: 'PivotDefinition',
       id: 'pivot-implicit-local',
@@ -235,6 +236,9 @@ describe('native PivotGridProjection contract', () => {
 
     const scoped: PivotModel = { ...implicitLocal, id: 'pivot-scoped-local', source: { kind: 'named-range', name: 'SalesData', sheetId: local.id } };
     assert.deepEqual(getPivotSourceRanges(workbook, scoped)[0], { sheetId: local.id, startRow: 0, endRow: 1, startColumn: 2, endColumn: 3 });
+
+    const incorrectlyScopedGlobal: PivotModel = { ...implicitLocal, id: 'pivot-incorrectly-scoped-global', source: { kind: 'named-range', name: 'WorkbookOnly', sheetId: local.id } };
+    assert.throws(() => getPivotSourceRanges(workbook, incorrectlyScopedGlobal), /Unknown named range/);
   });
 
   it('fails closed when a Pivot source intersects a blocked spill', () => {
