@@ -1,4 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
+import { WorkbookModel } from '@react-sheets/core-model';
 import type {
   PivotAggregateFunction,
   PivotDefinition,
@@ -33,6 +34,30 @@ export interface PivotUpdateParams {
   refreshPolicy?: PivotDefinition['refreshPolicy'];
   nativeMetadata?: PivotDefinition['nativeMetadata'];
   layout?: PivotLayout;
+}
+
+export type PivotCreateDestination =
+  | {
+    kind: 'new-sheet';
+    sheetId: string;
+    name: string;
+    rowCount?: number;
+    columnCount?: number;
+  }
+  | {
+    kind: 'existing-sheet';
+    sheetId: string;
+  };
+
+/**
+ * The only command contract for creating a PivotTable.  A new destination
+ * worksheet is part of this command rather than a preceding sheet command so
+ * the runtime can record, publish, and roll back the complete operation as one
+ * root transaction.
+ */
+export interface PivotCreateParams {
+  pivot: PivotModel;
+  destination: PivotCreateDestination;
 }
 
 export interface PivotLayoutCommandParams {
@@ -243,6 +268,16 @@ const isPivotModel = (value: unknown): value is PivotModel => isRecord(value)
     && Number.isSafeInteger(value.target.anchor.column) && Number(value.target.anchor.column) >= 0
   && isRecord(value.fieldCatalog) && Array.isArray(value.fieldCatalog.fields)
   && isRecord(value.refreshPolicy) && ['manual', 'on-open', 'on-change'].includes(String(value.refreshPolicy.mode));
+const isPivotCreateDestination = (value: unknown): value is PivotCreateDestination => {
+  if (!isRecord(value) || !isNonEmptyString(value.kind) || !isNonEmptyString(value.sheetId)) return false;
+  if (value.kind === 'existing-sheet') return Object.keys(value).every((key) => key === 'kind' || key === 'sheetId');
+  if (value.kind !== 'new-sheet' || !isNonEmptyString(value.name)) return false;
+  return (value.rowCount === undefined || (Number.isSafeInteger(value.rowCount) && Number(value.rowCount) > 0))
+    && (value.columnCount === undefined || (Number.isSafeInteger(value.columnCount) && Number(value.columnCount) > 0));
+};
+const isPivotCreate = (value: unknown): value is PivotCreateParams => isRecord(value)
+  && isPivotModel(value.pivot)
+  && isPivotCreateDestination(value.destination);
 const isPivotUpdate = (value: unknown): value is PivotUpdateParams => isRecord(value)
   && isNonEmptyString(value.sheetId) && isNonEmptyString(value.pivotId)
   && (value.source === undefined || isPivotSource(value.source))
@@ -268,6 +303,86 @@ function pivotMutationRanges(value: unknown): RangeRef[] {
   }
   if (isRecord(value) && isNonEmptyString(value.sheetId)) return sheetRange(value.sheetId);
   return [];
+}
+
+interface PivotCreatePlan {
+  pivot: PivotModel;
+  destination: PivotCreateDestination;
+  affectedRanges: RangeRef[];
+}
+
+function assertPivotSourceHeaders(workbook: WorkbookModel, pivot: PivotModel): void {
+  const ranges = getPivotSourceRanges(workbook, pivot);
+  for (const range of ranges) {
+    const sheet = workbook.getSheet(range.sheetId);
+    const names = new Set<string>();
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const raw = sheet.cells.get(range.startRow, column)?.formulaValue ?? sheet.cells.get(range.startRow, column)?.value;
+      const name = raw == null ? '' : String(raw).trim();
+      if (!name) throw new Error(`Pivot source header is blank at ${range.sheetId}:${range.startRow}:${column}`);
+      const key = name.toLocaleLowerCase();
+      if (names.has(key)) throw new Error(`Pivot source header is duplicated: ${name}`);
+      names.add(key);
+    }
+  }
+}
+
+function assertPivotCreateIdentity(workbook: WorkbookModel, params: PivotCreateParams): void {
+  if (workbook.getSheets().some((sheet) => sheet.pivots.some((pivot) => pivot.id === params.pivot.id))) {
+    throw new Error(`Pivot already exists: ${params.pivot.id}`);
+  }
+  if (params.destination.kind === 'existing-sheet') {
+    if (params.pivot.target.sheetId !== params.destination.sheetId) throw new Error('Pivot destination sheet does not match the target');
+    workbook.getSheet(params.destination.sheetId);
+    return;
+  }
+  if (params.pivot.target.sheetId !== params.destination.sheetId) throw new Error('Pivot destination sheet does not match the target');
+  if (!params.destination.sheetId.trim()) throw new Error('Pivot destination sheet id is required');
+  const name = params.destination.name.trim();
+  if (!name) throw new Error('Pivot destination sheet name is required');
+  const folded = name.toLocaleLowerCase();
+  if (workbook.sheets.has(params.destination.sheetId)) throw new Error(`Sheet already exists: ${params.destination.sheetId}`);
+  if (workbook.getSheets().some((sheet) => sheet.name.trim().toLocaleLowerCase() === folded)) {
+    throw new Error(`Sheet name already exists: ${name}`);
+  }
+  const dimensions: Array<readonly [string, number | undefined]> = [
+    ['rowCount', params.destination.rowCount],
+    ['columnCount', params.destination.columnCount],
+  ];
+  for (const [key, value] of dimensions) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) throw new Error(`Pivot destination ${key} is invalid`);
+  }
+}
+
+/** Build and validate the complete create operation without touching the live workbook. */
+function planPivotCreate(workbook: WorkbookModel, params: PivotCreateParams): PivotCreatePlan {
+  if (!isPivotCreate(params)) throw new Error('Invalid pivot.create payload');
+  assertPivotCreateIdentity(workbook, params);
+
+  const preflight = WorkbookModel.fromSnapshot(workbook.snapshot());
+  if (params.destination.kind === 'new-sheet') {
+    preflight.addSheet(
+      params.destination.sheetId,
+      params.destination.name.trim(),
+      params.destination.rowCount,
+      params.destination.columnCount,
+    );
+  }
+  const candidate = structuredClone(params.pivot);
+  assertPivotDefinition(preflight, candidate);
+  assertPivotSourceHeaders(preflight, candidate);
+  const canonical = structuredClone(normalizePivotDefinition(preflight, candidate));
+  if (canonical.fieldCatalog.fields.length === 0) throw new Error('PivotTable source does not contain usable fields');
+  assertPivotDefinition(preflight, canonical);
+  const projection = buildPivotGridProjection(preflight, canonical);
+  if (projection.collision.status === 'collision') {
+    throw new Error(`Pivot target collision: ${projection.collision.reasons.join(', ')}`);
+  }
+  return {
+    pivot: canonical,
+    destination: structuredClone(params.destination),
+    affectedRanges: sheetRange(canonical.target.sheetId),
+  };
 }
 
 function applyPivotAdd(context: CommandContext, params: PivotModel): void {
@@ -344,6 +459,61 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     },
   });
   commandIds.push('pivot.add');
+
+  runtime.registry.registerCommand<PivotCreateParams>({
+    id: 'pivot.create',
+    execute: (params, context) => {
+      const plan = planPivotCreate(context.workbook, params);
+      const { pivot, destination, affectedRanges } = plan;
+      if (destination.kind === 'new-sheet') {
+        const sheetParams = {
+          id: destination.sheetId,
+          name: destination.name.trim(),
+          ...(destination.rowCount === undefined ? {} : { rowCount: destination.rowCount }),
+          ...(destination.columnCount === undefined ? {} : { columnCount: destination.columnCount }),
+        };
+        context.applyMutation({
+          id: 'sheet.add',
+          unitId: context.workbook.unitId,
+          sheetId: destination.sheetId,
+          params: sheetParams,
+          affectedRanges: [],
+          inverse: [{
+            id: 'sheet.remove',
+            unitId: context.workbook.unitId,
+            sheetId: destination.sheetId,
+            params: { id: destination.sheetId },
+            affectedRanges: [],
+          }],
+          apply: () => {
+            context.workbook.addSheet(
+              sheetParams.id,
+              sheetParams.name,
+              sheetParams.rowCount,
+              sheetParams.columnCount,
+            );
+          },
+        });
+      }
+      context.applyMutation({
+        id: 'pivot.add',
+        unitId: context.workbook.unitId,
+        sheetId: pivot.target.sheetId,
+        params: structuredClone(pivot),
+        affectedRanges,
+        inverse: [{
+          id: 'pivot.remove',
+          unitId: context.workbook.unitId,
+          sheetId: pivot.target.sheetId,
+          params: pivot.id,
+          affectedRanges,
+        }],
+        apply: () => applyPivotAdd(context, structuredClone(pivot)),
+      });
+      return { operationId: context.operationId, mutationCount: destination.kind === 'new-sheet' ? 2 : 1, affectedRanges };
+    },
+  });
+  commandIds.push('pivot.create');
 
   runtime.registry.registerCommand<string | { sheetId: string; pivotId: string }>({
     id: 'pivot.remove',

@@ -46,6 +46,59 @@ function seed(app: WorkbookSession): { sheetId: string; pivot: PivotModel } {
 }
 
 describe('WorkbookSession PivotTable integration', () => {
+  it('creates a new worksheet and PivotTable as one history entry', () => {
+    const app = new WorkbookSession();
+    const { sheetId } = seed(app);
+    app.runCommand('selection.set', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }],
+      primaryRangeIndex: 0,
+      activeCell: { row: 0, column: 0 },
+      anchorCell: { row: 0, column: 0 },
+    });
+    const beforeHistory = app.getUiSnapshot().historyEntries.length;
+    const pivotId = app.createPivotTable({ destination: { kind: 'new-sheet' } });
+    assert.ok(pivotId);
+    const createdSheetId = app.getActiveSheetId();
+    assert.notEqual(createdSheetId, sheetId);
+    assert.equal(app.getUiSnapshot().historyEntries.length, beforeHistory + 1);
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots[0]?.id, pivotId);
+
+    app.undo();
+    assert.equal(app.getUiSnapshot().sheets.some((sheet) => sheet.id === createdSheetId), false);
+    app.redo();
+    const restoredSheet = app.getUiSnapshot().sheets.find((sheet) => sheet.id === createdSheetId);
+    assert.ok(restoredSheet);
+    assert.equal(restoredSheet.pivots[0]?.id, pivotId);
+  });
+
+  it('leaves workbook and history unchanged when create preflight rejects duplicate headers', () => {
+    const app = new WorkbookSession();
+    const { sheetId } = seed(app);
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 'Region' } });
+    const before = app.getUiSnapshot();
+    const pivotId = app.createPivotTable({ destination: { kind: 'new-sheet' } });
+    assert.equal(pivotId, undefined);
+    const after = app.getUiSnapshot();
+    assert.equal(after.sheets.length, before.sheets.length);
+    assert.equal(after.historyEntries.length, before.historyEntries.length);
+    assert.equal(after.notice, 'Pivot source header is duplicated: Region');
+  });
+
+  it('rejects PivotTable creation for a viewer before any worksheet mutation', () => {
+    const app = new WorkbookSession();
+    const { sheetId } = seed(app);
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
+    const before = app.getUiSnapshot();
+    assert.equal(app.createPivotTable({ destination: { kind: 'new-sheet' } }), undefined);
+    const after = app.getUiSnapshot();
+    assert.equal(after.sheets.length, before.sheets.length);
+    assert.equal(after.historyEntries.length, before.historyEntries.length);
+    assert.match(after.notice, /cannot perform|Permission denied/);
+    assert.equal(sheetId, app.getActiveSheetId());
+  });
+
   it('addPivot computes a local result tree', () => {
     const app = new WorkbookSession();
     const { pivot } = seed(app);

@@ -41,9 +41,28 @@ export const PERMISSION_EXEMPT_COMMAND_PREFIXES = [
 ] as const;
 
 export function inferAffectedRanges(commandId: string, params: unknown, sheetId: string): RangeRef[] {
-  void commandId;
   const p = params as Record<string, unknown> | null;
   if (!p) return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
+  if (commandId === 'pivot.create' && p.pivot && typeof p.pivot === 'object' && !Array.isArray(p.pivot)) {
+    const target = (p.pivot as Record<string, unknown>).target;
+    if (target && typeof target === 'object' && !Array.isArray(target)) {
+      const targetRecord = target as Record<string, unknown>;
+      const anchor = targetRecord.anchor;
+      if (typeof targetRecord.sheetId === 'string' && anchor && typeof anchor === 'object' && !Array.isArray(anchor)) {
+        const point = anchor as Record<string, unknown>;
+        if (Number.isSafeInteger(point.row) && Number.isSafeInteger(point.column)
+          && Number(point.row) >= 0 && Number(point.column) >= 0) {
+          return [{
+            sheetId: targetRecord.sheetId,
+            startRow: Number(point.row),
+            endRow: Number(point.row),
+            startColumn: Number(point.column),
+            endColumn: Number(point.column),
+          }];
+        }
+      }
+    }
+  }
   if (typeof p.row === 'number' && typeof p.column === 'number') {
     return [{ sheetId, startRow: p.row, endRow: p.row, startColumn: p.column, endColumn: p.column }];
   }

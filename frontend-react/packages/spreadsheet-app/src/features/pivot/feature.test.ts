@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
+import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerPivotFeature } from './index';
 import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
 import { computePivotResult, getPivotRevisionKey } from './engine';
@@ -20,6 +21,71 @@ function pivotDefinition(): ReturnType<typeof buildPivotModel> {
 }
 
 describe('pivot feature contract', () => {
+  it('creates a new destination worksheet and PivotTable in one reversible transaction', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerPivotFeature(runtime);
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    pivot.id = 'pivot-create';
+    pivot.target = { sheetId: 'pivot-sheet', anchor: { row: 0, column: 0 } };
+
+    const result = runtime.execute('pivot.create', {
+      pivot,
+      destination: { kind: 'new-sheet', sheetId: 'pivot-sheet', name: 'Pivot Output' },
+    });
+    assert.equal(result.mutationCount, 2);
+    assert.equal(runtime.getUndoEntries().length, 1);
+    assert.equal(workbook.getSheet('pivot-sheet').pivots[0]?.id, 'pivot-create');
+    assert.equal(runtime.undo(), true);
+    assert.equal(workbook.sheets.has('pivot-sheet'), false);
+    assert.equal(runtime.redo(), true);
+    assert.equal(workbook.getSheet('pivot-sheet').pivots[0]?.id, 'pivot-create');
+    assert.equal(runtime.getUndoEntries().length, 1);
+  });
+
+  it('rejects invalid create plans before the destination worksheet mutation', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const source = workbook.getSheet('source-2');
+    source.cells.set(0, 1, { value: 'Region' });
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerPivotFeature(runtime);
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    pivot.id = 'pivot-invalid-create';
+    pivot.target = { sheetId: 'pivot-invalid-sheet', anchor: { row: 0, column: 0 } };
+    const before = workbook.snapshot();
+    assert.throws(() => runtime.execute('pivot.create', {
+      pivot,
+      destination: { kind: 'new-sheet', sheetId: 'pivot-invalid-sheet', name: 'Pivot Invalid' },
+    }), /duplicated/);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.equal(runtime.getUndoEntries().length, 0);
+  });
+
+  it('rolls back the destination worksheet when a later mutation listener fails', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerPivotFeature(runtime);
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    pivot.id = 'pivot-injected-failure';
+    pivot.target = { sheetId: 'pivot-failure-sheet', anchor: { row: 0, column: 0 } };
+    runtime.onMutation((mutation, source) => {
+      if (source === 'command' && mutation.id === 'pivot.add') throw new Error('Injected pivot create failure');
+    });
+    const before = workbook.snapshot();
+    assert.throws(() => runtime.execute('pivot.create', {
+      pivot,
+      destination: { kind: 'new-sheet', sheetId: 'pivot-failure-sheet', name: 'Pivot Failure' },
+    }), /Injected pivot create failure/);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.equal(runtime.getUndoEntries().length, 0);
+  });
+
   it('keeps display sheet and cross-sheet source distinct', () => {
     const workbook = seedCrossSheetWorkbook();
     const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-1', { sheetId: 'source-2', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 });
