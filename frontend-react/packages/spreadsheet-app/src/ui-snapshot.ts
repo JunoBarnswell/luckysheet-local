@@ -53,6 +53,7 @@ import {
   resolveEffectiveFilterVisual,
   validateDataInput,
   type FilterDateSystem,
+  type FilterDateContext,
   type FilterDomainDescriptor,
   type ConditionalOverlay,
   type FilterButtonCell,
@@ -247,12 +248,13 @@ export function buildCanvasSheetSnapshot(
   dataContent: ReadonlyMap<string, DataSourceContentQuery> = new Map(),
   dateSystem: FilterDateSystem = '1900',
   pivotErrors: Readonly<Record<string, string>> = {},
+  dateContext?: FilterDateContext,
 ): CanvasSheetSnapshot {
   const overlays = computeConditionalOverlays(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
   const readFilterCell = (row: number, column: number) => cellResolver.resolve(sheet, row, column)?.cell;
   const filterVisual = createEffectiveFilterVisualResolver(overlays);
-  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual);
+  const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
   const hiddenRows = new Set<number>([...sheet.hiddenRows, ...filterHidden, ...outlineHiddenRows]);
@@ -392,9 +394,9 @@ export function buildCanvasSheetSnapshot(
     activeFilterColumns,
     filterButtons,
     filterButtonStates: resolveFilterButtonStates(sheet),
-    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
-    getFilterDomainDescriptor: (column) => getAutoFilterDomainDescriptor(sheet, column, readFilterCell, dateSystem, filterVisual),
-    getFilterDateDomain: (column) => getAutoFilterDateDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
+    getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem, filterVisual, dateContext),
+    getFilterDomainDescriptor: (column) => getAutoFilterDomainDescriptor(sheet, column, readFilterCell, dateSystem, filterVisual, dateContext),
+    getFilterDateDomain: (column) => getAutoFilterDateDomain(sheet, column, readFilterCell, dateSystem, filterVisual, dateContext),
     getFilterOwner: (column) => resolveFilterOwner(sheet, column),
     getActiveAutoFilter: (column) => {
       const filter = resolveActiveAutoFilter(sheet, column);

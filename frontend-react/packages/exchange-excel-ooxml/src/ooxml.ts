@@ -18,7 +18,19 @@ import type {
   WorksheetPane,
 } from '@react-sheets/core-model';
 import { assertCanonicalWorkbookSnapshot, createPivotMemberKey, isDynamicFilterType, pivotSourceIdentity } from '@react-sheets/core-model';
-import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
+import {
+  canonicalExcelDateDayOfWeek,
+  canonicalExcelDateFromParts,
+  canonicalExcelDateFromValue,
+  canonicalExcelDateFromUtcDate,
+  canonicalExcelDateToUtcDate,
+  shiftCanonicalExcelDate,
+  type CanonicalExcelDate,
+  type CanonicalExcelDateParts,
+  formatFormula,
+  offsetAst,
+  parseFormula,
+} from '@react-sheets/formula-engine';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import {
   child,
@@ -86,6 +98,8 @@ export interface ParsedOpcPackageGraph {
 export interface ParseLoadedXlsxOptions {
   fontMeasurer?: OoxmlFontMeasurer;
   workbookName?: string;
+  /** Required when an imported AutoFilter contains a dynamic date criterion. */
+  canonicalReferenceDate?: CanonicalExcelDateParts;
 }
 
 interface StyleRecord {
@@ -216,7 +230,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
-  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles));
+  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
@@ -421,6 +435,7 @@ function parseSheet(
   pkg: OpcPackageGraph,
   sharedStrings: SharedStringRecord[],
   styles: StyleContext,
+  canonicalReferenceDate?: CanonicalExcelDateParts,
 ): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
   const root = firstElement(parseXml(xml), 'worksheet');
@@ -492,13 +507,16 @@ function parseSheet(
     ...(autoFilter ? [autoFilter] : []),
     ...sheetTables.flatMap((table) => table.autoFilter ? [table.autoFilter] : []),
   ];
+  if (importedFilters.some((filter) => Object.values(filter.columns).some((column) => column.criterion?.kind === 'dynamic')) && !canonicalReferenceDate) {
+    throw new Error('Dynamic date AutoFilter requires an explicit canonical workbook reference date');
+  }
   materializeFilterMetadata(cells, descriptor.id, importedFilters, conditionalFormats);
   const filterOwnedRows = new Set<number>();
   for (const filter of importedFilters) {
     const table = sheetTables.find((candidate) => candidate.autoFilter === filter);
     const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
     for (const row of hiddenRows) {
-      if (row <= filter.range.startRow || row > endRow || !filterRowMatches(cells, filter, row, pkg.dateSystem)) continue;
+      if (row <= filter.range.startRow || row > endRow || !filterRowMatches(cells, filter, row, pkg.dateSystem, canonicalReferenceDate)) continue;
       filterOwnedRows.add(row);
     }
   }
@@ -548,6 +566,7 @@ function filterRowMatches(
   filter: AutoFilterModel,
   row: number,
   dateSystem: DateSystem,
+  canonicalReferenceDate?: CanonicalExcelDateParts,
 ): boolean {
   for (const column of Object.values(filter.columns)) {
     const criterion = column.criterion;
@@ -558,13 +577,13 @@ function filterRowMatches(
     if (criterion.kind === 'values') {
       const valueMatches = criterion.values.some((candidate) => String(candidate ?? '').toLocaleLowerCase() === text.toLocaleLowerCase())
         || (text === '' && criterion.includeBlank);
-      const dateMatches = (criterion.dateGroups ?? []).some((group) => dateMatchesGroup(toFilterDate(value, text, dateSystem), group));
+      const dateMatches = (criterion.dateGroups ?? []).some((group) => dateMatchesGroup(toFilterDate(value, dateSystem), group));
       if (!valueMatches && !dateMatches) return false;
     } else if (criterion.kind === 'custom') {
       const results = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition)).map((condition) => compareFilterText(text, String(condition.value ?? ''), condition.operator));
       if (criterion.join === 'and' ? !results.every(Boolean) : !results.some(Boolean)) return false;
     } else if (criterion.kind === 'dynamic') {
-      if (!matchesDynamicFilter(toFilterDate(value, text, dateSystem), criterion.type)) return false;
+      if (!matchesDynamicFilter(toFilterDate(value, dateSystem), criterion.type, dateSystem, canonicalReferenceDate)) return false;
     } else if (criterion.kind === 'top10') {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return false;
@@ -606,39 +625,45 @@ function compareFilterText(text: string, operand: string, operator: string): boo
   }
 }
 
-function dateMatchesGroup(date: Date | null, group: { year: number; month?: number; day?: number; hour?: number; minute?: number; second?: number }): boolean {
-  return Boolean(date) && date!.getFullYear() === group.year
-    && (group.month === undefined || date!.getMonth() + 1 === group.month)
-    && (group.day === undefined || date!.getDate() === group.day)
-    && (group.hour === undefined || date!.getHours() === group.hour)
-    && (group.minute === undefined || date!.getMinutes() === group.minute)
-    && (group.second === undefined || date!.getSeconds() === group.second);
+function dateMatchesGroup(date: CanonicalExcelDate | null, group: { year: number; month?: number; day?: number; hour?: number; minute?: number; second?: number }): boolean {
+  return Boolean(date) && date!.year === group.year
+    && (group.month === undefined || date!.month === group.month)
+    && (group.day === undefined || date!.day === group.day)
+    && (group.hour === undefined || date!.hour === group.hour)
+    && (group.minute === undefined || date!.minute === group.minute)
+    && (group.second === undefined || date!.second === group.second);
 }
 
-function toFilterDate(value: unknown, text: string, dateSystem: DateSystem): Date | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
-    return new Date(epoch + value * 24 * 60 * 60 * 1000);
-  }
-  const timestamp = Date.parse(String(value ?? text));
-  return Number.isNaN(timestamp) ? null : new Date(timestamp);
+function toFilterDate(value: unknown, dateSystem: DateSystem): CanonicalExcelDate | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Filter date serial must be finite');
+  return canonicalExcelDateFromValue(value, dateSystem);
 }
 
-function matchesDynamicFilter(date: Date | null, type: import('@react-sheets/core-model').DynamicFilterType): boolean {
+function matchesDynamicFilter(date: CanonicalExcelDate | null, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: DateSystem, canonicalReferenceDate?: CanonicalExcelDateParts): boolean {
   if (!date) return false;
-  const today = new Date();
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const day = 24 * 60 * 60 * 1000;
-  const monday = new Date(start); monday.setDate(start.getDate() - ((start.getDay() + 6) % 7));
-  const ranges: Record<import('@react-sheets/core-model').DynamicFilterType, [Date, Date]> = {
-    today: [start, new Date(start.getTime() + day)], yesterday: [new Date(start.getTime() - day), start], tomorrow: [new Date(start.getTime() + day), new Date(start.getTime() + 2 * day)],
-    thisWeek: [monday, new Date(monday.getTime() + 7 * day)], lastWeek: [new Date(monday.getTime() - 7 * day), monday], nextWeek: [new Date(monday.getTime() + 7 * day), new Date(monday.getTime() + 14 * day)],
-    thisMonth: [new Date(start.getFullYear(), start.getMonth(), 1), new Date(start.getFullYear(), start.getMonth() + 1, 1)], lastMonth: [new Date(start.getFullYear(), start.getMonth() - 1, 1), new Date(start.getFullYear(), start.getMonth(), 1)], nextMonth: [new Date(start.getFullYear(), start.getMonth() + 1, 1), new Date(start.getFullYear(), start.getMonth() + 2, 1)],
-    thisQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 3, 1)], lastQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 - 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3, 1)], nextQuarter: [new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 3, 1), new Date(start.getFullYear(), Math.floor(start.getMonth() / 3) * 3 + 6, 1)],
-    thisYear: [new Date(start.getFullYear(), 0, 1), new Date(start.getFullYear() + 1, 0, 1)], lastYear: [new Date(start.getFullYear() - 1, 0, 1), new Date(start.getFullYear(), 0, 1)], nextYear: [new Date(start.getFullYear() + 1, 0, 1), new Date(start.getFullYear() + 2, 0, 1)], yearToDate: [new Date(start.getFullYear(), 0, 1), new Date(start.getTime() + day)],
+  if (!canonicalReferenceDate) throw new Error('Dynamic date AutoFilter requires an explicit canonical workbook reference date');
+  const today = canonicalExcelDateFromParts({ ...canonicalReferenceDate, hour: 0, minute: 0, second: 0, millisecond: 0 }, dateSystem);
+  const monday = shiftCanonicalExcelDate(today, -((canonicalExcelDateDayOfWeek(today) + 6) % 7), dateSystem);
+  const startOfMonth = monthBoundary(today, 0, dateSystem);
+  const startOfQuarter = monthBoundary(today, -((today.month - 1) % 3), dateSystem);
+  const startOfYear = monthBoundary(today, -(today.month - 1), dateSystem);
+  const ranges: Record<import('@react-sheets/core-model').DynamicFilterType, [CanonicalExcelDate, CanonicalExcelDate]> = {
+    today: [today, shiftCanonicalExcelDate(today, 1, dateSystem)], yesterday: [shiftCanonicalExcelDate(today, -1, dateSystem), today], tomorrow: [shiftCanonicalExcelDate(today, 1, dateSystem), shiftCanonicalExcelDate(today, 2, dateSystem)],
+    thisWeek: [monday, shiftCanonicalExcelDate(monday, 7, dateSystem)], lastWeek: [shiftCanonicalExcelDate(monday, -7, dateSystem), monday], nextWeek: [shiftCanonicalExcelDate(monday, 7, dateSystem), shiftCanonicalExcelDate(monday, 14, dateSystem)],
+    thisMonth: [startOfMonth, monthBoundary(startOfMonth, 1, dateSystem)], lastMonth: [monthBoundary(startOfMonth, -1, dateSystem), startOfMonth], nextMonth: [monthBoundary(startOfMonth, 1, dateSystem), monthBoundary(startOfMonth, 2, dateSystem)],
+    thisQuarter: [startOfQuarter, monthBoundary(startOfQuarter, 3, dateSystem)], lastQuarter: [monthBoundary(startOfQuarter, -3, dateSystem), startOfQuarter], nextQuarter: [monthBoundary(startOfQuarter, 3, dateSystem), monthBoundary(startOfQuarter, 6, dateSystem)],
+    thisYear: [startOfYear, monthBoundary(startOfYear, 12, dateSystem)], lastYear: [monthBoundary(startOfYear, -12, dateSystem), startOfYear], nextYear: [monthBoundary(startOfYear, 12, dateSystem), monthBoundary(startOfYear, 24, dateSystem)], yearToDate: [startOfYear, shiftCanonicalExcelDate(today, 1, dateSystem)],
   };
   const [from, to] = ranges[type];
-  return date >= from && date < to;
+  return date.serial >= from.serial && date.serial < to.serial;
+}
+
+function monthBoundary(value: CanonicalExcelDate, offset: number, dateSystem: DateSystem): CanonicalExcelDate {
+  const date = canonicalExcelDateToUtcDate(value);
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + offset);
+  return canonicalExcelDateFromUtcDate(date, dateSystem);
 }
 
 function materializeFilterMetadata(

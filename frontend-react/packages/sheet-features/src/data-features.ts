@@ -14,6 +14,7 @@ import type {
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
 import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType } from "@react-sheets/core-model";
+import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
@@ -393,12 +394,13 @@ function hasCanonicalDateNumberFormat(cell: CellData | undefined): boolean {
   return /(^|[^a-z])(?:d{1,4}|m{1,4}|y{2,4}|h{1,2}|s{1,2})(?:[^a-z]|$)/i.test(format);
 }
 
-function canonicalFilterDate(cell: CellData | undefined, dateSystem: FilterDateSystem): Date | null {
+function canonicalFilterDate(cell: CellData | undefined, dateSystem: FilterDateSystem): import('@react-sheets/formula-engine').CanonicalExcelDate | null {
   const value = resolvedFilterScalar(cell);
-  if (typeof value !== 'number' || !Number.isFinite(value) || !hasCanonicalDateNumberFormat(cell)) return null;
-  const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
-  const date = new Date(epoch + value * 24 * 60 * 60 * 1000);
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !hasCanonicalDateNumberFormat(cell)) return null;
+    return canonicalExcelDateFromValue(value, dateSystem);
+  }
+  return null;
 }
 
 function numericOf(cell: CellData | undefined): number | undefined {
@@ -673,6 +675,7 @@ export function normalizeAutoFilterModel(filter: AutoFilterModel): AutoFilterMod
 
 export type FilterCellReader = (row: number, column: number) => CellData | undefined;
 export type FilterDateSystem = '1900' | '1904';
+export interface FilterDateContext { referenceDate: CanonicalExcelDateParts; }
 
 export type FilterScalarType = 'blank' | 'text' | 'number' | 'boolean' | 'date';
 export type FilterFamily = 'values' | 'text' | 'number' | 'date' | 'color' | 'icon';
@@ -728,6 +731,7 @@ export function computeFilterHiddenRows(
   readCell: FilterCellReader = (row, column) => sheet.cells.get(row, column),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
+  dateContext?: FilterDateContext,
 ): Set<number> {
   const hidden = new Set<number>();
   const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
@@ -746,14 +750,14 @@ export function computeFilterHiddenRows(
       && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
     const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
     const rows = Array.from({ length: Math.max(0, endRow - filter.range.startRow) }, (_, index) => filter.range.startRow + 1 + index);
-    const top10Matches = buildTop10Matches(filter, rows, readCell, dateSystem, resolveVisual);
+    const top10Matches = buildTop10Matches(filter, rows, readCell, dateSystem, resolveVisual, dateContext);
     for (const row of rows) {
       const visible = Object.values(filter.columns).every((entry) => {
         const criterion = entry.criterion;
         if (!criterion) return true;
         const cell = readCell(row, entry.column);
         if (criterion.kind === 'top10') return top10Matches.get(entry.column)?.has(row) ?? false;
-        return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+        return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
       });
       if (!visible) hidden.add(row);
     }
@@ -772,6 +776,7 @@ export function getAutoFilterScalarDomain(
   readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
+  dateContext?: FilterDateContext,
 ): FilterScalar[] {
   const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
   const filter = resolveAutoFilters(sheet)
@@ -787,7 +792,7 @@ export function getAutoFilterScalarDomain(
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
       const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
     });
     if (!otherColumnsMatch) continue;
     const cell = readCell(row, column);
@@ -803,8 +808,9 @@ export function getAutoFilterValueDomain(
   readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
+  dateContext?: FilterDateContext,
 ): string[] {
-  return getAutoFilterScalarDomain(sheet, column, readCell, dateSystem, visualResolver).map(filterScalarText);
+  return getAutoFilterScalarDomain(sheet, column, readCell, dateSystem, visualResolver, dateContext).map(filterScalarText);
 }
 
 function filterScalarText(value: FilterScalar): string {
@@ -837,6 +843,7 @@ export function getAutoFilterDateDomain(
   readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
+  dateContext?: FilterDateContext,
 ): FilterDateDomainEntry[] {
   const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
   const filter = resolveAutoFilters(sheet)
@@ -852,14 +859,14 @@ export function getAutoFilterDateDomain(
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
       const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell), dateContext);
     });
     if (!otherColumnsMatch) continue;
     const cell = readCell(row, column);
     const value = resolvedFilterScalar(cell);
     const date = canonicalFilterDate(cell, dateSystem);
     if (!date) continue;
-    const group = { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate(), hour: date.getHours(), minute: date.getMinutes(), second: date.getSeconds() };
+    const group = { year: date.year, month: date.month, day: date.day, hour: date.hour, minute: date.minute, second: date.second };
     const key = `${JSON.stringify(value)}|${JSON.stringify(group)}`;
     entries.set(key, { value: value as FilterScalar, group });
   }
@@ -923,9 +930,10 @@ export function getAutoFilterDomainDescriptor(
   readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
+  dateContext?: FilterDateContext,
 ): FilterDomainDescriptor {
-  const values = getAutoFilterScalarDomain(sheet, column, readCell, dateSystem, visualResolver);
-  const dateDomain = getAutoFilterDateDomain(sheet, column, readCell, dateSystem, visualResolver);
+  const values = getAutoFilterScalarDomain(sheet, column, readCell, dateSystem, visualResolver, dateContext);
+  const dateDomain = getAutoFilterDateDomain(sheet, column, readCell, dateSystem, visualResolver, dateContext);
   const colorDomain = getAutoFilterColorDomain(sheet, column, readCell, dateSystem, visualResolver);
   const iconDomain = getAutoFilterIconDomain(sheet, column, readCell, dateSystem, visualResolver);
   const dateValueKeys = new Set(dateDomain.map((entry) => JSON.stringify(entry.value)));
@@ -1026,6 +1034,7 @@ function matchesFilterCriterion(
   cell?: CellData,
   dateSystem: FilterDateSystem = '1900',
   visual?: EffectiveFilterVisual,
+  dateContext?: FilterDateContext,
 ): boolean {
   if (criterion.kind === 'values') {
     if (criterion.dateGroups?.length) {
@@ -1040,7 +1049,7 @@ function matchesFilterCriterion(
       .map((condition) => evaluateFilterCondition(text, condition.operator, String(condition.value ?? '')));
     return criterion.join === 'and' ? results.every(Boolean) : results.some(Boolean);
   }
-  if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem, cell);
+  if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem, cell, dateContext);
   if (criterion.kind === 'top10') return true;
   if (criterion.kind === 'color' || criterion.kind === 'icon') {
     const effective = visual ?? resolveEffectiveFilterVisual(cell);
@@ -1059,13 +1068,13 @@ function colorsEqual(left: string | undefined, right: string): boolean {
   return left !== undefined && left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
 }
 
-function dateMatchesGroup(date: Date, group: import('@react-sheets/core-model').DateGroupItem): boolean {
-  return date.getFullYear() === group.year
-    && (group.month === undefined || date.getMonth() + 1 === group.month)
-    && (group.day === undefined || date.getDate() === group.day)
-    && (group.hour === undefined || date.getHours() === group.hour)
-    && (group.minute === undefined || date.getMinutes() === group.minute)
-    && (group.second === undefined || date.getSeconds() === group.second);
+function dateMatchesGroup(date: import('@react-sheets/formula-engine').CanonicalExcelDate, group: import('@react-sheets/core-model').DateGroupItem): boolean {
+  return date.year === group.year
+    && (group.month === undefined || date.month === group.month)
+    && (group.day === undefined || date.day === group.day)
+    && (group.hour === undefined || date.hour === group.hour)
+    && (group.minute === undefined || date.minute === group.minute)
+    && (group.second === undefined || date.second === group.second);
 }
 
 function buildTop10Matches(
@@ -1074,6 +1083,7 @@ function buildTop10Matches(
   readCell: FilterCellReader,
   dateSystem: FilterDateSystem,
   visualResolver: FilterVisualResolver,
+  dateContext?: FilterDateContext,
 ): Map<number, Set<number>> {
   const result = new Map<number, Set<number>>();
   for (const entry of Object.values(filter.columns)) {
@@ -1084,7 +1094,7 @@ function buildTop10Matches(
       const cell = readCell(row, other.column);
       return other.criterion.kind === 'top10'
         ? true
-        : matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell));
+        : matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell), dateContext);
     }));
     const numeric = eligible
       .map((row) => {
@@ -1110,40 +1120,33 @@ function numericFilterValue(value: unknown, text: string): number | null {
   return Number.isFinite(parsed) && text.trim() !== '' ? parsed : null;
 }
 
-function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: FilterDateSystem, cell?: CellData): boolean {
+function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: FilterDateSystem, cell?: CellData, dateContext?: FilterDateContext): boolean {
   void value;
   void text;
   const date = canonicalFilterDate(cell, dateSystem);
   if (!date) return false;
-  const now = new Date();
-  const startOfDay = (candidate: Date): Date => new Date(candidate.getFullYear(), candidate.getMonth(), candidate.getDate());
-  const today = startOfDay(now);
-  const day = 24 * 60 * 60 * 1000;
-  const startOfWeek = new Date(today);
-  startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
-  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const startOfQuarter = new Date(today.getFullYear(), Math.floor(today.getMonth() / 3) * 3, 1);
-  const startOfYear = new Date(today.getFullYear(), 0, 1);
-  const ranges: Record<import('@react-sheets/core-model').DynamicFilterType, [Date, Date]> = {
-    today: [today, new Date(today.getTime() + day)],
-    yesterday: [new Date(today.getTime() - day), today],
-    tomorrow: [new Date(today.getTime() + day), new Date(today.getTime() + 2 * day)],
-    thisWeek: [startOfWeek, new Date(startOfWeek.getTime() + 7 * day)],
-    lastWeek: [new Date(startOfWeek.getTime() - 7 * day), startOfWeek],
-    nextWeek: [new Date(startOfWeek.getTime() + 7 * day), new Date(startOfWeek.getTime() + 14 * day)],
-    thisMonth: [startOfMonth, new Date(today.getFullYear(), today.getMonth() + 1, 1)],
-    lastMonth: [new Date(today.getFullYear(), today.getMonth() - 1, 1), startOfMonth],
-    nextMonth: [new Date(today.getFullYear(), today.getMonth() + 1, 1), new Date(today.getFullYear(), today.getMonth() + 2, 1)],
-    thisQuarter: [startOfQuarter, new Date(today.getFullYear(), startOfQuarter.getMonth() + 3, 1)],
-    lastQuarter: [new Date(today.getFullYear(), startOfQuarter.getMonth() - 3, 1), startOfQuarter],
-    nextQuarter: [new Date(today.getFullYear(), startOfQuarter.getMonth() + 3, 1), new Date(today.getFullYear(), startOfQuarter.getMonth() + 6, 1)],
-    thisYear: [startOfYear, new Date(today.getFullYear() + 1, 0, 1)],
-    lastYear: [new Date(today.getFullYear() - 1, 0, 1), startOfYear],
-    nextYear: [new Date(today.getFullYear() + 1, 0, 1), new Date(today.getFullYear() + 2, 0, 1)],
-    yearToDate: [startOfYear, new Date(today.getTime() + day)],
+  if (!dateContext) throw new Error('Dynamic date filter requires an explicit canonical workbook reference date');
+  const today = canonicalExcelDateFromParts({ ...dateContext.referenceDate, hour: 0, minute: 0, second: 0, millisecond: 0 }, dateSystem);
+  const startOfWeek = shiftCanonicalExcelDate(today, -((canonicalExcelDateDayOfWeek(today) + 6) % 7), dateSystem);
+  const startOfMonth = monthBoundary(today, 0, dateSystem);
+  const startOfQuarter = monthBoundary(today, -((today.month - 1) % 3), dateSystem);
+  const startOfYear = monthBoundary(today, -(today.month - 1), dateSystem);
+  const ranges: Record<import('@react-sheets/core-model').DynamicFilterType, [CanonicalExcelDate, CanonicalExcelDate]> = {
+    today: [today, shiftCanonicalExcelDate(today, 1, dateSystem)], yesterday: [shiftCanonicalExcelDate(today, -1, dateSystem), today], tomorrow: [shiftCanonicalExcelDate(today, 1, dateSystem), shiftCanonicalExcelDate(today, 2, dateSystem)],
+    thisWeek: [startOfWeek, shiftCanonicalExcelDate(startOfWeek, 7, dateSystem)], lastWeek: [shiftCanonicalExcelDate(startOfWeek, -7, dateSystem), startOfWeek], nextWeek: [shiftCanonicalExcelDate(startOfWeek, 7, dateSystem), shiftCanonicalExcelDate(startOfWeek, 14, dateSystem)],
+    thisMonth: [startOfMonth, monthBoundary(startOfMonth, 1, dateSystem)], lastMonth: [monthBoundary(startOfMonth, -1, dateSystem), startOfMonth], nextMonth: [monthBoundary(startOfMonth, 1, dateSystem), monthBoundary(startOfMonth, 2, dateSystem)],
+    thisQuarter: [startOfQuarter, monthBoundary(startOfQuarter, 3, dateSystem)], lastQuarter: [monthBoundary(startOfQuarter, -3, dateSystem), startOfQuarter], nextQuarter: [monthBoundary(startOfQuarter, 3, dateSystem), monthBoundary(startOfQuarter, 6, dateSystem)],
+    thisYear: [startOfYear, monthBoundary(startOfYear, 12, dateSystem)], lastYear: [monthBoundary(startOfYear, -12, dateSystem), startOfYear], nextYear: [monthBoundary(startOfYear, 12, dateSystem), monthBoundary(startOfYear, 24, dateSystem)], yearToDate: [startOfYear, shiftCanonicalExcelDate(today, 1, dateSystem)],
   };
   const [start, end] = ranges[type];
-  return date >= start && date < end;
+  return date.serial >= start.serial && date.serial < end.serial;
+}
+
+function monthBoundary(value: CanonicalExcelDate, offset: number, dateSystem: FilterDateSystem): CanonicalExcelDate {
+  const date = canonicalExcelDateToUtcDate(value);
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + offset);
+  return canonicalExcelDateFromUtcDate(date, dateSystem);
 }
 
 function evaluateFilterCondition(text: string, operator: string, operand: string, operand2?: string): boolean {

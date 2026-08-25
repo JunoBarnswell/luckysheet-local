@@ -1,4 +1,5 @@
 import type { FormulaValue } from '../values';
+import type { FormulaEvaluationContext } from '../evaluator';
 import { mathFunctions } from './math';
 import { statisticalFunctions } from './statistical';
 import { logicalFunctions } from './logical';
@@ -9,7 +10,9 @@ import { informationFunctions } from './information';
 import { extendedMatrixFunctions } from './extended-matrix';
 import { dynamicArrayFunctions } from './dynamic-array';
 
-export const BUILTIN_FUNCTIONS: Record<string, (args: FormulaValue[]) => FormulaValue> = {
+export type BuiltinFunction = (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue;
+
+export const BUILTIN_FUNCTIONS: Record<string, BuiltinFunction> = {
   ...mathFunctions,
   ...statisticalFunctions,
   ...logicalFunctions,
@@ -42,7 +45,7 @@ export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new
   }),
 );
 
-export function getBuiltinFunction(name: string): ((args: FormulaValue[]) => FormulaValue) | undefined {
+export function getBuiltinFunction(name: string): BuiltinFunction | undefined {
   return BUILTIN_FUNCTIONS[name.trim().toUpperCase()];
 }
 

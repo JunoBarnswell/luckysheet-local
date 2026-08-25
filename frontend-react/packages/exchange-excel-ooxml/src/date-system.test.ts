@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalDateToSerial, dateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate, serialToExcelDate } from './date-system';
+import { canonicalDateToSerial, canonicalExcelDateFromSerial, dateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate, serialToExcelDate } from './date-system';
 
 test('1900 date system serial round-trip', () => {
   const date = new Date(Date.UTC(2024, 0, 1));
@@ -34,4 +34,12 @@ test('date system and date format parsing fail closed', () => {
   assert.equal(isExcelDateFormat('yyyy-mm-dd'), true);
   assert.equal(isExcelDateFormat('0.00'), false);
   assert.throws(() => canonicalDateToSerial('2024-01-01', '1900'), /UTC ISO/);
+});
+
+test('canonical serial parts are timezone-independent for both workbook calendars', () => {
+  assert.deepEqual(canonicalExcelDateFromSerial(59, '1900'), { system: '1900', serial: 59, year: 1900, month: 2, day: 28, hour: 0, minute: 0, second: 0, millisecond: 0 });
+  assert.deepEqual(canonicalExcelDateFromSerial(61.5, '1900'), { system: '1900', serial: 61.5, year: 1900, month: 3, day: 1, hour: 12, minute: 0, second: 0, millisecond: 0 });
+  assert.deepEqual(canonicalExcelDateFromSerial(0.25, '1904'), { system: '1904', serial: 0.25, year: 1904, month: 1, day: 1, hour: 6, minute: 0, second: 0, millisecond: 0 });
+  assert.throws(() => canonicalExcelDateFromSerial(60, '1900'), /non-existent/);
+  assert.throws(() => canonicalExcelDateFromSerial(Number.NaN, '1900'), /finite/);
 });

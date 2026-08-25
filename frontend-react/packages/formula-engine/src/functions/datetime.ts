@@ -1,121 +1,53 @@
-import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
+import { createFormulaError, type FormulaValue } from '../values';
+import {
+  canonicalExcelDateFromParts,
+  canonicalExcelDateFromSerial,
+  canonicalExcelDateFromUtcDate,
+  canonicalExcelDateFromValue,
+  canonicalExcelDateToSerial,
+  type CanonicalExcelDate,
+  type ExcelDateEvaluationContext,
+} from '../excel-date';
 
-function parseDateInput(val: FormulaValue | undefined): Date | null {
-  if (val === undefined || val === null) return null;
-  if (val instanceof Date) return val;
-  if (typeof val === 'number') {
-    // Excel serial date: 1 = Jan 1, 1900, 25569 = Jan 1, 1970 UTC
-    const ms = Math.round((val - 25569) * 86400 * 1000);
-    return new Date(ms);
-  }
-  if (typeof val === 'string') {
-    const d = new Date(val);
-    if (!Number.isNaN(d.getTime())) return d;
-  }
+function parseDateInput(value: FormulaValue | undefined, context?: ExcelDateEvaluationContext): CanonicalExcelDate | null {
+  if (value === undefined || value === null) return null;
+  const system = context?.dateSystem ?? '1900';
+  if (value instanceof Date) return canonicalExcelDateFromUtcDate(value, system);
+  if (typeof value === 'number') return canonicalExcelDateFromSerial(value, system);
+  if (typeof value === 'string') return canonicalExcelDateFromValue(value, system);
   return null;
 }
 
-function toSerialDate(date: Date): number {
-  const ms = date.getTime();
-  return ms / (86400 * 1000) + 25569;
+function error(error: unknown, fallback: string): ReturnType<typeof createFormulaError> {
+  return createFormulaError('#VALUE!', error instanceof Error ? error.message : fallback);
 }
 
-export const datetimeFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
-  DATE: (args) => {
-    const year = Number(args[0]);
-    const month = Number(args[1]);
-    const day = Number(args[2]);
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
-      return createFormulaError('#VALUE!', 'Invalid date parameters');
-    }
-    const d = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-    return Math.round(toSerialDate(d));
+export const datetimeFunctions: Record<string, (args: FormulaValue[], context?: ExcelDateEvaluationContext) => FormulaValue> = {
+  DATE: (args, context) => {
+    const year = Number(args[0]); const month = Number(args[1]); const day = Number(args[2]);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return createFormulaError('#VALUE!', 'Invalid date parameters');
+    try { const system = context?.dateSystem ?? '1900'; return Math.round(canonicalExcelDateToSerial(canonicalExcelDateFromParts({ year, month, day, hour: 0, minute: 0, second: 0, millisecond: 0 }, system), system)); }
+    catch (cause) { return error(cause, 'Invalid date parameters'); }
   },
-
-  DATEVALUE: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Cannot parse date in DATEVALUE');
-    return Math.floor(toSerialDate(d));
+  DATEVALUE: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? Math.floor(date.serial) : createFormulaError('#VALUE!', 'Cannot parse date in DATEVALUE'); } catch (cause) { return error(cause, 'Cannot parse date in DATEVALUE'); } },
+  DAY: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.day : createFormulaError('#VALUE!', 'Invalid date in DAY'); } catch (cause) { return error(cause, 'Invalid date in DAY'); } },
+  MONTH: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.month : createFormulaError('#VALUE!', 'Invalid date in MONTH'); } catch (cause) { return error(cause, 'Invalid date in MONTH'); } },
+  YEAR: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.year : createFormulaError('#VALUE!', 'Invalid date in YEAR'); } catch (cause) { return error(cause, 'Invalid date in YEAR'); } },
+  HOUR: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.hour : createFormulaError('#VALUE!', 'Invalid date in HOUR'); } catch (cause) { return error(cause, 'Invalid date in HOUR'); } },
+  MINUTE: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.minute : createFormulaError('#VALUE!', 'Invalid date in MINUTE'); } catch (cause) { return error(cause, 'Invalid date in MINUTE'); } },
+  SECOND: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.second : createFormulaError('#VALUE!', 'Invalid date in SECOND'); } catch (cause) { return error(cause, 'Invalid date in SECOND'); } },
+  TODAY: (_args, context) => {
+    if (!context?.canonicalReferenceDate) return createFormulaError('#VALUE!', 'TODAY requires an explicit canonical workbook reference date');
+    try { const system = context.dateSystem ?? '1900'; return Math.floor(canonicalExcelDateToSerial(canonicalExcelDateFromParts({ ...context.canonicalReferenceDate, hour: 0, minute: 0, second: 0, millisecond: 0 }, system), system)); }
+    catch (cause) { return error(cause, 'Invalid canonical workbook reference date'); }
   },
-
-  DAY: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in DAY');
-    return d.getUTCDate();
+  NOW: (_args, context) => {
+    if (!context?.canonicalReferenceDate) return createFormulaError('#VALUE!', 'NOW requires an explicit canonical workbook reference date');
+    try { const system = context.dateSystem ?? '1900'; return canonicalExcelDateToSerial(canonicalExcelDateFromParts(context.canonicalReferenceDate, system), system); }
+    catch (cause) { return error(cause, 'Invalid canonical workbook reference date'); }
   },
-
-  MONTH: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in MONTH');
-    return d.getUTCMonth() + 1;
-  },
-
-  YEAR: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in YEAR');
-    return d.getUTCFullYear();
-  },
-
-  HOUR: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in HOUR');
-    return d.getUTCHours();
-  },
-
-  MINUTE: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in MINUTE');
-    return d.getUTCMinutes();
-  },
-
-  SECOND: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in SECOND');
-    return d.getUTCSeconds();
-  },
-
-  TODAY: () => {
-    const now = new Date();
-    const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    return Math.round(toSerialDate(d));
-  },
-
-  NOW: () => {
-    return toSerialDate(new Date());
-  },
-
-  WEEKDAY: (args) => {
-    const d = parseDateInput(args[0]);
-    if (!d) return createFormulaError('#VALUE!', 'Invalid date in WEEKDAY');
-    const returnType = args[1] !== undefined ? Number(args[1]) : 1;
-    const day = d.getUTCDay(); // 0 = Sunday, 1 = Monday ... 6 = Saturday
-    if (returnType === 1) return day + 1; // 1 = Sun, 7 = Sat
-    if (returnType === 2) return day === 0 ? 7 : day; // 1 = Mon, 7 = Sun
-    if (returnType === 3) return day === 0 ? 6 : day - 1; // 0 = Mon, 6 = Sun
-    return day + 1;
-  },
-
-  EDATE: (args) => {
-    const d = parseDateInput(args[0]);
-    const months = Number(args[1]);
-    if (!d || Number.isNaN(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EDATE');
-    const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, d.getUTCDate()));
-    return Math.round(toSerialDate(next));
-  },
-
-  EOMONTH: (args) => {
-    const d = parseDateInput(args[0]);
-    const months = Number(args[1]);
-    if (!d || Number.isNaN(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EOMONTH');
-    const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months + 1, 0));
-    return Math.round(toSerialDate(next));
-  },
-
-  DAYS: (args) => {
-    const end = parseDateInput(args[0]);
-    const start = parseDateInput(args[1]);
-    if (!end || !start) return createFormulaError('#VALUE!', 'Invalid dates in DAYS');
-    const diff = end.getTime() - start.getTime();
-    return Math.round(diff / (86400 * 1000));
-  },
+  WEEKDAY: (args, context) => { try { const date = parseDateInput(args[0], context); if (!date) return createFormulaError('#VALUE!', 'Invalid date in WEEKDAY'); const day = new Date(Date.UTC(2000, date.month - 1, date.day)).getUTCDay(); const returnType = args[1] === undefined ? 1 : Number(args[1]); if (returnType === 1) return day + 1; if (returnType === 2) return day === 0 ? 7 : day; if (returnType === 3) return day === 0 ? 6 : day - 1; return day + 1; } catch (cause) { return error(cause, 'Invalid date in WEEKDAY'); } },
+  EDATE: (args, context) => { try { const date = parseDateInput(args[0], context); const months = Number(args[1]); if (!date || !Number.isFinite(months) || !Number.isInteger(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EDATE'); const utc = new Date(Date.UTC(2000, date.month - 1 + months, date.day, date.hour, date.minute, date.second, date.millisecond)); utc.setUTCFullYear(date.year); return Math.round(canonicalExcelDateFromUtcDate(utc, date.system).serial); } catch (cause) { return error(cause, 'Invalid arguments in EDATE'); } },
+  EOMONTH: (args, context) => { try { const date = parseDateInput(args[0], context); const months = Number(args[1]); if (!date || !Number.isFinite(months) || !Number.isInteger(months)) return createFormulaError('#VALUE!', 'Invalid arguments in EOMONTH'); const utc = new Date(Date.UTC(2000, date.month + months, 0)); utc.setUTCFullYear(date.year); return Math.round(canonicalExcelDateFromUtcDate(utc, date.system).serial); } catch (cause) { return error(cause, 'Invalid arguments in EOMONTH'); } },
+  DAYS: (args, context) => { try { const end = parseDateInput(args[0], context); const start = parseDateInput(args[1], context); if (!end || !start || end.system !== start.system) return createFormulaError('#VALUE!', 'Invalid dates in DAYS'); return Math.round(end.serial - start.serial); } catch (cause) { return error(cause, 'Invalid dates in DAYS'); } },
 };

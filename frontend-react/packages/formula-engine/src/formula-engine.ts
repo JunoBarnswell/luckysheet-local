@@ -15,6 +15,7 @@ import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type
 import { normalizeDefinedNameModels, normalizeDefinedNames, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
+import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import {
   assertCalculationTaskRequest,
   InlineCalculationTaskPort,
@@ -77,6 +78,8 @@ export interface RecalculationReport {
 export interface FormulaEngineOptions {
   readonly defaultSheetId?: string;
   readonly recalculationMode?: RecalculationMode;
+  readonly dateSystem?: ExcelDateSystem;
+  readonly canonicalReferenceDate?: CanonicalExcelDateParts;
 }
 
 export interface CalculationTaskPortOptions {
@@ -114,12 +117,16 @@ export class FormulaEngine {
   private activeTaskId: string | null = null;
   private activeTaskPort: CalculationTaskPort | null = null;
   private defaultTaskPort: CalculationTaskPort | null = null;
+  private readonly dateSystem: ExcelDateSystem;
+  private readonly canonicalReferenceDate?: CanonicalExcelDateParts;
 
   private readonly cells = new Map<string, StoredCell>();
 
   constructor(options: FormulaEngineOptions = {}) {
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
     this.recalculationMode = options.recalculationMode ?? 'automatic';
+    this.dateSystem = options.dateSystem ?? '1900';
+    this.canonicalReferenceDate = options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined;
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -194,6 +201,10 @@ export class FormulaEngine {
 
   getRecalculationMode(): RecalculationMode {
     return this.recalculationMode;
+  }
+
+  getCanonicalReferenceDate(): CanonicalExcelDateParts | undefined {
+    return this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined;
   }
 
   /** Monotonic input/calculation generation used by derived consumers. */
@@ -462,6 +473,8 @@ export class FormulaEngine {
     try {
       trace = evaluateFormulaWithTrace(cell.ast, {
         currentCell: cell.address,
+        dateSystem: this.dateSystem,
+        canonicalReferenceDate: this.canonicalReferenceDate,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
@@ -835,6 +848,8 @@ export class FormulaEngine {
     try {
       value = evaluateFormula(cell.ast, {
         currentCell: cell.address,
+        dateSystem: this.dateSystem,
+        canonicalReferenceDate: this.canonicalReferenceDate,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),

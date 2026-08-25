@@ -864,6 +864,7 @@ export class WorkbookSession {
         this.runtime.dataContent,
         this.nativePackage?.dateSystem ?? '1900',
         this.runtime.pivotErrors,
+        this.runtime.formula.getCanonicalReferenceDate() ? { referenceDate: this.runtime.formula.getCanonicalReferenceDate()! } : undefined,
       );
       this.sheetProjectionCache.set(sheet.id, { generation: this.projectionGeneration, snapshot });
       return snapshot;
