@@ -81,6 +81,29 @@ describe('sparkline feature contract', () => {
     assert.throws(() => runtime.execute('sparkline.group.remove', { sheetId: 'sheet-1', groupId: 'missing' }), /Unknown sparkline group/);
   });
 
+  it('does not create history or mutation noise for a semantic no-op update', () => {
+    const { workbook, runtime } = register();
+    runtime.execute('sparkline.insertDataLocation', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-1',
+      dataRange: { sheetId: 'source-2', startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      location: { row: 1, column: 3 },
+      type: 'line',
+      highlightMax: true,
+      highlightMin: true,
+    });
+    const before = workbook.snapshot();
+    const beforeDepth = runtime.getHistoryDepth();
+    const result = runtime.execute('sparkline.update', {
+      sheetId: 'sheet-1',
+      sparklineId: 'spark-1',
+      patch: { highlightMax: true, highlightMin: true },
+    });
+    assert.equal(result.mutationCount, 0);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(runtime.getHistoryDepth(), beforeDepth);
+  });
+
   it('removing a grouped sparkline updates group membership and restores both on undo', () => {
     const { workbook, runtime } = register();
     runtime.execute('sparkline.insertDataLocation', {

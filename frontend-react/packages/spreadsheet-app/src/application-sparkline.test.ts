@@ -56,6 +56,39 @@ describe('WorkbookSession sparkline integration', () => {
     assert.equal(sparkline.anchor.column, 4);
   });
 
+  it('quick insertion is one history entry and restores complete style on Undo/Redo', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.range.set', {
+      sheetId,
+      startRow: 2,
+      startColumn: 1,
+      values: [[{ value: 4 }, { value: 6 }, { value: 8 }]],
+    });
+    app.runCommand('selection.set', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 2, endRow: 2, startColumn: 1, endColumn: 3 }],
+      primaryRangeIndex: 0,
+      activeCell: { row: 2, column: 1 },
+      anchorCell: { row: 2, column: 1 },
+    });
+    const beforeHistory = app.getUiSnapshot().historyEntries.length;
+    const sparklineId = app.insertSparkline('win-loss');
+    assert.ok(sparklineId);
+    const inserted = app.getUiSnapshot().selectedSheet.sparklines.find((entry) => entry.id === sparklineId);
+    assert.equal(inserted?.highlightMax, true);
+    assert.equal(inserted?.highlightMin, true);
+    assert.equal(app.getUiSnapshot().historyEntries.length, beforeHistory + 1);
+
+    app.undo();
+    assert.equal(app.getUiSnapshot().selectedSheet.sparklines.some((entry) => entry.id === sparklineId), false);
+    app.redo();
+    const restored = app.getUiSnapshot().selectedSheet.sparklines.find((entry) => entry.id === sparklineId);
+    assert.equal(restored?.type, 'win-loss');
+    assert.equal(restored?.highlightMax, true);
+    assert.equal(restored?.highlightMin, true);
+  });
+
   it('createSparklineGroup and updateSparklineGroup sync group settings', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
