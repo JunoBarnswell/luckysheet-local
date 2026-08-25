@@ -26,6 +26,7 @@ import type {
   PivotFieldDefinition,
   PivotModel,
   SparklineModel,
+  SparklineGroup,
   DefinedNameModel,
   DataRelationship,
   TableSheetDefinition,
@@ -109,6 +110,7 @@ export interface FeatureSidebarProps {
   onSaveDefinedName: (input: DefinedNameModel) => void;
   onRemoveDefinedName: (input: DefinedNameModel) => void;
   sparklines: SparklineModel[];
+  sparklineGroups: SparklineGroup[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
   historyEntries: readonly HistoryEntry[];
@@ -340,6 +342,7 @@ export function FeatureSidebar({
   onSaveDefinedName,
   onRemoveDefinedName,
   sparklines,
+  sparklineGroups,
   conditionalFormats,
   dataValidations,
   historyEntries,
@@ -598,10 +601,13 @@ export function FeatureSidebar({
         {phase === 'ready' && activePanel === 'sparkline' ? (
           <SparklinePanel
             sheetId={sheetId}
+            activeCell={activeCell}
             sparklines={sparklines}
+            sparklineGroups={sparklineGroups}
             defaultRange={selectionText}
             onAddSparkline={onAddSparkline}
             onRemoveSparkline={onRemoveSparkline}
+            onCommand={onCommand}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'conditionalFormat' ? (

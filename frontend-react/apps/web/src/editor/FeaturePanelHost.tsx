@@ -98,6 +98,7 @@ export function FeaturePanelHost({
           onSaveDefinedName={(input) => session.setDefinedName(input)}
           onRemoveDefinedName={(input) => session.removeDefinedName(input.name, input.scope, input.sheetId)}
           sparklines={state.selectedSheet.sparklines}
+          sparklineGroups={state.selectedSheet.sparklineGroups ?? []}
           conditionalFormats={state.selectedSheet.conditionalFormats}
           dataValidations={state.selectedSheet.dataValidations}
           historyEntries={state.historyEntries}

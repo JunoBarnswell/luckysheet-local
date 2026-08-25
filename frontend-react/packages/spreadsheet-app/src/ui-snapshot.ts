@@ -22,6 +22,7 @@ import type {
   RangeRef,
   TableSheetDefinition,
   SheetTableModel,
+  SparklineGroup,
   SparklineModel,
   WorkbookModel,
   WorksheetModel,
@@ -117,6 +118,7 @@ export interface CanvasSheetSnapshot {
   /** Derived worksheet overlay; never materialized in ordinary cells. */
   pivotProjections: Record<string, PivotGridProjection>;
   sparklines: SparklineModel[];
+  sparklineGroups?: SparklineGroup[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
   merges: MergeSpan[];
@@ -366,6 +368,7 @@ export function buildCanvasSheetSnapshot(
     pivotResults,
     pivotProjections,
     sparklines: [...sheet.sparklines],
+    sparklineGroups: structuredClone(sheet.sparklineGroups),
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
     merges: [...sheet.merges],

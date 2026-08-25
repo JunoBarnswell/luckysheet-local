@@ -538,17 +538,23 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     if (sheet.kind !== 'worksheet') return;
     const active = this.selectionService.getState().activeCell;
+    const sparkline = sheet.sparklines.find((entry) => entry.anchor.row === active.row && entry.anchor.column === active.column);
     const table = findSheetTableAt(sheet, active.row, active.column);
-    const next: ActiveContext = table
+    const next: ActiveContext = sparkline
+      ? { kind: 'sparkline', sheetId: sheet.id, sparklineId: sparkline.id }
+      : table
       ? { kind: 'table', sheetId: sheet.id, tableId: table.id }
       : { kind: 'none' };
     if (JSON.stringify(next) === JSON.stringify(this.activeContext)) return;
-    if (this.activeContext.kind !== 'none' && !['table'].includes(this.activeContext.kind)) return;
+    if (this.activeContext.kind !== 'none' && !['table', 'sparkline'].includes(this.activeContext.kind)) return;
     this.activeContext = next;
-    if (next.kind === 'table') {
+    if (next.kind === 'sparkline') {
+      this.panels = { ...this.panels, active: 'sparkline', open: true };
+      this.ribbonTab = 'sparklineDesign';
+    } else if (next.kind === 'table') {
       this.panels = { ...this.panels, active: 'data', open: true };
       this.ribbonTab = 'tableDesign';
-    } else if (this.ribbonTab === 'tableDesign') {
+    } else if (this.ribbonTab === 'tableDesign' || this.ribbonTab === 'sparklineDesign') {
       this.ribbonTab = 'home';
     }
   }
@@ -568,6 +574,7 @@ export class WorkbookSession {
       this.restorePersistedQuerySessions();
       this.ensureActiveSheetSession();
       this.reconcileDrawingSessionState();
+      this.syncTableContextFromSelection();
       this.runtime.formulaAudit.refresh();
       this.refresh();
     };
@@ -3005,7 +3012,7 @@ export class WorkbookSession {
       dataRange: RangeRef;
       location: { row: number; column: number };
       type?: SparklineModel['type'];
-    } & Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'groupId'>>,
+    } & Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId' | 'showAxis' | 'showMarkers'>>,
   ): string {
     const sparklineId = params.sparklineId;
     this.runCommand(

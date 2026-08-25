@@ -14,6 +14,8 @@ export interface SparklineInsertLocationParams {
   highlightFirst?: boolean;
   highlightLast?: boolean;
   highlightNegative?: boolean;
+  showAxis?: boolean;
+  showMarkers?: boolean;
 }
 
 export function buildSparklineInsertParams(sparkline: SparklineModel): { sheetId: string; sparkline: SparklineModel } {
@@ -29,7 +31,7 @@ export function buildSparklineDataLocationParams(
   dataRange: RangeRef,
   location: { row: number; column: number },
   type: SparklineModel['type'] = 'line',
-  options?: Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId'>>,
+  options?: Partial<Pick<SparklineModel, 'color' | 'negativeColor' | 'highlightMax' | 'highlightMin' | 'highlightFirst' | 'highlightLast' | 'highlightNegative' | 'groupId' | 'showAxis' | 'showMarkers'>>,
 ): SparklineInsertLocationParams {
   return {
     sheetId,
@@ -47,6 +49,8 @@ export function buildSparklineDataLocationParams(
     highlightFirst: options?.highlightFirst,
     highlightLast: options?.highlightLast,
     highlightNegative: options?.highlightNegative,
+    showAxis: options?.showAxis,
+    showMarkers: options?.showMarkers,
     groupId: options?.groupId,
   };
 }

@@ -153,6 +153,13 @@ describe('Ribbon UI command catalog', () => {
     assert.deepEqual(buildRibbonCommand('reportPagination', withReport), { type: 'intent', intent: { type: 'panel.open', panel: 'data' } });
   });
 
+  it('exposes Sparkline Design only for the selected sparkline anchor', () => {
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('sparklineDesign'), context()), false);
+    const withSparkline = context({ activeSparkline: { sheetId: 'sheet-1', sparklineId: 'spark-1' } });
+    assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('sparklineDesign'), withSparkline), true);
+    assert.deepEqual(buildRibbonCommand('sparklineDesign', withSparkline), { type: 'intent', intent: { type: 'panel.open', panel: 'sparkline' } });
+  });
+
   it('honors phase and permission context before building a command', () => {
     const disabled = context({ disabled: true });
     assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition('bold'), disabled), false);
