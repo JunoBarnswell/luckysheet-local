@@ -910,11 +910,15 @@ final class StructuralSnapshotReducer {
 
     private static void validatePermutationMetadataExact(ObjectNode sheet, RangeRef range, int[] rowMap) {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "drawings")) validateDrawingExact(requireObject(raw, "Drawing"), range);
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) requireSingleRange(requireObject(raw, "Sparkline").get("sourceRange"), range, rowMap, "sparkline source");
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "spillRanges")) requireSingleRange(requireObject(raw, "Spill range").get("range"), range, rowMap, "spill range");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) for (JsonNode item : requireObject(raw, "Conditional format").path("ranges")) remapRangeExact(item, range, rowMap);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) for (JsonNode item : requireObject(raw, "Data validation").path("ranges")) remapRangeExact(item, range, rowMap);
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) requireSingleRange(filter.get("range"), range, rowMap, "auto filter");
         for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) requireSingleRange(requireObject(table, "Sheet table").get("range"), range, rowMap, "sheet table");
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, rowMap, "pivot source"));
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, rowMap, "merge");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), range, rowMap, "protection rule");
     }
 
