@@ -123,6 +123,41 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void freezeSetAcceptsCanonicalPaneStates() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","pane":{"kind":"none"}}]}
+                """);
+
+        for (String pane : List.of(
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozenSplit\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20.5,\"ySplit\":10,\"startRow\":1,\"startColumn\":2}")) {
+            OperationMutation mutation = new OperationMutation("freeze.set", "sheet-1", mapper.readTree("{\"pane\":" + pane + "}"));
+            snapshot = registry.applyPublicMutations(snapshot, List.of(mutation));
+            assertEquals(mapper.readTree(pane), snapshot.path("sheets").get(0).path("pane"));
+        }
+    }
+
+    @Test
+    void freezeSetRejectsPaneStateThatWouldPoisonCanonicalSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","pane":{"kind":"none"}}]}
+                """);
+
+        for (String pane : List.of(
+                "{\"kind\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"split\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"split\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}")) {
+            OperationMutation mutation = new OperationMutation("freeze.set", "sheet-1", mapper.readTree("{\"pane\":" + pane + "}"));
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+            assertEquals("VALIDATION_ERROR", error.code());
+        }
+    }
+
+    @Test
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
