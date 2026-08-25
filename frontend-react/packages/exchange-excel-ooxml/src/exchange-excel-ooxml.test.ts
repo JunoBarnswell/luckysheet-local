@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, WorkbookModel } from '@react-sheets/core-model';
 import { exportXlsx } from './export';
 import { importXlsx } from './import';
 import { scanSnapshotFeatures } from './feature-scan';
@@ -200,6 +200,46 @@ describe('exchange-excel-ooxml', () => {
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(imported.sheets[0]?.pivots[0]?.source.kind, 'table');
     assert.deepEqual(imported.sheets[0]?.pivots[0]?.presentation, { styleName: 'PivotStyleMedium4', styleOptions: { showRowHeaders: false, showColumnHeaders: true, showRowStripes: true, showColumnStripes: true, showLastColumn: true } });
+  });
+
+  it('round-trips date, numeric and manual Pivot cache grouping through native fieldGroup metadata', () => {
+    const workbook = new WorkbookModel('wb-pivot-groups', 'Pivot Groups');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const rows = [
+      ['Date', 'Amount', 'Category'],
+      [45292, 10, 'A'],
+      [45323, 20, 'B'],
+      [45657, 30, 'C'],
+    ];
+    rows.forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'grouped-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 } }, target: { sheetId: sheet.id, anchor: { row: 6, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
+        { fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 0 },
+        { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 1 },
+        { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 2 },
+      ] },
+      layout: {
+        rows: [{ fieldId: 'date', group: { kind: 'date', unit: 'month', start: 45292, end: 45657 } }, { fieldId: 'category', group: { kind: 'manual', groups: [{ groupId: 'ab', name: 'AB', items: [createPivotMemberKey('A'), createPivotMemberKey('B')] }, { groupId: 'c', name: 'C', items: [createPivotMemberKey('C')] }] } }],
+        columns: [{ fieldId: 'amount', group: { kind: 'number', interval: 10, start: 0, end: 100 } }],
+        filters: [], values: [{ fieldId: 'amount', summarizeBy: 'sum' }], showSubtotals: true, showGrandTotals: true, compact: true, repeatLabels: false,
+      },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const cacheXml = strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
+    assert.match(cacheXml, /<fieldGroup base="0"><rangePr groupBy="months" startNum="45292" endNum="45657"\/>/);
+    assert.match(cacheXml, /<fieldGroup base="1"><rangePr groupBy="range" groupInterval="10" startNum="0" endNum="100"\/>/);
+    assert.match(cacheXml, /<fieldGroup base="2"><discretePr count="3"><x v="0"\/><x v="0"\/><x v="1"\/><\/discretePr><groupItems count="2"><s v="AB"\/><s v="C"\/><\/groupItems><\/fieldGroup>/);
+    const imported = parseLoadedXlsx(output).snapshot;
+    const pivot = imported.sheets[0]?.pivots[0];
+    assert.equal(pivot?.layout.rows[0]?.group?.kind, 'date');
+    assert.deepEqual(pivot?.layout.rows[0]?.group, { kind: 'date', unit: 'month', start: 45292, end: 45657 });
+    assert.deepEqual(pivot?.layout.columns[0]?.group, { kind: 'number', interval: 10, start: 0, end: 100 });
+    assert.deepEqual(pivot?.layout.rows[1]?.group, { kind: 'manual', groups: [
+      { groupId: 'native:cache:1:field:2:group:0', name: 'AB', items: [createPivotMemberKey('A'), createPivotMemberKey('B')] },
+      { groupId: 'native:cache:1:field:2:group:1', name: 'C', items: [createPivotMemberKey('C')] },
+    ] });
   });
 
   it('writes and validates canonical Slicer and Timeline native parts', async () => {

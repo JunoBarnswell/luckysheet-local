@@ -5,6 +5,7 @@ import type {
   PivotDefinition,
   PivotFieldDataType,
   PivotFieldPlacement,
+  PivotGroup,
   PivotLayout,
   PivotModel,
   PivotScalar,
@@ -21,6 +22,9 @@ import type {
   NativePivotCacheField,
   NativePivotControlDefinition,
   NativePivotDataField,
+  NativePivotFieldGroup,
+  NativePivotFieldRange,
+  NativePivotScalar,
   NativePivotGraph,
   NativePivotPackageUpdate,
   NativePivotSource,
@@ -363,9 +367,13 @@ export function mapNativePivotDefinition(
     };
   });
   const fieldId = (index: number): string => fields[index]?.fieldId ?? nativeFieldId(cache.cacheId, index);
+  const placement = (index: number): PivotFieldPlacement => {
+    const group = nativePivotGroup(cache.fields[index], cache, fieldId(index));
+    return { fieldId: fieldId(index), ...(group ? { group } : {}) };
+  };
   const layout: PivotLayout = {
-    rows: table.rowFields.map((index) => ({ fieldId: fieldId(index) })),
-    columns: table.columnFields.map((index) => ({ fieldId: fieldId(index) })),
+    rows: table.rowFields.map(placement),
+    columns: table.columnFields.map(placement),
     filters: table.pageFields.map((index) => ({ kind: 'manual' as const, fieldId: fieldId(index), mode: 'all' as const, memberKeys: [] })),
     values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
     showSubtotals: table.showSubtotals ?? true,
@@ -468,16 +476,31 @@ export function synchronizeNativePivotPackage(input: NativePivotPackageWriteInpu
       }
       continue;
     }
+    const cacheKey = `${sourceInfo.key}|${pivotGroupingKey(pivot)}`;
     let cache = pivot.nativeMetadata?.cacheId === undefined ? undefined : existingCaches.get(pivot.nativeMetadata.cacheId);
-    if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheBySource.get(sourceInfo.key);
+    if (!cache || cache.source.kind === 'unsupported' || nativeSourceKey(cache.source) !== sourceInfo.key) cache = cacheBySource.get(cacheKey);
     if (!cache) {
       cache = { cacheId: nextCacheId++, part: `xl/pivotCache/pivotCacheDefinition${partNumbers.cacheDefinition++}.xml`, recordsPart: `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`, source: sourceInfo.source, fields: [], refreshOnLoad: pivot.refreshPolicy.refreshOnLoad, refreshOnSave: pivot.refreshPolicy.mode === 'on-change', saveData: true, enableRefresh: true };
     }
     usedCaches.add(cache.cacheId);
-    cacheBySource.set(sourceInfo.key, cache);
+    cacheBySource.set(cacheKey, cache);
     const sourceRows = readSourceRows(sourceInfo.sheet, sourceInfo.range, pivot, sourceInfo.tableName);
     cache.source = sourceInfo.source;
-    cache.fields = sourceRows.fields.map((field, index) => ({ index, name: field.name, dataType: field.dataType, sharedItems: uniqueScalars(sourceRows.rows.map((row) => row[index] ?? null)) }));
+    const previousFields = cache.fields;
+    const groupedOrdinals = new Set([...pivot.layout.rows, ...pivot.layout.columns].flatMap((placement) => {
+      if (!placement.group) return [];
+      const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === placement.fieldId || candidate.name === placement.fieldId);
+      return field ? [field.ordinal] : [];
+    }));
+    cache.fields = sourceRows.fields.map((field, index) => ({
+      index,
+      name: field.name,
+      dataType: field.dataType,
+      sharedItems: uniqueScalars(sourceRows.rows.map((row) => row[index] ?? null)),
+      ...(previousFields[index]?.fieldGroup && (!nativePivotGroup(previousFields[index], cache, nativeFieldId(cache.cacheId, index)) || groupedOrdinals.has(index))
+        ? { fieldGroup: structuredClone(previousFields[index]!.fieldGroup) } : {}),
+    }));
+    applyCanonicalPivotGroups(cache, pivot);
     cache.recordCount = sourceRows.rows.length;
     cache.recordsPart ??= `xl/pivotCache/pivotCacheRecords${partNumbers.records++}.xml`;
     files[cache.part] = strToU8(buildCacheDefinitionXml(cache));
@@ -767,6 +790,10 @@ function normalizePivot(input: PivotModel): PivotDefinition | undefined {
   return structuredClone(input);
 }
 
+function pivotGroupingKey(pivot: PivotDefinition): string {
+  return JSON.stringify({ rows: pivot.layout.rows.map((placement) => placement.group ?? null), columns: pivot.layout.columns.map((placement) => placement.group ?? null) });
+}
+
 function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefinition, tableName?: string): { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] } {
   const fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }> = [];
   for (let column = range.startColumn; column <= range.endColumn; column += 1) {
@@ -780,6 +807,47 @@ function readSourceRows(sheet: SheetSnapshot, range: RangeRef, pivot: PivotDefin
     if (values.some((value) => value !== null)) rows.push(values);
   }
   return { fields, rows };
+}
+
+function applyCanonicalPivotGroups(cache: NativePivotCacheDefinition, pivot: PivotDefinition): void {
+  const placements = [...pivot.layout.rows, ...pivot.layout.columns];
+  for (const placement of placements) {
+    if (!placement.group) continue;
+    const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === placement.fieldId || candidate.name === placement.fieldId);
+    if (!field || !cache.fields[field.ordinal]) continue;
+    cache.fields[field.ordinal]!.fieldGroup = buildNativeFieldGroup(placement.group, field.ordinal, cache.fields[field.ordinal]!.sharedItems ?? []);
+  }
+}
+
+function buildNativeFieldGroup(group: PivotGroup, base: number, sharedItems: NativePivotScalar[]): NativePivotFieldGroup {
+  if (group.kind === 'date') {
+    const range: NativePivotFieldRange = {
+      groupBy: `${group.unit}s`,
+      ...(group.start === undefined ? {} : { start: group.start }),
+      ...(group.end === undefined ? {} : { end: group.end }),
+      ...(group.autoStart === undefined ? {} : { autoStart: group.autoStart }),
+      ...(group.autoEnd === undefined ? {} : { autoEnd: group.autoEnd }),
+    };
+    return { base, range };
+  }
+  if (group.kind === 'number') {
+    return {
+      base,
+      range: {
+        groupBy: 'range', interval: group.interval,
+        ...(group.start === undefined ? {} : { start: group.start }),
+        ...(group.end === undefined ? {} : { end: group.end }),
+        ...(group.autoStart === undefined ? {} : { autoStart: group.autoStart }),
+        ...(group.autoEnd === undefined ? {} : { autoEnd: group.autoEnd }),
+      },
+    };
+  }
+  const groupItems = group.groups.map((candidate) => candidate.name);
+  const groupByMember = new Map<string, number>();
+  group.groups.forEach((candidate, groupIndex) => candidate.items.forEach((item) => groupByMember.set(pivotMemberKey(item), groupIndex)));
+  const ungrouped = groupItems.length;
+  const discreteIndexes = sharedItems.map((value) => groupByMember.get(pivotMemberKey(createPivotMemberKey(value))) ?? ungrouped);
+  return { base, discreteIndexes, groupItems };
 }
 
 function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinition, part: string, sheetPart: string, old: NativePivotTableDefinition | undefined, source: { fields: Array<{ name: string; dataType: NativePivotCacheField['dataType'] }>; rows: PivotScalar[][] }): NativePivotTableDefinition {
@@ -830,10 +898,47 @@ function buildCacheDefinitionXml(cache: NativePivotCacheDefinition): string {
     const values = field.sharedItems ?? [];
     const contains = field.dataType === 'string' ? ' containsString="1"' : field.dataType === 'date' ? ' containsDate="1"' : field.dataType === 'number' ? ' containsNumber="1"' : field.dataType === 'boolean' ? ' containsBoolean="1"' : '';
     const shared = values.map((value) => value === null ? '<m/>' : typeof value === 'string' ? `<s v="${encodeXml(value)}"/>` : typeof value === 'boolean' ? `<b v="${value ? '1' : '0'}"/>` : field.dataType === 'date' ? `<d v="${value}"/>` : `<n v="${value}"/>`).join('');
-    return `<cacheField name="${encodeXml(field.name)}"><sharedItems count="${values.length}"${contains}>${shared}</sharedItems></cacheField>`;
+    const fieldGroup = field.fieldGroup ? buildNativeFieldGroupXml(field.fieldGroup) : '';
+    return `<cacheField name="${encodeXml(field.name)}"><sharedItems count="${values.length}"${contains}>${shared}</sharedItems>${fieldGroup}</cacheField>`;
   }).join('');
   const attrs = [...(cache.recordCount === undefined ? [] : [`recordCount="${cache.recordCount}"`]), ...boolAttr(cache.refreshOnLoad, 'refreshOnLoad'), ...boolAttr(cache.refreshOnSave, 'refreshOnSave'), ...boolAttr(cache.saveData, 'saveData'), ...boolAttr(cache.enableRefresh, 'enableRefresh')];
   return withXmlDeclaration(`<pivotCacheDefinition xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}"${attrs.length ? ` ${attrs.join(' ')}` : ''}><cacheSource type="worksheet">${source}</cacheSource><cacheFields count="${cache.fields.length}">${fields}</cacheFields></pivotCacheDefinition>`);
+}
+
+function buildNativeFieldGroupXml(group: NativePivotFieldGroup): string {
+  const attrs = [
+    ...(group.base === undefined ? [] : [`base="${group.base}"`]),
+    ...(group.parent === undefined ? [] : [`par="${group.parent}"`]),
+  ];
+  const range = group.range ? buildNativeFieldRangeXml(group.range) : '';
+  const discrete = group.discreteIndexes ? `<discretePr count="${group.discreteIndexes.length}">${group.discreteIndexes.map((index) => `<x v="${index}"/>`).join('')}</discretePr>` : '';
+  const items = group.groupItems ? `<groupItems count="${group.groupItems.length}">${group.groupItems.map(nativePivotScalarXml).join('')}</groupItems>` : '';
+  return `<fieldGroup${attrs.length ? ` ${attrs.join(' ')}` : ''}>${range}${discrete}${items}</fieldGroup>`;
+}
+
+function buildNativeFieldRangeXml(range: NativePivotFieldRange): string {
+  const attrs = [
+    ...(range.groupBy === undefined ? [] : [`groupBy="${encodeXml(range.groupBy)}"`]),
+    ...(range.interval === undefined ? [] : [`groupInterval="${range.interval}"`]),
+    ...rangeBoundAttr(range.start, 'start'),
+    ...rangeBoundAttr(range.end, 'end'),
+    ...boolAttr(range.autoStart, 'autoStart'),
+    ...boolAttr(range.autoEnd, 'autoEnd'),
+  ];
+  return `<rangePr${attrs.length ? ` ${attrs.join(' ')}` : ''}/>`;
+}
+
+function rangeBoundAttr(value: NativePivotScalar | undefined, name: 'start' | 'end'): string[] {
+  if (value === undefined || value === null) return [];
+  if (typeof value === 'number') return [`${name}Num="${value}"`];
+  return [`${name}Date="${encodeXml(String(value))}"`];
+}
+
+function nativePivotScalarXml(value: NativePivotScalar): string {
+  if (value === null) return '<m/>';
+  if (typeof value === 'string') return `<s v="${encodeXml(value)}"/>`;
+  if (typeof value === 'boolean') return `<b v="${value ? '1' : '0'}"/>`;
+  return `<n v="${encodeXml(String(value))}"/>`;
 }
 
 function buildCacheRecordsXml(cache: NativePivotCacheDefinition, rows: PivotScalar[][]): string {
@@ -909,7 +1014,110 @@ function parseCacheSource(node: XmlNode | undefined, sheets: Map<string, { name:
   return { kind: 'unsupported', reason: 'OLAP or unsupported Pivot source is not editable' };
 }
 
-function parseCacheFields(node: XmlNode | undefined): NativePivotCacheField[] { return children(node, 'cacheField').map((field, index) => { const shared = child(field, 'sharedItems'); const values: Array<string | number | boolean | null> = []; for (const item of children(shared, 's')) values.push(item.attrs.v ?? null); for (const item of children(shared, 'n')) values.push(numberOrNull(item.attrs.v)); for (const item of children(shared, 'd')) values.push(item.attrs.v ?? null); for (const item of children(shared, 'b')) values.push(item.attrs.v === '1' || item.attrs.v === 'true'); for (const item of children(shared, 'e')) values.push(item.attrs.v ?? null); const dataType = inferCacheType(shared); return { index, name: field.attrs.name ?? `Field${index + 1}`, ...(dataType ? { dataType } : {}), ...(values.length ? { sharedItems: values } : {}) }; }); }
+function parseCacheFields(node: XmlNode | undefined): NativePivotCacheField[] {
+  return children(node, 'cacheField').map((field, index) => {
+    const shared = child(field, 'sharedItems');
+    const values = parsePivotScalars(shared);
+    const dataType = inferCacheType(shared);
+    const fieldGroup = parseFieldGroup(child(field, 'fieldGroup'), `cacheField[${index}].fieldGroup`);
+    return {
+      index,
+      name: field.attrs.name ?? `Field${index + 1}`,
+      ...(dataType ? { dataType } : {}),
+      ...(values.length ? { sharedItems: values } : {}),
+      ...(fieldGroup ? { fieldGroup } : {}),
+    };
+  });
+}
+
+function parsePivotScalars(node: XmlNode | undefined): NativePivotScalar[] {
+  if (!node) return [];
+  return node.children.flatMap((item) => {
+    switch (localName(item.name)) {
+      case 's': return [item.attrs.v ?? null];
+      case 'n': return [numberOrNull(item.attrs.v)];
+      case 'd': return [item.attrs.v ?? null];
+      case 'b': return [item.attrs.v === '1' || item.attrs.v?.toLowerCase() === 'true'];
+      case 'e': return [item.attrs.v ?? null];
+      case 'm': return [null];
+      case 'groupItem': return [parseGroupItemValue(item)];
+      default: return [];
+    }
+  });
+}
+
+function parseGroupItemValue(node: XmlNode): NativePivotScalar {
+  const scalar = parsePivotScalars(node)[0];
+  return scalar === undefined ? (node.attrs.v ?? null) : scalar;
+}
+
+function parseFieldGroup(node: XmlNode | undefined, label: string): NativePivotFieldGroup | undefined {
+  if (!node) return undefined;
+  const base = node.attrs.base === undefined ? undefined : requiredInteger(node.attrs.base, `${label}.base`);
+  const parent = node.attrs.par === undefined ? undefined : requiredInteger(node.attrs.par, `${label}.par`);
+  const rangeNode = child(node, 'rangePr');
+  const range = rangeNode ? parseFieldRange(rangeNode, `${label}.rangePr`) : undefined;
+  const discreteNode = child(node, 'discretePr');
+  const discreteValues = discreteNode ? children(discreteNode, 'x').map((item, index) => requiredInteger(item.attrs.v, `${label}.discretePr.x[${index}]`)) : [];
+  if (discreteNode?.attrs.count !== undefined && requiredInteger(discreteNode.attrs.count, `${label}.discretePr.count`) !== discreteValues.length) throw new Error(`${label}.discretePr.count does not match x elements`);
+  const discreteIndexes = discreteNode ? discreteValues : undefined;
+  const groupItemsNode = child(node, 'groupItems');
+  const groupItems = groupItemsNode ? parsePivotScalars(groupItemsNode) : undefined;
+  if (groupItemsNode?.attrs.count !== undefined && requiredInteger(groupItemsNode.attrs.count, `${label}.groupItems.count`) !== (groupItems?.length ?? 0)) throw new Error(`${label}.groupItems.count does not match group items`);
+  return {
+    ...(base === undefined ? {} : { base }),
+    ...(parent === undefined ? {} : { parent }),
+    ...(range ? { range } : {}),
+    ...(discreteIndexes ? { discreteIndexes } : {}),
+    ...(groupItems ? { groupItems } : {}),
+  };
+}
+
+function parseFieldRange(node: XmlNode, label: string): NativePivotFieldRange {
+  const groupBy = node.attrs.groupBy;
+  const start = firstRangeValue(node.attrs, 'start');
+  const end = firstRangeValue(node.attrs, 'end');
+  const intervalValue = node.attrs.groupInterval ?? node.attrs.interval;
+  const interval = intervalValue === undefined ? undefined : finiteNumber(intervalValue, `${label}.groupInterval`);
+  if (interval !== undefined && interval <= 0) throw new Error(`${label}.groupInterval must be positive`);
+  const autoStart = node.attrs.autoStart === undefined ? undefined : parseBoolean(node.attrs.autoStart, `${label}.autoStart`);
+  const autoEnd = node.attrs.autoEnd === undefined ? undefined : parseBoolean(node.attrs.autoEnd, `${label}.autoEnd`);
+  return {
+    ...(groupBy === undefined ? {} : { groupBy }),
+    ...(start === undefined ? {} : { start }),
+    ...(end === undefined ? {} : { end }),
+    ...(interval === undefined ? {} : { interval }),
+    ...(autoStart === undefined ? {} : { autoStart }),
+    ...(autoEnd === undefined ? {} : { autoEnd }),
+  };
+}
+
+function firstRangeValue(attrs: Record<string, string>, name: 'start' | 'end'): NativePivotScalar | undefined {
+  const date = attrs[`${name}Date`];
+  if (date !== undefined) return date;
+  const number = attrs[`${name}Num`];
+  if (number !== undefined) {
+    const parsed = Number(number);
+    if (!Number.isFinite(parsed)) throw new Error(`Invalid ${name}Num range bound`);
+    return parsed;
+  }
+  const generic = attrs[name];
+  if (generic === undefined) return undefined;
+  const numeric = Number(generic);
+  return Number.isFinite(numeric) ? numeric : generic;
+}
+
+function finiteNumber(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`${label} must be finite`);
+  return parsed;
+}
+
+function parseBoolean(value: string, label: string): boolean {
+  if (value === '1' || value.toLowerCase() === 'true') return true;
+  if (value === '0' || value.toLowerCase() === 'false') return false;
+  throw new Error(`${label} must be boolean`);
+}
 
 function parsePivotFields(node: XmlNode | undefined): NativePivotTableField[] { return children(node, 'pivotField').map((field, index) => ({ index, ...(field.attrs.axis === 'axisRow' ? { axis: 'row' as const } : field.attrs.axis === 'axisCol' ? { axis: 'column' as const } : field.attrs.axis === 'axisPage' ? { axis: 'page' as const } : {}), ...(field.attrs.compact === '0' ? { compact: false } : field.attrs.compact === '1' ? { compact: true } : {}), ...(field.attrs.outline === '0' ? { outline: false } : field.attrs.outline === '1' ? { outline: true } : {}), ...((() => { const indexes = children(child(field, 'items'), 'item').flatMap((item) => item.attrs.sd === '0' && item.attrs.x !== undefined ? [requiredInteger(item.attrs.x, `pivotField[${index}].items.item.x`)] : []); return indexes.length ? { collapsedItemIndexes: indexes } : {}; })()) })); }
 function parseFieldIndexes(node: XmlNode | undefined, label: string): number[] { return children(node, 'field').map((field) => requiredInteger(field.attrs.x, `${label}.field.x`)); }
@@ -931,6 +1139,48 @@ function nativeFieldId(cacheId: number, index: number): string { return `native:
 function nativePivotId(table: NativePivotTableDefinition): string { return `native:pivot:${table.part}`; }
 function mapFieldType(value: NativePivotCacheField['dataType']): PivotFieldDataType { return value === 'string' ? 'text' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : 'mixed'; }
 function nativeDataType(value: PivotFieldDataType): NativePivotCacheField['dataType'] { return value === 'text' ? 'string' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : 'mixed'; }
+function nativePivotGroup(field: NativePivotCacheField | undefined, cache: NativePivotCacheDefinition, fieldId: string): PivotGroup | undefined {
+  const grouping = field?.fieldGroup;
+  if (!grouping) return undefined;
+  const baseField = grouping.base === undefined ? field : cache.fields[grouping.base] ?? field;
+  const range = grouping.range;
+  const groupBy = range?.groupBy?.toLowerCase();
+  const dateUnits: Record<string, 'year' | 'quarter' | 'month' | 'week' | 'day'> = {
+    year: 'year', years: 'year', quarter: 'quarter', quarters: 'quarter',
+    month: 'month', months: 'month', week: 'week', weeks: 'week', day: 'day', days: 'day',
+  };
+  if (groupBy && dateUnits[groupBy]) {
+    return {
+      kind: 'date', unit: dateUnits[groupBy],
+      ...(range?.start !== undefined ? { start: range.start } : {}),
+      ...(range?.end !== undefined ? { end: range.end } : {}),
+      ...(range?.autoStart !== undefined ? { autoStart: range.autoStart } : {}),
+      ...(range?.autoEnd !== undefined ? { autoEnd: range.autoEnd } : {}),
+    };
+  }
+  if (groupBy === 'range' || groupBy === 'number' || groupBy === 'numbers' || (baseField?.dataType === 'number' && range?.interval !== undefined)) {
+    const values = (grouping.groupItems ?? []).filter((value): value is number => typeof value === 'number');
+    const derivedInterval = values.length > 1 ? Math.abs(values[1]! - values[0]!) : undefined;
+    const interval = range?.interval ?? (derivedInterval && Number.isFinite(derivedInterval) && derivedInterval > 0 ? derivedInterval : undefined);
+    if (interval === undefined || !Number.isFinite(interval) || interval <= 0) return undefined;
+    return {
+      kind: 'number', interval,
+      ...(typeof range?.start === 'number' ? { start: range.start } : {}),
+      ...(typeof range?.end === 'number' ? { end: range.end } : {}),
+      ...(range?.autoStart !== undefined ? { autoStart: range.autoStart } : {}),
+      ...(range?.autoEnd !== undefined ? { autoEnd: range.autoEnd } : {}),
+    };
+  }
+  if (grouping.discreteIndexes && grouping.groupItems) {
+    const groups = grouping.groupItems.map((name, groupIndex) => ({
+      groupId: `${fieldId}:group:${groupIndex}`,
+      name: name === null ? '' : String(name),
+      items: (baseField?.sharedItems ?? []).flatMap((value, itemIndex) => grouping.discreteIndexes?.[itemIndex] === groupIndex ? [createPivotMemberKey(value)] : []),
+    }));
+    return { kind: 'manual', groups };
+  }
+  return undefined;
+}
 function inferDataType(sheet: SheetSnapshot, range: RangeRef, column: number): PivotFieldDataType { const values: unknown[] = []; for (let row = range.startRow + 1; row <= range.endRow; row += 1) values.push(sheet.cells[String(row)]?.[String(column)]?.value); if (values.filter((value) => value !== null).every((value) => typeof value === 'number')) return 'number'; if (values.filter((value) => value !== null).every((value) => typeof value === 'boolean')) return 'boolean'; return 'text'; }
 function mapAggregate(value: string | undefined): PivotAggregateFunction { switch ((value ?? 'sum').toLowerCase()) { case 'count': return 'count'; case 'countnums': case 'count-numbers': return 'count-numbers'; case 'average': case 'avg': return 'average'; case 'min': return 'min'; case 'max': return 'max'; case 'product': return 'product'; case 'stddev': case 'stdev': return 'stdev'; case 'stddevp': case 'stdevp': return 'stdevp'; case 'var': return 'var'; case 'varp': return 'varp'; case 'distinctcount': case 'distinct-count': return 'distinct-count'; default: return 'sum'; } }
 function nativeAggregate(value: string | undefined): string { switch (value) { case 'count-numbers': return 'countNums'; case 'stdev': return 'stdDev'; case 'stdevp': return 'stdDevp'; case 'distinct-count': return 'distinctCount'; default: return value ?? 'sum'; } }
