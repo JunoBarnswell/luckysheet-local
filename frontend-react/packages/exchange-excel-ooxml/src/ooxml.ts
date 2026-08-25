@@ -770,11 +770,25 @@ function attachNativePivotControls(snapshot: WorkbookSnapshot, controls: NativeP
         ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
       };
     } else {
+      if (!control.level || !control.selectionLevel || control.showHeader === undefined || control.showSelectionLabel === undefined || control.showTimeLevel === undefined || control.showHorizontalScrollbar === undefined || !control.filterType) {
+        throw new Error(`Native Timeline ${control.id} is missing canonical level/display state`);
+      }
       sheet.drawingPayloads[payloadId] = {
         kind: 'timeline',
         pivotId: control.pivotId,
         fieldId: control.fieldId,
         period: control.selection ?? {},
+        level: control.level,
+        selectionLevel: control.selectionLevel,
+        showHeader: control.showHeader,
+        showSelectionLabel: control.showSelectionLabel,
+        showTimeLevel: control.showTimeLevel,
+        showHorizontalScrollbar: control.showHorizontalScrollbar,
+        ...(control.scrollPosition === undefined ? {} : { scrollPosition: control.scrollPosition }),
+        bounds: control.bounds ?? {},
+        filterType: control.filterType,
+        ...(control.caption === undefined ? {} : { caption: control.caption }),
+        ...(control.styleName === undefined ? {} : { styleName: control.styleName }),
         style,
         ...(control.connectedPivotIds?.length ? { connectedPivotIds: control.connectedPivotIds } : {}),
       };

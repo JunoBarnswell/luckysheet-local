@@ -308,7 +308,7 @@ describe('exchange-excel-ooxml', () => {
       schema: 'PivotDefinition', id: 'control-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 2 } }, target: { sheetId: sheet.id, anchor: { row: 5, column: 0 } },
       fieldCatalog: { schema: 'PivotFieldCatalog', fields: [
         { fieldId: 'category', name: 'Category', dataType: 'text', ordinal: 0 },
-        { fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 1 },
+        { fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 1, values: ['1890-01-01T00:00:00Z', '2201-12-31T00:00:00Z'] },
         { fieldId: 'amount', name: 'Amount', dataType: 'number', ordinal: 2 },
       ] },
       layout: { rows: [{ fieldId: 'category' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [{ fieldId: 'amount', summarizeBy: 'sum' }], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
@@ -319,12 +319,25 @@ describe('exchange-excel-ooxml', () => {
       { id: 'date-timeline', sheetId: sheet.id, kind: 'timeline', anchor: { kind: 'one-cell', row: 10, column: 0 }, transform: { x: 0, y: 0, width: 420, height: 120 }, zIndex: 1, payloadId: 'date-timeline' },
     );
     sheet.drawingPayloads.set('category-slicer', { kind: 'slicer', pivotId: 'control-pivot', fieldId: 'category', filter: { mode: 'all', memberKeys: [] }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' }, settings: { showHeader: true, caption: 'Category', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 } });
-    sheet.drawingPayloads.set('date-timeline', { kind: 'timeline', pivotId: 'control-pivot', fieldId: 'date', period: { start: '2024-01-01T00:00:00Z', end: '2024-12-31T00:00:00Z' }, style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
+    sheet.drawingPayloads.set('date-timeline', { kind: 'timeline', pivotId: 'control-pivot', fieldId: 'date', period: { start: '2024-01-01T00:00:00Z', end: '2024-12-31T00:00:00Z' }, level: 'years', selectionLevel: 'days', showHeader: false, showSelectionLabel: true, showTimeLevel: false, showHorizontalScrollbar: true, scrollPosition: '1895-01-01T00:00:00Z', bounds: { start: '1890-01-01T00:00:00Z', end: '2201-12-31T00:00:00Z' }, filterType: 'dateBetween', caption: 'Fiscal Window', styleName: 'TimelineStyleDark3', style: { theme: 'dark', fill: '#111827', border: '#374151', textColor: '#f9fafb', accentColor: '#60a5fa' } });
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     assert.ok(output.files['xl/slicerCaches/slicerCache1.xml']);
     assert.ok(output.files['xl/slicers/slicer1.xml']);
     assert.ok(output.files['xl/timelineCaches/timelineCache1.xml']);
     assert.ok(output.files['xl/timelines/timeline1.xml']);
+    const timelineXml = strFromU8(output.files['xl/timelines/timeline1.xml']!);
+    assert.match(timelineXml, /caption="Fiscal Window"/);
+    assert.match(timelineXml, /showHeader="0"/);
+    assert.match(timelineXml, /showSelectionLabel="1"/);
+    assert.match(timelineXml, /showTimeLevel="0"/);
+    assert.match(timelineXml, /showHorizontalScrollbar="1"/);
+    assert.match(timelineXml, /level="0"/);
+    assert.match(timelineXml, /selectionLevel="3"/);
+    assert.match(timelineXml, /scrollPosition="1895-01-01T00:00:00Z"/);
+    assert.match(timelineXml, /style="TimelineStyleDark3"/);
+    const timelineCacheXml = strFromU8(output.files['xl/timelineCaches/timelineCache1.xml']!);
+    assert.match(timelineCacheXml, /selection startDate="2024-01-01T00:00:00Z" endDate="2024-12-31T00:00:00Z"/);
+    assert.match(timelineCacheXml, /bounds startDate="1890-01-01T00:00:00Z" endDate="2201-12-31T00:00:00Z"/);
     const contentTypes = strFromU8(output.files['[Content_Types].xml']!);
     assert.match(contentTypes, /application\/vnd\.openxmlformats-officedocument\.drawing\+xml/);
     assert.match(contentTypes, /application\/vnd\.ms-excel\.slicerCache"/);
@@ -337,6 +350,26 @@ describe('exchange-excel-ooxml', () => {
     const imported = parseLoadedXlsx(output).snapshot;
     assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'slicer').length, 1);
     assert.equal(Object.values(imported.sheets[0]?.drawingPayloads ?? {}).filter((payload) => payload.kind === 'timeline').length, 1);
+    const importedTimeline = Object.values(imported.sheets[0]?.drawingPayloads ?? {}).find((payload) => payload.kind === 'timeline');
+    assert.equal(importedTimeline?.kind, 'timeline');
+    if (!importedTimeline || importedTimeline.kind !== 'timeline') throw new Error('Timeline payload is missing');
+    assert.equal(importedTimeline.level, 'years');
+    assert.equal(importedTimeline.selectionLevel, 'days');
+    assert.equal(importedTimeline.showHeader, false);
+    assert.equal(importedTimeline.showSelectionLabel, true);
+    assert.equal(importedTimeline.showTimeLevel, false);
+    assert.equal(importedTimeline.showHorizontalScrollbar, true);
+    assert.equal(importedTimeline.scrollPosition, '1895-01-01T00:00:00Z');
+    assert.deepEqual(importedTimeline.bounds, { start: '1890-01-01T00:00:00Z', end: '2201-12-31T00:00:00Z' });
+    assert.equal(importedTimeline.caption, 'Fiscal Window');
+    assert.equal(importedTimeline.styleName, 'TimelineStyleDark3');
+    const preservedFiles: Record<string, Uint8Array> = Object.fromEntries(Object.entries(output.files).map(([name, bytes]) => [name, bytes.slice()]));
+    preservedFiles['xl/timelines/timeline1.xml'] = strToU8(strFromU8(preservedFiles['xl/timelines/timeline1.xml']!).replace('<timeline ', '<timeline futureTimelineAttr="keep-me" ').replace('/></timelines>', '><extLst><ext uri="future"><futureTimelineNode/></ext></extLst></timeline></timelines>'));
+    const preservedInput = loadOpcPackageGraph(zipXlsxPartsBuffer(preservedFiles));
+    const preservedImported = parseLoadedXlsx(preservedInput).snapshot;
+    const preservedExport = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(preservedImported, preservedInput.packageGraph));
+    assert.match(strFromU8(preservedExport.files['xl/timelines/timeline1.xml']!), /futureTimelineAttr="keep-me"/);
+    assert.match(strFromU8(preservedExport.files['xl/timelines/timeline1.xml']!), /futureTimelineNode/);
     const importedSlicerAnchor = imported.sheets[0]?.drawings.find((drawing) => drawing.kind === 'slicer')?.anchor;
     const importedTimelineAnchor = imported.sheets[0]?.drawings.find((drawing) => drawing.kind === 'timeline')?.anchor;
     assert.equal(importedSlicerAnchor?.kind, 'one-cell');
@@ -354,6 +387,31 @@ describe('exchange-excel-ooxml', () => {
     const removedControls = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(withoutControls, output.packageGraph));
     const removedDrawing = removedControls.files['xl/drawings/drawing1.xml'];
     assert.ok(!removedDrawing || !/category[_-]slicer|date[_-]timeline/.test(strFromU8(removedDrawing)));
+  });
+
+  it('fails closed for invalid native Timeline levels and bounds', () => {
+    const workbook = new WorkbookModel('wb-invalid-timeline-state', 'Invalid Timeline State');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Date' });
+    sheet.cells.set(1, 0, { value: '2024-01-01T00:00:00Z' });
+    sheet.pivots.push({
+      schema: 'PivotDefinition', id: 'invalid-timeline-pivot', source: { kind: 'worksheet-range', range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 } }, target: { sheetId: sheet.id, anchor: { row: 4, column: 0 } },
+      fieldCatalog: { schema: 'PivotFieldCatalog', fields: [{ fieldId: 'date', name: 'Date', dataType: 'date', ordinal: 0, values: ['2024-01-01T00:00:00Z'] }] },
+      layout: { rows: [{ fieldId: 'date' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showGrandTotals: true, compact: true, repeatLabels: false },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+    });
+    sheet.drawings.push({ id: 'invalid-timeline', sheetId: sheet.id, kind: 'timeline', anchor: { kind: 'one-cell', row: 8, column: 0 }, transform: { x: 0, y: 0, width: 420, height: 120 }, zIndex: 1, payloadId: 'invalid-timeline' });
+    sheet.drawingPayloads.set('invalid-timeline', { kind: 'timeline', pivotId: 'invalid-timeline-pivot', fieldId: 'date', period: {}, level: 'months', selectionLevel: 'months', showHeader: true, showSelectionLabel: true, showTimeLevel: true, showHorizontalScrollbar: true, bounds: { start: '2024-01-01T00:00:00Z', end: '2024-01-01T00:00:00Z' }, filterType: 'unknown', styleName: 'TimelineStyleLight2', style: { theme: 'light', fill: '#fff', border: '#ddd', textColor: '#111', accentColor: '#2563eb' } });
+    const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    const timelinePart = 'xl/timelines/timeline1.xml';
+    const cachePart = 'xl/timelineCaches/timelineCache1.xml';
+    const invalidLevel = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    invalidLevel.files[timelinePart] = strToU8(strFromU8(invalidLevel.files[timelinePart]!).replace('level="2"', 'level="9"'));
+    assert.throws(() => parseLoadedXlsx(loadOpcPackageGraph(zipXlsxPartsBuffer(invalidLevel.files))), /level must be one of/);
+    const invalidBounds = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
+    invalidBounds.files[cachePart] = strToU8(strFromU8(invalidBounds.files[cachePart]!).replace(/ endDate="[^"]+"/, ''));
+    assert.throws(() => parseLoadedXlsx(loadOpcPackageGraph(zipXlsxPartsBuffer(invalidBounds.files))), /bounds requires startDate and endDate/);
+    assert.ok(output.files[timelinePart]);
   });
 
   it('keeps native Slicer selections typed when member labels collide', () => {

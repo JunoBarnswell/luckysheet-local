@@ -19,13 +19,16 @@ import type {
   PivotScalar,
   PivotValueFilterOperator,
   PivotSlicerDrawingPayload,
+  PivotTimelineDrawingPayload,
+  PivotTimelineFilterType,
+  PivotTimelineLevel,
   PivotSource,
   PivotValueField,
   RangeRef,
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotRefreshPolicy, pivotMemberKey, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotRefreshPolicy, pivotMemberKey, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -189,6 +192,8 @@ interface NativeControlCachePart {
   pivotTableNames: string[];
   selectedItemIndexes?: number[];
   selection?: { start?: string; end?: string };
+  bounds?: { start?: string; end?: string };
+  filterType?: PivotTimelineFilterType;
 }
 
 function readNativePivotControls(input: NativePivotReadInput, caches: NativePivotCacheDefinition[], tables: NativePivotTableDefinition[]): NativePivotControlDefinition[] {
@@ -208,6 +213,9 @@ function readNativePivotControls(input: NativePivotReadInput, caches: NativePivo
     const data = descendants(root, 'tabular')[0] ?? descendants(root, 'state')[0];
     const pivotCacheId = data?.attrs.pivotCacheId === undefined ? undefined : requiredInteger(data.attrs.pivotCacheId, `${kind} cache pivotCacheId`);
     const selection = descendants(root, 'selection')[0];
+    const state = kind === 'timeline' ? descendants(root, 'state')[0] : undefined;
+    const bounds = state ? readTimelineBounds(child(state, 'bounds'), `${kind} cache bounds`) : undefined;
+    const filterType = state ? parseTimelineFilterType(state.attrs.filterType, `${kind} cache filterType`) : undefined;
     const selectedItemIndexes = kind === 'slicer' ? children(descendants(root, 'items')[0], 'i').flatMap((item) => item.attrs.s === '1' && item.attrs.x !== undefined ? [requiredInteger(item.attrs.x, `${kind} item.x`)] : []) : [];
     cacheParts.push({
       kind,
@@ -219,6 +227,8 @@ function readNativePivotControls(input: NativePivotReadInput, caches: NativePivo
       pivotTableNames: children(child(root, 'pivotTables'), 'pivotTable').flatMap((pivot) => pivot.attrs.name ? [pivot.attrs.name] : []),
       ...(selectedItemIndexes.length ? { selectedItemIndexes } : {}),
       ...(selection ? { selection: { ...(selection.attrs.startDate ? { start: selection.attrs.startDate } : {}), ...(selection.attrs.endDate ? { end: selection.attrs.endDate } : {}) } } : {}),
+      ...(bounds ? { bounds } : {}),
+      ...(filterType ? { filterType } : {}),
     });
   };
   for (const node of descendants(workbook, 'slicerCache')) addCache('slicer', node);
@@ -288,6 +298,17 @@ function buildImportedControl(
   const field = pivotCache && cachePart?.sourceName ? pivotCache.fields.find((candidate) => candidate.name === cachePart.sourceName) : undefined;
   const connectedPivotIds = cachePart?.pivotTableNames.flatMap((tableName) => { const found = tables.find((candidate) => candidate.name === tableName); return found ? [nativePivotId(found)] : []; });
   const valid = Boolean(cachePart && pivotCache && table && field);
+  const timelineLevel = kind === 'timeline' ? parseTimelineLevel(node.attrs.level, `${kind} level`) : undefined;
+  const selectionLevel = kind === 'timeline' ? parseTimelineLevel(node.attrs.selectionLevel, `${kind} selectionLevel`) : undefined;
+  const showHeader = kind === 'timeline' ? parseTimelineBoolean(node.attrs.showHeader, true, `${kind} showHeader`) : undefined;
+  const showSelectionLabel = kind === 'timeline' ? parseTimelineBoolean(node.attrs.showSelectionLabel, true, `${kind} showSelectionLabel`) : undefined;
+  const showTimeLevel = kind === 'timeline' ? parseTimelineBoolean(node.attrs.showTimeLevel, true, `${kind} showTimeLevel`) : undefined;
+  const showHorizontalScrollbar = kind === 'timeline' ? parseTimelineBoolean(node.attrs.showHorizontalScrollbar, true, `${kind} showHorizontalScrollbar`) : undefined;
+  const scrollPosition = kind === 'timeline' && node.attrs.scrollPosition !== undefined
+    ? parseTimelineDate(node.attrs.scrollPosition, `${kind} scrollPosition`)
+    : undefined;
+  const selection = cachePart?.selection;
+  if (kind === 'timeline') validateTimelinePeriod(selection, `${kind} selection`);
   return {
     kind,
     id: `native:${kind}:${part}:${name}`,
@@ -302,7 +323,16 @@ function buildImportedControl(
     ...(field ? { fieldId: nativeFieldId(pivotCache!.cacheId, field.index), fieldIndex: field.index } : {}),
     ...(pivotCache ? { pivotCacheId: pivotCache.cacheId } : {}),
     ...(connectedPivotIds?.length ? { connectedPivotIds } : {}),
-    ...(cachePart?.selection ? { selection: cachePart.selection } : {}),
+    ...(selection ? { selection } : {}),
+    ...(timelineLevel ? { level: timelineLevel } : {}),
+    ...(selectionLevel ? { selectionLevel } : {}),
+    ...(showHeader === undefined ? {} : { showHeader }),
+    ...(showSelectionLabel === undefined ? {} : { showSelectionLabel }),
+    ...(showTimeLevel === undefined ? {} : { showTimeLevel }),
+    ...(showHorizontalScrollbar === undefined ? {} : { showHorizontalScrollbar }),
+    ...(scrollPosition === undefined ? {} : { scrollPosition }),
+    ...(cachePart?.bounds ? { bounds: cachePart.bounds } : {}),
+    ...(cachePart?.filterType ? { filterType: cachePart.filterType } : {}),
     ...(cachePart?.selectedItemIndexes ? { selectedItemIndexes: cachePart.selectedItemIndexes } : {}),
     ...(node.attrs.style ? { styleName: node.attrs.style } : {}),
     ...(node.attrs.caption ? { caption: node.attrs.caption } : {}),
@@ -327,6 +357,61 @@ function readControlDrawingAnchor(bytes: Uint8Array, name: string): { row: numbe
 }
 
 function nativeCacheIdentity(cacheId: number): string { return `native-cache:${cacheId}`; }
+
+const TIMELINE_LEVELS: readonly PivotTimelineLevel[] = ['years', 'quarters', 'months', 'days'];
+const TIMELINE_LEVEL_TO_XML: Record<PivotTimelineLevel, number> = { years: 0, quarters: 1, months: 2, days: 3 };
+
+function parseTimelineLevel(value: string | undefined, label: string): PivotTimelineLevel {
+  if (value === undefined) throw new Error(`${label} is required`);
+  const level = Number(value);
+  if (!Number.isInteger(level) || level < 0 || level >= TIMELINE_LEVELS.length) throw new Error(`${label} must be one of 0, 1, 2, or 3`);
+  return TIMELINE_LEVELS[level]!;
+}
+
+function timelineLevelXml(value: PivotTimelineLevel, label: string): string {
+  const level = TIMELINE_LEVEL_TO_XML[value];
+  if (level === undefined) throw new Error(`${label} is invalid: ${value}`);
+  return String(level);
+}
+
+function parseTimelineBoolean(value: string | undefined, defaultValue: boolean, label: string): boolean {
+  if (value === undefined) return defaultValue;
+  if (value === '1' || value.toLowerCase() === 'true') return true;
+  if (value === '0' || value.toLowerCase() === 'false') return false;
+  throw new Error(`${label} must be true, false, 1, or 0`);
+}
+
+function timelineBooleanXml(value: boolean): string { return value ? '1' : '0'; }
+
+function parseTimelineFilterType(value: string | undefined, label: string): PivotTimelineFilterType | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'unknown' || value === 'dateBetween' || value === 'dateNotBetween') return value;
+  throw new Error(`${label} is unsupported: ${value}`);
+}
+
+function parseTimelineDate(value: string, label: string): string {
+  if (pivotTimelineInstant(value) === undefined) throw new Error(`${label} is not a valid xsd:dateTime: ${value}`);
+  return value;
+}
+
+function validateTimelinePeriod(period: { start?: string; end?: string } | undefined, label: string): void {
+  if (!period) return;
+  if (period.start !== undefined) parseTimelineDate(period.start, `${label}.startDate`);
+  if (period.end !== undefined) parseTimelineDate(period.end, `${label}.endDate`);
+  const start = period.start === undefined ? undefined : pivotTimelineInstant(period.start);
+  const end = period.end === undefined ? undefined : pivotTimelineInstant(period.end);
+  if (start !== undefined && end !== undefined && start > end) throw new Error(`${label} startDate must not be after endDate`);
+}
+
+function readTimelineBounds(node: XmlNode | undefined, label: string): { start: string; end: string } | undefined {
+  if (!node) return undefined;
+  const start = node.attrs.startDate;
+  const end = node.attrs.endDate;
+  if (!start || !end) throw new Error(`${label} requires startDate and endDate`);
+  const bounds = { start: parseTimelineDate(start, `${label}.startDate`), end: parseTimelineDate(end, `${label}.endDate`) };
+  validateTimelinePeriod(bounds, label);
+  return bounds;
+}
 
 function nativeRefreshMode(flags: PivotNativeCacheFlags | NativePivotCacheDefinition): PivotRefreshPolicy['mode'] {
   if (flags.refreshOnSave === true) return 'on-change';
@@ -747,12 +832,25 @@ function synchronizeNativeControls(input: NativeControlSyncInput): NativeControl
       pivotId: entry.payload.pivotId, fieldId: entry.payload.fieldId, fieldIndex: cacheFieldIndex, pivotCacheId: table.cacheId, connectedPivotIds,
       valid: true,
     };
+    if (entry.payload.kind === 'timeline') {
+      control.level = entry.payload.level;
+      control.selectionLevel = entry.payload.selectionLevel;
+      control.showHeader = entry.payload.showHeader;
+      control.showSelectionLabel = entry.payload.showSelectionLabel;
+      control.showTimeLevel = entry.payload.showTimeLevel;
+      control.showHorizontalScrollbar = entry.payload.showHorizontalScrollbar;
+      if (entry.payload.scrollPosition !== undefined) control.scrollPosition = parseTimelineDate(entry.payload.scrollPosition, `Timeline ${control.id} scrollPosition`);
+      control.bounds = entry.payload.bounds;
+      control.filterType = entry.payload.filterType;
+      if (entry.payload.caption !== undefined) control.caption = entry.payload.caption;
+      if (entry.payload.styleName !== undefined) control.styleName = entry.payload.styleName;
+    }
     if (entry.payload.kind === 'slicer') {
       files[cachePart] = strToU8(buildSlicerCacheXml(control, entry.payload, pivot, cache, input.tables));
       files[part] = strToU8(buildSlicerXml(control, entry.payload));
     } else {
-      files[cachePart] = strToU8(buildTimelineCacheXml(control, entry.payload, pivot, input.tables));
-      files[part] = strToU8(buildTimelineXml(control, entry.payload));
+      files[cachePart] = strToU8(buildTimelineCacheXml(control, entry.payload, pivot, input.tables, entry.sheet, old?.cachePart ? input.files[old.cachePart] : undefined));
+      files[part] = strToU8(buildTimelineXml(control, entry.payload, old?.part ? input.files[old.part] : undefined));
     }
     controls.push(control);
     const list = drawingEntries.get(control.sheetPart) ?? [];
@@ -826,17 +924,112 @@ function buildSlicerXml(control: NativePivotControlDefinition, payload: { kind: 
   return withXmlDeclaration(`<slicers xmlns="${NS_X14}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${NS_MAIN}" mc:Ignorable="x"><slicer name="${encodeXml(control.name)}" cache="${encodeXml(control.cacheName)}" caption="${encodeXml(control.name)}" rowHeight="228600"/></slicers>`);
 }
 
-function buildTimelineCacheXml(control: NativePivotControlDefinition, payload: { kind: 'timeline'; pivotId: string; fieldId: string; period: { start?: string; end?: string }; connectedPivotIds?: string[] }, pivot: PivotModel, tables: NativePivotTableDefinition[]): string {
+function buildTimelineCacheXml(
+  control: NativePivotControlDefinition,
+  payload: PivotTimelineDrawingPayload,
+  pivot: PivotModel,
+  tables: NativePivotTableDefinition[],
+  sheet: SheetSnapshot,
+  originalBytes?: Uint8Array,
+): string {
   const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === payload.fieldId);
   const connected = [...new Set([payload.pivotId, ...(payload.connectedPivotIds ?? [])])].flatMap((pivotId) => { const table = tables.find((candidate) => candidate.pivotId === pivotId || candidate.name === pivotId); return table ? [`<pivotTable tabId="1" name="${encodeXml(table.name)}"/>`] : []; }).join('');
-  const start = payload.period.start ?? '2000-01-01T00:00:00Z';
-  const end = payload.period.end ?? '2100-01-01T00:00:00Z';
-  const filterType = payload.period.start && payload.period.end ? 'dateBetween' : 'unknown';
-  return withXmlDeclaration(`<timelineCacheDefinition xmlns="${NS_X15}" xmlns:x15="${NS_X15}" name="${encodeXml(control.cacheName)}" sourceName="${encodeXml(field?.name ?? payload.fieldId)}"><pivotTables>${connected}</pivotTables><state minimalRefreshVersion="6" lastRefreshVersion="6" pivotCacheId="${control.pivotCacheId ?? 0}" filterType="${filterType}"><selection startDate="${encodeXml(start)}" endDate="${encodeXml(end)}"/><bounds startDate="2000-01-01T00:00:00Z" endDate="2100-01-01T00:00:00Z"/></state></timelineCacheDefinition>`);
+  const bounds = resolveTimelineBounds(payload.bounds, pivot, payload.fieldId, sheet);
+  validateTimelinePeriod(payload.period, `Timeline ${control.id} selection`);
+  const filterType = payload.filterType;
+  const root = originalBytes
+    ? firstElement(parseXml(strFromU8(originalBytes)), 'timelineCacheDefinition')
+    : firstElement(parseXml(`<timelineCacheDefinition xmlns="${NS_X15}" xmlns:x15="${NS_X15}" name="${encodeXml(control.cacheName)}" sourceName="${encodeXml(field?.name ?? payload.fieldId)}"><pivotTables/><state/></timelineCacheDefinition>`), 'timelineCacheDefinition');
+  root.attrs.name = control.cacheName;
+  root.attrs.sourceName = field?.name ?? payload.fieldId;
+  const pivotTables = child(root, 'pivotTables') ?? appendTimelineChild(root, 'pivotTables');
+  pivotTables.children = connected ? childrenFromXml(`<pivotTables>${connected}</pivotTables>`, 'pivotTables').children : [];
+  const state = child(root, 'state') ?? appendTimelineChild(root, 'state');
+  state.attrs.pivotCacheId = String(control.pivotCacheId ?? 0);
+  state.attrs.filterType = filterType;
+  const selection = child(state, 'selection') ?? appendTimelineChild(state, 'selection');
+  delete selection.attrs.startDate;
+  delete selection.attrs.endDate;
+  if (payload.period.start !== undefined) selection.attrs.startDate = parseTimelineDate(payload.period.start, `Timeline ${control.id} selection.startDate`);
+  if (payload.period.end !== undefined) selection.attrs.endDate = parseTimelineDate(payload.period.end, `Timeline ${control.id} selection.endDate`);
+  const boundsNode = child(state, 'bounds') ?? appendTimelineChild(state, 'bounds');
+  boundsNode.attrs.startDate = bounds.start;
+  boundsNode.attrs.endDate = bounds.end;
+  return withXmlDeclaration(serializeXml(root));
 }
 
-function buildTimelineXml(control: NativePivotControlDefinition, payload: { kind: 'timeline'; period: { start?: string; end?: string } }): string {
-  return withXmlDeclaration(`<timelines xmlns="${NS_X15}" xmlns:x15="${NS_X15}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${NS_MAIN}" mc:Ignorable="x"><timeline name="${encodeXml(control.name)}" cache="${encodeXml(control.cacheName)}" caption="${encodeXml(control.name)}" showHeader="1" showSelectionLabel="1" showTimeLevel="1" showHorizontalScrollbar="1" level="2" selectionLevel="2"${payload.period.start ? ` scrollPosition="${encodeXml(payload.period.start)}"` : ''} style="TimelineStyleLight2"/></timelines>`);
+function buildTimelineXml(control: NativePivotControlDefinition, payload: PivotTimelineDrawingPayload, originalBytes?: Uint8Array): string {
+  const root = originalBytes
+    ? firstElement(parseXml(strFromU8(originalBytes)), 'timelines')
+    : firstElement(parseXml(`<timelines xmlns="${NS_X15}" xmlns:x15="${NS_X15}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${NS_MAIN}" mc:Ignorable="x"><timeline/></timelines>`), 'timelines');
+  const timeline = children(root, 'timeline').find((candidate) => candidate.attrs.name === control.name) ?? children(root, 'timeline')[0] ?? appendTimelineChild(root, 'timeline');
+  timeline.attrs.name = control.name;
+  timeline.attrs.cache = control.cacheName;
+  if (payload.caption === undefined) delete timeline.attrs.caption;
+  else timeline.attrs.caption = payload.caption;
+  timeline.attrs.showHeader = timelineBooleanXml(payload.showHeader);
+  timeline.attrs.showSelectionLabel = timelineBooleanXml(payload.showSelectionLabel);
+  timeline.attrs.showTimeLevel = timelineBooleanXml(payload.showTimeLevel);
+  timeline.attrs.showHorizontalScrollbar = timelineBooleanXml(payload.showHorizontalScrollbar);
+  timeline.attrs.level = timelineLevelXml(payload.level, `Timeline ${control.id} level`);
+  timeline.attrs.selectionLevel = timelineLevelXml(payload.selectionLevel, `Timeline ${control.id} selectionLevel`);
+  if (payload.scrollPosition === undefined) delete timeline.attrs.scrollPosition;
+  else timeline.attrs.scrollPosition = parseTimelineDate(payload.scrollPosition, `Timeline ${control.id} scrollPosition`);
+  if (payload.styleName === undefined) delete timeline.attrs.style;
+  else timeline.attrs.style = payload.styleName;
+  return withXmlDeclaration(serializeXml(root));
+}
+
+function appendTimelineChild(parent: XmlNode, name: string): XmlNode {
+  const node: XmlNode = { name, attrs: {}, children: [], text: '' };
+  parent.children.push(node);
+  return node;
+}
+
+function childrenFromXml(source: string, name: string): XmlNode {
+  return firstElement(parseXml(source), name);
+}
+
+function resolveTimelineBounds(
+  configured: { start?: string; end?: string },
+  pivot: PivotModel,
+  fieldId: string,
+  sheet: SheetSnapshot,
+): { start: string; end: string } {
+  if ((configured.start === undefined) !== (configured.end === undefined)) throw new Error(`Timeline bounds for ${fieldId} must contain both start and end`);
+  if (configured.start !== undefined && configured.end !== undefined) {
+    const start = parseTimelineDate(configured.start, `Timeline ${fieldId} bounds.startDate`);
+    const end = parseTimelineDate(configured.end, `Timeline ${fieldId} bounds.endDate`);
+    validateTimelinePeriod({ start, end }, `Timeline ${fieldId} bounds`);
+    return { start, end };
+  }
+  const field = pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === fieldId);
+  const values = field?.values?.length ? [...field.values] : timelineSourceValues(pivot, field?.ordinal ?? -1, sheet);
+  const instants = values.map((value) => pivotTimelineInstant(value)).filter((value): value is number => value !== undefined);
+  if (!instants.length) throw new Error(`Timeline ${fieldId} bounds cannot be derived from a typed date-member domain`);
+  const start = new Date(Math.min(...instants)).toISOString();
+  const end = new Date(Math.max(...instants)).toISOString();
+  return { start, end };
+}
+
+function timelineSourceValues(pivot: PivotModel, fieldOrdinal: number, sheet: SheetSnapshot): PivotScalar[] {
+  if (fieldOrdinal < 0) return [];
+  let range: RangeRef | undefined;
+  const source = pivot.source;
+  if (source.kind === 'worksheet-range' && source.range.sheetId === sheet.id) range = source.range;
+  if (source.kind === 'table') {
+    const table = sheet.sheetTables?.find((candidate) => candidate.id === source.tableId || candidate.name === source.tableId);
+    range = table?.range;
+  }
+  if (!range) return [];
+  const values: PivotScalar[] = [];
+  const column = range.startColumn + fieldOrdinal;
+  for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
+    const cell = sheet.cells[String(row)]?.[String(column)];
+    const value = cell?.formulaValue ?? cell?.value;
+    if (typeof value === 'string' || typeof value === 'number') values.push(value);
+  }
+  return values;
 }
 
 function buildControlDrawingXml(entries: Array<{ control: NativePivotControlDefinition; drawing: { anchor: unknown; transform: { width: number; height: number } } }>): string {

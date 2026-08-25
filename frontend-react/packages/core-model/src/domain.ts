@@ -581,6 +581,12 @@ export interface PivotTimelinePeriod {
   end?: string;
 }
 
+/** Native Excel Timeline granularity, shared by the model and OOXML codec. */
+export type PivotTimelineLevel = 'years' | 'quarters' | 'months' | 'days';
+
+/** Native Timeline cache filter mode. `unknown` represents an unfiltered cache. */
+export type PivotTimelineFilterType = 'unknown' | 'dateBetween' | 'dateNotBetween';
+
 /** Persisted visual settings for both native Pivot controls. */
 export interface PivotControlStyle {
   theme: 'light' | 'dark' | 'accent';
@@ -631,6 +637,22 @@ export interface PivotTimelineDrawingPayload {
   pivotId: string;
   fieldId: string;
   period: PivotTimelinePeriod;
+  /** Visible grouping level of the Timeline track. */
+  level: PivotTimelineLevel;
+  /** Granularity of the selected window, independent from `level`. */
+  selectionLevel: PivotTimelineLevel;
+  showHeader: boolean;
+  showSelectionLabel: boolean;
+  showTimeLevel: boolean;
+  showHorizontalScrollbar: boolean;
+  /** The native scroll window is independent from the selected filter period. */
+  scrollPosition?: string;
+  /** Native cache bounds. New controls derive these from the typed date domain. */
+  bounds: PivotTimelinePeriod;
+  filterType: PivotTimelineFilterType;
+  /** Native Timeline caption/style identity retained alongside generic colors. */
+  caption?: string;
+  styleName?: string;
   style: PivotControlStyle;
   connectedPivotIds?: string[];
 }
@@ -669,6 +691,14 @@ export function isPivotTimelinePeriod(value: unknown): value is PivotTimelinePer
   if (!isRecord(value)) return false;
   return (value.start === undefined || (typeof value.start === 'string' && value.start.trim().length > 0))
     && (value.end === undefined || (typeof value.end === 'string' && value.end.trim().length > 0));
+}
+
+function isPivotTimelineLevel(value: unknown): value is PivotTimelineLevel {
+  return value === 'years' || value === 'quarters' || value === 'months' || value === 'days';
+}
+
+function isPivotTimelineFilterType(value: unknown): value is PivotTimelineFilterType {
+  return value === 'unknown' || value === 'dateBetween' || value === 'dateNotBetween';
 }
 
 export function isPivotControlStyle(value: unknown): value is PivotControlStyle {
@@ -719,6 +749,17 @@ export function isPivotTimelineDrawingPayload(value: unknown): value is PivotTim
     && typeof value.fieldId === 'string'
     && value.fieldId.trim().length > 0
     && isPivotTimelinePeriod(value.period)
+    && isPivotTimelineLevel(value.level)
+    && isPivotTimelineLevel(value.selectionLevel)
+    && typeof value.showHeader === 'boolean'
+    && typeof value.showSelectionLabel === 'boolean'
+    && typeof value.showTimeLevel === 'boolean'
+    && typeof value.showHorizontalScrollbar === 'boolean'
+    && (value.scrollPosition === undefined || (typeof value.scrollPosition === 'string' && value.scrollPosition.trim().length > 0))
+    && isPivotTimelinePeriod(value.bounds)
+    && isPivotTimelineFilterType(value.filterType)
+    && (value.caption === undefined || typeof value.caption === 'string')
+    && (value.styleName === undefined || (typeof value.styleName === 'string' && value.styleName.trim().length > 0))
     && isPivotControlStyle(value.style)
     && isConnectedPivotIds(value.connectedPivotIds);
 }

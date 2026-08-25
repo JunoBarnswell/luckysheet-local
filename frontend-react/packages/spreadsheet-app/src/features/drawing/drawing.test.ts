@@ -194,7 +194,7 @@ describe('drawing feature', () => {
       { kind: 'camera', payload: { kind: 'camera', sourceRange: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, refreshPolicy: 'live' } },
       { kind: 'form-control', payload: { kind: 'form-control', controlType: 'button', value: null, action: { kind: 'event', eventId: 'button-click' }, enabled: true, style: { fill: '#fff', border: '#000', textColor: '#000' } } },
       { kind: 'slicer', payload: { kind: 'slicer', pivotId: 'pivot-kind', fieldId: 'field-kind', filter: { mode: 'all', memberKeys: [] }, style, settings: { showHeader: true, caption: 'Slicer', multiSelect: true, sort: 'ascending', showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 20 } } },
-      { kind: 'timeline', payload: { kind: 'timeline', pivotId: 'pivot-kind', fieldId: 'field-kind', period: {}, style } },
+      { kind: 'timeline', payload: { kind: 'timeline', pivotId: 'pivot-kind', fieldId: 'field-kind', period: {}, level: 'months', selectionLevel: 'months', showHeader: true, showSelectionLabel: true, showTimeLevel: true, showHorizontalScrollbar: true, bounds: {}, filterType: 'unknown', styleName: 'TimelineStyleLight2', style } },
     ];
     const drawings = payloads.map(({ kind, payload }, index) => ({
       id: `drawing-kind-${index}`,

@@ -1,5 +1,5 @@
 /** XLSX 兼容级别 */
-import type { PivotErrorValue, PivotStyleOptions } from '@react-sheets/core-model';
+import type { PivotErrorValue, PivotStyleOptions, PivotTimelineFilterType, PivotTimelineLevel, PivotTimelinePeriod } from '@react-sheets/core-model';
 
 export type CompatibilityLevel = 'A' | 'B' | 'C';
 export type XlsxCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
@@ -221,6 +221,15 @@ export interface NativePivotControlDefinition {
   pivotCacheId?: number;
   connectedPivotIds?: string[];
   selection?: { start?: string; end?: string };
+  level?: PivotTimelineLevel;
+  selectionLevel?: PivotTimelineLevel;
+  showHeader?: boolean;
+  showSelectionLabel?: boolean;
+  showTimeLevel?: boolean;
+  showHorizontalScrollbar?: boolean;
+  scrollPosition?: string;
+  bounds?: PivotTimelinePeriod;
+  filterType?: PivotTimelineFilterType;
   selectedItemIndexes?: number[];
   styleName?: string;
   caption?: string;
