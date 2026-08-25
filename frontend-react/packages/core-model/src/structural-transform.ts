@@ -1,5 +1,5 @@
 import type { CellData, RangeRef, Row, Column, WorksheetModel } from './index';
-import type { CellHyperlink, CellNote, DrawingObject, StructuralTransformParams, CommentThread, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup } from './domain';
+import type { CellHyperlink, CellNote, DrawingObject, StructuralTransformParams, CommentThread, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
 import { WorkbookModel, noteCellKey } from './index';
 import {
   formatFormula,
@@ -13,6 +13,14 @@ import {
 
 export interface StructuralTransformResult {
   removedCells: Array<{ row: Row; column: Column; cell: CellData }>;
+}
+
+export interface CellShiftPlan {
+  spec: CellShiftSpec;
+  selection: RangeRef;
+  band: RangeRef;
+  count: number;
+  direction: 1 | -1;
 }
 
 /** 结构变换唯一入口 — 一次更新 cells/merges/CF/validation/filter/freeze/charts/pivots/tables/names/drawings/notes/comments/protection/公式引用 */
@@ -30,12 +38,14 @@ export class StructuralTransform {
         return applyAxis(workbook, sheet, 'column', params.at ?? 0, params.count ?? 1, -1);
       case 'move-range':
         return applyMoveRange(workbook, sheet, params.sourceRange!, params.targetOrigin!);
-      case 'shift-cells-down':
-      case 'shift-cells-up':
-      case 'shift-cells-right':
-      case 'shift-cells-left':
-        if (!params.sourceRange) throw new Error('Shift-cells requires sourceRange');
-        return applyShiftCells(workbook, sheet, params.sourceRange, params.kind);
+      case 'cell-shift':
+        if (!params.sourceRange || !params.operation || !params.axis) throw new Error('Cell shift requires range, operation and axis');
+        return applyCellShift(workbook, sheet, {
+          sheetId: params.sheetId,
+          range: params.sourceRange,
+          operation: params.operation,
+          axis: params.axis,
+        });
       default:
         throw new Error(`Unknown structural op: ${(params as StructuralTransformParams).kind}`);
     }
@@ -195,71 +205,6 @@ function shiftDataRegionAxis(
   }
 }
 
-function validateShiftPreservation(
-  workbook: WorkbookModel,
-  sheet: WorksheetModel,
-  selection: RangeRef,
-  kind: 'shift-cells-down' | 'shift-cells-up' | 'shift-cells-right' | 'shift-cells-left',
-): void {
-  const rowDelta = kind === 'shift-cells-down' ? 1 : kind === 'shift-cells-up' ? -1 : 0;
-  const columnDelta = kind === 'shift-cells-right' ? 1 : kind === 'shift-cells-left' ? -1 : 0;
-  const inside = (row: number, column: number): boolean =>
-    row >= selection.startRow && row <= selection.endRow && column >= selection.startColumn && column <= selection.endColumn;
-  const remainsInside = (row: number, column: number): boolean => inside(row + rowDelta, column + columnDelta);
-  for (const sparkline of sheet.sparklines) {
-    if (inside(sparkline.anchor.row, sparkline.anchor.column) && !remainsInside(sparkline.anchor.row, sparkline.anchor.column)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: sparkline ${sparkline.id} would leave the selected range`);
-    }
-  }
-  for (const spill of sheet.spillRanges) {
-    if (inside(spill.anchor.row, spill.anchor.column) && !remainsInside(spill.anchor.row, spill.anchor.column)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: spill range would leave the selected range`);
-    }
-  }
-  for (const drawing of sheet.drawings) {
-    if (drawing.anchor.kind === 'absolute') continue;
-    const row = drawing.anchor.row;
-    const column = drawing.anchor.column;
-    if (row !== undefined && column !== undefined && inside(row, column) && !remainsInside(row, column)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: drawing ${drawing.id} would leave the selected range`);
-    }
-    const endRow = drawing.anchor.endRow;
-    const endColumn = drawing.anchor.endColumn;
-    if (endRow !== undefined && endColumn !== undefined && inside(endRow, endColumn) && !remainsInside(endRow, endColumn)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: drawing ${drawing.id} would lose its extent`);
-    }
-  }
-  for (const [key] of sheet.notes) {
-    const [row, column] = key.split(':').map(Number);
-    if (row !== undefined && column !== undefined && inside(row, column) && !remainsInside(row, column)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: note at ${key} would leave the selected range`);
-    }
-  }
-  for (const [key] of sheet.hyperlinks) {
-    const [row, column] = key.split(':').map(Number);
-    if (row !== undefined && column !== undefined && inside(row, column) && !remainsInside(row, column)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: hyperlink at ${key} would leave the selected range`);
-    }
-  }
-  for (const thread of sheet.commentThreads) {
-    if (inside(thread.row, thread.column) && !remainsInside(thread.row, thread.column)) {
-      throw new Error(`Cannot shift ${selection.sheetId}: comment thread ${thread.id} would leave the selected range`);
-    }
-  }
-  for (const table of workbook.dataModel.tables.values()) {
-    const range = table.sourceRange;
-    if (!range || range.sheetId !== sheet.id) continue;
-    const contained = rangeContains(selection, range);
-    const intersects = rangesIntersect(selection, range);
-    if (intersects && !contained) {
-      throw new Error(`Cannot shift ${selection.sheetId}: workbook table ${table.id} would be partially moved`);
-    }
-    if (contained && (!remainsInside(range.startRow, range.startColumn) || !remainsInside(range.endRow, range.endColumn))) {
-      throw new Error(`Cannot shift ${selection.sheetId}: workbook table ${table.id} would leave the selected range`);
-    }
-  }
-}
-
 function applyAxis(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
@@ -326,84 +271,89 @@ function applyAxis(
   return { removedCells: removed };
 }
 
-function applyShiftCells(
-  workbook: WorkbookModel,
-  sheet: WorksheetModel,
-  range: RangeRef,
-  kind: 'shift-cells-down' | 'shift-cells-up' | 'shift-cells-right' | 'shift-cells-left',
-): StructuralTransformResult {
-  const startRow = Math.min(range.startRow, range.endRow);
-  const endRow = Math.max(range.startRow, range.endRow);
-  const startColumn = Math.min(range.startColumn, range.endColumn);
-  const endColumn = Math.max(range.startColumn, range.endColumn);
-  const selection: RangeRef = {
-    sheetId: range.sheetId,
-    startRow,
-    endRow,
-    startColumn,
-    endColumn,
-  };
-  validateShiftPreservation(workbook, sheet, selection, kind);
-  validateDataRegionShiftPreservation(sheet, selection);
-  const isVertical = kind === 'shift-cells-down' || kind === 'shift-cells-up';
-  const delta = kind === 'shift-cells-down' || kind === 'shift-cells-right' ? 1 : -1;
-  const rowDelta = isVertical ? delta : 0;
-  const columnDelta = isVertical ? 0 : delta;
+export function planCellShift(workbook: WorkbookModel, spec: CellShiftSpec): CellShiftPlan {
+  const sheet = workbook.getSheet(spec.sheetId);
+  if (spec.range.sheetId !== spec.sheetId) throw new Error('Cell shift range must belong to the target worksheet');
+  const selection = normalizeRange(spec.range);
+  const count = spec.axis === 'row'
+    ? selection.endRow - selection.startRow + 1
+    : selection.endColumn - selection.startColumn + 1;
+  const direction: 1 | -1 = spec.operation === 'insert' ? 1 : -1;
+  const band: RangeRef = spec.axis === 'row'
+    ? { sheetId: sheet.id, startRow: selection.startRow, endRow: sheet.rowCount - 1, startColumn: selection.startColumn, endColumn: selection.endColumn }
+    : { sheetId: sheet.id, startRow: selection.startRow, endRow: selection.endRow, startColumn: selection.startColumn, endColumn: sheet.columnCount - 1 };
+  if (selection.startRow < 0 || selection.startColumn < 0 || selection.endRow >= sheet.rowCount || selection.endColumn >= sheet.columnCount) {
+    throw new Error('Cell shift selection is outside worksheet bounds');
+  }
+  validateCellShiftBounds(sheet, selection, band, spec.axis, spec.operation, count);
+  validateDataRegionCellShift(sheet, band);
+  return { spec: { ...spec, range: selection }, selection, band, count, direction };
+}
 
+function applyCellShift(workbook: WorkbookModel, sheet: WorksheetModel, spec: CellShiftSpec): StructuralTransformResult {
+  const plan = planCellShift(workbook, spec);
   const sourceCells: Array<{ row: number; column: number; cell: CellData }> = [];
   sheet.cells.forEach((cell, row, column) => {
-    if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
-      sourceCells.push({ row, column, cell: structuredClone(cell) });
-    }
+    if (insideCell(plan.band, row, column)) sourceCells.push({ row, column, cell: structuredClone(cell) });
   });
-
-  // Clear the bounded region before placing shifted cells. This avoids stale
-  // cells at the newly-empty edge and makes the transform deterministic even
-  // when source and destination overlap.
-  for (let row = startRow; row <= endRow; row++) {
-    for (let column = startColumn; column <= endColumn; column++) sheet.cells.delete(row, column);
-  }
-
   const removedCells: Array<{ row: Row; column: Column; cell: CellData }> = [];
+  for (let row = plan.band.startRow; row <= plan.band.endRow; row += 1) {
+    for (let column = plan.band.startColumn; column <= plan.band.endColumn; column += 1) sheet.cells.delete(row, column);
+  }
   for (const entry of sourceCells) {
-    const nextRow = entry.row + rowDelta;
-    const nextColumn = entry.column + columnDelta;
-    const inside = nextRow >= startRow && nextRow <= endRow && nextColumn >= startColumn && nextColumn <= endColumn;
-    if (!inside) {
+    const destination = mapCellShiftCoordinate(plan, entry.row, entry.column);
+    if (!destination) {
       removedCells.push(entry);
       continue;
     }
-    const cell = entry.cell.formula
-      ? { ...entry.cell, formula: offsetFormulaText(entry.cell.formula, rowDelta, columnDelta) }
-      : entry.cell;
-    sheet.cells.set(nextRow, nextColumn, cell);
+    sheet.cells.set(destination.row, destination.column, entry.cell);
   }
-
-  shiftBoundedMetadata(workbook, sheet, selection, rowDelta, columnDelta);
-  rewriteReferencesForMovedRegion(workbook, sheet, selection, {
-    ...selection,
-    startRow: selection.startRow + rowDelta,
-    endRow: selection.endRow + rowDelta,
-    startColumn: selection.startColumn + columnDelta,
-    endColumn: selection.endColumn + columnDelta,
-  }, rowDelta, columnDelta);
+  shiftCellBandMetadata(workbook, sheet, plan);
+  rewriteFormulas(workbook, sheet.id, plan.spec.axis, plan.spec.axis === 'row' ? plan.selection.startRow : plan.selection.startColumn, plan.count, plan.direction);
   return { removedCells };
 }
 
-function validateDataRegionShiftPreservation(sheet: WorksheetModel, selection: RangeRef): void {
+function validateCellShiftBounds(
+  sheet: WorksheetModel,
+  selection: RangeRef,
+  band: RangeRef,
+  axis: CellShiftSpec['axis'],
+  operation: CellShiftSpec['operation'],
+  count: number,
+): void {
+  sheet.cells.forEach((_cell, row, column) => {
+    if (!insideCell(band, row, column)) return;
+    const destination = mapCellShiftCoordinate({ spec: { sheetId: sheet.id, range: selection, operation, axis }, selection, band, count, direction: operation === 'insert' ? 1 : -1 }, row, column);
+    if (destination && !insideCell(band, destination.row, destination.column)) throw new Error('Cell shift would move data outside worksheet bounds');
+    if (!destination && operation === 'insert') throw new Error('Cell shift would discard data outside worksheet bounds');
+  });
+}
+
+function validateDataRegionCellShift(sheet: WorksheetModel, band: RangeRef): void {
   for (const region of sheet.dataRegions) {
-    if (rangesIntersect(region.range, selection)) {
-      throw new Error(`Cannot shift cells across data region ${region.id}: requires a data-block transaction`);
-    }
+    if (rangesIntersect(region.range, band)) throw new Error(`Cannot shift cells across data region ${region.id}: requires a data-block transaction`);
   }
+}
+
+function mapCellShiftCoordinate(plan: CellShiftPlan, row: number, column: number): { row: number; column: number } | null {
+  if (!insideCell(plan.band, row, column)) return null;
+  const inSelection = insideCell(plan.selection, row, column);
+  if (plan.spec.axis === 'row') {
+    if (plan.spec.operation === 'delete' && inSelection) return null;
+    if (row < plan.selection.startRow) return { row, column };
+    return { row: plan.spec.operation === 'insert' ? row + plan.count : row - plan.count, column };
+  }
+  if (plan.spec.operation === 'delete' && inSelection) return null;
+  if (column < plan.selection.startColumn) return { row, column };
+  return { row, column: plan.spec.operation === 'insert' ? column + plan.count : column - plan.count };
 }
 
 function offsetFormulaText(formula: string, rowOffset: number, columnOffset: number): string {
   if (!formula.trim().startsWith('=')) return formula;
   try {
     return formatFormula(offsetAst(parseFormula(formula), rowOffset, columnOffset));
-  } catch {
-    return formula;
+  } catch (error) {
+    throw new Error(`Formula relocation failed: ${formula}`, { cause: error as Error });
   }
 }
 
@@ -415,138 +365,95 @@ function rangeContains(outer: RangeRef, inner: RangeRef): boolean {
     && inner.endColumn <= outer.endColumn;
 }
 
-function shiftContainedRange(range: RangeRef, selection: RangeRef, rowDelta: number, columnDelta: number): void {
-  if (!rangeContains(selection, range)) return;
-  range.startRow += rowDelta;
-  range.endRow += rowDelta;
-  range.startColumn += columnDelta;
-  range.endColumn += columnDelta;
-}
-
-function shiftBoundedMetadata(workbook: WorkbookModel, sheet: WorksheetModel, selection: RangeRef, rowDelta: number, columnDelta: number): void {
-  for (const merge of sheet.merges) {
-    const contained = rangeContains(selection, merge.range);
-    shiftContainedRange(merge.range, selection, rowDelta, columnDelta);
-    if (contained) {
-      merge.anchor.row += rowDelta;
-      merge.anchor.column += columnDelta;
+function shiftCellBandMetadata(workbook: WorkbookModel, sheet: WorksheetModel, plan: CellShiftPlan): void {
+  const shiftRange = (range: RangeRef): boolean => {
+    if (range.sheetId !== sheet.id || !rangesIntersect(range, plan.band)) return true;
+    if (plan.spec.axis === 'row'
+      ? range.startColumn < plan.selection.startColumn || range.endColumn > plan.selection.endColumn
+      : range.startRow < plan.selection.startRow || range.endRow > plan.selection.endRow) {
+      throw new Error('Cell shift intersects metadata outside the affected band');
     }
+    return shiftRangeRef(range, plan.spec.axis, plan.spec.axis === 'row' ? plan.selection.startRow : plan.selection.startColumn, plan.count, plan.direction);
+  };
+  const mapAnchor = (row: number, column: number): { row: number; column: number } | null => mapCellShiftCoordinate(plan, row, column);
+
+  for (let index = sheet.merges.length - 1; index >= 0; index -= 1) {
+    const merge = sheet.merges[index]!;
+    if (!shiftRange(merge.range)) { sheet.merges.splice(index, 1); continue; }
+    const anchor = mapAnchor(merge.anchor.row, merge.anchor.column);
+    if (anchor) { merge.anchor.row = anchor.row; merge.anchor.column = anchor.column; }
   }
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) {
-    for (const range of rule.ranges) shiftContainedRange(range, selection, rowDelta, columnDelta);
+    rule.ranges = rule.ranges.filter(shiftRange);
   }
-  if (sheet.autoFilter) shiftContainedRange(sheet.autoFilter.range, selection, rowDelta, columnDelta);
+  if (sheet.autoFilter) shiftRange(sheet.autoFilter.range);
   for (const table of sheet.sheetTables) {
-    shiftContainedRange(table.range, selection, rowDelta, columnDelta);
-    if (table.autoFilter) shiftContainedRange(table.autoFilter.range, selection, rowDelta, columnDelta);
+    if (!shiftRange(table.range)) throw new Error(`Cell shift would remove sheet table ${table.id}`);
+    if (table.autoFilter) shiftRange(table.autoFilter.range);
   }
   for (const table of workbook.dataModel.tables.values()) {
-    if (table.sourceRange?.sheetId === sheet.id) shiftContainedRange(table.sourceRange, selection, rowDelta, columnDelta);
+    if (table.sourceRange?.sheetId === sheet.id && !shiftRange(table.sourceRange)) throw new Error(`Cell shift would remove workbook table ${table.id}`);
   }
   for (const payload of sheet.drawingPayloads.values()) {
     if (payload.kind !== 'chart') continue;
-    for (const range of payload.sourceRanges) shiftContainedRange(range, selection, rowDelta, columnDelta);
-    if (payload.categoryRange) shiftContainedRange(payload.categoryRange, selection, rowDelta, columnDelta);
-    for (const series of payload.series ?? []) shiftContainedRange(series.range, selection, rowDelta, columnDelta);
+    payload.sourceRanges = payload.sourceRanges.filter(shiftRange);
+    if (payload.categoryRange) shiftRange(payload.categoryRange);
+    payload.series = payload.series?.filter((series) => shiftRange(series.range));
   }
   for (const pivot of sheet.pivots) {
-    if (pivot.source.kind === 'worksheet-range') shiftContainedRange(pivot.source.range, selection, rowDelta, columnDelta);
-    if (pivot.source.kind === 'worksheet-ranges') {
-      for (const range of pivot.source.ranges) shiftContainedRange(range, selection, rowDelta, columnDelta);
-    }
-    if (pivot.target.sheetId === sheet.id && pivot.target.anchor.row >= selection.startRow && pivot.target.anchor.row <= selection.endRow
-      && pivot.target.anchor.column >= selection.startColumn && pivot.target.anchor.column <= selection.endColumn) {
-      pivot.target.anchor.row += rowDelta;
-      pivot.target.anchor.column += columnDelta;
+    if (pivot.source.kind === 'worksheet-range') shiftRange(pivot.source.range);
+    if (pivot.source.kind === 'worksheet-ranges') pivot.source.ranges = pivot.source.ranges.filter(shiftRange);
+    if (pivot.target.sheetId === sheet.id) {
+      const anchor = mapAnchor(pivot.target.anchor.row, pivot.target.anchor.column);
+      if (anchor) { pivot.target.anchor.row = anchor.row; pivot.target.anchor.column = anchor.column; }
     }
   }
   for (const sparkline of sheet.sparklines) {
-    shiftContainedRange(sparkline.sourceRange, selection, rowDelta, columnDelta);
-    if (sparkline.anchor.row >= selection.startRow && sparkline.anchor.row <= selection.endRow
-      && sparkline.anchor.column >= selection.startColumn && sparkline.anchor.column <= selection.endColumn) {
-      sparkline.anchor.row += rowDelta;
-      sparkline.anchor.column += columnDelta;
-    }
+    shiftRange(sparkline.sourceRange);
+    const anchor = mapAnchor(sparkline.anchor.row, sparkline.anchor.column);
+    if (anchor) { sparkline.anchor.row = anchor.row; sparkline.anchor.column = anchor.column; }
   }
   for (const spill of sheet.spillRanges) {
-    shiftContainedRange(spill.range, selection, rowDelta, columnDelta);
-    if (spill.anchor.row >= selection.startRow && spill.anchor.row <= selection.endRow
-      && spill.anchor.column >= selection.startColumn && spill.anchor.column <= selection.endColumn) {
-      spill.anchor.row += rowDelta;
-      spill.anchor.column += columnDelta;
-    }
+    if (!shiftRange(spill.range)) throw new Error('Cell shift would remove a spill range');
+    const anchor = mapAnchor(spill.anchor.row, spill.anchor.column);
+    if (anchor) { spill.anchor.row = anchor.row; spill.anchor.column = anchor.column; }
   }
-  for (const rule of sheet.protectionRules) {
-    if (rule.range) shiftContainedRange(rule.range, selection, rowDelta, columnDelta);
-  }
-  if (sheet.bandedRule) shiftContainedRange(sheet.bandedRule.range, selection, rowDelta, columnDelta);
+  for (const rule of sheet.protectionRules) if (rule.range) shiftRange(rule.range);
+  if (sheet.bandedRule) shiftRange(sheet.bandedRule.range);
   for (const drawing of sheet.drawings) {
-    if (drawing.anchor.kind === 'absolute') continue;
-    const row = drawing.anchor.row;
-    const column = drawing.anchor.column;
-    if (row == null || column == null) continue;
-    if (row < selection.startRow || row > selection.endRow || column < selection.startColumn || column > selection.endColumn) continue;
-    drawing.anchor.row = row + rowDelta;
-    drawing.anchor.column = column + columnDelta;
-    if (drawing.anchor.endRow != null) drawing.anchor.endRow += rowDelta;
-    if (drawing.anchor.endColumn != null) drawing.anchor.endColumn += columnDelta;
+    if (drawing.anchor.kind === 'absolute' || drawing.anchor.row == null || drawing.anchor.column == null) continue;
+    const anchor = mapAnchor(drawing.anchor.row, drawing.anchor.column);
+    if (!anchor) throw new Error(`Cell shift would remove drawing ${drawing.id}`);
+    drawing.anchor.row = anchor.row;
+    drawing.anchor.column = anchor.column;
+    if (drawing.anchor.endRow != null) drawing.anchor.endRow = mapAnchor(drawing.anchor.endRow, drawing.anchor.endColumn ?? drawing.anchor.column)?.row ?? drawing.anchor.endRow;
+    if (drawing.anchor.endColumn != null) drawing.anchor.endColumn = mapAnchor(drawing.anchor.row, drawing.anchor.endColumn)?.column ?? drawing.anchor.endColumn;
   }
-
-  const nextNotes = new Map<string, CellNote>();
-  for (const [key, note] of sheet.notes) {
-    const [rowText, columnText] = key.split(':');
-    const row = Number(rowText);
-    const column = Number(columnText);
-    if (row >= selection.startRow && row <= selection.endRow && column >= selection.startColumn && column <= selection.endColumn) {
-      const nextRow = row + rowDelta;
-      const nextColumn = column + columnDelta;
-      if (nextRow >= selection.startRow && nextRow <= selection.endRow && nextColumn >= selection.startColumn && nextColumn <= selection.endColumn) {
-        nextNotes.set(noteCellKey(nextRow, nextColumn), note);
-      }
-    } else {
-      nextNotes.set(key, note);
+  const remapMap = <T,>(source: Map<string, T>): Map<string, T> => {
+    const next = new Map<string, T>();
+    for (const [key, value] of source) {
+      const parts = key.split(':');
+      const row = Number(parts[0]);
+      const column = Number(parts[1]);
+      const anchor = mapAnchor(row, column);
+      if (anchor) next.set(noteCellKey(anchor.row, anchor.column), value);
+      else if (!insideCell(plan.band, row, column)) next.set(key, value);
+      else throw new Error('Cell shift would remove anchored metadata');
     }
-  }
+    return next;
+  };
+  const nextNotes = remapMap(sheet.notes);
   sheet.notes.clear();
-  for (const [key, note] of nextNotes) sheet.notes.set(key, note);
-  const nextHyperlinks = new Map<string, CellHyperlink>();
-  for (const [key, hyperlink] of sheet.hyperlinks) {
-    const [rowText, columnText] = key.split(':');
-    const row = Number(rowText);
-    const column = Number(columnText);
-    if (row >= selection.startRow && row <= selection.endRow && column >= selection.startColumn && column <= selection.endColumn) {
-      const nextRow = row + rowDelta;
-      const nextColumn = column + columnDelta;
-      if (nextRow >= selection.startRow && nextRow <= selection.endRow && nextColumn >= selection.startColumn && nextColumn <= selection.endColumn) {
-        nextHyperlinks.set(noteCellKey(nextRow, nextColumn), hyperlink);
-      }
-    } else {
-      nextHyperlinks.set(key, hyperlink);
-    }
-  }
+  for (const [key, value] of nextNotes) sheet.notes.set(key, value);
+  const nextHyperlinks = remapMap(sheet.hyperlinks);
   sheet.hyperlinks.clear();
-  for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
-  const nextThreads: CommentThread[] = [];
-  for (const thread of sheet.commentThreads) {
-    if (thread.row >= selection.startRow && thread.row <= selection.endRow && thread.column >= selection.startColumn && thread.column <= selection.endColumn) {
-      const nextRow = thread.row + rowDelta;
-      const nextColumn = thread.column + columnDelta;
-      if (nextRow < selection.startRow || nextRow > selection.endRow || nextColumn < selection.startColumn || nextColumn > selection.endColumn) continue;
-      nextThreads.push({ ...thread, row: nextRow, column: nextColumn });
-      continue;
-    }
-    nextThreads.push(thread);
-  }
-  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...nextThreads);
-
-  if (rowDelta !== 0) {
-    remapBoundedSet(sheet.hiddenRows, selection.startRow, selection.endRow, rowDelta);
-    remapBoundedMap(sheet.rowHeightsPx, selection.startRow, selection.endRow, rowDelta);
-  }
-  if (columnDelta !== 0) {
-    remapBoundedSet(sheet.hiddenColumns, selection.startColumn, selection.endColumn, columnDelta);
-    remapBoundedMap(sheet.columnWidthsPx, selection.startColumn, selection.endColumn, columnDelta);
-  }
+  for (const [key, value] of nextHyperlinks) sheet.hyperlinks.set(key, value);
+  sheet.commentThreads.splice(0, sheet.commentThreads.length, ...sheet.commentThreads.map((thread) => {
+    const anchor = mapAnchor(thread.row, thread.column);
+    if (anchor) return { ...thread, row: anchor.row, column: anchor.column };
+    if (insideCell(plan.band, thread.row, thread.column)) throw new Error(`Cell shift would remove comment thread ${thread.id}`);
+    return thread;
+  }));
 }
 
 function remapBoundedSet(set: Set<number>, start: number, end: number, delta: number): void {
@@ -606,8 +513,8 @@ function transformFormula(formula: string, transform: (ast: ReturnType<typeof pa
   if (!formula.trim().startsWith('=')) return formula;
   try {
     return formatFormula(transform(parseFormula(formula)));
-  } catch {
-    return formula;
+  } catch (error) {
+    throw new Error(`Formula transformation failed: ${formula}`, { cause: error as Error });
   }
 }
 

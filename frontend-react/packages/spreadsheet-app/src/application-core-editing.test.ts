@@ -128,7 +128,7 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(cells.get(1, 0), undefined);
   });
 
-  it('shiftCells down moves cell contents within the selected range', () => {
+  it('cell insert down preserves the selected data and shifts the following band', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
@@ -145,15 +145,16 @@ describe('WorkbookSession core editing integration', () => {
     });
     app.runCommand('selection.set', {
       sheetId,
-      ranges: [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }],
+      ranges: [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
       primaryRangeIndex: 0,
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
     });
-    app.shiftCells('down');
+    app.applyCellShift('insert', 'row');
 
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(1, 0)?.value, 'top');
+    assert.equal(sheet.cells.get(2, 0)?.value, 'bottom');
     assert.equal(sheet.cells.get(0, 0)?.value, undefined);
   });
 

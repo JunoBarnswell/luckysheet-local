@@ -199,8 +199,10 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'style.preset.set',
   'dataRegion.materialize.commit',
   'dataRegion.materialize.restore',
-  'cells.shifted',
-  'cells.shifted.restore',
+  'cells.inserted',
+  'cells.deleted',
+  'cells.inserted.restore',
+  'cells.deleted.restore',
   'rows.inserted',
   'rows.deleted',
   'columns.inserted',
@@ -225,8 +227,10 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'range.set',
   'range.clear',
   'range.paste',
-  'cells.shifted',
-  'cells.shifted.restore',
+  'cells.inserted',
+  'cells.deleted',
+  'cells.inserted.restore',
+  'cells.deleted.restore',
 ]);
 
 function synchronizeManualCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): void {

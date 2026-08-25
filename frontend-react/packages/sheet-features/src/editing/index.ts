@@ -6,7 +6,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { noteCellKey } from '@react-sheets/core-model';
+import { noteCellKey, planCellShift, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -70,10 +70,8 @@ export interface GoToSpecialParams {
   kind: GoToSpecialKind;
 }
 
-export interface ShiftCellsParams {
-  sheetId: string;
-  range: RangeRef;
-  direction: 'down' | 'up' | 'right' | 'left';
+export interface CellShiftParams extends CellShiftSpec {
+  affectedBand: RangeRef;
 }
 
 export interface SheetViewParams {
@@ -115,10 +113,6 @@ function parseA1Reference(reference: string): { row: number; column: number } | 
   const row = Number(match[2]) - 1;
   if (!Number.isFinite(row) || row < 0 || column < 0) return null;
   return { row, column };
-}
-
-function shiftKind(direction: ShiftCellsParams['direction']): 'shift-cells-down' | 'shift-cells-up' | 'shift-cells-right' | 'shift-cells-left' {
-  return `shift-cells-${direction}` as 'shift-cells-down';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,17 +162,19 @@ function pasteAffectedRanges(value: PasteMutationParams): RangeRef[] {
   return ranges;
 }
 
-function isShiftCellsMutation(value: unknown): value is ShiftCellsParams {
+function isCellShiftMutation(value: unknown): value is CellShiftParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
+    && isRange(value.affectedBand)
     && value.range.sheetId === value.sheetId
-    && (value.direction === 'down' || value.direction === 'up' || value.direction === 'right' || value.direction === 'left');
+    && value.affectedBand.sheetId === value.sheetId
+    && (value.operation === 'insert' || value.operation === 'delete')
+    && (value.axis === 'row' || value.axis === 'column');
 }
 
-type ShiftCellsRestoreParams = { sheetId: string; range: RangeRef; direction: ShiftCellsParams['direction']; cells: Array<{ row: number; column: number; cell: CellData }> };
+type CellShiftRestoreParams = { spec: CellShiftParams; cells: Array<{ row: number; column: number; cell: CellData }> };
 
-function isShiftRestoreMutation(value: unknown): value is ShiftCellsRestoreParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
-    && isShiftCellsMutation({ sheetId: value.sheetId, range: value.range, direction: value.direction })
+function isCellShiftRestoreMutation(value: unknown): value is CellShiftRestoreParams {
+  return isRecord(value) && isCellShiftMutation(value.spec)
     && Array.isArray(value.cells) && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && isCellData(entry.cell));
 }
 
@@ -692,88 +688,39 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerMutation<ShiftCellsParams>({
-    id: 'cells.shifted',
-    handler: (item, context) => {
-      if (!isShiftCellsMutation(item.params)) throw new Error('Invalid cells.shifted mutation payload');
-      const params = item.params;
-      StructuralTransform.apply(context.workbook, { kind: shiftKind(params.direction), sheetId: params.sheetId, at: 0, count: 0, sourceRange: params.range });
-    },
-    metadata: {
-      schema: { name: 'ShiftCells', validate: isShiftCellsMutation },
-      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
-      inverseIds: ['cells.shifted.restore'],
-    },
-  });
-  runtime.registry.registerMutation<ShiftCellsRestoreParams>({
-    id: 'cells.shifted.restore',
-    handler: (item, context) => {
-    if (!isShiftRestoreMutation(item.params)) throw new Error('Invalid cells.shifted.restore mutation payload');
-    const params = item.params;
+  const validateCellShiftEnvelope = (params: CellShiftParams, context: { workbook: WorkbookModel }): void => {
+    const plan = planCellShift(context.workbook, params);
+    if (JSON.stringify(plan.band) !== JSON.stringify(params.affectedBand)) throw new Error('Cell shift affected band is not canonical');
+  };
+  const cellShiftMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted' | 'cells.deleted') => (item: { params: unknown }, context: { workbook: WorkbookModel }) => {
+      if (!isCellShiftMutation(item.params) || item.params.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
+      validateCellShiftEnvelope(item.params, context);
+      StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.sheetId, sourceRange: item.params.range, operation: item.params.operation, axis: item.params.axis });
+    };
+  runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.inserted', handler: cellShiftMutationHandler('insert', 'cells.inserted'), metadata: { schema: { name: 'CellShiftInsert', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, inverseIds: ['cells.inserted.restore'] } });
+  runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.deleted', handler: cellShiftMutationHandler('delete', 'cells.deleted'), metadata: { schema: { name: 'CellShiftDelete', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, inverseIds: ['cells.deleted.restore'] } });
+  const cellShiftRestoreMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted.restore' | 'cells.deleted.restore') => (item: { params: unknown }, context: { workbook: WorkbookModel }) => {
+      if (!isCellShiftRestoreMutation(item.params) || item.params.spec.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
+      validateCellShiftEnvelope(item.params.spec, context);
+      const plan = planCellShift(context.workbook, item.params.spec);
+      const sheet = context.workbook.getSheet(item.params.spec.sheetId);
+      StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.spec.sheetId, sourceRange: item.params.spec.range, operation: operation === 'insert' ? 'delete' : 'insert', axis: item.params.spec.axis });
+      for (let row = plan.band.startRow; row <= plan.band.endRow; row += 1) for (let column = plan.band.startColumn; column <= plan.band.endColumn; column += 1) sheet.cells.delete(row, column);
+      for (const entry of item.params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
+    };
+  runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.inserted.restore', handler: cellShiftRestoreMutationHandler('insert', 'cells.inserted.restore'), metadata: { schema: { name: 'CellShiftInsertRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, inverseIds: ['cells.inserted'] } });
+  runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.deleted.restore', handler: cellShiftRestoreMutationHandler('delete', 'cells.deleted.restore'), metadata: { schema: { name: 'CellShiftDeleteRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, inverseIds: ['cells.deleted'] } });
+  const createCellShiftParams = (params: Omit<CellShiftParams, 'affectedBand'>, context: { workbook: WorkbookModel }) => {
+    const plan = planCellShift(context.workbook, params);
+    const canonicalParams: CellShiftParams = { ...params, affectedBand: plan.band };
     const sheet = context.workbook.getSheet(params.sheetId);
-    if (params.direction) {
-      const reverse: ShiftCellsParams['direction'] = params.direction === 'down'
-        ? 'up'
-        : params.direction === 'up'
-          ? 'down'
-          : params.direction === 'right'
-            ? 'left'
-            : 'right';
-      StructuralTransform.apply(context.workbook, {
-        kind: shiftKind(reverse),
-        sheetId: params.sheetId,
-        at: 0,
-        count: 0,
-        sourceRange: params.range,
-      });
-    }
-    forEachCell(sheet, params.range, (row, column) => sheet.cells.delete(row, column));
-    for (const entry of params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
-    },
-    metadata: {
-      schema: { name: 'ShiftCellsRestore', validate: isShiftRestoreMutation },
-      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
-      inverseIds: ['cells.shifted'],
-    },
-  });
-
-  runtime.registry.registerCommand<ShiftCellsParams>({
-    id: 'sheet.cells.shift',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const snapshot: Array<{ row: number; column: number; cell: CellData }> = [];
-      forEachCell(sheet, params.range, (row, column, cell) => {
-        if (cell) snapshot.push({ row, column, cell: structuredClone(cell) });
-      });
-      const affectedRanges: RangeRef[] = [params.range];
-      context.applyMutation({
-        id: 'cells.shifted',
-        unitId: context.workbook.unitId,
-        sheetId: params.sheetId,
-        params,
-        affectedRanges,
-        inverse: [{
-          id: 'cells.shifted.restore' as const,
-          unitId: context.workbook.unitId,
-          sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, range: params.range, direction: params.direction, cells: snapshot },
-          affectedRanges,
-        }],
-        apply: () => {
-          StructuralTransform.apply(context.workbook, {
-            kind: shiftKind(params.direction),
-            sheetId: params.sheetId,
-            at: 0,
-            count: 0,
-            sourceRange: params.range,
-          });
-        },
-      });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
-    },
-  });
+    const snapshot: Array<{ row: number; column: number; cell: CellData }> = [];
+    forEachCell(sheet, plan.band, (row, column, cell) => { if (cell) snapshot.push({ row, column, cell: structuredClone(cell) }); });
+    const affectedRanges: RangeRef[] = [structuredClone(plan.band)];
+    return { canonicalParams, snapshot, affectedRanges };
+  };
+  runtime.registry.registerCommand<Omit<CellShiftParams, 'affectedBand'>>({ id: 'sheet.cells.insert', execute: (params, context) => { const { canonicalParams, snapshot, affectedRanges } = createCellShiftParams(params, context); context.applyMutation({ id: 'cells.inserted', unitId: context.workbook.unitId, sheetId: params.sheetId, params: canonicalParams, affectedRanges, inverse: [{ id: 'cells.inserted.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { spec: canonicalParams, cells: snapshot }, affectedRanges }], apply: () => StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: params.sheetId, sourceRange: params.range, operation: 'insert', axis: params.axis }) }); return { operationId: context.operationId, mutationCount: 1, affectedRanges }; } });
+  runtime.registry.registerCommand<Omit<CellShiftParams, 'affectedBand'>>({ id: 'sheet.cells.delete', execute: (params, context) => { const { canonicalParams, snapshot, affectedRanges } = createCellShiftParams(params, context); context.applyMutation({ id: 'cells.deleted', unitId: context.workbook.unitId, sheetId: params.sheetId, params: canonicalParams, affectedRanges, inverse: [{ id: 'cells.deleted.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { spec: canonicalParams, cells: snapshot }, affectedRanges }], apply: () => StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: params.sheetId, sourceRange: params.range, operation: 'delete', axis: params.axis }) }); return { operationId: context.operationId, mutationCount: 1, affectedRanges }; } });
 
   runtime.registry.registerMutation<{ sourceSheetId: string; newId: string; newName: string }>({
     id: 'sheet.duplicated',

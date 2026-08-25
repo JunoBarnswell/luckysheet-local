@@ -236,6 +236,7 @@ export type {
   FormulaErrorCode,
   FormulaValue,
   StructuralOpKind,
+  CellShiftSpec,
   StructuralTransformParams,
 } from './domain';
 export {
@@ -249,7 +250,7 @@ export {
   isPivotSlicerDrawingPayload,
   isPivotTimelineDrawingPayload,
 } from './domain';
-export { StructuralTransform, type StructuralTransformResult, ensureDrawing } from './structural-transform';
+export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
 export { applyRowPermutation, validatePermutationMetadata, type RowPermutation } from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
 export {

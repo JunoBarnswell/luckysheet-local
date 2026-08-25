@@ -134,7 +134,7 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 1, 1), '4');
   });
 
-  it('synchronizes formulas after range paste and bounded cell shifts', async () => {
+  it('synchronizes formulas after range paste and cell insert shifts', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 2 } });
@@ -147,10 +147,11 @@ describe('WorkbookSession formula integration', () => {
     });
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 0)?.value, 4);
 
-    app.runCommand('sheet.cells.shift', {
+    app.runCommand('sheet.cells.insert', {
       sheetId,
-      range: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
-      direction: 'down',
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      operation: 'insert',
+      axis: 'row',
     });
     const moved = app['runtime'].model.getSheet(sheetId).cells.get(1, 1);
     assert.equal(moved?.formula, '=A2*3');
