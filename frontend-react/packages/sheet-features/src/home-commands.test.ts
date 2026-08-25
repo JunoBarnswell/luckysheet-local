@@ -4,6 +4,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createFormulaError } from '@react-sheets/formula-engine';
 import { registerSheetCommands } from './index';
+import { parseReplacementValue } from './home-commands';
 
 function setup(): { workbook: WorkbookModel; runtime: CommandRuntime } {
   const workbook = new WorkbookModel('home-commands', 'Home Commands');
@@ -414,4 +415,146 @@ test('table style and drawing pane commands are canonical, persisted, and undoab
   runtime.undo();
   assert.equal(sheet.drawings[0]?.visible, true);
   assert.equal(sheet.drawings[0]?.name, undefined);
+});
+
+test('replacement parser preserves every supported tagged value', () => {
+  assert.deepEqual(parseReplacementValue('0'), { kind: 'number', value: 0 });
+  assert.equal(Object.is(parseReplacementValue('-0').value, -0), true);
+  assert.deepEqual(parseReplacementValue('-12.5'), { kind: 'number', value: -12.5 });
+  assert.deepEqual(parseReplacementValue('TRUE'), { kind: 'boolean', value: true });
+  assert.deepEqual(parseReplacementValue('false'), { kind: 'boolean', value: false });
+  assert.deepEqual(parseReplacementValue("'0"), { kind: 'text', value: '0' });
+  assert.deepEqual(parseReplacementValue('=A1+1'), { kind: 'formula', value: null, formula: '=A1+1' });
+  assert.deepEqual(parseReplacementValue('#DIV/0!'), { kind: 'error', value: null, code: '#DIV/0!' });
+  assert.deepEqual(parseReplacementValue(''), { kind: 'empty', value: null });
+});
+
+test('replacement parser rejects invalid formulas and overflowing numeric literals', () => {
+  assert.throws(() => parseReplacementValue('='), /Invalid replacement formula/);
+  assert.throws(() => parseReplacementValue('1e999'), /not finite/);
+});
+
+test('replace writes numeric zero as a number and is one undo/redo/replay operation', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 10 });
+  sheet.cells.set(1, 0, { value: '10' });
+  const initial = workbook.snapshot();
+
+  runtime.execute('sheet.range.replace', {
+    sheetId: sheet.id,
+    find: '10',
+    replace: '0',
+    entireCell: true,
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.value, 0);
+  assert.equal(typeof sheet.cells.get(0, 0)?.value, 'number');
+  assert.equal(sheet.cells.get(1, 0)?.value, 0);
+  assert.equal(typeof sheet.cells.get(1, 0)?.value, 'number');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  const entry = runtime.getUndoEntries()[0];
+  assert.ok(entry);
+  const remoteWorkbook = WorkbookModel.fromSnapshot(initial);
+  const remoteRuntime = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(entry.redo);
+  const remoteSheet = remoteWorkbook.getSheet(sheet.id);
+  assert.equal(remoteSheet.cells.get(0, 0)?.value, 0);
+  assert.equal(typeof remoteSheet.cells.get(0, 0)?.value, 'number');
+  assert.equal(remoteSheet.cells.get(1, 0)?.value, 0);
+
+  runtime.undo();
+  assert.equal(sheet.cells.get(0, 0)?.value, 10);
+  assert.equal(sheet.cells.get(1, 0)?.value, '10');
+  runtime.redo();
+  assert.equal(sheet.cells.get(0, 0)?.value, 0);
+  assert.equal(sheet.cells.get(1, 0)?.value, 0);
+});
+
+test('replace parses negative and fractional replacements without previous-value coercion', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 42 });
+  runtime.execute('sheet.range.replace', {
+    sheetId: sheet.id,
+    find: '42',
+    replace: '-3.25',
+    entireCell: true,
+  });
+  assert.equal(sheet.cells.get(0, 0)?.value, -3.25);
+  assert.equal(typeof sheet.cells.get(0, 0)?.value, 'number');
+});
+
+test('replace handles explicit formula and formula error values through the typed contract', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A1+1' });
+  runtime.execute('sheet.range.replace', {
+    sheetId: sheet.id,
+    find: '=A1+1',
+    replace: '=B1+1',
+    entireCell: true,
+    searchIn: 'formulas',
+  });
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=B1+1');
+  assert.equal(sheet.cells.get(0, 0)?.value, null);
+
+  sheet.cells.set(1, 0, { value: null, formulaValue: { kind: 'error', code: '#DIV/0!', message: '' } });
+  runtime.execute('sheet.range.replace', {
+    sheetId: sheet.id,
+    find: '#DIV/0!',
+    replace: '0',
+    entireCell: true,
+    searchIn: 'values',
+  });
+  assert.equal(sheet.cells.get(1, 0)?.value, 0);
+  assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.formula, undefined);
+});
+
+test('empty, overflowing, and invalid formula replacements fail before any cell or history mutation', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'old' });
+  sheet.cells.set(0, 1, { value: 'old' });
+  const before = workbook.snapshot();
+
+  for (const replace of ['', '1e999']) {
+    assert.throws(() => runtime.execute('sheet.range.replace', {
+      sheetId: sheet.id,
+      find: 'old',
+      replace,
+      entireCell: true,
+    }));
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.equal(runtime.getHistoryDepth().undo, 0);
+  }
+
+  sheet.cells.set(0, 0, { value: null, formula: '=A1' });
+  const beforeFormulaFailure = workbook.snapshot();
+  assert.throws(() => runtime.execute('sheet.range.replace', {
+    sheetId: sheet.id,
+    find: '=A1',
+    replace: 'not-a-formula',
+    entireCell: true,
+    searchIn: 'formulas',
+  }), /formula/);
+  assert.deepEqual(workbook.snapshot(), beforeFormulaFailure);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
+test('replace all does not re-match its own zero result', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: '111' });
+  runtime.execute('sheet.range.replace', {
+    sheetId: sheet.id,
+    find: '1',
+    replace: '0',
+  });
+  assert.equal(sheet.cells.get(0, 0)?.value, 0);
+  assert.equal(typeof sheet.cells.get(0, 0)?.value, 'number');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
 });

@@ -9,7 +9,6 @@ import type {
   FilterCriterion,
   FilterScalar,
   RangeRef,
-  WorkbookModel,
   WorksheetModel,
   ConditionalFormatTopBottom,
 } from "@react-sheets/core-model";
@@ -1434,77 +1433,6 @@ function judge(ok: boolean, rule: DataValidationRule): DataValidationResult {
     blocking: !ok && (rule.alertStyle ?? 'stop') === 'stop',
     message: ok ? undefined : validationMessage(rule, "不符合数据验证规则"),
   };
-}
-
-// ---------- 查找替换 ----------
-
-export interface FindReplaceParams {
-  find: string;
-  replace: string;
-  matchCase: boolean;
-  entireCell: boolean;
-  scope: "sheet" | "workbook";
-}
-
-export interface RangeValuesPatch {
-  sheetId: string;
-  startRow: number;
-  startColumn: number;
-  values: CellData[][];
-}
-
-/** 收集需要替换的区域补丁(每个命中行生成一个连续区段补丁) */
-export function collectFindReplacements(
-  workbook: WorkbookModel,
-  params: FindReplaceParams,
-): RangeValuesPatch[] {
-  if (!params.find) return [];
-  const sheets = params.scope === "workbook"
-    ? workbook.getSheets()
-    : [workbook.getSheet(workbook.primarySheetId)];
-  const patches: RangeValuesPatch[] = [];
-
-  for (const sheet of sheets) {
-    const byRow = new Map<number, Map<number, CellData>>();
-    sheet.cells.forEach((cell, row, column) => {
-      const original = cellText(cell);
-      if (!original) return;
-      const haystack = params.matchCase ? original : original.toLowerCase();
-      const needle = params.matchCase ? params.find : params.find.toLowerCase();
-      const hit = params.entireCell ? haystack === needle : haystack.includes(needle);
-      if (!hit) return;
-      const replaced = params.entireCell
-        ? params.replace
-        : (params.matchCase ? original : original)
-            .split(params.find)
-            .join(params.replace);
-      const next: CellData = { ...cell, value: coerceLike(replaced, cell.value) };
-      delete next.displayValue;
-      let rowMap = byRow.get(row);
-      if (!rowMap) { rowMap = new Map(); byRow.set(row, rowMap); }
-      rowMap.set(column, next);
-    });
-
-    for (const [row, columns] of byRow) {
-      const columnList = [...columns.keys()].sort((a, b) => a - b);
-      const startColumn = columnList[0]!;
-      const endColumn = columnList.at(-1)!;
-      const values: CellData[][] = [[]];
-      for (let c = startColumn; c <= endColumn; c++) {
-        values[0]!.push(columns.get(c) ?? { value: null });
-      }
-      patches.push({ sheetId: sheet.id, startRow: row, startColumn, values });
-    }
-  }
-  return patches;
-}
-
-function coerceLike(text: string, previous: CellData["value"]): CellData["value"] {
-  if (typeof previous === "number") {
-    const numeric = Number(text.replace(/[$,%]/g, ""));
-    if (Number.isFinite(numeric) && text !== "") return numeric;
-  }
-  return text;
 }
 
 /** 大纲折叠隐藏行 — 独立于 filter hiddenRows 语义；保留分组首行可见 */

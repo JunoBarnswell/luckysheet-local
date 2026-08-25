@@ -41,7 +41,7 @@ export function FindReplaceDialog({ initialFind = '', locale, open, onClose, onR
           <Button
             size="sm"
             variant="primary"
-            disabled={!find}
+            disabled={!find || replace === ''}
             data-testid="find-replace-all"
             onClick={() => {
               void Promise.resolve(onReplaceAll({ find, replace, matchCase, entireCell, scope })).then(setResult);
