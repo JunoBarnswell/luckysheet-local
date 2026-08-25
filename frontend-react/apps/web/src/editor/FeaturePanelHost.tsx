@@ -112,6 +112,7 @@ export function FeaturePanelHost({
           tables={state.tables}
           relationships={state.relationships}
           onUpdateTableSheet={(definition) => session.updateTableSheetDefinition(definition)}
+          onUpdateGanttSheet={(definition) => session.updateGanttSheetDefinition(definition)}
           onReadDataRows={session.readDataTable.bind(session)}
           onRemoveDataTable={session.removeDataTable.bind(session)}
           onCommand={dispatchCommand}

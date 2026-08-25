@@ -14,6 +14,7 @@ import type {
   StructuralTransformParams,
   DefinedNameModel,
   TableSheetDefinition,
+  GanttSheetDefinition,
 } from '@react-sheets/core-model';
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
@@ -82,6 +83,11 @@ export interface AddTableParams extends WorkbookTableModel {}
 export interface TableSheetUpdateParams {
   sheetId: string;
   definition: TableSheetDefinition;
+}
+
+export interface GanttSheetUpdateParams {
+  sheetId: string;
+  definition: GanttSheetDefinition;
 }
 
 export interface SetRangeValuesParams {
@@ -426,6 +432,43 @@ function normalizeTableSheetDefinition(workbook: WorkbookModel, params: TableShe
   return structuredClone(params.definition);
 }
 
+function isGanttSheetDefinition(value: unknown): value is GanttSheetDefinition {
+  if (!isRecord(value) || typeof value.viewId !== 'string' || !isRecord(value.fieldMap)
+    || !isRecord(value.calendar) || !isRecord(value.timeline) || !isRecord(value.dependencyStyle)) return false;
+  const fieldMap = value.fieldMap;
+  if (['id', 'title', 'start', 'end', 'progress'].some((key) => typeof fieldMap[key] !== 'string' || String(fieldMap[key]).trim().length === 0)) return false;
+  if (fieldMap.parentId !== undefined && typeof fieldMap.parentId !== 'string') return false;
+  if (fieldMap.dependencies !== undefined && typeof fieldMap.dependencies !== 'string') return false;
+  const calendar = value.calendar;
+  if (!Array.isArray(calendar.workingDays) || !calendar.workingDays.every((day) => Number.isInteger(day) && day >= 0 && day <= 6)) return false;
+  if (typeof calendar.dayStartHour !== 'number' || !Number.isFinite(calendar.dayStartHour)
+    || typeof calendar.dayEndHour !== 'number' || !Number.isFinite(calendar.dayEndHour)
+    || calendar.dayStartHour < 0 || calendar.dayEndHour > 24 || calendar.dayStartHour >= calendar.dayEndHour) return false;
+  const timeline = value.timeline;
+  if (!['day', 'week', 'month', 'quarter'].includes(String(timeline.unit))) return false;
+  if (timeline.start !== undefined && typeof timeline.start !== 'string') return false;
+  if (timeline.end !== undefined && typeof timeline.end !== 'string') return false;
+  const style = value.dependencyStyle;
+  return typeof style.color === 'string' && style.color.trim().length > 0 && typeof style.width === 'number' && Number.isFinite(style.width) && style.width > 0;
+}
+
+function normalizeGanttSheetDefinition(workbook: WorkbookModel, params: GanttSheetUpdateParams): GanttSheetDefinition {
+  if (!isGanttSheetDefinition(params.definition)) throw new Error('GanttSheet definition is invalid');
+  const sheet = workbook.getSheet(params.sheetId);
+  if (sheet.kind !== 'gantt-sheet' || !sheet.ganttSheet) throw new Error('GanttSheet definition can only be updated on a gantt-sheet');
+  const table = workbook.dataModel.tables.get(params.definition.viewId);
+  if (!table) throw new Error(`GanttSheet binding table is unavailable: ${params.definition.viewId}`);
+  const fieldIds = new Set(table.fields.map((field) => field.id));
+  const mapping = params.definition.fieldMap;
+  for (const key of ['id', 'title', 'start', 'end', 'progress'] as const) {
+    if (!fieldIds.has(mapping[key])) throw new Error(`GanttSheet field mapping ${key} is unavailable`);
+  }
+  for (const key of ['parentId', 'dependencies'] as const) {
+    if (mapping[key] !== undefined && !fieldIds.has(mapping[key]!)) throw new Error(`GanttSheet field mapping ${key} is unavailable`);
+  }
+  return structuredClone(params.definition);
+}
+
 function tableSheetAffectedRange(workbook: WorkbookModel, params: { sheetId: string }): RangeRef[] {
   const sheet = workbook.getSheet(params.sheetId);
   return [{ sheetId: params.sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
@@ -610,6 +653,20 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['tableSheet.update'],
     },
   });
+  runtime.registry.registerMutation<GanttSheetUpdateParams>({
+    id: 'ganttSheet.update',
+    handler: (item, context) => {
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isGanttSheetDefinition(item.params.definition)) throw new Error('Invalid ganttSheet.update mutation payload');
+      const params = item.params as GanttSheetUpdateParams;
+      context.workbook.getSheet(params.sheetId).ganttSheet = normalizeGanttSheetDefinition(context.workbook, params);
+    },
+    metadata: {
+      schema: { name: 'GanttSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isGanttSheetDefinition(value.definition) },
+      permission: { capability: 'gantt-sheet.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
+      inverseIds: ['ganttSheet.update'],
+    },
+  });
 
   runtime.registry.registerCommand<{ id: string }>({
     id: 'sheet.remove',
@@ -692,6 +749,34 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => { sheet.tableSheet = structuredClone(definition); },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  runtime.registry.registerCommand<GanttSheetUpdateParams>({
+    id: 'ganttSheet.update',
+    execute: (params, context) => {
+      const sheet = context.workbook.getSheet(params.sheetId);
+      const previous = sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined;
+      if (sheet.kind !== 'gantt-sheet' || !previous) throw new Error('GanttSheet definition can only be updated on a gantt-sheet');
+      const definition = normalizeGanttSheetDefinition(context.workbook, params);
+      if (JSON.stringify(previous) === JSON.stringify(definition)) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = tableSheetAffectedRange(context.workbook, params);
+      context.applyMutation({
+        id: 'ganttSheet.update',
+        unitId: context.workbook.unitId,
+        sheetId: params.sheetId,
+        params: { sheetId: params.sheetId, definition },
+        affectedRanges,
+        inverse: [{
+          id: 'ganttSheet.update',
+          unitId: context.workbook.unitId,
+          sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, definition: previous },
+          affectedRanges,
+        }],
+        apply: () => { sheet.ganttSheet = structuredClone(definition); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

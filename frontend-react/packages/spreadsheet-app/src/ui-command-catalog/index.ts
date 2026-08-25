@@ -14,7 +14,11 @@ export type RibbonCatalogTabId =
   | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
-  | 'tableSheetDesign';
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat';
 
 export type RibbonGroupId =
   | 'workbook'
@@ -55,7 +59,11 @@ export type RibbonGroupId =
   | 'settings'
   | 'pivotAnalyze'
   | 'pivotDesign'
-  | 'tableSheetDesign';
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat';
 
 export type RibbonCommandId =
   | 'save'
@@ -200,7 +208,11 @@ export type RibbonCommandId =
   | 'pivotRefresh'
   | 'pivotFieldList'
   | 'tableSheetFieldList'
-  | 'tableSheetColumnSettings';
+  | 'tableSheetColumnSettings'
+  | 'ganttFieldMapping'
+  | 'ganttCalendar'
+  | 'ganttTimeline'
+  | 'ganttDependencyStyle';
 
 export type RibbonTextKey = `groups.${RibbonGroupId}` | `commands.${RibbonCommandId}`;
 
@@ -362,6 +374,7 @@ export interface RibbonCommandContext {
   openCreatePivotDialog?: () => void;
   activePivot?: { sheetId: string; pivotId: string };
   activeTableSheet?: { sheetId: string; viewId: string };
+  activeGanttSheet?: { sheetId: string; viewId: string };
   actions: RibbonCommandActions;
   dispatchSessionIntent: (intent: UiSessionIntent) => void;
   sampleAutomationScript: string;
@@ -478,6 +491,10 @@ export const RIBBON_TEXT = {
     pivotAnalyze: 'groups.pivotAnalyze',
     pivotDesign: 'groups.pivotDesign',
     tableSheetDesign: 'groups.tableSheetDesign',
+    ganttTask: 'groups.ganttTask',
+    ganttProject: 'groups.ganttProject',
+    ganttView: 'groups.ganttView',
+    ganttFormat: 'groups.ganttFormat',
   },
   commands: {
     save: 'commands.save',
@@ -573,6 +590,10 @@ export const RIBBON_TEXT = {
     pivotFieldList: 'commands.pivotFieldList',
     tableSheetFieldList: 'commands.tableSheetFieldList',
     tableSheetColumnSettings: 'commands.tableSheetColumnSettings',
+    ganttFieldMapping: 'commands.ganttFieldMapping',
+    ganttCalendar: 'commands.ganttCalendar',
+    ganttTimeline: 'commands.ganttTimeline',
+    ganttDependencyStyle: 'commands.ganttDependencyStyle',
     chartBuilder: 'commands.chartBuilder',
     sparkline: 'commands.sparkline',
     shapesLines: 'commands.shapesLines',
@@ -675,6 +696,10 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('pivotAnalyze', 'pivotAnalyze', 10),
   group('pivotDesign', 'pivotDesign', 10),
   group('tableSheetDesign', 'tableSheetDesign', 10),
+  group('ganttTask', 'ganttTask', 10),
+  group('ganttProject', 'ganttProject', 20),
+  group('ganttView', 'ganttView', 30),
+  group('ganttFormat', 'ganttFormat', 40),
 ] as const;
 
 const ribbonSurface = (
@@ -1018,6 +1043,22 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     ...intent('tableSheetColumnSettings', 'tableSheetDesign', 'tableSheetDesign', RIBBON_TEXT.commands.tableSheetColumnSettings, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
     enabled: (context) => Boolean(context.activeTableSheet),
+  },
+  {
+    ...intent('ganttFieldMapping', 'ganttTask', 'ganttTask', RIBBON_TEXT.commands.ganttFieldMapping, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('ganttCalendar', 'ganttProject', 'ganttProject', RIBBON_TEXT.commands.ganttCalendar, () => ({ type: 'panel.open', panel: 'data' }), 'sliders'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('ganttTimeline', 'ganttView', 'ganttView', RIBBON_TEXT.commands.ganttTimeline, () => ({ type: 'panel.open', panel: 'data' }), 'layout'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
+  },
+  {
+    ...intent('ganttDependencyStyle', 'ganttFormat', 'ganttFormat', RIBBON_TEXT.commands.ganttDependencyStyle, () => ({ type: 'panel.open', panel: 'data' }), 'sparkles'),
+    enabled: (context) => Boolean(context.activeGanttSheet),
   },
   intent('chartBuilder', 'insert', 'insertCharts', RIBBON_TEXT.commands.chartBuilder, () => ({ type: 'panel.open', panel: 'chart' }), 'chart-column'),
   intent('sparkline', 'insert', 'insertCharts', RIBBON_TEXT.commands.sparkline, () => ({ type: 'panel.open', panel: 'sparkline' }), 'sparkline'),

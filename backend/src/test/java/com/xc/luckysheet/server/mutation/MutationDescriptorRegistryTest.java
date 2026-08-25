@@ -108,7 +108,7 @@ class MutationDescriptorRegistryTest {
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
                 "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
-                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update",
+                "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
@@ -148,6 +148,30 @@ class MutationDescriptorRegistryTest {
                 """));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
         assertEquals("name", snapshot.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
+    }
+
+    @Test
+    void ganttSheetUpdateUsesTheBoundTableAndWholeSheetRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {
+                  "dataModel":{"tables":[{"id":"tasks","fields":[{"id":"id"},{"id":"title"},{"id":"start"},{"id":"end"},{"id":"progress"},{"id":"parent"},{"id":"deps"}]}]},
+                  "sheets":[{"id":"sheet-1","kind":"gantt-sheet","rowCount":20,"columnCount":8,"cells":{},
+                    "ganttSheet":{"viewId":"tasks","fieldMap":{"id":"id","title":"title","start":"start","end":"end","progress":"progress","parentId":"parent","dependencies":"deps"},"calendar":{"workingDays":[1,2,3,4,5],"dayStartHour":9,"dayEndHour":18},"timeline":{"unit":"week"},"dependencyStyle":{"color":"#64748b","width":1}}}
+                ]}
+                """);
+        var update = new OperationMutation("ganttSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"tasks","fieldMap":{"id":"id","title":"title","start":"start","end":"end","progress":"progress","parentId":"parent","dependencies":"deps"},"calendar":{"workingDays":[1,2,3,4,5],"dayStartHour":8,"dayEndHour":17},"timeline":{"unit":"day"},"dependencyStyle":{"color":"#334155","width":2}}}
+                """));
+        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        assertEquals(1, prepared.affectedRanges().size());
+        assertEquals(19, prepared.affectedRanges().getFirst().endRow());
+        var updated = registry.applyPublicMutations(snapshot, List.of(update));
+        assertEquals("day", updated.path("sheets").get(0).path("ganttSheet").path("timeline").path("unit").asText());
+        var invalid = new OperationMutation("ganttSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"tasks","fieldMap":{"id":"missing","title":"title","start":"start","end":"end","progress":"progress"},"calendar":{"workingDays":[1],"dayStartHour":9,"dayEndHour":18},"timeline":{"unit":"week"},"dependencyStyle":{"color":"#64748b","width":1}}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
     }
 
     @Test

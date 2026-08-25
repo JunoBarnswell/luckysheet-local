@@ -95,6 +95,38 @@ test('TableSheet designer updates the canonical definition and rejects unknown f
   assert.deepEqual(sheet.tableSheet, before);
 });
 
+test('GanttSheet designer updates canonically, supports undo/redo, and rejects unmapped fields', () => {
+  const workbook = new WorkbookModel('unit-gantt-sheet-designer', 'GanttSheet Designer');
+  const table = {
+    id: 'gantt-table-1', name: 'Tasks', sourceSheetId: 'sheet-1',
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 6 }, rowCount: 3,
+    fields: [
+      { id: 'id', name: 'ID', ordinal: 0, type: 'text' as const },
+      { id: 'title', name: 'Title', ordinal: 1, type: 'text' as const },
+      { id: 'start', name: 'Start', ordinal: 2, type: 'date' as const },
+      { id: 'end', name: 'End', ordinal: 3, type: 'date' as const },
+      { id: 'progress', name: 'Progress', ordinal: 4, type: 'number' as const },
+      { id: 'parent', name: 'Parent', ordinal: 5, type: 'text' as const },
+      { id: 'deps', name: 'Dependencies', ordinal: 6, type: 'text' as const },
+    ], blockSize: 4096, blocks: [], revision: 0,
+  };
+  workbook.addTable(table);
+  const definition = { viewId: table.id, fieldMap: { id: 'id', title: 'title', start: 'start', end: 'end', progress: 'progress', parentId: 'parent', dependencies: 'deps' }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' as const }, dependencyStyle: { color: '#64748b', width: 1 } };
+  const sheet = workbook.addAdvancedSheet({ id: 'gantt-sheet-1', name: 'Tasks view', kind: 'gantt-sheet', ganttSheet: definition });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  runtime.execute('ganttSheet.update', { sheetId: sheet.id, definition: { ...definition, timeline: { unit: 'day' as const } } });
+  assert.equal(sheet.ganttSheet?.timeline.unit, 'day');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.undo();
+  assert.equal(sheet.ganttSheet?.timeline.unit, 'week');
+  runtime.redo();
+  assert.equal(sheet.ganttSheet?.timeline.unit, 'day');
+  const before = structuredClone(sheet.ganttSheet);
+  assert.throws(() => runtime.execute('ganttSheet.update', { sheetId: sheet.id, definition: { ...definition, fieldMap: { ...definition.fieldMap, start: 'missing' } } }), /field mapping|unavailable|invalid/i);
+  assert.deepEqual(sheet.ganttSheet, before);
+});
+
 test('sheet commands: range.clear, style.set, and merges', () => {
   const workbook = new WorkbookModel('unit-sheet-cmd2', 'Commands2');
   const runtime = new CommandRuntime(workbook);

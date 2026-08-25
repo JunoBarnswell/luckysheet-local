@@ -32,6 +32,10 @@ export type MessageKey =
   | 'pivotAnalyze'
   | 'pivotDesign'
   | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat'
   | 'engineConnected'
   | 'searchWorkbook';
 
@@ -56,6 +60,7 @@ const textTranslations: Record<string, string> = {
   'Print': '打印',
   'Tables': '数据表',
   'TableSheet Designer': '集算表设计器',
+  'GanttSheet Designer': '甘特表设计器',
   'History': '历史',
   'Clipboard': '剪贴板',
   'Font': '字体',

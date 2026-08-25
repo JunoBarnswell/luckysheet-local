@@ -46,6 +46,7 @@ import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover } from './pivot/PivotHeaderFilterPopover';
 import { createMergeSpatialIndex } from './canvas/merge-spatial-index';
+import { GanttViewOverlay } from './GanttViewOverlay';
 
 export interface SheetCanvasProps {
   locale: Locale;
@@ -863,6 +864,9 @@ export function SheetCanvas({
                 scrollTick={scrollTick}
               />
             )) : null}
+            {engineReady && sheet.kind === 'gantt-sheet' && sheet.ganttSheet ? (
+              <GanttViewOverlay engine={engineRef.current} sheet={sheet} tables={tables ?? []} scrollTick={scrollTick} />
+            ) : null}
             {engineReady ? pivotHeaderFilterCells.map(({ cell, projection }) => {
               const row = projection.target.anchor.row + cell.row;
               const column = projection.target.anchor.column + cell.column;

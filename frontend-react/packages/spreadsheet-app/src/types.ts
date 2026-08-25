@@ -15,7 +15,11 @@ export type RibbonTabId =
   | 'automate'
   | 'pivotAnalyze'
   | 'pivotDesign'
-  | 'tableSheetDesign';
+  | 'tableSheetDesign'
+  | 'ganttTask'
+  | 'ganttProject'
+  | 'ganttView'
+  | 'ganttFormat';
 export type SidebarPanelId =
   | 'inspector'
   | 'chart'
@@ -133,7 +137,8 @@ export type ActiveContext =
   | { kind: 'pivot'; sheetId: string; pivotId: string }
   | { kind: 'drawing'; sheetId: string; drawingId: string }
   | { kind: 'table'; sheetId: string; tableId: string }
-  | { kind: 'table-sheet'; sheetId: string; viewId: string };
+  | { kind: 'table-sheet'; sheetId: string; viewId: string }
+  | { kind: 'gantt-sheet'; sheetId: string; viewId: string };
 
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =

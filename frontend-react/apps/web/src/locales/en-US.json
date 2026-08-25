@@ -26,6 +26,10 @@
   "pivotAnalyze": "PivotTable Analyze",
   "pivotDesign": "PivotTable Design",
   "tableSheetDesign": "TableSheet Design",
+  "ganttTask": "Gantt Tasks",
+  "ganttProject": "Gantt Project",
+  "ganttView": "Gantt View",
+  "ganttFormat": "Gantt Format",
   "engineConnected": "Engine Connected",
   "searchWorkbook": "Search workbook",
   "formulaBar": {
@@ -277,6 +281,10 @@
       "pivotAnalyze": "PivotTable",
       "pivotDesign": "PivotTable",
       "tableSheetDesign": "TableSheet"
+      ,"ganttTask": "Gantt Tasks"
+      ,"ganttProject": "Gantt Project"
+      ,"ganttView": "Gantt View"
+      ,"ganttFormat": "Gantt Format"
     },
     "commands": {
       "settings": "Options",
@@ -374,6 +382,10 @@
       "pivotFieldList": "Field List",
       "tableSheetFieldList": "Field List",
       "tableSheetColumnSettings": "Column Settings",
+      "ganttFieldMapping": "Task Fields",
+      "ganttCalendar": "Calendar",
+      "ganttTimeline": "Timeline",
+      "ganttDependencyStyle": "Dependency Style",
       "chartBuilder": "Chart Builder",
       "sparkline": "Sparkline",
       "shapesLines": "Shapes & Lines",
