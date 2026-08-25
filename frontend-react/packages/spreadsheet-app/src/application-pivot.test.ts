@@ -75,6 +75,26 @@ describe('WorkbookSession PivotTable integration', () => {
     assert.equal(restoredSheet.pivots[0]?.id, pivotId);
   });
 
+  it('keeps the worksheet scope on a named-range source through create, undo, and redo', () => {
+    const app = new WorkbookSession();
+    const { sheetId } = seed(app);
+    app.setDefinedName({ name: 'SharedSource', formula: "='Sheet1'!A1:B3", scope: 'workbook' });
+    app.setDefinedName({ name: 'SharedSource', formula: "='Sheet1'!A1:B3", scope: 'sheet', sheetId });
+
+    const pivotId = app.createPivotTable({
+      source: { kind: 'named-range', name: 'SharedSource', sheetId },
+      destination: { kind: 'existing-sheet', sheetId, anchor: { row: 5, column: 0 } },
+    });
+    assert.ok(pivotId, app.getUiSnapshot().notice);
+    const source = app.getUiSnapshot().selectedSheet.pivots.find((pivot) => pivot.id === pivotId)?.source;
+    assert.deepEqual(source, { kind: 'named-range', name: 'SharedSource', sheetId });
+
+    app.undo();
+    assert.equal(app.getUiSnapshot().selectedSheet.pivots.some((pivot) => pivot.id === pivotId), false);
+    app.redo();
+    assert.deepEqual(app.getUiSnapshot().selectedSheet.pivots.find((pivot) => pivot.id === pivotId)?.source, { kind: 'named-range', name: 'SharedSource', sheetId });
+  });
+
   it('leaves workbook and history unchanged when create preflight rejects duplicate headers', () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);

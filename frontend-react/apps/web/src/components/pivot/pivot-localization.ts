@@ -33,6 +33,11 @@ const messages = {
 
 export type PivotMessageKey = keyof typeof messages['en-US'];
 export function pivotText(locale: Locale, key: PivotMessageKey): string { return messages[locale][key]; }
+export function pivotDefinedNameScopeText(locale: Locale, scope: 'workbook' | 'sheet', sheetName?: string): string {
+  if (scope === 'workbook') return locale === 'zh-CN' ? '工作簿' : 'Workbook';
+  const label = locale === 'zh-CN' ? '工作表' : 'Worksheet';
+  return `${label}: ${sheetName ?? ''}`.trim();
+}
 export function pivotTemplate(locale: Locale, key: PivotMessageKey, values: Record<string, string | number>): string {
   return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), pivotText(locale, key));
 }

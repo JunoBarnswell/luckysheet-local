@@ -340,8 +340,8 @@ function validatePivotSource(value: unknown): void {
     return;
   }
   if (source.kind === 'named-range') {
-    validateExactKeys(source, ['kind', 'name'], 'Pivot named source');
-    if (!isNonEmptyString(source.name)) throw new Error('Pivot named source is invalid');
+    validateExactKeys(source, ['kind', 'name', 'sheetId'], 'Pivot named source');
+    if (!isNonEmptyString(source.name) || (source.sheetId !== undefined && !isNonEmptyString(source.sheetId))) throw new Error('Pivot named source is invalid');
     return;
   }
   if (source.kind === 'data-source') {

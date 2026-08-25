@@ -11,6 +11,7 @@ import type {
   PivotDisplayOptions,
   PivotSource,
   PivotSort,
+  DefinedNameModel,
 } from "@react-sheets/core-model";
 import { DEFAULT_PIVOT_STYLE_OPTIONS } from "@react-sheets/core-model";
 import {
@@ -23,7 +24,7 @@ import {
 import { parseRangeInput } from "../domain/range-input";
 import type { PivotExpansionCommand, PivotPanelCallbacks, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from "../components/pivot/pivot-contract";
 import type { Locale } from '../i18n';
-import { pivotText } from '../components/pivot/pivot-localization';
+import { pivotDefinedNameScopeText, pivotText } from '../components/pivot/pivot-localization';
 
 export interface EditorCommandControllerOptions {
   session: WorkbookSession;
@@ -48,7 +49,7 @@ export interface EditorCommandController {
   pivotTimelineControls: PivotTimelineControl[];
   pivotPanelState: PivotPanelState;
   pivotCallbacks: PivotPanelCallbacks;
-  pivotSourceOptions: Array<{ id: string; label: string; source: PivotSource }>;
+  pivotSourceOptions: PivotSourceOption[];
   selectedDrawing: UiSnapshot["selectedSheet"]["drawings"][number] | undefined;
   buildTotalRowCommand: () => CommandDescriptor | undefined;
   buildSubtotalCommand: () => CommandDescriptor;
@@ -66,6 +67,66 @@ export interface EditorCommandController {
 }
 
 type RangeLike = ReturnType<WorkbookSession["getCurrentRegion"]>;
+
+export interface PivotSourceOption {
+  id: string;
+  label: string;
+  source: PivotSource;
+}
+
+export interface PivotSourceOptionInput {
+  currentDataRange: RangeLike;
+  currentSheetName: string;
+  sheetTables: ReadonlyArray<Pick<UiSnapshot["selectedSheet"]["sheetTables"][number], "id" | "name">>;
+  definedNameModels: readonly DefinedNameModel[];
+  sheetNames: ReadonlyMap<string, string>;
+  locale: Locale;
+}
+
+function definedNameOptionId(definedName: DefinedNameModel): string {
+  if (!definedName.name.trim()) throw new Error('Defined name is required');
+  const normalizedName = definedName.name.trim().toLocaleLowerCase();
+  if (definedName.scope === 'workbook') {
+    if (definedName.sheetId !== undefined) throw new Error(`Workbook-scoped defined name ${definedName.name} cannot specify sheetId`);
+    return `name:workbook:${encodeURIComponent(normalizedName)}`;
+  }
+  if (definedName.scope !== 'sheet') throw new Error(`Defined name ${definedName.name} has an unsupported scope`);
+  if (!definedName.sheetId) throw new Error(`Sheet-scoped defined name ${definedName.name} requires a sheetId`);
+  return `name:sheet:${encodeURIComponent(definedName.sheetId)}:${encodeURIComponent(normalizedName)}`;
+}
+
+function definedNameSource(definedName: DefinedNameModel, sheetNames: ReadonlyMap<string, string>): PivotSource {
+  if (!definedName.name.trim()) throw new Error('Defined name is required');
+  if (definedName.scope === 'workbook') {
+    if (definedName.sheetId !== undefined) throw new Error(`Workbook-scoped defined name ${definedName.name} cannot specify sheetId`);
+    return { kind: 'named-range', name: definedName.name };
+  }
+  if (definedName.scope !== 'sheet') throw new Error(`Defined name ${definedName.name} has an unsupported scope`);
+  if (!definedName.sheetId) throw new Error(`Sheet-scoped defined name ${definedName.name} requires a sheetId`);
+  if (!sheetNames.has(definedName.sheetId)) throw new Error(`Sheet-scoped defined name ${definedName.name} references unknown sheet ${definedName.sheetId}`);
+  return { kind: 'named-range', name: definedName.name, sheetId: definedName.sheetId };
+}
+
+export function buildPivotSourceOptions(input: PivotSourceOptionInput): PivotSourceOption[] {
+  const options: PivotSourceOption[] = [{
+    id: "current-region",
+    label: `${pivotText(input.locale, 'currentRegion')} · ${input.currentSheetName}`,
+    source: { kind: "worksheet-range", range: input.currentDataRange },
+  }];
+  for (const table of input.sheetTables) {
+    options.push({ id: `sheet-table:${table.id}`, label: `${pivotText(input.locale, 'tableSource')} · ${table.name}`, source: { kind: "table", tableId: table.id } });
+  }
+  for (const definedName of input.definedNameModels) {
+    const source = definedNameSource(definedName, input.sheetNames);
+    const scope = pivotDefinedNameScopeText(input.locale, definedName.scope, definedName.sheetId ? input.sheetNames.get(definedName.sheetId) : undefined);
+    options.push({
+      id: definedNameOptionId(definedName),
+      label: `${pivotText(input.locale, 'namedRange')} · ${definedName.name} · ${scope}`,
+      source,
+    });
+  }
+  return options;
+}
 
 function createWebId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return `${prefix}-${crypto.randomUUID()}`;
@@ -167,16 +228,15 @@ export function useEditorCommandController({
     return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: true } };
   };
 
-  const pivotSourceOptions = useMemo(() => {
-    const options: Array<{ id: string; label: string; source: PivotSource }> = [{
-      id: "current-region",
-      label: `${pivotText(locale, 'currentRegion')} · ${state.selectedSheet.name}`,
-      source: { kind: "worksheet-range", range: currentDataRange },
-    }];
-    for (const table of state.selectedSheet.sheetTables) options.push({ id: `sheet-table:${table.id}`, label: `${pivotText(locale, 'tableSource')} · ${table.name}`, source: { kind: "table", tableId: table.id } });
-    for (const name of state.definedNameModels) options.push({ id: `name:${name.name}`, label: `${pivotText(locale, 'namedRange')} · ${name.name}`, source: { kind: "named-range", name: name.name } });
-    return options;
-  }, [currentDataRange, locale, state.definedNameModels, state.selectedSheet.name, state.selectedSheet.sheetTables, state.version]);
+  const sheetNames = useMemo(() => new Map(state.sheets.map((sheet) => [sheet.id, sheet.name] as const)), [state.sheets]);
+  const pivotSourceOptions = useMemo(() => buildPivotSourceOptions({
+    currentDataRange,
+    currentSheetName: state.selectedSheet.name,
+    sheetTables: state.selectedSheet.sheetTables,
+    definedNameModels: state.definedNameModels,
+    sheetNames,
+    locale,
+  }), [currentDataRange, locale, sheetNames, state.definedNameModels, state.selectedSheet.name, state.selectedSheet.sheetTables, state.version]);
 
   const createPivotFromDialog = (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => {
     const source = pivotSourceOptions.find((option) => option.id === request.sourceId)?.source;

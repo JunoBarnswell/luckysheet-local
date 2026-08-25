@@ -192,6 +192,8 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
     color: '#10b981',
   });
   workbook.setDefinedName({ name: 'TaxRate', formula: '0.15', scope: 'workbook' });
+  workbook.setDefinedName({ name: 'SharedName', formula: "='Sheet1'!A1", scope: 'workbook' });
+  workbook.setDefinedName({ name: 'SharedName', formula: "='Sheet1'!B1", scope: 'sheet', sheetId: 'sheet-1' });
   workbook.setCellStyleTemplate({
     id: 'status-template',
     name: 'Status',
@@ -219,6 +221,9 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.equal(restoredSheet.drawings.find((drawing) => drawing.id === 'shape-1')?.visible, false);
   assert.equal(restoredSheet.sparklines.length, 1);
   assert.equal(restored.definedNames['TaxRate'], '0.15');
+  assert.equal(restored.getDefinedNameExact('SharedName', 'workbook')?.formula, "='Sheet1'!A1");
+  assert.equal(restored.getDefinedNameExact('SharedName', 'sheet', 'sheet-1')?.formula, "='Sheet1'!B1");
+  assert.equal(restored.getDefinedName('SharedName', 'sheet-1')?.scope, 'sheet');
   assert.equal(restored.listCellStyleTemplates()[0]?.style.indent, 2);
   assert.deepEqual(restored.listCellStyleTemplates()[0]?.editor?.values, ['Open', 'Closed']);
 });
