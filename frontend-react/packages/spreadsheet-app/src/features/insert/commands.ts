@@ -1,4 +1,4 @@
-import { BARCODE_SYMBOLOGIES, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlDrawingPayload, type ImageCellPresentation, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { BARCODE_SYMBOLOGIES, type BarcodeCellPresentation, type CellData, type DataChartBindingArea, type DataChartDrawingPayload, type DrawingObject, type FormControlDrawingPayload, type ImageCellPresentation, type ImageDrawingPayload, type ImageEffects, type RangeRef, type SheetSnapshot, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 
 export interface AdvancedSheetCreateParams {
@@ -27,6 +27,22 @@ export interface DataChartUpdateParams {
 }
 
 export interface CellImageApplyParams { sheetId: string; row: number; column: number; presentation: ImageCellPresentation }
+
+export interface PictureConvertToCellParams {
+  sheetId: string;
+  drawingId: string;
+  row: number;
+  column: number;
+}
+
+export interface PictureConvertToFloatingParams {
+  sheetId: string;
+  row: number;
+  column: number;
+  drawingId: string;
+  payloadId: string;
+  transform?: DrawingObject['transform'];
+}
 
 export interface FormControlActivateParams { sheetId: string; drawingId: string }
 
@@ -207,6 +223,124 @@ function validateBarcodeValue(presentation: BarcodeCellPresentation, rawValue: C
   if (!valid) throw new Error(`Barcode source value is invalid for ${presentation.symbology}`);
 }
 
+function validateImagePresentation(presentation: ImageCellPresentation): void {
+  if (!presentation || presentation.kind !== 'image' || typeof presentation.src !== 'string' || presentation.src.length === 0) throw new Error('Image presentation source is required');
+  if (!['contain', 'cover', 'stretch'].includes(presentation.fit)) throw new Error('Image fit mode is invalid');
+  const crop = presentation.crop;
+  if (crop && (![crop.left, crop.top, crop.right, crop.bottom].every((value) => Number.isFinite(value) && value >= 0) || crop.left + crop.right >= 1 || crop.top + crop.bottom >= 1)) throw new Error('Image crop is invalid');
+  const effects = presentation.effects;
+  if (effects && (!isImageEffects(effects))) throw new Error('Image effects are invalid');
+}
+
+function isImageEffects(value: ImageEffects): boolean {
+  return (value.brightness === undefined || (Number.isFinite(value.brightness) && value.brightness >= -1 && value.brightness <= 1))
+    && (value.contrast === undefined || (Number.isFinite(value.contrast) && value.contrast >= -1 && value.contrast <= 1))
+    && (value.transparency === undefined || (Number.isFinite(value.transparency) && value.transparency >= 0 && value.transparency <= 1));
+}
+
+function imageRange(sheetId: string, row: number, column: number): RangeRef[] {
+  return [{ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
+}
+
+function assertCellPosition(sheet: WorksheetModel, row: number, column: number): void {
+  if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0 || row >= sheet.rowCount || column >= sheet.columnCount) throw new Error('Picture cell position is outside worksheet bounds');
+}
+
+function removeDrawingForPicture(sheet: WorksheetModel, drawingId: string): void {
+  const index = sheet.drawings.findIndex((drawing) => drawing.id === drawingId);
+  if (index < 0) throw new Error(`Unknown drawing: ${drawingId}`);
+  const drawing = sheet.drawings[index]!;
+  sheet.drawings.splice(index, 1);
+  sheet.drawingPayloads.delete(drawing.payloadId);
+}
+
+function convertCellImageToPayload(presentation: ImageCellPresentation): ImageDrawingPayload {
+  validateImagePresentation(presentation);
+  return {
+    kind: 'image',
+    src: presentation.src,
+    altText: presentation.altText,
+    crop: presentation.crop ? structuredClone(presentation.crop) : undefined,
+    effects: presentation.effects ? structuredClone(presentation.effects) : undefined,
+  };
+}
+
+function convertDrawingImageToPresentation(payload: ImageDrawingPayload): ImageCellPresentation {
+  return {
+    kind: 'image',
+    src: payload.src,
+    altText: payload.altText,
+    fit: 'contain',
+    crop: payload.crop ? structuredClone(payload.crop) : undefined,
+    effects: payload.effects ? structuredClone(payload.effects) : undefined,
+  };
+}
+
+function executePictureConvertToCell(params: PictureConvertToCellParams, context: CommandContext) {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  assertCellPosition(sheet, params.row, params.column);
+  const drawing = sheet.drawings.find((entry) => entry.id === params.drawingId);
+  const payload = drawing ? sheet.drawingPayloads.get(drawing.payloadId) : undefined;
+  if (!drawing || drawing.kind !== 'image' || payload?.kind !== 'image') throw new Error(`Unknown image drawing: ${params.drawingId}`);
+  const previousCell = structuredClone(sheet.cells.get(params.row, params.column));
+  if (previousCell && (previousCell.value !== null || previousCell.presentation !== undefined)) throw new Error('Picture conversion target cell is not empty');
+  const nextCell: CellData = { ...(previousCell ?? { value: null }), presentation: convertDrawingImageToPresentation(payload) };
+  const affectedRanges = imageRange(params.sheetId, params.row, params.column);
+  const drawingSnapshot = structuredClone(drawing);
+  const payloadSnapshot = structuredClone(payload);
+  context.applyMutation({
+    id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId,
+    params: { sheetId: params.sheetId, drawingId: params.drawingId }, affectedRanges,
+    inverse: [{ id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawing: drawingSnapshot, payload: payloadSnapshot }, affectedRanges }],
+    apply: () => removeDrawingForPicture(sheet, params.drawingId),
+  });
+  context.applyMutation({
+    id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
+    params: { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, affectedRanges,
+    inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
+    apply: () => sheet.cells.set(params.row, params.column, structuredClone(nextCell)),
+  });
+  return { operationId: context.operationId, mutationCount: 2, affectedRanges };
+}
+
+function executePictureConvertToFloating(params: PictureConvertToFloatingParams, context: CommandContext) {
+  const sheet = context.workbook.getSheet(params.sheetId);
+  assertCellPosition(sheet, params.row, params.column);
+  if (sheet.drawings.some((drawing) => drawing.id === params.drawingId)) throw new Error(`Drawing already exists: ${params.drawingId}`);
+  if (sheet.drawingPayloads.has(params.payloadId)) throw new Error(`Drawing payload already exists: ${params.payloadId}`);
+  const previousCell = structuredClone(sheet.cells.get(params.row, params.column));
+  if (!previousCell?.presentation || previousCell.presentation.kind !== 'image') throw new Error('Picture conversion source cell has no image');
+  const payload = convertCellImageToPayload(previousCell.presentation);
+  const drawing: DrawingObject = {
+    id: params.drawingId,
+    sheetId: params.sheetId,
+    kind: 'image',
+    anchor: { kind: 'one-cell', row: params.row, column: params.column },
+    transform: structuredClone(params.transform ?? { x: 96, y: 96, width: 320, height: 200, rotation: 0 }),
+    zIndex: 0,
+    payloadId: params.payloadId,
+  };
+  const nextCell = structuredClone(previousCell);
+  delete nextCell.presentation;
+  const affectedRanges = imageRange(params.sheetId, params.row, params.column);
+  context.applyMutation({
+    id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
+    params: { sheetId: params.sheetId, row: params.row, column: params.column, value: nextCell }, affectedRanges,
+    inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: params.row, column: params.column, previous: previousCell }, affectedRanges }],
+    apply: () => sheet.cells.set(params.row, params.column, structuredClone(nextCell)),
+  });
+  context.applyMutation({
+    id: 'drawing.add', unitId: context.workbook.unitId, sheetId: params.sheetId,
+    params: { sheetId: params.sheetId, drawing, payload }, affectedRanges,
+    inverse: [{ id: 'drawing.remove', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, drawingId: drawing.id }, affectedRanges }],
+    apply: () => {
+      sheet.drawings.push(structuredClone(drawing));
+      sheet.drawingPayloads.set(drawing.payloadId, structuredClone(payload));
+    },
+  });
+  return { operationId: context.operationId, mutationCount: 2, affectedRanges };
+}
+
 export function registerInsertCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<AdvancedSheetCreateParams>({ id: 'sheet.create.advanced', execute: executeAdvancedSheetCreate });
   runtime.registry.registerCommand<BarcodeApplyParams>({ id: 'cell.barcode.apply', execute: executeBarcodeApply });
@@ -216,6 +350,8 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
     id: 'cell.image.apply',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      assertCellPosition(sheet, params.row, params.column);
+      validateImagePresentation(params.presentation);
       const previous = structuredClone(sheet.cells.get(params.row, params.column));
       const next: CellData = structuredClone(previous ?? { value: null });
       next.presentation = structuredClone(params.presentation);
@@ -227,6 +363,8 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
   });
+  runtime.registry.registerCommand<PictureConvertToCellParams>({ id: 'picture.convertToCell', execute: executePictureConvertToCell });
+  runtime.registry.registerCommand<PictureConvertToFloatingParams>({ id: 'picture.convertToFloating', execute: executePictureConvertToFloating });
   runtime.registry.registerCommand<FormControlActivateParams>({
     id: 'formControl.activate',
     execute: (params, context) => {
@@ -265,5 +403,5 @@ export function registerInsertCommands(runtime: CommandRuntime): string[] {
       return { operationId: context.operationId, mutationCount, affectedRanges };
     },
   });
-  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'dataChart.update', 'cell.image.apply', 'formControl.activate'];
+  return ['sheet.create.advanced', 'cell.barcode.apply', 'dataChart.create', 'dataChart.update', 'cell.image.apply', 'picture.convertToCell', 'picture.convertToFloating', 'formControl.activate'];
 }

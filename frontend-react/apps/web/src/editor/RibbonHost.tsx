@@ -50,6 +50,7 @@ export function RibbonHost({
 }: RibbonHostProps): ReactNode {
   const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
   const activeChartDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'chart');
+  const activePictureDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'image');
   const activeSparklineContext = state.activeContext.kind === 'sparkline' ? state.activeContext : undefined;
   return (
     <Ribbon
@@ -79,6 +80,7 @@ export function RibbonHost({
         })()
         : undefined}
       activeChart={activeChartDrawing ? { sheetId: activeChartDrawing.sheetId, chartId: activeChartDrawing.payloadId } : undefined}
+      activePicture={activePictureDrawing ? { sheetId: activePictureDrawing.sheetId, drawingId: activePictureDrawing.id } : undefined}
       activeSparkline={activeSparklineContext ? { sheetId: activeSparklineContext.sheetId, sparklineId: activeSparklineContext.sparklineId } : undefined}
       locale={locale}
       onCommand={dispatchCommand}

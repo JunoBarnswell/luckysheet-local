@@ -154,11 +154,28 @@ export interface DrawingAnchor {
   endColumn?: Column;
 }
 
+/** Canonical normalized crop fractions shared by in-cell and floating images. */
+export interface ImageCrop {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Supported editable picture appearance; unsupported OOXML effects remain opaque. */
+export interface ImageEffects {
+  brightness?: number;
+  contrast?: number;
+  transparency?: number;
+}
+
 export interface ImageDrawingPayload {
   kind: 'image';
   src: string;
   altText?: string;
   name?: string;
+  crop?: ImageCrop;
+  effects?: ImageEffects;
 }
 
 export interface ShapeDrawingPayload {

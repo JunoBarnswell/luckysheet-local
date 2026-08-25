@@ -24,6 +24,7 @@ export type RibbonTabId =
   | 'tableDesign'
   | 'chartDesign'
   | 'chartFormat'
+  | 'pictureFormat'
   | 'sparklineDesign';
 export type SidebarPanelId =
   | 'inspector'
@@ -34,6 +35,7 @@ export type SidebarPanelId =
   | 'formulaAudit'
   | 'definedNames'
   | 'shape'
+  | 'picture'
   | 'sparkline'
   | 'conditionalFormat'
   | 'selectionPane'

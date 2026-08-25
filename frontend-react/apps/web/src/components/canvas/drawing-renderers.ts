@@ -738,7 +738,17 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
             img.onload = requestRender;
           }
           if (img.complete && img.naturalWidth > 0) {
-            context.drawImage(img, rect.x, rect.y, rect.width, rect.height);
+            const crop = payload.crop ?? { left: 0, top: 0, right: 0, bottom: 0 };
+            const sourceX = img.naturalWidth * crop.left;
+            const sourceY = img.naturalHeight * crop.top;
+            const sourceWidth = img.naturalWidth * (1 - crop.left - crop.right);
+            const sourceHeight = img.naturalHeight * (1 - crop.top - crop.bottom);
+            const effects = payload.effects;
+            context.save();
+            context.globalAlpha = 1 - (effects?.transparency ?? 0);
+            context.filter = `brightness(${1 + (effects?.brightness ?? 0)}) contrast(${1 + (effects?.contrast ?? 0)})`;
+            context.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, rect.x, rect.y, rect.width, rect.height);
+            context.restore();
             return;
           }
           context.fillStyle = "#f1f5f9";

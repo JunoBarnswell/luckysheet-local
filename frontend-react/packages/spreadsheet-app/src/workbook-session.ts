@@ -525,9 +525,10 @@ export class WorkbookSession {
       this.inputMode = 'grid';
       this.focus = { mode: 'grid', target: 'grid' };
     }
-    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'barcode' || this.panels.active === 'shape')) {
+    if (contextRemoved && (this.panels.active === 'chart' || this.panels.active === 'dataChart' || this.panels.active === 'barcode' || this.panels.active === 'shape' || this.panels.active === 'picture')) {
       this.panels = { ...this.panels, open: false };
     }
+    if (contextRemoved && this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
     if (JSON.stringify(nextContext) !== JSON.stringify(previousContext)) {
       this.activeContext = nextContext;
     }
@@ -3523,13 +3524,20 @@ export class WorkbookSession {
     if (valid.length === 0 && mode === 'replace') {
       this.runCommand('drawing.deselect', { sheetId: this.activeSheetId });
       this.activeContext = { kind: 'none' };
+      if (this.panels.active === 'picture') this.panels = { ...this.panels, open: false };
+      if (this.ribbonTab === 'pictureFormat') this.ribbonTab = 'home';
       this.emit();
       return;
     }
     this.runCommand('drawing.select', { sheetId: this.activeSheetId, drawingIds: valid, mode });
-    this.activeContext = this.selectedFloatingId
-      ? { kind: 'drawing', sheetId: this.activeSheetId, drawingId: this.selectedFloatingId }
+    const selectedDrawing = this.selectedFloatingId ? sheet.drawings.find((drawing) => drawing.id === this.selectedFloatingId) : undefined;
+    this.activeContext = selectedDrawing
+      ? { kind: 'drawing', sheetId: this.activeSheetId, drawingId: selectedDrawing.id }
       : { kind: 'none' };
+    if (selectedDrawing?.kind === 'image') {
+      this.panels = { ...this.panels, active: 'picture', open: true };
+      this.ribbonTab = 'pictureFormat';
+    }
     this.emit();
   }
 

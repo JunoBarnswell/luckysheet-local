@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { StructuralTransform, WorkbookModel, type DrawingObject, type DrawingPayload } from '@react-sheets/core-model';
+import { StructuralTransform, WorkbookModel, type DrawingObject, type DrawingPayload, type ImageDrawingPayload } from '@react-sheets/core-model';
 import { DrawingRuntime, registerDrawingFeature } from '../../index';
 
 describe('drawing feature', () => {
@@ -253,6 +253,46 @@ describe('drawing feature', () => {
     assert.equal(remotePayload.kind, 'image');
     assert.equal(remotePayload.altText, 'Accessible image');
     assert.deepEqual(remotePayload.crop, { left: 0.1, top: 0.2, right: 0.1, bottom: 0 });
+  });
+
+  it('supports typed picture effects with fail-close validation and undo', () => {
+    const workbook = new WorkbookModel('drawing-image-effects-test', 'Drawing Image Effects');
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    runtime.execute('drawing.add.image', {
+      sheetId: 'sheet-1',
+      drawing: {
+        id: 'draw-effects',
+        sheetId: 'sheet-1',
+        kind: 'image',
+        payloadId: 'effects-payload',
+        anchor: { kind: 'absolute' },
+        transform: { x: 0, y: 0, width: 120, height: 80, rotation: 0 },
+        zIndex: 1,
+      },
+      payload: { kind: 'image', src: 'data:image/png;base64,AA==' },
+    });
+    runtime.clearHistory();
+
+    runtime.execute('drawing.image.effects', {
+      sheetId: 'sheet-1',
+      drawingId: 'draw-effects',
+      effects: { brightness: 0.25, contrast: -0.1, transparency: 0.4 },
+    });
+    const payload = workbook.getSheet('sheet-1').drawingPayloads.get('effects-payload') as ImageDrawingPayload;
+    assert.deepEqual(payload.effects, { brightness: 0.25, contrast: -0.1, transparency: 0.4 });
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+
+    const beforeRejected = workbook.snapshot();
+    assert.throws(() => runtime.execute('drawing.image.effects', {
+      sheetId: 'sheet-1', drawingId: 'draw-effects', effects: { brightness: 2 },
+    }), /Image effects are invalid/);
+    assert.deepEqual(workbook.snapshot(), beforeRejected);
+
+    assert.equal(runtime.undo(), true);
+    assert.equal((workbook.getSheet('sheet-1').drawingPayloads.get('effects-payload') as ImageDrawingPayload).effects, undefined);
+    assert.equal(runtime.redo(), true);
+    assert.deepEqual((workbook.getSheet('sheet-1').drawingPayloads.get('effects-payload') as ImageDrawingPayload).effects, { brightness: 0.25, contrast: -0.1, transparency: 0.4 });
   });
 
   it('preserves anchored drawings when rows are inserted', () => {
