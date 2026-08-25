@@ -29,7 +29,7 @@ import type {
   SheetSnapshot,
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
-import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotNumericValue, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -2029,17 +2029,17 @@ function uniqueScalars(values: PivotScalar[]): PivotScalar[] { const result: Piv
 function uniqueTuples(rows: PivotScalar[][], indexes: number[]): PivotScalar[][] { if (!indexes.length) return [[]]; const seen = new Set<string>(); const result: PivotScalar[][] = []; for (const row of rows) { const tuple = indexes.map((index) => row[index] ?? null); const key = tuple.map(scalarKey).join('|'); if (!seen.has(key)) { seen.add(key); result.push(tuple); } } return result; }
 function matchesTuple(row: PivotScalar[], indexes: number[], tuple: PivotScalar[]): boolean { return indexes.every((index, position) => scalarKey(row[index] ?? null) === scalarKey(tuple[position] ?? null)); }
 function aggregate(values: PivotScalar[], operation: string | undefined): PivotScalar {
-  const numbers = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const numbers = values.map(pivotNumericValue).filter((value): value is number => value != null);
   const firstError = values.find(isPivotError);
   switch (mapAggregate(operation)) {
-    case 'count': return values.filter((value) => value !== null).length;
+    case 'count': return values.filter((value) => value !== null && value !== '').length;
     case 'count-numbers': return numbers.length;
     case 'average': return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null);
     case 'min': return firstError ?? (numbers.length ? Math.min(...numbers) : null);
     case 'max': return firstError ?? (numbers.length ? Math.max(...numbers) : null);
     case 'product': return firstError ?? (numbers.length ? numbers.reduce((product, value) => product * value, 1) : null);
-    case 'distinct-count': return new Set(values.filter((value) => value !== null).map(scalarKey)).size;
-    default: return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) : values.filter((value) => value !== null).length || null);
+    case 'distinct-count': return new Set(values.filter((value) => value !== null && value !== '').map(scalarKey)).size;
+    default: return firstError ?? (numbers.length ? numbers.reduce((sum, value) => sum + value, 0) : values.filter((value) => value !== null && value !== '').length || null);
   }
 }
 function inferCacheType(node: XmlNode | undefined): NativePivotCacheField['dataType'] | undefined { if (!node) return undefined; if (node.attrs.containsString === '1' || node.attrs.containsString === 'true') return 'string'; if (node.attrs.containsDate === '1' || node.attrs.containsDate === 'true') return 'date'; if (node.attrs.containsNumber === '1' || node.attrs.containsNumber === 'true') return 'number'; if (node.attrs.containsBoolean === '1' || node.attrs.containsBoolean === 'true') return 'boolean'; if (node.attrs.containsError === '1' || node.attrs.containsError === 'true') return 'error'; return undefined; }

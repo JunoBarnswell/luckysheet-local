@@ -180,6 +180,15 @@ export function createPivotMemberKey(value: PivotScalar): PivotMemberKey {
   return { type: 'text', value };
 }
 
+/**
+ * Resolve the only Pivot scalar kind accepted by numeric aggregation.
+ * Display text, including currency and percent-looking strings, is never
+ * reparsed into a number; formatting belongs to presentation, not typing.
+ */
+export function pivotNumericValue(value: PivotScalar): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 export function pivotMemberKey(value: PivotMemberKey): string {
   return `${value.type}:${JSON.stringify(value.value)}`;
 }

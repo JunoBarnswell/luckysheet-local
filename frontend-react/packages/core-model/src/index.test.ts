@@ -5,6 +5,7 @@ import {
   buildPivotTimelineTiles,
   normalizePivotNumberFormat,
   normalizePivotTimelinePeriod,
+  pivotNumericValue,
   pivotTimelineInstant,
   WorkbookModel,
 } from './index';
@@ -45,6 +46,18 @@ test('CellMatrix keeps empty logical space sparse', () => {
   assert.equal(matrix.has(100_000, 4), false);
   assert.equal(matrix.count(), 0);
   assert.equal(cloned.has(100_000, 4), true);
+});
+
+test('Pivot numeric value resolution preserves canonical scalar types', () => {
+  assert.equal(pivotNumericValue(10), 10);
+  assert.equal(pivotNumericValue(0.5), 0.5);
+  assert.equal(pivotNumericValue('10'), null);
+  assert.equal(pivotNumericValue('$100'), null);
+  assert.equal(pivotNumericValue('50%'), null);
+  assert.equal(pivotNumericValue(true), null);
+  assert.equal(pivotNumericValue(null), null);
+  assert.equal(pivotNumericValue(Number.NaN as never), null);
+  assert.equal(pivotNumericValue(Number.POSITIVE_INFINITY as never), null);
 });
 
 test('Pivot timeline dates use deterministic half-open civil-day bounds', () => {
