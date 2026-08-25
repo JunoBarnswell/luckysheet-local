@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { WorkbookModel, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
+import { WorkbookModel, createPivotCollator, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
 import type {
   PivotAggregateFunction,
   PivotDefinition,
@@ -378,10 +378,25 @@ const isPivotExpansion = (value: unknown): boolean => isRecord(value)
   && Array.isArray(value.expandedNodeIds) && value.expandedNodeIds.every(isNonEmptyString)
   && Array.isArray(value.collapsedNodeIds) && value.collapsedNodeIds.every(isNonEmptyString)
   && typeof value.showButtons === 'boolean';
+const isPivotCollation = (value: unknown): boolean => {
+  if (!isRecord(value)
+    || Object.keys(value).some((key) => !['locale', 'sensitivity', 'numeric', 'caseFirst'].includes(key))
+    || typeof value.locale !== 'string' || value.locale.trim().length === 0
+    || !['base', 'accent', 'case', 'variant'].includes(String(value.sensitivity))
+    || typeof value.numeric !== 'boolean'
+    || !['upper', 'lower', 'false'].includes(String(value.caseFirst))) return false;
+  try {
+    createPivotCollator(value as unknown as Parameters<typeof createPivotCollator>[0]);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const isPivotLayout = (value: unknown): value is PivotLayout => isRecord(value)
   && Array.isArray(value.rows) && Array.isArray(value.columns) && Array.isArray(value.filters)
   && Array.isArray(value.values)
   && typeof value.allowMultipleFiltersPerField === 'boolean'
+  && isPivotCollation(value.collation)
   && ['top', 'bottom', 'off'].includes(String(value.subtotalLocation)) && typeof value.showGrandTotals === 'boolean'
   && typeof value.compact === 'boolean' && typeof value.repeatLabels === 'boolean'
   && (value.expansion === undefined || isPivotExpansion(value.expansion));

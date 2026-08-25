@@ -7,6 +7,7 @@ import type {
   RangeRef,
   WorkbookModel,
 } from '@react-sheets/core-model';
+import { DEFAULT_PIVOT_COLLATION } from '@react-sheets/core-model';
 import { getPivotFieldCatalog, getPivotSourceRanges } from './engine';
 
 export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string, sourceRegion: RangeRef): PivotLayout | undefined {
@@ -18,7 +19,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
     layout: {
-      rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, values: [], subtotalLocation: 'bottom', showGrandTotals: true,
+      rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { ...DEFAULT_PIVOT_COLLATION }, values: [], subtotalLocation: 'bottom', showGrandTotals: true,
       compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [],
     },
   } satisfies PivotModel;
@@ -38,6 +39,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     columns,
     filters: [],
     allowMultipleFiltersPerField: true,
+    collation: { ...DEFAULT_PIVOT_COLLATION },
     values: [{ fieldId: valueId, summarizeBy }],
     subtotalLocation: 'bottom',
     showGrandTotals: true,

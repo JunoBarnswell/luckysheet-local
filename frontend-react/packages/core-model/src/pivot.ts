@@ -202,6 +202,21 @@ export interface PivotFieldPlacement {
 /** The independent predicate family used to identify a Pivot filter slot. */
 export type PivotFilterFamily = 'manual' | 'label' | 'date' | 'value' | 'top-items';
 
+/** Persisted document-owned text collation. It must never be inferred from a host locale. */
+export interface PivotCollation {
+  locale: string;
+  sensitivity: 'base' | 'accent' | 'case' | 'variant';
+  numeric: boolean;
+  caseFirst: 'upper' | 'lower' | 'false';
+}
+
+export const DEFAULT_PIVOT_COLLATION: PivotCollation = {
+  locale: 'en-US',
+  sensitivity: 'variant',
+  numeric: false,
+  caseFirst: 'false',
+};
+
 export type PivotManualFilter = {
   kind: 'manual';
   family: 'manual';
@@ -283,6 +298,7 @@ export interface PivotLayout {
   filters: PivotFilter[];
   /** Explicitly controls whether more than one predicate may target a field. */
   allowMultipleFiltersPerField: boolean;
+  collation: PivotCollation;
   values: PivotValueField[];
   calculatedFields?: PivotCalculatedField[];
   calculatedItems?: PivotCalculatedItem[];
@@ -303,6 +319,23 @@ export function pivotFilterIdentity(filter: Pick<PivotFilter, 'fieldId' | 'famil
 
 export function allowsMultiplePivotFilters(layout: Pick<PivotLayout, 'allowMultipleFiltersPerField'>): boolean {
   return layout.allowMultipleFiltersPerField;
+}
+
+export function createPivotCollator(collation: PivotCollation): Intl.Collator {
+  if (!collation || typeof collation.locale !== 'string' || !collation.locale.trim()
+    || !['base', 'accent', 'case', 'variant'].includes(collation.sensitivity)
+    || typeof collation.numeric !== 'boolean' || !['upper', 'lower', 'false'].includes(collation.caseFirst)) {
+    throw new Error('Pivot collation is invalid');
+  }
+  try {
+    return new Intl.Collator(collation.locale, {
+      sensitivity: collation.sensitivity,
+      numeric: collation.numeric,
+      caseFirst: collation.caseFirst,
+    });
+  } catch (error) {
+    throw new Error(`Pivot collation locale is unsupported: ${collation.locale}`, { cause: error });
+  }
 }
 
 export interface PivotStyleOptions {
@@ -563,6 +596,7 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
   }
   const canonical = structuredClone(input);
   if (typeof canonical.layout.allowMultipleFiltersPerField !== 'boolean') throw new Error(`Pivot ${input.id} is missing allowMultipleFiltersPerField`);
+  createPivotCollator(canonical.layout.collation);
   const identities = new Set<string>();
   for (const filter of canonical.layout.filters) {
     const expectedFamily = filter.kind === 'manual' ? 'manual' : filter.kind === 'top-items' ? 'top-items' : filter.family;

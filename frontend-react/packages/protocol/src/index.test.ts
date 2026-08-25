@@ -248,10 +248,13 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
     target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
     fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [{ fieldId: 'region', name: 'Region', dataType: 'text' as const, ordinal: 0 }, { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 }] },
-    layout: { rows: [{ fieldId: 'region', subtotal: { mode: 'none' as const } }], columns: [], filters: [], allowMultipleFiltersPerField: true, values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    layout: { rows: [{ fieldId: 'region', subtotal: { mode: 'none' as const } }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
+  const { collation: _collation, ...legacyCollationLayout } = base.layout;
+  assert.throws(() => validatePivotDefinition({ ...base, layout: legacyCollationLayout }), /collation/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, collation: { ...base.layout.collation, locale: '***' } } }), /collation/);
   const { allowMultipleFiltersPerField: _allowMultiple, ...legacyLayout } = base.layout;
   assert.throws(() => validatePivotDefinition({ ...base, layout: legacyLayout }), /Pivot layout is invalid/);
   assert.throws(() => validatePivotDefinition({ ...base, layout: {
@@ -284,7 +287,7 @@ test('Pivot worksheet-ranges require stable source nodes and graph endpoints', (
     },
     target: { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } },
     fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [] },
-    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);

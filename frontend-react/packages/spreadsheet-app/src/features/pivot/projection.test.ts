@@ -54,7 +54,7 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
     target: { sheetId: 'sheet-1', anchor: { row: 10, column: 0 } },
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
-    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
   };
   const catalog = getPivotFieldCatalog(workbook, pivot);
   const region = catalog.fields.find((field) => field.name === 'Region')!;
@@ -66,6 +66,33 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
 }
 
 describe('native PivotGridProjection contract', () => {
+  it('orders text members from persisted collation, independent of host defaults', () => {
+    const workbook = new WorkbookModel('pivot-collation', 'Pivot Collation');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Member', 'Amount'], ['é', 1], ['e', 2], ['中', 3], ['甲', 4], ['A', 5], ['a', 6]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-collation', { sheetId: 'sheet-1', startRow: 0, endRow: 6, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const member = catalog.fields.find((field) => field.name === 'Member')!;
+    const amount = catalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.layout.rows = [{ fieldId: member.fieldId }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    const first = computePivotResult(workbook, pivot);
+    const second = computePivotResult(workbook, pivot);
+    assert.deepEqual(first.rows.map((node) => node.label), second.rows.map((node) => node.label));
+    const alternate = structuredClone(pivot);
+    alternate.layout.collation = { locale: 'zh-CN', sensitivity: 'variant', numeric: false, caseFirst: 'false' };
+    assert.notDeepEqual(first.rows.map((node) => node.label), computePivotResult(workbook, alternate).rows.map((node) => node.label));
+  });
+
+  it('rejects an unsupported persisted collation before calculation', () => {
+    const workbook = workbookWithData();
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-invalid-collation', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    pivot.layout.collation = { locale: '***', sensitivity: 'variant', numeric: false, caseFirst: 'false' };
+    assert.throws(() => computePivotResult(workbook, pivot), /unsupported|invalid/i);
+  });
+
   it('builds a complete canonical definition with stable field IDs', () => {
     const workbook = workbookWithData();
     const sourceRange = { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 };
@@ -335,7 +362,7 @@ describe('native PivotGridProjection contract', () => {
       },
       refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
       layout: {
-        rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true,
+        rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const },
         values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
         subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },

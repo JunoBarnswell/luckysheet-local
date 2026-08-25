@@ -1,4 +1,4 @@
-import { normalizePivotRefreshPolicy } from '@react-sheets/core-model';
+import { createPivotCollator, normalizePivotRefreshPolicy } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   PivotDefinition,
@@ -350,6 +350,23 @@ function validatePivotPresentation(value: unknown): asserts value is PivotPresen
     || typeof options.showLastColumn !== 'boolean') throw new Error('Pivot presentation styleOptions are invalid');
 }
 
+function validatePivotCollation(value: unknown): void {
+  const collation = requireRecord(value, 'Pivot collation');
+  validateExactKeys(collation, ['locale', 'sensitivity', 'numeric', 'caseFirst'], 'Pivot collation');
+  if (!isNonEmptyString(collation.locale)
+    || !['base', 'accent', 'case', 'variant'].includes(String(collation.sensitivity))
+    || typeof collation.numeric !== 'boolean'
+    || !['upper', 'lower', 'false'].includes(String(collation.caseFirst))) {
+    throw new Error('Pivot collation is invalid');
+  }
+  createPivotCollator({
+    locale: String(collation.locale),
+    sensitivity: collation.sensitivity as 'base' | 'accent' | 'case' | 'variant',
+    numeric: collation.numeric,
+    caseFirst: collation.caseFirst as 'upper' | 'lower' | 'false',
+  });
+}
+
 function validatePivotGroup(value: unknown): void {
   const group = requireRecord(value, 'Pivot group');
   if (group.kind === 'date') {
@@ -429,10 +446,11 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     fieldIds.add(field.fieldId);
   }
   const layout = requireRecord(pivot.layout, 'Pivot layout');
-  validateExactKeys(layout, ['rows', 'columns', 'filters', 'allowMultipleFiltersPerField', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
+  validateExactKeys(layout, ['rows', 'columns', 'filters', 'allowMultipleFiltersPerField', 'collation', 'values', 'calculatedFields', 'calculatedItems', 'subtotalLocation', 'showGrandTotals', 'compact', 'repeatLabels', 'expansion'], 'Pivot layout');
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.filters) || !Array.isArray(layout.values)
     || typeof layout.allowMultipleFiltersPerField !== 'boolean'
     || !['top', 'bottom', 'off'].includes(String(layout.subtotalLocation)) || typeof layout.showGrandTotals !== 'boolean' || typeof layout.compact !== 'boolean' || typeof layout.repeatLabels !== 'boolean') throw new Error('Pivot layout is invalid');
+  validatePivotCollation(layout.collation);
   if (layout.expansion !== undefined) {
     const expansion = requireRecord(layout.expansion, 'Pivot expansion');
     validateExactKeys(expansion, ['expandedNodeIds', 'collapsedNodeIds', 'showButtons'], 'Pivot expansion');
