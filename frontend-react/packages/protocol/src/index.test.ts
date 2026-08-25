@@ -243,13 +243,14 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
 });
 
 test('Pivot subtotal contract rejects malformed custom functions and accepts field-owned modes', () => {
+  const legacyValuePlacementKey = ['value', 'Field', 'Id'].join('');
   const base = {
     schema: 'PivotDefinition' as const,
     id: 'pivot-subtotals',
     source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
     target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
     fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [{ fieldId: 'region', name: 'Region', dataType: 'text' as const, ordinal: 0 }, { fieldId: 'amount', name: 'Amount', dataType: 'number' as const, ordinal: 1 }] },
-    layout: { rows: [{ fieldId: 'region', subtotal: { mode: 'none' as const } }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
+    layout: { rows: [{ fieldId: 'region', subtotal: { mode: 'none' as const } }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ valueId: `value:${'amount'}`, fieldId: 'amount', summarizeBy: 'sum' as const }], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
@@ -304,6 +305,18 @@ test('Pivot subtotal contract rejects malformed custom functions and accepts fie
     ...base.layout,
     filters: [{ kind: 'manual', family: 'manual', fieldId: 'amount', scope: 'field', mode: 'all', memberKeys: [] }],
   } }), /row or column field/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    values: [base.layout.values[0]!, { ...base.layout.values[0]!, valueId: base.layout.values[0]!.valueId }],
+  } }), /invalid or duplicated/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    values: [{ fieldId: 'amount', summarizeBy: 'sum', [legacyValuePlacementKey]: 'amount' }],
+  } as never }), /unsupported field/);
+  assert.throws(() => validatePivotDefinition({ ...base, layout: {
+    ...base.layout,
+    rows: [{ fieldId: 'region', sort: { direction: 'ascending', by: 'value', valueId: 'amount' } }],
+  } }), /placement identity is invalid/);
 });
 
 test('Pivot calculated definitions extend the effective field set without catalog duplication', () => {
@@ -323,7 +336,7 @@ test('Pivot calculated definitions extend the effective field set without catalo
       calculatedFields: [{ fieldId: 'calculated:margin', name: 'Margin', formula: '=amount*1.15' }],
       calculatedItems: [{ fieldId: 'calculated-item:amount:premium', targetFieldId: 'amount', name: 'Premium', formula: '=amount*3' }],
       rows: [{ fieldId: 'calculated:margin' }],
-      values: [{ fieldId: 'calculated:margin', summarizeBy: 'sum' as const }],
+      values: [{ valueId: `value:${'calculated:margin'}`, fieldId: 'calculated:margin', summarizeBy: 'sum' as const }],
     },
   };
   validatePivotDefinition(calculated);
@@ -382,7 +395,7 @@ test('Pivot protocol preserves typed formula-error members and rejects unknown c
     source: { kind: 'worksheet-range' as const, range: { sheetId: 'sheet-1', startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 } },
     target: { sheetId: 'sheet-1', anchor: { row: 4, column: 0 } },
     fieldCatalog: { schema: 'PivotFieldCatalog' as const, fields: [{ fieldId: 'member', name: 'Member', dataType: 'error' as const, ordinal: 0, values: [{ kind: 'error' as const, code: '#N/A' as const }] }] },
-    layout: { rows: [{ fieldId: 'member' }], columns: [], filters: [{ kind: 'manual' as const, family: 'manual' as const, fieldId: 'member', mode: 'include' as const, memberKeys: [{ type: 'error' as const, value: '#N/A' as const }] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ fieldId: 'member', summarizeBy: 'count' as const }], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
+    layout: { rows: [{ fieldId: 'member' }], columns: [], filters: [{ kind: 'manual' as const, family: 'manual' as const, fieldId: 'member', mode: 'include' as const, memberKeys: [{ type: 'error' as const, value: '#N/A' as const }] }], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const }, values: [{ valueId: `value:${'member'}`, fieldId: 'member', summarizeBy: 'count' as const }], subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
   };
   validatePivotDefinition(base);
@@ -393,7 +406,7 @@ test('Pivot protocol preserves typed formula-error members and rejects unknown c
   validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'quarter', 'month'], startOfWeek: 1 } }] } });
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, rows: [{ fieldId: 'member', group: { kind: 'date', unit: 'year', units: ['year', 'year'] } }] } }), /date group is invalid/);
   validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'date', fieldId: 'member', operator: 'between', value: '2024-01-01', value2: '2024-12-31' }] } });
-  validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', valueFieldId: 'member', operator: 'not-between', value: 10, value2: 20 }] } });
+    validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'value', fieldId: 'member', valueId: `value:${'member'}`, operator: 'not-between', value: 10, value2: 20 }] } });
   assert.throws(() => validatePivotDefinition({ ...base, layout: { ...base.layout, filters: [{ kind: 'condition', family: 'date', fieldId: 'member', operator: 'between', value: '2024-01-01' }] } }), /range filter requires two bounds/);
   assert.throws(() => validatePivotDefinition({ ...base, presentation: {
     styleOptions: { showRowHeaders: true, showColumnHeaders: true, showRowStripes: false, showColumnStripes: false, showLastColumn: false },

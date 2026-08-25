@@ -307,7 +307,7 @@ export type PivotGroup =
 export type PivotSort = {
   direction: 'ascending' | 'descending';
   by?: 'label' | 'value';
-  valueFieldId?: string;
+  valueId?: string;
 };
 
 export interface PivotFieldPlacement {
@@ -354,7 +354,7 @@ export interface PivotLabelFilter {
   kind: 'condition';
   family: 'label';
   fieldId: string;
-  valueFieldId?: string;
+  valueId?: string;
   scope?: 'report' | 'field';
   operator: PivotLabelFilterOperator;
   value: PivotScalar;
@@ -366,7 +366,7 @@ export interface PivotDateFilter {
   kind: 'condition';
   family: 'date';
   fieldId: string;
-  valueFieldId?: string;
+  valueId?: string;
   scope?: 'report' | 'field';
   operator: PivotDateFilterOperator;
   value: PivotScalar;
@@ -380,7 +380,7 @@ export interface PivotValueFilter {
   family: 'value';
   fieldId: string;
   /** Optional measure identity for native value filters. */
-  valueFieldId?: string;
+  valueId?: string;
   scope?: 'report' | 'field';
   operator: PivotValueFilterOperator;
   value: PivotScalar;
@@ -399,7 +399,7 @@ export type PivotFilter =
     fieldId: string;
     scope?: 'report' | 'field';
     count: number;
-    valueFieldId: string;
+    valueId: string;
     direction: 'top' | 'bottom';
   };
 
@@ -465,6 +465,8 @@ export type PivotShowAs =
   | { kind: 'index' };
 
 export interface PivotValueField {
+  /** Stable identity of this Values placement; distinct from the source field. */
+  valueId: string;
   fieldId: string;
   summarizeBy: PivotAggregateFunction;
   displayName?: string;
@@ -819,6 +821,8 @@ export interface PivotProjectionCell {
   numberFormat?: string;
   /** Canonical field identity for header/filter interactions. */
   fieldId?: string;
+  /** Canonical Values placement identity for value, subtotal, and total cells. */
+  valueId?: string;
   /** Locale-independent caption owned by the presentation layer. */
   captionKey?: 'row-labels' | 'grand-total' | 'loading';
   filterSummary?: PivotReportFilterSummary;
@@ -895,18 +899,30 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
   }
   const canonical = structuredClone(input);
   if (typeof canonical.layout.allowMultipleFiltersPerField !== 'boolean') throw new Error(`Pivot ${input.id} is missing allowMultipleFiltersPerField`);
+  const valueIds = new Set<string>();
   canonical.layout.values = canonical.layout.values.map((field) => {
+    if (!field.valueId || valueIds.has(field.valueId)) throw new Error(`Pivot ${input.id} has duplicate or missing Values placement identity`);
+    valueIds.add(field.valueId);
     const numberFormat = normalizePivotNumberFormat(field.numberFormat);
     return { ...field, ...(numberFormat === undefined ? {} : { numberFormat }) };
   });
   createPivotCollator(canonical.layout.collation);
   const axisFields = new Set([...canonical.layout.rows, ...canonical.layout.columns].map((entry) => entry.fieldId));
+  for (const placement of [...canonical.layout.rows, ...canonical.layout.columns]) {
+    if (placement.sort?.by === 'value' && (!placement.sort.valueId || !valueIds.has(placement.sort.valueId))) {
+      throw new Error(`Pivot ${input.id} has an invalid value sort placement identity`);
+    }
+  }
   const identities = new Set<string>();
   for (const filter of canonical.layout.filters) {
     const expectedFamily = filter.kind === 'manual' ? 'manual' : filter.kind === 'top-items' ? 'top-items' : filter.family;
     if (filter.family !== expectedFamily) throw new Error(`Pivot ${input.id} has an invalid filter family`);
     if (filter.scope === 'field' && !axisFields.has(filter.fieldId)) {
       throw new Error(`Pivot ${input.id} field filter must target a row or column field`);
+    }
+    if (filter.kind === 'top-items' && !valueIds.has(filter.valueId)) throw new Error(`Pivot ${input.id} top-items filter references an unknown Values placement`);
+    if (filter.kind === 'condition' && filter.valueId !== undefined && (!valueIds.has(filter.valueId) || filter.family !== 'value')) {
+      throw new Error(`Pivot ${input.id} condition filter references an invalid Values placement`);
     }
     const identity = pivotFilterIdentity(filter);
     if (identities.has(identity)) throw new Error(`Pivot ${input.id} contains duplicate filter family ${identity}`);

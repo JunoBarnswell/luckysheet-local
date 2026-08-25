@@ -21,7 +21,7 @@ import { applyPivotManualMemberDelta, pivotManualMemberSelected } from './pivot-
 type FilterMode = 'values' | 'label' | 'date' | 'value';
 
 export interface PivotValueSortOption {
-  fieldId: string;
+  valueId: string;
   label: string;
 }
 
@@ -72,7 +72,7 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
     setSelected([...next.memberKeys]);
   };
   const apply = () => {
-    if (sort?.by === 'value' && !sort.valueFieldId) return;
+    if (sort?.by === 'value' && !sort.valueId) return;
     if (mode === 'values') {
       const filter: PivotFilter | undefined = manualMode === 'all'
         ? undefined
@@ -93,7 +93,7 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
         <Button icon="sort" size="sm" variant="ghost" className="!h-9 !justify-start rounded-none px-4 text-[13px]" onClick={() => setSort({ direction: 'ascending', by: 'label' })}>{pivotText(locale, 'ascending')}</Button>
         <Button icon="sort" size="sm" variant="ghost" className="!h-9 !justify-start rounded-none px-4 text-[13px]" onClick={() => setSort({ direction: 'descending', by: 'label' })}>{pivotText(locale, 'descending')}</Button>
         <Button icon="sliders" size="sm" variant="ghost" className="!h-9 !justify-start rounded-none px-4 text-[13px]" onClick={() => setShowSortOptions((visible) => !visible)}>{pivotText(locale, 'otherSortOptions')}</Button>
-        {showSortOptions ? <Stack gap="xs" className="border-b border-[#d7d7d7] px-3 py-2"><Inline gap="xs"><Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={sort?.by ?? 'label'} onChange={(event) => setSort(event.target.value === 'value' ? { direction: sort?.direction ?? 'ascending', by: 'value' } : { direction: sort?.direction ?? 'ascending', by: 'label' })}><option value="label">{pivotText(locale, 'labelFilter')}</option><option value="value" disabled={valueFields.length === 0}>{pivotText(locale, 'valueFilter')}</option></Select><Button size="xs" variant="ghost" onClick={() => setSort(undefined)}>{pivotText(locale, 'clearSort')}</Button></Inline>{sort?.by === 'value' ? <Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={sort.valueFieldId ?? ''} onChange={(event) => setSort({ direction: sort.direction, by: 'value', valueFieldId: event.target.value })}><option value="" disabled>{pivotText(locale, 'sortField')}</option>{valueFields.map((value) => <option key={value.fieldId} value={value.fieldId}>{value.label}</option>)}</Select> : null}</Stack> : null}
+        {showSortOptions ? <Stack gap="xs" className="border-b border-[#d7d7d7] px-3 py-2"><Inline gap="xs"><Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={sort?.by ?? 'label'} onChange={(event) => setSort(event.target.value === 'value' ? { direction: sort?.direction ?? 'ascending', by: 'value' } : { direction: sort?.direction ?? 'ascending', by: 'label' })}><option value="label">{pivotText(locale, 'labelFilter')}</option><option value="value" disabled={valueFields.length === 0}>{pivotText(locale, 'valueFilter')}</option></Select><Button size="xs" variant="ghost" onClick={() => setSort(undefined)}>{pivotText(locale, 'clearSort')}</Button></Inline>{sort?.by === 'value' ? <Select aria-label={pivotText(locale, 'sortField')} sizeVariant="sm" value={sort.valueId ?? ''} onChange={(event) => setSort({ direction: sort.direction, by: 'value', valueId: event.target.value })}><option value="" disabled>{pivotText(locale, 'sortField')}</option>{valueFields.map((value) => <option key={value.valueId} value={value.valueId}>{value.label}</option>)}</Select> : null}</Stack> : null}
         <Button icon="filter" disabled={currentFilters.length === 0} size="sm" variant="ghost" className="!h-9 !justify-start rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => onApply(undefined, sort, 'all')}>{pivotTemplate(locale, 'clearFieldFilter', { field: field.name })}</Button>
         {field.dataType === 'date' ? <Button size="sm" variant={mode === 'date' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none px-4 text-[13px]" onClick={() => setMode('date')}><Text as="span" size="sm">{pivotText(locale, 'dateFilter')}</Text><Icon name="chevron-right" size="xs" /></Button> : <Button size="sm" variant={mode === 'label' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none px-4 text-[13px]" onClick={() => setMode('label')}><Text as="span" size="sm">{pivotText(locale, 'labelFilter')}</Text><Icon name="chevron-right" size="xs" /></Button>}
         {field.dataType === 'number' ? <Button size="sm" variant={mode === 'value' ? 'soft' : 'ghost'} className="!h-9 !justify-between rounded-none border-b border-[#d7d7d7] px-4 text-[13px]" onClick={() => setMode('value')}><Text as="span" size="sm">{pivotText(locale, 'valueFilter')}</Text><Icon name="chevron-right" size="xs" /></Button> : null}
@@ -121,7 +121,7 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
           </Stack>
         )}
         <Inline gap="sm" className="justify-end border-t border-[#d7d7d7] p-2">
-          <Button size="sm" variant="outline" disabled={sort?.by === 'value' && !sort.valueFieldId} className="min-w-[86px] rounded-none border-[#0078d4] text-slate-900" onClick={apply}>{pivotText(locale, 'confirm')}</Button>
+          <Button size="sm" variant="outline" disabled={sort?.by === 'value' && !sort.valueId} className="min-w-[86px] rounded-none border-[#0078d4] text-slate-900" onClick={apply}>{pivotText(locale, 'confirm')}</Button>
           <Button size="sm" variant="outline" className="min-w-[86px] rounded-none" onClick={onClose}>{pivotText(locale, 'cancel')}</Button>
         </Inline>
       </Stack>

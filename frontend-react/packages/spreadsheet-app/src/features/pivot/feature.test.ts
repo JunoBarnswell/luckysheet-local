@@ -89,7 +89,7 @@ function sameSheetRelationalPivot(): { workbook: WorkbookModel; pivot: NonNullab
   const region = pivot.fieldCatalog.fields.find((field) => field.fieldId === 'source:customers:column:1')!;
   const amount = pivot.fieldCatalog.fields.find((field) => field.fieldId === 'source:orders:column:1')!;
   pivot.layout.rows = [{ fieldId: region.fieldId }];
-  pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+  pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
   return { workbook, pivot };
 }
 
@@ -381,7 +381,7 @@ describe('pivot feature contract', () => {
     assert.ok(amountField);
     pivot.layout.rows = [];
     pivot.layout.columns = [];
-    pivot.layout.values = [{ fieldId: amountField.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amountField.fieldId}`, fieldId: amountField.fieldId, summarizeBy: 'sum' }];
     sheet.pivots.push(pivot);
     const timeline = buildPivotTimelineDrawing({
       drawingId: 'timeline-boundary',
@@ -424,7 +424,7 @@ describe('pivot feature contract', () => {
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 35);
     // Source revision is supplied by the block/data-source revision counter in
     // production; the sparse legacy CellMatrix has no mutation counter.
-    pivot.layout.values[0] = { fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId, summarizeBy: 'count' };
+    pivot.layout.values[0] = { valueId: `value:${pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId}`, fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId, summarizeBy: 'count' };
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notEqual(getPivotRevisionKey(workbook, pivot).layoutRevision, firstKey.layoutRevision);
     pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
@@ -440,7 +440,7 @@ describe('pivot feature contract', () => {
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId;
     const manual = { kind: 'manual' as const, family: 'manual' as const, fieldId: region, mode: 'include' as const, memberKeys: [{ type: 'text' as const, value: 'East' }] };
     const label = { kind: 'condition' as const, family: 'label' as const, fieldId: region, operator: 'contains' as const, value: 'East' };
-    const value = { kind: 'condition' as const, family: 'value' as const, fieldId: region, valueFieldId: amount, operator: 'greater-than' as const, value: 5 };
+    const value = { kind: 'condition' as const, family: 'value' as const, fieldId: region, valueId: `value:${amount}`, operator: 'greater-than' as const, value: 5 };
     const withManual = upsertPivotFilter(pivot.layout, manual);
     const withLabel = upsertPivotFilter(withManual, label);
     const withValue = upsertPivotFilter(withLabel, value);
@@ -459,7 +459,7 @@ describe('pivot feature contract', () => {
     const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId;
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId;
     pivot.layout.rows = [{ fieldId: region }];
-    pivot.layout.values = [{ fieldId: amount, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount}`, fieldId: amount, summarizeBy: 'sum' }];
     pivot.layout.filters = [
       { kind: 'manual', family: 'manual', fieldId: region, mode: 'all', memberKeys: [] },
       { kind: 'manual', family: 'manual', fieldId: amount, mode: 'all', memberKeys: [] },

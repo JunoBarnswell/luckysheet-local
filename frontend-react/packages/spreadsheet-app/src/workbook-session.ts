@@ -2786,8 +2786,8 @@ export class WorkbookSession {
   ): void {
     this.runCommand('pivot.update', { sheetId: this.activeSheetId, pivotId, ...patch });
   }
-  setPivotAggregate(pivotId: string, fieldId: string, summarizeBy: PivotAggregateFunction): void {
-    this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, fieldId, summarizeBy });
+  setPivotAggregate(pivotId: string, valueId: string, summarizeBy: PivotAggregateFunction): void {
+    this.runCommand('pivot.setAggregate', { sheetId: this.activeSheetId, pivotId, valueId, summarizeBy });
   }
 
   listPivotControls(pivotId: string): readonly PivotControlRecord[] {

@@ -93,14 +93,14 @@ export interface PivotExpansionButtonsParams {
 export interface PivotAggregateParams {
   sheetId: string;
   pivotId: string;
-  fieldId: string;
+  valueId: string;
   summarizeBy: PivotAggregateFunction;
 }
 
 export interface PivotShowAsParams {
   sheetId: string;
   pivotId: string;
-  fieldId: string;
+  valueId: string;
   showAs: PivotShowAs;
 }
 
@@ -969,7 +969,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
   },
     });
 
-  const registerLayoutPatch = <P extends { sheetId: string; pivotId: string; fieldId: string }>(
+  const registerLayoutPatch = <P extends { sheetId: string; pivotId: string }>(
     commandId: string,
     buildLayout: (layout: PivotLayout, params: P) => PivotLayout,
   ): void => {
@@ -978,7 +978,9 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
       execute: (params, context) => {
         const pivot = pivotFor(context, params.sheetId, params.pivotId);
         if (!pivot) throw new Error(`Unknown pivot: ${params.pivotId}`);
-        assertPivotField(context.workbook, pivot, params.fieldId);
+        if ('fieldId' in params) assertPivotField(context.workbook, pivot, params.fieldId as string);
+        else if ('valueId' in params && !pivot.layout.values.some((entry) => entry.valueId === params.valueId)) throw new Error(`Unknown Pivot Values placement: ${String(params.valueId)}`);
+        else if (!('valueId' in params)) throw new Error(`Pivot layout patch target is missing: ${commandId}`);
         const previousLayout = structuredClone(pivot.layout);
         const nextLayout = buildLayout(previousLayout, params);
         const affectedRanges = sheetRange(params.sheetId);
@@ -997,8 +999,8 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     commandIds.push(commandId);
   };
 
-  registerLayoutPatch<PivotAggregateParams>('pivot.setAggregate', (layout, params) => setPivotAggregate(layout, params.fieldId, params.summarizeBy));
-  registerLayoutPatch<PivotShowAsParams>('pivot.setShowAs', (layout, params) => setPivotShowAs(layout, params.fieldId, params.showAs));
+  registerLayoutPatch<PivotAggregateParams>('pivot.setAggregate', (layout, params) => setPivotAggregate(layout, params.valueId, params.summarizeBy));
+  registerLayoutPatch<PivotShowAsParams>('pivot.setShowAs', (layout, params) => setPivotShowAs(layout, params.valueId, params.showAs));
   registerLayoutPatch<PivotGroupParams>('pivot.setGroup', (layout, params) => setPivotGroup(layout, params.axis, params.fieldId, params.group));
 
   runtime.registry.registerCommand<PivotChartCreateParams>({

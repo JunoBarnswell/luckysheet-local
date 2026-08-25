@@ -192,11 +192,13 @@ function subtotalOptions(locale: Locale, field: AreaItem, placement: PivotFieldP
 
 export function PivotFieldArea({ area, className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
   const [valueSortFieldIds, setValueSortFieldIds] = useState<Record<string, string>>({});
-  const items: AreaItem[] = fieldIds.map((fieldId, index) => {
+  const items: AreaItem[] = fieldIds.map((placementId, index) => {
+    const value = area === 'values' ? valueFields.find((entry) => entry.valueId === placementId) : undefined;
+    const fieldId = value?.fieldId ?? placementId;
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     return {
-      ...(field ?? { name: fieldId, dataType: 'text' as const, ordinal: index }),
-      id: fieldId,
+      ...(field ?? { name: value?.displayName ?? fieldId, dataType: 'text' as const, ordinal: index }),
+      id: placementId,
       fieldId,
       index,
       placement: placements?.get(fieldId),
@@ -220,7 +222,7 @@ export function PivotFieldArea({ area, className, disabled = false, fieldIds, fi
             draggable={!disabled}
             gap="xs"
             className="group min-h-8 cursor-grab rounded-md border border-blue-100 bg-white px-2 py-1 shadow-sm active:cursor-grabbing"
-            onDragStart={(event) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)}
+            onDragStart={(event) => { if (area === 'values') event.dataTransfer.setData('application/x-pivot-value', field.id); else event.dataTransfer.setData('application/x-pivot-field', field.fieldId); }}
           >
             <Icon name="menu" size="xs" className="text-slate-300" />
             <Text size="xs" weight="medium" className="min-w-0 flex-1 truncate">{field.name}</Text>
@@ -241,15 +243,15 @@ export function PivotFieldArea({ area, className, disabled = false, fieldIds, fi
                    <Stack gap="xs" className="min-w-48 p-1">
                      <Text size="xs" weight="semibold">{area === 'values' ? pivotText(locale, 'valueSettings') : pivotText(locale, 'fieldSettings')}</Text>
                      <Inline gap="xs">
-                        <Button aria-label={pivotText(locale, 'moveUp')} disabled={field.index === 0} icon="arrow-up" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.fieldId, field.index, -1); close(); }} />
-                        <Button aria-label={pivotText(locale, 'moveDown')} disabled={field.index === items.length - 1} icon="arrow-down" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.fieldId, field.index, 1); close(); }} />
-                        <Button aria-label={pivotText(locale, 'remove')} icon="trash" iconOnly size="xs" variant="danger" onClick={() => { onRemove(field.fieldId, field.index); close(); }} />
+                        <Button aria-label={pivotText(locale, 'moveUp')} disabled={field.index === 0} icon="arrow-up" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.id, field.index, -1); close(); }} />
+                        <Button aria-label={pivotText(locale, 'moveDown')} disabled={field.index === items.length - 1} icon="arrow-down" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.id, field.index, 1); close(); }} />
+                        <Button aria-label={pivotText(locale, 'remove')} icon="trash" iconOnly size="xs" variant="danger" onClick={() => { onRemove(field.id, field.index); close(); }} />
                      </Inline>
-                      {onSort ? <Stack gap="xs" className="border-t border-slate-100 pt-1"><Text size="xs" weight="semibold">{pivotText(locale, 'sortBy')}</Text><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'label' }); close(); }}>{pivotText(locale, 'ascending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'label' }); close(); }}>{pivotText(locale, 'descending')}</Button></Inline><Select aria-label={`${field.name} ${pivotText(locale, 'sortField')}`} sizeVariant="sm" disabled={disabled || valueFields.length === 0} value={valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueFieldId ?? ''} onChange={(event) => setValueSortFieldIds((current) => ({ ...current, [field.fieldId]: event.target.value }))}><option value="" disabled>{pivotText(locale, 'sortField')}</option>{valueFields.map((value) => <option key={value.fieldId} value={value.fieldId}>{value.displayName ?? value.fieldId}</option>)}</Select><Inline gap="xs"><Button size="xs" variant="ghost" disabled={!valueSortFieldIds[field.fieldId] && !field.placement?.sort?.valueFieldId} onClick={() => { const valueFieldId = valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueFieldId; if (valueFieldId) { onSort(field.fieldId, { direction: 'ascending', by: 'value', valueFieldId }); close(); } }}>{pivotText(locale, 'valueAscending')}</Button><Button size="xs" variant="ghost" disabled={!valueSortFieldIds[field.fieldId] && !field.placement?.sort?.valueFieldId} onClick={() => { const valueFieldId = valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueFieldId; if (valueFieldId) { onSort(field.fieldId, { direction: 'descending', by: 'value', valueFieldId }); close(); } }}>{pivotText(locale, 'valueDescending')}</Button></Inline><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, undefined); close(); }}>{pivotText(locale, 'clearSort')}</Button></Stack> : null}
+                      {onSort ? <Stack gap="xs" className="border-t border-slate-100 pt-1"><Text size="xs" weight="semibold">{pivotText(locale, 'sortBy')}</Text><Inline gap="xs"><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'ascending', by: 'label' }); close(); }}>{pivotText(locale, 'ascending')}</Button><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, { direction: 'descending', by: 'label' }); close(); }}>{pivotText(locale, 'descending')}</Button></Inline><Select aria-label={`${field.name} ${pivotText(locale, 'sortField')}`} sizeVariant="sm" disabled={disabled || valueFields.length === 0} value={valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueId ?? ''} onChange={(event) => setValueSortFieldIds((current) => ({ ...current, [field.fieldId]: event.target.value }))}><option value="" disabled>{pivotText(locale, 'sortField')}</option>{valueFields.map((value) => <option key={value.valueId} value={value.valueId}>{value.displayName ?? value.fieldId}</option>)}</Select><Inline gap="xs"><Button size="xs" variant="ghost" disabled={!valueSortFieldIds[field.fieldId] && !field.placement?.sort?.valueId} onClick={() => { const valueId = valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueId; if (valueId) { onSort(field.fieldId, { direction: 'ascending', by: 'value', valueId }); close(); } }}>{pivotText(locale, 'valueAscending')}</Button><Button size="xs" variant="ghost" disabled={!valueSortFieldIds[field.fieldId] && !field.placement?.sort?.valueId} onClick={() => { const valueId = valueSortFieldIds[field.fieldId] ?? field.placement?.sort?.valueId; if (valueId) { onSort(field.fieldId, { direction: 'descending', by: 'value', valueId }); close(); } }}>{pivotText(locale, 'valueDescending')}</Button></Inline><Button size="xs" variant="ghost" onClick={() => { onSort(field.fieldId, undefined); close(); }}>{pivotText(locale, 'clearSort')}</Button></Stack> : null}
                       {groupOptions(locale, field, onGroup)}
                       {area !== 'values' && area !== 'filters' ? subtotalOptions(locale, field, field.placement, onSubtotal) : null}
                       {area === 'values' && onValueChange ? (() => {
-                        const value = valueFields.find((entry) => entry.fieldId === field.fieldId);
+                        const value = valueFields.find((entry) => entry.valueId === field.id);
                         return value ? <PivotValueEditor locale={locale} fields={fields} value={value} disabled={disabled} onChange={onValueChange} /> : null;
                       })() : null}
                    </Stack>

@@ -277,21 +277,25 @@ export function useEditorCommandController({
     onPivotSelect: setActivePivotId,
     onFieldAreaChange: (fieldId, area, index) => {
       if (!activePivot) return;
-      const next = removePivotField(activePivot.layout, fieldId);
+      const next = area === "values" ? cloneLayout(activePivot.layout) : removePivotField(activePivot.layout, fieldId);
       if (area === "values") {
         const field = pivotFields.find((entry) => entry.fieldId === fieldId);
         const summarizeBy: PivotAggregateFunction = field?.dataType === "number" ? "sum" : "count";
-        next.values.splice(Math.max(0, index), 0, { fieldId, summarizeBy });
+        const baseValueId = `value:${fieldId}`;
+        let valueId = baseValueId;
+        let suffix = 2;
+        while (next.values.some((value) => value.valueId === valueId)) valueId = `${baseValueId}:${suffix++}`;
+        next.values.splice(Math.max(0, index), 0, { valueId, fieldId, summarizeBy });
       } else if (area === "filters") next.filters.splice(Math.max(0, index), 0, { kind: "manual", family: "manual", fieldId, scope: 'report', mode: "all", memberKeys: [] });
       else next[area].splice(Math.max(0, index), 0, { fieldId });
       updatePivotLayout(next);
     },
-    onRemoveField: (fieldId, area) => {
+    onRemoveField: (placementId, area) => {
       if (!activePivot) return;
       const next = cloneLayout(activePivot.layout);
-      if (area === "values") next.values = next.values.filter((value) => value.fieldId !== fieldId);
-      else if (area === "filters") next.filters = next.filters.filter((filter) => filter.fieldId !== fieldId);
-      else next[area] = next[area].filter((field) => field.fieldId !== fieldId);
+      if (area === "values") next.values = next.values.filter((value) => value.valueId !== placementId);
+      else if (area === "filters") next.filters = next.filters.filter((filter) => filter.fieldId !== placementId);
+      else next[area] = next[area].filter((field) => field.fieldId !== placementId);
       updatePivotLayout(next);
     },
     onValueChange: (value) => {

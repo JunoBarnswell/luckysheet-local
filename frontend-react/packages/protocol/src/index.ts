@@ -539,10 +539,10 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     if (!isNonEmptyString(placement.fieldId) || !effectiveFieldIds.has(placement.fieldId)) throw new Error('Pivot placement fieldId is invalid');
     if (placement.sort !== undefined) {
       const sort = requireRecord(placement.sort, 'Pivot sort');
-      validateExactKeys(sort, ['direction', 'by', 'valueFieldId'], 'Pivot sort');
+      validateExactKeys(sort, ['direction', 'by', 'valueId'], 'Pivot sort');
       if (!['ascending', 'descending'].includes(String(sort.direction)) || (sort.by !== undefined && !['label', 'value'].includes(String(sort.by)))) throw new Error('Pivot sort is invalid');
-      if (sort.valueFieldId !== undefined && (!isNonEmptyString(sort.valueFieldId) || !effectiveFieldIds.has(sort.valueFieldId))) throw new Error('Pivot sort valueFieldId is invalid');
-      if (sort.by === 'value' && sort.valueFieldId === undefined) throw new Error('Pivot value sort requires valueFieldId');
+      if (sort.valueId !== undefined && !isNonEmptyString(sort.valueId)) throw new Error('Pivot sort valueId is invalid');
+      if (sort.by === 'value' && sort.valueId === undefined) throw new Error('Pivot value sort requires valueId');
     }
     if (placement.group !== undefined) validatePivotGroup(placement.group);
     if (placement.subtotal !== undefined) validatePivotSubtotal(placement.subtotal);
@@ -562,16 +562,16 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       if (!['all', 'include', 'exclude'].includes(String(filter.mode)) || !Array.isArray(filter.memberKeys)) throw new Error('Pivot manual filter is invalid');
       filter.memberKeys.forEach((item, index) => validatePivotMemberKey(item, `Pivot manual filter member ${String(index)}`));
     } else if (filter.kind === 'condition') {
-      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'valueFieldId', 'scope', 'operator', 'value', 'value2', 'dynamic', 'wholeDay'], 'Pivot condition filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'valueId', 'scope', 'operator', 'value', 'value2', 'dynamic', 'wholeDay'], 'Pivot condition filter');
       if (!['label', 'date', 'value'].includes(String(filter.family))) throw new Error('Pivot condition filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot condition filter scope is invalid');
-      if (filter.valueFieldId !== undefined && (!isNonEmptyString(filter.valueFieldId) || !effectiveFieldIds.has(filter.valueFieldId))) throw new Error('Pivot condition valueFieldId is invalid');
+      if (filter.valueId !== undefined && !isNonEmptyString(filter.valueId)) throw new Error('Pivot condition valueId is invalid');
       const labelOperators = ['equals', 'not-equals', 'begins-with', 'not-begins-with', 'ends-with', 'not-ends-with', 'contains', 'not-contains', 'between', 'not-between', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal'];
       const dateOperators = ['equals', 'not-equals', 'before', 'after', 'between', 'not-between'];
       const valueOperators = ['equals', 'not-equals', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal', 'between', 'not-between'];
       const operators = filter.family === 'label' ? labelOperators : filter.family === 'date' ? dateOperators : valueOperators;
       if (!operators.includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid for its family');
-      if (filter.family !== 'value' && filter.valueFieldId !== undefined) throw new Error('Pivot condition valueFieldId is only valid for value filters');
+      if (filter.family !== 'value' && filter.valueId !== undefined) throw new Error('Pivot condition valueId is only valid for value filters');
       validatePivotScalar(filter.value, 'Pivot condition value');
       if (filter.value2 !== undefined) validatePivotScalar(filter.value2, 'Pivot condition upper value');
       const dynamicDates = ['today', 'yesterday', 'tomorrow', 'this-week', 'last-week', 'next-week', 'this-month', 'last-month', 'next-month', 'this-quarter', 'last-quarter', 'next-quarter', 'this-year', 'last-year', 'next-year', 'year-to-date'];
@@ -580,10 +580,10 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       if (filter.family === 'date' && filter.dynamic !== undefined && !['equals', 'between'].includes(String(filter.operator))) throw new Error('Pivot dynamic date operator is invalid');
       if (filter.wholeDay !== undefined && (filter.family !== 'date' || typeof filter.wholeDay !== 'boolean')) throw new Error('Pivot condition wholeDay is invalid');
     } else if (filter.kind === 'top-items') {
-      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueFieldId', 'direction'], 'Pivot top-items filter');
+      validateExactKeys(filter, ['kind', 'family', 'fieldId', 'scope', 'count', 'valueId', 'direction'], 'Pivot top-items filter');
       if (filter.family !== 'top-items') throw new Error('Pivot top-items filter family is invalid');
       if (filter.scope !== undefined && !['report', 'field'].includes(String(filter.scope))) throw new Error('Pivot top-items filter scope is invalid');
-      if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueFieldId) || !effectiveFieldIds.has(filter.valueFieldId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
+      if (!Number.isSafeInteger(filter.count) || Number(filter.count) < 1 || !isNonEmptyString(filter.valueId) || !['top', 'bottom'].includes(String(filter.direction))) throw new Error('Pivot top-items filter is invalid');
     } else throw new Error('Pivot filter kind is unsupported');
     const scope = filter.scope ?? (axisFieldIds.has(filter.fieldId) ? 'field' : 'report');
     if (scope === 'field' && !axisFieldIds.has(filter.fieldId)) throw new Error('Pivot field filter must target a row or column field');
@@ -594,10 +594,23 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
     if (!layout.allowMultipleFiltersPerField && filterFields.has(fieldScope)) throw new Error('Pivot multiple filters per field are disabled');
     filterFields.add(fieldScope);
   }
+  const valueIds = new Set<string>();
   for (const rawValue of layout.values) {
     const item = requireRecord(rawValue, 'Pivot value field');
-    validateExactKeys(item, ['fieldId', 'summarizeBy', 'displayName', 'numberFormat', 'baseFieldId', 'baseItem', 'showAs'], 'Pivot value field');
+    validateExactKeys(item, ['valueId', 'fieldId', 'summarizeBy', 'displayName', 'numberFormat', 'baseFieldId', 'baseItem', 'showAs'], 'Pivot value field');
+    if (!isNonEmptyString(item.valueId) || valueIds.has(item.valueId)) throw new Error('Pivot value placement identity is invalid or duplicated');
+    valueIds.add(item.valueId);
     if (!isNonEmptyString(item.fieldId) || !effectiveFieldIds.has(item.fieldId) || !['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'].includes(String(item.summarizeBy))) throw new Error('Pivot value field is invalid');
+  }
+  for (const rawPlacement of [...layout.rows, ...layout.columns]) {
+    const placement = rawPlacement as Record<string, unknown>;
+    const sort = placement.sort as Record<string, unknown> | undefined;
+    if (sort?.by === 'value' && (!isNonEmptyString(sort.valueId) || !valueIds.has(sort.valueId))) throw new Error('Pivot value sort placement identity is invalid');
+  }
+  for (const rawFilter of layout.filters) {
+    const filter = rawFilter as Record<string, unknown>;
+    if (filter.kind === 'top-items' && (!isNonEmptyString(filter.valueId) || !valueIds.has(filter.valueId))) throw new Error('Pivot top-items placement identity is invalid');
+    if (filter.kind === 'condition' && filter.valueId !== undefined && (!valueIds.has(String(filter.valueId)) || filter.family !== 'value')) throw new Error('Pivot condition placement identity is invalid');
   }
   const policy = requireRecord(pivot.refreshPolicy, 'Pivot refresh policy');
   validateExactKeys(policy, ['mode', 'preserveFormatting', 'refreshOnLoad'], 'Pivot refresh policy');

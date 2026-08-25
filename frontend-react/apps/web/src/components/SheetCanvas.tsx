@@ -1082,7 +1082,7 @@ export function SheetCanvas({
             const placement = pivot ? [...pivot.layout.rows, ...pivot.layout.columns].find((candidate) => candidate.fieldId === pivotFilterPopover.fieldId) : undefined;
             const currentFilters = pivot?.layout.filters.filter((candidate) => candidate.fieldId === pivotFilterPopover.fieldId && (candidate.scope ?? 'report') === pivotFilterPopover.scope) ?? [];
             const valueFields: PivotValueSortOption[] = pivot?.layout.values.map((value) => ({
-              fieldId: value.fieldId,
+              valueId: value.valueId,
               label: value.displayName ?? pivot.fieldCatalog.fields.find((candidate) => candidate.fieldId === value.fieldId)?.name ?? value.fieldId,
             })) ?? [];
             const memberOptions = placement?.group ? buildPivotGroupedFilterMembers(field?.values ?? [], placement.group) : undefined;

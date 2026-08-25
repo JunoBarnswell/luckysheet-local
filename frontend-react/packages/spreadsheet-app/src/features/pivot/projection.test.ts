@@ -15,6 +15,7 @@ import {
   summarizePivotReportFilters,
 } from './engine';
 import { buildPivotModel } from './helpers';
+import { patchPivotValueField } from './panel-state';
 import { buildPivotSlicerDrawing } from '../pivot-controls/helpers';
 import { createSpillEnvironment } from '../../formula-spill-sync';
 
@@ -24,6 +25,36 @@ function workbookWithData(): WorkbookModel {
   [['Region', 'Amount'], ['East', 10], ['West', 20], ['East', 5]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
   return workbook;
 }
+
+it('keeps repeated source fields independent through Values placement identities', () => {
+  const workbook = workbookWithData();
+  const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-repeated-values', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+  assert.ok(pivot);
+  const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
+  const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+  pivot.layout.rows = [{ fieldId: region.fieldId }];
+  pivot.layout.values = [
+    { valueId: 'amount:sum', fieldId: amount.fieldId, summarizeBy: 'sum' },
+    { valueId: 'amount:count', fieldId: amount.fieldId, summarizeBy: 'count' },
+  ];
+
+  const result = computePivotResult(workbook, pivot);
+  assert.deepEqual(result.valueFields?.map((field) => [field.valueId, field.fieldId, field.summarizeBy]), [
+    ['amount:sum', amount.fieldId, 'sum'],
+    ['amount:count', amount.fieldId, 'count'],
+  ]);
+  assert.deepEqual(result.grandTotal?.values, [35, 3]);
+  const projection = buildPivotGridProjection(workbook, pivot);
+  assert.ok(projection.cells.some((cell) => cell.valueId === 'amount:sum'));
+  assert.ok(projection.cells.some((cell) => cell.valueId === 'amount:count'));
+
+  const edited = patchPivotValueField(pivot.layout, 'amount:count', { summarizeBy: 'average' });
+  assert.equal(edited.values[0]?.summarizeBy, 'sum');
+  assert.equal(edited.values[1]?.summarizeBy, 'average');
+  assert.throws(() => patchPivotValueField(pivot.layout, amount.fieldId, { summarizeBy: 'max' }), /Unknown Pivot Values placement/);
+  assert.throws(() => computePivotResult(workbook, { ...pivot, layout: { ...pivot.layout, values: [{ ...pivot.layout.values[0]!, valueId: 'amount:sum' }, { ...pivot.layout.values[1]!, valueId: 'amount:sum' }] } }), /Duplicate Pivot Values placement identity/);
+  assert.throws(() => computePivotResult(workbook, { ...pivot, layout: { ...pivot.layout, rows: [{ fieldId: region.fieldId, sort: { direction: 'ascending', by: 'value', valueId: amount.fieldId } }] } }), /value sort placement is not in Values/);
+});
 
 function relationalWorkbook(): WorkbookModel {
   const workbook = new WorkbookModel('pivot-relations', 'Pivot Relations');
@@ -68,7 +99,7 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
   const amount = catalog.fields.find((field) => field.name === 'Amount')!;
   pivot.fieldCatalog = catalog;
   pivot.layout.rows = [{ fieldId: region.fieldId }];
-  pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+  pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
   return pivot;
 }
 
@@ -97,7 +128,7 @@ describe('native PivotGridProjection contract', () => {
     const category = catalog.fields.find((field) => field.name === 'Category')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: category.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.subtotalLocation = 'bottom';
     pivot.layout.showRowGrandTotals = false;
     const result = computePivotResult(workbook, pivot);
@@ -136,7 +167,7 @@ describe('native PivotGridProjection contract', () => {
     const category = catalog.fields.find((field) => field.name === 'Category')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     sheet.pivots.push(pivot);
     const regionSlicer = buildPivotSlicerDrawing({ drawingId: 'region-slicer', payloadId: 'region-slicer-payload', sheetId: sheet.id, pivotId: pivot.id, fieldId: region.fieldId, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 1 });
     const categorySlicer = buildPivotSlicerDrawing({ drawingId: 'category-slicer', payloadId: 'category-slicer-payload', sheetId: sheet.id, pivotId: pivot.id, fieldId: category.fieldId, filter: { mode: 'include', memberKeys: [createPivotMemberKey('Widget')] }, transform: { x: 0, y: 140, width: 200, height: 120 }, zIndex: 2 });
@@ -165,7 +196,7 @@ describe('native PivotGridProjection contract', () => {
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.fieldCatalog = catalog;
     pivot.layout.rows = [{ fieldId: member.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const result = computePivotResult(workbook, pivot, formula);
     assert.deepEqual(result.rows.map((node) => node.key), [1, 2, 3]);
     assert.equal(result.grandTotal?.values[0], 60);
@@ -190,7 +221,7 @@ describe('native PivotGridProjection contract', () => {
     const catalog = getPivotFieldCatalog(workbook, pivot, formula);
     pivot.fieldCatalog = catalog;
     pivot.layout.rows = [{ fieldId: catalog.fields[0]!.fieldId }];
-    pivot.layout.values = [{ fieldId: catalog.fields[0]!.fieldId, summarizeBy: 'count' }];
+    pivot.layout.values = [{ valueId: `value:${catalog.fields[0]!.fieldId}`, fieldId: catalog.fields[0]!.fieldId, summarizeBy: 'count' }];
     assert.equal(getPivotSourceRanges(workbook, pivot, formula)[0]?.endRow, 2);
     assert.deepEqual(computePivotResult(workbook, pivot, formula).rows.map((node) => node.key), [1, 2]);
     formula.setFormula({ sheetId: sheet.id, row: 0, column: 0 }, '=SEQUENCE(4,1,0,1)');
@@ -223,7 +254,7 @@ describe('native PivotGridProjection contract', () => {
       const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!;
       const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
       pivot.layout.rows = [{ fieldId: region.fieldId }];
-      pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+      pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     }
 
     assert.deepEqual(computePivotResult(workbook, globalPivot).rows.map((node) => node.key), ['East', 'West']);
@@ -289,7 +320,7 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(region.values, ['North', null, 'South']);
     pivot.fieldCatalog = catalog;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const all = computePivotResult(workbook, pivot);
     assert.deepEqual(all.rows.map((node) => node.label), ['(blank)', 'North', 'South']);
     pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'blank', value: null }] }];
@@ -318,7 +349,7 @@ describe('native PivotGridProjection contract', () => {
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.fieldCatalog = catalog;
     pivot.layout.rows = [{ fieldId: member.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const result = computePivotResult(workbook, pivot, formula);
     assert.deepEqual(result.rows.map((node) => node.label), ['#DIV/0!', '#VALUE!']);
     assert.equal(result.grandTotal?.values[0], 30);
@@ -342,7 +373,7 @@ describe('native PivotGridProjection contract', () => {
     const member = catalog.fields.find((field) => field.name === 'Member')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: member.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const first = computePivotResult(workbook, pivot);
     const second = computePivotResult(workbook, pivot);
     assert.deepEqual(first.rows.map((node) => node.label), second.rows.map((node) => node.label));
@@ -380,7 +411,7 @@ describe('native PivotGridProjection contract', () => {
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const calculatedId = 'calculated:revenue';
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: calculatedId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${calculatedId}`, fieldId: calculatedId, summarizeBy: 'sum' }];
     pivot.layout.calculatedFields = [{ fieldId: calculatedId, name: 'Revenue', formula: '=Sales*Units' }];
 
     const result = computePivotResult(workbook, pivot);
@@ -396,7 +427,7 @@ describe('native PivotGridProjection contract', () => {
     assert.ok(pivot);
     const revenue = 'calculated:revenue';
     const adjusted = 'calculated:adjusted';
-    pivot.layout.values = [{ fieldId: adjusted, summarizeBy: 'sum' }, { fieldId: revenue, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${adjusted}`, fieldId: adjusted, summarizeBy: 'sum' }, { valueId: `value:${revenue}`, fieldId: revenue, summarizeBy: 'sum' }];
     pivot.layout.calculatedFields = [
       { fieldId: adjusted, name: 'Adjusted', formula: '=[Revenue]+10' },
       { fieldId: revenue, name: 'Revenue', formula: '=[Sales]*[Units]' },
@@ -413,7 +444,7 @@ describe('native PivotGridProjection contract', () => {
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     const calculated = 'calculated:invalid';
-    pivot.layout.values = [{ fieldId: calculated, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${calculated}`, fieldId: calculated, summarizeBy: 'sum' }];
     pivot.layout.calculatedFields = [{ fieldId: calculated, name: 'Invalid', formula: '=Missing+1' }];
     assert.throws(() => computePivotResult(workbook, pivot), /unknown field/i);
 
@@ -421,12 +452,12 @@ describe('native PivotGridProjection contract', () => {
       { fieldId: 'calculated:a', name: 'A', formula: '=B+1' },
       { fieldId: 'calculated:b', name: 'B', formula: '=A+1' },
     ];
-    pivot.layout.values = [{ fieldId: 'calculated:a', summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${'calculated:a'}`, fieldId: 'calculated:a', summarizeBy: 'sum' }];
     assert.throws(() => computePivotResult(workbook, pivot), /dependency cycle/i);
 
     pivot.layout.calculatedFields = [{ fieldId: calculated, name: 'Invalid', formula: `=${amount.fieldId}+1` }];
     pivot.layout.rows = [{ fieldId: calculated }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     assert.throws(() => computePivotResult(workbook, pivot), /only valid in Values/i);
   });
 
@@ -457,7 +488,8 @@ describe('native PivotGridProjection contract', () => {
     assert.ok(pivot);
     const region = getPivotFieldCatalog(workbook, pivot).fields.find((field) => field.name === 'Region')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: getPivotFieldCatalog(workbook, pivot).fields.find((field) => field.name === 'Amount')!.fieldId, summarizeBy: 'count' }];
+    const amountFieldId = getPivotFieldCatalog(workbook, pivot).fields.find((field) => field.name === 'Amount')!.fieldId;
+    pivot.layout.values = [{ valueId: `value:${amountFieldId}`, fieldId: amountFieldId, summarizeBy: 'count' }];
     pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'all', memberKeys: [] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 3);
     pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
@@ -478,12 +510,12 @@ describe('native PivotGridProjection contract', () => {
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.allowMultipleFiltersPerField = true;
     pivot.layout.filters = [
       { kind: 'manual', family: 'manual', scope: 'report', fieldId: region.fieldId, mode: 'all', memberKeys: [] },
       { kind: 'condition', family: 'label', fieldId: region.fieldId, scope: 'report', operator: 'begins-with', value: 'E' },
-      { kind: 'top-items', family: 'top-items', scope: 'report', fieldId: region.fieldId, count: 1, valueFieldId: amount.fieldId, direction: 'top' },
+      { kind: 'top-items', family: 'top-items', scope: 'report', fieldId: region.fieldId, count: 1, valueId: `value:${amount.fieldId}`, direction: 'top' },
     ];
     const summary = summarizePivotReportFilters(pivot.layout.filters, catalog, region.fieldId);
     assert.equal(summary.fieldName, 'Region');
@@ -507,7 +539,7 @@ describe('native PivotGridProjection contract', () => {
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', numberFormat: '#,##0.00' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', numberFormat: '#,##0.00' }];
     const projection = buildPivotGridProjection(workbook, pivot);
     const values = projection.cells.filter((cell) => cell.kind === 'value' || cell.kind === 'grand-total');
     assert.ok(values.length > 0);
@@ -533,7 +565,7 @@ describe('native PivotGridProjection contract', () => {
     pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
     pivot.layout.rows = [{ fieldId: date.fieldId, group: { kind: 'date', unit: 'year' } }, { fieldId: category.fieldId, group: { kind: 'manual', groups: [{ groupId: 'ab', name: 'AB', items: [{ type: 'text', value: 'A' }, { type: 'text', value: 'B' }] }] } }];
     pivot.layout.columns = [{ fieldId: amount.fieldId, group: { kind: 'number', interval: 10, start: 0 } }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const result = computePivotResult(workbook, pivot);
     assert.equal(result.rows[0]?.label, '2024');
     assert.equal(result.rows[0]?.children[0]?.label, 'AB');
@@ -552,7 +584,7 @@ describe('native PivotGridProjection contract', () => {
     pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
     pivot.layout.rows = [{ fieldId: date.fieldId, group: { kind: 'date', unit: 'year', units: ['year', 'quarter', 'month'] } }];
     pivot.layout.columns = [{ fieldId: amount.fieldId, group: { kind: 'number', interval: 50, start: 0, end: 1000 } }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const result = computePivotResult(workbook, pivot);
     assert.equal(result.rows[0]?.label, '2024 / 2024 Q1 / 2024-01');
     assert.deepEqual(result.columnPaths, [[0], [50], [100]]);
@@ -572,7 +604,7 @@ describe('native PivotGridProjection contract', () => {
     const yearMembers = buildPivotGroupedFilterMembers(date.values ?? [], yearGroup);
     assert.deepEqual(yearMembers.map((member) => member.value), [2024, 2025]);
     pivot.layout.rows = [{ fieldId: date.fieldId, group: yearGroup }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.filters = [{ kind: 'manual', family: 'manual', scope: 'field', fieldId: date.fieldId, mode: 'include', memberKeys: [yearMembers[0]!.key] }];
     assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024']);
     pivot.layout.filters = [{ kind: 'condition', family: 'date', scope: 'field', fieldId: date.fieldId, operator: 'equals', value: '2024-01-01' }];
@@ -599,13 +631,13 @@ describe('native PivotGridProjection contract', () => {
     const year = pivot.fieldCatalog.fields.find((field) => field.name === 'Year')!;
     const sales = pivot.fieldCatalog.fields.find((field) => field.name === 'Sales')!;
     pivot.layout.rows = [{ fieldId: year.fieldId, sort: { direction: 'ascending', by: 'label' } }];
-    pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum' }];
     assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024', '2025', '2026']);
 
-    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value', valueFieldId: sales.fieldId } };
+    pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value', valueId: `value:${sales.fieldId}` } };
     assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2025', '2024', '2026']);
     pivot.layout.rows[0] = { fieldId: year.fieldId, sort: { direction: 'ascending', by: 'value' } };
-    assert.throws(() => computePivotResult(workbook, pivot), /requires a valueFieldId/);
+    assert.throws(() => computePivotResult(workbook, pivot), /requires a valueId/);
   });
 
   it('evaluates typed label and date filter families with range predicates', () => {
@@ -619,7 +651,7 @@ describe('native PivotGridProjection contract', () => {
     const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
     pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
     pivot.layout.rows = [{ fieldId: name.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.filters = [{ kind: 'condition', family: 'label', fieldId: name.fieldId, operator: 'begins-with', value: 'A' }];
     assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['Alice', 'Avery']);
     pivot.layout.rows = [{ fieldId: date.fieldId }];
@@ -641,7 +673,7 @@ describe('native PivotGridProjection contract', () => {
       { fieldId: region.fieldId, subtotal: { mode: 'none' } },
       { fieldId: city.fieldId, subtotal: { mode: 'custom', functions: ['sum', 'average'] } },
     ];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.subtotalLocation = 'bottom';
     const result = computePivotResult(workbook, pivot);
     const east = result.rows.find((node) => node.label === 'East')!;
@@ -671,7 +703,7 @@ describe('native PivotGridProjection contract', () => {
     const city = catalog.fields.find((field) => field.name === 'City')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'grand-percentage' } }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'grand-percentage' } }];
     const result = computePivotResult(workbook, pivot);
     const east = result.rows.find((node) => node.label === 'East')!;
     const west = result.rows.find((node) => node.label === 'West')!;
@@ -693,7 +725,7 @@ describe('native PivotGridProjection contract', () => {
     const city = catalog.fields.find((field) => field.name === 'City')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'running-total', axis: 'row' } }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'running-total', axis: 'row' } }];
     const running = computePivotResult(workbook, pivot);
     const eastRunning = running.rows.find((node) => node.label === 'East')!;
     const westRunning = running.rows.find((node) => node.label === 'West')!;
@@ -703,7 +735,7 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(eastRunning.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 30);
     assert.equal(running.grandTotal?.values[0], 70);
 
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'rank', axis: 'row', direction: 'descending' } }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'rank', axis: 'row', direction: 'descending' } }];
     const ranked = computePivotResult(workbook, pivot);
     const eastRank = ranked.rows.find((node) => node.label === 'East')!;
     const westRank = ranked.rows.find((node) => node.label === 'West')!;
@@ -727,7 +759,7 @@ describe('native PivotGridProjection contract', () => {
     const sales = catalog.fields.find((field) => field.name === 'Sales')!;
     pivot.layout.rows = [];
     pivot.layout.columns = [{ fieldId: month.fieldId }];
-    pivot.layout.values = [{ fieldId: sales.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum' }];
     pivot.layout.showRowGrandTotals = true;
     pivot.layout.showColumnGrandTotals = true;
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
@@ -758,7 +790,7 @@ describe('native PivotGridProjection contract', () => {
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
     pivot.layout.columns = [{ fieldId: month.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.layout.showRowGrandTotals = true;
     pivot.layout.showColumnGrandTotals = false;
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
@@ -791,7 +823,7 @@ describe('native PivotGridProjection contract', () => {
     const city = catalog.fields.find((field) => field.name === 'City')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 6, column: 0 } };
     const tree = computePivotResult(workbook, pivot);
     const parent = tree.rows.find((node) => node.label === 'East')!;
@@ -874,7 +906,7 @@ describe('native PivotGridProjection contract', () => {
     const region = catalog.fields.find((field) => field.name === 'Region')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum' }];
     const firstResult = computePivotResult(workbook, pivot);
     const firstProjection = buildPivotGridProjection(workbook, pivot, firstResult);
     assert.equal(firstProjection.cells.some((cell) => cell.text === 'Amount'), true);
@@ -884,7 +916,7 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(stale.refresh.status, 'stale');
     assert.equal(stale.cells.some((cell) => cell.value === 35), true);
 
-    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'count' }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'count' }];
     const refreshedLayout = buildPivotGridProjection(workbook, pivot, firstResult);
     assert.notEqual(refreshedLayout.refresh.status, 'stale');
     assert.equal(refreshedLayout.cells.some((cell) => cell.value === 3), true);
@@ -923,7 +955,7 @@ describe('native PivotGridProjection contract', () => {
       refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
       layout: {
         rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant' as const, numeric: false, caseFirst: 'false' as const },
-        values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
+        values: [{ valueId: `value:${'amount'}`, fieldId: 'amount', summarizeBy: 'sum' as const }],
         subtotalLocation: 'bottom' as const, showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' as const,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },
       },

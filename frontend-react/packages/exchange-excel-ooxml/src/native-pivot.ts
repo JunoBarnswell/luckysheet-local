@@ -549,7 +549,7 @@ export function mapNativePivotDefinition(
     };
   });
   const fieldId = (index: number): string => fields[index]?.fieldId ?? nativeFieldId(cache.cacheId, index);
-  const mappedFilters = mapNativePivotFilters(table.pivotFilters ?? [], fields, table.dataFields, new Set(table.pageFields));
+  const mappedFilters = mapNativePivotFilters(table.pivotFilters ?? [], fields, table.dataFields, cache.cacheId, new Set(table.pageFields));
   const manualItemFilters = table.fields.flatMap((nativeField) => {
     const hidden = nativeField.hiddenItemIndexes ?? [];
     if (hidden.length === 0) return [];
@@ -582,7 +582,7 @@ export function mapNativePivotDefinition(
     return { kind: 'manual' as const, family: 'manual' as const, fieldId: fieldId(index), scope: 'report' as const, mode: 'all' as const, memberKeys: [] };
   }).filter((filter): filter is NonNullable<typeof filter> => filter !== undefined);
   const preservedAutoSortScopes = table.fields.flatMap((field) => {
-    if (!field.autoSortScope || nativePivotSort(field, table.dataFields, fieldId) || (field.sortType === undefined && field.nonAutoSortDefault === undefined)) return [];
+    if (!field.autoSortScope || nativePivotSort(field, table.dataFields, (index) => nativeValueId(cache.cacheId, index)) || (field.sortType === undefined && field.nonAutoSortDefault === undefined)) return [];
     return [{
       fieldIndex: field.index,
       ...(field.sortType ? { sortType: field.sortType } : {}),
@@ -594,7 +594,7 @@ export function mapNativePivotDefinition(
   const placement = (index: number): PivotFieldPlacement => {
     const group = nativePivotGroup(cache.fields[index], cache, fieldId(index));
     const subtotal = nativePivotSubtotal(table.fields[index]);
-    const sort = nativePivotSort(table.fields[index], table.dataFields, fieldId);
+    const sort = nativePivotSort(table.fields[index], table.dataFields, (dataFieldIndex) => nativeValueId(cache.cacheId, dataFieldIndex));
     return { fieldId: fieldId(index), ...(sort ? { sort } : {}), ...(group ? { group } : {}), ...(subtotal ? { subtotal } : {}) };
   };
   const layout: PivotLayout = {
@@ -603,7 +603,7 @@ export function mapNativePivotDefinition(
     filters: [...pageFilters, ...manualItemFilters, ...mappedFilters.filters],
     allowMultipleFiltersPerField: table.multipleFieldFilters ?? true,
     collation: { ...DEFAULT_PIVOT_COLLATION },
-    values: table.dataFields.map((data) => ({ fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.numberFormat ? { numberFormat: normalizePivotNumberFormat(data.numberFormat) } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
+    values: table.dataFields.map((data, index) => ({ valueId: nativeValueId(cache.cacheId, index), fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.numberFormat ? { numberFormat: normalizePivotNumberFormat(data.numberFormat) } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
     subtotalLocation: table.subtotalLocation ?? 'bottom',
     showRowGrandTotals: table.showRowGrandTotals ?? true,
     showColumnGrandTotals: table.showColumnGrandTotals ?? true,
@@ -1296,8 +1296,9 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
       } : {};
     }
     const preserved = pivot.nativeMetadata?.preservedAutoSortScopes?.find((candidate) => candidate.fieldIndex === index);
-    const valueFieldOrdinal = sort.valueFieldId === undefined ? -1 : pivot.fieldCatalog.fields.find((field) => field.fieldId === sort.valueFieldId || field.name === sort.valueFieldId)?.ordinal ?? -1;
-    const valueField = valueFieldOrdinal < 0 ? undefined : dataFields.find((value) => value.field === valueFieldOrdinal);
+    const valueFieldPlacement = sort.valueId === undefined ? undefined : pivot.layout.values.find((value) => value.valueId === sort.valueId);
+    const valuePlacementIndex = valueFieldPlacement ? pivot.layout.values.findIndex((value) => value.valueId === valueFieldPlacement.valueId) : -1;
+    const valueField = valuePlacementIndex < 0 ? undefined : dataFields[valuePlacementIndex];
     return {
       sortType: sort.direction,
       ...(preserved?.nonAutoSortDefault === undefined ? {} : { nonAutoSortDefault: preserved.nonAutoSortDefault }),
@@ -1510,14 +1511,17 @@ function buildPivotFilterXml(filter: NativePivotFilter): string {
 
 function buildNativePivotFilters(pivot: PivotDefinition, dataFields: NativePivotDataField[]): NativePivotFilter[] {
   const fieldIndex = (id: string): number => pivot.fieldCatalog.fields.find((field) => field.fieldId === id || field.name === id)?.ordinal ?? -1;
-  const dataFieldIndex = (id: string): number => dataFields.findIndex((dataField) => dataField.field === fieldIndex(id));
+  const dataFieldIndex = (valueId: string): number => {
+    const valueIndex = pivot.layout.values.findIndex((entry) => entry.valueId === valueId);
+    return valueIndex >= 0 && dataFields[valueIndex] ? valueIndex : -1;
+  };
   const filters = pivot.layout.filters.flatMap((filter): NativePivotFilter[] => {
     if (filter.kind === 'manual') return [];
     const field = fieldIndex(filter.fieldId);
     if (field < 0) throw new Error(`Pivot filter references missing field ${filter.fieldId}`);
     if (filter.kind === 'top-items') {
-      const measure = dataFieldIndex(filter.valueFieldId);
-      if (measure < 0) throw new Error(`Pivot top-items filter references missing value field ${filter.valueFieldId}`);
+      const measure = dataFieldIndex(filter.valueId);
+      if (measure < 0) throw new Error(`Pivot top-items filter references missing value field ${filter.valueId}`);
       return [{ field, type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', measureField: measure, value1: filter.count, top: filter.direction === 'top', attributes: { fld: String(field), type: filter.direction === 'top' ? 'valueTop10' : 'valueBottom10', iMeasureFld: String(measure), val: String(filter.count), top: filter.direction === 'top' ? '1' : '0' } }];
     }
     if (filter.family === 'date' && filter.dynamic) {
@@ -1527,13 +1531,13 @@ function buildNativePivotFilters(pivot: PivotDefinition, dataFields: NativePivot
       return [{ field, type, attributes: { fld: String(field), type }, ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) }];
     }
     const isValueFilter = filter.family === 'value';
-    const measure = isValueFilter && filter.valueFieldId !== undefined ? dataFieldIndex(filter.valueFieldId) : undefined;
+    const measure = isValueFilter && filter.valueId !== undefined ? dataFieldIndex(filter.valueId) : undefined;
     const captionTypes: Record<string, string | undefined> = { equals: 'captionEqual', 'not-equals': 'captionNotEqual', 'begins-with': 'captionBeginsWith', 'not-begins-with': 'captionNotBeginsWith', 'ends-with': 'captionEndsWith', 'not-ends-with': 'captionNotEndsWith', contains: 'captionContains', 'not-contains': 'captionNotContains', between: 'captionBetween', 'not-between': 'captionNotBetween', 'greater-than': 'captionGreaterThan', 'greater-or-equal': 'captionGreaterThanOrEqual', 'less-than': 'captionLessThan', 'less-or-equal': 'captionLessThanOrEqual' };
     const dateTypes: Record<string, string | undefined> = { equals: 'dateEqual', 'not-equals': 'dateNotEqual', before: 'dateOlderThan', after: 'dateNewerThan', between: 'dateBetween', 'not-between': 'dateNotBetween' };
     const valueTypes: Record<string, string | undefined> = { equals: 'valueEqual', 'not-equals': 'valueNotEqual', 'greater-than': 'valueGreaterThan', 'greater-or-equal': 'valueGreaterThanOrEqual', 'less-than': 'valueLessThan', 'less-or-equal': 'valueLessThanOrEqual', between: 'valueBetween', 'not-between': 'valueNotBetween' };
     const type = isValueFilter ? valueTypes[filter.operator] : filter.family === 'date' ? dateTypes[filter.operator] : captionTypes[filter.operator];
     if (!type) throw new Error(`Pivot filter operator ${filter.operator} cannot be represented in native OOXML`);
-    if (isValueFilter && (filter.valueFieldId === undefined || measure === undefined || measure < 0)) throw new Error(`Pivot value filter references missing value field ${filter.valueFieldId ?? filter.fieldId}`);
+    if (isValueFilter && (filter.valueId === undefined || measure === undefined || measure < 0)) throw new Error(`Pivot value filter references missing value field ${filter.valueId ?? filter.fieldId}`);
     return [{ field, type, ...(measure === undefined ? {} : { measureField: measure }), ...(typeof filter.value === 'string' && !isValueFilter ? { stringValue1: filter.value } : { value1: filter.value }), ...(filter.value2 === undefined ? {} : typeof filter.value2 === 'string' && !isValueFilter ? { stringValue2: filter.value2 } : { value2: filter.value2 }), ...(filter.family === 'date' && filter.wholeDay !== undefined ? { wholeDay: filter.wholeDay } : {}), attributes: { fld: String(field), type, ...(measure === undefined ? {} : { iMeasureFld: String(measure) }) } }];
   });
   const preserved = pivot.nativeMetadata?.preservedPivotFilters?.map((filter) => ({ field: filter.fieldIndex, type: filter.type, attributes: { ...filter.attributes } })) ?? [];
@@ -1716,7 +1720,7 @@ function nativePivotSubtotal(field: NativePivotTableField | undefined): NonNulla
   return subtotal.mode === 'custom' ? { mode: 'custom', functions: (subtotal.functions ?? []).map(mapAggregate) } : { mode: subtotal.mode };
 }
 
-function nativePivotSort(field: NativePivotTableField | undefined, dataFields: NativePivotDataField[], fieldId: (index: number) => string): NonNullable<PivotFieldPlacement['sort']> | undefined {
+function nativePivotSort(field: NativePivotTableField | undefined, dataFields: NativePivotDataField[], valueId: (index: number) => string): NonNullable<PivotFieldPlacement['sort']> | undefined {
   if (!field?.sortType || field.sortType === 'manual') return undefined;
   const scope = field.autoSortScope;
   const valueSort = scope?.dataOnly === true || scope?.labelOnly === false;
@@ -1724,28 +1728,30 @@ function nativePivotSort(field: NativePivotTableField | undefined, dataFields: N
   const reference = scope?.references.find((candidate) => dataFields.some((dataField) => dataField.field === candidate.field));
   const valueField = reference ? dataFields.find((candidate) => candidate.field === reference.field) : undefined;
   if (!valueField) return undefined;
-  return { direction: field.sortType, by: 'value', valueFieldId: fieldId(valueField.field) };
+  const valueIndex = dataFields.findIndex((candidate) => candidate === valueField);
+  return { direction: field.sortType, by: 'value', valueId: valueId(valueIndex) };
 }
 
 function mapNativePivotFilters(
   filters: NativePivotFilter[],
   fields: Array<{ fieldId: string }>,
   dataFields: NativePivotDataField[],
+  cacheId: number,
   pageFieldIndexes: ReadonlySet<number>,
 ): { filters: PivotLayout['filters']; preserved: PivotNativeFilterMetadata[] } {
   const mapped: PivotLayout['filters'] = [];
   const preserved: PivotNativeFilterMetadata[] = [];
   const fieldId = (index: number): string | undefined => fields[index]?.fieldId;
-  const valueFieldId = (index: number | undefined): string | undefined => index === undefined ? undefined : dataFields[index]?.field !== undefined ? fields[dataFields[index]!.field]?.fieldId : undefined;
+  const valueId = (index: number | undefined): string | undefined => index === undefined || !dataFields[index] ? undefined : nativeValueId(cacheId, index);
   for (const filter of filters) {
     const targetFieldId = fieldId(filter.field);
-    const measureFieldId = valueFieldId(filter.measureField);
+    const measureFieldId = valueId(filter.measureField);
     const value = filter.value1 ?? filter.stringValue1;
     const type = filter.type.toLowerCase();
     const scope = pageFieldIndexes.has(filter.field) ? 'report' as const : 'field' as const;
     const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false, upperValue: PivotScalar | undefined = filter.value2, dynamic: PivotDynamicDateFilter | undefined = undefined): void => {
       if (!targetFieldId || (withMeasure && !measureFieldId)) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
-      if (withMeasure) mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, ...(measureFieldId ? { valueFieldId: measureFieldId } : {}), operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
+      if (withMeasure) mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, ...(measureFieldId ? { valueId: measureFieldId } : {}), operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
       else if (type.startsWith('date')) mapped.push({ kind: 'condition', family: 'date', fieldId: targetFieldId, operator: operator as PivotDateFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), ...(dynamic === undefined ? {} : { dynamic }), scope, ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
       else mapped.push({ kind: 'condition', family: 'label', fieldId: targetFieldId, operator: operator as PivotLabelFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
     };
@@ -1782,7 +1788,7 @@ function mapNativePivotFilters(
     else if (type === 'valuetop10' || type === 'top10' || type === 'valuebottom10' || type === 'bottom10') {
       const count = typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
       if (!targetFieldId || !measureFieldId || !count || count < 1 || filter.percent) preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
-      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueFieldId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope });
+      else mapped.push({ kind: 'top-items', family: 'top-items', fieldId: targetFieldId, valueId: measureFieldId, count, direction: filter.top === false || type === 'valuebottom10' || type === 'bottom10' ? 'bottom' : 'top', scope });
     } else preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } });
   }
   return { filters: mapped, preserved };
@@ -1945,6 +1951,7 @@ function isNativePivotPart(name: string): boolean { return /^xl\/(pivotTables\/|
 function isNativeControlPart(name: string): boolean { return /^xl\/(slicers\/|slicerCaches\/|timelines\/|timelineCaches\/)/i.test(name); }
 function nextPartNumbers(files: Record<string, Uint8Array>): { cacheDefinition: number; records: number; table: number } { const max = (pattern: RegExp): number => Object.keys(files).reduce((value, name) => Math.max(value, Number(name.match(pattern)?.[1] ?? 0)), 0); return { cacheDefinition: max(/pivotCacheDefinition(\d+)\.xml$/i) + 1, records: max(/pivotCacheRecords(\d+)\.xml$/i) + 1, table: max(/pivotTable(\d+)\.xml$/i) + 1 }; }
 function nativeFieldId(cacheId: number, index: number): string { return `native:cache:${cacheId}:field:${index}`; }
+function nativeValueId(cacheId: number, index: number): string { return `native:cache:${cacheId}:value:${index}`; }
 function nativePivotId(table: NativePivotTableDefinition): string { return `native:pivot:${table.part}`; }
 function mapFieldType(value: NativePivotCacheField['dataType']): PivotFieldDataType {
   return value === 'string' ? 'text' : value === 'number' ? 'number' : value === 'date' ? 'date' : value === 'boolean' ? 'boolean' : value === 'error' ? 'error' : 'mixed';

@@ -149,8 +149,8 @@ describe('chart feature', () => {
       },
       columnPaths: [['Jan'], ['Feb']],
       valueFields: [
-        { fieldId: 'sales', sourceFieldId: 'sales', displayName: 'Sales', summarizeBy: 'sum' },
-        { fieldId: 'count', sourceFieldId: 'count', displayName: 'Orders', summarizeBy: 'count' },
+        { valueId: 'value:sales', fieldId: 'sales', sourceFieldId: 'sales', displayName: 'Sales', summarizeBy: 'sum' },
+        { valueId: 'value:count', fieldId: 'count', sourceFieldId: 'count', displayName: 'Orders', summarizeBy: 'count' },
       ],
       rows: [
         {
@@ -184,7 +184,7 @@ describe('chart feature', () => {
 
     const noRows: PivotResultTree = {
       schema: 'PivotResultTree', pivotId: 'root-pivot', fields: { fields: [] }, columnPaths: [[]],
-      valueFields: [{ fieldId: 'amount', sourceFieldId: 'amount', displayName: 'Amount', summarizeBy: 'sum' }],
+      valueFields: [{ valueId: 'value:amount', fieldId: 'amount', sourceFieldId: 'amount', displayName: 'Amount', summarizeBy: 'sum' }],
       rows: [{ kind: 'leaf', key: null, label: 'Values', depth: 0, path: ['__root__'], children: [], subtotal: false, values: [{ columnPath: [], values: [null], sourceRowPaths: [] }], sourceRowPaths: [] }],
       grandTotal: null, sourceRowPaths: [],
     };
