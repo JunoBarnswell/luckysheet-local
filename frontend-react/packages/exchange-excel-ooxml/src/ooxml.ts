@@ -43,6 +43,7 @@ import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCac
 import { synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds } from './native-number-format';
+import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -147,7 +148,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
   const rootOfficeDocument = (relationships[''] ?? []).find((relation) => isRelationshipKind(relation.type, 'officeDocument'));
   const workbookPart = rootOfficeDocument ? resolveTarget('', rootOfficeDocument.target) : 'xl/workbook.xml';
   if (!normalizedFiles[workbookPart]) throw new Error(`Not a valid XLSX package: workbook part is missing (${workbookPart})`);
-  const dateSystem = parseWorkbookDateSystem(strFromU8(normalizedFiles[workbookPart]));
+  const dateSystem = parseDateSystem(strFromU8(normalizedFiles[workbookPart]));
   const format = detectOoxmlFormat(normalizedFiles, workbookPart, fileName);
   const sheetPartById = readSheetPartMap(normalizedFiles, relationships, workbookPart);
   const coreParts = new Set<string>([
@@ -164,7 +165,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
   }
 
   const nativePivotGraph = workbookPart === 'xl/workbook.xml' && hasNativePivotMarkers(normalizedFiles)
-    ? readNativePivotGraph({ files: normalizedFiles, relationships, sheetPartById })
+    ? readNativePivotGraph({ files: normalizedFiles, relationships, sheetPartById, dateSystem })
     : undefined;
   return {
     files: normalizedFiles,
@@ -176,7 +177,7 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
       relationships,
       sheetPartById,
       contentTypesXml: normalizedFiles['[Content_Types].xml']?.slice(),
-      dateSystem,
+    dateSystem,
       format,
       profile: format.family === 'ooxml' ? format.profile : 'transitional',
       ...(nativePivotGraph ? { nativePivotGraph } : {}),
@@ -281,6 +282,7 @@ export function exportSnapshotToOpcPackageGraph(
     graph: preserved?.nativePivotGraph,
     snapshot,
     sheetPartById,
+    dateSystem: options.dateSystem,
   });
   const chartUpdate = synchronizeNativePivotCharts({
     files: nativeUpdate.files,
@@ -314,7 +316,7 @@ export function exportSnapshotToOpcPackageGraph(
       [...requiredHyperlinks, ...tableParts.required],
     );
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
   }
 
   const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
@@ -458,13 +460,14 @@ function parseSheet(
       const styleId = cellNode.attrs.s;
       const style = styleId === undefined ? undefined : styles.records[Number(styleId)];
       const valueRecord = readCellValue(cellNode, sharedStrings, styles.themeColors);
+      const canonicalValue = canonicalizeImportedDate(valueRecord.value, style?.numberFormat, pkg.dateSystem, `${descriptor.name}!${cellNode.attrs.r ?? 'unknown'}`);
       const formulaRecord = readFormula(cellNode, address, sharedFormulaMasters, descriptor);
       const cell: CellData = {
-        value: valueRecord.value,
+        value: canonicalValue,
         ...(valueRecord.richText ? { richText: valueRecord.richText } : {}),
         ...(formulaRecord.formula ? { formula: formulaRecord.formula } : {}),
         ...(formulaRecord.metadata ? { formulaMetadata: formulaRecord.metadata } : {}),
-        ...(formulaRecord.formula && isScalar(valueRecord.value) ? { formulaValue: valueRecord.value } : {}),
+        ...(formulaRecord.formula && isScalar(canonicalValue) ? { formulaValue: canonicalValue } : {}),
         ...(styleId === undefined ? {} : { styleId }),
         ...(style?.style ? { style: structuredClone(style.style) } : {}),
         ...(style?.numberFormat ? { numberFormat: style.numberFormat } : {}),
@@ -1289,6 +1292,7 @@ function buildWorksheetXml(
   differentialStyleIndexes: Map<string, number>,
   maximumDigitWidthPx: number,
   includeCachedValues: boolean,
+  dateSystem: DateSystem,
   nativeDisplayCells?: Record<string, Record<string, CellData>>,
   nativeControls: NativePivotControlDefinition[] = [],
   printDocument?: NonNullable<WorkbookSnapshot['printDocuments']>[number],
@@ -1323,7 +1327,7 @@ function buildWorksheetXml(
     for (const column of columns) {
       const cell = cells[String(column)];
       if (!cell) continue;
-      xml += buildCellXml(cell, row, column, styleIndexes, includeCachedValues);
+      xml += buildCellXml(cell, row, column, styleIndexes, includeCachedValues, dateSystem);
     }
     xml += '</row>';
   }
@@ -1391,7 +1395,7 @@ function buildWorksheetXml(
   return xml;
 }
 
-function buildCellXml(cell: CellData, row: number, column: number, styleIndexes: Map<string, number>, includeCachedValues: boolean): string {
+function buildCellXml(cell: CellData, row: number, column: number, styleIndexes: Map<string, number>, includeCachedValues: boolean, dateSystem: DateSystem): string {
   const ref = `${columnToLetter(column)}${row + 1}`;
   const styleKey = JSON.stringify({ style: cell.style, numberFormat: cell.numberFormat });
   const style = cell.style || cell.numberFormat ? (styleIndexes.get(styleKey) ?? 1) : undefined;
@@ -1401,8 +1405,10 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
     const sourceFormula = metadata?.sourceFormula ?? cell.formula ?? '';
     const formula = sourceFormula.startsWith('=') ? sourceFormula.slice(1) : sourceFormula;
     const cachedValue = isScalar(cell.formulaValue) ? cell.formulaValue : isScalar(cell.value) ? cell.value : null;
-    const cached = includeCachedValues && cachedValue !== null ? `<v>${encodeXml(typeof cachedValue === 'boolean' ? (cachedValue ? '1' : '0') : String(cachedValue))}</v>` : '';
-    const cachedType = typeof cachedValue === 'boolean' ? 'b' : typeof cachedValue === 'string' ? 'str' : undefined;
+    const cachedSerial = typeof cachedValue === 'string' && isExcelDateFormat(cell.numberFormat) ? canonicalDateToSerial(cachedValue, dateSystem) : undefined;
+    const serializedCachedValue = cachedSerial ?? cachedValue;
+    const cached = includeCachedValues && serializedCachedValue !== null ? `<v>${encodeXml(typeof serializedCachedValue === 'boolean' ? (serializedCachedValue ? '1' : '0') : String(serializedCachedValue))}</v>` : '';
+    const cachedType = typeof serializedCachedValue === 'boolean' ? 'b' : typeof serializedCachedValue === 'string' ? 'str' : undefined;
     const formulaAttrs = metadata?.kind === 'shared' && metadata.preservedOnly
       ? ` t="shared"${metadata.sharedIndex !== undefined ? ` si="${metadata.sharedIndex}"` : ''}${metadata.sharedMaster && metadata.range ? ` ref="${encodeXml(metadata.range)}"` : ''}`
       : metadata?.kind === 'array'
@@ -1416,7 +1422,20 @@ function buildCellXml(cell: CellData, row: number, column: number, styleIndexes:
   if (cell.value === null || cell.value === undefined) return `<c r="${ref}"${styleAttr}/>`;
   if (typeof cell.value === 'boolean') return `<c r="${ref}"${styleAttr} t="b"><v>${cell.value ? '1' : '0'}</v></c>`;
   if (typeof cell.value === 'number') return `<c r="${ref}"${styleAttr}><v>${Number.isFinite(cell.value) ? cell.value : 0}</v></c>`;
+  if (isExcelDateFormat(cell.numberFormat)) {
+    const serial = canonicalDateToSerial(cell.value, dateSystem);
+    return `<c r="${ref}"${styleAttr}><v>${serial}</v></c>`;
+  }
   return `<c r="${ref}"${styleAttr} t="inlineStr"><is>${serializeRichText(cell.value, cell.richText)}</is></c>`;
+}
+
+function canonicalizeImportedDate(value: CellData['value'], format: string | undefined, dateSystem: DateSystem, label: string): CellData['value'] {
+  if (!isExcelDateFormat(format) || typeof value !== 'number') return value;
+  try {
+    return serialToCanonicalDate(value, dateSystem);
+  } catch (error) {
+    throw new Error(`Invalid date serial at ${label}: ${String(error instanceof Error ? error.message : error)}`, { cause: error });
+  }
 }
 
 function serializeRichText(value: string, runs?: RichTextRun[]): string {
@@ -2319,12 +2338,6 @@ function readCellValue(cell: XmlNode, sharedStrings: SharedStringRecord[], theme
   if (type === 'e' || type === 'str') return { value: raw };
   const number = Number(raw);
   return { value: Number.isNaN(number) ? raw : number };
-}
-
-function parseWorkbookDateSystem(xml: string): DateSystem {
-  const workbook = firstElement(parseXml(xml), 'workbook');
-  const value = child(workbook, 'workbookPr')?.attrs.date1904;
-  return value === '1' || value === 'true' ? '1904' : '1900';
 }
 
 function hasNativePivotMarkers(files: Record<string, Uint8Array>): boolean {
