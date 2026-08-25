@@ -569,13 +569,16 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog): Pivot
   const fieldId = resolveFieldId(filter.fieldId, catalog);
   if (!fieldId) throw new Error(`Unknown pivot field: ${filter.fieldId}`);
   if (filter.kind === 'manual') {
-    return { kind: 'manual', fieldId, scope: filter.scope ?? 'report', mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
+    if (filter.family !== 'manual') throw new Error(`Pivot manual filter family is invalid: ${fieldId}`);
+    return { kind: 'manual', family: 'manual', fieldId, scope: filter.scope ?? 'report', mode: filter.mode, memberKeys: structuredClone(filter.memberKeys) };
   }
   if (filter.kind === 'top-items') {
+    if (filter.family !== 'top-items') throw new Error(`Pivot top-items filter family is invalid: ${fieldId}`);
     const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
     if (!valueFieldId) throw new Error(`Unknown pivot value field: ${filter.valueFieldId}`);
     return { ...filter, fieldId, valueFieldId };
   }
+  if (!['label', 'date', 'value'].includes(filter.family)) throw new Error(`Pivot condition filter family is invalid: ${fieldId}`);
   if (filter.valueFieldId !== undefined) {
     const valueFieldId = resolveFieldId(filter.valueFieldId, catalog);
     if (!valueFieldId) throw new Error(`Unknown pivot value filter field: ${filter.valueFieldId}`);
@@ -593,11 +596,22 @@ function normalizeValueField(field: PivotValueField, catalog: PivotFieldCatalog)
 function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): PivotLayout {
   const values = layout.values.map((entry) => normalizeValueField(entry, catalog));
   const valueFieldIds = new Set(values.map((entry) => entry.fieldId));
+  const filters = layout.filters.map((entry) => normalizeFilter(entry, catalog));
+  const identities = new Set<string>();
+  const fields = new Set<string>();
+  for (const filter of filters) {
+    const identity = `${filter.fieldId}|${filter.scope ?? 'report'}|${filter.family}`;
+    if (identities.has(identity)) throw new Error(`Duplicate Pivot filter family: ${identity}`);
+    identities.add(identity);
+    const fieldScope = `${filter.fieldId}|${filter.scope ?? 'report'}`;
+    if (!layout.allowMultipleFiltersPerField && fields.has(fieldScope)) throw new Error(`Multiple Pivot filters are disabled for ${fieldScope}`);
+    fields.add(fieldScope);
+  }
   return {
     ...structuredClone(layout),
     rows: layout.rows.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
     columns: layout.columns.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
-    filters: layout.filters.map((entry) => normalizeFilter(entry, catalog)),
+    filters,
     values,
     expansion: layout.expansion ? {
       expandedNodeIds: [...layout.expansion.expandedNodeIds],

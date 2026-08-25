@@ -54,7 +54,7 @@ function relationalPivot(workbook: WorkbookModel, order: string[]): PivotModel {
     target: { sheetId: 'sheet-1', anchor: { row: 10, column: 0 } },
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
-    layout: { rows: [], columns: [], filters: [], values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
+    layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, values: [], subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false },
   };
   const catalog = getPivotFieldCatalog(workbook, pivot);
   const region = catalog.fields.find((field) => field.name === 'Region')!;
@@ -105,12 +105,12 @@ describe('native PivotGridProjection contract', () => {
     const region = getPivotFieldCatalog(workbook, pivot).fields.find((field) => field.name === 'Region')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }];
     pivot.layout.values = [{ fieldId: getPivotFieldCatalog(workbook, pivot).fields.find((field) => field.name === 'Amount')!.fieldId, summarizeBy: 'count' }];
-    pivot.layout.filters = [{ kind: 'manual', fieldId: region.fieldId, mode: 'all', memberKeys: [] }];
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'all', memberKeys: [] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 3);
-    pivot.layout.filters = [{ kind: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notDeepEqual({ type: 'text', value: '1' }, { type: 'number', value: 1 });
-    pivot.layout.filters = [{ kind: 'manual', scope: 'field', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', scope: 'field', fieldId: region.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
     pivot.target = { sheetId: 'sheet-1', anchor: { row: 8, column: 0 } };
     const fieldFiltered = buildPivotGridProjection(workbook, pivot);
     assert.equal(fieldFiltered.cells.some((cell) => cell.kind === 'filter'), false);
@@ -335,7 +335,7 @@ describe('native PivotGridProjection contract', () => {
       },
       refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
       layout: {
-        rows: [{ fieldId: 'region' }], columns: [], filters: [],
+        rows: [{ fieldId: 'region' }], columns: [], filters: [], allowMultipleFiltersPerField: true,
         values: [{ fieldId: 'amount', summarizeBy: 'sum' as const }],
         subtotalLocation: 'bottom' as const, showGrandTotals: true, compact: true, repeatLabels: false,
         expansion: { expandedNodeIds: [], collapsedNodeIds: [], showButtons: true },

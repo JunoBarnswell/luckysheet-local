@@ -18,7 +18,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     fieldCatalog: { fields: [] },
     refreshPolicy: { mode: 'on-change' as const, preserveFormatting: true, refreshOnLoad: true },
     layout: {
-      rows: [], columns: [], filters: [], values: [], subtotalLocation: 'bottom', showGrandTotals: true,
+      rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, values: [], subtotalLocation: 'bottom', showGrandTotals: true,
       compact: true, repeatLabels: false, calculatedFields: [], calculatedItems: [],
     },
   } satisfies PivotModel;
@@ -37,6 +37,7 @@ export function buildDefaultPivotLayout(workbook: WorkbookModel, sheetId: string
     rows,
     columns,
     filters: [],
+    allowMultipleFiltersPerField: true,
     values: [{ fieldId: valueId, summarizeBy }],
     subtotalLocation: 'bottom',
     showGrandTotals: true,

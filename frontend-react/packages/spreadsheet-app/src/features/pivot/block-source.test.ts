@@ -84,6 +84,7 @@ function pivot(source: string): PivotDefinition {
       rows: [],
       columns: [],
       filters: [],
+      allowMultipleFiltersPerField: true,
       values: [],
       subtotalLocation: 'bottom',
       showGrandTotals: true,

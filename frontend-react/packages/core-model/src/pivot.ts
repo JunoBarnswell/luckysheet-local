@@ -199,8 +199,12 @@ export interface PivotFieldPlacement {
   subtotal?: PivotSubtotalDefinition;
 }
 
+/** The independent predicate family used to identify a Pivot filter slot. */
+export type PivotFilterFamily = 'manual' | 'label' | 'date' | 'value' | 'top-items';
+
 export type PivotManualFilter = {
   kind: 'manual';
+  family: 'manual';
   fieldId: string;
   /** Report filters occupy the Filters area; field filters stay attached to a row/column field. */
   scope?: 'report' | 'field';
@@ -212,6 +216,7 @@ export type PivotFilter =
   | PivotManualFilter
   | {
     kind: 'condition';
+    family: 'label' | 'date' | 'value';
     fieldId: string;
     /** Optional measure identity for native value filters. */
     valueFieldId?: string;
@@ -222,6 +227,7 @@ export type PivotFilter =
   }
   | {
     kind: 'top-items';
+    family: 'top-items';
     fieldId: string;
     scope?: 'report' | 'field';
     count: number;
@@ -275,6 +281,8 @@ export interface PivotLayout {
   rows: PivotFieldPlacement[];
   columns: PivotFieldPlacement[];
   filters: PivotFilter[];
+  /** Explicitly controls whether more than one predicate may target a field. */
+  allowMultipleFiltersPerField: boolean;
   values: PivotValueField[];
   calculatedFields?: PivotCalculatedField[];
   calculatedItems?: PivotCalculatedItem[];
@@ -283,6 +291,18 @@ export interface PivotLayout {
   compact: boolean;
   repeatLabels: boolean;
   expansion?: PivotExpansionState;
+}
+
+export function pivotFilterScope(filter: Pick<PivotFilter, 'scope'>): 'report' | 'field' {
+  return filter.scope ?? 'report';
+}
+
+export function pivotFilterIdentity(filter: Pick<PivotFilter, 'fieldId' | 'family' | 'scope'>): string {
+  return `${filter.fieldId}|${pivotFilterScope(filter)}|${filter.family}`;
+}
+
+export function allowsMultiplePivotFilters(layout: Pick<PivotLayout, 'allowMultipleFiltersPerField'>): boolean {
+  return layout.allowMultipleFiltersPerField;
 }
 
 export interface PivotStyleOptions {
@@ -542,6 +562,15 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     throw new Error(`Pivot ${input.id} has non-canonical field references`);
   }
   const canonical = structuredClone(input);
+  if (typeof canonical.layout.allowMultipleFiltersPerField !== 'boolean') throw new Error(`Pivot ${input.id} is missing allowMultipleFiltersPerField`);
+  const identities = new Set<string>();
+  for (const filter of canonical.layout.filters) {
+    const expectedFamily = filter.kind === 'manual' ? 'manual' : filter.kind === 'top-items' ? 'top-items' : filter.family;
+    if (filter.family !== expectedFamily) throw new Error(`Pivot ${input.id} has an invalid filter family`);
+    const identity = pivotFilterIdentity(filter);
+    if (identities.has(identity)) throw new Error(`Pivot ${input.id} contains duplicate filter family ${identity}`);
+    identities.add(identity);
+  }
   canonical.refreshPolicy = refreshPolicy;
   canonical.presentation = {
     ...(canonical.presentation?.styleName ? { styleName: canonical.presentation.styleName } : {}),

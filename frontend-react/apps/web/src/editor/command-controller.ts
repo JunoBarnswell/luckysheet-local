@@ -5,6 +5,7 @@ import type {
   DrawingObject,
   PivotAggregateFunction,
   PivotFilter,
+  PivotFilterFamily,
   PivotFieldDefinition,
   PivotLayout,
   PivotSource,
@@ -59,7 +60,7 @@ export interface EditorCommandController {
   executeShortcut: (id: string) => boolean;
   selectPanel: (panel: SidebarPanelId) => void;
   applySelection: (selection: SelectionState) => void;
-  applyPivotHeaderFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field') => void;
+  applyPivotHeaderFilter: (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => void;
 }
 
 type RangeLike = ReturnType<WorkbookSession["getCurrentRegion"]>;
@@ -208,7 +209,7 @@ export function useEditorCommandController({
         const field = pivotFields.find((entry) => entry.fieldId === fieldId);
         const summarizeBy: PivotAggregateFunction = field?.dataType === "number" ? "sum" : "count";
         next.values.splice(Math.max(0, index), 0, { fieldId, summarizeBy });
-      } else if (area === "filters") next.filters.splice(Math.max(0, index), 0, { kind: "manual", fieldId, scope: 'report', mode: "all", memberKeys: [] });
+      } else if (area === "filters") next.filters.splice(Math.max(0, index), 0, { kind: "manual", family: "manual", fieldId, scope: 'report', mode: "all", memberKeys: [] });
       else next[area].splice(Math.max(0, index), 0, { fieldId });
       updatePivotLayout(next);
     },
@@ -238,7 +239,7 @@ export function useEditorCommandController({
       if (existing?.kind === "manual") {
         existing.mode = filter.mode;
         existing.memberKeys = [...filter.memberKeys];
-      } else next.filters.push({ kind: "manual", fieldId, mode: filter.mode, memberKeys: [...filter.memberKeys] });
+      } else next.filters.push({ kind: "manual", family: "manual", fieldId, mode: filter.mode, memberKeys: [...filter.memberKeys] });
       updatePivotLayout(next);
       session.notify(pivotText(locale, 'filterUpdated'));
     },
@@ -283,11 +284,11 @@ export function useEditorCommandController({
 
   const pivotPanelState: PivotPanelState = { disabled: state.phase !== "ready", loading: state.phase === "loading", error: state.phase === "error" ? pivotText(locale, 'error') : undefined, empty: pivotFields.length === 0 };
 
-  const applyPivotHeaderFilter = (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field') => {
+  const applyPivotHeaderFilter = (pivotId: string, fieldId: string, filter: PivotFilter | undefined, sort: PivotSort | undefined, scope: 'report' | 'field', family: PivotFilterFamily | 'all') => {
     const targetPivot = state.selectedSheet.pivots.find((candidate) => candidate.id === pivotId);
     if (!targetPivot) return;
     const layout = cloneLayout(targetPivot.layout);
-    layout.filters = layout.filters.filter((candidate) => candidate.fieldId !== fieldId || (candidate.scope ?? 'report') !== scope);
+    layout.filters = layout.filters.filter((candidate) => candidate.fieldId !== fieldId || (candidate.scope ?? 'report') !== scope || (family !== 'all' && candidate.family !== family));
     if (filter) layout.filters.push(structuredClone(filter));
     layout.rows = layout.rows.map((placement) => placement.fieldId === fieldId ? { ...placement, sort } : placement);
     layout.columns = layout.columns.map((placement) => placement.fieldId === fieldId ? { ...placement, sort } : placement);

@@ -9,6 +9,7 @@ import { buildPivotModel, connectedPivotIdsForSource } from './helpers';
 import { buildPivotSlicerDrawing, buildPivotTimelineDrawing } from '../pivot-controls';
 import { computePivotResult, getPivotFieldCatalog, getPivotRevisionKey } from './engine';
 import { buildPivotWriteback } from './writeback';
+import { clearPivotFilterFamily, clearPivotFiltersForField, upsertPivotFilter } from './panel-state';
 
 function seedCrossSheetWorkbook(): WorkbookModel {
   const workbook = new WorkbookModel('pivot-feature-test', 'Pivot Feature');
@@ -413,8 +414,28 @@ describe('pivot feature contract', () => {
     pivot.layout.values[0] = { fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId, summarizeBy: 'count' };
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 2);
     assert.notEqual(getPivotRevisionKey(workbook, pivot).layoutRevision, firstKey.layoutRevision);
-    pivot.layout.filters = [{ kind: 'manual', fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', fieldId: pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId, mode: 'include', memberKeys: [{ type: 'text', value: 'East' }] }];
     assert.equal(computePivotResult(workbook, pivot).grandTotal?.values[0], 1);
     assert.notEqual(getPivotRevisionKey(workbook, pivot).filterRevision, firstKey.filterRevision);
+  });
+
+  it('keeps same-field filter families independent and rejects disabled multi-filter layouts', () => {
+    const workbook = seedCrossSheetWorkbook();
+    const pivot = pivotDefinition();
+    assert.ok(pivot);
+    const region = pivot.fieldCatalog.fields.find((field) => field.name === 'Region')!.fieldId;
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!.fieldId;
+    const manual = { kind: 'manual' as const, family: 'manual' as const, fieldId: region, mode: 'include' as const, memberKeys: [{ type: 'text' as const, value: 'East' }] };
+    const label = { kind: 'condition' as const, family: 'label' as const, fieldId: region, operator: 'contains' as const, value: 'East' };
+    const value = { kind: 'condition' as const, family: 'value' as const, fieldId: region, valueFieldId: amount, operator: 'greater-than' as const, value: 5 };
+    const withManual = upsertPivotFilter(pivot.layout, manual);
+    const withLabel = upsertPivotFilter(withManual, label);
+    const withValue = upsertPivotFilter(withLabel, value);
+    assert.deepEqual(withValue.filters.map((filter) => filter.family), ['manual', 'label', 'value']);
+    assert.equal(computePivotResult(workbook, { ...pivot, layout: withValue }).grandTotal?.values[0], 10);
+    assert.equal(upsertPivotFilter(withValue, { ...label, operator: 'equals', value: 'East' }).filters.length, 3);
+    assert.equal(clearPivotFilterFamily(withValue, region, 'label').filters.length, 2);
+    assert.equal(clearPivotFiltersForField(withValue, region).filters.length, 0);
+    assert.throws(() => computePivotResult(workbook, { ...pivot, layout: { ...withValue, allowMultipleFiltersPerField: false } }), /Multiple Pivot filters are disabled/);
   });
 });
