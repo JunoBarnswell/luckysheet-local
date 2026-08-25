@@ -587,6 +587,39 @@ class MutationDescriptorRegistryTest {
         assertEquals("table", snapshot.path("sheets").get(0).path("pivots").get(0).path("source").path("kind").asText());
     }
 
+    @Test
+    void pivotNamedRangeSourceUsesExactWorkbookOrWorksheetScope() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":10,"cells":{},"pivots":[]},
+                  {"id":"sheet-2","name":"Sheet 2","rowCount":20,"columnCount":10,"cells":{},"pivots":[]}
+                ],
+                "definedNameModels":[
+                  {"name":"WorkbookOnly","formula":"=Sheet1!A1:B3","scope":"workbook"},
+                  {"name":"LocalOnly","formula":"=C1:D3","scope":"sheet","sheetId":"sheet-2"}
+                ]}
+                """);
+
+        OperationMutation validLocal = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(
+                "{\"kind\":\"named-range\",\"name\":\"LocalOnly\",\"sheetId\":\"sheet-2\"}", "pivot-local-exact"));
+        registry.prepare(snapshot, validLocal, WorkbookAclRole.EDITOR);
+
+        OperationMutation validWorkbook = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(
+                "{\"kind\":\"named-range\",\"name\":\"WorkbookOnly\"}", "pivot-workbook-exact"));
+        registry.prepare(snapshot, validWorkbook, WorkbookAclRole.EDITOR);
+
+        for (String source : List.of(
+                "{\"kind\":\"named-range\",\"name\":\"WorkbookOnly\",\"sheetId\":\"sheet-2\"}",
+                "{\"kind\":\"named-range\",\"name\":\"LocalOnly\"}")) {
+            JsonNode before = snapshot.deepCopy();
+            OperationMutation invalid = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(source, "pivot-invalid-scope"));
+            ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalid, WorkbookAclRole.EDITOR));
+            assertEquals("NOT_FOUND", error.code());
+            assertEquals(before, snapshot);
+        }
+    }
+
     private JsonNode pivotWithSource(String source, String id) throws Exception {
         return mapper.readTree("""
                 {"schema":"PivotDefinition","id":"%s","source":%s,"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}

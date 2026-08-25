@@ -397,9 +397,12 @@ function parseA1Range(formula: string, workbook: WorkbookModel, fallbackSheetId:
 }
 
 function resolveNamedRange(workbook: WorkbookModel, name: string, sheetId?: string, calculator?: FormulaEngine): RangeRef {
-  const formula = workbook.getDefinedName(name, sheetId)?.formula ?? '';
+  const definedName = sheetId === undefined
+    ? workbook.getDefinedNameExact(name, 'workbook')
+    : workbook.getDefinedNameExact(name, 'sheet', sheetId);
+  const formula = definedName?.formula ?? '';
   if (!formula) throw new Error(`Unknown named range: ${name}`);
-  return parseA1Range(formula, workbook, workbook.primarySheetId, calculator);
+  return parseA1Range(formula, workbook, sheetId ?? workbook.primarySheetId, calculator);
 }
 
 function readRange(sheet: WorksheetModel, range: RangeRef, source: PivotSource, rangeIndex: number, persisted?: PivotFieldCatalog, formula?: FormulaEngine): SourceTable {
