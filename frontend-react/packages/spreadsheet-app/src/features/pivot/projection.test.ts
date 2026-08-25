@@ -217,6 +217,26 @@ describe('native PivotGridProjection contract', () => {
     assert.deepEqual(computePivotResult(workbook, localPivot).rows.map((node) => node.key), ['North', 'South']);
   });
 
+  it('requires explicit worksheet scope for local named-range Pivot sources', () => {
+    const workbook = new WorkbookModel('pivot-local-name', 'Pivot Local Name');
+    const local = workbook.addSheet('sheet-2', 'Sheet 2');
+    workbook.setDefinedName({ name: 'SalesData', formula: '=Sheet1!A1:B2', scope: 'sheet', sheetId: 'sheet-1' });
+    workbook.setDefinedName({ name: 'SalesData', formula: "='Sheet 2'!C1:D2", scope: 'sheet', sheetId: local.id });
+    const implicitLocal: PivotModel = {
+      schema: 'PivotDefinition',
+      id: 'pivot-implicit-local',
+      source: { kind: 'named-range', name: 'SalesData' },
+      target: { sheetId: 'sheet-1', anchor: { row: 5, column: 0 } },
+      fieldCatalog: { fields: [] },
+      refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
+      layout: { rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true, collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' }, values: [], subtotalLocation: 'bottom', showRowGrandTotals: true, showColumnGrandTotals: true, reportLayout: 'compact' },
+    };
+    assert.throws(() => getPivotSourceRanges(workbook, implicitLocal), /Unknown named range/);
+
+    const scoped: PivotModel = { ...implicitLocal, id: 'pivot-scoped-local', source: { kind: 'named-range', name: 'SalesData', sheetId: local.id } };
+    assert.deepEqual(getPivotSourceRanges(workbook, scoped)[0], { sheetId: local.id, startRow: 0, endRow: 1, startColumn: 2, endColumn: 3 });
+  });
+
   it('fails closed when a Pivot source intersects a blocked spill', () => {
     const workbook = new WorkbookModel('pivot-blocked-spill', 'Pivot Blocked Spill');
     const sheet = workbook.getSheet('sheet-1');

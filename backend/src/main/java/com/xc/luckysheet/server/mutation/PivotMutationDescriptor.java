@@ -28,12 +28,12 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Set<String> UPDATE_KEYS = Set.of(
             "sheetId", "pivotId", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"
     );
-    private static final Set<String> SOURCE_KEYS = Set.of("kind", "range", "ranges", "relationships", "tableId", "name", "dataSourceId");
+    private static final Set<String> SOURCE_KEYS = Set.of("kind", "range", "ranges", "relationships", "tableId", "name", "sheetId", "dataSourceId");
     private static final Set<String> TARGET_KEYS = Set.of("sheetId", "anchor");
     private static final Set<String> FIELD_KEYS = Set.of("fieldId", "name", "dataType", "ordinal", "values");
     private static final Set<String> LAYOUT_KEYS = Set.of(
             "rows", "columns", "filters", "allowMultipleFiltersPerField", "collation", "values", "calculatedFields", "calculatedItems",
-            "subtotalLocation", "showGrandTotals", "compact", "repeatLabels", "expansion"
+            "subtotalLocation", "showRowGrandTotals", "showColumnGrandTotals", "reportLayout", "expansion"
     );
     private static final Set<String> COLLATION_KEYS = Set.of("locale", "sensitivity", "numeric", "caseFirst");
     private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group", "subtotal");
@@ -208,8 +208,9 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         SnapshotMutationSupport.text(pivot, "id");
         ObjectNode target = SnapshotMutationSupport.requiredObject(pivot, "target");
         validateTarget(root, expectedSheetId, target);
-        validateSource(root, pivot.get("source"));
+        PivotSourceResolver.Resolution source = validateSource(root, pivot.get("source"));
         Set<String> fieldIds = validateFieldCatalog(pivot.get("fieldCatalog"));
+        validateSourceFieldCatalog(pivot, fieldIds, source.fieldIds());
         validateLayout(root, pivot.get("layout"), fieldIds);
         validateRefreshPolicy(pivot.get("refreshPolicy"));
         validatePresentation(pivot.get("presentation"));
@@ -224,7 +225,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         coordinate(root, targetSheetId, anchor, "Pivot target anchor");
     }
 
-    private void validateSource(ObjectNode root, JsonNode raw) {
+    private PivotSourceResolver.Resolution validateSource(ObjectNode root, JsonNode raw) {
         if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot source is required");
         ObjectNode source = (ObjectNode) raw;
         SnapshotMutationSupport.validateKnownKeys(source, SOURCE_KEYS, "Pivot source");
@@ -254,8 +255,9 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 SnapshotMutationSupport.text(source, "tableId");
             }
             case "named-range" -> {
-                requireOnly(source, Set.of("kind", "name"), "Pivot named range source");
+                requireOnly(source, source.has("sheetId") ? Set.of("kind", "name", "sheetId") : Set.of("kind", "name"), "Pivot named range source");
                 SnapshotMutationSupport.text(source, "name");
+                if (source.has("sheetId")) SnapshotMutationSupport.text(source, "sheetId");
             }
             case "data-source" -> {
                 requireOnly(source, Set.of("kind", "dataSourceId"), "Pivot data source");
@@ -263,6 +265,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             }
             default -> throw ServiceException.validation("Pivot source kind is invalid");
         }
+        return PivotSourceResolver.resolve(root, source);
     }
 
     private void validateRelationships(ObjectNode root, JsonNode raw, Map<String, RangeRef> sourceRanges) {
@@ -436,6 +439,33 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         return ids;
     }
 
+    private void validateSourceFieldCatalog(ObjectNode pivot, Set<String> fieldIds, List<String> sourceFieldIds) {
+        // An empty catalogue is retained as an explicitly empty preflight
+        // shape for reducers that have not yet materialized live source fields.
+        // Once a catalogue is supplied, every source field must be the stable
+        // identity produced by the same source resolver; this prevents a
+        // source switch from silently retaining fields from the old source.
+        if (fieldIds.isEmpty()) return;
+        Set<String> expected = new LinkedHashSet<>(sourceFieldIds);
+        Set<String> calculated = new LinkedHashSet<>();
+        JsonNode layout = pivot.get("layout");
+        if (layout != null && layout.isObject()) {
+            for (String key : List.of("calculatedFields", "calculatedItems")) {
+                JsonNode entries = layout.get(key);
+                if (entries == null || !entries.isArray()) continue;
+                for (JsonNode entry : entries) if (entry.isObject() && entry.path("fieldId").isTextual()) calculated.add(entry.path("fieldId").asText());
+            }
+        }
+        for (String fieldId : fieldIds) {
+            if (!expected.contains(fieldId) && !calculated.contains(fieldId)) {
+                throw ServiceException.validation("Pivot fieldId is not owned by its source: " + fieldId);
+            }
+        }
+        if (!expected.isEmpty() && !fieldIds.containsAll(expected)) {
+            throw ServiceException.validation("Pivot field catalog is incomplete for its source");
+        }
+    }
+
     private void validateLayout(ObjectNode root, JsonNode raw, Set<String> fieldIds) {
         if (raw == null || !raw.isObject()) throw ServiceException.validation("Pivot layout is required");
         ObjectNode layout = (ObjectNode) raw;
@@ -450,8 +480,13 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if (!layout.path("subtotalLocation").isTextual() || !Set.of("top", "bottom", "off").contains(layout.path("subtotalLocation").asText())) {
             throw ServiceException.validation("Pivot layout subtotalLocation is invalid");
         }
-        for (String key : List.of("showGrandTotals", "compact", "repeatLabels")) {
+        for (String key : List.of("showRowGrandTotals", "showColumnGrandTotals")) {
             if (!layout.path(key).isBoolean()) throw ServiceException.validation("Pivot layout " + key + " must be a boolean");
+        }
+        JsonNode reportLayout = layout.get("reportLayout");
+        if (reportLayout == null || !reportLayout.isTextual()
+                || !Set.of("compact", "outline", "tabular").contains(reportLayout.asText())) {
+            throw ServiceException.validation("Pivot layout reportLayout is invalid");
         }
         for (JsonNode placement : layout.path("rows")) validatePlacement(placement, fieldIds, "Pivot row field");
         for (JsonNode placement : layout.path("columns")) validatePlacement(placement, fieldIds, "Pivot column field");
@@ -786,22 +821,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     /** Resolves only canonical source kinds. */
     static List<RangeRef> sourceRanges(ObjectNode root, ObjectNode pivot) {
         ObjectNode source = requiredObject(pivot, "source", "Pivot source");
-        String kind = SnapshotMutationSupport.text(source, "kind");
-        return switch (kind) {
-            case "worksheet-range" -> List.of(SnapshotMutationSupport.range(root, source.get("range")));
-            case "worksheet-ranges" -> {
-                List<RangeRef> ranges = new ArrayList<>();
-                for (JsonNode raw : SnapshotMutationSupport.requiredArray(source, "ranges")) {
-                    if (!raw.isObject()) throw ServiceException.validation("Pivot source range must be an object");
-                    ranges.add(SnapshotMutationSupport.range(root, raw.get("range")));
-                }
-                yield List.copyOf(ranges);
-            }
-            case "table" -> resolveTableRanges(root, SnapshotMutationSupport.text(source, "tableId"));
-            case "data-source" -> resolveDataSourceRanges(root, SnapshotMutationSupport.text(source, "dataSourceId"));
-            case "named-range" -> List.of();
-            default -> throw ServiceException.validation("Pivot source kind is invalid");
-        };
+        return PivotSourceResolver.resolve(root, source).ranges();
     }
 
     static void forEachWorksheetSourceRange(ObjectNode pivot, Consumer<JsonNode> consumer) {
@@ -826,44 +846,6 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
 
     static ObjectNode requiredAnchor(ObjectNode target) {
         return requiredObject(target, "anchor", "Pivot target anchor");
-    }
-
-    private static List<RangeRef> resolveTableRanges(ObjectNode root, String tableId) {
-        List<RangeRef> ranges = new ArrayList<>();
-        JsonNode workbookTables = root.path("dataModel").get("tables");
-        if (workbookTables != null && workbookTables.isArray()) {
-            for (JsonNode raw : workbookTables) if (raw.isObject() && tableId.equals(raw.path("id").asText())) {
-                JsonNode range = raw.get("sourceRange");
-                if (range != null) ranges.add(SnapshotMutationSupport.range(root, range));
-            }
-        }
-        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
-            if (!rawSheet.isObject()) continue;
-            ObjectNode sheet = (ObjectNode) rawSheet;
-            JsonNode tables = sheet.get("sheetTables");
-            if (tables == null || !tables.isArray()) continue;
-            for (JsonNode raw : tables) if (raw.isObject() && tableId.equals(raw.path("id").asText())) {
-                JsonNode range = raw.get("range");
-                if (range != null) ranges.add(SnapshotMutationSupport.range(root, range));
-            }
-        }
-        if (ranges.isEmpty()) throw ServiceException.notFound("Pivot table source not found: " + tableId);
-        return List.copyOf(ranges);
-    }
-
-    private static List<RangeRef> resolveDataSourceRanges(ObjectNode root, String sourceId) {
-        JsonNode rawSources = root.path("dataModel").get("sources");
-        if (rawSources == null || !rawSources.isArray()) return List.of();
-        for (JsonNode raw : rawSources) if (raw.isObject() && sourceId.equals(raw.path("id").asText())) {
-            ObjectNode source = (ObjectNode) raw;
-            List<RangeRef> ranges = new ArrayList<>();
-            JsonNode single = source.get("sourceRange");
-            if (single != null && !single.isNull()) ranges.add(SnapshotMutationSupport.range(root, single));
-            JsonNode many = source.get("ranges");
-            if (many != null && many.isArray()) for (JsonNode range : many) ranges.add(SnapshotMutationSupport.range(root, range));
-            return List.copyOf(ranges);
-        }
-        return List.of();
     }
 
     private static ObjectNode requiredObject(ObjectNode parent, String property, String label) {
