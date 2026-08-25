@@ -24,10 +24,17 @@ export interface PivotValueSortOption {
   label: string;
 }
 
+export interface PivotFilterMemberOption {
+  key: PivotMemberKey;
+  value: PivotScalar;
+  label: string;
+}
+
 export interface PivotHeaderFilterPopoverProps {
   currentFilters: readonly PivotFilter[];
   currentSort?: PivotSort;
   field: PivotFieldDefinition;
+  memberOptions?: readonly PivotFilterMemberOption[];
   locale: Locale;
   scope?: 'report' | 'field';
   valueFields: readonly PivotValueSortOption[];
@@ -39,8 +46,9 @@ export interface PivotHeaderFilterPopoverProps {
 
 function member(value: PivotScalar): PivotMemberKey { return createPivotMemberKey(value); }
 
-export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, locale, onApply, onClose, scope = 'field', valueFields, x, y }: PivotHeaderFilterPopoverProps) {
+export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, locale, memberOptions, onApply, onClose, scope = 'field', valueFields, x, y }: PivotHeaderFilterPopoverProps) {
   const values = field.values ?? [];
+  const options = useMemo(() => memberOptions ?? values.map((value) => ({ key: member(value), value, label: formatPivotMember(value) })), [memberOptions, values]);
   const manualFilter = currentFilters.find((filter) => filter.kind === 'manual' && filter.family === 'manual');
   const conditionFilter = currentFilters.find((filter) => filter.kind === 'condition');
   const [query, setQuery] = useState('');
@@ -52,15 +60,15 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
   const [sort, setSort] = useState<PivotSort | undefined>(currentSort);
   const [showSortOptions, setShowSortOptions] = useState(false);
   const initialSelected = useMemo(() => {
-    if (!manualFilter || manualFilter.mode === 'all') return values.map(member);
+    if (!manualFilter || manualFilter.mode === 'all') return options.map((option) => option.key);
     if (manualFilter.mode === 'include') return manualFilter.memberKeys;
-    return values.map(member).filter((candidate) => !manualFilter.memberKeys.some((item) => pivotMemberKeyEquals(candidate, item)));
-  }, [manualFilter, values]);
+    return options.map((option) => option.key).filter((candidate) => !manualFilter.memberKeys.some((item) => pivotMemberKeyEquals(candidate, item)));
+  }, [manualFilter, options]);
   const [selected, setSelected] = useState<PivotMemberKey[]>(() => [...initialSelected]);
-  const visibleValues = useMemo(() => values.filter((value) => formatPivotMember(value).toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, values]);
-  const selectedHas = (value: PivotScalar) => selected.some((candidate) => pivotMemberKeyEquals(candidate, member(value)));
+  const visibleValues = useMemo(() => options.filter((option) => option.label.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, options]);
+  const selectedHas = (option: PivotFilterMemberOption) => selected.some((candidate) => pivotMemberKeyEquals(candidate, option.key));
   const setVisible = (checked: boolean) => {
-    const visible = visibleValues.map(member);
+    const visible = visibleValues.map((option) => option.key);
     setSelected((current) => checked
       ? [...current, ...visible].filter((candidate, index, entries) => entries.findIndex((entry) => pivotMemberKeyEquals(candidate, entry)) === index)
       : current.filter((candidate) => !visible.some((entry) => pivotMemberKeyEquals(candidate, entry))));
@@ -68,7 +76,7 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
   const apply = () => {
     if (sort?.by === 'value' && !sort.valueFieldId) return;
     if (mode === 'values') {
-      const filter: PivotFilter | undefined = selected.length === values.length
+      const filter: PivotFilter | undefined = selected.length === options.length
         ? undefined
         : { kind: 'manual', family: 'manual', scope, fieldId: field.fieldId, mode: 'include', memberKeys: [...selected] };
       onApply(filter, sort, 'manual');
@@ -109,7 +117,7 @@ export function PivotHeaderFilterPopover({ currentFilters, currentSort, field, l
             </Inline>
             <ScrollArea className="h-[210px] border border-[#c8c8c8] p-2">
               <Stack gap="none">
-                {visibleValues.map((value) => <Box key={pivotMemberKey(member(value))} className="py-1"><CheckToggle checkedTone="dark" className="text-[13px]" label={formatPivotMember(value)} checked={selectedHas(value)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, member(value)] : current.filter((candidate) => !pivotMemberKeyEquals(candidate, member(value))))} /></Box>)}
+                {visibleValues.map((option) => <Box key={pivotMemberKey(option.key)} className="py-1"><CheckToggle checkedTone="dark" className="text-[13px]" label={option.label} checked={selectedHas(option)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, option.key] : current.filter((candidate) => !pivotMemberKeyEquals(candidate, option.key)))} /></Box>)}
               </Stack>
             </ScrollArea>
           </Stack>

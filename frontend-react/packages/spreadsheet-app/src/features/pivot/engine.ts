@@ -681,6 +681,17 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   const values = layout.values.map((entry) => normalizeValueField(entry, catalog));
   const valueFieldIds = new Set(values.map((entry) => entry.fieldId));
   const filters = layout.filters.map((entry) => normalizeFilter(entry, catalog));
+  const normalizedRows = layout.rows.map((entry) => normalizePlacement(entry, catalog, valueFieldIds));
+  const normalizedColumns = layout.columns.map((entry) => normalizePlacement(entry, catalog, valueFieldIds));
+  for (const filter of filters) {
+    if (filter.kind !== 'manual' || (filter.scope ?? 'report') !== 'field') continue;
+    const placement = [...normalizedRows, ...normalizedColumns].find((entry) => entry.fieldId === filter.fieldId && entry.group);
+    const field = catalog.fields.find((entry) => entry.fieldId === filter.fieldId);
+    if (!placement?.group || !field?.values?.length) continue;
+    const validKeys = new Set(buildPivotGroupedFilterMembers(field.values, placement.group).map((member) => pivotMemberKey(member.key)));
+    const invalid = filter.memberKeys.find((member) => !validKeys.has(pivotMemberKey(member)));
+    if (invalid) throw new Error(`Pivot grouped filter member is incompatible with grouping for ${filter.fieldId}`);
+  }
   const identities = new Set<string>();
   const fields = new Set<string>();
   for (const filter of filters) {
@@ -693,8 +704,8 @@ function normalizeLayout(layout: PivotLayout, catalog: PivotFieldCatalog): Pivot
   }
   return {
     ...structuredClone(layout),
-    rows: layout.rows.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
-    columns: layout.columns.map((entry) => normalizePlacement(entry, catalog, valueFieldIds)),
+    rows: normalizedRows,
+    columns: normalizedColumns,
     filters,
     values,
     expansion: layout.expansion ? {
@@ -929,6 +940,34 @@ function grouped(value: PivotScalar, group?: PivotGroup): PivotScalar {
   return dateGroupLabel(date, group);
 }
 
+/** A grouped item keeps its canonical selection key separate from its display caption. */
+export interface PivotGroupedFilterMember {
+  key: PivotMemberKey;
+  value: PivotScalar;
+  label: string;
+}
+
+function groupedMemberKey(value: PivotScalar, group: PivotGroup): PivotMemberKey {
+  if (group.kind === 'manual') {
+    const rawKey = createPivotMemberKey(value);
+    const owner = group.groups.find((candidate) => candidate.items.some((item) => pivotMemberKeyEquals(item, rawKey)));
+    if (owner) return { type: 'text', value: `__pivot_group__:${owner.groupId}` };
+  }
+  return createPivotMemberKey(grouped(value, group));
+}
+
+/** Build the same grouped member domain used by axisGroups for filter surfaces. */
+export function buildPivotGroupedFilterMembers(values: readonly PivotScalar[], group: PivotGroup): PivotGroupedFilterMember[] {
+  const members = new Map<string, PivotGroupedFilterMember>();
+  for (const value of values) {
+    const projected = grouped(value, group);
+    const key = groupedMemberKey(value, group);
+    const identity = pivotMemberKey(key);
+    if (!members.has(identity)) members.set(identity, { key, value: projected, label: formatPivotMember(projected) });
+  }
+  return [...members.values()];
+}
+
 function pivotDate(value: PivotScalar): Date {
   if (typeof value === 'number' && Number.isFinite(value)) return new Date(Date.UTC(1899, 11, 30) + value * 86_400_000);
   return new Date(String(value));
@@ -977,9 +1016,9 @@ function axisGroups(rows: SourceRow[], placements: PivotFieldPlacement[], fieldC
   return result;
 }
 
-function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'manual' }>): boolean {
+function manualFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'manual' }>, group?: PivotGroup): boolean {
   if (filter.mode === 'all') return true;
-  const key = createPivotMemberKey(value);
+  const key = group ? groupedMemberKey(value, group) : createPivotMemberKey(value);
   const included = (filter.memberKeys ?? []).some((candidate) => pivotMemberKeyEquals(candidate, key));
   return filter.mode === 'include' ? included : !included;
 }
@@ -1060,14 +1099,38 @@ function labelFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { k
   return filter.operator === 'between' ? inside : !inside;
 }
 
-function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator): boolean {
+function groupedPlacementForFilter(definition: PivotDefinition, filter: PivotFilter): PivotFieldPlacement | undefined {
+  if ((filter.scope ?? 'report') !== 'field' || filter.kind === 'top-items') return undefined;
+  if (filter.kind === 'condition' && filter.valueFieldId !== undefined) return undefined;
+  return [...definition.layout.rows, ...definition.layout.columns].find((placement) => placement.fieldId === filter.fieldId && placement.group);
+}
+
+function groupedDateFilterMatches(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'date' }>, group: PivotGroup, collator: Intl.Collator): boolean {
+  if (filter.dynamic) return dateFilterMatches(value, filter);
+  const projectedValue = grouped(value, group);
+  const projectedFilter = { ...filter, value: grouped(filter.value, group), ...(filter.value2 === undefined ? {} : { value2: grouped(filter.value2, group) }) };
+  const left = String(projectedValue ?? '');
+  const right = String(projectedFilter.value ?? '');
+  const order = collator.compare(left, right);
+  if (filter.operator === 'equals') return order === 0;
+  if (filter.operator === 'not-equals') return order !== 0;
+  if (filter.operator === 'before') return order < 0;
+  if (filter.operator === 'after') return order > 0;
+  const upper = String(projectedFilter.value2 ?? '');
+  const inside = collator.compare(left, right) >= 0 && collator.compare(left, upper) <= 0;
+  return filter.operator === 'between' ? inside : !inside;
+}
+
+function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator, definition?: PivotDefinition): boolean {
   const fieldId = filter.fieldId;
-  const value = filter.kind === 'condition' && filter.valueFieldId
+  const rawValue = filter.kind === 'condition' && filter.valueFieldId
     ? row.values[filter.valueFieldId] ?? null
     : row.values[fieldId] ?? null;
+  const placement = definition ? groupedPlacementForFilter(definition, filter) : undefined;
+  const value = placement?.group ? grouped(rawValue, placement.group) : rawValue;
   if (filter.kind === 'top-items') return true;
-  if (filter.kind === 'manual') return manualFilterMatches(value, filter);
-  if (filter.family === 'date') return dateFilterMatches(value, filter);
+  if (filter.kind === 'manual') return manualFilterMatches(rawValue, filter, placement?.group);
+  if (filter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, filter, placement.group, collator) : dateFilterMatches(value, filter);
   if (filter.family === 'label') return labelFilterMatches(value, filter, collator);
   const leftNumber = toNumber(value);
   const rightNumber = toNumber(filter.value);
@@ -1287,7 +1350,7 @@ function computePivotResultFromTable(
   const unknown = references.find((field) => field && !known.has(field));
   if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
   let filtered = matchesControls(workbook, rows, pivot);
-  filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator)));
+  filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator, definition)));
   filtered = topItems(filtered, definition.layout.filters);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator) : [{ values: [], rows: filtered }];
   const resultFields = resultValueFields(definition.layout);

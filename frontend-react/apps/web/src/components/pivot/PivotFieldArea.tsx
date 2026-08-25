@@ -21,12 +21,14 @@ import type { PivotFieldArea as Area, PivotManualFilterState } from './pivot-con
 import type { Locale } from '../../i18n';
 import { pivotText, type PivotMessageKey } from './pivot-localization';
 import { PivotValueEditor } from './PivotValueEditor';
+import { buildPivotGroupedFilterMembers, type PivotGroupedFilterMember } from '@react-sheets/spreadsheet-app';
 
 interface AreaItem extends PivotFieldDefinition {
   id: string;
   fieldId: string;
   index: number;
   placement?: PivotFieldPlacement;
+  groupedMembers?: readonly PivotGroupedFilterMember[];
 }
 
 export interface PivotFieldAreaProps {
@@ -55,16 +57,19 @@ function keyFor(value: PivotScalar): PivotMemberKey {
   return createPivotMemberKey(value);
 }
 
+function filterMembers(field: AreaItem): readonly PivotGroupedFilterMember[] {
+  return field.groupedMembers ?? (field.values ?? []).map((value) => ({ key: keyFor(value), value, label: formatPivotMember(value) }));
+}
+
 function selectedMembers(field: AreaItem, state: PivotManualFilterState): PivotMemberKey[] {
-  const all = (field.values ?? []).map(keyFor);
+  const all = filterMembers(field).map((item) => item.key);
   if (state.mode === 'all') return all;
   if (state.mode === 'include') return state.memberKeys.filter((key) => all.some((candidate) => pivotMemberKeyEquals(candidate, key)));
   return all.filter((key) => !state.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, key)));
 }
 
-function filterWithValue(field: AreaItem, state: PivotManualFilterState, value: PivotScalar, checked: boolean): PivotManualFilterState {
-  const all = (field.values ?? []).map(keyFor);
-  const target = keyFor(value);
+function filterWithValue(field: AreaItem, state: PivotManualFilterState, target: PivotMemberKey, checked: boolean): PivotManualFilterState {
+  const all = filterMembers(field).map((item) => item.key);
   const selected = selectedMembers(field, state);
   const nextSelected = checked
     ? [...selected, target].filter((key, index, keys) => keys.findIndex((candidate) => pivotMemberKeyEquals(candidate, key)) === index)
@@ -77,7 +82,7 @@ function filterForMode(field: AreaItem, state: PivotManualFilterState, mode: Piv
   if (mode === 'all') return { mode, memberKeys: [] };
   const selected = selectedMembers(field, state);
   if (mode === 'include') return { mode, memberKeys: selected };
-  const all = (field.values ?? []).map(keyFor);
+  const all = filterMembers(field).map((item) => item.key);
   return { mode, memberKeys: all.filter((key) => !selected.some((candidate) => pivotMemberKeyEquals(candidate, key))) };
 }
 
@@ -90,9 +95,9 @@ function filterOptions(locale: Locale, field: AreaItem, disabled: boolean, state
         <option value="include">{pivotText(locale, 'includeSelected')}</option>
         <option value="exclude">{pivotText(locale, 'excludeSelected')}</option>
       </Select>
-      {(field.values ?? []).map((value) => {
-        const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, keyFor(value)));
-        return <CheckToggle key={pivotMemberKey(keyFor(value))} label={formatPivotMember(value)} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, value, event.target.checked))} />;
+      {filterMembers(field).map((item) => {
+        const selected = selectedMembers(field, state).some((key) => pivotMemberKeyEquals(key, item.key));
+        return <CheckToggle key={pivotMemberKey(item.key)} label={item.label} checked={selected} onChange={(event) => onFilter(field.fieldId, filterWithValue(field, state, item.key, event.target.checked))} />;
       })}
     </Stack>
   );
@@ -203,6 +208,7 @@ export function PivotFieldArea({ area, className, disabled = false, fieldIds, fi
       fieldId,
       index,
       placement: placements?.get(fieldId),
+      groupedMembers: placements?.get(fieldId)?.group ? buildPivotGroupedFilterMembers(field?.values ?? [], placements.get(fieldId)!.group!) : undefined,
     };
   });
   return (

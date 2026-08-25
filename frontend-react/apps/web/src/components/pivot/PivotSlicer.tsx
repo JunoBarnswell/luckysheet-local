@@ -7,6 +7,7 @@ import { pivotText } from './pivot-localization';
 
 export interface PivotSlicerProps {
   field: PivotFieldDefinition;
+  memberOptions?: readonly PivotSlicerItem[];
   locale: Locale;
   mode: PivotFilterMode;
   memberKeys: readonly PivotMemberKey[];
@@ -33,9 +34,9 @@ export function buildPivotSlicerItems(values: readonly PivotScalar[]): PivotSlic
   });
 }
 
-export function PivotSlicer({ disabled = false, field, locale, memberKeys, mode, onChange }: PivotSlicerProps) {
+export function PivotSlicer({ disabled = false, field, locale, memberKeys, mode, memberOptions, onChange }: PivotSlicerProps) {
   const [search, setSearch] = useState('');
-  const items = useMemo(() => buildPivotSlicerItems(field.values ?? []), [field.values]);
+  const items = useMemo(() => memberOptions ?? buildPivotSlicerItems(field.values ?? []), [field.values, memberOptions]);
   const visibleItems = useMemo(() => items.filter((item) => item.label.toLocaleLowerCase().includes(search.toLocaleLowerCase())), [items, search]);
   const allMembers = items.map((item) => item.key);
   const selected = (member: PivotMemberKey): boolean => {

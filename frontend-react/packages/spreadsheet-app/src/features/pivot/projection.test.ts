@@ -4,6 +4,7 @@ import { WorkbookModel, type PivotModel } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import {
   aggregatePivotValues,
+  buildPivotGroupedFilterMembers,
   buildPivotGridProjection,
   computePivotResult,
   computePivotResultFromBlockSource,
@@ -310,6 +311,38 @@ describe('native PivotGridProjection contract', () => {
     const result = computePivotResult(workbook, pivot);
     assert.equal(result.rows[0]?.label, '2024 / 2024 Q1 / 2024-01');
     assert.deepEqual(result.columnPaths, [[0], [50], [100]]);
+  });
+
+  it('uses grouped members as the field-filter domain and keeps manual group identities stable', () => {
+    const workbook = new WorkbookModel('pivot-grouped-filter', 'Pivot Grouped Filter');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Date', 'Category', 'Amount'], [45292, 'A', 10], [45323, 'B', 20], [45658, 'C', 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-grouped-filter', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 });
+    assert.ok(pivot);
+    const date = pivot.fieldCatalog.fields.find((field) => field.name === 'Date')!;
+    const category = pivot.fieldCatalog.fields.find((field) => field.name === 'Category')!;
+    const amount = pivot.fieldCatalog.fields.find((field) => field.name === 'Amount')!;
+    pivot.fieldCatalog.fields[date.ordinal]!.dataType = 'date';
+    const yearGroup = { kind: 'date' as const, unit: 'year' as const };
+    const yearMembers = buildPivotGroupedFilterMembers(date.values ?? [], yearGroup);
+    assert.deepEqual(yearMembers.map((member) => member.value), [2024, 2025]);
+    pivot.layout.rows = [{ fieldId: date.fieldId, group: yearGroup }];
+    pivot.layout.values = [{ fieldId: amount.fieldId, summarizeBy: 'sum' }];
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', scope: 'field', fieldId: date.fieldId, mode: 'include', memberKeys: [yearMembers[0]!.key] }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024']);
+    pivot.layout.filters = [{ kind: 'condition', family: 'date', scope: 'field', fieldId: date.fieldId, operator: 'equals', value: '2024-01-01' }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['2024']);
+
+    const manualGroup = { kind: 'manual' as const, groups: [{ groupId: 'category-ab', name: 'AB', items: [{ type: 'text' as const, value: 'A' }, { type: 'text' as const, value: 'B' }] }] };
+    const categoryMembers = buildPivotGroupedFilterMembers(category.values ?? [], manualGroup);
+    assert.equal(categoryMembers.find((member) => member.label === 'AB')?.key.value, '__pivot_group__:category-ab');
+    pivot.layout.rows = [{ fieldId: category.fieldId, group: manualGroup }];
+    pivot.layout.filters = [{ kind: 'manual', family: 'manual', scope: 'field', fieldId: category.fieldId, mode: 'include', memberKeys: [categoryMembers.find((member) => member.label === 'AB')!.key] }];
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['AB']);
+    pivot.layout.rows[0] = { fieldId: category.fieldId, group: { kind: 'manual', groups: [{ ...manualGroup.groups[0]!, name: 'Renamed' }] } };
+    assert.deepEqual(computePivotResult(workbook, pivot).rows.map((node) => node.label), ['Renamed']);
+    pivot.layout.rows[0] = { fieldId: category.fieldId, group: { kind: 'manual', groups: [{ groupId: 'category-new', name: 'New', items: [{ type: 'text', value: 'A' }, { type: 'text', value: 'B' }] }] } };
+    assert.throws(() => computePivotResult(workbook, pivot), /incompatible with grouping/);
   });
 
   it('keeps numeric label sorting separate from explicit Values sorting', () => {
