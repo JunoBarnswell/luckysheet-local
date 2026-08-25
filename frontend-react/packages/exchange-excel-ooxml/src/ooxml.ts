@@ -1511,8 +1511,12 @@ function serializeAutoFilter(filter: AutoFilterModel, differentialStyleIndexes?:
   const columns = Object.values(filter.columns).map((column) => {
     const colId = column.column - filter.range.startColumn;
     const criterion = column.criterion;
-    const preserved = isRecord(column.preservedXml) && Array.isArray(column.preservedXml.children)
-      ? column.preservedXml.children.filter((value): value is string => typeof value === 'string').join('')
+    const preservedRecord = isRecord(column.preservedXml) ? column.preservedXml : undefined;
+    const preserved = preservedRecord && Array.isArray(preservedRecord.children)
+      ? preservedRecord.children.filter((value): value is string => typeof value === 'string').join('')
+      : '';
+    const preservedFilter = preservedRecord && Array.isArray(preservedRecord.filterChildren)
+      ? preservedRecord.filterChildren.filter((value): value is string => typeof value === 'string').join('')
       : '';
     const buttonAttrs = `${column.showButton === false ? ' showButton="0"' : ''}${column.hiddenButton ? ' hiddenButton="1"' : ''}`;
     if (!criterion && column.showButton !== false && !column.hiddenButton && !preserved) return '';
@@ -1528,7 +1532,7 @@ function serializeAutoFilter(filter: AutoFilterModel, differentialStyleIndexes?:
         if (group.second !== undefined) attrs.push(`second="${group.second}"`);
         return `<dateGroupItem ${attrs.join(' ')}/>`;
       }).join('');
-      return `<filterColumn colId="${colId}"${buttonAttrs}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}${dateGroups}</filters>${preserved}</filterColumn>`;
+      return `<filterColumn colId="${colId}"${buttonAttrs}><filters${criterion.includeBlank ? ' blank="1"' : ''}>${criterion.values.map((value) => `<filter val="${encodeXml(String(value ?? ''))}"/>`).join('')}${dateGroups}${preservedFilter}</filters>${preserved}</filterColumn>`;
     }
     if (criterion.kind === 'custom') {
       const conditions = criterion.conditions.filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
@@ -2111,6 +2115,37 @@ function normalizeValidationOperator(value: string | undefined): DataValidationR
   return supported.has(value as DataValidationRule['operator']) ? value as DataValidationRule['operator'] : undefined;
 }
 
+function parseDateGroupItem(item: XmlNode): { year: number; month?: number; day?: number; hour?: number; minute?: number; second?: number } | undefined {
+  const grouping = item.attrs.dateTimeGrouping;
+  if (!grouping || !['year', 'month', 'day', 'hour', 'minute', 'second'].includes(grouping)) return undefined;
+  const allowed = new Set(['dateTimeGrouping', 'year', 'month', 'day', 'hour', 'minute', 'second']);
+  if (Object.keys(item.attrs).some((key) => !allowed.has(key))) return undefined;
+  const parse = (key: string, minimum: number, maximum?: number): number | undefined => {
+    const raw = item.attrs[key];
+    if (raw === undefined) return undefined;
+    const number = Number(raw);
+    if (!Number.isSafeInteger(number) || number < minimum || (maximum !== undefined && number > maximum)) return undefined;
+    return number;
+  };
+  const year = parse('year', 1);
+  if (year === undefined) return undefined;
+  const month = parse('month', 1, 12);
+  const day = parse('day', 1, 31);
+  const hour = parse('hour', 0, 23);
+  const minute = parse('minute', 0, 59);
+  const second = parse('second', 0, 59);
+  if ((item.attrs.month !== undefined && month === undefined)
+    || (item.attrs.day !== undefined && day === undefined)
+    || (item.attrs.hour !== undefined && hour === undefined)
+    || (item.attrs.minute !== undefined && minute === undefined)
+    || (item.attrs.second !== undefined && second === undefined)) return undefined;
+  const expected: Record<string, string | undefined> = { year: item.attrs.year, month: item.attrs.month, day: item.attrs.day, hour: item.attrs.hour, minute: item.attrs.minute, second: item.attrs.second };
+  const order = ['year', 'month', 'day', 'hour', 'minute', 'second'];
+  const deepest = order.indexOf(grouping);
+  if (deepest < 0 || order.slice(1, deepest + 1).some((key) => expected[key] === undefined) || order.slice(deepest + 1).some((key) => expected[key] !== undefined)) return undefined;
+  return { year, ...(month === undefined ? {} : { month }), ...(day === undefined ? {} : { day }), ...(hour === undefined ? {} : { hour }), ...(minute === undefined ? {} : { minute }), ...(second === undefined ? {} : { second }) };
+}
+
 function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: StyleContext): AutoFilterModel | undefined {
   const node = child(root, 'autoFilter');
   if (!node?.attrs.ref) return undefined;
@@ -2121,18 +2156,23 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
     if (!Number.isSafeInteger(relative) || relative < 0) continue;
     const absolute = range.startColumn + relative;
     const filtersNode = child(column, 'filters');
-    const filters = children(filtersNode, 'filter').map((filter) => filter.attrs.val ?? '');
-    const dateGroups = children(filtersNode, 'dateGroupItem').flatMap((item) => {
-      if (!item.attrs.dateTimeGrouping) return [];
-      return [{
-        year: Number(item.attrs.year ?? 0),
-        ...(item.attrs.month === undefined ? {} : { month: Number(item.attrs.month) }),
-        ...(item.attrs.day === undefined ? {} : { day: Number(item.attrs.day) }),
-        ...(item.attrs.hour === undefined ? {} : { hour: Number(item.attrs.hour) }),
-        ...(item.attrs.minute === undefined ? {} : { minute: Number(item.attrs.minute) }),
-        ...(item.attrs.second === undefined ? {} : { second: Number(item.attrs.second) }),
-      }];
-    });
+    const filters: string[] = [];
+    const dateGroups: Array<{ year: number; month?: number; day?: number; hour?: number; minute?: number; second?: number }> = [];
+    const preservedFilterChildren: string[] = [];
+    for (const filterChild of filtersNode?.children ?? []) {
+      const name = localName(filterChild.name);
+      if (name === 'filter') {
+        filters.push(filterChild.attrs.val ?? '');
+        continue;
+      }
+      if (name === 'dateGroupItem') {
+        const dateGroup = parseDateGroupItem(filterChild);
+        if (dateGroup) dateGroups.push(dateGroup);
+        else preservedFilterChildren.push(serializeXml(filterChild));
+        continue;
+      }
+      preservedFilterChildren.push(serializeXml(filterChild));
+    }
     const custom = children(child(column, 'customFilters'), 'customFilter');
     const customFiltersNode = child(column, 'customFilters');
     const dynamic = child(column, 'dynamicFilter');
@@ -2148,8 +2188,11 @@ function parseAutoFilter(root: XmlNode, descriptor: SheetDescriptor, styles?: St
       column: absolute,
       showButton: column.attrs.showButton !== '0',
       hiddenButton: column.attrs.hiddenButton === '1',
-      ...(preservedChildren.length ? { preservedXml: { children: preservedChildren } } : {}),
-      criterion: filters.length || dateGroups.length || filtersNode?.attrs.blank !== undefined
+      ...((preservedChildren.length || preservedFilterChildren.length) ? { preservedXml: {
+        ...(preservedChildren.length ? { children: preservedChildren } : {}),
+        ...(preservedFilterChildren.length ? { filterChildren: preservedFilterChildren } : {}),
+      } } : {}),
+      criterion: filters.length || dateGroups.length || filtersNode?.attrs.blank !== undefined || preservedFilterChildren.length
         ? { kind: 'values', values: filters, includeBlank: filtersNode?.attrs.blank === '1', ...(dateGroups.length ? { dateGroups } : {}) }
         : custom.length
           ? {

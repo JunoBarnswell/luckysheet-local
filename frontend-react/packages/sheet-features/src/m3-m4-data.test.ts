@@ -7,6 +7,7 @@ import {
   computeFilterHiddenRows,
   createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
+  getAutoFilterDateDomain,
   registerSheetCommands,
   normalizeAutoFilterModel,
   normalizeDataValidationRule,
@@ -146,6 +147,34 @@ test('AutoFilter value domain is complete and ignores the current column criteri
   assert.equal(domain.length, 125);
   assert.equal(domain.includes('Value-2'), true);
   assert.equal(domain.includes('Value-3'), false);
+});
+
+test('AutoFilter date domain remains typed instead of parsing display strings', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Date' });
+  sheet.cells.set(1, 0, { value: 'not-a-date' });
+  sheet.cells.set(2, 0, { value: '2026-08-15T13:14:15Z' });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false } },
+  });
+  const domain = getAutoFilterDateDomain(sheet, 0);
+  assert.equal(domain.length, 1);
+  assert.equal(domain[0]?.value, '2026-08-15T13:14:15Z');
+  const expected = new Date('2026-08-15T13:14:15Z');
+  assert.deepEqual(domain[0]?.group, { year: expected.getFullYear(), month: expected.getMonth() + 1, day: expected.getDate(), hour: expected.getHours(), minute: expected.getMinutes(), second: expected.getSeconds() });
+});
+
+test('AutoFilter rejects malformed date-group shapes instead of guessing', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  assert.throws(() => normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false, criterion: { kind: 'values', values: [], includeBlank: false, dateGroups: [{ year: 2026, month: 8, second: 1 }] } } },
+  }), /requires minute/);
 });
 
 test('AutoFilter evaluates Top10 and dynamic date criteria against canonical rows', () => {

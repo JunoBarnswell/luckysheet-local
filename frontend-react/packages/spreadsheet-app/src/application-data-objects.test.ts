@@ -131,4 +131,29 @@ describe('WorkbookSession data objects integration', () => {
     assert.ok(autoFilter);
     assert.deepEqual(autoFilter?.columns[0]?.criterion, { kind: 'values', values: ['East', 'West'], includeBlank: false });
   });
+
+  it('keeps dateGroups through a no-op Apply without adding history', () => {
+    const app = new WorkbookSession();
+    const criterion = {
+      kind: 'values' as const,
+      values: ['literal'],
+      includeBlank: true,
+      dateGroups: [
+        { year: 2026 },
+        { year: 2026, month: 8, day: 15, hour: 13, minute: 14, second: 15 },
+      ],
+    };
+    app.applyFilter(0, { criterion });
+    const initialSheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    initialSheet.autoFilter!.columns[0]!.preservedXml = { filterChildren: ['<dateGroupItem dateTimeGrouping="quarter" year="2026" quarter="3"/>'] };
+    const before = app.getUiSnapshot().undoRedo.undoCount;
+    app.applyFilter(0, { criterion: structuredClone(criterion) });
+    const sheet = app['runtime'].model.getSheet(app.getActiveSheetId());
+    assert.equal(app.getUiSnapshot().undoRedo.undoCount, before);
+    assert.deepEqual(sheet.autoFilter?.columns[0]?.criterion, criterion);
+    assert.deepEqual(sheet.autoFilter?.columns[0]?.preservedXml, { filterChildren: ['<dateGroupItem dateTimeGrouping="quarter" year="2026" quarter="3"/>'] });
+    app.applyFilter(0, { criterion: undefined });
+    assert.equal(sheet.autoFilter?.columns[0]?.criterion, undefined);
+    assert.equal(sheet.autoFilter?.columns[0]?.preservedXml, undefined);
+  });
 });

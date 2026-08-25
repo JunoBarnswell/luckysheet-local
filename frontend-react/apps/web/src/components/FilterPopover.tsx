@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, CheckToggle, Inline, Select, Stack, TextInput, Text, VirtualList } from '@react-sheets/ui-system';
-import type { FilterCriterion } from '@react-sheets/core-model';
+import type { DateGroupItem, FilterCriterion } from '@react-sheets/core-model';
 import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 
 export interface FilterPatch {
@@ -27,14 +27,56 @@ function criterionValues(criterion: FilterCriterion | undefined): string[] {
   return criterion?.kind === 'values' ? criterion.values.map((value) => String(value ?? '')) : [];
 }
 
+type DateGroupUnit = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
+type DateGroupNode = { key: string; group: DateGroupItem; unit: DateGroupUnit; depth: number; label: string };
+const dateGroupUnits: readonly DateGroupUnit[] = ['year', 'month', 'day', 'hour', 'minute', 'second'];
+
+function dateGroupKey(group: DateGroupItem): string {
+  return dateGroupUnits.filter((unit) => group[unit] !== undefined).map((unit) => `${unit}=${group[unit]}`).join('|');
+}
+
+function dateGroupLabel(group: DateGroupItem, unit: DateGroupUnit): string {
+  if (unit === 'year') return `${group.year}`;
+  if (unit === 'month') return `${group.year}-${String(group.month).padStart(2, '0')}`;
+  if (unit === 'day') return `${group.year}-${String(group.month).padStart(2, '0')}-${String(group.day).padStart(2, '0')}`;
+  if (unit === 'hour') return `${dateGroupLabel(group, 'day')} ${String(group.hour).padStart(2, '0')}:00`;
+  if (unit === 'minute') return `${dateGroupLabel(group, 'hour')}:${String(group.minute).padStart(2, '0')}`;
+  return `${dateGroupLabel(group, 'minute')}:${String(group.second).padStart(2, '0')}`;
+}
+
+function buildDateGroupNodes(entries: Array<{ group: DateGroupItem }>, active: DateGroupItem[]): DateGroupNode[] {
+  const groups = new Map<string, DateGroupItem>();
+  const add = (source: DateGroupItem): void => {
+    for (let index = 0; index < dateGroupUnits.length; index += 1) {
+      const unit = dateGroupUnits[index]!;
+      if (unit !== 'year' && source[dateGroupUnits[index - 1]!] === undefined) break;
+      if (source[unit] === undefined && unit !== 'year') break;
+      const group = Object.fromEntries(dateGroupUnits.slice(0, index + 1).filter((key) => source[key] !== undefined).map((key) => [key, source[key]])) as unknown as DateGroupItem;
+      groups.set(dateGroupKey(group), group);
+    }
+  };
+  entries.forEach((entry) => add(entry.group));
+  active.forEach(add);
+  return [...groups.entries()].map(([key, group]) => {
+    const unit = [...dateGroupUnits].reverse().find((candidate) => group[candidate] !== undefined) ?? 'year';
+    return { key, group, unit, depth: dateGroupUnits.indexOf(unit), label: dateGroupLabel(group, unit) };
+  }).sort((left, right) => left.key.localeCompare(right.key));
+}
+
 /** Excel-style filter task surface. UI draft state is local; only OK emits a command payload. */
 export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }: FilterPopoverProps): React.ReactElement {
   const values = useMemo(() => sheet.getFilterValueDomain(column), [column, sheet]);
+  const dateDomain = useMemo(() => sheet.getFilterDateDomain?.(column) ?? [], [column, sheet]);
   const colors = useMemo(() => sheet.getFilterColorDomain(column), [column, sheet]);
   const icons = useMemo(() => sheet.getFilterIconDomain(column), [column, sheet]);
   const currentCriterion = sheet.getFilterCriterion(column);
   const [mode, setMode] = useState<FilterMode>(currentCriterion?.kind === 'custom' ? 'text' : currentCriterion?.kind === 'dynamic' ? 'date' : currentCriterion?.kind === 'top10' ? 'number' : currentCriterion?.kind === 'color' ? 'color' : currentCriterion?.kind === 'icon' ? 'icon' : 'values');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(currentCriterion?.kind === 'values' ? criterionValues(currentCriterion) : values));
+  const [includeBlank, setIncludeBlank] = useState(currentCriterion?.kind === 'values' ? currentCriterion.includeBlank : false);
+  const currentDateGroups = currentCriterion?.kind === 'values' ? currentCriterion.dateGroups ?? [] : [];
+  const dateGroupNodes = useMemo(() => buildDateGroupNodes(dateDomain, currentDateGroups), [currentDateGroups, dateDomain]);
+  const [selectedDateGroups, setSelectedDateGroups] = useState<Set<string>>(() => new Set(currentDateGroups.map(dateGroupKey)));
+  const [dateGroupsDirty, setDateGroupsDirty] = useState(false);
   const [search, setSearch] = useState('');
   const [operator, setOperator] = useState<CustomOperator>(currentCriterion?.kind === 'custom' ? currentCriterion.conditions[0]?.operator as CustomOperator ?? 'contains' : 'contains');
   const [operand, setOperand] = useState(currentCriterion?.kind === 'custom' ? String(currentCriterion.conditions[0]?.value ?? '') : '');
@@ -85,10 +127,27 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
       onApply({ criterion: { kind: 'custom', join, conditions } });
       return;
     }
-    const selectedValues = [...selected];
-    const criterion = selectedValues.length === values.length && values.every((value) => selected.has(value))
+    const currentLiteralValues = new Map(currentCriterion?.kind === 'values' ? currentCriterion.values.map((value) => [String(value ?? ''), value] as const) : []);
+    const initialValues = currentCriterion?.kind === 'values' ? criterionValues(currentCriterion) : [];
+    const valuesUnchanged = currentCriterion?.kind === 'values'
+      && initialValues.length === selected.size
+      && initialValues.every((value) => selected.has(value))
+      && currentCriterion.includeBlank === includeBlank;
+    if (valuesUnchanged && !dateGroupsDirty) {
+      onApply({ criterion: structuredClone(currentCriterion) });
+      return;
+    }
+    const selectedValues = [...selected].flatMap((value) => {
+      if (value === '' && !currentLiteralValues.has(value)) return [];
+      return [currentLiteralValues.get(value) ?? value];
+    });
+    const dateGroups = dateGroupsDirty
+      ? dateGroupNodes.filter((node) => selectedDateGroups.has(node.key)).map((node) => structuredClone(node.group))
+      : currentDateGroups.map((group) => structuredClone(group));
+    const allLiteralsSelected = selectedValues.length === values.length && values.every((value) => selected.has(value));
+    const criterion = allLiteralsSelected && !includeBlank && dateGroups.length === 0
       ? undefined
-      : { kind: 'values' as const, values: selectedValues, includeBlank: selected.has('') };
+      : { kind: 'values' as const, values: selectedValues, includeBlank, ...(dateGroups.length ? { dateGroups } : {}) };
     onApply({ criterion });
   };
 
@@ -221,6 +280,7 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
               onChange={(event) => {
                 const next = new Set(selected);
                 visibleValues.forEach((value) => event.target.checked ? next.add(value) : next.delete(value));
+                if (visibleValues.includes('')) setIncludeBlank(event.target.checked);
                 setSelected(next);
               }}
             />
@@ -238,11 +298,31 @@ export function FilterPopover({ column, x, y, sheet, onApply, onSort, onClose }:
                     const next = new Set(selected);
                     if (event.target.checked) next.add(value);
                     else next.delete(value);
+                    if (value === '') setIncludeBlank(event.target.checked);
                     setSelected(next);
                   }}
                 />
               )}
             />
+            {dateGroupNodes.length > 0 ? (
+              <Stack gap="xs" className="rounded border border-slate-100 p-2">
+                <Text size="xs" weight="semibold">Date groups</Text>
+                {dateGroupNodes.map((node) => (
+                  <CheckToggle
+                    key={node.key}
+                    checked={selectedDateGroups.has(node.key)}
+                    label={`${'\u00a0'.repeat(node.depth * 2)}${node.label}`}
+                    onChange={(event) => {
+                      const next = new Set(selectedDateGroups);
+                      if (event.target.checked) next.add(node.key);
+                      else next.delete(node.key);
+                      setSelectedDateGroups(next);
+                      setDateGroupsDirty(true);
+                    }}
+                  />
+                ))}
+              </Stack>
+            ) : null}
           </>
         )}
 
