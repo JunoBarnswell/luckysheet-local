@@ -60,6 +60,7 @@ function sheet(pivot: PivotGridProjection): CanvasSheetSnapshot {
     getFilterColorDomain: () => [],
     getFilterIconDomain: () => [],
     getFilterValueDomain: () => [],
+    getFilterDomainDescriptor: () => ({ column: 0, values: [], scalarTypes: [], dominantType: 'empty', hasBlank: false, dateDomain: [], dateHierarchy: [], colorDomain: [], iconDomain: [], supportedFamilies: ['values'] }),
     getFilterCriterion: () => undefined,
     getFilterOwner: () => undefined,
     getActiveAutoFilter: () => undefined,

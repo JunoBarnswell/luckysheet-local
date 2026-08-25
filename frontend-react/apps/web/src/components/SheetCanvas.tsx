@@ -1107,6 +1107,7 @@ export function SheetCanvas({
 
           {filterPopover ? (
             <FilterPopover
+              locale={locale}
               column={filterPopover.column}
               x={filterPopover.x}
               y={filterPopover.y}

@@ -5,13 +5,13 @@ import type {
   DataValidationRule,
   AutoFilterColumn,
   AutoFilterModel,
+  DateGroupItem,
   FilterCriterion,
+  FilterScalar,
   RangeRef,
   WorkbookModel,
   WorksheetModel,
   ConditionalFormatTopBottom,
-  DateGroupItem,
-  FilterScalar,
 } from "@react-sheets/core-model";
 import { StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType } from "@react-sheets/core-model";
 import { resolveAutoFilters } from './sheet-table-features';
@@ -369,8 +369,36 @@ export function createEffectiveFilterVisualResolver(
 }
 
 function cellText(cell: CellData | undefined): string {
-  if (!cell || cell.value == null) return "";
-  return String(cell.value);
+  const value = cell?.formulaValue ?? cell?.value;
+  if (value == null || typeof value === 'object') return "";
+  return String(value);
+}
+
+/**
+ * The filter domain is built from the evaluated cell result, never from a
+ * formula source.  Formula errors intentionally remain outside FilterScalar;
+ * they therefore participate as the canonical blank/error bucket instead of
+ * leaking an authored formula string into the value menu.
+ */
+function resolvedFilterScalar(cell: CellData | undefined): FilterScalar {
+  const value = cell?.formulaValue ?? cell?.value ?? null;
+  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
+}
+
+function hasCanonicalDateNumberFormat(cell: CellData | undefined): boolean {
+  const format = cell?.numberFormat ?? cell?.style?.numberFormat;
+  if (!format) return false;
+  // Only a numeric cell carrying an explicit date/time format is a date.  In
+  // particular, a text value such as "2024-01-01" remains text.
+  return /(^|[^a-z])(?:d{1,4}|m{1,4}|y{2,4}|h{1,2}|s{1,2})(?:[^a-z]|$)/i.test(format);
+}
+
+function canonicalFilterDate(cell: CellData | undefined, dateSystem: FilterDateSystem): Date | null {
+  const value = resolvedFilterScalar(cell);
+  if (typeof value !== 'number' || !Number.isFinite(value) || !hasCanonicalDateNumberFormat(cell)) return null;
+  const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
+  const date = new Date(epoch + value * 24 * 60 * 60 * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function numericOf(cell: CellData | undefined): number | undefined {
@@ -646,6 +674,24 @@ export function normalizeAutoFilterModel(filter: AutoFilterModel): AutoFilterMod
 export type FilterCellReader = (row: number, column: number) => CellData | undefined;
 export type FilterDateSystem = '1900' | '1904';
 
+export type FilterScalarType = 'blank' | 'text' | 'number' | 'boolean' | 'date';
+export type FilterFamily = 'values' | 'text' | 'number' | 'date' | 'color' | 'icon';
+export type FilterDateGroupUnit = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
+
+export interface FilterDomainDescriptor {
+  column: number;
+  values: FilterScalar[];
+  scalarTypes: FilterScalarType[];
+  dominantType: FilterScalarType | 'mixed' | 'empty';
+  hasBlank: boolean;
+  dateDomain: Array<{ value: FilterScalar; group: DateGroupItem & { hour: number; minute: number; second: number } }>;
+  dateHierarchy: FilterDateGroupUnit[];
+  colorDomain: Array<{ target: 'cell' | 'font'; color: string; dxfId?: number }>;
+  iconDomain: Array<{ iconSet: string; iconId: number }>;
+  currentFamily?: FilterFamily;
+  supportedFamilies: FilterFamily[];
+}
+
 function normalizeCriterion(criterion: FilterCriterion): FilterCriterion {
   if (criterion.kind === 'values') {
     const dateGroups = criterion.dateGroups?.map((group) => normalizeDateGroupItem(group));
@@ -707,7 +753,7 @@ export function computeFilterHiddenRows(
         if (!criterion) return true;
         const cell = readCell(row, entry.column);
         if (criterion.kind === 'top10') return top10Matches.get(entry.column)?.has(row) ?? false;
-        return matchesFilterCriterion(cell?.value ?? null, cellText(cell), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+        return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
       });
       if (!visible) hidden.add(row);
     }
@@ -720,6 +766,37 @@ export function computeFilterHiddenRows(
  * criterion is deliberately ignored while all other column criteria remain
  * active, matching Excel's filter menu recovery semantics.
  */
+export function getAutoFilterScalarDomain(
+  sheet: WorksheetModel,
+  column: number,
+  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): FilterScalar[] {
+  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const filter = resolveAutoFilters(sheet)
+    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
+    .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
+  if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) return [];
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+    && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
+    && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
+  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+  const values = new Map<string, FilterScalar>();
+  for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
+    const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
+      if (entry.column === column || !entry.criterion) return true;
+      const cell = readCell(row, entry.column);
+      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+    });
+    if (!otherColumnsMatch) continue;
+    const cell = readCell(row, column);
+    const value = resolvedFilterScalar(cell);
+    values.set(JSON.stringify(value), value);
+  }
+  return [...values.values()].sort(compareFilterScalars);
+}
+
 export function getAutoFilterValueDomain(
   sheet: WorksheetModel,
   column: number,
@@ -727,27 +804,21 @@ export function getAutoFilterValueDomain(
   dateSystem: FilterDateSystem = '1900',
   visualResolver?: FilterVisualResolver,
 ): string[] {
-  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
-  const filter = resolveAutoFilters(sheet)
-    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
-    .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
-  if (!filter || column < filter.range.startColumn || column > filter.range.endColumn) return [];
-  const values = new Set<string>();
-  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
-    && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
-    && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
-  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
-  for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
-    const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
-      if (entry.column === column || !entry.criterion) return true;
-      const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
-    });
-    if (!otherColumnsMatch) continue;
-    const cell = readCell(row, column);
-    values.add(cellText(cell));
-  }
-  return [...values].sort((left, right) => left.localeCompare(right));
+  return getAutoFilterScalarDomain(sheet, column, readCell, dateSystem, visualResolver).map(filterScalarText);
+}
+
+function filterScalarText(value: FilterScalar): string {
+  return value == null ? '' : String(value);
+}
+
+function compareFilterScalars(left: FilterScalar, right: FilterScalar): number {
+  const leftBlank = left == null || left === '';
+  const rightBlank = right == null || right === '';
+  if (leftBlank !== rightBlank) return leftBlank ? -1 : 1;
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  if (typeof left === 'boolean' && typeof right === 'boolean') return Number(left) - Number(right);
+  if (typeof left === typeof right) return filterScalarText(left).localeCompare(filterScalarText(right));
+  return typeof left === 'number' ? -1 : typeof right === 'number' ? 1 : filterScalarText(left).localeCompare(filterScalarText(right));
 }
 
 /**
@@ -781,19 +852,171 @@ export function getAutoFilterDateDomain(
     const otherColumnsMatch = Object.values(filter.columns).every((entry) => {
       if (entry.column === column || !entry.criterion) return true;
       const cell = readCell(row, entry.column);
-      return matchesFilterCriterion(cell?.value ?? null, cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
+      return matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), entry.criterion, cell, dateSystem, resolveVisual(row, entry.column, cell));
     });
     if (!otherColumnsMatch) continue;
     const cell = readCell(row, column);
-    const value = cell?.value;
-    if (value !== null && typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue;
-    const date = toFilterDate(value, cellText(cell), dateSystem);
+    const value = resolvedFilterScalar(cell);
+    const date = canonicalFilterDate(cell, dateSystem);
     if (!date) continue;
     const group = { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate(), hour: date.getHours(), minute: date.getMinutes(), second: date.getSeconds() };
     const key = `${JSON.stringify(value)}|${JSON.stringify(group)}`;
     entries.set(key, { value: value as FilterScalar, group });
   }
   return [...entries.values()].sort((left, right) => JSON.stringify(left.group).localeCompare(JSON.stringify(right.group)));
+}
+
+export function getAutoFilterColorDomain(
+  sheet: WorksheetModel,
+  column: number,
+  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): Array<{ target: 'cell' | 'font'; color: string; dxfId?: number }> {
+  void dateSystem;
+  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const filter = resolveAutoFilters(sheet)
+    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
+    .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
+  if (!filter) return [];
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+    && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
+    && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
+  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+  const options = new Map<string, { target: 'cell' | 'font'; color: string; dxfId?: number }>();
+  for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
+    const visual = resolveVisual(row, column, readCell(row, column));
+    if (visual.style.background) options.set(`cell:${visual.style.background}:${visual.nativeColor?.dxfId ?? ''}`, { target: 'cell', color: visual.style.background, ...(visual.nativeColor?.target === 'cell' && visual.nativeColor.dxfId !== undefined ? { dxfId: visual.nativeColor.dxfId } : {}) });
+    if (visual.style.textColor) options.set(`font:${visual.style.textColor}:${visual.nativeColor?.dxfId ?? ''}`, { target: 'font', color: visual.style.textColor, ...(visual.nativeColor?.target === 'font' && visual.nativeColor.dxfId !== undefined ? { dxfId: visual.nativeColor.dxfId } : {}) });
+  }
+  return [...options.values()].sort((left, right) => `${left.target}:${left.color}`.localeCompare(`${right.target}:${right.color}`));
+}
+
+export function getAutoFilterIconDomain(
+  sheet: WorksheetModel,
+  column: number,
+  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): Array<{ iconSet: string; iconId: number }> {
+  void dateSystem;
+  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const filter = resolveAutoFilters(sheet)
+    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
+    .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
+  if (!filter) return [];
+  const table = sheet.sheetTables.find((entry) => entry.sheetId === sheet.id
+    && entry.range.startRow === filter.range.startRow && entry.range.endRow === filter.range.endRow
+    && entry.range.startColumn === filter.range.startColumn && entry.range.endColumn === filter.range.endColumn);
+  const endRow = table?.hasTotalRow ? filter.range.endRow - 1 : filter.range.endRow;
+  const options = new Map<string, { iconSet: string; iconId: number }>();
+  for (let row = filter.range.startRow + 1; row <= endRow; row += 1) {
+    const icon = resolveVisual(row, column, readCell(row, column)).nativeIcon;
+    if (icon) options.set(`${icon.iconSet}:${icon.iconId}`, { ...icon });
+  }
+  return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));
+}
+
+export function getAutoFilterDomainDescriptor(
+  sheet: WorksheetModel,
+  column: number,
+  readCell: FilterCellReader = (row, currentColumn) => sheet.cells.get(row, currentColumn),
+  dateSystem: FilterDateSystem = '1900',
+  visualResolver?: FilterVisualResolver,
+): FilterDomainDescriptor {
+  const values = getAutoFilterScalarDomain(sheet, column, readCell, dateSystem, visualResolver);
+  const dateDomain = getAutoFilterDateDomain(sheet, column, readCell, dateSystem, visualResolver);
+  const colorDomain = getAutoFilterColorDomain(sheet, column, readCell, dateSystem, visualResolver);
+  const iconDomain = getAutoFilterIconDomain(sheet, column, readCell, dateSystem, visualResolver);
+  const dateValueKeys = new Set(dateDomain.map((entry) => JSON.stringify(entry.value)));
+  const scalarTypes = new Set<FilterScalarType>();
+  for (const value of values) {
+    if (value == null || value === '') scalarTypes.add('blank');
+    else if (dateValueKeys.has(JSON.stringify(value))) scalarTypes.add('date');
+    else if (typeof value === 'number') scalarTypes.add('number');
+    else if (typeof value === 'boolean') scalarTypes.add('boolean');
+    else scalarTypes.add('text');
+  }
+  const nonBlankTypes = [...scalarTypes].filter((type): type is Exclude<FilterScalarType, 'blank'> => type !== 'blank');
+  const dominantType = nonBlankTypes.length === 0
+    ? (values.length === 0 || scalarTypes.has('blank') ? 'empty' : 'mixed')
+    : new Set(nonBlankTypes).size === 1 ? nonBlankTypes[0]! : 'mixed';
+  const currentCriterion = resolveAutoFilters(sheet)
+    .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
+    .find((filter) => column >= filter.range.startColumn && column <= filter.range.endColumn)?.columns[column]?.criterion;
+  const currentFamily = currentCriterion ? criterionFamily(currentCriterion, dominantType) : undefined;
+  const supportedFamilies: FilterFamily[] = ['values'];
+  if (dominantType === 'text') supportedFamilies.push('text');
+  if (dominantType === 'number') supportedFamilies.push('number');
+  if (dominantType === 'date') supportedFamilies.push('date');
+  if (colorDomain.length > 0) supportedFamilies.push('color');
+  if (iconDomain.length > 0) supportedFamilies.push('icon');
+  const units: FilterDateGroupUnit[] = ['year', 'month', 'day', 'hour', 'minute', 'second'];
+  return {
+    column,
+    values,
+    scalarTypes: [...scalarTypes],
+    dominantType,
+    hasBlank: scalarTypes.has('blank'),
+    dateDomain,
+    dateHierarchy: units.filter((unit) => dateDomain.some((entry) => entry.group[unit] !== undefined)),
+    colorDomain,
+    iconDomain,
+    currentFamily,
+    supportedFamilies,
+  };
+}
+
+function criterionFamily(criterion: FilterCriterion, dominantType: FilterDomainDescriptor['dominantType']): FilterFamily | undefined {
+  if (criterion.kind === 'values') return 'values';
+  if (criterion.kind === 'color') return 'color';
+  if (criterion.kind === 'icon') return 'icon';
+  if (criterion.kind === 'dynamic') return 'date';
+  if (criterion.kind === 'top10') return 'number';
+  if (dominantType === 'text') return 'text';
+  if (dominantType === 'number') return 'number';
+  if (dominantType === 'date') return 'date';
+  return undefined;
+}
+
+const TEXT_FILTER_OPERATORS = new Set(['equals', 'notEquals', 'contains', 'notContains', 'beginsWith', 'endsWith']);
+const ORDERED_FILTER_OPERATORS = new Set(['equals', 'notEquals', 'lessThan', 'lessThanOrEqual', 'greaterThan', 'greaterThanOrEqual']);
+
+/**
+ * Command-layer validation for a criterion selected from a resolved domain.
+ * The UI uses the same descriptor, but replay/API callers must be checked here
+ * as well; an invalid family or a visual/date criterion without a domain must
+ * never reach the mutation registry.
+ */
+export function validateFilterCriterionAgainstDomain(descriptor: FilterDomainDescriptor, criterion: FilterCriterion | undefined): void {
+  if (!criterion) return;
+  const family = criterionFamily(criterion, descriptor.dominantType);
+  if (!family || !descriptor.supportedFamilies.includes(family)) throw new Error(`FILTER_DOMAIN_MISMATCH: ${criterion.kind} is not supported for column ${descriptor.column}`);
+  if (criterion.kind === 'custom') {
+    const operators = family === 'text' ? TEXT_FILTER_OPERATORS : ORDERED_FILTER_OPERATORS;
+    for (const condition of criterion.conditions) {
+      if (condition && !operators.has(condition.operator)) throw new Error(`FILTER_OPERATOR_MISMATCH: ${condition.operator} is not valid for ${family}`);
+    }
+    return;
+  }
+  if (criterion.kind === 'top10') {
+    if (family !== 'number' || !Number.isSafeInteger(criterion.rank) || criterion.rank <= 0) throw new Error('FILTER_DOMAIN_MISMATCH: Top/Bottom requires a numeric domain and a positive safe rank');
+    return;
+  }
+  if (criterion.kind === 'dynamic') {
+    if (family !== 'date' || !isDynamicFilterType(criterion.type)) throw new Error('FILTER_DOMAIN_MISMATCH: dynamic date criteria require a canonical date domain');
+    return;
+  }
+  if (criterion.kind === 'color') {
+    const expected = criterion.target === 'cell' ? criterion.style?.background : criterion.style?.textColor;
+    const available = descriptor.colorDomain.some((entry) => entry.target === criterion.target
+      && ((expected !== undefined && colorsEqual(entry.color, expected)) || (criterion.dxfId >= 0 && entry.dxfId === criterion.dxfId)));
+    if (!available) throw new Error('FILTER_DOMAIN_MISMATCH: color criterion is not present in the resolved color domain');
+    return;
+  }
+  if (criterion.kind === 'icon') {
+    if (!descriptor.iconDomain.some((entry) => entry.iconSet === criterion.iconSet && entry.iconId === criterion.iconId)) throw new Error('FILTER_DOMAIN_MISMATCH: icon criterion is not present in the resolved icon domain');
+  }
 }
 
 function matchesFilterCriterion(
@@ -806,7 +1029,7 @@ function matchesFilterCriterion(
 ): boolean {
   if (criterion.kind === 'values') {
     if (criterion.dateGroups?.length) {
-      const date = toFilterDate(value, text, dateSystem);
+      const date = canonicalFilterDate(cell, dateSystem);
       if (date && criterion.dateGroups.some((group) => dateMatchesGroup(date, group))) return true;
     }
     if (text === '' && criterion.includeBlank) return true;
@@ -817,7 +1040,7 @@ function matchesFilterCriterion(
       .map((condition) => evaluateFilterCondition(text, condition.operator, String(condition.value ?? '')));
     return criterion.join === 'and' ? results.every(Boolean) : results.some(Boolean);
   }
-  if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem);
+  if (criterion.kind === 'dynamic') return matchesDynamicDateFilter(value, text, criterion.type, dateSystem, cell);
   if (criterion.kind === 'top10') return true;
   if (criterion.kind === 'color' || criterion.kind === 'icon') {
     const effective = visual ?? resolveEffectiveFilterVisual(cell);
@@ -861,10 +1084,13 @@ function buildTop10Matches(
       const cell = readCell(row, other.column);
       return other.criterion.kind === 'top10'
         ? true
-        : matchesFilterCriterion(cell?.value ?? null, cellText(cell), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell));
+        : matchesFilterCriterion(resolvedFilterScalar(cell), cellText(cell), other.criterion, cell, dateSystem, visualResolver(row, other.column, cell));
     }));
     const numeric = eligible
-      .map((row) => ({ row, value: numericFilterValue(readCell(row, entry.column)?.value, cellText(readCell(row, entry.column))) }))
+      .map((row) => {
+        const cell = readCell(row, entry.column);
+        return { row, value: numericFilterValue(resolvedFilterScalar(cell), cellText(cell)) };
+      })
       .filter((item): item is { row: number; value: number } => item.value !== null)
       .sort((left, right) => criterion.top ? right.value - left.value : left.value - right.value);
     const requested = criterion.percent ? Math.max(1, Math.ceil(numeric.length * criterion.rank / 100)) : criterion.rank;
@@ -884,8 +1110,10 @@ function numericFilterValue(value: unknown, text: string): number | null {
   return Number.isFinite(parsed) && text.trim() !== '' ? parsed : null;
 }
 
-function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: FilterDateSystem): boolean {
-  const date = toFilterDate(value, text, dateSystem);
+function matchesDynamicDateFilter(value: unknown, text: string, type: import('@react-sheets/core-model').DynamicFilterType, dateSystem: FilterDateSystem, cell?: CellData): boolean {
+  void value;
+  void text;
+  const date = canonicalFilterDate(cell, dateSystem);
   if (!date) return false;
   const now = new Date();
   const startOfDay = (candidate: Date): Date => new Date(candidate.getFullYear(), candidate.getMonth(), candidate.getDate());
@@ -916,17 +1144,6 @@ function matchesDynamicDateFilter(value: unknown, text: string, type: import('@r
   };
   const [start, end] = ranges[type];
   return date >= start && date < end;
-}
-
-function toFilterDate(value: unknown, text: string, dateSystem: FilterDateSystem): Date | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    const epoch = dateSystem === '1904' ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
-    const date = new Date(epoch + value * 24 * 60 * 60 * 1000);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-  const timestamp = Date.parse(String(value ?? text));
-  if (Number.isNaN(timestamp)) return null;
-  return new Date(timestamp);
 }
 
 function evaluateFilterCondition(text: string, operator: string, operand: string, operand2?: string): boolean {

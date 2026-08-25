@@ -35,6 +35,9 @@ import {
   createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
   getAutoFilterDateDomain,
+  getAutoFilterDomainDescriptor,
+  getAutoFilterColorDomain,
+  getAutoFilterIconDomain,
   computeOutlineHiddenColumns,
   computeOutlineHiddenRows,
   computeSheetTableCellStyle,
@@ -50,6 +53,7 @@ import {
   resolveEffectiveFilterVisual,
   validateDataInput,
   type FilterDateSystem,
+  type FilterDomainDescriptor,
   type ConditionalOverlay,
   type FilterButtonCell,
   type FilterButtonState,
@@ -143,6 +147,7 @@ export interface CanvasSheetSnapshot {
   filterButtons: FilterButtonCell[];
   filterButtonStates: FilterButtonState[];
   getFilterValueDomain: (column: number) => string[];
+  getFilterDomainDescriptor: (column: number) => FilterDomainDescriptor;
   /** Typed source dates for hierarchical date-group editing; never derived from display text. */
   getFilterDateDomain?: (column: number) => Array<{ value: import('@react-sheets/core-model').FilterScalar; group: DateGroupItem & { hour: number; minute: number; second: number } }>;
   getFilterCriterion: (column: number) => FilterCriterion | undefined;
@@ -388,6 +393,7 @@ export function buildCanvasSheetSnapshot(
     filterButtons,
     filterButtonStates: resolveFilterButtonStates(sheet),
     getFilterValueDomain: (column) => getAutoFilterValueDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
+    getFilterDomainDescriptor: (column) => getAutoFilterDomainDescriptor(sheet, column, readFilterCell, dateSystem, filterVisual),
     getFilterDateDomain: (column) => getAutoFilterDateDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
     getFilterOwner: (column) => resolveFilterOwner(sheet, column),
     getActiveAutoFilter: (column) => {
@@ -395,27 +401,8 @@ export function buildCanvasSheetSnapshot(
       return filter ? structuredClone(filter) : undefined;
     },
     getFilterCriterion: (column) => resolveActiveAutoFilter(sheet, column)?.columns[column]?.criterion,
-    getFilterColorDomain: (column) => {
-      const range = resolveActiveAutoFilter(sheet, column)?.range;
-      if (!range || column < range.startColumn || column > range.endColumn) return [];
-      const options = new Map<string, { target: 'cell' | 'font'; color: string }>();
-      for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-        const style = filterVisual(row, column, readFilterCell(row, column)).style;
-        if (style?.background) options.set(`cell:${style.background}`, { target: 'cell', color: style.background });
-        if (style?.textColor) options.set(`font:${style.textColor}`, { target: 'font', color: style.textColor });
-      }
-      return [...options.values()].sort((left, right) => `${left.target}:${left.color}`.localeCompare(`${right.target}:${right.color}`));
-    },
-    getFilterIconDomain: (column) => {
-      const range = resolveActiveAutoFilter(sheet, column)?.range;
-      if (!range || column < range.startColumn || column > range.endColumn) return [];
-      const options = new Map<string, { iconSet: string; iconId: number }>();
-      for (let row = range.startRow + 1; row <= range.endRow; row += 1) {
-        const icon = filterVisual(row, column, readFilterCell(row, column)).nativeIcon;
-        if (icon) options.set(`${icon.iconSet}:${icon.iconId}`, { ...icon });
-      }
-      return [...options.values()].sort((left, right) => `${left.iconSet}:${left.iconId}`.localeCompare(`${right.iconSet}:${right.iconId}`));
-    },
+    getFilterColorDomain: (column) => getAutoFilterColorDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
+    getFilterIconDomain: (column) => getAutoFilterIconDomain(sheet, column, readFilterCell, dateSystem, filterVisual),
     sheetTables: [...sheet.sheetTables],
     tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
     ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,

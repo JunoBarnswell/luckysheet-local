@@ -9,6 +9,8 @@ import {
   createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
   getAutoFilterDateDomain,
+  getAutoFilterDomainDescriptor,
+  validateFilterCriterionAgainstDomain,
   registerSheetCommands,
   normalizeAutoFilterModel,
   normalizeDataValidationRule,
@@ -307,10 +309,68 @@ test('AutoFilter date domain remains typed instead of parsing display strings', 
     columns: { 0: { column: 0, showButton: true, hiddenButton: false } },
   });
   const domain = getAutoFilterDateDomain(sheet, 0);
-  assert.equal(domain.length, 1);
-  assert.equal(domain[0]?.value, '2026-08-15T13:14:15Z');
-  const expected = new Date('2026-08-15T13:14:15Z');
-  assert.deepEqual(domain[0]?.group, { year: expected.getFullYear(), month: expected.getMonth() + 1, day: expected.getDate(), hour: expected.getHours(), minute: expected.getMinutes(), second: expected.getSeconds() });
+  assert.equal(domain.length, 0, 'text that resembles an ISO date remains text');
+  sheet.cells.set(1, 0, { value: 46249.5515625, numberFormat: 'yyyy-mm-dd hh:mm:ss' });
+  const numericDomain = getAutoFilterDateDomain(sheet, 0);
+  assert.equal(numericDomain.length, 1);
+  assert.equal(numericDomain[0]?.value, 46249.5515625);
+  const expected = new Date(Date.UTC(1899, 11, 30) + 46249.5515625 * 86_400_000);
+  assert.deepEqual(numericDomain[0]?.group, { year: expected.getFullYear(), month: expected.getMonth() + 1, day: expected.getDate(), hour: expected.getHours(), minute: expected.getMinutes(), second: expected.getSeconds() });
+});
+
+test('FilterDomainDescriptor uses resolved formula values and exposes only compatible families', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Amount' });
+  sheet.cells.set(1, 0, { value: '=A1+1', formula: '=A1+1', formulaValue: 42 });
+  sheet.cells.set(2, 0, { value: 7 });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false } },
+  });
+  const descriptor = getAutoFilterDomainDescriptor(sheet, 0);
+  assert.deepEqual(descriptor.values, [7, 42]);
+  assert.equal(descriptor.dominantType, 'number');
+  assert.deepEqual(descriptor.supportedFamilies, ['values', 'number']);
+  assert.equal(descriptor.values.map(String).includes('=A1+1'), false);
+});
+
+test('FilterDomainDescriptor date hierarchy requires numeric values with canonical date format', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Date' });
+  sheet.cells.set(1, 0, { value: '2026-08-15' });
+  sheet.cells.set(2, 0, { value: 46249.5, numberFormat: 'yyyy-mm-dd hh:mm:ss' });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false } },
+  });
+  const descriptor = getAutoFilterDomainDescriptor(sheet, 0);
+  assert.equal(descriptor.dominantType, 'mixed');
+  assert.equal(descriptor.dateDomain.length, 1);
+  assert.equal(descriptor.dateHierarchy.includes('year'), true);
+  assert.equal(descriptor.supportedFamilies.includes('date'), false, 'mixed text/date values do not expose date operators');
+  assert.throws(() => validateFilterCriterionAgainstDomain(descriptor, { kind: 'dynamic', type: 'nextQuarter' }), /FILTER_DOMAIN_MISMATCH/);
+  assert.throws(() => validateFilterCriterionAgainstDomain(descriptor, { kind: 'custom', join: 'and', conditions: [{ operator: 'contains', value: '2026' }] }), /FILTER_OPERATOR_MISMATCH|FILTER_DOMAIN_MISMATCH/);
+});
+
+test('FilterDomainDescriptor rejects visual criteria without a resolved visual domain', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Value' });
+  sheet.cells.set(1, 0, { value: 1 });
+  sheet.autoFilter = normalizeAutoFilterModel({
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: { 0: { column: 0, showButton: true, hiddenButton: false } },
+  });
+  const descriptor = getAutoFilterDomainDescriptor(sheet, 0);
+  assert.deepEqual(descriptor.colorDomain, []);
+  assert.deepEqual(descriptor.iconDomain, []);
+  assert.throws(() => validateFilterCriterionAgainstDomain(descriptor, { kind: 'color', target: 'cell', dxfId: -1, style: { background: '#fff' } }), /FILTER_DOMAIN_MISMATCH/);
+  assert.throws(() => validateFilterCriterionAgainstDomain(descriptor, { kind: 'icon', iconSet: '3TrafficLights1', iconId: 1 }), /FILTER_DOMAIN_MISMATCH/);
 });
 
 test('AutoFilter rejects malformed date-group shapes instead of guessing', () => {
@@ -336,10 +396,11 @@ test('AutoFilter evaluates Top10 and dynamic date criteria against canonical row
   assert.deepEqual([...computeFilterHiddenRows(sheet)].sort((a, b) => a - b), [2, 4]);
 
   const today = new Date();
-  const isoToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const epoch = Date.UTC(1899, 11, 30);
+  const serialToday = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - epoch) / 86_400_000;
   sheet.cells.set(0, 0, { value: 'Date' });
-  sheet.cells.set(1, 0, { value: isoToday });
-  sheet.cells.set(2, 0, { value: '2000-01-01' });
+  sheet.cells.set(1, 0, { value: serialToday, numberFormat: 'yyyy-mm-dd' });
+  sheet.cells.set(2, 0, { value: 36526, numberFormat: 'yyyy-mm-dd' });
   sheet.autoFilter = normalizeAutoFilterModel({
     sheetId: sheet.id,
     range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },

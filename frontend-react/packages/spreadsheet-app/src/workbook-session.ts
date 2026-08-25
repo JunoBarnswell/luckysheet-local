@@ -60,6 +60,8 @@ import {
   parseTsv,
   resolveActiveAutoFilter,
   resolveFilterOwner,
+  getAutoFilterDomainDescriptor,
+  validateFilterCriterionAgainstDomain,
   validationList,
   type ClipboardPayload,
   type PasteSpecialSpec,
@@ -3363,6 +3365,18 @@ export class WorkbookSession {
   applyFilter(column: number, patch: { criterion?: FilterCriterion }): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const activeFilter = resolveActiveAutoFilter(sheet, column);
+    if (patch.criterion && !activeFilter && (patch.criterion.kind === 'color' || patch.criterion.kind === 'icon')) {
+      throw new Error('FILTER_DOMAIN_MISMATCH: visual criteria require an active resolved color/icon domain');
+    }
+    if (patch.criterion && activeFilter) {
+      const descriptor = getAutoFilterDomainDescriptor(
+        sheet,
+        column,
+        (row, currentColumn) => this.readResolvedCell(sheet, row, currentColumn),
+        this.nativePackage?.dateSystem ?? '1900',
+      );
+      validateFilterCriterionAgainstDomain(descriptor, patch.criterion);
+    }
     const previousColumn = activeFilter?.columns[column];
     const hasPreservedFilterChildren = Boolean(previousColumn?.preservedXml && typeof previousColumn.preservedXml === 'object'
       && !Array.isArray(previousColumn.preservedXml) && Array.isArray((previousColumn.preservedXml as Record<string, unknown>).filterChildren));
