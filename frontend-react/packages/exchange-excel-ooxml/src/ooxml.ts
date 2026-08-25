@@ -631,6 +631,7 @@ function materializeFilterMetadata(
 ): void {
   const inRange = (range: RangeRef, row: number, column: number): boolean => range.sheetId === sheetId
     && row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn;
+  const numericValuesByRange = new Map<RangeRef, number[]>();
   for (const filter of filters) {
     for (const column of Object.values(filter.columns)) {
       const criterion = column.criterion;
@@ -649,7 +650,11 @@ function materializeFilterMetadata(
           const numeric = typeof cell.value === 'number' ? cell.value : Number(cell.value);
           if (rule && Number.isFinite(numeric)) {
             const ruleRange = rule.ranges.find((range) => inRange(range, row, column.column));
-            const values = ruleRange ? numericValues(cells, ruleRange) : [];
+            let values: number[] = [];
+            if (ruleRange) {
+              values = numericValuesByRange.get(ruleRange) ?? numericValues(cells, ruleRange);
+              numericValuesByRange.set(ruleRange, values);
+            }
             const thresholds = resolveIconThresholds(rule.iconThresholds, values);
             const iconId = thresholds.reduce((identity, threshold, index) => numeric >= threshold ? index : identity, 0);
             cell.filterMetadata = { ...cell.filterMetadata, icon: { iconSet: criterion.iconSet, iconId } };
@@ -662,9 +667,13 @@ function materializeFilterMetadata(
 
 function numericValues(cells: Record<string, Record<string, CellData>>, range: RangeRef): number[] {
   const values: number[] = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const value = cells[String(row)]?.[String(column)]?.value;
+  for (const [rowKey, rowCells] of Object.entries(cells)) {
+    const row = Number(rowKey);
+    if (row < range.startRow || row > range.endRow) continue;
+    for (const [columnKey, cell] of Object.entries(rowCells)) {
+      const column = Number(columnKey);
+      if (column < range.startColumn || column > range.endColumn) continue;
+      const value = cell.value;
       const numeric = typeof value === 'number' ? value : Number(value);
       if (Number.isFinite(numeric)) values.push(numeric);
     }
