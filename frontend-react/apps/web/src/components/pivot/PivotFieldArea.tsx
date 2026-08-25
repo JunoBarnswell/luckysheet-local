@@ -40,6 +40,7 @@ export interface PivotFieldAreaProps {
   valueFields?: readonly PivotValueField[];
   onValueChange?: (value: PivotValueField) => void;
   locale: Locale;
+  className?: string;
 }
 
 const icons: Record<Area, 'filter' | 'columns' | 'rows' | 'calculator'> = { filters: 'filter', columns: 'columns', rows: 'rows', values: 'calculator' };
@@ -126,7 +127,7 @@ function groupOptions(locale: Locale, field: AreaItem, onGroup?: PivotFieldAreaP
     : null;
 }
 
-export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
+export function PivotFieldArea({ area, className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
   const items: AreaItem[] = fieldIds.map((fieldId, index) => {
     const field = fields.find((candidate) => candidate.fieldId === fieldId);
     return {
@@ -138,15 +139,15 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
     };
   });
   return (
-    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className="min-w-0 border-[#bdbdbd] bg-white">
-      <Inline gap="xs" className="h-8 px-2">
+    <Box as="section" aria-label={`${pivotText(locale, area)} field area`} className={`flex min-h-0 min-w-0 flex-1 flex-col border-[#bdbdbd] bg-white ${className ?? ''}`}>
+      <Inline gap="xs" className="h-8 shrink-0 px-2">
         <Icon name={icons[area]} size="xs" className="text-accent" />
         <Text size="sm" weight="medium">{pivotText(locale, area)}</Text>
       </Inline>
       <FieldDropZone<AreaItem>
         disabled={disabled}
-        emptyLabel=""
-        className="h-[92px] overflow-auto rounded-none border-0 bg-white p-1"
+        emptyLabel={pivotText(locale, 'dragFieldsHere')}
+        className="min-h-20 flex-1 overflow-auto rounded-none border-0 bg-white p-1"
         items={items}
         onDropItem={onDrop}
         renderItem={(field) => (
@@ -173,6 +174,7 @@ export function PivotFieldArea({ area, disabled = false, fieldIds, fields, filte
               {({ close }) => (
                 <Inline gap="xs" className="p-1">
                    <Stack gap="xs" className="min-w-48 p-1">
+                     <Text size="xs" weight="semibold">{area === 'values' ? pivotText(locale, 'valueSettings') : pivotText(locale, 'fieldSettings')}</Text>
                      <Inline gap="xs">
                         <Button aria-label={pivotText(locale, 'moveUp')} disabled={field.index === 0} icon="arrow-up" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.fieldId, field.index, -1); close(); }} />
                         <Button aria-label={pivotText(locale, 'moveDown')} disabled={field.index === items.length - 1} icon="arrow-down" iconOnly size="xs" variant="ghost" onClick={() => { onMoveByKeyboard(field.fieldId, field.index, 1); close(); }} />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Box, Button, CheckToggle, DropdownMenu, Inline, Panel, Select, Stack, StatePanel, Text } from '@react-sheets/ui-system';
 import type { PivotFieldDefinition, PivotFieldPlacement, PivotLayout, PivotModel, PivotValueField } from '@react-sheets/core-model';
 import type { Locale } from '../../i18n';
@@ -9,7 +9,8 @@ import { PivotFieldCatalog } from '../pivot/PivotFieldCatalog';
 import { PivotSlicer } from '../pivot/PivotSlicer';
 import { PivotTimeline } from '../pivot/PivotTimeline';
 import { pivotText } from '../pivot/pivot-localization';
-import type { PivotFieldArea as Area, PivotManualFilterState, PivotPanelCallbacks, PivotPanelSlots, PivotPanelState, PivotSlicerControl, PivotTimelineControl } from '../pivot/pivot-contract';
+import { PIVOT_FIELD_PANE_LAYOUTS, type PivotFieldArea as Area, type PivotFieldPaneLayout, type PivotManualFilterState, type PivotPanelCallbacks, type PivotPanelSlots, type PivotPanelState, type PivotSlicerControl, type PivotTimelineControl } from '../pivot/pivot-contract';
+import type { PivotMessageKey } from '../pivot/pivot-localization';
 
 export interface PivotPanelProps {
   locale: Locale;
@@ -57,11 +58,22 @@ function placementMap(layout: PivotLayout): ReadonlyMap<string, PivotFieldPlacem
   return new Map([...layout.rows, ...layout.columns].map((placement) => [placement.fieldId, placement]));
 }
 
+const fieldPaneLayoutLabels: Record<PivotFieldPaneLayout, PivotMessageKey> = {
+  stacked: 'stacked',
+  'side-by-side': 'sideBySide',
+  'areas-2x2': 'areas2x2',
+  'areas-1x4': 'areas1x4',
+  'fields-only': 'fieldsOnly',
+  'areas-only': 'areasOnly',
+};
+
 export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFields, locale, onClose, pivot, pivotList = [], slicerControls = [], slots, state, timelineControls = [] }: PivotPanelProps) {
   const fields = suppliedFields ?? pivot?.fieldCatalog.fields ?? [];
   const [delayUpdate, setDelayUpdate] = useState(false);
   const [draft, setDraft] = useState<PivotLayout | null>(pivot ? cloneLayout(pivot.layout) : null);
   const [dirty, setDirty] = useState(false);
+  const [fieldPaneLayout, setFieldPaneLayout] = useState<PivotFieldPaneLayout>(() => typeof window !== 'undefined' && window.innerWidth >= 1280 ? 'side-by-side' : 'stacked');
+  const [fieldPaneSplit, setFieldPaneSplit] = useState(42);
   useEffect(() => { setDraft(pivot ? cloneLayout(pivot.layout) : null); setDirty(false); }, [pivot?.id]);
   const layout = delayUpdate && draft ? draft : pivot?.layout;
   const disabled = Boolean(state?.disabled || state?.loading || state?.error || !pivot || !layout);
@@ -73,6 +85,30 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
   const selected = useMemo(() => new Set([...filters, ...columns, ...rows, ...values.map((field) => field.fieldId)]), [columns, filters, rows, values]);
   const currentFilterStates = useMemo(() => layout ? filterStates(layout) : {}, [layout]);
   const placements = useMemo(() => layout ? placementMap(layout) : new Map<string, PivotFieldPlacement>(), [layout]);
+  const showFields = fieldPaneLayout !== 'areas-only';
+  const showAreas = fieldPaneLayout !== 'fields-only';
+  const sideBySide = fieldPaneLayout === 'side-by-side';
+
+  const beginSplitDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    event.preventDefault();
+    const startPosition = sideBySide ? event.clientX : event.clientY;
+    const startSplit = fieldPaneSplit;
+    const parent = event.currentTarget.parentElement;
+    const update = (moveEvent: globalThis.PointerEvent) => {
+      const bounds = parent?.getBoundingClientRect();
+      if (!bounds) return;
+      const available = sideBySide ? bounds.width : bounds.height;
+      if (available <= 0) return;
+      const position = sideBySide ? moveEvent.clientX : moveEvent.clientY;
+      setFieldPaneSplit(Math.max(25, Math.min(70, startSplit + ((position - startPosition) / available) * 100)));
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', update);
+      window.removeEventListener('pointerup', stop);
+    };
+    window.addEventListener('pointermove', update);
+    window.addEventListener('pointerup', stop, { once: true });
+  };
 
   if (state?.loading) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="loading" description={pivotText(locale, 'loading')} /></Panel>;
   if (state?.error) return <Panel className="h-full border-0 shadow-none"><StatePanel kind="error" description={state.error || pivotText(locale, 'error')} /></Panel>;
@@ -130,11 +166,40 @@ export function PivotPanel({ activePivotId, callbacks, fieldCatalog: suppliedFie
         <Inline gap="sm"><Box className="rounded-full border-2 border-[#a529ff] px-3 py-0.5 text-[#8b20e8]"><Text size="sm" weight="bold">AI</Text></Box>{onClose ? <Button aria-label={pivotText(locale, 'close')} icon="x" iconOnly size="sm" variant="ghost" onClick={onClose} /> : null}</Inline>
       </Inline>
       <Stack gap="sm" className="min-h-0 flex-1 px-4 pb-2">
-        <Text size="sm">{pivotText(locale, 'addFields')}</Text>
-        <PivotFieldCatalog locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(fieldId, area) => changeArea(fieldId, area, idsFor(area).length)} />
-        <Text size="sm">{pivotText(locale, 'dragFields')}</Text>
-        <Box className="grid min-h-[260px] flex-1 grid-cols-2 grid-rows-2 border border-[#bdbdbd]">
-          {(['filters', 'columns', 'rows', 'values'] as const).map((area, index) => <Box key={area} className={`${index % 2 === 0 ? 'border-r border-[#bdbdbd]' : ''}${index < 2 ? ' border-b border-[#bdbdbd]' : ''}`}><PivotFieldArea locale={locale} area={area} fields={fields} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onRemove={(fieldId) => removeFromArea(fieldId)} onMoveByKeyboard={(fieldId, itemIndex, direction) => changeArea(fieldId, area, itemIndex + direction)} onSort={sort} onValueChange={valueChange} /></Box>)}
+        <Inline gap="sm" className="h-9 shrink-0 justify-between">
+          <Text size="sm" weight="medium">{pivotText(locale, 'fieldPaneLayout')}</Text>
+          <Select aria-label={pivotText(locale, 'fieldPaneLayout')} sizeVariant="sm" value={fieldPaneLayout} onChange={(event) => setFieldPaneLayout(event.target.value as PivotFieldPaneLayout)}>
+            {PIVOT_FIELD_PANE_LAYOUTS.map((mode) => <option key={mode} value={mode}>{pivotText(locale, fieldPaneLayoutLabels[mode])}</option>)}
+          </Select>
+        </Inline>
+        <Box className={`min-h-0 min-w-0 flex flex-1 ${sideBySide ? 'flex-row' : 'flex-col'} gap-2`}>
+          {showFields ? (
+            <Box className="min-h-0 min-w-0 flex flex-col" style={sideBySide ? { width: `${showAreas ? fieldPaneSplit : 100}%` } : { flexBasis: `${showAreas ? fieldPaneSplit : 100}%` }}>
+              <Text size="sm" className="mb-1 shrink-0">{pivotText(locale, 'addFields')}</Text>
+              <PivotFieldCatalog className="flex-1" locale={locale} fields={fields} selectedFieldIds={selected} disabled={disabled} onToggle={toggle} onToggleVisible={toggleVisible} onDragField={(event, field) => event.dataTransfer.setData('application/x-pivot-field', field.fieldId)} onKeyboardAssign={(fieldId, area) => changeArea(fieldId, area, idsFor(area).length)} />
+            </Box>
+          ) : null}
+          {showFields && showAreas ? (
+            <Box
+              role="separator"
+              aria-label={pivotText(locale, 'paneResize')}
+              aria-orientation={sideBySide ? 'vertical' : 'horizontal'}
+              aria-valuemin={25}
+              aria-valuemax={70}
+              aria-valuenow={Math.round(fieldPaneSplit)}
+              tabIndex={0}
+              className={`${sideBySide ? 'h-full w-2 cursor-col-resize' : 'h-2 w-full cursor-row-resize'} shrink-0 touch-none rounded bg-slate-100 hover:bg-blue-100`}
+              onPointerDown={beginSplitDrag}
+            />
+          ) : null}
+          {showAreas ? (
+            <Box className="min-h-0 min-w-0 flex flex-1 flex-col">
+              <Text size="sm" className="mb-1 shrink-0">{pivotText(locale, 'dragFields')}</Text>
+              <Box className={`${fieldPaneLayout === 'areas-1x4' ? 'flex flex-col' : 'grid grid-cols-2 grid-rows-2'} min-h-0 flex-1 gap-1`}>
+                {(['filters', 'columns', 'rows', 'values'] as const).map((area) => <Box key={area} className="min-h-0 min-w-0 border border-[#bdbdbd]"><PivotFieldArea className="border-0" locale={locale} area={area} fields={fields} fieldIds={idsFor(area)} placements={placements} filterStates={currentFilterStates} valueFields={values} disabled={disabled} onDrop={drop(area)} onFilter={filter} onGroup={group} onRemove={(fieldId) => removeFromArea(fieldId)} onMoveByKeyboard={(fieldId, itemIndex, direction) => changeArea(fieldId, area, itemIndex + direction)} onSort={sort} onValueChange={valueChange} /></Box>)}
+              </Box>
+            </Box>
+          ) : null}
         </Box>
         <Inline gap="sm" className="h-9 justify-between">
           <CheckToggle label={pivotText(locale, 'delayUpdate')} checked={delayUpdate} onChange={(event) => { setDelayUpdate(event.target.checked); setDraft(cloneLayout(pivot.layout)); setDirty(false); }} />
