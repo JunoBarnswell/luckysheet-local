@@ -130,6 +130,8 @@ export interface NativePivotTableField {
   nonAutoSortDefault?: boolean;
   autoSortScope?: NativePivotAutoSortScope;
   collapsedItemIndexes?: number[];
+  /** Native pivotField/items entries with h="1"; mapped to a canonical manual filter. */
+  hiddenItemIndexes?: number[];
   subtotal?: { mode: 'automatic' | 'none' | 'custom'; functions?: string[] };
 }
 
