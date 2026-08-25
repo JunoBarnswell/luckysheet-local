@@ -1752,7 +1752,10 @@ function mapNativePivotFilters(
     const scope = pageFieldIndexes.has(filter.field) ? 'report' as const : 'field' as const;
     const condition = (operator: NonNullable<Extract<PivotLayout['filters'][number], { kind: 'condition' }>['operator']>, conditionValue: PivotScalar = value ?? null, withMeasure = false, upperValue: PivotScalar | undefined = filter.value2, dynamic: PivotDynamicDateFilter | undefined = undefined): void => {
       if (!targetFieldId || (withMeasure && !measureFieldId)) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
-      if (withMeasure) mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, ...(measureFieldId ? { valueId: measureFieldId } : {}), operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
+      if (withMeasure) {
+        if (!measureFieldId) { preserved.push({ fieldIndex: filter.field, type: filter.type, attributes: { ...filter.attributes } }); return; }
+        mapped.push({ kind: 'condition', family: 'value', fieldId: targetFieldId, valueId: measureFieldId, operator: operator as PivotValueFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
+      }
       else if (type.startsWith('date')) mapped.push({ kind: 'condition', family: 'date', fieldId: targetFieldId, operator: operator as PivotDateFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), ...(dynamic === undefined ? {} : { dynamic }), scope, ...(filter.wholeDay === undefined ? {} : { wholeDay: filter.wholeDay }) });
       else mapped.push({ kind: 'condition', family: 'label', fieldId: targetFieldId, operator: operator as PivotLabelFilterOperator, value: conditionValue, ...(upperValue === undefined ? {} : { value2: upperValue }), scope });
     };

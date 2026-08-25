@@ -571,6 +571,7 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
       const valueOperators = ['equals', 'not-equals', 'greater-than', 'greater-or-equal', 'less-than', 'less-or-equal', 'between', 'not-between'];
       const operators = filter.family === 'label' ? labelOperators : filter.family === 'date' ? dateOperators : valueOperators;
       if (!operators.includes(String(filter.operator))) throw new Error('Pivot condition operator is invalid for its family');
+      if (filter.family === 'value' && !isNonEmptyString(filter.valueId)) throw new Error('Pivot value filter requires valueId');
       if (filter.family !== 'value' && filter.valueId !== undefined) throw new Error('Pivot condition valueId is only valid for value filters');
       validatePivotScalar(filter.value, 'Pivot condition value');
       if (filter.value2 !== undefined) validatePivotScalar(filter.value2, 'Pivot condition upper value');

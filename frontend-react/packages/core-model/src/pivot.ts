@@ -382,8 +382,8 @@ export interface PivotValueFilter {
   kind: 'condition';
   family: 'value';
   fieldId: string;
-  /** Optional measure identity for native value filters. */
-  valueId?: string;
+  /** Values placement identity whose aggregate is compared for each Pivot item. */
+  valueId: string;
   scope?: 'report' | 'field';
   operator: PivotValueFilterOperator;
   value: PivotScalar;
@@ -963,7 +963,10 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
         throw new Error(`Pivot ${input.id} top-items filter threshold is invalid`);
       }
     }
-    if (filter.kind === 'condition' && filter.valueId !== undefined && (!valueIds.has(filter.valueId) || filter.family !== 'value')) {
+    if (filter.kind === 'condition' && filter.family === 'value' && (!filter.valueId || !valueIds.has(filter.valueId))) {
+      throw new Error(`Pivot ${input.id} value filter requires a valid Values placement`);
+    }
+    if (filter.kind === 'condition' && filter.family !== 'value' && filter.valueId !== undefined) {
       throw new Error(`Pivot ${input.id} condition filter references an invalid Values placement`);
     }
     const identity = pivotFilterIdentity(filter);

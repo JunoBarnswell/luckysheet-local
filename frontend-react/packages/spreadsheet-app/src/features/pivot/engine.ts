@@ -760,10 +760,11 @@ function normalizeFilter(filter: PivotFilter, catalog: PivotFieldCatalog, valueI
     return { ...filter, fieldId, valueId: filter.valueId };
   }
   if (!['label', 'date', 'value'].includes(filter.family)) throw new Error(`Pivot condition filter family is invalid: ${fieldId}`);
-  if (filter.valueId !== undefined) {
-    if (filter.family !== 'value' || !valueIds.has(filter.valueId)) throw new Error(`Unknown Pivot Values placement: ${filter.valueId}`);
+  if (filter.family === 'value') {
+    if (!filter.valueId || !valueIds.has(filter.valueId)) throw new Error(`Unknown Pivot Values placement: ${filter.valueId ?? '(missing)'}`);
     return { ...filter, fieldId, valueId: filter.valueId };
   }
+  if (filter.valueId !== undefined) throw new Error(`Pivot condition valueId is only valid for value filters: ${fieldId}`);
   return { ...filter, fieldId };
 }
 
@@ -1344,20 +1345,23 @@ function groupedDateFilterMatches(value: PivotScalar, filter: Extract<PivotFilte
   return filter.operator === 'between' ? inside : !inside;
 }
 
+type PivotSourceFilter = Exclude<PivotFilter, { kind: 'condition'; family: 'value' }>;
+
 function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Collator, definition?: PivotDefinition): boolean {
-  const fieldId = filter.fieldId;
-  const valueSourceId = filter.kind === 'condition' && filter.valueId !== undefined && definition
-    ? valueSourceFieldId(filter.valueId, definition.layout.values)
-    : undefined;
-  const rawValue = filter.kind === 'condition' && filter.valueId
-    ? row.values[valueSourceId!] ?? null
-    : row.values[fieldId] ?? null;
-  const placement = definition ? groupedPlacementForFilter(definition, filter) : undefined;
+  if (filter.kind === 'condition' && filter.family === 'value') throw new Error('Pivot value filters must be evaluated against aggregated Pivot items');
+  const sourceFilter = filter as PivotSourceFilter;
+  const fieldId = sourceFilter.fieldId;
+  const rawValue = row.values[fieldId] ?? null;
+  const placement = definition ? groupedPlacementForFilter(definition, sourceFilter) : undefined;
   const value = placement?.group ? grouped(rawValue, placement.group) : rawValue;
-  if (filter.kind === 'top-items') return true;
-  if (filter.kind === 'manual') return manualFilterMatches(rawValue, filter, placement?.group);
-  if (filter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, filter, placement.group, collator) : dateFilterMatches(value, filter);
-  if (filter.family === 'label') return labelFilterMatches(value, filter, collator);
+  if (sourceFilter.kind === 'top-items') return true;
+  if (sourceFilter.kind === 'manual') return manualFilterMatches(rawValue, sourceFilter, placement?.group);
+  if (sourceFilter.family === 'date') return placement?.group ? groupedDateFilterMatches(rawValue, sourceFilter, placement.group, collator) : dateFilterMatches(value, sourceFilter);
+  if (sourceFilter.family === 'label') return labelFilterMatches(value, sourceFilter, collator);
+  throw new Error('Unsupported Pivot source filter family');
+}
+
+function matchesValueFilter(value: PivotScalar, filter: Extract<PivotFilter, { kind: 'condition'; family: 'value' }>, collator: Intl.Collator): boolean {
   const leftNumber = pivotNumericValue(value);
   const rightNumber = pivotNumericValue(filter.value);
   const upperNumber = filter.value2 === undefined ? null : pivotNumericValue(filter.value2);
@@ -1373,6 +1377,66 @@ function matchesFilter(row: SourceRow, filter: PivotFilter, collator: Intl.Colla
     case 'not-between': return filter.value2 !== undefined && !(order >= 0 && (leftNumber != null && upperNumber != null ? leftNumber <= upperNumber : compare(value, filter.value2, undefined, collator) <= 0));
     default: return false;
   }
+}
+
+/**
+ * Apply aggregate value predicates to Pivot item buckets.
+ *
+ * Label/manual/date predicates intentionally run before this stage because
+ * they restrict source members. A value predicate is different: its left
+ * operand is the selected Values placement's configured aggregate for one
+ * item, never a raw source-row member. The preceding row/column placements
+ * form the parent context for field-scoped filters; report-scoped filters
+ * aggregate the target field globally.
+ */
+function applyValueFilters(
+  rows: SourceRow[],
+  filters: readonly PivotFilter[],
+  definition: PivotDefinition,
+  calculatedFields: CalculatedFieldEvaluator,
+  collator: Intl.Collator,
+): SourceRow[] {
+  const source = rows;
+  let result = rows;
+  for (const rawFilter of filters) {
+    if (rawFilter.kind !== 'condition' || rawFilter.family !== 'value') continue;
+    const filter = rawFilter;
+    if (!filter.valueId) throw new Error(`Pivot value filter requires valueId for ${filter.fieldId}`);
+    const valueField = definition.layout.values.find((entry) => entry.valueId === filter.valueId);
+    if (!valueField) throw new Error(`Unknown Pivot Values placement: ${filter.valueId}`);
+
+    const rowPlacements = definition.layout.rows.filter((placement) => placement.fieldId === filter.fieldId);
+    const columnPlacements = definition.layout.columns.filter((placement) => placement.fieldId === filter.fieldId);
+    const fieldScoped = (filter.scope ?? 'report') === 'field';
+    if (fieldScoped && rowPlacements.length + columnPlacements.length !== 1) {
+      throw new Error(`Pivot value filter field must resolve to exactly one axis placement: ${filter.fieldId}`);
+    }
+    const axis = !fieldScoped ? undefined : rowPlacements.length === 1 && columnPlacements.length === 0
+      ? definition.layout.rows
+      : columnPlacements.length === 1 && rowPlacements.length === 0
+        ? definition.layout.columns
+        : undefined;
+    const targetIndex = axis?.findIndex((placement) => placement.fieldId === filter.fieldId) ?? -1;
+    const contextPlacements = axis && targetIndex >= 0 ? axis.slice(0, targetIndex + 1) : undefined;
+    const targetPlacement = [...rowPlacements, ...columnPlacements][0];
+    const buckets = new Map<string, SourceRow[]>();
+    for (const row of source) {
+      const keyValues = contextPlacements?.map((placement) => grouped(row.values[placement.fieldId] ?? null, placement.group))
+        ?? [grouped(row.values[filter.fieldId] ?? null, targetPlacement?.group)];
+      const key = JSON.stringify(keyValues.map(createPivotMemberKey));
+      const bucket = buckets.get(key) ?? [];
+      bucket.push(row);
+      buckets.set(key, bucket);
+    }
+    const aggregateField: PivotResultValueField = { ...valueField, sourceFieldId: valueField.fieldId };
+    const accepted = new Set<SourceRow>();
+    for (const bucket of buckets.values()) {
+      const aggregate = resultValue(bucket, aggregateField, valueField.summarizeBy, calculatedFields);
+      if (matchesValueFilter(aggregate, filter, collator)) bucket.forEach((row) => accepted.add(row));
+    }
+    result = result.filter((row) => accepted.has(row));
+  }
+  return result;
 }
 
 function topItems(
@@ -1486,6 +1550,7 @@ function slicerItemProjection(
   drawingId: string,
   payload: PivotSlicerDrawingPayload,
   collator: Intl.Collator,
+  calculatedFields: CalculatedFieldEvaluator,
 ): PivotSlicerItemProjection[] {
   const fieldValues = rows.map((row) => row.values[payload.fieldId] ?? null);
   const members = new Map<string, PivotSlicerItemProjection>();
@@ -1495,9 +1560,9 @@ function slicerItemProjection(
     if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
   }
   const filteredRows = matchesControls(workbook, rows, pivot, drawingId)
-    .filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator, definition)));
-  const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields, definition.layout.calculatedItems);
-  const availableRows = topItems(filteredRows, definition.layout.filters, definition.layout.values, createCalculatedFieldEvaluator(calculatedPlan), definition);
+    .filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
+  const valueFilteredRows = applyValueFilters(filteredRows, definition.layout.filters, definition, calculatedFields, collator);
+  const availableRows = topItems(valueFilteredRows, definition.layout.filters, definition.layout.values, calculatedFields, definition);
   const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(row.values[payload.fieldId] ?? null))));
   for (const item of members.values()) {
     item.hasData = available.has(pivotMemberKey(item.key));
@@ -1795,7 +1860,8 @@ function computePivotResultFromTable(
   const unknown = references.find((field) => field && !known.has(field));
   if (unknown && rawTable.fields.length) throw new Error(`Unknown pivot field: ${unknown}`);
   let filtered = matchesControls(workbook, rows, pivot);
-  filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items').every((filter) => matchesFilter(row, filter, collator, definition)));
+  filtered = filtered.filter((row) => definition.layout.filters.filter((filter) => filter.kind !== 'top-items' && !(filter.kind === 'condition' && filter.family === 'value')).every((filter) => matchesFilter(row, filter, collator, definition)));
+  filtered = applyValueFilters(filtered, definition.layout.filters, definition, calculatedFields, collator);
   filtered = topItems(filtered, definition.layout.filters, definition.layout.values, calculatedFields, definition);
   const resultFields = resultValueFields(definition.layout);
   const columns = definition.layout.columns.length ? axisGroups(filtered, definition.layout.columns, definition.fieldCatalog, collator, resultFields) : [{ values: [], rows: filtered }];
@@ -1821,7 +1887,7 @@ function computePivotResultFromTable(
   const slicerItems: Record<string, PivotSlicerItemProjection[]> = {};
   for (const control of controls) {
     if (control.payload.kind !== 'slicer') continue;
-    slicerItems[control.drawingId] = slicerItemProjection(workbook, pivot, definition, rows, control.drawingId, control.payload, collator);
+    slicerItems[control.drawingId] = slicerItemProjection(workbook, pivot, definition, rows, control.drawingId, control.payload, collator, calculatedFields);
   }
   if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
   applyShowAs(tree, resultFields);
