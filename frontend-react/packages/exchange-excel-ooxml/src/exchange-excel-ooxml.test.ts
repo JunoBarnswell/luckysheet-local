@@ -26,6 +26,7 @@ describe('exchange-excel-ooxml', () => {
         'xl/worksheets/sheet1.xml': [],
       },
       sheetPartById: { 'sheet-1': 'xl/worksheets/sheet1.xml' },
+      dateSystem: '1900',
     });
     assert.equal(graph.caches[0]?.fields[0]?.dataType, 'error');
     assert.deepEqual(graph.caches[0]?.fields[0]?.sharedItems, [{ kind: 'error', code: '#N/A' }]);
@@ -300,13 +301,13 @@ describe('exchange-excel-ooxml', () => {
     });
     const output = loadOpcPackageGraph(exportSnapshotToXlsxBuffer(workbook.snapshot()));
     const cacheXml = strFromU8(output.files['xl/pivotCache/pivotCacheDefinition1.xml']!);
-    assert.match(cacheXml, /<fieldGroup base="0"><rangePr groupBy="months" startNum="45292" endNum="45657"\/>/);
+    assert.match(cacheXml, /<fieldGroup base="0"><rangePr groupBy="months" startDate="2024-01-01T00:00:00.000Z" endDate="2024-12-31T00:00:00.000Z"\/>/);
     assert.match(cacheXml, /<fieldGroup base="1"><rangePr groupBy="range" groupInterval="10" startNum="0" endNum="100"\/>/);
     assert.match(cacheXml, /<fieldGroup base="2"><discretePr count="3"><x v="0"\/><x v="0"\/><x v="1"\/><\/discretePr><groupItems count="2"><s v="AB"\/><s v="C"\/><\/groupItems><\/fieldGroup>/);
     const imported = parseLoadedXlsx(output).snapshot;
     const pivot = imported.sheets[0]?.pivots[0];
     assert.equal(pivot?.layout.rows[0]?.group?.kind, 'date');
-    assert.deepEqual(pivot?.layout.rows[0]?.group, { kind: 'date', unit: 'month', start: 45292, end: 45657 });
+    assert.deepEqual(pivot?.layout.rows[0]?.group, { kind: 'date', unit: 'month', start: '2024-01-01T00:00:00.000Z', end: '2024-12-31T00:00:00.000Z' });
     assert.deepEqual(pivot?.layout.columns[0]?.group, { kind: 'number', interval: 10, start: 0, end: 100 });
     assert.deepEqual(pivot?.layout.rows[1]?.group, { kind: 'manual', groups: [
       { groupId: 'native:cache:1:field:2:group:0', name: 'AB', items: [createPivotMemberKey('A'), createPivotMemberKey('B')] },
