@@ -48,6 +48,7 @@ export interface PivotFieldAreaProps {
   onGroup?: (fieldId: string, group: PivotGroup | undefined) => void;
   onSubtotal?: (fieldId: string, subtotal: PivotSubtotalDefinition) => void;
   valueFields?: readonly PivotValueField[];
+  baseFields?: readonly PivotFieldDefinition[];
   onValueChange?: (value: PivotValueField) => void;
   locale: Locale;
   className?: string;
@@ -199,7 +200,7 @@ function subtotalOptions(locale: Locale, field: AreaItem, placement: PivotFieldP
   );
 }
 
-export function PivotFieldArea({ area, className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
+export function PivotFieldArea({ area, baseFields = [], className, disabled = false, fieldIds, fields, filterStates = {}, locale, onDrop, onFilter, onGroup, onMoveByKeyboard, onRemove, onSort, onSubtotal, onValueChange, placements, valueFields = [] }: PivotFieldAreaProps) {
   const [valueSortFieldIds, setValueSortFieldIds] = useState<Record<string, string>>({});
   const items: AreaItem[] = fieldIds.map((placementId, index) => {
     const value = area === 'values' ? valueFields.find((entry) => entry.valueId === placementId) : undefined;
@@ -264,7 +265,7 @@ export function PivotFieldArea({ area, className, disabled = false, fieldIds, fi
                       {area !== 'values' && area !== 'filters' ? subtotalOptions(locale, field, field.placement, onSubtotal) : null}
                       {area === 'values' && onValueChange ? (() => {
                         const value = valueFields.find((entry) => entry.valueId === field.id);
-                        return value ? <PivotValueEditor locale={locale} fields={fields} value={value} disabled={disabled} onChange={onValueChange} /> : null;
+                        return value ? <PivotValueEditor locale={locale} fields={fields} baseFields={baseFields} value={value} disabled={disabled} onChange={onValueChange} /> : null;
                       })() : null}
                    </Stack>
                 </Inline>

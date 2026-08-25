@@ -30,7 +30,7 @@ import type {
   WorkbookSnapshot,
 } from '@react-sheets/core-model';
 import { canonicalDateToSerial, serialToCanonicalDate } from './date-system';
-import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotNumericValue, pivotSourceIdentity, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
+import { canonicalizePivotDefinition, createPivotMemberKey, DEFAULT_PIVOT_COLLATION, DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError, normalizePivotDisplayOptions, normalizePivotNumberFormat, normalizePivotRefreshPolicy, pivotMemberKey, pivotMemberKeyEquals, pivotNumericValue, pivotSourceIdentity, pivotTimelineInstant, refreshOnSaveForPivotMode } from '@react-sheets/core-model';
 import { child, children, descendants, encodeXml, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
 import type {
   NativePivotCacheDefinition,
@@ -606,7 +606,7 @@ export function mapNativePivotDefinition(
     filters: [...pageFilters, ...manualItemFilters, ...mappedFilters.filters],
     allowMultipleFiltersPerField: table.multipleFieldFilters ?? true,
     collation: { ...DEFAULT_PIVOT_COLLATION },
-    values: table.dataFields.map((data, index) => ({ valueId: nativeValueId(cache.cacheId, index), fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.numberFormat ? { numberFormat: normalizePivotNumberFormat(data.numberFormat) } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs) } : {}) })),
+    values: table.dataFields.map((data, index) => ({ valueId: nativeValueId(cache.cacheId, index), fieldId: fieldId(data.field), summarizeBy: mapAggregate(data.subtotal), ...(data.name ? { displayName: data.name } : {}), ...(data.numberFormat ? { numberFormat: normalizePivotNumberFormat(data.numberFormat) } : {}), ...(data.showDataAs ? { showAs: mapShowAs(data.showDataAs, data.baseField, data.baseItem, fields, cache) } : {}) })),
     subtotalLocation: table.subtotalLocation ?? 'bottom',
     showRowGrandTotals: table.showRowGrandTotals ?? true,
     showColumnGrandTotals: table.showColumnGrandTotals ?? true,
@@ -1295,7 +1295,9 @@ function buildNativeTable(pivot: PivotDefinition, cache: NativePivotCacheDefinit
     ?? pivot.layout.columns.find((placement) => fieldIndex(placement) === index)?.subtotal;
   const dataFields = pivot.layout.values.map((value) => {
     const numberFormat = normalizePivotNumberFormat(value.numberFormat);
-    return { field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(numberFormat ? { numberFormat } : {}), ...(value.showAs && value.showAs.kind !== 'normal' ? { showDataAs: nativeShowAs(value.showAs.kind) } : {}) };
+    const showAs = value.showAs && value.showAs.kind !== 'normal' ? nativeShowAs(value.showAs.kind) : undefined;
+    const base = value.showAs && 'baseFieldId' in value.showAs ? nativeShowAsBase(value.showAs, fieldIndex, cache) : {};
+    return { field: fieldIndex(value), ...(value.displayName ? { name: value.displayName } : {}), subtotal: value.summarizeBy, ...(numberFormat ? { numberFormat } : {}), ...(showAs ? { showDataAs: showAs } : {}), ...base };
   }).filter((value) => value.field >= 0);
   const placementForField = (index: number): PivotFieldPlacement | undefined => [...pivot.layout.rows, ...pivot.layout.columns].find((placement) => fieldIndex(placement) === index);
   const nativeSortForField = (index: number): Pick<NativePivotTableField, 'sortType' | 'nonAutoSortDefault' | 'autoSortScope'> => {
@@ -1485,7 +1487,7 @@ function buildPivotTableXml(table: NativePivotTableDefinition, customNumberForma
   const data = table.dataFields.map((field) => {
     const numFmtId = field.numberFormat === undefined ? undefined : numberFormatId(field.numberFormat, customNumberFormatIds);
     if (field.numberFormat !== undefined && numFmtId === undefined) throw new Error(`Pivot value field numberFormat cannot be serialized: ${field.numberFormat}`);
-    return `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}${numFmtId === undefined ? '' : ` numFmtId="${numFmtId}"`}/>`;
+    return `<dataField fld="${field.field}"${field.name ? ` name="${encodeXml(field.name)}"` : ''} subtotal="${encodeXml(nativeAggregate(field.subtotal))}"${field.showDataAs ? ` showDataAs="${encodeXml(field.showDataAs)}"` : ''}${field.baseField === undefined ? '' : ` baseField="${field.baseField}"`}${field.baseItem === undefined ? '' : ` baseItem="${field.baseItem}"`}${numFmtId === undefined ? '' : ` numFmtId="${numFmtId}"`}/>`;
   }).join('');
   const filters = table.pivotFilters?.length ? `<pivotFilters count="${table.pivotFilters.length}">${table.pivotFilters.map(buildPivotFilterXml).join('')}</pivotFilters>` : '';
   const styleOptions = { ...DEFAULT_PIVOT_STYLE_OPTIONS, ...(table.styleOptions ?? {}) };
@@ -1986,6 +1988,8 @@ function parseDataFields(node: XmlNode | undefined, customNumberFormats: Readonl
       ...(field.attrs.name ? { name: field.attrs.name } : {}),
       ...(field.attrs.subtotal ? { subtotal: field.attrs.subtotal } : {}),
       ...(field.attrs.showDataAs ? { showDataAs: field.attrs.showDataAs } : {}),
+      ...(field.attrs.baseField !== undefined ? { baseField: requiredInteger(field.attrs.baseField, 'dataField.baseField') } : {}),
+      ...(field.attrs.baseItem !== undefined ? { baseItem: requiredSignedInteger(field.attrs.baseItem, 'dataField.baseItem') } : {}),
       ...(numberFormat ? { numberFormat } : {}),
     };
   });
@@ -2069,8 +2073,47 @@ function inferDataType(sheet: SheetSnapshot, range: RangeRef, column: number): P
 }
 function mapAggregate(value: string | undefined): PivotAggregateFunction { switch ((value ?? 'sum').toLowerCase()) { case 'count': return 'count'; case 'countnums': case 'count-numbers': return 'count-numbers'; case 'average': case 'avg': return 'average'; case 'min': return 'min'; case 'max': return 'max'; case 'product': return 'product'; case 'stddev': case 'stdev': return 'stdev'; case 'stddevp': case 'stdevp': return 'stdevp'; case 'var': return 'var'; case 'varp': return 'varp'; case 'distinctcount': case 'distinct-count': return 'distinct-count'; default: return 'sum'; } }
 function nativeAggregate(value: string | undefined): string { switch (value) { case 'count-numbers': return 'countNums'; case 'stdev': return 'stdDev'; case 'stdevp': return 'stdDevp'; case 'distinct-count': return 'distinctCount'; default: return value ?? 'sum'; } }
-function mapShowAs(value: string): NonNullable<PivotValueField['showAs']> { return value === 'percentOfTotal' ? { kind: 'grand-percentage' } : value === 'percentOfRow' ? { kind: 'row-percentage' } : value === 'percentOfCol' ? { kind: 'column-percentage' } : value === 'runningTotal' ? { kind: 'running-total', axis: 'row' } : { kind: 'normal' }; }
-function nativeShowAs(value: NonNullable<PivotValueField['showAs']>['kind']): string | undefined { return value === 'grand-percentage' ? 'percentOfTotal' : value === 'row-percentage' ? 'percentOfRow' : value === 'column-percentage' ? 'percentOfCol' : value === 'running-total' ? 'runningTotal' : undefined; }
+function mapShowAs(value: string, baseField: number | undefined, baseItem: number | undefined, fields: Array<{ fieldId: string }>, cache: NativePivotCacheDefinition): NonNullable<PivotValueField['showAs']> {
+  const kind = value === 'normal' ? 'normal'
+    : value === 'percentOfTotal' || value === 'percent' ? 'grand-percentage'
+    : value === 'percentOfRow' ? 'row-percentage'
+      : value === 'percentOfCol' ? 'column-percentage'
+        : value === 'percentOfParent' ? 'parent-percentage'
+        : value === 'difference' || value === 'differenceFrom' ? 'difference'
+          : value === 'percentDiff' || value === 'percentDifference' ? 'percentage-difference'
+            : value === 'runningTotal' || value === 'runTotal' ? 'running-total'
+              : value === 'percentRunningTotal' || value === 'percentRunTotal' ? 'percentage-running-total'
+                : value === 'index' ? 'index' : undefined;
+  if (!kind) throw new Error(`Unsupported native Pivot showDataAs: ${value}`);
+  if (kind === 'normal' || kind === 'index' || kind === 'grand-percentage' || kind === 'row-percentage' || kind === 'column-percentage' || kind === 'parent-percentage') return { kind };
+  if (kind === 'difference' || kind === 'percentage-difference') {
+    if (baseField === undefined || baseItem === undefined || !fields[baseField]) throw new Error(`Native Pivot ${value} is missing baseField/baseItem`);
+    const shared = cache.fields[baseField]?.sharedItems ?? [];
+    const member = baseItem === -1 ? 'previous' : baseItem === -2 ? 'next' : shared[baseItem];
+    if (member === undefined) throw new Error(`Native Pivot ${value} baseItem ${baseItem} is outside sharedItems`);
+    return { kind, baseFieldId: fields[baseField]!.fieldId, baseItem: member === 'previous' || member === 'next' ? member : createPivotMemberKey(member) };
+  }
+  if (baseField === undefined || !fields[baseField]) throw new Error(`Native Pivot ${value} is missing baseField`);
+  return { kind, baseFieldId: fields[baseField]!.fieldId };
+}
+function nativeShowAs(value: NonNullable<PivotValueField['showAs']>['kind']): string {
+  const native = value === 'grand-percentage' ? 'percentOfTotal' : value === 'row-percentage' ? 'percentOfRow' : value === 'column-percentage' ? 'percentOfCol' : value === 'parent-percentage' ? 'percentOfParent' : value === 'difference' ? 'difference' : value === 'percentage-difference' ? 'percentDiff' : value === 'running-total' ? 'runTotal' : value === 'index' ? 'index' : undefined;
+  if (!native) throw new Error(`Pivot ShowAs ${value} cannot be represented in native OOXML`);
+  return native;
+}
+function nativeShowAsBase(value: Extract<NonNullable<PivotValueField['showAs']>, { baseFieldId: string }>, fieldIndex: (placement: PivotFieldPlacement | PivotValueField) => number, cache: NativePivotCacheDefinition): { baseField: number; baseItem?: number } {
+  const baseField = fieldIndex({ fieldId: value.baseFieldId });
+  if (baseField < 0) throw new Error(`Pivot ShowAs base field is not present in native cache: ${value.baseFieldId}`);
+  if (!('baseItem' in value)) return { baseField };
+  if (value.baseItem === 'previous') return { baseField, baseItem: -1 };
+  if (value.baseItem === 'next') return { baseField, baseItem: -2 };
+  const baseItem = value.baseItem;
+  if (typeof baseItem === 'string') throw new Error(`Pivot ShowAs base item sentinel is invalid: ${baseItem}`);
+  const shared = cache.fields[baseField]?.sharedItems ?? [];
+  const index = shared.findIndex((item) => pivotMemberKeyEquals(createPivotMemberKey(item), baseItem));
+  if (index < 0) throw new Error(`Pivot ShowAs base item is not present in native cache: ${value.baseFieldId}`);
+  return { baseField, baseItem: index };
+}
 function parseRange(value: string, sheetId: string): RangeRef | undefined { const parts = value.split(':'); const start = parseA1(parts[0] ?? ''); const end = parseA1(parts[1] ?? parts[0] ?? ''); return start && end ? { sheetId, startRow: start.row, endRow: end.row, startColumn: start.column, endColumn: end.column } : undefined; }
 function rangeToA1(range: RangeRef): string { const start = a1(range.startRow, range.startColumn); const end = a1(range.endRow, range.endColumn); return start === end ? start : `${start}:${end}`; }
 function deriveLocation(pivot: PivotDefinition, rows: number, rowFields: number, columnFields: number, values: number): string { return `${a1(pivot.target.anchor.row, pivot.target.anchor.column)}:${a1(pivot.target.anchor.row + Math.max(4, rows + rowFields + 2) - 1, pivot.target.anchor.column + Math.max(2, rowFields + columnFields * Math.max(1, values) + 1) - 1)}`; }
@@ -2107,4 +2150,5 @@ function numberOrNull(value: string | undefined): number | null { const number =
 function optionalBoolean(value: string | undefined, key: string): Record<string, boolean> { return value === undefined ? {} : { [key]: parseBoolean(value, key) }; }
 function boolAttr(value: boolean | undefined, name: string): string[] { return value === undefined ? [] : [`${name}="${value ? '1' : '0'}"`]; }
 function requiredInteger(value: string | undefined, label: string): number { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) throw new Error(`${label} must be a non-negative integer`); return number; }
+function requiredSignedInteger(value: string | undefined, label: string): number { const number = Number(value); if (!Number.isSafeInteger(number)) throw new Error(`${label} must be an integer`); return number; }
 function withXmlDeclaration(xml: string): string { return xml.startsWith('<?xml') ? xml : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`; }

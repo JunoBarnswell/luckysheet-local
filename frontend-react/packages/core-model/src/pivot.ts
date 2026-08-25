@@ -552,11 +552,21 @@ export type PivotShowAs =
   | { kind: 'row-percentage' }
   | { kind: 'column-percentage' }
   | { kind: 'parent-percentage' }
-  | { kind: 'difference'; base: 'grand' | 'row' | 'column' | 'parent' }
-  | { kind: 'percentage-difference'; base: 'grand' | 'row' | 'column' | 'parent' }
-  | { kind: 'running-total'; axis: 'row' | 'column' }
-  | { kind: 'rank'; axis: 'row' | 'column'; direction: 'ascending' | 'descending' }
+  /** Compare against one member in one row/column field. */
+  | { kind: 'difference'; baseFieldId: string; baseItem: PivotShowAsBaseItem }
+  | { kind: 'percentage-difference'; baseFieldId: string; baseItem: PivotShowAsBaseItem }
+  /** Accumulate members in the selected row/column field. */
+  | { kind: 'running-total'; baseFieldId: string }
+  | { kind: 'percentage-running-total'; baseFieldId: string }
+  | { kind: 'rank'; baseFieldId: string; direction: 'ascending' | 'descending' }
   | { kind: 'index' };
+
+/**
+ * The only non-member values accepted by Excel's Difference From controls.
+ * Keeping Previous/Next as explicit sentinels prevents a localized UI label
+ * or an untyped string from becoming a persisted member identity.
+ */
+export type PivotShowAsBaseItem = PivotMemberKey | 'previous' | 'next';
 
 export interface PivotValueField {
   /** Stable identity of this Values placement; distinct from the source field. */
@@ -565,8 +575,6 @@ export interface PivotValueField {
   summarizeBy: PivotAggregateFunction;
   displayName?: string;
   numberFormat?: string;
-  baseFieldId?: string;
-  baseItem?: PivotMemberKey | string;
   showAs?: PivotShowAs;
 }
 

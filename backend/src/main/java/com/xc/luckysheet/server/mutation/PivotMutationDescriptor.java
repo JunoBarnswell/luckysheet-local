@@ -41,7 +41,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Set<String> COLLATION_KEYS = Set.of("locale", "sensitivity", "numeric", "caseFirst");
     private static final Set<String> PLACEMENT_KEYS = Set.of("fieldId", "sort", "group", "subtotal");
     private static final Set<String> VALUE_KEYS = Set.of(
-            "valueId", "fieldId", "summarizeBy", "displayName", "numberFormat", "baseFieldId", "baseItem", "showAs"
+            "valueId", "fieldId", "summarizeBy", "displayName", "numberFormat", "showAs"
     );
     private static final Set<String> REFRESH_KEYS = Set.of("mode", "preserveFormatting", "refreshOnLoad");
     private static final Set<String> NATIVE_KEYS = Set.of(
@@ -74,7 +74,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     );
     private static final Set<String> SHOW_AS_KINDS = Set.of(
             "normal", "grand-percentage", "row-percentage", "column-percentage", "parent-percentage",
-            "difference", "percentage-difference", "running-total", "rank", "index"
+            "difference", "percentage-difference", "running-total", "percentage-running-total", "rank", "index"
     );
     private static final Set<String> CALCULATED_ITEM_FUNCTIONS = Set.of(
             "SUM", "COUNT", "AVERAGE", "MIN", "MAX", "IF", "AND", "OR", "NOT", "ROUND", "ABS", "CONCAT", "LEFT", "RIGHT", "LEN"
@@ -573,6 +573,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             validatePlacement(placement, fieldIds, valueIds, "Pivot column field");
             axisFieldIds.add(SnapshotMutationSupport.text((ObjectNode) placement, "fieldId"));
         }
+        for (JsonNode value : layout.path("values")) validateShowAs(value.get("showAs"), fieldIds, axisFieldIds);
         Set<String> filterIdentities = new LinkedHashSet<>();
         Set<String> filterFields = new LinkedHashSet<>();
         for (JsonNode filter : layout.path("filters")) {
@@ -722,9 +723,6 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
         requireField(fieldIds, value);
         if (!AGGREGATORS.contains(SnapshotMutationSupport.text(value, "summarizeBy"))) throw ServiceException.validation("Pivot value aggregator is invalid");
-        if (value.has("baseFieldId")) requireField(fieldIds, value, "baseFieldId");
-        if (value.has("baseItem") && !isScalar(value.get("baseItem")) && !value.get("baseItem").isObject()) throw ServiceException.validation("Pivot baseItem is invalid");
-        validateShowAs(value.get("showAs"));
     }
 
     /**
@@ -1040,7 +1038,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         }
     }
 
-    private void validateShowAs(JsonNode raw) {
+    private void validateShowAs(JsonNode raw, Set<String> fieldIds, Set<String> axisFieldIds) {
         if (raw == null || raw.isNull()) return;
         if (!raw.isObject()) throw ServiceException.validation("Pivot showAs must be an object");
         ObjectNode showAs = (ObjectNode) raw;
@@ -1048,21 +1046,47 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if (!SHOW_AS_KINDS.contains(kind)) throw ServiceException.validation("Pivot showAs kind is invalid");
         switch (kind) {
             case "difference", "percentage-difference" -> {
-                SnapshotMutationSupport.validateKnownKeys(showAs, Set.of("kind", "base"), "Pivot difference showAs");
-                if (!Set.of("grand", "row", "column", "parent").contains(SnapshotMutationSupport.text(showAs, "base"))) throw ServiceException.validation("Pivot showAs base is invalid");
+                SnapshotMutationSupport.validateKnownKeys(showAs, Set.of("kind", "baseFieldId", "baseItem"), "Pivot difference showAs");
+                requireAxisField(showAs, fieldIds, axisFieldIds, "baseFieldId");
+                validateShowAsBaseItem(showAs.get("baseItem"));
             }
-            case "running-total" -> {
-                SnapshotMutationSupport.validateKnownKeys(showAs, Set.of("kind", "axis"), "Pivot running-total showAs");
-                if (!Set.of("row", "column").contains(SnapshotMutationSupport.text(showAs, "axis"))) throw ServiceException.validation("Pivot showAs axis is invalid");
+            case "running-total", "percentage-running-total" -> {
+                SnapshotMutationSupport.validateKnownKeys(showAs, Set.of("kind", "baseFieldId"), "Pivot running-total showAs");
+                requireAxisField(showAs, fieldIds, axisFieldIds, "baseFieldId");
             }
             case "rank" -> {
-                SnapshotMutationSupport.validateKnownKeys(showAs, Set.of("kind", "axis", "direction"), "Pivot rank showAs");
-                if (!Set.of("row", "column").contains(SnapshotMutationSupport.text(showAs, "axis")) || !Set.of("ascending", "descending").contains(SnapshotMutationSupport.text(showAs, "direction"))) throw ServiceException.validation("Pivot rank showAs is invalid");
+                SnapshotMutationSupport.validateKnownKeys(showAs, Set.of("kind", "baseFieldId", "direction"), "Pivot rank showAs");
+                requireAxisField(showAs, fieldIds, axisFieldIds, "baseFieldId");
+                if (!Set.of("ascending", "descending").contains(SnapshotMutationSupport.text(showAs, "direction"))) throw ServiceException.validation("Pivot rank direction is invalid");
             }
             default -> {
                 if (showAs.size() != 1) throw ServiceException.validation("Pivot showAs contains unknown fields");
             }
         }
+    }
+
+    private void requireAxisField(ObjectNode object, Set<String> fieldIds, Set<String> axisFieldIds, String property) {
+        JsonNode value = object.get(property);
+        if (value == null || !value.isTextual() || value.asText().isBlank()
+                || !fieldIds.contains(value.asText()) || !axisFieldIds.contains(value.asText())) {
+            throw ServiceException.validation("Pivot showAs " + property + " must target a row or column field");
+        }
+    }
+
+    private void validateShowAsBaseItem(JsonNode raw) {
+        if (raw == null) throw ServiceException.validation("Pivot showAs baseItem is required");
+        if (raw.isTextual() && Set.of("previous", "next").contains(raw.asText())) return;
+        if (!raw.isObject()) throw ServiceException.validation("Pivot showAs baseItem is invalid");
+        ObjectNode member = (ObjectNode) raw;
+        SnapshotMutationSupport.validateKnownKeys(member, Set.of("type", "value"), "Pivot showAs baseItem");
+        String type = SnapshotMutationSupport.text(member, "type");
+        JsonNode value = member.get("value");
+        if (!Set.of("text", "number", "boolean", "blank", "error").contains(type)) throw ServiceException.validation("Pivot showAs baseItem type is invalid");
+        if ("blank".equals(type) && (value == null || !value.isNull())) throw ServiceException.validation("Pivot showAs blank baseItem must have null value");
+        if ("text".equals(type) && (value == null || !value.isTextual())) throw ServiceException.validation("Pivot showAs text baseItem is invalid");
+        if ("number".equals(type) && (value == null || !value.isNumber() || !Double.isFinite(value.asDouble()))) throw ServiceException.validation("Pivot showAs number baseItem is invalid");
+        if ("boolean".equals(type) && (value == null || !value.isBoolean())) throw ServiceException.validation("Pivot showAs boolean baseItem is invalid");
+        if ("error".equals(type) && (value == null || !value.isTextual())) throw ServiceException.validation("Pivot showAs error baseItem is invalid");
     }
 
     private void validateRefreshPolicy(JsonNode raw) {

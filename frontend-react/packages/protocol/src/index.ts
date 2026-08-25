@@ -264,6 +264,41 @@ function validatePivotMemberKey(value: unknown, label: string): void {
   if (member.type === 'error' && (typeof member.value !== 'string' || !PIVOT_FORMULA_ERROR_CODES.has(member.value))) throw new Error(`${label}.value must be a formula error code`);
 }
 
+function validatePivotShowAs(value: unknown, fieldIds: ReadonlySet<string>, axisFieldIds: ReadonlySet<string>): void {
+  if (value === undefined) return;
+  const showAs = requireRecord(value, 'Pivot showAs');
+  const kind = showAs.kind;
+  const totalKinds = new Set(['normal', 'grand-percentage', 'row-percentage', 'column-percentage', 'parent-percentage', 'index']);
+  if (typeof kind !== 'string') throw new Error('Pivot showAs kind is invalid');
+  if (totalKinds.has(kind)) {
+    validateExactKeys(showAs, ['kind'], 'Pivot showAs');
+    return;
+  }
+  if (kind === 'difference' || kind === 'percentage-difference') {
+    validateExactKeys(showAs, ['kind', 'baseFieldId', 'baseItem'], 'Pivot difference showAs');
+    if (!isNonEmptyString(showAs.baseFieldId) || !fieldIds.has(showAs.baseFieldId) || !axisFieldIds.has(showAs.baseFieldId)) {
+      throw new Error('Pivot difference showAs baseFieldId must target a row or column field');
+    }
+    if (showAs.baseItem === 'previous' || showAs.baseItem === 'next') return;
+    validatePivotMemberKey(showAs.baseItem, 'Pivot difference showAs baseItem');
+    return;
+  }
+  if (kind === 'running-total' || kind === 'percentage-running-total') {
+    validateExactKeys(showAs, ['kind', 'baseFieldId'], 'Pivot running-total showAs');
+    if (!isNonEmptyString(showAs.baseFieldId) || !fieldIds.has(showAs.baseFieldId) || !axisFieldIds.has(showAs.baseFieldId)) {
+      throw new Error('Pivot running-total showAs baseFieldId must target a row or column field');
+    }
+    return;
+  }
+  if (kind === 'rank') {
+    validateExactKeys(showAs, ['kind', 'baseFieldId', 'direction'], 'Pivot rank showAs');
+    if (!isNonEmptyString(showAs.baseFieldId) || !fieldIds.has(showAs.baseFieldId) || !axisFieldIds.has(showAs.baseFieldId)
+      || !['ascending', 'descending'].includes(String(showAs.direction))) throw new Error('Pivot rank showAs is invalid');
+    return;
+  }
+  throw new Error('Pivot showAs kind is unsupported');
+}
+
 function validatePivotSource(value: unknown): void {
   const source = requireRecord(value, 'Pivot source');
   if (source.kind === 'worksheet-range') {
@@ -712,10 +747,11 @@ export function validatePivotDefinition(value: unknown): asserts value is PivotD
   const valueIds = new Set<string>();
   for (const rawValue of layout.values) {
     const item = requireRecord(rawValue, 'Pivot value field');
-    validateExactKeys(item, ['valueId', 'fieldId', 'summarizeBy', 'displayName', 'numberFormat', 'baseFieldId', 'baseItem', 'showAs'], 'Pivot value field');
+    validateExactKeys(item, ['valueId', 'fieldId', 'summarizeBy', 'displayName', 'numberFormat', 'showAs'], 'Pivot value field');
     if (!isNonEmptyString(item.valueId) || valueIds.has(item.valueId)) throw new Error('Pivot value placement identity is invalid or duplicated');
     valueIds.add(item.valueId);
     if (!isNonEmptyString(item.fieldId) || !effectiveFieldIds.has(item.fieldId) || !['sum', 'count', 'count-numbers', 'average', 'min', 'max', 'product', 'stdev', 'stdevp', 'var', 'varp', 'distinct-count'].includes(String(item.summarizeBy))) throw new Error('Pivot value field is invalid');
+    validatePivotShowAs(item.showAs, effectiveFieldIds, axisFieldIds);
   }
   for (const rawPlacement of [...layout.rows, ...layout.columns]) {
     const placement = rawPlacement as Record<string, unknown>;

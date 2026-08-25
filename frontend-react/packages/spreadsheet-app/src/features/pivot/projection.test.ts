@@ -923,6 +923,52 @@ describe('native PivotGridProjection contract', () => {
     assert.equal(result.grandTotal?.values[0], 1);
   });
 
+  it('uses the selected base field and typed base item for Difference From variants', () => {
+    const workbook = new WorkbookModel('pivot-show-as-difference', 'Pivot Show As Difference');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Month', 'Sales'], ['Jan', 100], ['Feb', 125], ['Mar', 90]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-show-as-difference', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const month = catalog.fields.find((field) => field.name === 'Month')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: month.fieldId }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum', showAs: { kind: 'difference', baseFieldId: month.fieldId, baseItem: { type: 'text', value: 'Jan' } } }];
+    const difference = computePivotResult(workbook, pivot);
+    const valueByMonth = (result: typeof difference) => Object.fromEntries(result.rows.map((node) => [node.label, node.values[0]?.values[0]]));
+    assert.deepEqual(valueByMonth(difference), { Feb: 25, Jan: null, Mar: -10 });
+
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum', showAs: { kind: 'percentage-difference', baseFieldId: month.fieldId, baseItem: { type: 'text', value: 'Jan' } } }];
+    const percentage = computePivotResult(workbook, pivot);
+    assert.deepEqual(valueByMonth(percentage), { Feb: 0.25, Jan: null, Mar: -0.1 });
+
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum', showAs: { kind: 'difference', baseFieldId: month.fieldId, baseItem: 'previous' } }];
+    const previous = computePivotResult(workbook, pivot);
+    assert.deepEqual(valueByMonth(previous), { Feb: null, Jan: -25, Mar: -10 });
+  });
+
+  it('uses the selected base field for running totals, percent running totals, and rank', () => {
+    const workbook = new WorkbookModel('pivot-show-as-axis', 'Pivot Show As Axis');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Month', 'Sales'], ['Jan', 100], ['Feb', 125], ['Mar', 90]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const pivot = buildPivotModel(workbook, 'sheet-1', 'pivot-show-as-axis', { sheetId: 'sheet-1', startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 });
+    assert.ok(pivot);
+    const catalog = getPivotFieldCatalog(workbook, pivot);
+    const month = catalog.fields.find((field) => field.name === 'Month')!;
+    const sales = catalog.fields.find((field) => field.name === 'Sales')!;
+    pivot.layout.rows = [{ fieldId: month.fieldId }];
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum', showAs: { kind: 'running-total', baseFieldId: month.fieldId } }];
+    const running = computePivotResult(workbook, pivot);
+    const valueByMonth = (result: typeof running) => Object.fromEntries(result.rows.map((node) => [node.label, node.values[0]?.values[0]]));
+    assert.deepEqual(valueByMonth(running), { Feb: 125, Jan: 225, Mar: 315 });
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum', showAs: { kind: 'percentage-running-total', baseFieldId: month.fieldId } }];
+    const percentageRunning = computePivotResult(workbook, pivot);
+    assert.deepEqual(valueByMonth(percentageRunning), { Feb: 125 / 315, Jan: 225 / 315, Mar: 1 });
+    pivot.layout.values = [{ valueId: `value:${sales.fieldId}`, fieldId: sales.fieldId, summarizeBy: 'sum', showAs: { kind: 'rank', baseFieldId: month.fieldId, direction: 'ascending' } }];
+    const ranked = computePivotResult(workbook, pivot);
+    assert.deepEqual(Object.fromEntries(ranked.rows.map((node) => [node.label, node.values[0]?.values[0]])), { Feb: 3, Jan: 2, Mar: 1 });
+  });
+
   it('uses subtotal peers for running total and rank instead of indexing a leaf-only series', () => {
     const workbook = new WorkbookModel('pivot-show-as-subtotals', 'Pivot Show As Subtotals');
     const sheet = workbook.getSheet('sheet-1');
@@ -934,24 +980,24 @@ describe('native PivotGridProjection contract', () => {
     const city = catalog.fields.find((field) => field.name === 'City')!;
     const amount = catalog.fields.find((field) => field.name === 'Amount')!;
     pivot.layout.rows = [{ fieldId: region.fieldId }, { fieldId: city.fieldId }];
-    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'running-total', axis: 'row' } }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'running-total', baseFieldId: city.fieldId } }];
     const running = computePivotResult(workbook, pivot);
     const eastRunning = running.rows.find((node) => node.label === 'East')!;
     const westRunning = running.rows.find((node) => node.label === 'West')!;
-    assert.equal(eastRunning.values[0]?.values[0], 30);
-    assert.equal(westRunning.values[0]?.values[0], 70);
+    assert.equal(eastRunning.values[0]?.values[0], null);
+    assert.equal(westRunning.values[0]?.values[0], null);
     assert.equal(eastRunning.children.find((node) => node.label === 'Austin')?.values[0]?.values[0], 20);
     assert.equal(eastRunning.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 30);
     assert.equal(running.grandTotal?.values[0], 70);
 
-    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'rank', axis: 'row', direction: 'descending' } }];
+    pivot.layout.values = [{ valueId: `value:${amount.fieldId}`, fieldId: amount.fieldId, summarizeBy: 'sum', showAs: { kind: 'rank', baseFieldId: city.fieldId, direction: 'descending' } }];
     const ranked = computePivotResult(workbook, pivot);
     const eastRank = ranked.rows.find((node) => node.label === 'East')!;
     const westRank = ranked.rows.find((node) => node.label === 'West')!;
-    assert.equal(eastRank.values[0]?.values[0], 2);
-    assert.equal(westRank.values[0]?.values[0], 1);
-    assert.equal(eastRank.children.find((node) => node.label === 'Austin')?.values[0]?.values[0], 2);
-    assert.equal(eastRank.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 3);
+    assert.equal(eastRank.values[0]?.values[0], null);
+    assert.equal(westRank.values[0]?.values[0], null);
+    assert.equal(eastRank.children.find((node) => node.label === 'Austin')?.values[0]?.values[0], 1);
+    assert.equal(eastRank.children.find((node) => node.label === 'Boston')?.values[0]?.values[0], 2);
     assert.equal(ranked.grandTotal?.values[0], 1);
     assert.equal(ranked.rows.flatMap((node) => [node, ...node.children]).flatMap((node) => node.values.flatMap((cell) => cell.values)).some((value) => value === 0), false);
   });
