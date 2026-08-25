@@ -3,8 +3,9 @@ import { Button, Divider, DropdownMenu, Inline, Stack, Text, type RibbonLayoutSt
 import { getRibbonGroupDefinition, type RibbonCommandId } from '@react-sheets/spreadsheet-app';
 import type { ChartDrawingPayload, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { Locale } from '../i18n';
-import { translateRibbonText } from '../i18n';
+import { insertText, translateRibbonText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
+import { INSERT_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_VARIANTS, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
@@ -48,18 +49,18 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
       <InsertGroup id="insertTables" locale={locale}>{renderCommand('worksheetTable', { tile: true })}{renderCommand('pivotTable', { tile: true })}</InsertGroup>
       <Divider orientation="vertical" className="h-[96px]" />
       <InsertGroup id="insertCharts" locale={locale}>
-        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="chart-column" title="图表">图表</RibbonLarge>}>
+        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="chart-column" title={insertText(locale, 'chart')}>{insertText(locale, 'chart')}</RibbonLarge>}>
           <Stack gap="none" className="min-w-[15rem] p-1">
-            {([['column', 'chart-column', '柱形图'], ['bar', 'chart-bar', '条形图'], ['line', 'chart-line', '折线图'], ['area', 'chart-area', '面积图'], ['pie', 'chart-pie', '饼图'], ['scatter', 'chart-scatter', '散点图'], ['combo', 'data-chart', '组合图']] as const).map(([type, icon, label]) => <Button key={type} icon={icon} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertChart(type)}>{label}</Button>)}
+            {INSERT_CHART_VARIANTS.map((variant) => { const label = insertText(locale, variant.labelKey); return <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertChart(variant.value)}>{label}</Button>; })}
           </Stack>
         </DropdownMenu>
         <Stack gap="none" className="w-[116px] px-1 pt-1">
-          <Inline gap="none"><Button aria-label="柱形图" icon="chart-column" iconOnly size="sm" variant="ghost" onClick={() => onInsertChart('column')} /><Button aria-label="条形图" icon="chart-bar" iconOnly size="sm" variant="ghost" onClick={() => onInsertChart('bar')} /><Button aria-label="折线图" icon="chart-line" iconOnly size="sm" variant="ghost" onClick={() => onInsertChart('line')} /></Inline>
-          <Inline gap="none"><Button aria-label="面积图" icon="chart-area" iconOnly size="sm" variant="ghost" onClick={() => onInsertChart('area')} /><Button aria-label="饼图" icon="chart-pie" iconOnly size="sm" variant="ghost" onClick={() => onInsertChart('pie')} /><Button aria-label="散点图" icon="chart-scatter" iconOnly size="sm" variant="ghost" onClick={() => onInsertChart('scatter')} /></Inline>
+          <Inline gap="none">{INSERT_CHART_VARIANTS.slice(0, 3).map((variant) => <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} iconOnly size="sm" variant="ghost" onClick={() => onInsertChart(variant.value)} />)}</Inline>
+          <Inline gap="none">{INSERT_CHART_VARIANTS.slice(3, 6).map((variant) => <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} iconOnly size="sm" variant="ghost" onClick={() => onInsertChart(variant.value)} />)}</Inline>
         </Stack>
         {renderCommand('barcode', { tile: true })}
-        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="sparkline" title="迷你图">迷你图</RibbonLarge>}>
-          <Stack gap="none" className="min-w-[10rem] p-1"><Button icon="chart-line" size="sm" variant="ghost" onClick={() => onInsertSparkline('line')}>折线</Button><Button icon="chart-column" size="sm" variant="ghost" onClick={() => onInsertSparkline('column')}>柱形</Button><Button icon="chart-bar" size="sm" variant="ghost" onClick={() => onInsertSparkline('win-loss')}>盈亏</Button></Stack>
+        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="sparkline" title={insertText(locale, 'sparkline')}>{insertText(locale, 'sparkline')}</RibbonLarge>}>
+          <Stack gap="none" className="min-w-[10rem] p-1">{INSERT_SPARKLINE_VARIANTS.map((variant) => { const label = insertText(locale, variant.labelKey); return <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" onClick={() => onInsertSparkline(variant.value)}>{label}</Button>; })}</Stack>
         </DropdownMenu>
       </InsertGroup>
       <Divider orientation="vertical" className="h-[96px]" />
@@ -67,9 +68,9 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
       <Divider orientation="vertical" className="h-[96px]" />
       <InsertGroup id="illustrations" locale={locale}>
         {renderCommand('picture', { tile: true })}
-        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="shape-square" title="形状">形状</RibbonLarge>}><Stack gap="none" className="min-w-[12rem] p-1">{(['rectangle', 'rounded-rectangle', 'ellipse', 'line', 'arrow', 'callout', 'star'] as const).map((type) => <Button key={type} icon={type === 'ellipse' ? 'shape-circle' : 'shape-square'} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertShape(type)}>{type}</Button>)}</Stack></DropdownMenu>
+        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="shape-square" title={insertText(locale, 'shape')}>{insertText(locale, 'shape')}</RibbonLarge>}><Stack gap="none" className="min-w-[12rem] p-1">{INSERT_SHAPE_VARIANTS.map((variant) => { const label = insertText(locale, variant.labelKey); return <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertShape(variant.value)}>{label}</Button>; })}</Stack></DropdownMenu>
         {renderCommand('camera', { tile: true })}
-        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="form-control" title="控件">控件</RibbonLarge>}><Stack gap="none" className="min-w-[13rem] p-1">{(['button', 'spin-button', 'list-box', 'combo-box', 'checkbox', 'option-button', 'group-box', 'label', 'scrollbar'] as const).map((type) => <Button key={type} icon={type === 'checkbox' ? 'checkbox' : 'form-control'} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertFormControl(type)}>{type}</Button>)}</Stack></DropdownMenu>
+        <DropdownMenu align="left" trigger={<RibbonLarge disabled={disabled} icon="form-control" title={insertText(locale, 'formControl')}>{insertText(locale, 'formControl')}</RibbonLarge>}><Stack gap="none" className="min-w-[13rem] p-1">{INSERT_FORM_CONTROL_VARIANTS.map((variant) => { const label = insertText(locale, variant.labelKey); return <Button key={variant.id} aria-label={insertText(locale, variant.ariaLabelKey)} title={insertText(locale, variant.tooltipKey)} icon={variant.icon} size="sm" variant="ghost" className="justify-start" onClick={() => onInsertFormControl(variant.value)}>{label}</Button>; })}</Stack></DropdownMenu>
       </InsertGroup>
       <Divider orientation="vertical" className="h-[96px]" />
       <InsertGroup id="insertLinks" locale={locale}>{renderCommand('hyperlink', { tile: true })}</InsertGroup>
