@@ -368,7 +368,11 @@
     "autoFitColumnWidth": "自动调整列宽",
     "hideColumns": "隐藏列",
     "unhideColumns": "取消隐藏列",
-    "defaultColumnWidth": "默认列宽…"
+    "defaultColumnWidth": "默认列宽…",
+    "rowHeight": "行高…",
+    "autoFitRowHeight": "自动调整行高",
+    "hideRows": "隐藏行",
+    "unhideRows": "取消隐藏行"
   },
   "ribbon": {
     "comingSoon": "此选项卡的命令将在此显示。",

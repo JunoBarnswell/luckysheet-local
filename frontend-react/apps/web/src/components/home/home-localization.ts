@@ -13,6 +13,10 @@ export const HOME_NUMBER_FORMAT_OPTIONS = [
 ] as const satisfies readonly { value: string; labelKey: HomeUiTextKey }[];
 
 export const HOME_CELLS_ACTIONS = [
+  { id: 'rowHeight', labelKey: 'rowHeight' },
+  { id: 'autoFitRowHeight', labelKey: 'autoFitRowHeight' },
+  { id: 'hideRows', labelKey: 'hideRows' },
+  { id: 'unhideRows', labelKey: 'unhideRows' },
   { id: 'columnWidth', labelKey: 'columnWidth' },
   { id: 'autoFitColumnWidth', labelKey: 'autoFitColumnWidth' },
   { id: 'hideColumns', labelKey: 'hideColumns' },

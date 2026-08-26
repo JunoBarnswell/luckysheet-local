@@ -78,6 +78,33 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(sheet.rowHeightsPx[1], 42);
   });
 
+  it('applies selected row dimensions and visibility atomically with permission rejection', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    const defaultHeight = sheet.defaultRowHeightPx;
+
+    app.resizeRows([1, 2], 36);
+    assert.deepEqual([sheet.rowHeightsPx[1], sheet.rowHeightsPx[2]], [36, 36]);
+    app.undo();
+    assert.deepEqual([sheet.rowHeightsPx[1], sheet.rowHeightsPx[2]], [defaultHeight, defaultHeight]);
+    app.redo();
+
+    app.setRowsHidden([1, 2], true);
+    assert.deepEqual([...sheet.hiddenRows].sort((left, right) => left - right), [1, 2]);
+    app.undo();
+    assert.deepEqual([...sheet.hiddenRows], []);
+    app.redo();
+
+    const before = structuredClone(app['runtime'].model.snapshot());
+    const historyDepth = app['runtime'].commands.getHistoryDepth();
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
+    assert.throws(() => app.setRowsHidden([1, 2], false), /cannot perform "structure"/i);
+    assert.deepEqual(app['runtime'].model.snapshot(), before);
+    assert.deepEqual(app['runtime'].commands.getHistoryDepth(), historyDepth);
+  });
+
   it('selectAddress jumps to the requested cell', () => {
     const app = new WorkbookSession();
     assert.equal(app.selectAddress('C3'), true);

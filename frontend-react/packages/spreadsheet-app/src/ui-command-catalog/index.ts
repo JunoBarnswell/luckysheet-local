@@ -527,6 +527,10 @@ export type RibbonControlId =
   | 'cells-delete-menu'
   | 'cells-format-menu'
   | 'clear-menu'
+  | 'row-height'
+  | 'auto-fit-row-height'
+  | 'hide-rows'
+  | 'unhide-rows'
   | 'column-width'
   | 'auto-fit-column-width'
   | 'hide-columns'
@@ -955,11 +959,15 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'cells.delete-row', 'cells', 50, 'menu', 'deleteRow', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
   ribbonSurface('home', 'cells.delete-column', 'cells', 51, 'menu', 'deleteColumn', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
   ribbonSurface('home', 'cells.delete-cells', 'cells', 52, 'menu', 'deleteCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-delete-menu'),
-  homeControl('column-width', 'cells', 60, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
-  homeControl('auto-fit-column-width', 'cells', 61, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
-  homeControl('hide-columns', 'cells', 62, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
-  homeControl('unhide-columns', 'cells', 63, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
-  homeControl('default-column-width', 'cells', 64, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('row-height', 'cells', 60, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('auto-fit-row-height', 'cells', 61, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('hide-rows', 'cells', 62, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('unhide-rows', 'cells', 63, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('column-width', 'cells', 70, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('auto-fit-column-width', 'cells', 71, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('hide-columns', 'cells', 72, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('unhide-columns', 'cells', 73, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
+  homeControl('default-column-width', 'cells', 74, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
   ribbonSurface('home', 'editing.autosum', 'editing', 60, 'small', 'autoSum'),
   ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
   ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'small', 'fillUp'),

@@ -1,4 +1,4 @@
-import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth } from '@react-sheets/exchange-excel-ooxml';
+import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, SelectionState, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
@@ -6,6 +6,8 @@ export interface ColumnWidthPreview {
   widthPx: number;
   excelWidth: number;
 }
+
+export const MAX_EXCEL_ROW_HEIGHT_POINTS = 409;
 
 export class ColumnDimensionController {
   private autoFitAbort: AbortController | null = null;
@@ -35,9 +37,27 @@ export class ColumnDimensionController {
     return [...columns].sort((left, right) => left - right);
   }
 
+  selectedRows(includeOrdinaryCellRanges = true): number[] {
+    const sheet = this.getSheet();
+    const selection = this.getSelection();
+    const rows = new Set<number>();
+    for (const range of selection.ranges) {
+      const completeRow = range.startColumn === 0 && range.endColumn >= sheet.columnCount - 1;
+      if (!completeRow && !includeOrdinaryCellRanges) continue;
+      for (let row = range.startRow; row <= range.endRow; row += 1) rows.add(row);
+    }
+    if (!rows.size) rows.add(selection.activeCell.row);
+    return [...rows].sort((left, right) => left - right);
+  }
+
   columnsForBoundary(boundaryColumn: number): number[] {
     const selected = this.selectedColumns(false);
     return selected.includes(boundaryColumn) ? selected : [boundaryColumn];
+  }
+
+  rowsForBoundary(boundaryRow: number): number[] {
+    const selected = this.selectedRows(false);
+    return selected.includes(boundaryRow) ? selected : [boundaryRow];
   }
 
   resizeBoundary(boundaryColumn: number, widthPx: number): void {
@@ -63,6 +83,20 @@ export class ColumnDimensionController {
     this.session.setColumnsHidden(columns, hidden);
   }
 
+  setRowHeightPoints(rows: readonly number[], points: number): void {
+    if (!Number.isFinite(points) || points <= 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    this.session.resizeRows(rows, pointsToPixels(points));
+  }
+
+  setRowPixels(rows: readonly number[], heightPx: number): void {
+    if (!Number.isFinite(heightPx) || heightPx <= 0) throw new Error('Row height must be positive pixels');
+    this.session.resizeRows(rows, heightPx);
+  }
+
+  setRowsHidden(rows: readonly number[], hidden: boolean): void {
+    this.session.setRowsHidden(rows, hidden);
+  }
+
   setDefaultExcelWidth(excelWidth: number): void {
     if (!Number.isFinite(excelWidth) || excelWidth <= 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw new Error('Default Excel column width must be between 0 and 255');
     this.session.setDefaultColumnWidth(excelColumnWidthToPixels(excelWidth, this.getSheet().maximumDigitWidthPx));
@@ -86,25 +120,33 @@ export class ColumnDimensionController {
   }
 
   async autoFitRows(rows: readonly number[]): Promise<void> {
+    this.cancelAutoFit();
+    const controller = new AbortController();
+    this.autoFitAbort = controller;
     const sheet = this.getSheet();
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Canvas text measurement is unavailable');
-    const heights: Array<{ row: number; heightPx: number }> = [];
-    for (const row of [...new Set(rows)]) {
-      if (row < 0 || row >= sheet.rowCount) continue;
-      let heightPx = 8;
-      for (let column = sheet.usedRange.startColumn; column <= sheet.usedRange.endColumn; column += 1) {
-        if (sheet.merges.some((merge) => merge.range.startRow !== merge.range.endRow && row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn)) continue;
-        const cell = sheet.getCell(row, column);
-        if (!cell || !hasMeasurableCellContent(cell)) continue;
-        const availableWidthPx = sheet.columnWidthsPx[column] ?? sheet.defaultColumnWidthPx;
-        heightPx = Math.max(heightPx, measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, availableWidthPx, sheet.filterButtons.some((button) => button.row === row && button.column === column)).heightPx);
+    try {
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Canvas text measurement is unavailable');
+      const heights: Array<{ row: number; heightPx: number }> = [];
+      for (const row of [...new Set(rows)]) {
+        if (controller.signal.aborted) throw new DOMException('AutoFit cancelled', 'AbortError');
+        if (row < 0 || row >= sheet.rowCount) continue;
+        let heightPx = 8;
+        for (let column = sheet.usedRange.startColumn; column <= sheet.usedRange.endColumn; column += 1) {
+          if (sheet.merges.some((merge) => merge.range.startRow !== merge.range.endRow && row >= merge.range.startRow && row <= merge.range.endRow && column >= merge.range.startColumn && column <= merge.range.endColumn)) continue;
+          const cell = sheet.getCell(row, column);
+          if (!cell || !hasMeasurableCellContent(cell)) continue;
+          const availableWidthPx = sheet.columnWidthsPx[column] ?? sheet.defaultColumnWidthPx;
+          heightPx = Math.max(heightPx, measureCellAutoFit(context, { value: cell.value, displayValue: cell.displayValue, formula: cell.formula, style: cell.style }, DEFAULT_RENDER_THEME, availableWidthPx, sheet.filterButtons.some((button) => button.row === row && button.column === column)).heightPx);
+        }
+        heights.push({ row, heightPx });
+        if (heights.length % 250 === 0) await yieldToBrowser();
       }
-      heights.push({ row, heightPx });
-      if (heights.length % 250 === 0) await yieldToBrowser();
+      if (!controller.signal.aborted) this.session.applyRowHeights(heights);
+    } finally {
+      if (this.autoFitAbort === controller) this.autoFitAbort = null;
     }
-    this.session.applyRowHeights(heights);
   }
 
   private async measureColumns(columns: number[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
