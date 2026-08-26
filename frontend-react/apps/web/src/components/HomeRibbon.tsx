@@ -96,8 +96,10 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
   }
 }
 
+const HOME_COMPACT_ACTION_CLASS = '!h-6 !min-h-0 !w-8 !rounded-none px-0 [&>svg]:!h-4 [&>svg]:!w-4';
+
 function HomeTile({ children, className, ...props }: React.ComponentProps<typeof Button>) {
-  return <Button {...props} className={`!h-[68px] !min-h-0 !w-[72px] flex-col gap-1 rounded-none px-1 text-[10px] leading-3 [&>svg]:!h-6 [&>svg]:!w-6 ${className ?? ''}`}>{children}</Button>;
+  return <Button {...props} className={`!h-[68px] !min-h-0 !w-[68px] flex-col gap-1 rounded-none px-1 text-[10px] leading-3 [&>svg]:!h-6 [&>svg]:!w-6 ${className ?? ''}`}>{children}</Button>;
 }
 
 /** HOME visual composition. Surface identity and responsive membership come only from the catalog. */
@@ -164,25 +166,29 @@ export function HomeRibbon({
     if (surface.controlId) return renderControl(surface.controlId, mode, surface.id);
     if (!surface.commandId) return null;
     if (mode === 'menu') return renderCommand(surface.commandId, { className: 'w-full justify-start', ribbonSurfaceId: surface.id });
+    if (surface.id.startsWith('history.')) return renderCommand(surface.commandId, { iconOnly: true, className: HOME_COMPACT_ACTION_CLASS, ribbonSurfaceId: surface.id });
     const tile = surface.appearance === 'large' || surface.appearance === 'tile';
-    return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? undefined : '!h-8 !min-h-0 !rounded-none', ribbonSurfaceId: surface.id });
+    return renderCommand(surface.commandId, { tile, iconOnly: !tile && surface.appearance === 'small', className: tile ? undefined : HOME_COMPACT_ACTION_CLASS, ribbonSurfaceId: surface.id });
   };
 
   const renderControl = (controlId: RibbonControlId, mode: 'wide' | 'menu', surfaceId: string): React.ReactNode => {
     const label = surfaceLabel(locale, controlId);
+    const compactMenu = controlId === 'font-borders-menu' || controlId === 'orientation-menu' || controlId === 'merge-menu';
     const menuTrigger = (icon: React.ComponentProps<typeof Button>['icon']) => mode === 'wide'
-      ? <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
+      ? compactMenu
+        ? <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} iconOnly size="sm" variant="ghost" className={HOME_COMPACT_ACTION_CLASS} />
+        : <HomeTile aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} type="button">{label}</HomeTile>
       : <Button aria-label={label} data-ribbon-surface={surfaceId} title={label} disabled={disabled} icon={icon} size="sm" variant="ghost" className="w-full justify-start">{label}</Button>;
     switch (controlId) {
       case 'format-painter':
-        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={mode === 'wide'} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-8 !rounded-none' : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{mode === 'menu' ? label : null}</Button>;
+        return <Button aria-label={label} aria-pressed={formatPainterActive} data-ribbon-surface={surfaceId} data-testid="home-format-painter" disabled={!canFormat} icon="palette" iconOnly={mode === 'wide'} size="sm" title={homeText(locale, 'formatPainterHint')} variant="ghost" className={mode === 'wide' ? HOME_COMPACT_ACTION_CLASS : 'w-full justify-start'} onClick={() => onBeginFormatPainter(false)} onDoubleClick={() => onBeginFormatPainter(true)}>{mode === 'menu' ? label : null}</Button>;
       case 'font-family':
         return <Box data-ribbon-surface={surfaceId} className={mode === 'wide' ? 'w-[124px] shrink-0' : 'w-full'}><FontFamilyControl
           value={cellStyle.fontFamily}
           fallbackValue="Microsoft YaHei"
           mixed={mixed('fontFamily')}
           mixedPlaceholder={homeText(locale, 'mixed')}
-          className="w-full"
+          className="!h-8 !rounded-sm !px-2 text-xs"
           disabled={!canFormat}
           label={label}
           testId="home-font-family"
@@ -192,7 +198,7 @@ export function HomeRibbon({
         return <TextInput
           aria-label={label}
           data-ribbon-surface={surfaceId}
-          className={mode === 'wide' ? '!w-[48px]' : 'w-full'}
+          className={mode === 'wide' ? '!h-8 !w-[48px] !rounded-sm !px-2 text-xs' : 'w-full'}
           disabled={!canFormat}
           inputMode="decimal"
           value={fontSizeDraft ?? fontSizeValue}
@@ -226,10 +232,10 @@ export function HomeRibbon({
         />;
       case 'font-increase':
       case 'font-decrease':
-        return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-7 rounded-none px-0 font-semibold text-[#2572bc]' : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: controlId === 'font-increase' ? Math.min(pointsToPixels(409), (cellStyle.fontSizePx ?? pointsToPixels(11)) + pointsToPixels(1)) : Math.max(pointsToPixels(1), (cellStyle.fontSizePx ?? pointsToPixels(11)) - pointsToPixels(1)) })}>{mode === 'wide' ? 'A' : label}</Button>;
+        return <Button aria-label={label} disabled={!canFormat} size="sm" variant="ghost" className={mode === 'wide' ? `${HOME_COMPACT_ACTION_CLASS} font-semibold text-[#2572bc]` : 'w-full justify-start'} onClick={() => onEmitStyle({ fontSizePx: controlId === 'font-increase' ? Math.min(pointsToPixels(409), (cellStyle.fontSizePx ?? pointsToPixels(11)) + pointsToPixels(1)) : Math.max(pointsToPixels(1), (cellStyle.fontSizePx ?? pointsToPixels(11)) - pointsToPixels(1)) })}>{mode === 'wide' ? 'A' : label}</Button>;
       case 'font-color':
       case 'fill-color':
-        return <DropdownMenu disabled={!canFormat} trigger={mode === 'wide' ? <Button aria-label={label} disabled={!canFormat} icon={controlId === 'font-color' ? 'type' : 'paint-bucket'} iconOnly size="sm" variant="ghost" className="!h-8 !min-h-0 !w-8 !rounded-none" /> : menuTrigger(controlId === 'font-color' ? 'type' : 'paint-bucket')}>
+        return <DropdownMenu disabled={!canFormat} trigger={mode === 'wide' ? <Button aria-label={label} disabled={!canFormat} icon={controlId === 'font-color' ? 'type' : 'paint-bucket'} iconOnly size="sm" variant="ghost" className={HOME_COMPACT_ACTION_CLASS} /> : menuTrigger(controlId === 'font-color' ? 'type' : 'paint-bucket')}>
           {({ close }) => <ColorPicker color={controlId === 'font-color' ? cellStyle.textColor ?? '#1e293b' : cellStyle.background ?? '#ffffff'} onChange={(color) => { onEmitStyle({ [controlId === 'font-color' ? 'textColor' : 'background']: color }); close(); }} />}
         </DropdownMenu>;
       case 'font-borders-menu':
@@ -239,7 +245,7 @@ export function HomeRibbon({
           </Stack>
         </DropdownMenu>;
       case 'number-format':
-        return <Select aria-label={label} data-ribbon-surface={surfaceId} className="w-full" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
+        return <Select aria-label={label} data-ribbon-surface={surfaceId} className="!rounded-sm" disabled={!canFormat} sizeVariant="sm" value={mixed('numberFormat') ? '__mixed__' : cellStyle.numberFormat || 'general'} onChange={(event) => { if (event.target.value !== '__mixed__') onEmitStyle({ numberFormat: event.target.value }); }}>
           {mixed('numberFormat') ? <option value="__mixed__" disabled>{homeText(locale, 'mixed')}</option> : null}
           {HOME_NUMBER_FORMAT_OPTIONS.map(({ value, labelKey }) => <option key={value} value={value}>{homeText(locale, labelKey)}</option>)}
         </Select>;
@@ -298,9 +304,9 @@ export function HomeRibbon({
           </Stack>
         </DropdownMenu>;
       case 'auto-sum-menu':
-        return <Inline gap="none" className={mode === 'wide' ? 'h-8 items-stretch' : 'w-full'}>
-          {renderCommand('autoSum', { iconOnly: mode === 'wide', className: mode === 'wide' ? '!h-8 !min-h-0 !rounded-none' : 'w-full justify-start' })}
-          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-5 rounded-none px-0' : 'w-5 shrink-0 justify-center px-0'} />}>
+        return <Inline gap="none" className={mode === 'wide' ? 'h-6 items-stretch' : 'w-full'}>
+          {renderCommand('autoSum', { iconOnly: mode === 'wide', className: mode === 'wide' ? HOME_COMPACT_ACTION_CLASS : 'w-full justify-start', ribbonSurfaceId: surfaceId })}
+          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={mode === 'wide' ? '!h-6 !min-h-0 !w-5 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : 'w-5 shrink-0 justify-center px-0'} />}>
             <Stack gap="none" className="min-w-[10rem] p-1">
               {menuMembers('control.auto-sum-menu').map((surface) => renderSurface(surface, 'menu'))}
             </Stack>

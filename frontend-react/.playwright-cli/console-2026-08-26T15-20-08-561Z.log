@@ -1,0 +1,4 @@
+[  981727ms] [ERROR] [2026-08-26T15:36:30.283Z] Error: Connection disconnected with error 'Error: Server returned an error on close: Connection closed with an error.'. @ http://127.0.0.1:5173/@vite/client:524
+[  994236ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/workflow/workbench/filter-options?box=pending:0
+[  995667ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/workflow/workbench/filter-options?box=pending:0
+[ 1002773ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/workflow/workbench/filter-options?box=processed:0

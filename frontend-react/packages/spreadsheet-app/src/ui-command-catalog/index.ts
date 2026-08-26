@@ -1329,6 +1329,7 @@ export const SHAPE_FORMAT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = 
 export const RIBBON_TAB_SURFACES: readonly RibbonSurfaceDefinition[] = [...HOME_RIBBON_SURFACES, ...INSERT_RIBBON_SURFACES, ...SHAPE_FORMAT_RIBBON_SURFACES];
 
 const surfaceNode = (surface: RibbonSurfaceDefinition): RibbonLayoutNode => ({ kind: 'surface', id: surface.id, surfaceId: surface.id });
+const homeSurfaceNode = (surfaceId: string): RibbonLayoutNode => ({ kind: 'surface', id: surfaceId, surfaceId });
 const surfaceLayout = (tab: Extract<RibbonLayoutTab, 'home' | 'insert'>, groups: readonly RibbonGroupId[]): RibbonLayoutSpec => ({
   tab,
   groups: groups.map((groupId) => {
@@ -1339,10 +1340,74 @@ const surfaceLayout = (tab: Extract<RibbonLayoutTab, 'home' | 'insert'>, groups:
   }),
 });
 
+/**
+ * The Home tab has a denser, two-dimensional composition than the other
+ * tabs. Keep that composition in the catalog so the renderer cannot fall
+ * back to an order-only horizontal list. The proportions follow the
+ * SpreadJS Designer Home tab: large actions form the visual anchors while
+ * related secondary actions share compact rows or columns.
+ */
+const homeRibbonLayout = (): RibbonLayoutSpec => ({
+  tab: 'home',
+  groups: [
+    groupSpec('history', 10, columnNode('history.layout', homeSurfaceNode('history.undo'), homeSurfaceNode('history.redo'))),
+    groupSpec(
+      'clipboard',
+      20,
+      rowNode(
+        'clipboard.layout',
+        homeSurfaceNode('clipboard.paste'),
+        columnNode(
+          'clipboard.secondary',
+          rowNode('clipboard.secondary.top', homeSurfaceNode('clipboard.cut'), homeSurfaceNode('clipboard.copy')),
+          rowNode('clipboard.secondary.bottom', homeSurfaceNode('control.format-painter'), homeSurfaceNode('clipboard.paste-special')),
+        ),
+      ),
+    ),
+    groupSpec(
+      'font',
+      30,
+      rowNode('font.controls', homeSurfaceNode('control.font-family'), homeSurfaceNode('control.font-size'), homeSurfaceNode('control.font-increase'), homeSurfaceNode('control.font-decrease')),
+      rowNode('font.actions', homeSurfaceNode('font.bold'), homeSurfaceNode('font.italic'), homeSurfaceNode('font.underline'), homeSurfaceNode('font.strikethrough'), homeSurfaceNode('control.font-borders-menu'), homeSurfaceNode('control.font-color'), homeSurfaceNode('control.fill-color')),
+    ),
+    groupSpec(
+      'alignment',
+      40,
+      rowNode(
+        'alignment.layout',
+        homeSurfaceNode('control.alignment-menu'),
+        columnNode(
+          'alignment.controls',
+          rowNode('alignment.controls.top', homeSurfaceNode('control.orientation-menu'), homeSurfaceNode('control.merge-menu'), homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.bottom'), homeSurfaceNode('alignment.indent-increase'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.wrap'), homeSurfaceNode('alignment.shrink-to-fit'), homeSurfaceNode('alignment.vertical-justify'), homeSurfaceNode('alignment.vertical-distributed')),
+        ),
+      ),
+    ),
+    groupSpec(
+      'number',
+      50,
+      rowNode('number.format', homeSurfaceNode('control.number-format')),
+      rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
+    ),
+    groupSpec(
+      'styles',
+      60,
+      rowNode('styles.actions', homeSurfaceNode('control.cell-styles-menu'), homeSurfaceNode('styles.conditional-format'), homeSurfaceNode('styles.table'), homeSurfaceNode('styles.format-cells'), homeSurfaceNode('styles.validation'), homeSurfaceNode('styles.template'), homeSurfaceNode('styles.editor')),
+    ),
+    groupSpec('cells', 70, rowNode('cells.actions', homeSurfaceNode('control.cells-insert-menu'), homeSurfaceNode('control.cells-delete-menu'), homeSurfaceNode('control.cells-format-menu'))),
+    groupSpec(
+      'editing',
+      80,
+      rowNode('editing.primary', homeSurfaceNode('control.auto-sum-menu'), homeSurfaceNode('editing.fill-down'), homeSurfaceNode('editing.fill-up'), homeSurfaceNode('editing.fill-right'), homeSurfaceNode('editing.fill-left')),
+      rowNode('editing.secondary', homeSurfaceNode('editing.fill-series'), homeSurfaceNode('editing.sort'), homeSurfaceNode('editing.filter'), homeSurfaceNode('control.clear-menu'), homeSurfaceNode('editing.find')),
+    ),
+  ],
+});
+
 /** One layout tree drives all Designer ribbon tabs with the same group shell. */
 export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], RibbonLayoutSpec>> = {
   ...BASE_RIBBON_LAYOUT_SPECS,
-  home: surfaceLayout('home', ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing']),
+  home: homeRibbonLayout(),
   insert: surfaceLayout('insert', ['insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls']),
 };
 

@@ -13,9 +13,11 @@ import {
   isRibbonCommandEnabled,
   RIBBON_COMMAND_CATALOG,
   RIBBON_GROUP_CATALOG,
+  RIBBON_LAYOUT_SPECS,
   validateRibbonLayoutSpecs,
   type RibbonCommandActions,
   type RibbonCommandContext,
+  type RibbonLayoutNode,
 } from './index';
 
 function descriptor(commandId: string, params?: unknown): CommandDescriptor {
@@ -305,6 +307,28 @@ describe('Ribbon UI command catalog', () => {
       if (surface.commandId) assert.ok(getRibbonCommandDefinition(surface.commandId));
     }
     assert.ok(getRibbonSurfaces('home', 'styles', 'compact').some((surface) => surface.commandId === 'cellTemplate'));
+  });
+
+  it('keeps the Home layout explicit and renders each visible surface exactly once', () => {
+    const collectSurfaceIds = (nodes: readonly RibbonLayoutNode[]): string[] => nodes.flatMap((node) => {
+      if (node.kind === 'surface') return [node.surfaceId];
+      if ('children' in node) return collectSurfaceIds(node.children);
+      return [];
+    });
+    const layout = RIBBON_LAYOUT_SPECS.home;
+    const layoutSurfaceIds = layout.groups.flatMap((group) => collectSurfaceIds(group.children));
+    const visibleSurfaceIds = HOME_RIBBON_SURFACES.filter((surface) => !surface.menuId).map((surface) => surface.id);
+
+    assert.equal(new Set(layoutSurfaceIds).size, layoutSurfaceIds.length);
+    assert.deepEqual(new Set(layoutSurfaceIds), new Set(visibleSurfaceIds));
+    assert.deepEqual(layout.groups.find((group) => group.id === 'history')?.children[0], {
+      kind: 'column',
+      id: 'history.layout',
+      children: [
+        { kind: 'surface', id: 'history.undo', surfaceId: 'history.undo' },
+        { kind: 'surface', id: 'history.redo', surfaceId: 'history.redo' },
+      ],
+    });
   });
 
   it('keeps the complete HOME surface set identical across responsive breakpoints', () => {

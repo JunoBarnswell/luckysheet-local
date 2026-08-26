@@ -41,14 +41,14 @@ interface NodeRenderContext {
  * into the viewport or clipping their controls vertically.
  */
 const RIBBON_GROUP_WIDTH_CLASSES: Partial<Record<RibbonGroupId, string>> = {
-  history: 'w-[144px]',
-  clipboard: 'w-[216px]',
-  font: 'w-[240px]',
-  alignment: 'w-[240px]',
+  history: 'w-[80px]',
+  clipboard: 'w-[168px]',
+  font: 'w-[248px]',
+  alignment: 'w-[320px]',
   number: 'w-[196px]',
-  styles: 'w-[216px]',
-  cells: 'w-[216px]',
-  editing: 'w-[216px]',
+  styles: 'w-[488px]',
+  cells: 'w-[220px]',
+  editing: 'w-[224px]',
   pageSetup: 'w-[320px]',
   scaleToFit: 'w-[128px]',
   sheetOptions: 'w-[236px]',

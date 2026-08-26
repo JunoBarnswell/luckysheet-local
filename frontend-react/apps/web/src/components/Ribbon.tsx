@@ -205,7 +205,7 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? '!h-[64px] !min-h-0 !w-[68px] flex-col gap-0 rounded-none px-1 text-[10px] leading-3 [&>svg]:!h-6 [&>svg]:!w-6' : undefined,
+        textBelow ? '!h-[68px] !min-h-0 !w-[68px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-6 [&>svg]:!w-6' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}
