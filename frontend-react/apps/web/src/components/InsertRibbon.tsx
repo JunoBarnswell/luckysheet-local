@@ -1,11 +1,11 @@
 import React, { useMemo } from 'react';
 import { Button, Divider, DropdownMenu, Inline, Stack, Text, type RibbonLayoutState } from '@react-sheets/ui-system';
 import { getRibbonGroupDefinition, getRibbonSurfaces, type RibbonCommandId, type RibbonGroupId, type RibbonSurfaceBreakpoint, type RibbonSurfaceDefinition } from '@react-sheets/spreadsheet-app';
-import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SparklineModel } from '@react-sheets/core-model';
 import type { Locale } from '../i18n';
 import { insertText, translateRibbonText } from '../i18n';
 import type { HomeRibbonCommandOptions } from './HomeRibbon';
-import { INSERT_BARCODE_VARIANTS, INSERT_CHART_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
+import { INSERT_BARCODE_VARIANTS, INSERT_CHART_VARIANTS, INSERT_CONNECTOR_VARIANTS, INSERT_DATA_CHART_VARIANTS, INSERT_FORM_CONTROL_VARIANTS, INSERT_SHAPE_GALLERY, INSERT_SPARKLINE_VARIANTS } from './insert-ribbon-catalog';
 
 export interface InsertRibbonProps {
   locale: Locale;
@@ -17,6 +17,7 @@ export interface InsertRibbonProps {
   onInsertBarcode: (symbology: BarcodeSymbology) => void;
   onInsertSparkline: (type: SparklineModel['type']) => void;
   onInsertShape: (type: ShapeDrawingPayload['type']) => void;
+  onInsertConnector: (type: DrawingConnectorType) => void;
   onInsertFormControl: (type: FormControlType) => void;
 }
 
@@ -36,7 +37,7 @@ function variantButton({ id, icon, label, onSelect, disabled }: { id: string; ic
   return <Button key={id} aria-label={label} title={label} icon={icon} disabled={disabled} size="sm" variant="ghost" className="w-full justify-start" onClick={onSelect}>{label}</Button>;
 }
 
-export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertDataChart, onInsertBarcode, onInsertSparkline, onInsertShape, onInsertFormControl }: InsertRibbonProps) {
+export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsertChart, onInsertDataChart, onInsertBarcode, onInsertSparkline, onInsertShape, onInsertConnector, onInsertFormControl }: InsertRibbonProps) {
   const breakpoint = breakpointFor(layout);
   const surfacesByGroup = useMemo(() => new Map(INSERT_GROUPS.map((group) => [group, getRibbonSurfaces('insert', group, breakpoint)] as const)), [breakpoint]);
 
@@ -55,6 +56,8 @@ export function InsertRibbon({ locale, layout, disabled, renderCommand, onInsert
     if (commandId === 'shapesLines') return INSERT_SHAPE_GALLERY.flatMap((category) => [
       <Text key={`${category.id}.label`} size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, category.labelKey)}</Text>,
       ...category.variants.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertShape(variant.value) })),
+      <Text key="connectors.label" size="xs" weight="semibold" className="px-2 pb-1 pt-2 text-slate-500">{insertText(locale, 'connectorCategory')}</Text>,
+      ...INSERT_CONNECTOR_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertConnector(variant.value) })),
     ]);
     if (commandId === 'formControls') return INSERT_FORM_CONTROL_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertFormControl(variant.value) }));
     if (commandId === 'dataChart') return INSERT_DATA_CHART_VARIANTS.map((variant) => variantButton({ id: variant.id, icon: variant.icon, label: insertText(locale, variant.labelKey), disabled, onSelect: () => onInsertDataChart(variant.value) }));

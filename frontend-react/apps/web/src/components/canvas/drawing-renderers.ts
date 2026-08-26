@@ -193,6 +193,18 @@ function drawCanonicalShapeOnCanvas(options: {
     context.restore();
     return;
   }
+  if (payload.effects?.shadow) {
+    context.shadowColor = payload.effects.shadow.color;
+    context.shadowBlur = payload.effects.shadow.blur;
+    context.shadowOffsetX = payload.effects.shadow.offsetX;
+    context.shadowOffsetY = payload.effects.shadow.offsetY;
+    context.globalAlpha = payload.effects.shadow.opacity;
+  }
+  if (payload.effects?.glow) {
+    context.shadowColor = payload.effects.glow.color;
+    context.shadowBlur = payload.effects.glow.radius;
+    context.globalAlpha = payload.effects.glow.opacity;
+  }
   context.fillStyle = payload.fill;
   context.strokeStyle = payload.stroke;
   context.lineWidth = payload.strokeWidth ?? 1.5;
@@ -254,11 +266,21 @@ function drawCanonicalShapeOnCanvas(options: {
     context.stroke();
   }
   if (payload.text) {
+    context.globalAlpha = 1;
     context.fillStyle = payload.textColor ?? "#1e293b";
     context.font = `${payload.fontSize ?? 13}px Inter, sans-serif`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(payload.text, width / 2, height / 2, Math.max(10, width - 8));
+    context.textAlign = payload.textAlignment ?? "center";
+    context.textBaseline = payload.textVerticalAlignment === 'top' ? 'top' : payload.textVerticalAlignment === 'bottom' ? 'bottom' : 'middle';
+    const textX = payload.textAlignment === 'left' ? 6 : payload.textAlignment === 'right' ? width - 6 : width / 2;
+    const textY = payload.textVerticalAlignment === 'top' ? 6 : payload.textVerticalAlignment === 'bottom' ? height - 6 : height / 2;
+    if (payload.textDirection === 'vertical') {
+      const chars = [...payload.text];
+      const lineHeight = Math.max(10, (payload.fontSize ?? 13) * 1.15);
+      const startY = height / 2 - ((chars.length - 1) * lineHeight) / 2;
+      chars.forEach((char, index) => context.fillText(char, textX, startY + index * lineHeight, Math.max(10, width - 8)));
+    } else {
+      context.fillText(payload.text, textX, textY, Math.max(10, width - 8));
+    }
   }
   context.restore();
 }

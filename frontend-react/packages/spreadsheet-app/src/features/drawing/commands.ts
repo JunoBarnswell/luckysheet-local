@@ -16,6 +16,7 @@ import type {
 import {
   assertCanonicalConnector,
   isDrawingConnectorPayload,
+  isShapeDrawingPayload,
   isDrawingGroup,
   isFormControlDrawingPayload,
   isPivotSlicerDrawingPayload,
@@ -225,7 +226,8 @@ function isDrawingPayload(value: unknown): value is DrawingPayload {
   if (value.kind === 'connector') return isDrawingConnectorPayload(value);
   if (value.kind === 'form-control') return isFormControlDrawingPayload(value);
   if (value.kind === 'textbox') return isTextBoxPayload(value);
-  if (['shape', 'chart', 'data-chart', 'camera'].includes(String(value.kind))) return true;
+  if (value.kind === 'shape') return isShapeDrawingPayload(value);
+  if (['chart', 'data-chart', 'camera'].includes(String(value.kind))) return true;
   return isPivotSlicerDrawingPayload(value) || isPivotTimelineDrawingPayload(value);
 }
 

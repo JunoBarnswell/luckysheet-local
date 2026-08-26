@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { Ribbon } from "../components/Ribbon";
 import type { RibbonTabId, UiSessionIntent, UiSnapshot, WorkbookSession } from "@react-sheets/spreadsheet-app";
+import type { DrawingConnectorType } from '@react-sheets/core-model';
 import type { Locale } from "../i18n";
 import type { EditorCommandController } from "./command-controller";
 import type { ColumnDimensionController } from './column-dimension-controller';
@@ -54,7 +55,7 @@ export function RibbonHost({
   const activeTableContext = state.activeContext.kind === 'table' ? state.activeContext : undefined;
   const activeChartDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'chart');
   const activePictureDrawing = state.selectedSheet.drawings.find((drawing) => drawing.id === state.selectedFloatingId && drawing.kind === 'image');
-  const activeShapeDrawings = state.selectedSheet.drawings.filter((drawing) => state.selectedDrawingIds.includes(drawing.id) && drawing.kind === 'shape');
+  const activeShapeDrawings = state.selectedSheet.drawings.filter((drawing) => state.selectedDrawingIds.includes(drawing.id) && (drawing.kind === 'shape' || drawing.kind === 'connector'));
   const activeShape = activeShapeDrawings.length > 0
     ? {
       sheetId: state.activeSheetId,
@@ -172,6 +173,7 @@ export function RibbonHost({
       onInsertChartType={(type) => session.insertChart(type)}
       onInsertSparklineType={(type) => { session.insertSparkline(type); }}
       onInsertShapeType={(type) => session.insertShape(type)}
+      onInsertConnectorType={(type: DrawingConnectorType) => session.insertConnector(type)}
       onTabChange={(tab: RibbonTabId) => session.setRibbonTab(tab)}
       phase={state.phase}
       homeState={state.homeRibbon}

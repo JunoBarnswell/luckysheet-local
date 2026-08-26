@@ -436,12 +436,12 @@ describe('drawing feature', () => {
     assert.equal(runtime.redo(), true);
     const sheet = workbook.getSheet(sheetId);
     const before = structuredClone(sheet.snapSettings);
-    runtime.execute('drawing.snapSettings.set', { sheetId, before, after: { enabled: true, snapToGrid: true, gridSize: 16 } });
+    runtime.execute('drawing.snapSettings.set', { sheetId, before, after: { enabled: true, snapToGrid: true, snapToShape: true, gridSize: 16 } });
     const pointer = drawingRuntime.beginPointerTransform(sheet, 'group-a');
-    assert.deepEqual(drawingRuntime.previewPointerTransform(sheet, pointer.id, { x: 21, y: 29, width: 20, height: 20 }), { x: 16, y: 32, width: 16, height: 16, rotation: 0 });
+    assert.deepEqual(drawingRuntime.previewPointerTransform(sheet, pointer.id, { x: 21, y: 29, width: 20, height: 20 }), { x: 20, y: 32, width: 16, height: 16, rotation: 0 });
     drawingRuntime.cancelPointerTransform(pointer.id);
     const invalidBefore = structuredClone(sheet.snapSettings);
-    assert.throws(() => runtime.execute('drawing.snapSettings.set', { sheetId, before: invalidBefore, after: { enabled: true, snapToGrid: true, gridSize: 0 } }), /invalid/);
+    assert.throws(() => runtime.execute('drawing.snapSettings.set', { sheetId, before: invalidBefore, after: { enabled: true, snapToGrid: true, snapToShape: true, gridSize: 0 } }), /invalid/);
     assert.deepEqual(sheet.snapSettings, invalidBefore);
   });
 });

@@ -1,4 +1,4 @@
-import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingCategory, ShapeDrawingType, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DrawingConnectorType, DataChartPlotType, FormControlType, ShapeDrawingCategory, ShapeDrawingType, SparklineModel } from '@react-sheets/core-model';
 import type { IconName } from '@react-sheets/ui-system';
 import type { InsertUiTextKey } from '../i18n';
 
@@ -83,6 +83,12 @@ export const INSERT_SHAPE_GALLERY: readonly ShapeGalleryCategory[] = [
   { id: 'lines', labelKey: 'shapeCategoryLines', variants: SHAPE_VARIANTS_LINES },
   { id: 'callouts-and-stars', labelKey: 'shapeCategoryCallouts', variants: SHAPE_VARIANTS_CALLOUTS },
 ] as const;
+
+export const INSERT_CONNECTOR_VARIANTS = [
+  { id: 'connector.straight', value: 'straight', icon: 'arrow-right', labelKey: 'connectorStraight', ariaLabelKey: 'connectorStraight', tooltipKey: 'connectorStraight' },
+  { id: 'connector.elbow', value: 'elbow', icon: 'arrow-right', labelKey: 'connectorElbow', ariaLabelKey: 'connectorElbow', tooltipKey: 'connectorElbow' },
+  { id: 'connector.curved', value: 'curved', icon: 'arrow-right', labelKey: 'connectorCurved', ariaLabelKey: 'connectorCurved', tooltipKey: 'connectorCurved' },
+] as const satisfies readonly InsertVariantDefinition<DrawingConnectorType>[];
 
 
 export const INSERT_FORM_CONTROL_VARIANTS = [

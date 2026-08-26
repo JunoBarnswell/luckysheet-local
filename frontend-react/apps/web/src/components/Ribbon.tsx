@@ -33,7 +33,7 @@ import { CommandPalette, type CommandPaletteEntry } from './CommandPalette';
 import { HomeRibbon, type HomeRibbonCommandOptions } from './HomeRibbon';
 import { InsertRibbon } from './InsertRibbon';
 import { RibbonTabPresenter } from './RibbonTabPresenter';
-import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
+import type { BarcodeSymbology, ChartDrawingPayload, DataChartPlotType, DrawingConnectorType, FormControlType, ShapeDrawingPayload, SheetTableModel, SparklineModel } from '@react-sheets/core-model';
 
 export interface RibbonProps {
   activeTab: RibbonTabId;
@@ -119,6 +119,7 @@ export interface RibbonProps {
   onInsertChartType: (type: ChartDrawingPayload['chartType']) => void;
   onInsertSparklineType: (type: SparklineModel['type']) => void;
   onInsertShapeType: (type: ShapeDrawingPayload['type']) => void;
+  onInsertConnectorType: (type: DrawingConnectorType) => void;
   onTabChange: (tab: RibbonTabId) => void;
   phase: AppPhase;
   activePivot?: { sheetId: string; pivotId: string };
@@ -302,6 +303,7 @@ export function Ribbon({
   canExecute,
   commandPaletteOpen = false,
   onCloseCommandPalette,
+  onInsertConnectorType,
 }: RibbonProps) {
   const disabled = phase !== 'ready';
   const cellStyle = homeState.style;
@@ -492,6 +494,7 @@ export function Ribbon({
         onInsertBarcode={(symbology) => onApplyBarcode(symbology)}
             onInsertSparkline={onInsertSparklineType}
             onInsertShape={onInsertShapeType}
+            onInsertConnector={onInsertConnectorType}
             onInsertFormControl={onCreateFormControl}
           />
         ) : null}

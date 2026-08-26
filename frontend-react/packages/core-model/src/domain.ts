@@ -178,14 +178,19 @@ export interface ImageDrawingPayload {
   effects?: ImageEffects;
 }
 
-/**
- * Shape identities are deliberately limited to the renderer-backed surface.
- * Connector/group/snap identities are not part of the canonical model until
- * their drawing, persistence, and collaboration contracts exist.
- */
+/** Renderer-backed auto-shape identity shared by gallery, payload, and export. */
 export type ShapeDrawingType = 'rectangle' | 'rounded-rectangle' | 'ellipse' | 'line' | 'arrow' | 'callout' | 'star';
 
 export type ShapeDrawingCategory = 'basic-shapes' | 'lines' | 'callouts-and-stars';
+
+export type ShapeTextDirection = 'horizontal' | 'vertical';
+export type ShapeTextHorizontalAlignment = 'left' | 'center' | 'right';
+export type ShapeTextVerticalAlignment = 'top' | 'middle' | 'bottom';
+
+export interface ShapeDrawingEffects {
+  shadow?: { color: string; blur: number; offsetX: number; offsetY: number; opacity: number };
+  glow?: { color: string; radius: number; opacity: number };
+}
 
 export interface ShapeDrawingPayload {
   kind: 'shape';
@@ -196,6 +201,12 @@ export interface ShapeDrawingPayload {
   text?: string;
   textColor?: string;
   fontSize?: number;
+  effects?: ShapeDrawingEffects;
+  textDirection?: ShapeTextDirection;
+  textAlignment?: ShapeTextHorizontalAlignment;
+  textVerticalAlignment?: ShapeTextVerticalAlignment;
+  hyperlink?: HyperlinkTarget;
+  propertyFormula?: string;
 }
 
 export type DrawingConnectorType = 'straight' | 'elbow' | 'curved';
@@ -239,12 +250,14 @@ export interface DrawingGroup {
 export interface WorksheetSnapSettings {
   enabled: boolean;
   snapToGrid: boolean;
+  snapToShape: boolean;
   gridSize: number;
 }
 
 export const DEFAULT_WORKSHEET_SNAP_SETTINGS: WorksheetSnapSettings = {
   enabled: true,
   snapToGrid: true,
+  snapToShape: true,
   gridSize: 8,
 };
 
@@ -749,6 +762,7 @@ export function isWorksheetSnapSettings(value: unknown): value is WorksheetSnapS
   if (!isRecord(value)) return false;
   return typeof value.enabled === 'boolean'
     && typeof value.snapToGrid === 'boolean'
+    && typeof value.snapToShape === 'boolean'
     && typeof value.gridSize === 'number'
     && Number.isFinite(value.gridSize)
     && value.gridSize > 0
@@ -762,6 +776,22 @@ export function isDrawingGroup(value: unknown): value is DrawingGroup {
     && Array.isArray(value.memberDrawingIds)
     && value.memberDrawingIds.length >= 2
     && value.memberDrawingIds.every((id) => typeof id === 'string' && id.trim().length > 0);
+}
+
+export function isShapeDrawingPayload(value: unknown): value is ShapeDrawingPayload {
+  if (!isRecord(value) || value.kind !== 'shape') return false;
+  if (!['rectangle', 'rounded-rectangle', 'ellipse', 'line', 'arrow', 'callout', 'star'].includes(String(value.type))) return false;
+  if (typeof value.fill !== 'string' || value.fill.trim().length === 0 || typeof value.stroke !== 'string' || value.stroke.trim().length === 0) return false;
+  if (value.strokeWidth !== undefined && (typeof value.strokeWidth !== 'number' || !Number.isFinite(value.strokeWidth) || value.strokeWidth <= 0 || value.strokeWidth > 100)) return false;
+  if (value.text !== undefined && typeof value.text !== 'string') return false;
+  if (value.textColor !== undefined && typeof value.textColor !== 'string') return false;
+  if (value.fontSize !== undefined && (typeof value.fontSize !== 'number' || !Number.isFinite(value.fontSize) || value.fontSize <= 0)) return false;
+  if (value.textDirection !== undefined && value.textDirection !== 'horizontal' && value.textDirection !== 'vertical') return false;
+  if (value.textAlignment !== undefined && !['left', 'center', 'right'].includes(String(value.textAlignment))) return false;
+  if (value.textVerticalAlignment !== undefined && !['top', 'middle', 'bottom'].includes(String(value.textVerticalAlignment))) return false;
+  if (value.propertyFormula !== undefined && (typeof value.propertyFormula !== 'string' || value.propertyFormula.trim().length === 0)) return false;
+  if (value.effects !== undefined && !isRecord(value.effects)) return false;
+  return true;
 }
 
 export function isDrawingConnectorPayload(value: unknown): value is ConnectorDrawingPayload {

@@ -93,6 +93,28 @@ describe('WorkbookSession drawing integration', () => {
     assert.equal((sheet.drawingPayloads.get(drawing?.payloadId ?? '') as { type?: string }).type, 'rectangle');
   });
 
+  it('inserts a bound connector only for two selected shapes and exposes Shape Format context', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const add = (id: string, payloadId: string, x: number) => app.addShape({ id, sheetId, kind: 'shape', payloadId, anchor: { kind: 'absolute' }, transform: { x, y: 20, width: 80, height: 40, rotation: 0 }, zIndex: 0 }, {
+      kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000',
+    });
+    add('connector-source', 'connector-source-payload', 20);
+    add('connector-target', 'connector-target-payload', 180);
+    app.setDrawingSelection(['connector-source', 'connector-target']);
+    app.insertConnector('elbow');
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    const connector = sheet.drawings.find((drawing) => drawing.kind === 'connector');
+    assert.ok(connector);
+    const payload = sheet.drawingPayloads.get(connector.payloadId);
+    assert.equal(payload?.kind, 'connector');
+    assert.equal(payload?.kind === 'connector' ? payload.connectorType : undefined, 'elbow');
+    assert.equal(app.getUiSnapshot().ribbon.activeTab, 'shapeFormat');
+    assert.throws(() => { app.setDrawingSelection(['connector-source']); app.insertConnector(); }, /exactly two/);
+    app.undo();
+    assert.equal(sheet.drawings.some((drawing) => drawing.kind === 'connector'), false);
+  });
+
   it('clears drawing selection and context on undo, with deterministic grid focus on redo', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

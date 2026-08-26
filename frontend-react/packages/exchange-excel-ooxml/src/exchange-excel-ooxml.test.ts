@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPivotMemberKey, WorkbookModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
 import { exportXlsx } from './export';
 import { importXlsx } from './import';
 import { scanSnapshotFeatures } from './feature-scan';
@@ -107,6 +107,31 @@ describe('exchange-excel-ooxml', () => {
     });
     assert.ok(exported.buffer.byteLength > 0);
     assert.equal(exported.fileName, 'roundtrip.xlsx');
+  });
+
+  it('preserves canonical connector routes, group ownership, and worksheet snap settings in metadata', async () => {
+    const workbook = new WorkbookModel('wb-shape-contracts', 'Shape contracts');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.drawings.push(
+      { id: 'shape-a', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'absolute' }, transform: { x: 20, y: 20, width: 80, height: 40, rotation: 0 }, zIndex: 0, payloadId: 'shape-a-payload' },
+      { id: 'shape-b', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'absolute' }, transform: { x: 180, y: 80, width: 80, height: 40, rotation: 0 }, zIndex: 1, payloadId: 'shape-b-payload' },
+      { id: 'connector-a-b', sheetId: sheet.id, kind: 'connector', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 0, height: 0, rotation: 0 }, zIndex: 2, payloadId: 'connector-a-b-payload' },
+    );
+    sheet.drawingPayloads.set('shape-a-payload', { kind: 'shape', type: 'rectangle', fill: '#fff', stroke: '#000' });
+    sheet.drawingPayloads.set('shape-b-payload', { kind: 'shape', type: 'ellipse', fill: '#fff', stroke: '#000' });
+    const connector = sheet.drawings[2]!;
+    const connectorPayload = { kind: 'connector' as const, connectorType: 'elbow' as const, start: { drawingId: 'shape-a', connectionPoint: 'right' as const }, end: { drawingId: 'shape-b', connectionPoint: 'left' as const }, stroke: '#2563eb', startArrowhead: 'none' as const, endArrowhead: 'triangle' as const, route: { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } };
+    const planned = planConnectorRoute(sheet, connector, connectorPayload);
+    connector.transform = planned.transform;
+    sheet.drawingPayloads.set(connector.payloadId, planned.payload);
+    sheet.drawingGroups.push({ id: 'shape-group', sheetId: sheet.id, memberDrawingIds: ['shape-a', 'shape-b'] });
+    sheet.snapSettings = { enabled: true, snapToGrid: false, snapToShape: true, gridSize: 12 };
+    const imported = await importXlsx({ fileName: 'shape-contracts.xlsx', buffer: exportSnapshotToXlsxBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+    const importedSheet = imported.snapshot.sheets[0]!;
+    assert.deepEqual(importedSheet.drawingGroups, sheet.drawingGroups);
+    assert.deepEqual(importedSheet.snapSettings, sheet.snapSettings);
+    assert.deepEqual(importedSheet.drawings.find((drawing) => drawing.id === connector.id)?.transform, connector.transform);
+    assert.deepEqual(importedSheet.drawingPayloads[connector.payloadId], planned.payload);
   });
 
   it('round-trips canonical and imported font families through OOXML styles', async () => {

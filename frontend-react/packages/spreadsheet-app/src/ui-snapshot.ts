@@ -123,6 +123,8 @@ export interface CanvasSheetSnapshot {
   drawings: DrawingObject[];
   /** Read-only payload projection keyed by DrawingObject.payloadId. */
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
+  drawingGroups?: import('@react-sheets/core-model').DrawingGroup[];
+  snapSettings?: import('@react-sheets/core-model').WorksheetSnapSettings;
   pivots: PivotModel[];
   pivotResults: Record<string, PivotResultTree>;
   /** Derived worksheet overlay; never materialized in ordinary cells. */
@@ -389,6 +391,8 @@ export function buildCanvasSheetSnapshot(
     drawingPayloads: new Map(
       [...sheet.drawingPayloads.entries()].map(([payloadId, payload]) => [payloadId, structuredClone(payload)]),
     ),
+    drawingGroups: structuredClone(sheet.drawingGroups),
+    snapSettings: structuredClone(sheet.snapSettings),
     pivots: [...sheet.pivots],
     pivotResults,
     pivotProjections,

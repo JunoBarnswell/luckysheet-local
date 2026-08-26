@@ -84,7 +84,7 @@ describe('canonical drawing graph planner', () => {
     const connector = value.drawings.find((drawing) => drawing.kind === 'connector')!;
     const payload = payloadAt(value, connector.payloadId) as ConnectorDrawingPayload;
     assert.throws(() => planConnectorRoute(value, connector, { ...payload, end: { drawingId: 'missing', connectionPoint: 'left' } }), /missing/);
-    assert.throws(() => validateDrawingGraph({ ...value, snapSettings: { enabled: true, snapToGrid: true, gridSize: 0 } }), /snap settings/);
+    assert.throws(() => validateDrawingGraph({ ...value, snapSettings: { enabled: true, snapToGrid: true, snapToShape: true, gridSize: 0 } }), /snap settings/);
   });
 
   it('rejects duplicate group ownership and non-canonical route data', () => {

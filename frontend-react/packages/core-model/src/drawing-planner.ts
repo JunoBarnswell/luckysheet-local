@@ -12,6 +12,7 @@ import {
   DEFAULT_WORKSHEET_SNAP_SETTINGS,
   isDrawingConnectorPayload,
   isDrawingGroup,
+  isShapeDrawingPayload,
   isWorksheetSnapSettings,
 } from './domain';
 
@@ -158,6 +159,7 @@ export function validateDrawingGraph(sheet: DrawingGraphSheet): void {
   if (orphanConnector) throw new Error(`Connector payload is orphaned: ${orphanConnector[0]}`);
   for (const drawing of sheet.drawings) {
     const payload = payloadAt(sheet, drawing.payloadId);
+    if (payload?.kind === 'shape' && !isShapeDrawingPayload(payload)) throw new Error(`Shape payload is invalid: ${drawing.payloadId}`);
     if (payload?.kind === 'connector') assertCanonicalConnector(sheet, drawing, payload);
   }
   const owned = new Set<string>();
