@@ -17,7 +17,6 @@ import { clearFormulaProvenance, columnLabel, noteCellKey, planCellShift, type C
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
-import { formatFormula, parseFormula, renameAstSheetReferences } from '@react-sheets/formula-engine';
 import {
   copyRangeToClipboardData,
   parseClipboardPayload,
@@ -275,30 +274,6 @@ function isSheetReorderedMutation(value: unknown): value is { sheetId: string; t
 
 function isTabColorMutation(value: unknown): value is { sheetId: string; color?: string } {
   return isRecord(value) && typeof value.sheetId === 'string' && (value.color === undefined || typeof value.color === 'string');
-}
-
-export function rewriteFormulasForSheetRename(
-  workbook: WorkbookModel,
-  _sheetId: string,
-  oldName: string,
-  newName: string,
-): Array<{ sheetId: string; row: number; column: number; previous?: CellData }> {
-  const changes: Array<{ sheetId: string; row: number; column: number; previous?: CellData }> = [];
-  for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
-      if (!cell.formula) return;
-      try {
-        const nextFormula = formatFormula(renameAstSheetReferences(parseFormula(cell.formula), oldName, newName));
-        if (nextFormula === cell.formula) return;
-        changes.push({ sheetId: sheet.id, row, column, previous: structuredClone(cell) });
-        sheet.cells.set(row, column, { ...cell, formula: nextFormula });
-      } catch {
-        // Unsupported formula syntax is left untouched. A lossy regex rewrite
-        // could mutate string literals or structured references.
-      }
-    });
-  }
-  return changes;
 }
 
 export function resolveGoTo(workbook: WorkbookModel, params: GoToParams): { row: number; column: number } | null {

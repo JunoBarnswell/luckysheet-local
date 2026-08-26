@@ -35,8 +35,10 @@ import {
 import { normalizeFontFamily } from './font-family';
 import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
+import { planSheetIdentityTransform } from './sheet-identity-transform';
 
 export * from './sheet-extent';
+export * from './sheet-identity-transform';
 
 export * from './font-family';
 export {
@@ -983,6 +985,9 @@ export interface SheetSnapshot {
   tableSheet?: TableSheetDefinition;
   ganttSheet?: GanttSheetDefinition;
   reportSheet?: ReportSheetDefinition;
+  /** Lifecycle inverse payload; owned workbook documents travel with the sheet. */
+  lifecycleDefinedNames?: DefinedNameModel[];
+  lifecyclePrintDocument?: PrintDocumentSnapshot;
 }
 
 export class WorkbookModel {
@@ -1269,26 +1274,15 @@ export class WorkbookModel {
 
   duplicateSheet(sourceSheetId: SheetId, newId: SheetId, newName: string): WorksheetModel {
     const source = this.getSheet(sourceSheetId);
-    const copy = source.cloneWithIdentity(newId, newName);
-    this.sheets.set(newId, copy);
-    const scopedNames = this.definedNameModels
-      .filter((entry) => entry.scope === 'sheet' && entry.sheetId === sourceSheetId)
-      .map((entry) => ({ ...entry, sheetId: newId }));
-    this.definedNameModels.push(...structuredClone(scopedNames));
-    const printDocument = this.printDocuments.get(sourceSheetId);
-    if (printDocument) {
-      this.printDocuments.set(newId, structuredClone({
-        ...printDocument,
-        sheetId: newId,
-        printAreas: printDocument.printAreas.map((area) => ({ sheetId: newId, range: { ...area.range, sheetId: newId } })),
-        pageBreaks: printDocument.pageBreaks.map((pageBreak) => pageBreak.row !== undefined
-          ? { sheetId: newId, row: pageBreak.row }
-          : { sheetId: newId, column: pageBreak.column }),
-      }));
-    }
-    const sourceIndex = this.sheetOrder.indexOf(sourceSheetId);
-    this.sheetOrder.splice(sourceIndex + 1, 0, newId);
-    return copy;
+    const plan = planSheetIdentityTransform(this, {
+      kind: 'duplicate',
+      sourceSheetId,
+      sourceName: source.name,
+      targetSheetId: newId,
+      targetName: newName,
+    });
+    plan.apply();
+    return this.getSheet(newId);
   }
 
   reorderSheet(sheetId: SheetId, toIndex: number): void {
@@ -1300,22 +1294,32 @@ export class WorkbookModel {
   }
 
   removeSheet(sheetId: SheetId): WorksheetModel {
-    if (this.sheets.size <= 1) throw new Error('A workbook must keep at least one worksheet');
     const sheet = this.getSheet(sheetId);
-    this.sheets.delete(sheetId);
-    this.printDocuments.delete(sheetId);
-    for (let index = this.definedNameModels.length - 1; index >= 0; index -= 1) {
-      if (this.definedNameModels[index]?.scope === 'sheet' && this.definedNameModels[index]?.sheetId === sheetId) {
-        this.definedNameModels.splice(index, 1);
-      }
-    }
-    this.sheetOrder = this.sheetOrder.filter((id) => id !== sheetId);
+    const plan = planSheetIdentityTransform(this, {
+      kind: 'delete',
+      sourceSheetId: sheetId,
+      sourceName: sheet.name,
+    });
+    plan.apply();
     return sheet;
+  }
+
+  renameSheet(sheetId: SheetId, name: string): void {
+    const source = this.getSheet(sheetId);
+    planSheetIdentityTransform(this, {
+      kind: 'rename',
+      sourceSheetId: sheetId,
+      sourceName: source.name,
+      targetName: name,
+    }).apply();
   }
 
   getSheetSnapshot(sheetId: SheetId): SheetSnapshot {
     const sheet = this.snapshot().sheets.find((entry) => entry.id === sheetId);
     if (!sheet) throw new Error(`Unknown sheet: ${sheetId}`);
+    sheet.lifecycleDefinedNames = structuredClone(this.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === sheetId));
+    const printDocument = this.printDocuments.get(sheetId);
+    if (printDocument) sheet.lifecyclePrintDocument = structuredClone(printDocument);
     return structuredClone(sheet);
   }
 
@@ -1325,6 +1329,8 @@ export class WorkbookModel {
     const hydrated = WorkbookModel.fromSnapshot({ ...current, sheets: [structuredClone(snapshot)] });
     const sheet = hydrated.getSheet(snapshot.id);
     this.sheets.set(sheet.id, sheet);
+    if (snapshot.lifecycleDefinedNames) this.definedNameModels.push(...structuredClone(snapshot.lifecycleDefinedNames));
+    if (snapshot.lifecyclePrintDocument) this.printDocuments.set(snapshot.id, structuredClone(snapshot.lifecyclePrintDocument));
     const bounded = Math.max(0, Math.min(index, this.sheetOrder.length));
     this.sheetOrder.splice(bounded, 0, sheet.id);
   }

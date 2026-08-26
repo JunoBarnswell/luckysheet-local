@@ -32,7 +32,7 @@ import { isHorizontalAlignment, isReadingOrder, isVerticalAlignment } from '@rea
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { buildCellFromText, type CellInputInterpretationContext } from './text-input';
-import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
+import { registerEditingCommands } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
 import { registerSheetTableCommands } from './sheet-table-commands';
 import { planSheetTableAutoExpansion, validateFilterOwnership } from './sheet-table-features';
@@ -812,13 +812,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isRenameSheetMutation(item.params)) throw new Error('Invalid sheet.rename mutation payload');
       const params = item.params;
-      context.workbook.getSheet(params.sheetId).name = params.name;
+      context.workbook.renameSheet(params.sheetId, params.name);
     },
     metadata: {
       schema: { name: 'RenameSheet', validate: isRenameSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      inverseIds: ['sheet.rename', 'cell.restore'],
+      inverseIds: ['sheet.rename'],
     },
   });
   runtime.registry.registerMutation<{ sheet: import('@react-sheets/core-model').SheetSnapshot; index?: number }>({
@@ -1020,14 +1020,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       const previousName = sheet.name;
       const affectedRanges: RangeRef[] = [];
-      const formulaRewrites = previousName !== params.name
-        ? rewriteFormulasForSheetRename(context.workbook, params.sheetId, previousName, params.name)
-        : [];
-      if (formulaRewrites.length > 0) {
-        for (const item of formulaRewrites) {
-          if (item.previous) context.workbook.getSheet(item.sheetId).cells.set(item.row, item.column, item.previous);
-        }
-      }
       context.applyMutation({
         id: 'sheet.rename',
         unitId: context.workbook.unitId,
@@ -1042,20 +1034,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             params: { sheetId: params.sheetId, name: previousName },
             affectedRanges,
           },
-          ...formulaRewrites.map((item) => ({
-            id: 'cell.restore' as const,
-            unitId: context.workbook.unitId,
-            sheetId: item.sheetId,
-            params: { sheetId: item.sheetId, row: item.row, column: item.column, previous: item.previous },
-            affectedRanges: cellRange({ sheetId: item.sheetId, row: item.row, column: item.column, value: item.previous ?? { value: null } }),
-          })),
         ],
-        apply: () => {
-          sheet.name = params.name;
-          if (previousName !== params.name) {
-            rewriteFormulasForSheetRename(context.workbook, params.sheetId, previousName, params.name);
-          }
-        },
+        apply: () => context.workbook.renameSheet(params.sheetId, params.name),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
