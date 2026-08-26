@@ -1,11 +1,13 @@
 package com.xc.luckysheet.server.contract;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record OperationEnvelope(
         @JsonProperty("schema") String schema,
         @JsonProperty("operationId") String operationId,
@@ -13,7 +15,8 @@ public record OperationEnvelope(
         @JsonProperty("clientSequence") long clientSequence,
         @JsonProperty("baseRevision") long baseRevision,
         @JsonProperty("mutations") List<OperationMutation> mutations,
-        @JsonProperty("createdAt") Instant createdAt
+        @JsonProperty("createdAt") Instant createdAt,
+        @JsonProperty("intent") OperationIntent intent
 ) {
     public static final String SCHEMA = "OperationEnvelope";
 
@@ -27,5 +30,17 @@ public record OperationEnvelope(
         if (mutations == null || mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
         mutations = List.copyOf(mutations);
         Objects.requireNonNull(createdAt, "createdAt is required");
+    }
+
+    public OperationEnvelope(
+            String schema,
+            String operationId,
+            String unitId,
+            long clientSequence,
+            long baseRevision,
+            List<OperationMutation> mutations,
+            Instant createdAt
+    ) {
+        this(schema, operationId, unitId, clientSequence, baseRevision, mutations, createdAt, null);
     }
 }

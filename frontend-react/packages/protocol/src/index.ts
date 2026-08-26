@@ -60,6 +60,12 @@ export interface OperationMutation {
   params: unknown;
 }
 
+export interface OperationIntent {
+  type: 'undo';
+  targetOperationId: string;
+  targetBaseRevision: number;
+}
+
 export interface OperationEnvelope {
   schema: typeof OPERATION_ENVELOPE_SCHEMA;
   operationId: string;
@@ -68,6 +74,7 @@ export interface OperationEnvelope {
   baseRevision: number;
   mutations: OperationMutation[];
   createdAt: string;
+  intent?: OperationIntent;
 }
 
 /**
@@ -1189,6 +1196,26 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   if ('actorId' in input || 'affectedRanges' in input) {
     throw new Error('actorId and affectedRanges are server-owned fields');
   }
+  let intent: OperationIntent | undefined;
+  if (input.intent !== undefined) {
+    if (!input.intent || typeof input.intent !== 'object' || Array.isArray(input.intent)) {
+      throw new Error('operation intent must be an object');
+    }
+    const rawIntent = input.intent as Record<string, unknown>;
+    const unknownIntentKeys = Object.keys(rawIntent).filter((key) => !['type', 'targetOperationId', 'targetBaseRevision'].includes(key));
+    if (unknownIntentKeys.length > 0) throw new Error(`operation intent contains unsupported fields: ${unknownIntentKeys.join(', ')}`);
+    if (rawIntent.type !== 'undo' || !isNonEmptyString(rawIntent.targetOperationId)) {
+      throw new Error('operation intent must identify an undo target');
+    }
+    if (!Number.isSafeInteger(rawIntent.targetBaseRevision) || Number(rawIntent.targetBaseRevision) < 0) {
+      throw new Error('operation intent targetBaseRevision must be a non-negative safe integer');
+    }
+    intent = {
+      type: 'undo',
+      targetOperationId: rawIntent.targetOperationId,
+      targetBaseRevision: Number(rawIntent.targetBaseRevision),
+    };
+  }
 
   const mutations = input.mutations.map((raw, index) => {
     if (!raw || typeof raw !== 'object') throw new Error(`mutation[${index}] must be an object`);
@@ -1219,6 +1246,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
     baseRevision: Number(input.baseRevision),
     mutations,
     createdAt: input.createdAt,
+    ...(intent ? { intent } : {}),
   };
 }
 
@@ -2028,6 +2056,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     clientSequence: input.clientSequence,
     baseRevision: input.baseRevision,
     createdAt: input.createdAt,
+    ...(input.intent === undefined ? {} : { intent: input.intent }),
     mutations: Array.isArray(input.mutations)
       ? input.mutations.map((mutation) => {
         if (!mutation || typeof mutation !== 'object') return mutation;

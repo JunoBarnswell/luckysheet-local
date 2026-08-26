@@ -207,6 +207,7 @@ export function createSpreadsheetRuntime(options: {
     shareTokenProvider: options.shareTokenProvider,
     disposed: false,
   };
+  runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   // The offline journal records operation intent and its client sequence.
   // The same IndexedDB transaction also checkpoints the canonical local
   // workbook snapshot, so a closed browser can resume without any service.
@@ -574,7 +575,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (history) {
         runtime.collaboration?.recordLocalUndo({
           operationId: result.operationId,
-          undoMutations: history.undo,
+          undoMutations: history.inversePlan,
         });
       }
       if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
@@ -590,15 +591,17 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       // replayed mutation facts through the same session coordinator boundary
       // used by local and remote command application.
       runtime.handlers.onMutationsApplied?.();
-      if (!runtime.collaboration || entry.undo.length === 0) return;
+      if (!runtime.collaboration || entry.inversePlan.length === 0) return;
       const operation = source === 'undo'
         ? runtime.collaboration.enqueueCompensatingMutations(
-          runtime.collaboration.undoOwnLast() ?? entry.undo,
+          runtime.collaboration.undoOwnLast() ?? entry.inversePlan,
           runtime.model.unitId,
+          entry.operationId,
+          entry.baseRevision,
         )
-        : runtime.collaboration.enqueueLocalMutations(entry.redo, runtime.model.unitId);
+        : runtime.collaboration.enqueueLocalMutations(entry.forwardMutations, runtime.model.unitId);
       if (source === 'redo') {
-        runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.undo });
+        runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.inversePlan });
       }
       scheduleOperation(runtime, operation);
       void runtime.checkpointWorkspace();
@@ -719,6 +722,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
     return runtime.formula?.getCellResult(address)?.value;
   });
   runtime.commands = new CommandRuntime(workbook);
+  runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
   runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
   installCommandCellValueResolver(runtime);

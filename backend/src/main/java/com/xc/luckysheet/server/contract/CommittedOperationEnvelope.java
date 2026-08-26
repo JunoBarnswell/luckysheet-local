@@ -1,11 +1,13 @@
 package com.xc.luckysheet.server.contract;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Instant;
 import java.util.List;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record CommittedOperationEnvelope(
         @JsonProperty("schema") String schema,
         @JsonProperty("operationId") String operationId,
@@ -17,7 +19,8 @@ public record CommittedOperationEnvelope(
         @JsonProperty("revision") long revision,
         @JsonProperty("mutations") List<CommittedOperationMutation> mutations,
         @JsonProperty("createdAt") Instant createdAt,
-        @JsonProperty("committedAt") Instant committedAt
+        @JsonProperty("committedAt") Instant committedAt,
+        @JsonProperty("intent") OperationIntent intent
 ) {
     @JsonCreator
     public CommittedOperationEnvelope {
@@ -27,6 +30,22 @@ public record CommittedOperationEnvelope(
         if (mutations == null || mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
         mutations = List.copyOf(mutations);
         if (createdAt == null || committedAt == null) throw new IllegalArgumentException("operation timestamps are required");
+    }
+
+    public CommittedOperationEnvelope(
+            String schema,
+            String operationId,
+            String unitId,
+            String actorId,
+            OperationOrigin origin,
+            long clientSequence,
+            long baseRevision,
+            long revision,
+            List<CommittedOperationMutation> mutations,
+            Instant createdAt,
+            Instant committedAt
+    ) {
+        this(schema, operationId, unitId, actorId, origin, clientSequence, baseRevision, revision, mutations, createdAt, committedAt, null);
     }
 
     public static CommittedOperationEnvelope from(
@@ -49,7 +68,8 @@ public record CommittedOperationEnvelope(
                 // Client clocks are neither trusted nor replay authority.
                 // The persisted envelope has one server-issued event time.
                 committedAt,
-                committedAt
+                committedAt,
+                operation.intent()
         );
     }
 
@@ -71,7 +91,8 @@ public record CommittedOperationEnvelope(
                 revision,
                 mutations,
                 committedAt,
-                committedAt
+                committedAt,
+                operation.intent()
         );
     }
 }

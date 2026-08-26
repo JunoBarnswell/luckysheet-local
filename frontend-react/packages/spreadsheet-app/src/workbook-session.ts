@@ -1829,7 +1829,7 @@ export class WorkbookSession {
     const undoCount = entries.length - 1 - index;
     for (let step = 0; step < undoCount; step += 1) {
       const entry = this.runtime.commands.getUndoEntries().at(-1);
-      if (entry && !this.canReplayHistory(entry.undo)) {
+      if (entry && !this.canReplayHistory(entry.inversePlan)) {
         this.notify('Undo is no longer allowed for the protected selection');
         break;
       }
@@ -1980,7 +1980,7 @@ export class WorkbookSession {
 
   undo(): void {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.undo)) {
+    if (entry && !this.canReplayHistory(entry.inversePlan)) {
       this.notify('Undo is no longer allowed for the protected selection');
       return;
     }
@@ -1996,7 +1996,7 @@ export class WorkbookSession {
 
   redo(): void {
     const entry = this.runtime.commands.getRedoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.redo)) {
+    if (entry && !this.canReplayHistory(entry.forwardMutations)) {
       this.notify('Redo is no longer allowed for the protected selection');
       return;
     }
