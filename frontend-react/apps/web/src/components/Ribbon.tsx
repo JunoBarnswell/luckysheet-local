@@ -89,7 +89,7 @@ export interface RibbonProps {
   onOpenTableSettings: () => void;
   onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
   onConvertActiveTableToRange: () => void;
-  onCreateDataTable: () => void;
+  onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
   onClearFilter: () => CommandDescriptor | undefined;
@@ -259,7 +259,7 @@ export function Ribbon({
   onOpenTableSettings,
   onToggleTableOption,
   onConvertActiveTableToRange,
-  onCreateDataTable,
+  onCreateDataSource,
   onToggleSheetTableTotalRow,
   onApplyFilterSelection,
   onClearFilter,
@@ -350,7 +350,7 @@ export function Ribbon({
     onOpenTableSettings,
     onToggleTableOption,
     onConvertActiveTableToRange,
-    onCreateDataTable,
+    onCreateDataSource,
     onToggleSheetTableTotalRow,
     onApplyFilterSelection,
     onClearFilter,

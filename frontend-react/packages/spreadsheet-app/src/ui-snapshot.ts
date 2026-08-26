@@ -133,6 +133,7 @@ export interface CanvasSheetSnapshot {
   sparklineGroups?: SparklineGroup[];
   conditionalFormats: ConditionalFormatRule[];
   dataValidations: DataValidationRule[];
+  dataRegions: import('@react-sheets/core-model').SheetDataRegion[];
   merges: MergeSpan[];
   pane: WorksheetPane;
   autoFilter?: AutoFilterModel;
@@ -399,6 +400,7 @@ export function buildCanvasSheetSnapshot(
     sparklineGroups: structuredClone(sheet.sparklineGroups),
     conditionalFormats: [...sheet.conditionalFormats],
     dataValidations: [...sheet.dataValidations],
+    dataRegions: structuredClone(sheet.dataRegions),
     merges: [...sheet.merges],
     pane: { ...sheet.pane },
     autoFilter: resolveActiveAutoFilter(sheet) ? structuredClone(resolveActiveAutoFilter(sheet)) : undefined,

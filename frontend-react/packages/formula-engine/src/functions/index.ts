@@ -42,12 +42,13 @@ const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MA
 const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'MEDIAN', 'PERCENTILE', 'SORT', 'FILTER', 'UNIQUE']);
 const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT', 'RANDARRAY']);
 const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY', 'FILTER', 'UNIQUE', 'SORT', 'SORTBY', 'SEQUENCE', 'RANDARRAY', 'HSTACK', 'VSTACK', 'TAKE', 'DROP']);
+const NATIVE_FUNCTIONS = new Set(['SJS.TABLE']);
 
 export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new Map(
-  [...new Set([...Object.keys(BUILTIN_FUNCTIONS), ...Object.keys(ADVANCED_FUNCTIONS)])].map((name) => {
+  [...new Set([...Object.keys(BUILTIN_FUNCTIONS), ...Object.keys(ADVANCED_FUNCTIONS), ...NATIVE_FUNCTIONS])].map((name) => {
     const id = name.toUpperCase();
     const volatile = VOLATILE_FUNCTIONS.has(id);
-    const cost = volatile ? 'volatile' : MATRIX_FUNCTIONS.has(id) ? 'range' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
+    const cost = volatile ? 'volatile' : MATRIX_FUNCTIONS.has(id) || NATIVE_FUNCTIONS.has(id) ? 'range' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
     return [id, { id, cost, streaming: cost === 'range', volatile }];
   }),
 );
@@ -63,7 +64,7 @@ const categoryForFunction = (name: string): FunctionLibraryCategory => {
 
 /** The only UI-facing function list; it is derived from the executable registry. */
 export const FUNCTION_LIBRARY: readonly FunctionLibraryEntry[] = [...FUNCTION_DESCRIPTORS.values()]
-  .filter((descriptor) => Object.prototype.hasOwnProperty.call(BUILTIN_FUNCTIONS, descriptor.id))
+  .filter((descriptor) => Object.prototype.hasOwnProperty.call(BUILTIN_FUNCTIONS, descriptor.id) || NATIVE_FUNCTIONS.has(descriptor.id))
   .map((descriptor) => ({ ...descriptor, category: categoryForFunction(descriptor.id) }))
   .sort((left, right) => left.id.localeCompare(right.id));
 

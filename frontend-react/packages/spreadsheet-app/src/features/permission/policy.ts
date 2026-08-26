@@ -168,7 +168,6 @@ const COMMAND_ACTION_MAP: Readonly<Record<string, PermissionAction>> = {
   'automation.record.stop': 'script',
   'extended.whatIf.goalSeek': 'script',
   'extended.whatIf.scenario': 'script',
-  'extended.whatIf.dataTable': 'script',
   'sheet.create.advanced': 'structure',
   'tableSheet.update': 'structure',
   'ganttSheet.update': 'structure',

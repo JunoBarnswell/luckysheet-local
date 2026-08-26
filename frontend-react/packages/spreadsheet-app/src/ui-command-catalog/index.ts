@@ -95,6 +95,7 @@ export type RibbonCommandId =
   | 'stopRecording'
   | 'calculateNow'
   | 'goalSeek'
+  | 'sjsTable'
   | 'tracePrecedents'
   | 'traceDependents'
   | 'removeArrows'
@@ -226,8 +227,8 @@ export type RibbonCommandId =
   | 'sortAscending'
   | 'sortDescending'
   | 'customSort'
-  | 'dataModel'
-  | 'createDataTable'
+  | 'dataSource'
+  | 'createDataSource'
   | 'formatAsTable'
   | 'totalRow'
   | 'dataValidation'
@@ -444,7 +445,7 @@ export interface RibbonCommandActions {
   onOpenTableSettings: () => void;
   onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
   onConvertActiveTableToRange: () => void;
-  onCreateDataTable: () => void;
+  onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
   onApplyFilterSelection: () => CommandDescriptor | undefined;
   onClearFilter: () => CommandDescriptor | undefined;
@@ -711,6 +712,7 @@ export const RIBBON_TEXT = {
     stopRecording: 'commands.stopRecording',
     calculateNow: 'commands.calculateNow',
     goalSeek: 'commands.goalSeek',
+    sjsTable: 'commands.sjsTable',
     tracePrecedents: 'commands.tracePrecedents',
     traceDependents: 'commands.traceDependents',
     removeArrows: 'commands.removeArrows',
@@ -890,8 +892,8 @@ export const RIBBON_TEXT = {
     sortAscending: 'commands.sortAscending',
     sortDescending: 'commands.sortDescending',
     customSort: 'commands.customSort',
-    dataModel: 'commands.dataModel',
-    createDataTable: 'commands.createDataTable',
+    dataSource: 'commands.dataSource',
+    createDataSource: 'commands.createDataSource',
     formatAsTable: 'commands.formatAsTable',
     totalRow: 'commands.totalRow',
     dataValidation: 'commands.dataValidation',
@@ -972,7 +974,6 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('sortFilter', 'data', 10),
   group('dataTools', 'data', 20),
   group('outline', 'data', 40),
-  group('findTransform', 'data', 60),
   group('whatIf', 'data', 70),
   group('comments', 'review', 10),
   group('notesLinks', 'review', 20),
@@ -1052,10 +1053,9 @@ export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], Ribbo
     tab: 'data',
     groups: [
       groupSpec('sortFilter', 10, columnNode('sortFilter.primary', rowNode('sortFilter.order', commandNode('sortAscending', 'sortAscending', 'sort'), commandNode('sortDescending', 'sortDescending', 'sort')), rowNode('sortFilter.filter', commandNode('customSort', 'customSort', 'sort')))),
-      groupSpec('dataTools', 20, columnNode('dataTools.primary', commandNode('dataModel', 'dataModel', 'data-tools', 'large'), stackNode('dataTools.secondary', commandNode('createDataTable', 'createDataTable', 'data-tools'), commandNode('formatAsTable', 'formatAsTable', 'data-tools'), commandNode('totalRow', 'totalRow', 'data-tools'), commandNode('dataValidation', 'dataValidation', 'data-tools'), commandNode('filterSelection', 'filterSelection', 'filter'), commandNode('clearFilter', 'clearFilter', 'filter')))),
+      groupSpec('dataTools', 20, columnNode('dataTools.primary', commandNode('dataSource', 'dataSource', 'data-tools', 'large'), stackNode('dataTools.secondary', commandNode('createDataSource', 'createDataSource', 'data-tools'), commandNode('dataValidation', 'dataValidation', 'data-tools'), commandNode('filterSelection', 'filterSelection', 'filter'), commandNode('clearFilter', 'clearFilter', 'filter')))),
       groupSpec('outline', 40, columnNode('outline.primary', rowNode('outline.rows', commandNode('groupRows', 'groupRows', 'outline'), commandNode('ungroupRows', 'ungroupRows', 'outline'), commandNode('showLevel1', 'showLevel1', 'outline')), rowNode('outline.columns', commandNode('groupColumns', 'groupColumns', 'outline'), commandNode('ungroupColumns', 'ungroupColumns', 'outline'), commandNode('showLevel2', 'showLevel2', 'outline')), rowNode('outline.transform', commandNode('subtotal', 'subtotal', 'outline'), commandNode('removeDuplicates', 'removeDuplicates', 'outline'), commandNode('textToColumns', 'textToColumns', 'outline'), commandNode('showLevel3', 'showLevel3', 'outline')))),
-      groupSpec('findTransform', 60, columnNode('findTransform.primary', commandNode('findReplace', 'findReplace', 'find-transform', 'large'), stackNode('findTransform.secondary', commandNode('goTo', 'goTo', 'find-transform'), commandNode('transpose', 'transpose', 'find-transform'), commandNode('flipHorizontal', 'flipHorizontal', 'find-transform'), commandNode('flipVertical', 'flipVertical', 'find-transform'), commandNode('splitByDelimiter', 'splitByDelimiter', 'find-transform')))),
-      groupSpec('whatIf', 70, columnNode('whatIf.primary', commandNode('goalSeek', 'goalSeek', 'goal-seek', 'large'))),
+      groupSpec('whatIf', 70, columnNode('whatIf.primary', commandNode('goalSeek', 'goalSeek', 'goal-seek', 'large'), commandNode('sjsTable', 'sjsTable', 'function', 'large'))),
     ],
   },
 };
@@ -1434,6 +1434,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
 
   callback('calculateNow', 'formulas', 'calculation', RIBBON_TEXT.commands.calculateNow, (context) => context.actions.onRecalculate(), 'calculator'),
   intent('goalSeek', 'data', 'whatIf', RIBBON_TEXT.commands.goalSeek, () => ({ type: 'panel.open', panel: 'extended' })),
+  intent('sjsTable', 'data', 'whatIf', RIBBON_TEXT.commands.sjsTable, () => ({ type: 'dialog.open', dialog: 'function-wizard' }), 'function'),
   callback('tracePrecedents', 'formulas', 'formulaAudit', RIBBON_TEXT.commands.tracePrecedents, (context) => context.actions.onTracePrecedents(), 'search'),
   callback('traceDependents', 'formulas', 'formulaAudit', RIBBON_TEXT.commands.traceDependents, (context) => context.actions.onTraceDependents(), 'share'),
   callback('removeArrows', 'formulas', 'formulaAudit', RIBBON_TEXT.commands.removeArrows, (context) => context.actions.onRemoveArrows(), 'x'),
@@ -1767,10 +1768,8 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
     enabled: (context) => Boolean(context.buildSortDescriptor),
   },
   intent('customSort', 'data', 'sortFilter', RIBBON_TEXT.commands.customSort, () => ({ type: 'dialog.open', dialog: 'sort-dialog' }), 'sliders'),
-  intent('dataModel', 'data', 'dataTools', RIBBON_TEXT.commands.dataModel, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
-  callback('createDataTable', 'data', 'dataTools', RIBBON_TEXT.commands.createDataTable, (context) => context.actions.onCreateDataTable(), 'table'),
-  callback('formatAsTable', 'data', 'dataTools', RIBBON_TEXT.commands.formatAsTable, (context) => context.actions.onCreateSheetTable(), 'table'),
-  dynamicCommand('totalRow', 'data', 'dataTools', RIBBON_TEXT.commands.totalRow, (context) => context.actions.onToggleSheetTableTotalRow(), 'table'),
+  intent('dataSource', 'data', 'dataTools', RIBBON_TEXT.commands.dataSource, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
+  callback('createDataSource', 'data', 'dataTools', RIBBON_TEXT.commands.createDataSource, (context) => context.actions.onCreateDataSource(), 'table'),
   intent('dataValidation', 'data', 'dataTools', RIBBON_TEXT.commands.dataValidation, () => ({ type: 'panel.open', panel: 'dataValidation' }), 'check-circle'),
   dynamicCommand('filterSelection', 'data', 'dataTools', RIBBON_TEXT.commands.filterSelection, (context) => context.actions.onApplyFilterSelection(), 'filter'),
   dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),

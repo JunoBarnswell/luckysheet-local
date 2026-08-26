@@ -1,22 +1,15 @@
 import React, { useState } from 'react';
 import { Box, Button, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { parseRangeInput } from '../../domain/range-input';
 
 export interface ExtendedPanelProps {
   lastWhatIfMessage?: string | null;
   canRunExtended: boolean;
-  sheetId: string;
   onGoalSeek: (params: {
     setRow: number;
     setColumn: number;
     targetValue: number;
     changingRow: number;
     changingColumn: number;
-  }) => void;
-  onRunDataTable: (params: {
-    inputMode: 'row' | 'column';
-    inputCell: { row: number; column: number };
-    tableRange: { startRow: number; startColumn: number; endRow: number; endColumn: number };
   }) => void;
   onRunScenario: (params: {
     name: string;
@@ -41,16 +34,11 @@ export function ExtendedPanel({
   lastWhatIfMessage,
   onClose,
   onGoalSeek,
-  onRunDataTable,
   onRunScenario,
-  sheetId,
 }: ExtendedPanelProps) {
   const [setCell, setSetCell] = useState('A1');
   const [changingCell, setChangingCell] = useState('B1');
   const [targetValue, setTargetValue] = useState('100');
-  const [dataTableInputCell, setDataTableInputCell] = useState('B1');
-  const [dataTableRange, setDataTableRange] = useState('A1:D2');
-  const [dataTableMode, setDataTableMode] = useState<'row' | 'column'>('column');
   const [scenarioName, setScenarioName] = useState('Best Case');
   const [scenarioChangingCell, setScenarioChangingCell] = useState('B1');
   const [scenarioChangingValue, setScenarioChangingValue] = useState('20');
@@ -110,62 +98,6 @@ export function ExtendedPanel({
                 }}
               >
                 Run Goal Seek
-              </Button>
-            </Stack>
-          </Box>
-
-          <Box>
-            <Text size="xs" weight="semibold" className="mb-2 text-slate-700">Data Table</Text>
-            <Stack gap="sm">
-              <Inline gap="xs">
-                <Button
-                  size="xs"
-                  variant={dataTableMode === 'column' ? 'primary' : 'ghost'}
-                  disabled={!canRunExtended}
-                  onClick={() => setDataTableMode('column')}
-                >
-                  Column Input
-                </Button>
-                <Button
-                  size="xs"
-                  variant={dataTableMode === 'row' ? 'primary' : 'ghost'}
-                  disabled={!canRunExtended}
-                  onClick={() => setDataTableMode('row')}
-                >
-                  Row Input
-                </Button>
-              </Inline>
-              <TextInput
-                value={dataTableInputCell}
-                onChange={(event) => setDataTableInputCell(event.target.value)}
-                placeholder="Input cell (e.g. B1)"
-                disabled={!canRunExtended}
-              />
-              <TextInput
-                value={dataTableRange}
-                onChange={(event) => setDataTableRange(event.target.value)}
-                placeholder="Table range (e.g. A1:D2)"
-                disabled={!canRunExtended}
-              />
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={!canRunExtended}
-                onClick={() => {
-                  const inputCell = parseCell(dataTableInputCell);
-                  const tableRange = parseRangeInput(dataTableRange, sheetId);
-                  if (!inputCell || !tableRange) {
-                    setStatus('Invalid data table cell or range');
-                    return;
-                  }
-                  onRunDataTable({
-                    inputMode: dataTableMode,
-                    inputCell,
-                    tableRange,
-                  });
-                }}
-              >
-                Run Data Table
               </Button>
             </Stack>
           </Box>

@@ -31,7 +31,6 @@ export function registerPlatformFeatures(runtime: CommandRuntime): string[] {
     'automation.record.stop',
     'extended.whatIf.goalSeek',
     'extended.whatIf.scenario',
-    'extended.whatIf.dataTable',
     'sheet.protect.set',
     'sheet.protect.remove',
   ];

@@ -63,22 +63,4 @@ describe('WorkbookSession extended integration', () => {
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1)?.value, 20);
   });
 
-  it('runs data table through extended.whatIf.dataTable command path', () => {
-    const app = new WorkbookSession();
-    const sheetId = app.getActiveSheetId();
-    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { formula: '=B1*2' } });
-    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 5 } });
-    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 2, value: { value: 10 } });
-    app.recalculateFormulas();
-
-    const result = app.runDataTableAnalysis({
-      columnInputCell: { row: 0, column: 1 },
-      tableRange: { startRow: 0, startColumn: 0, endRow: 1, endColumn: 2 },
-    });
-
-    assert.equal(result.status, 'completed');
-    assert.equal(result.filledCells, 2);
-    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 1)?.value, 10);
-    assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(1, 2)?.value, 20);
-  });
 });

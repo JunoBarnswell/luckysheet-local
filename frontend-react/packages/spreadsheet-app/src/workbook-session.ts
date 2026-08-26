@@ -140,6 +140,7 @@ import {
 import {
   prepareDataRegionMaterialization,
   createWorkbookCellResolver,
+  encodeSheetDataRegion,
 } from './features/data-source';
 import type { TableRowsResponse, WorkbookCellResolver } from './features/data-source';
 import {
@@ -198,8 +199,6 @@ import type { AutomationWorkerFactory } from './features/automation';
 import { CommandRecorder } from './features/automation/command-recorder';
 import type { ScriptRunResult } from './features/automation';
 import type {
-  DataTableParams,
-  DataTableResult,
   GoalSeekParams,
   GoalSeekResult,
   ScenarioDefinition,
@@ -342,7 +341,7 @@ export interface UiSnapshot extends DesignerState {
   automationRecording: boolean;
   recordedScript: string;
   lastScriptResult: ScriptRunResult | null;
-  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
+  lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
   formulaAudit: FormulaAuditProjection;
   version: number;
   /** Canonical DesignerState fields; render-specific projections remain read-only views of the same session. */
@@ -397,7 +396,7 @@ function compareStyleValue(value: unknown): string {
 }
 
 export interface ExtendedSnapshot {
-  lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null;
+  lastWhatIfResult: GoalSeekResult | ScenarioResult | null;
 }
 
 export interface CreatePivotTableParams {
@@ -507,7 +506,7 @@ export class WorkbookSession {
   private automationRecording = false;
   private recordedScript = '';
   private lastScriptResult: ScriptRunResult | null = null;
-  private lastWhatIfResult: GoalSeekResult | ScenarioResult | DataTableResult | null = null;
+  private lastWhatIfResult: GoalSeekResult | ScenarioResult | null = null;
   private lastRepeatableCommand: CommandDescriptor | null = null;
   private readonly pivotTaskGeneration = new Map<string, number>();
   private pivotOpenRefreshStarted = false;
@@ -4738,21 +4737,6 @@ export class WorkbookSession {
     return result;
   }
 
-  runDataTableAnalysis(params: DataTableParams): DataTableResult {
-    if (!this.canExecute('extended.whatIf.dataTable')) {
-      this.notify('You do not have permission to run data tables');
-      return { kind: 'data-table', status: 'failed', message: 'Permission denied', filledCells: 0, writes: [] };
-    }
-    const command = this.runCommand('extended.whatIf.dataTable', { ...params, sheetId: this.activeSheetId }) as import('@react-sheets/command-runtime').CommandResult & { plan?: WhatIfPlan };
-    const result = command.plan?.result as DataTableResult | undefined;
-    if (!result) throw new Error('Data Table command did not return a plan');
-    this.lastWhatIfResult = result;
-    this.panels = { ...this.panels, active: 'extended', open: true };
-    this.notify(result.message);
-    this.refresh();
-    return result;
-  }
-
   getExtendedSnapshot(): ExtendedSnapshot {
     return {
       lastWhatIfResult: this.lastWhatIfResult,
@@ -5131,26 +5115,25 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  async createDataTableFromSelection(): Promise<void> {
+  async createDataSourceFromSelection(): Promise<void> {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const primaryRange = this.getPrimaryRange();
     const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
     await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
-    const fieldNames = new Set<string>();
-    const fields: WorkbookTableModel['fields'] = [];
-    for (let column = sourceRange.startColumn; column <= sourceRange.endColumn; column++) {
-      const rawName = String(this.readResolvedCell(sheet, sourceRange.startRow, column)?.value ?? '').trim() || `Column ${column - sourceRange.startColumn + 1}`;
-      let name = rawName;
-      let suffix = 2;
-      while (fieldNames.has(name)) name = `${rawName} ${suffix++}`;
-      fieldNames.add(name);
-      const sample: CellData['value'][] = [];
-      for (let row = sourceRange.startRow + 1; row <= Math.min(sourceRange.endRow, sourceRange.startRow + 1000); row++) sample.push(this.readResolvedCell(sheet, row, column)?.value ?? null);
-      fields.push({ id: name, name, ordinal: fields.length, type: inferTableFieldType(sample) });
-    }
-    const table: WorkbookTableModel = { id: nextId('table'), name: `${sheet.name} table`, sourceSheetId: this.activeSheetId, sourceRange: { ...sourceRange }, rowCount: Math.max(0, sourceRange.endRow - sourceRange.startRow), fields, blockSize: 4096, blocks: [], revision: 0 };
-    this.runCommand('table.add', table);
-    this.notify(`Data table ${table.name} created`);
+    const sourceId = nextId('data-source');
+    const encoded = await encodeSheetDataRegion({
+      sheet,
+      range: sourceRange,
+      sourceId,
+      sourceName: `${sheet.name} data source`,
+      regionId: `${sourceId}:region`,
+      revision: 0,
+    });
+    if (!encoded) throw new Error('Selected range does not meet the block-backed Data Source threshold');
+    for (const block of encoded.blocks) await this.storeDataBlock(block.ref, block.payload);
+    this.addDataSource(encoded.manifest);
+    this.addDataRegion(encoded.region);
+    this.notify(`Data Source ${encoded.manifest.name} created`);
     this.refresh();
   }
 

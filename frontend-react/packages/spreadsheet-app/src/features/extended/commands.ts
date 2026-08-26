@@ -1,10 +1,8 @@
 import type { CellData, RangeRef } from '@react-sheets/core-model';
 import type { CommandContext, CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import {
-  planDataTable,
   planGoalSeek,
   planScenario,
-  type DataTableParams,
   type GoalSeekParams,
   type ScenarioDefinition,
   type WhatIfCellWrite,
@@ -19,10 +17,6 @@ export interface ExtendedGoalSeekCommandParams extends GoalSeekParams {
 export interface ExtendedScenarioCommandParams {
   sheetId?: string;
   scenario: ScenarioDefinition;
-}
-
-export interface ExtendedDataTableCommandParams extends DataTableParams {
-  sheetId?: string;
 }
 
 function cellRange(sheetId: string, row: number, column: number): RangeRef[] {
@@ -104,13 +98,6 @@ export function registerExtendedCommands(registry: CommandRegistry): void {
     },
   });
 
-  registry.registerCommand<ExtendedDataTableCommandParams>({
-    id: 'extended.whatIf.dataTable',
-    execute(params, context): CommandResult & { plan: WhatIfPlan } {
-      const sheetId = params.sheetId ?? context.workbook.primarySheetId;
-      return commandPlanResult(planDataTable(context.workbook, sheetId, params), params, context);
-    },
-  });
 }
 
 function hashValue(value: unknown): string {

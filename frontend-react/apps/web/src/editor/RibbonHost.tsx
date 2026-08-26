@@ -142,7 +142,7 @@ export function RibbonHost({
       onOpenTableSettings={() => session.openTableSettings()}
       onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
       onConvertActiveTableToRange={() => session.convertActiveSheetTableToRange()}
-      onCreateDataTable={() => session.createDataTableFromSelection()}
+      onCreateDataSource={() => { void session.createDataSourceFromSelection(); }}
       onToggleSheetTableTotalRow={commands.buildTotalRowCommand}
       onApplyFilterSelection={commands.buildFilterSelectionCommand}
       onClearFilter={commands.buildClearFilterCommand}

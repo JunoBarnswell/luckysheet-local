@@ -4,6 +4,8 @@ import { collectFormulaDependencies } from './dependencies';
 import {
   evaluateFormula,
   evaluateFormulaWithTrace,
+  type FormulaCellOverride,
+  type FormulaEvaluationContext,
   type FormulaEvaluationReference,
   type FormulaEvaluationTrace,
 } from './evaluator';
@@ -576,40 +578,7 @@ export class FormulaEngine {
     const visiting = new Set<string>();
     let trace: FormulaEvaluationTrace;
     try {
-      trace = evaluateFormulaWithTrace(cell.ast, {
-        currentCell: cell.address,
-        dateSystem: this.dateSystem,
-        canonicalReferenceDate: this.canonicalReferenceDate,
-        numericContext: this.numericContext,
-        collationContext: this.collationContext,
-        rowVisibility: this.rowVisibilityResolver,
-        readFormulaKind: (reference) => this.formulaKindAt(reference),
-        random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
-        readCell: (reference) => this.evaluateCell(reference, cache, visiting),
-        readRange: (range) => this.readRange(range, cache, visiting),
-        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
-        readSpillRange: (anchor) => {
-          this.evaluateCell(anchor, cache, visiting);
-          const spill = this.spills.get(spillKey(anchor));
-          return spill ? {
-            kind: 'range' as const,
-            start: { sheetId: spill.range.sheetId, row: spill.range.startRow, column: spill.range.startColumn },
-            end: { sheetId: spill.range.sheetId, row: spill.range.endRow, column: spill.range.endColumn },
-          } : undefined;
-        },
-        readSpillValue: (address) => {
-          this.evaluateCell(address, cache, visiting);
-          return this.getSpillValueAt(address.sheetId, address.row, address.column);
-        },
-        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
-        resolveTableReference: (tableName, request) => {
-          const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
-          if (isFormulaError(resolved)) return resolved;
-          if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
-          return this.evaluateCell(resolved as CellAddress, cache, visiting);
-        },
-        resolveReference: (reference) => this.resolveReference(reference, cell.address),
-      });
+      trace = evaluateFormulaWithTrace(cell.ast, this.createEvaluationContext(cell, cache, visiting, []));
     } catch (error) {
       const value = error instanceof FormulaReferenceError
         ? createFormulaError('#REF!', error.message)
@@ -1026,6 +995,7 @@ export class FormulaEngine {
     address: CellAddress,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
   ): FormulaValue {
     const key = cellAddressKey(address);
     const cached = cache.get(key);
@@ -1055,40 +1025,7 @@ export class FormulaEngine {
     visiting.add(key);
     let value: FormulaValue;
     try {
-      value = evaluateFormula(cell.ast, {
-        currentCell: cell.address,
-        dateSystem: this.dateSystem,
-        canonicalReferenceDate: this.canonicalReferenceDate,
-        numericContext: this.numericContext,
-        collationContext: this.collationContext,
-        rowVisibility: this.rowVisibilityResolver,
-        readFormulaKind: (reference) => this.formulaKindAt(reference),
-        random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
-        readCell: (reference) => this.evaluateCell(reference, cache, visiting),
-        readRange: (range) => this.readRange(range, cache, visiting),
-        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
-        readSpillRange: (anchor) => {
-          this.evaluateCell(anchor, cache, visiting);
-          const spill = this.spills.get(spillKey(anchor));
-          return spill ? {
-            kind: 'range' as const,
-            start: { sheetId: spill.range.sheetId, row: spill.range.startRow, column: spill.range.startColumn },
-            end: { sheetId: spill.range.sheetId, row: spill.range.endRow, column: spill.range.endColumn },
-          } : undefined;
-        },
-        readSpillValue: (address) => {
-          this.evaluateCell(address, cache, visiting);
-          return this.getSpillValueAt(address.sheetId, address.row, address.column);
-        },
-        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
-        resolveTableReference: (tableName, request) => {
-          const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
-          if (isFormulaError(resolved)) return resolved;
-          if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
-          return this.evaluateCell(resolved as CellAddress, cache, visiting);
-        },
-        resolveReference: (reference) => this.resolveReference(reference, cell.address),
-      });
+      value = evaluateFormula(cell.ast, this.createEvaluationContext(cell, cache, visiting, overrides));
     } catch (error) {
       value = error instanceof FormulaReferenceError
         ? createFormulaError('#REF!', error.message)
@@ -1102,6 +1039,59 @@ export class FormulaEngine {
     const displayValue = this.cells.get(key)?.result.value ?? value;
     cache.set(key, displayValue);
     return displayValue;
+  }
+
+  private createEvaluationContext(
+    cell: StoredCell & { ast: FormulaAst },
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[],
+  ): FormulaEvaluationContext {
+    return {
+        currentCell: cell.address,
+        dateSystem: this.dateSystem,
+        canonicalReferenceDate: this.canonicalReferenceDate,
+        numericContext: this.numericContext,
+        collationContext: this.collationContext,
+        rowVisibility: this.rowVisibilityResolver,
+        readFormulaKind: (reference) => this.formulaKindAt(reference),
+        random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
+        readCell: (reference) => this.readCellWithOverrides(reference, cache, visiting, overrides),
+        readRange: (range) => this.readRange(range, cache, visiting, overrides),
+        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting, overrides),
+        readSpillRange: (anchor) => {
+          this.evaluateCell(anchor, cache, visiting, overrides);
+          const spill = this.spills.get(spillKey(anchor));
+          return spill ? {
+            kind: 'range' as const,
+            start: { sheetId: spill.range.sheetId, row: spill.range.startRow, column: spill.range.startColumn },
+            end: { sheetId: spill.range.sheetId, row: spill.range.endRow, column: spill.range.endColumn },
+          } : undefined;
+        },
+        readSpillValue: (address) => {
+          this.evaluateCell(address, cache, visiting, overrides);
+          return this.getSpillValueAt(address.sheetId, address.row, address.column);
+        },
+        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
+        resolveTableReference: (tableName, request) => {
+          const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
+          if (isFormulaError(resolved)) return resolved;
+          if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
+          return this.evaluateCell(resolved as CellAddress, cache, visiting, overrides);
+        },
+        resolveReference: (reference) => this.resolveReference(reference, cell.address),
+        evaluateWithCellOverrides: (ast, nestedOverrides) => evaluateFormula(ast, this.createEvaluationContext(cell, new Map<string, FormulaValue>(), new Set<string>(), [...overrides, ...nestedOverrides])),
+      };
+  }
+
+  private readCellWithOverrides(
+    address: CellAddress,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[],
+  ): FormulaValue {
+    const override = overrides.find((candidate) => cellAddressKey(candidate.address) === cellAddressKey(address));
+    return override ? structuredClone(override.value) : this.evaluateCell(address, cache, visiting, overrides);
   }
 
   private refreshSpill(address: CellAddress, value: FormulaValue, cache?: Map<string, FormulaValue>): void {
@@ -1305,12 +1295,13 @@ export class FormulaEngine {
     range: RangeDependency,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
   ): ArrayValue {
     const matrix: ArrayValue = [];
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       const line: FormulaValue[] = [];
       for (let column = range.start.column; column <= range.end.column; column += 1) {
-        line.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting));
+        line.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting, overrides));
       }
       matrix.push(line);
     }
@@ -1321,11 +1312,12 @@ export class FormulaEngine {
     range: RangeDependency,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
   ): readonly FormulaValue[] {
     const values: FormulaValue[] = [];
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       for (let column = range.start.column; column <= range.end.column; column += 1) {
-        values.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting));
+        values.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting, overrides));
       }
     }
     return values;
@@ -1335,8 +1327,9 @@ export class FormulaEngine {
     address: CellAddress,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
   ): FormulaValue {
-    const value = this.evaluateCell(address, cache, visiting);
+    const value = this.evaluateCell(address, cache, visiting, overrides);
     return this.getSpillValueAt(address.sheetId, address.row, address.column) ?? value;
   }
 }

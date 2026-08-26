@@ -29,6 +29,7 @@ import type {
   SparklineGroup,
   DefinedNameModel,
   DataRelationship,
+  DataSourceManifest,
   TableSheetDefinition,
   GanttSheetDefinition,
   ReportSheetDefinition,
@@ -37,7 +38,6 @@ import type {
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
-import type { TableRowsResponse } from '@react-sheets/spreadsheet-app';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition } from '@react-sheets/spreadsheet-app';
@@ -62,7 +62,7 @@ import { AutomationPanel } from './panels/AutomationPanel';
 import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
-import { DataModelPanel } from './panels/DataModelPanel';
+import { DataSourcePanel } from './panels/DataSourcePanel';
 import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
 import { GanttDesignerPanel } from './panels/GanttDesignerPanel';
 import { ReportDesignerPanel } from './panels/ReportDesignerPanel';
@@ -129,6 +129,7 @@ export interface FeatureSidebarProps {
   compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport: () => void;
   tables: readonly WorkbookTableModel[];
+  dataSources: readonly DataSourceManifest[];
   relationships: readonly DataRelationship[];
   onUpdateTableSheet: (definition: TableSheetDefinition) => void;
   onUpdateGanttSheet: (definition: GanttSheetDefinition) => void;
@@ -139,8 +140,8 @@ export interface FeatureSidebarProps {
   onResizeTable: (range: RangeRef) => void;
   onTableStyleChange: (styleName: string) => void;
   onConvertTableToRange: () => void;
-  onReadDataRows: (tableId: string, offset?: number, limit?: number) => Promise<TableRowsResponse>;
-  onRemoveDataTable: (tableId: string) => Promise<void>;
+  onRemoveDataSource: (sourceId: string) => void;
+  onRemoveDataRegion: (regionId: string) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onAddSparkline: (sparkline: SparklineModel) => void;
   onRemoveSparkline: (id: string) => void;
@@ -168,11 +169,6 @@ export interface FeatureSidebarProps {
   lastWhatIfMessage?: string | null;
   canRunExtended: boolean;
   onGoalSeek: (params: { setRow: number; setColumn: number; targetValue: number; changingRow: number; changingColumn: number }) => void;
-  onRunDataTable: (params: {
-    inputMode: 'row' | 'column';
-    inputCell: { row: number; column: number };
-    tableRange: { startRow: number; startColumn: number; endRow: number; endColumn: number };
-  }) => void;
   onRunScenario: (params: {
     name: string;
     changingCell: { row: number; column: number };
@@ -356,6 +352,7 @@ export function FeatureSidebar({
   compatibilityReport = null,
   onClearCompatibilityReport,
   tables,
+  dataSources,
   relationships,
   onUpdateTableSheet,
   onUpdateGanttSheet,
@@ -366,8 +363,8 @@ export function FeatureSidebar({
   onResizeTable,
   onTableStyleChange,
   onConvertTableToRange,
-  onReadDataRows,
-  onRemoveDataTable,
+  onRemoveDataSource,
+  onRemoveDataRegion,
   onCommand,
   onAddSparkline,
   onRemoveSparkline,
@@ -395,7 +392,6 @@ export function FeatureSidebar({
   lastWhatIfMessage = null,
   canRunExtended,
   onGoalSeek,
-  onRunDataTable,
   onRunScenario,
   onAddComment,
   onReplyComment,
@@ -680,7 +676,6 @@ export function FeatureSidebar({
             canRunExtended={canRunExtended}
             sheetId={sheetId}
             onGoalSeek={onGoalSeek}
-            onRunDataTable={onRunDataTable}
             onRunScenario={onRunScenario}
           />
         ) : null}
@@ -718,7 +713,7 @@ export function FeatureSidebar({
           ) : activeTable ? (
             <TableDesignPanel table={activeTable} locale={locale} selectedRange={tableResizeRange} onNameChange={onTableNameChange} onToggle={onToggleTableOption} onResize={onResizeTable} onStyleChange={onTableStyleChange} onConvert={onConvertTableToRange} />
           ) : (
-            <DataModelPanel tables={tables} onReadRows={onReadDataRows} onRemove={onRemoveDataTable} />
+            <DataSourcePanel sources={dataSources} regions={sheet.dataRegions} onRemoveSource={onRemoveDataSource} onRemoveRegion={onRemoveDataRegion} />
           )
         ) : null}
       </Box>

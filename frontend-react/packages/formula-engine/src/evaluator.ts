@@ -5,7 +5,7 @@ import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
-import { createFormulaError, isArrayValue, isFormulaError, isReferenceValue, type ArrayValue, type FormulaError, type FormulaValue } from './values';
+import { createFormulaError, isArrayValue, isFormulaError, isReferenceValue, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
 import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
 import type { ExcelNumericContext } from './numeric';
 import type { WorkbookCollationContext } from './collation';
@@ -47,6 +47,13 @@ export interface FormulaEvaluationContext {
   readonly volatileOccurrence?: string;
   /** Host-provided order-independent random source for volatile functions. */
   readonly random?: (functionName: string, occurrence?: string, elementIndex?: number) => number | FormulaError;
+  /** Evaluate a formula AST while overriding one or more input cells. */
+  readonly evaluateWithCellOverrides?: (ast: FormulaAst, overrides: readonly FormulaCellOverride[]) => FormulaValue;
+}
+
+export interface FormulaCellOverride {
+  readonly address: CellAddress;
+  readonly value: ScalarValue;
 }
 
 /** A data-only evaluation step used by Formula Auditing's Evaluate Formula view. */
@@ -391,6 +398,8 @@ function evaluateReferenceFunction(
   trace?: EvaluationTraceSink,
 ): FormulaValue | EvaluationRange | undefined {
   switch (name.toUpperCase()) {
+    case 'SJS.TABLE':
+      return evaluateSjsTable(args, context, trace);
     case 'ROW': {
       if (args.length === 0) return context.currentCell.row + 1;
       const target = args[0]!;
@@ -487,6 +496,71 @@ function evaluateReferenceFunction(
     default:
       return undefined;
   }
+}
+
+/**
+ * SJS.TABLE is the canonical dynamic-array data-table function.  The first
+ * argument is the result expression/reference, followed by one or more
+ * `(inputs, inputCell)` pairs.  Each input range is sampled in row-major
+ * order and the result expression is evaluated with the corresponding input
+ * cells overridden for that row.
+ */
+function evaluateSjsTable(
+  args: readonly FormulaAst[],
+  context: FormulaEvaluationContext,
+  trace?: EvaluationTraceSink,
+): FormulaValue {
+  if (!context.evaluateWithCellOverrides) return createFormulaError('#BLOCKED!', 'SJS.TABLE requires an override-capable workbook evaluator');
+  if (args.length < 3 || (args.length - 1) % 2 !== 0) {
+    return createFormulaError('#VALUE!', 'SJS.TABLE expects resultReference and one or more input pairs');
+  }
+
+  const inputPairs: Array<{ values: FormulaValue[]; address: CellAddress }> = [];
+  for (let index = 1; index < args.length; index += 2) {
+    const inputNode = args[index]!;
+    const cellNode = args[index + 1]!;
+    const address = referenceCellAddress(cellNode, context);
+    if (!address) return createFormulaError('#VALUE!', 'SJS.TABLE inputCell must be a cell reference');
+    const values = referenceValues(inputNode, context, trace);
+    if (isFormulaError(values)) return values;
+    inputPairs.push({ values, address });
+  }
+  const rowCount = inputPairs[0]?.values.length ?? 0;
+  if (rowCount === 0 || inputPairs.some((pair) => pair.values.length !== rowCount)) {
+    return createFormulaError('#VALUE!', 'SJS.TABLE input ranges must have the same number of values');
+  }
+
+  const result: ArrayValue = [];
+  for (let row = 0; row < rowCount; row += 1) {
+    const overrides = inputPairs.map((pair) => ({ address: pair.address, value: scalarForTable(pair.values[row]!) }));
+    const value = context.evaluateWithCellOverrides(args[0]!, overrides);
+    trace?.(args[0]!, value as EvaluationValue);
+    if (isFormulaError(value)) return value;
+    if (isArrayValue(value) || isReferenceValue(value)) return createFormulaError('#CALC!', 'SJS.TABLE resultReference must resolve to a scalar');
+    result.push([value]);
+  }
+  return result;
+}
+
+function referenceCellAddress(node: FormulaAst, context: FormulaEvaluationContext): CellAddress | undefined {
+  if (node.type !== 'cell-reference') return undefined;
+  return resolveCellReference(node.reference, context.currentCell);
+}
+
+function referenceValues(node: FormulaAst, context: FormulaEvaluationContext, trace?: EvaluationTraceSink): FormulaValue[] | FormulaError {
+  const value = evaluateNode(node, context, trace);
+  if (isFormulaError(value)) return value;
+  if (isEvaluationRange(value)) return [...context.readRange(value.range)];
+  if (isEvaluationReference(value)) return value.ranges.flatMap((range) => [...context.readRange(range)]);
+  if (isArrayValue(value)) return value.flat();
+  if (isReferenceValue(value)) return createFormulaError('#VALUE!', 'SJS.TABLE inputs must be cell or range references');
+  return [value];
+}
+
+function scalarForTable(value: FormulaValue): ScalarValue {
+  if (isFormulaError(value)) return null;
+  if (isArrayValue(value) || isReferenceValue(value)) return null;
+  return value;
 }
 
 function readRangeAsMatrix(range: RangeDependency, context: FormulaEvaluationContext): ArrayValue {
