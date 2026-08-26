@@ -4321,22 +4321,22 @@ export class WorkbookSession {
   }
 
   setPrintArea(range: RangeRef): void {
-    if (!this.canExecute('print.area.set')) {
+    if (!this.canExecute('pageLayout.printArea.set')) {
       this.notify('You do not have permission to set print area');
       return;
     }
-    this.runCommand('print.area.set', { sheetId: range.sheetId, range });
+    this.runCommand('pageLayout.printArea.set', { sheetId: range.sheetId, range });
     this.rebuildPrintSnapshot(this.printLayout, range);
     this.notify('Print area updated');
     this.emit();
   }
 
   updatePrintPageSetup(layout: PrintLayout): void {
-    if (!this.canExecute('print.pageSetup')) {
+    if (!this.canExecute('pageLayout.pageSetup.set')) {
       this.notify('You do not have permission to change print setup');
       return;
     }
-    this.runCommand('print.pageSetup', { layout, sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.pageSetup.set', { layout, sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot(layout);
     this.emit();
   }
@@ -4351,7 +4351,7 @@ export class WorkbookSession {
   }
 
   clearPrintArea(): void {
-    this.runCommand('print.area.clear', { sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.printArea.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Print area cleared');
     this.emit();
@@ -4362,14 +4362,14 @@ export class WorkbookSession {
     const params = axis === 'rows'
       ? { sheetId: this.activeSheetId, repeatRows: { start: range.startRow, end: range.endRow } }
       : { sheetId: this.activeSheetId, repeatColumns: { start: range.startColumn, end: range.endColumn } };
-    this.runCommand('print.titles.set', params);
+    this.runCommand('pageLayout.printTitles.set', params);
     this.rebuildStoredPrintSnapshot();
     this.notify(axis === 'rows' ? 'Rows to repeat at top updated' : 'Columns to repeat at left updated');
     this.emit();
   }
 
   clearPrintTitles(): void {
-    this.runCommand('print.titles.clear', { sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.printTitles.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Print titles cleared');
     this.emit();
@@ -4377,27 +4377,27 @@ export class WorkbookSession {
 
   setPrintPageBreak(pageBreak: { row?: number; column?: number }): void {
     const next: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
-    this.runCommand('print.pageBreak.set', { sheetId: this.activeSheetId, pageBreak: next });
+    this.runCommand('pageLayout.pageBreak.insert', { sheetId: this.activeSheetId, pageBreak: next });
     this.rebuildStoredPrintSnapshot();
     this.emit();
   }
 
   removePrintPageBreak(pageBreak: { row?: number; column?: number }): void {
     const target: PrintPageBreak = { sheetId: this.activeSheetId, ...pageBreak };
-    this.runCommand('print.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
+    this.runCommand('pageLayout.pageBreak.remove', { sheetId: this.activeSheetId, pageBreak: target });
     this.rebuildStoredPrintSnapshot();
     this.emit();
   }
 
   clearPrintPageBreaks(): void {
-    this.runCommand('print.pageBreaks.clear', { sheetId: this.activeSheetId });
+    this.runCommand('pageLayout.pageBreak.clear', { sheetId: this.activeSheetId });
     this.rebuildStoredPrintSnapshot();
     this.notify('Manual page breaks cleared');
     this.emit();
   }
 
   setPrintScale(scale: number, fitToWidth?: number | null, fitToHeight?: number | null): void {
-    this.runCommand('print.scale.set', {
+    this.runCommand('pageLayout.scaleToFit.set', {
       sheetId: this.activeSheetId,
       scale,
       ...(fitToWidth === undefined ? {} : { fitToWidth }),
@@ -4421,26 +4421,26 @@ export class WorkbookSession {
   }
 
   setPrintGridlines(enabled: boolean): void {
-    this.runCommand('print.gridlines.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.printGridlines.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printGridlines: enabled };
     this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
   setPrintHeadings(enabled: boolean): void {
-    this.runCommand('print.headings.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.printHeadings.set', { sheetId: this.activeSheetId, enabled });
     this.printLayout = { ...this.printLayout, printHeadings: enabled };
     this.rebuildStoredPrintSnapshot(this.printLayout);
     this.emit();
   }
 
   setViewGridlines(enabled: boolean): void {
-    this.runCommand('pageLayout.gridlines.view.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.viewGridlines.set', { sheetId: this.activeSheetId, enabled });
     this.refresh();
   }
 
   setViewHeadings(enabled: boolean): void {
-    this.runCommand('pageLayout.headings.view.set', { sheetId: this.activeSheetId, enabled });
+    this.runCommand('pageLayout.viewHeadings.set', { sheetId: this.activeSheetId, enabled });
     this.refresh();
   }
 

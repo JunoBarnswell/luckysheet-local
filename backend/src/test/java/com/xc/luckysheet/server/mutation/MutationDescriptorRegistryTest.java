@@ -224,7 +224,7 @@ class MutationDescriptorRegistryTest {
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
                 "table.add", "table.remove", "name.set", "name.remove",
-                "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set", "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace"
+                "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source",
                 "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
@@ -535,8 +535,8 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = mapper.readTree("""
                 {"schema":"WorkbookSnapshot","unitId":"book-1","name":"Book","sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}],"printDocuments":[],"queryDefinitions":[]}
                 """);
-        OperationMutation print = new OperationMutation("print.document.replace", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","document":{"schema":"PrintDocument","unitId":"book-1","sheetId":"sheet-1","pageSetup":{"paperSize":"a4","orientation":"portrait","margins":{"top":72,"right":72,"bottom":72,"left":72,"header":36,"footer":36},"scale":100,"printGridlines":false,"printHeadings":false,"centerHorizontally":false,"centerVertically":false},"printAreas":[{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2}}],"pageBreaks":[]}}
+        OperationMutation print = new OperationMutation("pageLayout.paperSize.set", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","paperSize":"a4"}
                 """));
         JsonNode current = registry.prepare(snapshot, print, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, print);
         assertEquals("a4", current.path("printDocuments").get(0).path("pageSetup").path("paperSize").asText());

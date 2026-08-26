@@ -16,8 +16,10 @@ import java.util.Set;
 final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of(
             "table.add", "table.remove", "name.set", "name.remove",
-            "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set",
-            "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace"
+            "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set",
+            "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear",
+            "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear",
+            "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
     );
 
     WorkbookStateMutationDescriptor(String id) {
@@ -28,11 +30,11 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     @Override
     public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
-        if (id().startsWith("print.")) {
+        if (id().startsWith("pageLayout.")) {
+            validatePageLayoutMutation(root, mutation);
             ObjectNode params = SnapshotMutationSupport.params(mutation);
-            ObjectNode document = SnapshotMutationSupport.requiredObject(params, "document");
-            validateDocument(root, mutation.sheetId(), document);
-            return List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
+            if (id().equals("pageLayout.printArea.set")) return List.of(SnapshotMutationSupport.range(root, params.get("range")));
+            return List.of();
         }
         if (id().equals("table.add")) {
             ObjectNode table = requiredMutationObject(mutation);
@@ -56,7 +58,10 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
             case "table.remove" -> removeTable(root, rawId(mutation.params(), "Table id"));
             case "name.set" -> setName(root, SnapshotMutationSupport.params(mutation));
             case "name.remove" -> removeName(root, SnapshotMutationSupport.params(mutation));
-            case "print.pageSetup.set", "print.area.set", "print.area.clear", "print.pageBreak.set", "print.pageBreak.remove", "print.pageBreaks.clear", "print.document.replace" -> setDocument(root, mutation.sheetId(), SnapshotMutationSupport.params(mutation));
+            case "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set",
+                    "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear",
+                    "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear",
+                    "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set" -> applyPageLayout(root, mutation);
             default -> throw ServiceException.validation("Unsupported workbook state mutation: " + id());
         }
         return root;
@@ -126,6 +131,150 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         if (scope.equals("workbook")) SnapshotMutationSupport.object(root, "definedNames").remove(name);
     }
 
+    private void validatePageLayoutMutation(ObjectNode root, OperationMutation mutation) {
+        ObjectNode params = SnapshotMutationSupport.params(mutation);
+        String sheetId = SnapshotMutationSupport.text(params, "sheetId");
+        if (!mutation.sheetId().equals(sheetId)) throw ServiceException.validation("Page layout mutation sheet does not match operation sheet");
+        SnapshotMutationSupport.sheet(root, sheetId);
+        switch (id()) {
+            case "pageLayout.margins.set" -> {
+                ObjectNode margins = SnapshotMutationSupport.requiredObject(params, "margins");
+                for (String field : List.of("top", "right", "bottom", "left", "header", "footer")) finiteNonNegative(margins.get(field), "Page layout margin " + field);
+            }
+            case "pageLayout.orientation.set" -> {
+                String orientation = SnapshotMutationSupport.text(params, "orientation");
+                if (!Set.of("portrait", "landscape").contains(orientation)) throw ServiceException.validation("Page layout orientation is invalid");
+            }
+            case "pageLayout.paperSize.set" -> {
+                String paper = SnapshotMutationSupport.text(params, "paperSize");
+                if (!Set.of("letter", "a4", "a3", "legal", "custom").contains(paper)) throw ServiceException.validation("Page layout paper size is invalid");
+            }
+            case "pageLayout.pageSetupDetail.set" -> validatePageSetup(SnapshotMutationSupport.requiredObject(params, "pageSetup"));
+            case "pageLayout.scaleToFit.set" -> {
+                JsonNode scale = params.get("scale");
+                if (scale == null || !scale.isNumber() || scale.asDouble() <= 0 || scale.asDouble() > 400) throw ServiceException.validation("Page layout scale is invalid");
+                optionalPositiveInteger(params.get("fitToWidth"), "Page layout fitToWidth");
+                optionalPositiveInteger(params.get("fitToHeight"), "Page layout fitToHeight");
+            }
+            case "pageLayout.printTitles.set" -> {
+                validateSpan(params.get("repeatRows"), "Page layout repeatRows");
+                validateSpan(params.get("repeatColumns"), "Page layout repeatColumns");
+            }
+            case "pageLayout.printArea.set" -> {
+                RangeRef range = SnapshotMutationSupport.range(root, params.get("range"));
+                SnapshotMutationSupport.requireSheet(range, sheetId);
+            }
+            case "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove" -> validatePageBreak(params.get("pageBreak"), sheetId);
+            case "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set" -> {
+                if (!params.path("enabled").isBoolean()) throw ServiceException.validation("Page layout toggle enabled is required");
+            }
+            case "pageLayout.printArea.clear" -> validatePrintAreas(root, params.get("printAreas"), sheetId);
+            case "pageLayout.pageBreak.clear" -> validatePageBreaks(params.get("pageBreaks"), sheetId);
+            default -> throw ServiceException.validation("Unsupported page layout mutation: " + id());
+        }
+    }
+
+    private void validatePageSetup(ObjectNode setup) {
+        String paper = SnapshotMutationSupport.text(setup, "paperSize");
+        if (!Set.of("letter", "a4", "a3", "legal", "custom").contains(paper)) throw ServiceException.validation("Print paper size is invalid");
+        String orientation = SnapshotMutationSupport.text(setup, "orientation");
+        if (!Set.of("portrait", "landscape").contains(orientation)) throw ServiceException.validation("Print orientation is invalid");
+        ObjectNode margins = SnapshotMutationSupport.requiredObject(setup, "margins");
+        for (String field : List.of("top", "right", "bottom", "left", "header", "footer")) finiteNonNegative(margins.get(field), "Print margin " + field);
+        JsonNode scale = setup.get("scale");
+        if (scale == null || !scale.isNumber() || scale.asDouble() <= 0 || scale.asDouble() > 400) throw ServiceException.validation("Print scale is invalid");
+        for (String field : List.of("printGridlines", "printHeadings", "centerHorizontally", "centerVertically")) if (!setup.path(field).isBoolean()) throw ServiceException.validation("Print page setup " + field + " must be boolean");
+    }
+
+    private void validateSpan(JsonNode value, String label) {
+        if (value == null || value.isNull()) return;
+        if (!value.isObject() || !value.path("start").canConvertToInt() || !value.path("end").canConvertToInt() || value.path("start").asInt() < 0 || value.path("end").asInt() < value.path("start").asInt()) throw ServiceException.validation(label + " is invalid");
+    }
+
+    private void optionalPositiveInteger(JsonNode value, String label) {
+        if (value == null || value.isNull()) return;
+        if (!value.isIntegralNumber() || value.asInt() < 1) throw ServiceException.validation(label + " is invalid");
+    }
+
+    private void validatePrintAreas(ObjectNode root, JsonNode value, String sheetId) {
+        if (value == null) return;
+        if (!value.isArray()) throw ServiceException.validation("Page layout printAreas must be an array");
+        for (JsonNode area : value) {
+            if (!area.isObject() || !sheetId.equals(SnapshotMutationSupport.text((ObjectNode) area, "sheetId"))) throw ServiceException.validation("Page layout print area sheet is invalid");
+            RangeRef range = SnapshotMutationSupport.range(root, area.get("range"));
+            SnapshotMutationSupport.requireSheet(range, sheetId);
+        }
+    }
+
+    private void validatePageBreaks(JsonNode value, String sheetId) {
+        if (value == null) return;
+        if (!value.isArray()) throw ServiceException.validation("Page layout pageBreaks must be an array");
+        for (JsonNode pageBreak : value) validatePageBreak(pageBreak, sheetId);
+    }
+
+    private ObjectNode printDocumentFor(ObjectNode root, String sheetId) {
+        ArrayNode documents = SnapshotMutationSupport.array(root, "printDocuments");
+        for (JsonNode document : documents) if (sheetId.equals(document.path("sheetId").asText()) && document.isObject()) return (ObjectNode) document;
+        ObjectNode document = JsonNodeFactory.instance.objectNode();
+        document.put("schema", "PrintDocument");
+        document.put("unitId", SnapshotMutationSupport.text(root, "unitId"));
+        document.put("sheetId", sheetId);
+        ObjectNode setup = document.putObject("pageSetup");
+        setup.put("paperSize", "a4");
+        setup.put("orientation", "portrait");
+        ObjectNode margins = setup.putObject("margins");
+        margins.put("top", 72).put("right", 72).put("bottom", 72).put("left", 72).put("header", 36).put("footer", 36);
+        setup.put("scale", 100).put("printGridlines", false).put("printHeadings", false).put("centerHorizontally", false).put("centerVertically", false);
+        document.putArray("printAreas");
+        document.putArray("pageBreaks");
+        documents.add(document);
+        return document;
+    }
+
+    private void applyPageLayout(ObjectNode root, OperationMutation mutation) {
+        validatePageLayoutMutation(root, mutation);
+        ObjectNode params = SnapshotMutationSupport.params(mutation);
+        String sheetId = SnapshotMutationSupport.text(params, "sheetId");
+        ObjectNode document = printDocumentFor(root, sheetId);
+        ObjectNode setup = SnapshotMutationSupport.requiredObject(document, "pageSetup");
+        switch (id()) {
+            case "pageLayout.margins.set" -> setup.set("margins", params.get("margins").deepCopy());
+            case "pageLayout.orientation.set" -> setup.set("orientation", params.get("orientation"));
+            case "pageLayout.paperSize.set" -> setup.set("paperSize", params.get("paperSize"));
+            case "pageLayout.pageSetupDetail.set" -> document.set("pageSetup", params.get("pageSetup").deepCopy());
+            case "pageLayout.scaleToFit.set" -> { setup.set("scale", params.get("scale")); copyOrRemove(setup, params, "fitToWidth"); copyOrRemove(setup, params, "fitToHeight"); }
+            case "pageLayout.printTitles.set" -> { if (params.has("repeatRows")) copyOrRemove(document, params, "repeatRows"); if (params.has("repeatColumns")) copyOrRemove(document, params, "repeatColumns"); }
+            case "pageLayout.printArea.set" -> { ArrayNode areas = document.putArray("printAreas"); ObjectNode area = areas.addObject(); area.put("sheetId", sheetId); area.set("range", params.get("range").deepCopy()); }
+            case "pageLayout.printArea.clear" -> {
+                if (params.has("printAreas")) document.set("printAreas", params.get("printAreas").deepCopy());
+                else document.putArray("printAreas");
+            }
+            case "pageLayout.pageBreak.insert" -> { ArrayNode breaks = document.withArray("pageBreaks"); removeBreak(breaks, params.get("pageBreak")); breaks.add(params.get("pageBreak").deepCopy()); }
+            case "pageLayout.pageBreak.remove" -> removeBreak(document.withArray("pageBreaks"), params.get("pageBreak"));
+            case "pageLayout.pageBreak.clear" -> {
+                if (params.has("pageBreaks")) document.set("pageBreaks", params.get("pageBreaks").deepCopy());
+                else document.putArray("pageBreaks");
+            }
+            case "pageLayout.printGridlines.set" -> setup.set("printGridlines", params.get("enabled"));
+            case "pageLayout.printHeadings.set" -> setup.set("printHeadings", params.get("enabled"));
+            case "pageLayout.viewGridlines.set" -> SnapshotMutationSupport.sheet(root, sheetId).set("showGridlines", params.get("enabled"));
+            case "pageLayout.viewHeadings.set" -> SnapshotMutationSupport.sheet(root, sheetId).set("showHeaders", params.get("enabled"));
+            default -> throw ServiceException.validation("Unsupported page layout mutation: " + id());
+        }
+    }
+
+    private void copyOrRemove(ObjectNode target, ObjectNode source, String field) {
+        JsonNode value = source.get(field);
+        if (value == null || value.isNull()) target.remove(field); else target.set(field, value.deepCopy());
+    }
+
+    private void removeBreak(ArrayNode breaks, JsonNode candidate) {
+        for (int index = breaks.size() - 1; index >= 0; index--) {
+            JsonNode current = breaks.get(index);
+            if (java.util.Objects.equals(current.get("row"), candidate.get("row")) && java.util.Objects.equals(current.get("column"), candidate.get("column"))) breaks.remove(index);
+        }
+    }
+
     private int nameIndex(ArrayNode models, String name, String scope, String sheetId) {
         for (int index = 0; index < models.size(); index++) {
             JsonNode model = models.get(index);
@@ -137,45 +286,6 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
             }
         }
         return -1;
-    }
-
-    private void setDocument(ObjectNode root, String sheetId, ObjectNode params) {
-        ObjectNode document = SnapshotMutationSupport.requiredObject(params, "document");
-        validateDocument(root, sheetId, document);
-        ArrayNode documents = SnapshotMutationSupport.array(root, "printDocuments");
-        for (int index = 0; index < documents.size(); index++) {
-            if (sheetId.equals(documents.get(index).path("sheetId").asText())) {
-                documents.set(index, document.deepCopy());
-                return;
-            }
-        }
-        documents.add(document.deepCopy());
-    }
-
-    private void validateDocument(ObjectNode root, String expectedSheetId, ObjectNode document) {
-        if (!"PrintDocument".equals(SnapshotMutationSupport.text(document, "schema"))) throw ServiceException.validation("Print document schema is invalid");
-        if (!SnapshotMutationSupport.text(root, "unitId").equals(SnapshotMutationSupport.text(document, "unitId"))) throw ServiceException.validation("Print document unit does not match workbook");
-        SnapshotMutationSupport.requireEntitySheet(document, expectedSheetId);
-        ObjectNode setup = SnapshotMutationSupport.requiredObject(document, "pageSetup");
-        String paper = SnapshotMutationSupport.text(setup, "paperSize");
-        if (!Set.of("letter", "a4", "a3", "legal", "custom").contains(paper)) throw ServiceException.validation("Print paper size is invalid");
-        String orientation = SnapshotMutationSupport.text(setup, "orientation");
-        if (!orientation.equals("portrait") && !orientation.equals("landscape")) throw ServiceException.validation("Print orientation is invalid");
-        ObjectNode margins = SnapshotMutationSupport.requiredObject(setup, "margins");
-        for (String field : List.of("top", "right", "bottom", "left", "header", "footer")) finiteNonNegative(margins.get(field), "Print margin " + field);
-        JsonNode scale = setup.get("scale");
-        if (scale == null || !scale.isNumber() || scale.asDouble() <= 0 || scale.asDouble() > 400) throw ServiceException.validation("Print scale is invalid");
-        for (String field : List.of("printGridlines", "printHeadings", "centerHorizontally", "centerVertically")) {
-            if (!setup.path(field).isBoolean()) throw ServiceException.validation("Print page setup " + field + " must be boolean");
-        }
-        ArrayNode areas = SnapshotMutationSupport.requiredArray(document, "printAreas");
-        for (JsonNode area : areas) {
-            if (!area.isObject() || !expectedSheetId.equals(area.path("sheetId").asText())) throw ServiceException.validation("Print area targets another sheet");
-            RangeRef range = SnapshotMutationSupport.range(root, area.get("range"));
-            SnapshotMutationSupport.requireSheet(range, expectedSheetId);
-        }
-        ArrayNode breaks = SnapshotMutationSupport.requiredArray(document, "pageBreaks");
-        for (JsonNode pageBreak : breaks) validatePageBreak(pageBreak, expectedSheetId);
     }
 
     private void validatePageBreak(JsonNode pageBreak, String sheetId) {
@@ -208,6 +318,6 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     }
 
     private static String action(String id) {
-        return id.startsWith("print.") ? "print" : id.startsWith("table.") ? "format" : "edit-cell";
+        return id.startsWith("pageLayout.") ? "print" : id.startsWith("table.") ? "format" : "edit-cell";
     }
 }
