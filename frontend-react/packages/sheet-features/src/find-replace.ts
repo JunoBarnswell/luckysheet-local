@@ -10,6 +10,7 @@ import type {
 import { createFormulaError, getCellNote, noteCellKey } from '@react-sheets/core-model';
 import { isFormulaError } from '@react-sheets/formula-engine';
 import { parseCellText, type CellInputInterpretationContext, type NumberFormatIntent } from './text-input';
+import type { DataRegionContext } from './data-region-context';
 
 /** Canonical content families that Find/Replace may inspect. */
 export type FindSearchTarget = 'values' | 'formulas' | 'notes' | 'comments';
@@ -27,6 +28,7 @@ export interface FindSearchParams {
   matchCase?: boolean;
   entireCell?: boolean;
   wildcard?: boolean;
+  dataRegionContext?: DataRegionContext;
 }
 
 export interface FindMatch {
@@ -208,6 +210,39 @@ function addMatch(matches: FindMatch[], sheet: WorksheetModel, row: number, colu
   });
 }
 
+interface FindMetadataComment {
+  id: string;
+  text: string;
+}
+
+interface FindMetadataBucket {
+  note?: CellNote;
+  comments: FindMetadataComment[];
+}
+
+function buildFindMetadataIndex(sheet: WorksheetModel): Map<string, FindMetadataBucket> {
+  const index = new Map<string, FindMetadataBucket>();
+  const bucketFor = (key: string): FindMetadataBucket => {
+    const existing = index.get(key);
+    if (existing) return existing;
+    const created: FindMetadataBucket = { comments: [] };
+    index.set(key, created);
+    return created;
+  };
+  for (const [key, note] of sheet.notes) bucketFor(key).note = structuredClone(note);
+  sheet.commentThreads.forEach((thread) => {
+    bucketFor(`${thread.row}:${thread.column}`).comments.push({ id: thread.id, text: thread.text });
+  });
+  sheet.cells.forEach((cell, row, column) => {
+    const bucket = bucketFor(`${row}:${column}`);
+    if (!bucket.note && cell.note) bucket.note = structuredClone(cell.note);
+    if (cell.comment && !bucket.comments.some((comment) => comment.id === cell.comment!.id)) {
+      bucket.comments.push({ id: cell.comment.id, text: cell.comment.text });
+    }
+  });
+  return index;
+}
+
 function scanSheet(
   sheet: WorksheetModel,
   range: RangeRef,
@@ -217,6 +252,7 @@ function scanSheet(
   resolveCellValue?: FindResolveCellValue,
 ): void {
   const targetSet = new Set(targets);
+  const metadataIndex = buildFindMetadataIndex(sheet);
   const cells = new Map<string, CellData>();
   sheet.cells.forEach((cell, row, column) => {
     if (inRange(row, column, range)) cells.set(`${row}:${column}`, cell);
@@ -235,39 +271,34 @@ function scanSheet(
       addMatch(matches, sheet, row, column, 'formulas', cell.formula);
     }
     if (targetSet.has('notes')) {
-      const note = getCellNote(sheet, row, column) ?? cell.note;
+      const note = metadataIndex.get(`${row}:${column}`)?.note;
       if (note && matchesFindText(note.text, params)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
     }
     if (targetSet.has('comments')) {
-      const threads = sheet.commentThreads.filter((thread) => thread.row === row && thread.column === column);
-      for (const thread of threads) if (matchesFindText(thread.text, params)) addMatch(matches, sheet, row, column, 'comments', thread.text, thread.id);
-      if (threads.length === 0 && cell.comment && matchesFindText(cell.comment.text, params)) addMatch(matches, sheet, row, column, 'comments', cell.comment.text, cell.comment.id);
+      const comments = metadataIndex.get(`${row}:${column}`)?.comments ?? [];
+      for (const comment of comments) if (matchesFindText(comment.text, params)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
     }
   }
   // Notes/comments may be attached to an otherwise empty cell and therefore
   // are not present in CellMatrix. Include them in the same row/column order.
   const metadataCoordinates = new Set(coordinates.map(([row, column]) => `${row}:${column}`));
   const extras: Array<{ row: number; column: number }> = [];
-  const extraKeys = new Set<string>();
-  for (const [key] of sheet.notes) {
+  for (const [key] of metadataIndex) {
     const parts = key.split(':').map(Number);
     const row = parts[0];
     const column = parts[1];
     if (row === undefined || column === undefined) continue;
-    if (!metadataCoordinates.has(key) && inRange(row, column, range) && !extraKeys.has(key)) { extras.push({ row, column }); extraKeys.add(key); }
-  }
-  for (const thread of sheet.commentThreads) {
-    const key = `${thread.row}:${thread.column}`;
-    if (!metadataCoordinates.has(key) && inRange(thread.row, thread.column, range) && !extraKeys.has(key)) { extras.push({ row: thread.row, column: thread.column }); extraKeys.add(key); }
+    if (!metadataCoordinates.has(key) && inRange(row, column, range)) extras.push({ row, column });
   }
   for (const { row, column } of extras.sort((a, b) => a.row - b.row || a.column - b.column)) {
+    const metadata = metadataIndex.get(`${row}:${column}`);
     if (targetSet.has('notes')) {
-      const note = getCellNote(sheet, row, column);
+      const note = metadata?.note;
       if (note && matchesFindText(note.text, params)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
     }
     if (targetSet.has('comments')) {
-      for (const thread of sheet.commentThreads.filter((entry) => entry.row === row && entry.column === column)) {
-        if (matchesFindText(thread.text, params)) addMatch(matches, sheet, row, column, 'comments', thread.text, thread.id);
+      for (const comment of metadata?.comments ?? []) {
+        if (matchesFindText(comment.text, params)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
       }
     }
   }
@@ -277,14 +308,15 @@ function scanSheet(
 export function planFind(workbook: WorkbookModel, params: FindSearchParams, resolveCellValue?: FindResolveCellValue): FindSearchResult {
   if (!params.sheetId || !params.query) throw new Error('Find requires a sheet and non-empty query');
   if (params.searchOrder !== 'rows' && params.searchOrder !== 'columns') throw new Error('Find requires a valid search order');
-  if (params.scope === 'selection' && params.range === undefined) throw new Error('Selection Find requires an explicit range');
+  if (params.scope === 'selection' && params.range === undefined && params.dataRegionContext === undefined) throw new Error('Selection Find requires an explicit range');
+  if (params.dataRegionContext && params.dataRegionContext.sheetId !== params.sheetId) throw new Error('Find DataRegionContext targets another sheet');
   const targets = normalizeTargets(params.targets);
   const selectedSheet = workbook.getSheet(params.sheetId);
   const sheets = params.scope === 'workbook' ? workbook.getSheets() : [selectedSheet];
   const matches: FindMatch[] = [];
   for (const sheet of sheets) {
     const range = params.scope === 'selection' || (params.range && sheet.id === params.sheetId)
-      ? normalizeRange(params.range ?? fullRange(sheet), sheet)
+      ? normalizeRange(params.range ?? params.dataRegionContext?.range ?? fullRange(sheet), sheet)
       : fullRange(sheet);
     scanSheet(sheet, range, targets, params, matches, resolveCellValue);
   }

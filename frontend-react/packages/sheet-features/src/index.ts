@@ -76,6 +76,7 @@ export * from './fill-series';
 export * from './find-replace';
 export * from './cell-template-commands';
 export * from './clear-planner';
+export * from './data-region-context';
 
 
 export type CellEntryIntentKind =

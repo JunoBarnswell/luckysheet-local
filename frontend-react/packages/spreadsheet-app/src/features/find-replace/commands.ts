@@ -14,6 +14,7 @@ import {
   type FindSearchTarget,
   type CellInputInterpretationContext,
   isCellInputInterpretationContext,
+  type DataRegionContext,
 } from '@react-sheets/sheet-features';
 import type { SpreadsheetFeatureManifest } from '../../feature-registry';
 
@@ -30,6 +31,7 @@ export interface FindReplaceParams {
   matchCase?: boolean;
   entireCell?: boolean;
   wildcard?: boolean;
+  dataRegionContext?: DataRegionContext;
   inputContext: CellInputInterpretationContext;
 }
 
@@ -60,6 +62,7 @@ export interface FindReplacementMutationParams {
   direction: 'forward' | 'reverse';
   patches: readonly FindReplacementMutationPatch[];
   affectedRanges: readonly RangeRef[];
+  dataRegionContext?: DataRegionContext;
 }
 
 interface CellPatch {
@@ -212,6 +215,7 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
     matchCase: params.matchCase,
     entireCell: params.entireCell,
     wildcard: params.wildcard,
+    dataRegionContext: params.dataRegionContext,
   }, context.resolveCellValue as FindResolveCellValue | undefined);
   const matches = params.mode === 'one'
     ? [result.matches.find((match) => match.key === params.matchKey)].filter((match): match is FindMatch => match !== undefined)
@@ -272,8 +276,8 @@ export function registerFindReplaceCommands(runtime: CommandRuntime): string[] {
       if (!isValidFindReplace(params)) throw new Error('Invalid find.replace parameters');
       const patches = buildPatches(params, context);
       const affectedRanges = patches.map((patch) => patch.match.range);
-      const forward: FindReplacementMutationParams = { direction: 'forward', patches, affectedRanges };
-      const inverse: FindReplacementMutationParams = { direction: 'reverse', patches, affectedRanges };
+      const forward: FindReplacementMutationParams = { direction: 'forward', patches, affectedRanges, dataRegionContext: params.dataRegionContext };
+      const inverse: FindReplacementMutationParams = { direction: 'reverse', patches, affectedRanges, dataRegionContext: params.dataRegionContext };
       context.applyMutation({ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: forward, affectedRanges: [...affectedRanges], inverse: [{ id: 'find.replaced', unitId: context.workbook.unitId, sheetId: params.sheetId, params: inverse, affectedRanges: [...affectedRanges] }], apply: () => applyFindReplacementMutation(forward, context) });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges, event: { type: 'find.replaced', payload: { count: patches.length } } };
     },

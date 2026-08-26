@@ -17,6 +17,7 @@ import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, colum
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
 import { resolveAutoFilters } from './sheet-table-features';
+import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
 import {
   evaluateFormula,
@@ -1553,6 +1554,7 @@ export interface DataSortParams {
   range: RangeRef;
   criteria: Array<{ column: number; ascending: boolean }>;
   hasHeader?: boolean;
+  dataRegionContext?: DataRegionContext;
 }
 
 export interface SubtotalParams {
@@ -1797,15 +1799,30 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<DataSortParams>({
     id: 'data.sort.rows',
     execute: (params, context) => {
-      const range = selectedRange(params);
+      const requestedRange = selectedRange(params);
       const sheet = context.workbook.getSheet(params.sheetId);
+      const regionContext = params.dataRegionContext ?? resolveDataRegionContext(context.workbook, {
+        selection: requestedRange,
+        activeRow: requestedRange.startRow,
+        activeColumn: params.criteria[0]?.column ?? requestedRange.startColumn,
+      });
+      if (params.dataRegionContext) {
+        const actual = resolveDataRegionContext(context.workbook, {
+          selection: requestedRange,
+          activeRow: requestedRange.startRow,
+          activeColumn: params.criteria[0]?.column ?? requestedRange.startColumn,
+        });
+        assertDataRegionContextMatches(params.dataRegionContext, actual);
+      }
+      const range = normalizeRangeRef(regionContext.range);
+      const hasHeader = params.hasHeader ?? regionContext.header.kind === 'present';
       assertNoDataRegionIntersection(sheet, range, 'Sort');
       if (params.criteria.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const sourceRows = sortedSourceRows(sheet, { ...params, range }, context.resolveCellValue);
-      if (sourceRows.length <= 1 || sourceRows.every((row, offset) => row === range.startRow + (params.hasHeader ? 1 : 0) + offset)) {
+      const sourceRows = sortedSourceRows(sheet, { ...params, range, hasHeader }, context.resolveCellValue);
+      if (sourceRows.length <= 1 || sourceRows.every((row, offset) => row === range.startRow + (hasHeader ? 1 : 0) + offset)) {
         return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       }
-      const startRow = (params.hasHeader ?? false) ? range.startRow + 1 : range.startRow;
+      const startRow = hasHeader ? range.startRow + 1 : range.startRow;
       const bodyRange: RangeRef = { ...range, startRow };
       const inverseRows = new Array<number>(sourceRows.length);
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
@@ -1816,13 +1833,15 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: {
           ...params,
+          hasHeader,
+          dataRegionContext: regionContext,
           range: bodyRange,
           sourceRows,
           sortState: {
             sheetId: params.sheetId,
             range,
             criteria: structuredClone(params.criteria),
-            hasHeader: params.hasHeader,
+            hasHeader,
             revision: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState?.revision ?? 0) + 1,
           },
           previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
@@ -1836,6 +1855,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           sheetId: params.sheetId,
           params: {
             ...params,
+            hasHeader,
+            dataRegionContext: regionContext,
             range: bodyRange,
             sourceRows: inverseRows,
             sortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -42,6 +43,7 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             case "cells.inserted", "cells.deleted" -> List.of(cellAffectedBand(root, mutation.sheetId(), params));
             case "cells.inserted.restore", "cells.deleted.restore" -> List.of(restoreAffectedBand(root, mutation.sheetId(), params));
             case "rows.permuted" -> {
+                DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 // Row permutation remaps row-addressed metadata such as
                 // protection rules across the full Excel coordinate domain,
@@ -63,7 +65,10 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             case "columns.deleted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.DELETE);
             case "cells.inserted", "cells.deleted" -> applyCellShift(root, mutation.sheetId(), params);
             case "cells.inserted.restore", "cells.deleted.restore" -> restore(root, mutation.sheetId(), params);
-            case "rows.permuted" -> StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), ownRange(root, mutation.sheetId(), params), params.get("sourceRows"));
+            case "rows.permuted" -> {
+                DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
+                StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), ownRange(root, mutation.sheetId(), params), params.get("sourceRows"));
+            }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         }
         return root;

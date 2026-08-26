@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
+import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
@@ -83,10 +84,18 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "autoFilter.set" -> {
                 ObjectNode filter = filter(root, mutation.sheetId(), params);
                 RangeRef candidateRange = SnapshotMutationSupport.range(root, filter.get("range"));
+                DataRegionContextValidator.validateFilter(root, mutation.sheetId(), params, candidateRange, "worksheet", null);
                 AutoFilterOwnershipValidator.validateCandidate(sheet, mutation.sheetId(), "worksheet", null, candidateRange);
                 sheet.set("autoFilter", filter.deepCopy());
             }
-            case "autoFilter.remove" -> sheet.remove("autoFilter");
+            case "autoFilter.remove" -> {
+                JsonNode current = sheet.get("autoFilter");
+                if (current != null && current.isObject()) {
+                    RangeRef currentRange = SnapshotMutationSupport.range(root, current.get("range"));
+                    DataRegionContextValidator.validateFilter(root, mutation.sheetId(), params, currentRange, "worksheet", null);
+                }
+                sheet.remove("autoFilter");
+            }
             case "cf.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
             case "cf.remove" -> removeRule(sheet, params, "conditionalFormats");
             case "cf.clear" -> sheet.set("conditionalFormats", JsonNodeFactory.instance.arrayNode());
@@ -165,6 +174,11 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         if (table == null) throw ServiceException.notFound("Sheet Table not found: " + tableId);
         JsonNode value = params.get("autoFilter");
         if (value == null || value.isNull()) {
+            JsonNode current = table.get("autoFilter");
+            if (current != null && current.isObject()) {
+                RangeRef currentRange = SnapshotMutationSupport.range(root, current.get("range"));
+                DataRegionContextValidator.validateFilter(root, sheetId, params, currentRange, "sheet-table", tableId);
+            }
             AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
             table.remove("autoFilter");
             return;
@@ -174,6 +188,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         RangeRef filterRange = SnapshotMutationSupport.range(root, filter.get("range"));
         RangeRef tableRange = SnapshotMutationSupport.range(root, table.get("range"));
         if (!sameRange(filterRange, tableRange)) throw ServiceException.validation("Table AutoFilter range must equal the Table range");
+        DataRegionContextValidator.validateFilter(root, sheetId, params, filterRange, "sheet-table", tableId);
         validateFilter(root, sheetId, filter);
         AutoFilterOwnershipValidator.validateCandidate(sheet, sheetId, "table", tableId, filterRange);
         table.set("autoFilter", filter.deepCopy());

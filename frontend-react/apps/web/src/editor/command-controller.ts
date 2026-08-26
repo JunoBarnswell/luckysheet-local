@@ -160,7 +160,8 @@ export function useEditorCommandController({
 }: EditorCommandControllerOptions): EditorCommandController {
   const [activePivotId, setActivePivotId] = useState<string>();
   const selectedRange = state.selection.ranges[state.selection.primaryRangeIndex] ?? state.selection.ranges[0];
-  const currentDataRange = session.getCurrentRegion();
+  const dataRegionContext = session.getDataRegionContext();
+  const currentDataRange = dataRegionContext.range;
   const sortColumns = state.selectedSheet.columns.slice(currentDataRange.startColumn, currentDataRange.endColumn + 1);
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
@@ -213,19 +214,21 @@ export function useEditorCommandController({
     const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
-  const activeFilterOwner = state.selectedSheet.getFilterOwner(state.selection.activeCell.column);
+  const activeFilterOwner = dataRegionContext.owner.kind === 'sheet-table'
+    ? { kind: 'table' as const, tableId: dataRegionContext.owner.tableId }
+    : { kind: 'worksheet' as const };
   const activeAutoFilter = state.selectedSheet.getActiveAutoFilter(state.selection.activeCell.column);
   const buildFilterSelectionCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId } }
-    : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange } };
+    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
+    : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange, dataRegionContext } };
   const filterRange = activeAutoFilter?.range ?? currentDataRange;
   const buildClearFilterCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId } }
-    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange } };
+    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
+    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange, dataRegionContext } };
   const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
-    const range = session.getCurrentRegion();
+    const range = dataRegionContext.range;
     if (range.endRow <= range.startRow) return undefined;
-    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: true } };
+    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: dataRegionContext.header.kind === 'present', dataRegionContext } };
   };
 
   const sheetNames = useMemo(() => new Map(state.sheets.map((sheet) => [sheet.id, sheet.name] as const)), [state.sheets]);

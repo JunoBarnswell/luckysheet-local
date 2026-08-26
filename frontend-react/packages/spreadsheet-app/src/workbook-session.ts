@@ -85,6 +85,8 @@ import {
   type FindSearchParams,
   type FindSearchTarget,
   type FindScope,
+  resolveDataRegionContext,
+  type DataRegionContext,
   type FillDirection,
   type FillMode,
   createCellInputInterpretationContext,
@@ -208,7 +210,7 @@ import {
   HistoryPreviewSession,
   type HistoryEntryMeta,
 } from './features/history';
-import { currentRegionOfSheet, inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
+import { inferTableFieldType, nextId, usedRangeOfSheet } from './application-helpers';
 import { InsertCoordinator, type DrawingInsertRequest, type InsertMutationRequest, type InsertResult } from './insert-coordinator';
 import type {
   ActiveContext,
@@ -1701,23 +1703,18 @@ export class WorkbookSession {
   }
 
   getCurrentRegion(): RangeRef {
-    const selection = this.selectionService.getState();
-    const primary = this.getPrimaryRange();
-    if (primary.startRow !== primary.endRow || primary.startColumn !== primary.endColumn) return primary;
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const table = findSheetTableAt(sheet, selection.activeCell.row, selection.activeCell.column);
-    if (table) return structuredClone(table.range);
-    const blockRegion = sheet.dataRegions.find((region) => selection.activeCell.row >= region.range.startRow
-      && selection.activeCell.row <= region.range.endRow
-      && selection.activeCell.column >= region.range.startColumn
-      && selection.activeCell.column <= region.range.endColumn);
-    if (blockRegion) return structuredClone(blockRegion.range);
-    return currentRegionOfSheet(
-      sheet,
-      selection.activeCell.row,
-      selection.activeCell.column,
-      (row, column) => this.isCanonicalCellOccupied(sheet, row, column),
-    );
+    return this.getDataRegionContext().range;
+  }
+
+  getDataRegionContext(searchScope: DataRegionContext['searchScope'] = 'current-region'): DataRegionContext {
+    const selection = this.getPrimaryRange();
+    const activeCell = this.selectionService.getState().activeCell;
+    return resolveDataRegionContext(this.runtime.model, {
+      selection: normalizeRangeRef({ ...selection, sheetId: this.activeSheetId }),
+      activeRow: activeCell.row,
+      activeColumn: activeCell.column,
+      searchScope,
+    });
   }
 
   async storeDataBlock(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
@@ -3824,10 +3821,11 @@ export class WorkbookSession {
       criterion: patch.criterion ? structuredClone(patch.criterion) : undefined,
     };
     const autoFilter = { sheetId: this.activeSheetId, range: baseRange, columns };
+    const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(baseRange), currentRegion: structuredClone(baseRange) };
     if (owner?.kind === 'table' && tableOwner) {
-      this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter } });
+      this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: tableOwner.id, autoFilter, dataRegionContext } });
     } else {
-      this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter } });
+      this.dispatch({ commandId: 'sheet.autoFilter.set', params: { sheetId: this.activeSheetId, autoFilter, dataRegionContext } });
     }
   }
 
@@ -3838,7 +3836,7 @@ export class WorkbookSession {
       this.notify('No active filter is available for this column');
       return;
     }
-    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending } });
+    this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext: this.getDataRegionContext() } });
   }
 
   applyFilterSelection(): void {
@@ -3850,7 +3848,7 @@ export class WorkbookSession {
         const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
         if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
       }
-      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion() } });
+      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion(), dataRegionContext: this.getDataRegionContext() } });
       return;
     }
     const range = this.getCurrentRegion();
@@ -3861,6 +3859,7 @@ export class WorkbookSession {
     this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
       sheetId: this.activeSheetId,
       range,
+      dataRegionContext: this.getDataRegionContext(),
     } });
   }
 
@@ -3877,8 +3876,9 @@ export class WorkbookSession {
       return;
     }
     const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
-    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns } } });
-    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
+    const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(autoFilter.range), currentRegion: structuredClone(autoFilter.range) };
+    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns }, dataRegionContext } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext } });
   }
 
   closeFilter(): void {
@@ -3890,17 +3890,19 @@ export class WorkbookSession {
       const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
       if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
     }
-    else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range } });
+    else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext: this.getDataRegionContext() } });
   }
 
   private findParams(params: FindDialogParams): FindSearchParams {
     if (!params.query) throw new Error('Find query must not be empty');
+    const dataRegionContext = this.getDataRegionContext(params.scope === 'selection' ? 'selection' : params.scope === 'workbook' ? 'workbook' : 'sheet');
     return {
       sheetId: this.activeSheetId,
       query: params.query,
       searchOrder: params.searchOrder,
       scope: params.scope,
-      ...(params.scope === 'selection' ? { range: normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId }) } : {}),
+      ...(params.scope === 'selection' ? { range: normalizeRangeRef(dataRegionContext.range) } : {}),
+      dataRegionContext,
       targets: params.targets,
       matchCase: params.matchCase,
       entireCell: params.entireCell,
