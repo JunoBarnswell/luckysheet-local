@@ -4,6 +4,7 @@ import {
   Button,
   ColorPicker,
   DropdownMenu,
+  Inline,
   Select,
   Stack,
   TextInput,
@@ -89,6 +90,7 @@ function surfaceLabel(locale: Locale, controlId: RibbonControlId): string {
     case 'unhide-columns': return homeText(locale, 'unhideColumns');
     case 'default-column-width': return homeText(locale, 'defaultColumnWidth');
     case 'merge-menu': return homeText(locale, 'mergeCenter');
+    case 'auto-sum-menu': return translateRibbonText(locale, 'commands.autoSum');
   }
 }
 
@@ -292,6 +294,15 @@ export function HomeRibbon({
             {menuMembers('control.merge-menu').map((surface) => renderSurface(surface, 'menu'))}
           </Stack>
         </DropdownMenu>;
+      case 'auto-sum-menu':
+        return <Inline gap="none" className={mode === 'wide' ? 'h-8 items-stretch' : 'w-full'}>
+          {renderCommand('autoSum', { iconOnly: mode === 'wide', className: mode === 'wide' ? '!h-8 !min-h-0 !rounded-none' : 'w-full justify-start' })}
+          <DropdownMenu align="left" trigger={<Button aria-label={`${label} options`} title={`${label} options`} disabled={disabled} icon="chevron-down" iconOnly size="sm" variant="ghost" className={mode === 'wide' ? '!h-8 !min-h-0 !w-5 rounded-none px-0' : 'w-5 shrink-0 justify-center px-0'} />}>
+            <Stack gap="none" className="min-w-[10rem] p-1">
+              {menuMembers('control.auto-sum-menu').map((surface) => renderSurface(surface, 'menu'))}
+            </Stack>
+          </DropdownMenu>
+        </Inline>;
     }
   };
 

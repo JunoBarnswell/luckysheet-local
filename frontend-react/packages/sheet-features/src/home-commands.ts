@@ -20,6 +20,7 @@ import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } fro
 import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
 import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillWrite } from './fill-series';
+import { AUTO_SUM_FUNCTIONS, type AutoSumDescriptor, type AutoSumFunctionName } from './auto-sum-contract';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -57,7 +58,7 @@ export interface AutoSumParams {
   sheetId: string;
   range: RangeRef;
   target?: { row: number; column: number };
-  functionName?: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN';
+  functionName?: AutoSumFunctionName;
   /** Generate one formula for each selected column when target is omitted. */
   byColumn?: boolean;
 }
@@ -223,6 +224,7 @@ function rangeEntryIntent(
   startRow: number,
   startColumn: number,
   values: CellData[][],
+  autoSum?: AutoSumDescriptor,
 ) {
   return {
     kind,
@@ -235,6 +237,7 @@ function rangeEntryIntent(
     },
     candidate: structuredClone(values),
     validationDecision: { status: 'not-applicable' as const },
+    ...(autoSum ? { autoSum: structuredClone(autoSum) } : {}),
   };
 }
 
@@ -324,18 +327,22 @@ function hasNumericResolvedValue(sheet: WorksheetModel, range: RangeRef, context
   return false;
 }
 
-function formulaForAutoSum(sheet: WorksheetModel, targetRow: number, targetColumn: number, functionName: AutoSumParams['functionName'], selectedRange: RangeRef, context: CommandContext): string {
-  const name = functionName ?? 'SUM';
+function autoSumSourceRange(sheet: WorksheetModel, targetRow: number, targetColumn: number, selectedRange: RangeRef, context: CommandContext): RangeRef {
   const above = contiguousNumericAbove(sheet, targetRow, targetColumn, context);
-  if (above) return `=${name}(${columnLabel(targetColumn)}${above.startRow + 1}:${columnLabel(targetColumn)}${above.endRow + 1})`;
+  if (above) return { sheetId: sheet.id, startRow: above.startRow, endRow: above.endRow, startColumn: targetColumn, endColumn: targetColumn };
   const left = contiguousNumericLeft(sheet, targetRow, targetColumn, context);
-  if (left) return `=${name}(${columnLabel(left.startColumn)}${targetRow + 1}:${columnLabel(left.endColumn)}${targetRow + 1})`;
+  if (left) return { sheetId: sheet.id, startRow: targetRow, endRow: targetRow, startColumn: left.startColumn, endColumn: left.endColumn };
   if (!hasNumericResolvedValue(sheet, selectedRange, context)) throw new Error('AutoSum source contains no numeric result');
   if (targetRow >= selectedRange.startRow && targetRow <= selectedRange.endRow
     && targetColumn >= selectedRange.startColumn && targetColumn <= selectedRange.endColumn) {
     throw new Error('AutoSum source range would include its target');
   }
-  return `=${name}(${columnLabel(selectedRange.startColumn)}${selectedRange.startRow + 1}:${columnLabel(selectedRange.endColumn)}${selectedRange.endRow + 1})`;
+  return structuredClone(selectedRange);
+}
+
+function formulaForAutoSum(sheet: WorksheetModel, targetRow: number, targetColumn: number, functionName: AutoSumFunctionName, selectedRange: RangeRef, context: CommandContext): string {
+  const source = autoSumSourceRange(sheet, targetRow, targetColumn, selectedRange, context);
+  return `=${functionName}(${columnLabel(source.startColumn)}${source.startRow + 1}:${columnLabel(source.endColumn)}${source.endRow + 1})`;
 }
 
 function assertSafeAutoSumTarget(sheet: WorksheetModel, target: { row: number; column: number }): void {
@@ -366,7 +373,8 @@ function assertSafeAutoSumTarget(sheet: WorksheetModel, target: { row: number; c
 function isValidAutoSumParams(value: unknown): value is AutoSumParams {
   if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.range)) return false;
   if (value.target !== undefined && (!isRecord(value.target) || !isFiniteInt(value.target.row) || !isFiniteInt(value.target.column))) return false;
-  return value.functionName === undefined || ['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'].includes(String(value.functionName));
+  return (value.functionName === undefined || AUTO_SUM_FUNCTIONS.includes(String(value.functionName) as AutoSumFunctionName))
+    && (value.byColumn === undefined || typeof value.byColumn === 'boolean');
 }
 
 function isValidFillParams(value: unknown): value is HomeFillParams {
@@ -1027,6 +1035,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       const sheet = context.workbook.getSheet(params.sheetId);
       assertNoDataRegionIntersection(sheet, range, 'AutoSum');
       const targets: Array<{ row: number; column: number }> = [];
+      const functionName = params.functionName ?? 'SUM';
       if (params.target) {
         targets.push({ row: params.target.row, column: params.target.column });
       } else if (params.byColumn || range.startColumn !== range.endColumn) {
@@ -1063,17 +1072,23 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
             ...(previous?.style ? { style: structuredClone(previous.style) } : {}),
             ...(previous?.numberFormat ? { numberFormat: previous.numberFormat } : {}),
             value: null,
-            formula: formulaForAutoSum(sheet, row, column, params.functionName, range, context),
+            formula: formulaForAutoSum(sheet, row, column, functionName, range, context),
           });
         }
         values.push(line);
       }
+      const autoSum: AutoSumDescriptor = {
+        functionName,
+        sourceRange: structuredClone(range),
+        targets: targets.map((target) => ({ ...target })),
+        inferenceMode: 'adjacent',
+      };
       const result = runtime.execute('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: minRow,
         startColumn: minColumn,
         values,
-        entryIntent: rangeEntryIntent('formula-result', params.sheetId, minRow, minColumn, values),
+        entryIntent: rangeEntryIntent('formula-result', params.sheetId, minRow, minColumn, values, autoSum),
       });
       return result;
     },

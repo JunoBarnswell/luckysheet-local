@@ -642,7 +642,8 @@ export type RibbonControlId =
   | 'auto-fit-column-width'
   | 'hide-columns'
   | 'unhide-columns'
-  | 'default-column-width';
+  | 'default-column-width'
+  | 'auto-sum-menu';
 
 export interface RibbonControlDefinition {
   readonly id: RibbonControlId;
@@ -1186,7 +1187,11 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   homeControl('hide-columns', 'cells', 72, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
   homeControl('unhide-columns', 'cells', 73, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
   homeControl('default-column-width', 'cells', 74, ['wide', 'compact', 'narrow'], 'control.cells-format-menu'),
-  ribbonSurface('home', 'editing.autosum', 'editing', 60, 'small', 'autoSum'),
+  homeControl('auto-sum-menu', 'editing', 60),
+  ribbonSurface('home', 'editing.autosum.average', 'editing', 601, 'menu', 'autoSumAverage', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
+  ribbonSurface('home', 'editing.autosum.count', 'editing', 602, 'menu', 'autoSumCount', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
+  ribbonSurface('home', 'editing.autosum.max', 'editing', 603, 'menu', 'autoSumMax', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
+  ribbonSurface('home', 'editing.autosum.min', 'editing', 604, 'menu', 'autoSumMin', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
   ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
   ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'small', 'fillUp'),
   ribbonSurface('home', 'editing.fill-right', 'editing', 67, 'small', 'fillRight'),
@@ -1302,9 +1307,10 @@ const callback = (
   labelKey: RibbonTextKey,
   invoke: (context: RibbonCommandContext) => void,
   icon?: RibbonIconName,
+  additionalPlacements: readonly RibbonCommandPlacement[] = [],
 ): CommandDefinition => ({
   id,
-  placements: [{ tab, group: groupId }],
+  placements: [{ tab, group: groupId }, ...additionalPlacements],
   labelKey,
   icon,
   priority: 30,
@@ -1467,10 +1473,10 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('calculationManual', 'formulas', 'calculation', RIBBON_TEXT.commands.calculationManual, (context) => context.actions.onSetRecalculationMode('manual'), 'calculator'),
   callback('calculationPartial', 'formulas', 'calculation', RIBBON_TEXT.commands.calculationPartial, (context) => context.actions.onSetRecalculationMode('partial'), 'calculator'),
   intent('functionWizard', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.functionWizard, () => ({ type: 'dialog.open', dialog: 'function-wizard' }), 'function'),
-  callback('autoSumAverage', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumAverage, (context) => context.actions.onAutoSum('AVERAGE'), 'calculator'),
-  callback('autoSumCount', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumCount, (context) => context.actions.onAutoSum('COUNT'), 'calculator'),
-  callback('autoSumMax', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumMax, (context) => context.actions.onAutoSum('MAX'), 'calculator'),
-  callback('autoSumMin', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumMin, (context) => context.actions.onAutoSum('MIN'), 'calculator'),
+  callback('autoSumAverage', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumAverage, (context) => context.actions.onAutoSum('AVERAGE'), 'calculator', [{ tab: 'home', group: 'editing' }]),
+  callback('autoSumCount', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumCount, (context) => context.actions.onAutoSum('COUNT'), 'calculator', [{ tab: 'home', group: 'editing' }]),
+  callback('autoSumMax', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumMax, (context) => context.actions.onAutoSum('MAX'), 'calculator', [{ tab: 'home', group: 'editing' }]),
+  callback('autoSumMin', 'formulas', 'functionLibrary', RIBBON_TEXT.commands.autoSumMin, (context) => context.actions.onAutoSum('MIN'), 'calculator', [{ tab: 'home', group: 'editing' }]),
   callback('definedNames', 'formulas', 'definedNames', RIBBON_TEXT.commands.definedNames, (context) => context.actions.onOpenDefinedNames(), 'function'),
   callback('pageSetup', 'pageLayout', 'pageSetup', RIBBON_TEXT.commands.pageSetup, (context) => context.actions.onOpenPrintLayout(), 'printer'),
   callback('setPrintArea', 'pageLayout', 'pageSetup', RIBBON_TEXT.commands.setPrintArea, (context) => context.actions.onSetPrintArea(), 'layout'),

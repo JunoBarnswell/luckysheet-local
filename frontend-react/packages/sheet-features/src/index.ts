@@ -17,6 +17,7 @@ import type {
   GanttSheetDefinition,
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
+import { isAutoSumDescriptor, type AutoSumDescriptor } from './auto-sum-contract';
 import {
   clearFormulaProvenance,
   StructuralTransform,
@@ -70,6 +71,7 @@ export * from './outline-commands';
 export * from './outline-features';
 export * from './text-input';
 export * from './home-commands';
+export * from './auto-sum-contract';
 export * from './fill-series';
 export * from './find-replace';
 export * from './cell-template-commands';
@@ -107,6 +109,8 @@ export interface CellEntryIntent {
     ruleId?: string;
     alertStyle?: 'stop' | 'warning' | 'information';
   };
+  /** Present only for formula-result writes planned by formula.autosum. */
+  autoSum?: AutoSumDescriptor;
 }
 
 export function createCellEntryIntent(
@@ -348,7 +352,8 @@ function isCellEntryIntent(value: unknown): value is CellEntryIntent {
     && !(Array.isArray(value.candidate) && value.candidate.every((row) => Array.isArray(row) && row.every(isCellData)))) return false;
   if (!isRecord(value.validationDecision) || !['accepted', 'confirmed', 'rejected', 'not-applicable'].includes(String(value.validationDecision.status))) return false;
   return (value.validationDecision.ruleId === undefined || typeof value.validationDecision.ruleId === 'string')
-    && (value.validationDecision.alertStyle === undefined || ['stop', 'warning', 'information'].includes(String(value.validationDecision.alertStyle)));
+    && (value.validationDecision.alertStyle === undefined || ['stop', 'warning', 'information'].includes(String(value.validationDecision.alertStyle)))
+    && (value.autoSum === undefined || (value.kind === 'formula-result' && isAutoSumDescriptor(value.autoSum)));
 }
 
 function isCellSetMutation(value: unknown): value is SetCellValueParams {

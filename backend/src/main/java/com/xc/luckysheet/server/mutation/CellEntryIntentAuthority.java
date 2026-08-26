@@ -33,7 +33,7 @@ final class CellEntryIntentAuthority {
         }
     }
 
-    static void requireRangeWrite(ObjectNode params, String mutationId) {
+    static void requireRangeWrite(String sheetId, ObjectNode params, String mutationId) {
         ObjectNode intent = requireIntent(params);
         String kind = requiredText(intent, "kind", "entryIntent");
         if (!KINDS.contains(kind)) throw ServiceException.validation("entryIntent.kind is unsupported: " + kind);
@@ -43,6 +43,75 @@ final class CellEntryIntentAuthority {
         if ("range.paste".equals(mutationId) && !"paste".equals(kind)) {
             throw ServiceException.validation("range.paste requires entryIntent.kind=paste");
         }
+        JsonNode autoSum = intent.get("autoSum");
+        if (autoSum != null) requireAutoSumDescriptor(autoSum, sheetId, params, kind);
+    }
+
+    private static void requireAutoSumDescriptor(JsonNode value, String sheetId, ObjectNode params, String kind) {
+        if (!"formula-result".equals(kind) || !value.isObject()) {
+            throw ServiceException.validation("entryIntent.autoSum requires formula-result range.set");
+        }
+        ObjectNode descriptor = (ObjectNode) value;
+        String functionName = requiredText(descriptor, "functionName", "entryIntent.autoSum").toUpperCase(Locale.ROOT);
+        if (!List.of("SUM", "AVERAGE", "COUNT", "MAX", "MIN").contains(functionName)) {
+            throw ServiceException.validation("entryIntent.autoSum.functionName is unsupported: " + functionName);
+        }
+        if (!"adjacent".equals(requiredText(descriptor, "inferenceMode", "entryIntent.autoSum"))) {
+            throw ServiceException.validation("entryIntent.autoSum.inferenceMode is unsupported");
+        }
+        JsonNode source = descriptor.get("sourceRange");
+        if (source == null || !source.isObject() || !sheetId.equals(source.path("sheetId").asText())
+                || !bounded((ObjectNode) source, "startRow", SnapshotMutationSupport.MAX_ROW) || !bounded((ObjectNode) source, "endRow", SnapshotMutationSupport.MAX_ROW)
+                || source.path("endRow").asInt(-1) < source.path("startRow").asInt(-1)
+                || !bounded((ObjectNode) source, "startColumn", SnapshotMutationSupport.MAX_COLUMN) || !bounded((ObjectNode) source, "endColumn", SnapshotMutationSupport.MAX_COLUMN)
+                || source.path("endColumn").asInt(-1) < source.path("startColumn").asInt(-1)) {
+            throw ServiceException.validation("entryIntent.autoSum.sourceRange is invalid");
+        }
+        JsonNode targets = descriptor.get("targets");
+        JsonNode values = params.get("values");
+        if (targets == null || !targets.isArray() || targets.size() == 0 || values == null || !values.isArray()) {
+            throw ServiceException.validation("entryIntent.autoSum targets and range values are required");
+        }
+        JsonNode candidate = params.path("entryIntent").path("candidate");
+        if (!candidate.isArray() || !candidate.equals(values)) {
+            throw ServiceException.validation("entryIntent.autoSum candidate does not match range values");
+        }
+        int startRow = params.path("startRow").asInt(-1);
+        int startColumn = params.path("startColumn").asInt(-1);
+        if (startRow < 0 || startColumn < 0) throw ServiceException.validation("AutoSum range origin is invalid");
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (JsonNode target : targets) {
+            if (!target.isObject() || !bounded((ObjectNode) target, "row", SnapshotMutationSupport.MAX_ROW) || !bounded((ObjectNode) target, "column", SnapshotMutationSupport.MAX_COLUMN)) {
+                throw ServiceException.validation("entryIntent.autoSum target is invalid");
+            }
+            int row = target.path("row").asInt(-1);
+            int column = target.path("column").asInt(-1);
+            String key = row + ":" + column;
+            if (!seen.add(key)) throw ServiceException.validation("entryIntent.autoSum targets must be unique");
+            int sourceStartRow = source.path("startRow").asInt(-1);
+            int sourceEndRow = source.path("endRow").asInt(-1);
+            int sourceStartColumn = source.path("startColumn").asInt(-1);
+            int sourceEndColumn = source.path("endColumn").asInt(-1);
+            if (row >= sourceStartRow && row <= sourceEndRow && column >= sourceStartColumn && column <= sourceEndColumn) {
+                throw ServiceException.validation("entryIntent.autoSum sourceRange overlaps a target");
+            }
+            int rowOffset = row - startRow;
+            int columnOffset = column - startColumn;
+            if (rowOffset < 0 || rowOffset >= values.size() || !values.get(rowOffset).isArray()
+                    || columnOffset < 0 || columnOffset >= values.get(rowOffset).size()) {
+                throw ServiceException.validation("entryIntent.autoSum target is outside range values");
+            }
+            JsonNode cell = values.get(rowOffset).get(columnOffset);
+            String formula = cell != null && cell.isObject() ? cell.path("formula").asText("") : "";
+            if (!formula.toUpperCase(Locale.ROOT).startsWith("=" + functionName + "(")) {
+                throw ServiceException.validation("entryIntent.autoSum target formula does not match functionName");
+            }
+        }
+    }
+
+    private static boolean bounded(ObjectNode node, String name, int maximum) {
+        JsonNode value = node.get(name);
+        return value != null && value.isIntegralNumber() && value.asLong() >= 0 && value.asLong() <= maximum;
     }
 
     private static ObjectNode requireIntent(ObjectNode params) {
