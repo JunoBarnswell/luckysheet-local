@@ -28,6 +28,7 @@ import {
   parseFormula,
   type ParsedCellReference,
   type FormulaError,
+  type FormulaAst,
   type FormulaValue,
   type ScalarValue,
 } from "@react-sheets/formula-engine";
@@ -371,9 +372,9 @@ export function resolveEffectiveFilterVisual(
 }
 
 export function createEffectiveFilterVisualResolver(
-  overlays: ReadonlyMap<string, ConditionalOverlay> = new Map(),
+  overlays: ReadonlyMap<string, ConditionalOverlay> | ((row: number, column: number) => ConditionalOverlay | undefined) = new Map(),
 ): FilterVisualResolver {
-  return (row, column, cell) => resolveEffectiveFilterVisual(cell, overlays.get(`${row}:${column}`));
+  return (row, column, cell) => resolveEffectiveFilterVisual(cell, typeof overlays === 'function' ? overlays(row, column) : overlays.get(`${row}:${column}`));
 }
 
 function cellText(resolved: FilterCellValue | undefined): string {
@@ -441,130 +442,176 @@ function mixHex(a: string, b: string, ratio: number): string {
 
 // ---------- 条件格式求值 ----------
 
-export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, ConditionalOverlay> {
-  const overlays = new Map<string, ConditionalOverlay>();
-  const rules = [...sheet.conditionalFormats].sort((left, right) =>
-    (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER));
-  if (rules.length === 0) return overlays;
-  const valueCounts = buildValueCounts(sheet, rules);
-  const stopped = new Set<string>();
+interface ConditionalRangeStats {
+  readonly count: number;
+  readonly min: number;
+  readonly max: number;
+  readonly topThreshold?: number;
+  readonly bottomThreshold?: number;
+}
 
-  // 预收集各规则范围的数值用于色阶/数据条归一化
-  for (const rule of rules) {
-    for (const range of rule.ranges) {
-      if (range.sheetId !== sheet.id) continue;
-      let min = Number.POSITIVE_INFINITY;
-      let max = Number.NEGATIVE_INFINITY;
-      for (let r = range.startRow; r <= range.endRow; r++) {
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          const numeric = numericOf(sheet.cells.get(r, c));
-          if (numeric !== undefined) {
-            min = Math.min(min, numeric);
-            max = Math.max(max, numeric);
-          }
+function conditionalRangeKey(range: RangeRef): string {
+  return `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
+}
+
+function buildConditionalRangeStats(sheet: WorksheetModel, rule: ConditionalFormatRule, range: RangeRef): ConditionalRangeStats {
+  const values: number[] = [];
+  for (let row = range.startRow; row <= range.endRow; row += 1) {
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      const value = numericOf(sheet.cells.get(row, column));
+      if (value !== undefined) values.push(value);
+    }
+  }
+  const min = values.length === 0 ? 0 : values.reduce((current, value) => Math.min(current, value), Number.POSITIVE_INFINITY);
+  const max = values.length === 0 ? 1 : values.reduce((current, value) => Math.max(current, value), Number.NEGATIVE_INFINITY);
+  if (rule.type !== 'topBottom' || values.length === 0) return { count: values.length, min, max };
+  const config = rule.topBottom ?? {
+    direction: rule.operator === 'bottom' ? 'bottom' : 'top',
+    rank: Number(rule.value1 ?? 10),
+  };
+  values.sort((left, right) => left - right);
+  const rank = config.percent
+    ? Math.max(1, Math.ceil(values.length * config.rank / 100))
+    : Math.max(1, Math.floor(config.rank));
+  return config.direction === 'top'
+    ? { count: values.length, min, max, topThreshold: values[Math.max(0, values.length - rank)] }
+    : { count: values.length, min, max, bottomThreshold: values[Math.min(values.length - 1, rank - 1)] };
+}
+
+/**
+ * Compiles rule formulas once and evaluates only requested cells/ranges. The
+ * compatibility computeConditionalOverlays wrapper below intentionally uses
+ * this same runtime, so there is one evaluator and no top/bottom inner scan.
+ */
+export class ConditionalFormatRuntime {
+  private readonly rules: ConditionalFormatRule[];
+  private readonly valueCounts: Map<string, number>;
+  private readonly stats = new Map<string, ConditionalRangeStats>();
+  private readonly compiledFormulas = new Map<string, FormulaAst | null>();
+  private readonly cellCache = new Map<string, ConditionalOverlay | undefined>();
+
+  constructor(private readonly sheet: WorksheetModel) {
+    this.rules = [...sheet.conditionalFormats].sort((left, right) =>
+      (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER));
+    this.valueCounts = buildValueCounts(sheet, this.rules);
+    for (const rule of this.rules) {
+      if (rule.operator === 'formula') {
+        try {
+          const source = String(rule.value1 ?? '').trim();
+          this.compiledFormulas.set(rule.id, source ? parseFormula(source.startsWith('=') ? source : `=${source}`) : null);
+        } catch {
+          this.compiledFormulas.set(rule.id, null);
         }
       }
-      const boundedMin = Number.isFinite(min) ? min : 0;
-      const boundedMax = Number.isFinite(max) ? max : 1;
-      const span = boundedMax - boundedMin || 1;
-
-      for (let r = range.startRow; r <= range.endRow; r++) {
-        for (let c = range.startColumn; c <= range.endColumn; c++) {
-          const cell = sheet.cells.get(r, c);
-          const key = r + ":" + c;
-          if (stopped.has(key)) continue;
-          let overlay = overlays.get(key) ?? {};
-          let matches = false;
-
-          switch (rule.type) {
-            case "highlight": {
-              matches = evaluateHighlight(rule, cell, sheet, r, c, valueCounts);
-              if (matches && rule.style) overlay = { ...overlay, style: { ...overlay.style, ...rule.style } };
-              break;
-            }
-            case "dataBar": {
-            const numeric = numericOf(cell);
-            if (numeric !== undefined) {
-              matches = true;
-              overlay = {
-                ...overlay,
-                dataBar: { color: rule.barColor ?? "#60a5fa", ratio: (numeric - boundedMin) / span },
-              };
-            }
-            break;
-            }
-            case "colorScale": {
-            const numeric = numericOf(cell);
-            if (numeric !== undefined) {
-              matches = true;
-              const ratio = (numeric - boundedMin) / span;
-              const minColor = rule.minColor ?? "#fca5a5";
-              const midColor = rule.midColor;
-              const maxColor = rule.maxColor ?? "#86efac";
-              overlay = {
-                ...overlay,
-                colorScale: midColor
-                  ? (ratio <= 0.5 ? mixHex(minColor, midColor, ratio * 2) : mixHex(midColor, maxColor, (ratio - 0.5) * 2))
-                  : mixHex(minColor, maxColor, ratio),
-              };
-            }
-            break;
-            }
-            case "iconSet": {
-            const numeric = numericOf(cell);
-            if (numeric !== undefined) {
-              matches = true;
-              const ratio = (numeric - boundedMin) / span;
-              overlay = {
-                ...overlay,
-                icon: ratio >= 0.67 ? "up" : ratio >= 0.34 ? "flat" : "down",
-              };
-            }
-            break;
-            }
-            case "topBottom": {
-              matches = matchesTopBottom(rule, cell, sheet, range);
-              if (matches && rule.style) overlay = { ...overlay, style: { ...overlay.style, ...rule.style } };
-              break;
-            }
-          }
-          if (matches || Object.keys(overlay).length > 0) overlays.set(key, overlay);
-          if (matches && rule.stopIfTrue) stopped.add(key);
+      for (const range of rule.ranges) {
+        if (range.sheetId !== sheet.id) continue;
+        if (rule.type === 'dataBar' || rule.type === 'colorScale' || rule.type === 'iconSet' || rule.type === 'topBottom') {
+          this.stats.set(`${rule.id}:${conditionalRangeKey(range)}`, buildConditionalRangeStats(sheet, rule, range));
         }
       }
     }
   }
-  return overlays;
+
+  resolveCell(row: number, column: number): ConditionalOverlay | undefined {
+    const key = `${row}:${column}`;
+    if (this.cellCache.has(key)) return this.cellCache.get(key);
+    let overlay: ConditionalOverlay | undefined;
+    let stoppedByRule = false;
+    for (const rule of this.rules) {
+      const range = rule.ranges.find((candidate) => candidate.sheetId === this.sheet.id
+        && row >= candidate.startRow && row <= candidate.endRow
+        && column >= candidate.startColumn && column <= candidate.endColumn);
+      if (!range || stoppedByRule) continue;
+      const cell = this.sheet.cells.get(row, column);
+      const stats = this.stats.get(`${rule.id}:${conditionalRangeKey(range)}`);
+      let matches = false;
+      switch (rule.type) {
+        case 'highlight':
+          matches = evaluateHighlight(rule, cell, this.sheet, row, column, this.valueCounts, this.compiledFormulas.get(rule.id));
+          if (matches && rule.style) overlay = { ...overlay, style: { ...overlay?.style, ...rule.style } };
+          break;
+        case 'dataBar': {
+          const numeric = numericOf(cell);
+          if (numeric !== undefined && stats) {
+            matches = true;
+            const span = stats.max - stats.min || 1;
+            overlay = { ...overlay, dataBar: { color: rule.barColor ?? '#60a5fa', ratio: (numeric - stats.min) / span } };
+          }
+          break;
+        }
+        case 'colorScale': {
+          const numeric = numericOf(cell);
+          if (numeric !== undefined && stats) {
+            matches = true;
+            const ratio = (numeric - stats.min) / (stats.max - stats.min || 1);
+            const minColor = rule.minColor ?? '#fca5a5';
+            const maxColor = rule.maxColor ?? '#86efac';
+            overlay = { ...overlay, colorScale: rule.midColor
+              ? (ratio <= 0.5 ? mixHex(minColor, rule.midColor, ratio * 2) : mixHex(rule.midColor, maxColor, (ratio - 0.5) * 2))
+              : mixHex(minColor, maxColor, ratio) };
+          }
+          break;
+        }
+        case 'iconSet': {
+          const numeric = numericOf(cell);
+          if (numeric !== undefined && stats) {
+            matches = true;
+            const ratio = (numeric - stats.min) / (stats.max - stats.min || 1);
+            overlay = { ...overlay, icon: ratio >= 0.67 ? 'up' : ratio >= 0.34 ? 'flat' : 'down' };
+          }
+          break;
+        }
+        case 'topBottom': {
+          matches = matchesTopBottom(rule, cell, stats);
+          if (matches && rule.style) overlay = { ...overlay, style: { ...overlay?.style, ...rule.style } };
+          break;
+        }
+      }
+      if (matches && rule.stopIfTrue) stoppedByRule = true;
+    }
+    this.cellCache.set(key, overlay);
+    return overlay;
+  }
+
+  resolveRange(range: RangeRef): Map<string, ConditionalOverlay> {
+    const overlays = new Map<string, ConditionalOverlay>();
+    for (let row = range.startRow; row <= range.endRow; row += 1) {
+      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+        const overlay = this.resolveCell(row, column);
+        if (overlay) overlays.set(`${row}:${column}`, overlay);
+      }
+    }
+    return overlays;
+  }
+
+  resolveAll(): Map<string, ConditionalOverlay> {
+    return this.resolveRange({ sheetId: this.sheet.id, startRow: 0, endRow: Math.max(0, this.sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, this.sheet.columnCount - 1) });
+  }
+}
+
+export function createConditionalFormatRuntime(sheet: WorksheetModel): ConditionalFormatRuntime {
+  return new ConditionalFormatRuntime(sheet);
+}
+
+export function computeConditionalOverlays(sheet: WorksheetModel): Map<string, ConditionalOverlay> {
+  return new ConditionalFormatRuntime(sheet).resolveAll();
+}
+
+function createDefaultConditionalVisualResolver(sheet: WorksheetModel): FilterVisualResolver {
+  const runtime = new ConditionalFormatRuntime(sheet);
+  return createEffectiveFilterVisualResolver((row, column) => runtime.resolveCell(row, column));
 }
 
 function matchesTopBottom(
   rule: ConditionalFormatRule,
   cell: CellData | undefined,
-  sheet: WorksheetModel,
-  range: RangeRef,
+  stats: ConditionalRangeStats | undefined,
 ): boolean {
-  const config = rule.topBottom ?? {
-    direction: rule.operator === 'bottom' ? 'bottom' : 'top',
-    rank: Number(rule.value1 ?? 10),
-  };
-  const values: Array<{ row: number; column: number; value: number }> = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      const value = numericOf(sheet.cells.get(row, column));
-      if (value !== undefined) values.push({ row, column, value });
-    }
-  }
-  if (values.length === 0 || !cell) return false;
-  values.sort((left, right) => left.value - right.value);
-  const rank = config.percent
-    ? Math.max(1, Math.ceil(values.length * config.rank / 100))
-    : Math.max(1, Math.floor(config.rank));
-  const threshold = config.direction === 'top'
-    ? values[Math.max(0, values.length - rank)]?.value
-    : values[Math.min(values.length - 1, rank - 1)]?.value;
+  if (!stats || !cell) return false;
+  const config = rule.topBottom ?? { direction: rule.operator === 'bottom' ? 'bottom' : 'top', rank: Number(rule.value1 ?? 10) };
   const numeric = numericOf(cell);
-  if (numeric === undefined || threshold === undefined) return false;
-  return config.direction === 'top' ? numeric >= threshold : numeric <= threshold;
+  if (numeric === undefined) return false;
+  return config.direction === 'top' ? stats.topThreshold !== undefined && numeric >= stats.topThreshold : stats.bottomThreshold !== undefined && numeric <= stats.bottomThreshold;
 }
 
 function evaluateHighlight(
@@ -574,6 +621,7 @@ function evaluateHighlight(
   row: number,
   column: number,
   valueCounts: Map<string, number>,
+  compiledFormula?: FormulaAst | null,
 ): boolean {
   const text = cellStorageText(cell);
   const numeric = numericOf(cell);
@@ -594,16 +642,17 @@ function evaluateHighlight(
     case "notContainsText": return typeof firstValue === "string" && !text.toLowerCase().includes(String(firstValue).toLowerCase());
     case "duplicate": return valueCounts.get(text) !== undefined && (valueCounts.get(text) ?? 0) > 1;
     case "unique": return text !== "" && (valueCounts.get(text) ?? 0) === 1;
-    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
+    case "formula": return evaluateCfFormula(String(firstValue ?? ""), sheet, row, column, cell, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined), compiledFormula);
     default: return false;
   }
 }
 
-function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }): boolean {
+function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, column: number, cell: CellData | undefined, anchor?: { sheetId: string; row: number; column: number }, compiledFormula?: FormulaAst | null): boolean {
   const source = formula.trim();
   if (!source) return false;
+  if (compiledFormula === null) return false;
   try {
-    const parsed = parseFormula(source.startsWith('=') ? source : `=${source}`);
+    const parsed = compiledFormula ?? parseFormula(source.startsWith('=') ? source : `=${source}`);
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     const result = evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
@@ -739,7 +788,7 @@ export function computeFilterHiddenRows(
   dateContext?: FilterDateContext,
 ): Set<number> {
   const hidden = new Set<number>();
-  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
   let filters: import('@react-sheets/core-model').AutoFilterModel[] = [];
   try {
     filters = resolveAutoFilters(sheet).map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter));
@@ -784,7 +833,7 @@ export function getAutoFilterScalarDomain(
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
 ): FilterScalar[] {
-  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
   const filter = resolveAutoFilters(sheet)
     .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
     .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
@@ -847,7 +896,7 @@ export function getAutoFilterDateDomain(
   visualResolver?: FilterVisualResolver,
   dateContext?: FilterDateContext,
 ): FilterDateDomainEntry[] {
-  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
   const filter = resolveAutoFilters(sheet)
     .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
     .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
@@ -885,7 +934,7 @@ export function getAutoFilterColorDomain(
   visualResolver?: FilterVisualResolver,
 ): Array<{ target: 'cell' | 'font'; color: string; dxfId?: number }> {
   void dateSystem;
-  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
   const filter = resolveAutoFilters(sheet)
     .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
     .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);
@@ -911,7 +960,7 @@ export function getAutoFilterIconDomain(
   visualResolver?: FilterVisualResolver,
 ): Array<{ iconSet: string; iconId: number }> {
   void dateSystem;
-  const resolveVisual = visualResolver ?? createEffectiveFilterVisualResolver(computeConditionalOverlays(sheet));
+  const resolveVisual = visualResolver ?? createDefaultConditionalVisualResolver(sheet);
   const filter = resolveAutoFilters(sheet)
     .map(({ autoFilter }) => normalizeAutoFilterModel(autoFilter))
     .find((candidate) => column >= candidate.range.startColumn && column <= candidate.range.endColumn);

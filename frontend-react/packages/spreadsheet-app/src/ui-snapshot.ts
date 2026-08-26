@@ -31,7 +31,7 @@ import type {
 } from '@react-sheets/core-model';
 import {
   computeBandedCellStyle,
-  computeConditionalOverlays,
+  createConditionalFormatRuntime,
   computeFilterHiddenRows,
   createEffectiveFilterVisualResolver,
   getAutoFilterValueDomain,
@@ -255,7 +255,7 @@ export function buildCanvasSheetSnapshot(
   pivotErrors: Readonly<Record<string, string>> = {},
   dateContext?: FilterDateContext,
 ): CanvasSheetSnapshot {
-  const overlays = computeConditionalOverlays(sheet);
+  const conditionalRuntime = createConditionalFormatRuntime(sheet);
   const cellResolver = createWorkbookCellResolver(dataContent);
   const resolveFilterCell = (owner: WorksheetModel, row: number, column: number): FilterCellValue => {
     const cell = cellResolver.resolve(owner, row, column)?.cell;
@@ -272,7 +272,7 @@ export function buildCanvasSheetSnapshot(
     return resolveFilterCellValue(cell, undefined, dateSystem);
   };
   const readFilterCell = (row: number, column: number) => resolveFilterCell(sheet, row, column);
-  const filterVisual = createEffectiveFilterVisualResolver(overlays);
+  const filterVisual = createEffectiveFilterVisualResolver((row, column) => conditionalRuntime.resolveCell(row, column));
   const filterHidden = computeFilterHiddenRows(sheet, readFilterCell, dateSystem, filterVisual, dateContext);
   const outlineHiddenRows = computeOutlineHiddenRows(sheet);
   const outlineHiddenColumns = computeOutlineHiddenColumns(sheet);
@@ -304,8 +304,7 @@ export function buildCanvasSheetSnapshot(
     const modelCell = resolved.cell;
     const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
     const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
-    const key = `${row}:${column}`;
-    const overlay = overlays.get(key);
+    const overlay = conditionalRuntime.resolveCell(row, column);
     const table = findSheetTableAt(sheet, row, column);
     const presentation = mergePresentationStyles(
       computeBandedCellStyle(sheet, row, column),
