@@ -123,7 +123,7 @@ function applyBinding(context: CommandContext, binding: QueryLoadBinding | null,
 function applyQueryLoad(context: CommandContext, payload: QueryLoadMutationPayload): void {
   if (!isQueryLoadPayload(payload)) throw new Error('Invalid block-backed query load mutation payload');
   const normalizedSource = payload.source ? normalizeDataSourceManifest(structuredClone(payload.source)) : null;
-  if (payload.binding && !normalizedSource) throw new Error(`Query load binding has no source manifest: ${payload.sourceId}`);
+  if (payload.binding?.kind === 'sheet-region' && !normalizedSource) throw new Error(`Query load sheet binding has no source manifest: ${payload.sourceId}`);
   if (normalizedSource && payload.binding?.kind === 'sheet-region') {
     const regionWidth = payload.binding.region.range.endColumn - payload.binding.region.range.startColumn + 1;
     if (payload.binding.region.sourceId !== payload.sourceId

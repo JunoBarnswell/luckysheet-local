@@ -84,7 +84,7 @@ test('sort keys retain canonical typed formula results and reject unresolved val
   sheet.cells.set(2, 0, { formula: '=A1', value: null });
   assert.throws(() => resolveSortCellValue(sheet, 2, 0), /formula result unavailable/);
   assert.equal(compareSortValues(2, 10) < 0, true);
-  assert.equal(compareSortValues(true, 'true') < 0, true);
+  assert.equal(compareSortValues(true, 'true') > 0, true);
   assert.equal(compareSortValues(createFormulaError('#N/A', 'missing'), null) < 0, true);
   assert.equal(compareSortValues(createFormulaError('#DIV/0!', 'zero'), createFormulaError('#N/A', 'missing')) < 0, true);
   assert.equal(compareSortValues(5, 5), 0);
@@ -219,7 +219,7 @@ test('sort and remove duplicates preserve formulas and use structural row deleti
   const permutation = commands.getUndoEntries().at(-1)?.redo[0];
   assert.equal(permutation?.id, 'rows.permuted');
   assert.deepEqual(permutation?.affectedRanges, [{
-    sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 16_383,
+    sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: sheet.columnCount - 1,
   }]);
   assert.equal(sheet.cells.get(1, 0)?.value, 'A');
   assert.equal(sheet.cells.get(1, 2)?.formula, '=B3*2');

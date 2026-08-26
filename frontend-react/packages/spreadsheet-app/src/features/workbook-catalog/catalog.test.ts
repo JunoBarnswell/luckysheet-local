@@ -73,7 +73,10 @@ describe('WorkbookCatalogService', () => {
     assert.equal(restored.lifecycle, 'active');
     assert.equal((await catalog.list()).some((entry) => entry.unitId === created.unitId), true);
     await catalog.purge(created.unitId);
-    await assert.rejects(() => catalog.resolve(created.unitId), /not found/i);
+    await assert.rejects(
+      () => catalog.resolve(created.unitId),
+      (error: unknown) => error instanceof WorkbookResolutionError && error.code === 'permission-denied',
+    );
   });
 
   it('imports XLSX as a new workbook and exports it through the same catalog boundary', async () => {

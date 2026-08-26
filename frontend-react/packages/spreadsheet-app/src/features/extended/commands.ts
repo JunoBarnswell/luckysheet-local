@@ -36,7 +36,6 @@ function applyWrite(write: WhatIfCellWrite, context: CommandContext): void {
       row: write.row,
       column: write.column,
       value: structuredClone(write.value),
-      entryIntent: { kind: 'formula-result', target: { sheetId: write.sheetId, row: write.row, column: write.column }, candidate: structuredClone(write.value), validationDecision: { status: 'not-applicable' } },
     },
     affectedRanges,
     inverse: [{

@@ -233,7 +233,7 @@ export function createSpreadsheetRuntime(options: {
       runtime.handlers.onWorkspacePersisted?.();
     },
   });
-  runtime.checkpointWorkspace = () => checkpointWorkspace(runtime);
+  runtime.checkpointWorkspace = (advanceLocalRevision = true) => checkpointWorkspace(runtime, advanceLocalRevision);
   installCommandCellValueResolver(runtime);
   attachCoreListeners(runtime);
   return runtime;

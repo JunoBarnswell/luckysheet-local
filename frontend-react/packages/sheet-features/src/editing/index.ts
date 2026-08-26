@@ -27,7 +27,6 @@ import {
   isPasteSpecialSpecSupported,
 } from '../clipboard';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from '../text-input';
-import type { CellEntryIntent } from '../index';
 
 export type FreezePreset = 'none' | 'firstRow' | 'firstColumn' | 'both';
 export type GoToSpecialKind =
@@ -54,8 +53,8 @@ export interface PasteRangeParams {
   sheetId: string;
   targetOrigin: { row: number; column: number };
   clipboard: ClipboardPayload;
-  inputContext: CellInputInterpretationContext;
-  entryIntent: CellEntryIntent;
+  /** Required only when the payload still contains host text/HTML representations. */
+  inputContext?: CellInputInterpretationContext;
   transfer: ClipboardTransfer;
   spec: PasteSpecialSpec;
 }
@@ -153,7 +152,7 @@ function isSheetViewMutation(value: unknown): value is SheetViewParams {
     && (value.zoom === undefined || (typeof value.zoom === 'number' && Number.isFinite(value.zoom) && value.zoom > 0));
 }
 
-type PasteMutationParams = PasteRangeParams & {
+type PasteMutationParams = Omit<PasteRangeParams, 'inputContext'> & {
   sourceExtent: { rows: number; columns: number };
   sourceRange?: RangeRef;
   clearSource?: boolean;
@@ -191,8 +190,6 @@ function isPasteMutation(value: unknown): value is PasteMutationParams {
   const sourceExtent = clipboard.sourceExtent as Record<string, unknown>;
   return typeof value.sheetId === 'string'
     && isRecord(value.targetOrigin) && Number.isInteger(value.targetOrigin.row) && Number.isInteger(value.targetOrigin.column)
-    && isCellInputInterpretationContext(value.inputContext)
-    && isRecord(value.entryIntent) && value.entryIntent.kind === 'paste'
     && (value.transfer === 'copy' || value.transfer === 'move')
     && clipboard.transfer === value.transfer
     && clipboard.schema === 'SparseClipboardPayload'
@@ -691,12 +688,23 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
     for (const entry of metadata.notes) {
       const row = targetRange.startRow + entry.rowOffset;
       const column = targetRange.startColumn + entry.columnOffset;
-      notes.push({ key: keyFor(row, column), value: structuredClone(entry.value) });
+      notes.push({
+        key: keyFor(row, column),
+        value: { ...structuredClone(entry.value), id: `${entry.value.id}@paste:${row}:${column}` },
+      });
     }
     after.notes = notes;
     const comments = after.comments ?? [];
     for (const entry of metadata.comments) {
-      comments.push({ ...structuredClone(entry.value), sheetId: params.sheetId, row: targetRange.startRow + entry.rowOffset, column: targetRange.startColumn + entry.columnOffset });
+      const row = targetRange.startRow + entry.rowOffset;
+      const column = targetRange.startColumn + entry.columnOffset;
+      comments.push({
+        ...structuredClone(entry.value),
+        id: `${entry.value.id}@paste:${row}:${column}`,
+        sheetId: params.sheetId,
+        row,
+        column,
+      });
     }
     after.comments = comments;
   }
@@ -778,7 +786,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       if (!isPasteSpecialSpec(params.spec)) throw new Error('Paste Special requires a canonical specification');
-      const clipboard = parseClipboardPayload(params.clipboard, params.inputContext);
+      const requiresInterpretation = Boolean(params.clipboard.representations?.length || params.clipboard.html !== undefined || params.clipboard.text !== undefined);
+      if (requiresInterpretation && !isCellInputInterpretationContext(params.inputContext)) {
+        throw new Error('External clipboard text requires a cell input interpretation context');
+      }
+      const clipboard = requiresInterpretation
+        ? parseClipboardPayload(params.clipboard, params.inputContext!)
+        : structuredClone(params.clipboard);
       const sourceRange = params.clipboard.range;
       const transfer = params.transfer;
       if (transfer !== 'copy' && transfer !== 'move' || params.clipboard.transfer !== transfer) {
@@ -787,7 +801,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       if (transfer === 'move' && (!sourceRange || sourceRange.sheetId.length === 0)) {
         throw new Error('Move clipboard payload must include a source range');
       }
-      const canonicalParams = { ...params, clipboard };
+      const canonicalParams: Omit<PasteRangeParams, 'inputContext'> = {
+        sheetId: params.sheetId,
+        targetOrigin: structuredClone(params.targetOrigin),
+        clipboard,
+        transfer: params.transfer,
+        spec: structuredClone(params.spec),
+      };
       const targetRange = assertPastePreconditions(context.workbook, canonicalParams);
       const sourceRow = sourceRange?.startRow ?? 0;
       const sourceColumn = sourceRange?.startColumn ?? 0;
@@ -811,9 +831,16 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       const clearsMetadata = Object.values(params.spec.metadata).some(Boolean)
         ? [structuredClone(targetCellRange), ...(transfer === 'move' && sourceRange ? [structuredClone(sourceRange)] : [])]
         : [];
-      const sparseWidths = (targetSheet: WorksheetModel, ranges: RangeRef[]) => Object.entries(targetSheet.columnWidthsPx)
-        .map(([column, widthPx]) => ({ column: Number(column), widthPx }))
-        .filter((entry) => ranges.some((range) => entry.column >= range.startColumn && entry.column <= range.endColumn));
+      const sparseWidths = (targetSheet: WorksheetModel, ranges: RangeRef[]) => {
+        const columns = new Set<number>();
+        for (const range of ranges) {
+          for (let column = range.startColumn; column <= range.endColumn; column += 1) columns.add(column);
+        }
+        return [...columns].sort((left, right) => left - right).map((column) => ({
+          column,
+          widthPx: targetSheet.columnWidthsPx[column],
+        }));
+      };
       const before: PasteSnapshot = {
         clearRanges: clearsCells.filter((range) => range.sheetId === params.sheetId),
         clearMetadataRanges: clearsMetadata.filter((range) => range.sheetId === params.sheetId),

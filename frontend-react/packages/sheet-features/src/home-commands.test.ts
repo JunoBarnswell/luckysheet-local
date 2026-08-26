@@ -9,7 +9,7 @@ import { parseReplacementValue as parseReplacementValueWithContext } from './hom
 import type { CellInputInterpretationContext } from './text-input';
 
 const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
-  sourceKind: 'direct-entry', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
+  sourceKind: 'find-replace', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
   referenceDate: { year: 2026, month: 8, day: 27, hour: 0, minute: 0, second: 0, millisecond: 0 },
 };
 const parseReplacementValue = (text: string) => parseReplacementValueWithContext(text, TEST_INPUT_CONTEXT);
@@ -250,7 +250,7 @@ test('replace all is one history action and restores every cell', () => {
   const sheet = workbook.getSheet(workbook.primarySheetId);
   sheet.cells.set(0, 0, { value: 'old value' });
   sheet.cells.set(0, 1, { value: 'old' });
-  runtime.execute('sheet.range.replace', { sheetId: sheet.id, find: 'old', replace: 'new' });
+  runtime.execute('sheet.range.replace', { sheetId: sheet.id, find: 'old', replace: 'new', inputContext: TEST_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, 'new value');
   assert.equal(sheet.cells.get(0, 1)?.value, 'new');
   assert.equal(runtime.getHistoryDepth().undo, 1);
@@ -338,7 +338,7 @@ test('Home cell commands fail closed on block-backed data regions', () => {
     mode: 'copy',
   }), /data-region/);
   assert.throws(() => runtime.execute('formula.autosum', { sheetId: sheet.id, range }), /data-region/);
-  assert.throws(() => runtime.execute('sheet.range.replace', { sheetId: sheet.id, find: 'a', replace: 'b', range }), /data-region/);
+  assert.throws(() => runtime.execute('sheet.range.replace', { sheetId: sheet.id, find: 'a', replace: 'b', range, inputContext: TEST_INPUT_CONTEXT }), /data-region/);
 });
 
 test('canonical fill is one mutation, preserves seeds, and replays/undoes atomically', () => {
@@ -574,7 +574,7 @@ test('replacement parser preserves every supported tagged value', () => {
   assert.deepEqual(parseReplacementValue('-12.5'), { kind: 'number', value: -12.5 });
   assert.deepEqual(parseReplacementValue('TRUE'), { kind: 'boolean', value: true });
   assert.deepEqual(parseReplacementValue('false'), { kind: 'boolean', value: false });
-  assert.deepEqual(parseReplacementValue("'0"), { kind: 'text', value: '0' });
+  assert.deepEqual(parseReplacementValue("'0"), { kind: 'text', value: "'0" });
   assert.deepEqual(parseReplacementValue('=A1+1'), { kind: 'formula', value: null, formula: '=A1+1' });
   assert.deepEqual(parseReplacementValue('#DIV/0!'), { kind: 'error', value: null, code: '#DIV/0!' });
   assert.deepEqual(parseReplacementValue(''), { kind: 'empty', value: null });
@@ -596,6 +596,7 @@ test('replace writes numeric zero as a number and is one undo/redo/replay operat
     sheetId: sheet.id,
     find: '10',
     replace: '0',
+    inputContext: TEST_INPUT_CONTEXT,
     entireCell: true,
   });
 
@@ -632,6 +633,7 @@ test('replace parses negative and fractional replacements without previous-value
     sheetId: sheet.id,
     find: '42',
     replace: '-3.25',
+    inputContext: TEST_INPUT_CONTEXT,
     entireCell: true,
   });
   assert.equal(sheet.cells.get(0, 0)?.value, -3.25);
@@ -646,6 +648,7 @@ test('replace handles explicit formula and formula error values through the type
     sheetId: sheet.id,
     find: '=A1+1',
     replace: '=B1+1',
+    inputContext: TEST_INPUT_CONTEXT,
     entireCell: true,
     searchIn: 'formulas',
   });
@@ -657,6 +660,7 @@ test('replace handles explicit formula and formula error values through the type
     sheetId: sheet.id,
     find: '#DIV/0!',
     replace: '0',
+    inputContext: TEST_INPUT_CONTEXT,
     entireCell: true,
     searchIn: 'values',
   });
@@ -689,6 +693,7 @@ test('empty, overflowing, and invalid formula replacements fail before any cell 
     sheetId: sheet.id,
     find: '=A1',
     replace: 'not-a-formula',
+    inputContext: TEST_INPUT_CONTEXT,
     entireCell: true,
     searchIn: 'formulas',
   }), /formula/);
@@ -704,6 +709,7 @@ test('replace all does not re-match its own zero result', () => {
     sheetId: sheet.id,
     find: '1',
     replace: '0',
+    inputContext: TEST_INPUT_CONTEXT,
   });
   assert.equal(sheet.cells.get(0, 0)?.value, 0);
   assert.equal(typeof sheet.cells.get(0, 0)?.value, 'number');

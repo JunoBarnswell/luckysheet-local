@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { createNativePackageState } from '@react-sheets/exchange-excel-ooxml';
+import { createNativePackageState, exportSnapshotToXlsxBuffer, loadOpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import {
@@ -20,6 +20,8 @@ import {
   WORKSPACE_STORE_NAME,
   WorkspaceDatabaseCoordinator,
   WorkspaceStorageError,
+  requestResult,
+  transactionComplete,
 } from './indexed-db';
 
 interface FakeOpenRequest {
@@ -114,27 +116,65 @@ describe('persistence storage', () => {
     const databaseName = `persistence-artifact-${Date.now()}-${Math.random()}`;
     const persistence = new WorkspacePersistence({ databaseName });
     const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
+    const sourceBytes = exportSnapshotToXlsxBuffer(snapshot);
     const artifact = await createNativePackageState({
       fileName: 'artifact.xlsx',
-      buffer: new Uint8Array([80, 75, 3, 4]).buffer,
+      buffer: sourceBytes,
       dateSystem: '1900',
-      packageGraph: {
-        schema: 'OpcPackageGraph',
-        workbookPart: 'xl/workbook.xml',
-        parts: {},
-        opaqueParts: {},
-        relationships: {},
-        sheetPartById: {},
-        dateSystem: '1900',
-        format: { family: 'ooxml', profile: 'transitional', variant: 'xlsx' },
-        profile: 'transitional',
-      } satisfies OpcPackageGraph,
+      packageGraph: loadOpcPackageGraph(sourceBytes).packageGraph satisfies OpcPackageGraph,
       detectedFeatures: ['worksheet'],
     });
 
     const record = await persistence.checkpointWithArtifact(snapshot, 3, 0, 'local-only', artifact);
     assert.equal((await persistence.load(snapshot.unitId))?.checksum, record.checksum);
     assert.equal((await persistence.nativePackages.load(snapshot.unitId))?.checksum, artifact.checksum);
+  });
+
+  it('upgrades v6 to v7 without deleting workspace, package, block, or overlay records', async () => {
+    const databaseName = `persistence-v6-upgrade-${Date.now()}-${Math.random()}`;
+    const request = indexedDB.open(databaseName, 6);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      database.createObjectStore(WORKSPACE_STORE_NAME, { keyPath: 'unitId' });
+      database.createObjectStore(DATA_BLOCK_STORE_NAME, { keyPath: ['sourceId', 'blockId'] });
+      database.createObjectStore(NATIVE_PACKAGE_STORE_NAME, { keyPath: 'unitId' });
+      database.createObjectStore(OVERLAY_STORE_NAME, { keyPath: ['sourceId', 'blockId', 'revision'] });
+    };
+    const legacyDatabase = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error('Unable to create v6 database'));
+    });
+    const seed = legacyDatabase.transaction(
+      [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME],
+      'readwrite',
+    );
+    seed.objectStore(WORKSPACE_STORE_NAME).put({ unitId: 'legacy-workbook', unknownField: { preserved: true } });
+    seed.objectStore(DATA_BLOCK_STORE_NAME).put({ sourceId: 'legacy-source', blockId: 'block-1', bytes: new Uint8Array([1, 2, 3]) });
+    seed.objectStore(NATIVE_PACKAGE_STORE_NAME).put({ unitId: 'legacy-workbook', opaqueBinary: new Uint8Array([4, 5, 6]) });
+    seed.objectStore(OVERLAY_STORE_NAME).put({ sourceId: 'legacy-source', blockId: 'block-1', revision: 2, marker: 'overlay' });
+    await transactionComplete(seed);
+    legacyDatabase.close();
+
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName, indexedDB, broadcast: false });
+    const upgraded = await coordinator.open();
+    assert.equal(upgraded.version, 7);
+    assert.equal(upgraded.objectStoreNames.contains(ASSET_STORE_NAME), true);
+    const read = upgraded.transaction(
+      [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME],
+      'readonly',
+    );
+    const [workspace, block, nativePackage, overlay] = await Promise.all([
+      requestResult(read.objectStore(WORKSPACE_STORE_NAME).get('legacy-workbook')),
+      requestResult(read.objectStore(DATA_BLOCK_STORE_NAME).get(['legacy-source', 'block-1'])),
+      requestResult(read.objectStore(NATIVE_PACKAGE_STORE_NAME).get('legacy-workbook')),
+      requestResult(read.objectStore(OVERLAY_STORE_NAME).get(['legacy-source', 'block-1', 2])),
+    ]);
+    await transactionComplete(read);
+    assert.deepEqual((workspace as { unknownField: unknown }).unknownField, { preserved: true });
+    assert.deepEqual([...((block as { bytes: Uint8Array }).bytes)], [1, 2, 3]);
+    assert.deepEqual([...((nativePackage as { opaqueBinary: Uint8Array }).opaqueBinary)], [4, 5, 6]);
+    assert.equal((overlay as { marker: string }).marker, 'overlay');
+    await coordinator.close();
   });
 
   it('fails closed when the database upgrade is blocked and permits an explicit retry', async () => {
@@ -174,10 +214,8 @@ describe('persistence storage', () => {
 
   it('closes an open connection when a later schema upgrade requests a version change', async () => {
     let closed = false;
-    const database = {
-      onversionchange: null as (() => void) | null,
-      close: () => { closed = true; },
-    } as unknown as IDBDatabase;
+    const database = fakeDatabase();
+    database.close = () => { closed = true; };
     const factory = {
       open: () => {
         const request: FakeOpenRequest = {

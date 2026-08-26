@@ -160,3 +160,55 @@ Visit https://react.dev/link/error-boundaries to learn more about error boundari
     at workLoopSync (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:8325:37)
     at renderRootSync (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:8309:6)
     at performWorkOnRoot (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:7994:27) @ http://127.0.0.1:5173/@vite/client:524
+[ 5712851ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:14335
+[ 5714702ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:14335
+[ 5717663ms] [ERROR] [2026-08-26T16:55:26.223Z] Error: Connection disconnected with error 'Error: Server returned an error on close: Connection closed with an error.'. @ http://127.0.0.1:5173/@vite/client:524
+[ 5783876ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:14335
+[ 6039471ms] [ERROR] [2026-08-26T17:00:48.031Z] Error: Connection disconnected with error 'Error: WebSocket closed with status code: 1006 (no reason given).'. @ http://127.0.0.1:5173/@vite/client:524
+[ 6039487ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 6039493ms] [ERROR] [2026-08-26T17:00:48.053Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6039494ms] [ERROR] [2026-08-26T17:00:48.054Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6041505ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 6041507ms] [ERROR] [2026-08-26T17:00:50.067Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6041507ms] [ERROR] [2026-08-26T17:00:50.068Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6051531ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 6051532ms] [ERROR] [2026-08-26T17:01:00.093Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6051533ms] [ERROR] [2026-08-26T17:01:00.093Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6082127ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 6082307ms] [ERROR] [2026-08-26T17:01:30.867Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6082310ms] [ERROR] [2026-08-26T17:01:30.870Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 6250172ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/system/menus/tree?includeButtons=false&includeHidden=false:0
+[ 6250175ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/system/menus/permission-catalog:0
+[ 6250276ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/system/menus/tree?includeButtons=false&includeHidden=false:0
+[ 6250277ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/system/menus/permission-catalog:0
+[ 7199518ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:14335
+[ 7217880ms] Error: useI18n must be used inside I18nProvider
+    at useI18n (http://127.0.0.1:5173/src/core/i18n/I18nProvider.tsx?t=1787763321517:97:15)
+    at FeedbackProvider (http://127.0.0.1:5173/src/shared/feedback/FeedbackProvider.tsx?t=1787763321517:16:27)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:12866:12)
+    at renderWithHooks (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:4213:19)
+    at updateFunctionComponent (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:5569:16)
+    at beginWork (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:6140:20)
+    at runWithFiberInDEV (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:851:66)
+    at performUnitOfWork (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:8429:92)
+    at workLoopSync (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:8325:37)
+    at renderRootSync (http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:8309:6)
+[ 7217878ms] [WARNING] %s
+
+%s
+ An error occurred in the <FeedbackProvider> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:5173/@vite/client:524
+[ 7218424ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5173/node_modules/.vite/deps/client-D0fXik_x.js?v=b3816537:14335
+[ 7240976ms] [ERROR] [2026-08-26T17:20:49.536Z] Error: Connection disconnected with error 'Error: WebSocket closed with status code: 1006 (no reason given).'. @ http://127.0.0.1:5173/@vite/client:524
+[ 7240983ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 7240984ms] [ERROR] [2026-08-26T17:20:49.545Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7240986ms] [ERROR] [2026-08-26T17:20:49.546Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7243000ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 7243004ms] [ERROR] [2026-08-26T17:20:51.564Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7243005ms] [ERROR] [2026-08-26T17:20:51.565Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7264242ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 7266745ms] [ERROR] [2026-08-26T17:21:15.305Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7266745ms] [ERROR] [2026-08-26T17:21:15.306Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7299710ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5173/hubs/system-notification/negotiate?negotiateVersion=1:0
+[ 7299720ms] [ERROR] [2026-08-26T17:21:48.279Z] Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524
+[ 7299771ms] [ERROR] [2026-08-26T17:21:48.331Z] Error: Failed to start the connection: Error: Failed to complete negotiation with the server: Error: Bad Gateway: Status code '502' @ http://127.0.0.1:5173/@vite/client:524

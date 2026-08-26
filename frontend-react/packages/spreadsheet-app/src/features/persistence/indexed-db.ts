@@ -208,6 +208,7 @@ export class WorkspaceDatabaseCoordinator {
   private readonly openTimeoutMs: number;
   private database: IDBDatabase | null = null;
   private opening: Promise<IDBDatabase> | null = null;
+  private cancelOpening: ((error: WorkspaceStorageError) => void) | null = null;
   private stateValue: WorkspaceDatabaseState = 'idle';
   private activeTransactions = 0;
   private drainWaiters: Array<() => void> = [];
@@ -253,6 +254,7 @@ export class WorkspaceDatabaseCoordinator {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutId);
+        if (this.cancelOpening === finishFailure) this.cancelOpening = null;
         this.opening = null;
         this.stateValue = 'failed';
         reject(error);
@@ -272,6 +274,7 @@ export class WorkspaceDatabaseCoordinator {
           '打开本地工作簿存储超时。',
           '请完整刷新当前页面后重试；若问题持续，请检查浏览器站点存储权限。',
         )), this.openTimeoutMs);
+      this.cancelOpening = finishFailure;
 
       request.onupgradeneeded = () => ensureWorkspaceStores(request.result);
       request.onblocked = () => {
@@ -307,6 +310,7 @@ export class WorkspaceDatabaseCoordinator {
         }
         settled = true;
         clearTimeout(timeoutId);
+        if (this.cancelOpening === finishFailure) this.cancelOpening = null;
         this.database = request.result;
         this.database.onversionchange = () => { void this.close('versionchange'); };
         this.opening = null;
@@ -350,6 +354,14 @@ export class WorkspaceDatabaseCoordinator {
 
   async close(reason: 'dispose' | 'pagehide' | 'versionchange' | 'upgrade-request' = 'dispose'): Promise<void> {
     if (this.stateValue === 'closing') return;
+    this.cancelOpening?.(storageError(
+      'STORAGE_UNAVAILABLE',
+      this.databaseName,
+      'close',
+      '本地工作簿存储在打开完成前被页面生命周期关闭。',
+      '请重新进入工作簿页面后重试当前操作。',
+    ));
+    this.cancelOpening = null;
     this.stateValue = 'closing';
     if (this.activeTransactions > 0) await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
     this.database?.close();

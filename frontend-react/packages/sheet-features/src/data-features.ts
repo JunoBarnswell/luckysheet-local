@@ -148,18 +148,6 @@ function applyRangeValues(
     params: {
       ...params,
       values,
-      entryIntent: {
-        kind: 'script' as const,
-        target: {
-          sheetId: params.sheetId,
-          startRow: params.startRow,
-          endRow: params.startRow + Math.max(0, values.length - 1),
-          startColumn: params.startColumn,
-          endColumn: params.startColumn + Math.max(0, Math.max(1, ...values.map((row) => row.length)) - 1),
-        },
-        candidate: structuredClone(values),
-        validationDecision: { status: 'not-applicable' as const },
-      },
     },
     affectedRanges,
     inverse: previous.map((entry) => ({

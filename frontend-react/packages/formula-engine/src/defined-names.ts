@@ -89,6 +89,7 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
         for (const row of matrix) values.push(...row);
         return values;
       },
+      readRangeMatrix: context.readRangeMatrix,
       resolveName: context.resolveName,
       numericContext: context.numericContext,
     });

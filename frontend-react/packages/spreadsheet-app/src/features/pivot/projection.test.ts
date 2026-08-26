@@ -1285,7 +1285,11 @@ describe('native PivotGridProjection contract', () => {
         { id: 'amount', name: 'Amount', ordinal: 1, type: 'number' },
       ],
       blockRowCount: 65_536,
-      blocks: [],
+      blocks: [{
+        id: 'source-block-0', dataSourceId: 'source-block', startRow: 0, rowCount: 2,
+        storageKey: 'source-block-0', checksum: 'c'.repeat(64), byteLength: 1,
+        encoding: 'columnar-v1', revision: 1,
+      }],
       revision: 1,
     });
     const pivot = {

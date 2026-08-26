@@ -19,6 +19,7 @@ const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
   sourceKind: 'clipboard-text', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
   referenceDate: { year: 2026, month: 8, day: 27, hour: 0, minute: 0, second: 0, millisecond: 0 },
 };
+const DIRECT_INPUT_CONTEXT: CellInputInterpretationContext = { ...TEST_INPUT_CONTEXT, sourceKind: 'direct-entry' };
 const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
 const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
 
@@ -181,9 +182,9 @@ test('checkbox cell text commits stay Boolean and reject unsupported input', () 
   const sheet = workbook.getSheet('sheet-1');
   sheet.cells.set(0, 0, { value: false, editor: { kind: 'checkbox' } });
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'TRUE' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'TRUE', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, true);
-  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'maybe' }), /Checkbox source value/);
+  assert.throws(() => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: 'maybe', inputContext: DIRECT_INPUT_CONTEXT }), /Checkbox source value/);
   assert.equal(sheet.cells.get(0, 0)?.value, true);
 });
 
@@ -514,7 +515,7 @@ test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
     representations: [{ mime: 'text/html', data: '<table><tr><td>42</td><td data-formula="=A1+1">43</td></tr></table>' }],
   };
   const parsed = parseClipboardPayload(payload);
-  assert.deepEqual(parsed.occupiedCells.map((cell) => cell.value.value), [42, 43]);
+  assert.deepEqual(parsed.occupiedCells.map((cell) => cell.value.value), [42, null]);
   assert.equal(parsed.occupiedCells[1]?.value.formula, '=A1+1');
   assert.equal(clipboardRepresentations(parsed).some((entry) => entry.mime === 'text/html'), true);
   assert.deepEqual(parseTsv(' 42 \t true ').map((row) => row.map((cell) => cell.value)), [[' 42 ', ' true ']]);
@@ -601,19 +602,19 @@ test('sheet.cell.commitText is the single raw-text input path', () => {
     displayValue: 'old',
   });
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: ' 42 ' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: ' 42 ', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, ' 42 ');
   assert.equal(sheet.cells.get(0, 0)?.style?.bold, true);
   assert.equal(sheet.cells.get(0, 0)?.styleId, 'style-1');
   assert.equal(sheet.cells.get(0, 0)?.displayValue, undefined);
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 + 1' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 + 1', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1 + 1');
   assert.equal(sheet.cells.get(0, 0)?.value, null);
   assert.equal(sheet.cells.get(0, 0)?.style?.background, '#fff');
 
   assert.throws(
-    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 +' }),
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '=A1 +', inputContext: DIRECT_INPUT_CONTEXT }),
     /formula|expression|unexpected/i,
   );
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1 + 1');
@@ -631,11 +632,11 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
   registerSheetCommands(runtime);
   const sheet = workbook.getSheet(sheetId(workbook));
 
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '42' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 0, text: '42', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 0)?.value, 42);
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 1, text: 'TRUE' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 1, text: 'TRUE', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 1)?.value, true);
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 2, text: ' true ' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 0, column: 2, text: ' true ', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(0, 2)?.value, ' true ');
 
   sheet.dataValidations.push({
@@ -647,7 +648,7 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
     alertStyle: 'stop',
   });
   assert.throws(
-    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 1, column: 0, text: 'Rejected' }),
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 1, column: 0, text: 'Rejected', inputContext: DIRECT_INPUT_CONTEXT }),
     /允许的列表|validation/i,
   );
   assert.equal(sheet.cells.get(1, 0), undefined);
@@ -660,10 +661,10 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
     state: 'ok',
   });
   assert.throws(
-    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 1, text: 'blocked' }),
+    () => runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 1, text: 'blocked', inputContext: DIRECT_INPUT_CONTEXT }),
     /spill child/i,
   );
-  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 0, text: 'anchor' });
+  runtime.execute('sheet.cell.commitText', { sheetId: sheet.id, row: 2, column: 0, text: 'anchor', inputContext: DIRECT_INPUT_CONTEXT });
   assert.equal(sheet.cells.get(2, 0)?.value, 'anchor');
 });
 

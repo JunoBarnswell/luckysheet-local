@@ -457,7 +457,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
       context.applyMutation({
         id: 'pageLayout.printArea.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
         params: { sheetId: params.sheetId, range: structuredClone(params.range) }, affectedRanges: [params.range],
-        inverse: [{ id: 'pageLayout.printArea.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, printAreas: structuredClone(previous.printAreas) }, affectedRanges: [params.range] }],
+        inverse: [{ id: 'pageLayout.printArea.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, printAreas: structuredClone(previous.printAreas) }, affectedRanges: [] }],
         apply: () => replacePrintDocument(context.workbook, next),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: [params.range] };

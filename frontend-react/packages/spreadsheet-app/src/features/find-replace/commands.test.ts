@@ -2,10 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime } from '@react-sheets/command-runtime';
-import { registerSheetCommands } from '@react-sheets/sheet-features';
+import { registerSheetCommands, type CellInputInterpretationContext } from '@react-sheets/sheet-features';
 import { registerFindReplaceCommands } from './commands';
 import { registerReviewCommands } from '../review/commands';
 import { WorkbookSession } from '../../workbook-session';
+
+const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
+  sourceKind: 'find-replace', cultureId: 'en-US', decimalSeparator: '.', groupSeparator: ',', dateSystem: '1900',
+  referenceDate: { year: 2026, month: 8, day: 27, hour: 0, minute: 0, second: 0, millisecond: 0 },
+};
 
 function setup(): { workbook: WorkbookModel; runtime: CommandRuntime } {
   const workbook = new WorkbookModel('find-command', 'Find command');
@@ -26,6 +31,7 @@ test('find.replace replaces one/all typed cell values in one undoable transactio
     sheetId: sheet.id,
     query: 'before',
     replace: '0',
+    inputContext: TEST_INPUT_CONTEXT,
     mode: 'all',
     searchOrder: 'rows',
     scope: 'sheet',
@@ -60,6 +66,7 @@ test('find.replace updates canonical notes and comment threads atomically', () =
     sheetId: sheet.id,
     query: 'old',
     replace: 'new',
+    inputContext: TEST_INPUT_CONTEXT,
     mode: 'all',
     searchOrder: 'rows',
     scope: 'sheet',
@@ -84,6 +91,7 @@ test('find.replace fails closed before applying any patch for a stale or invalid
     sheetId: sheet.id,
     query: '=foo',
     replace: 'bar',
+    inputContext: TEST_INPUT_CONTEXT,
     mode: 'all',
     searchOrder: 'rows',
     scope: 'sheet',
@@ -96,6 +104,7 @@ test('find.replace fails closed before applying any patch for a stale or invalid
     sheetId: sheet.id,
     query: 'foo',
     replace: '',
+    inputContext: TEST_INPUT_CONTEXT,
     mode: 'all',
     searchOrder: 'rows',
     scope: 'sheet',
@@ -106,6 +115,7 @@ test('find.replace fails closed before applying any patch for a stale or invalid
     sheetId: sheet.id,
     query: 'foo',
     replace: '0',
+    inputContext: TEST_INPUT_CONTEXT,
     mode: 'one',
     searchOrder: 'rows',
     matchKey: 'sheet-1!9:9:values:',

@@ -76,6 +76,17 @@ export function inferAffectedRanges(commandId: string, params: unknown, sheetId:
   }
   if (p.range && typeof p.range === 'object') return [p.range as RangeRef];
   if (Array.isArray(p.ranges)) return p.ranges as RangeRef[];
+  if (typeof p.startRow === 'number' && typeof p.startColumn === 'number' && Array.isArray(p.values)) {
+    const rows = p.values as unknown[];
+    const columnCount = Math.max(0, ...rows.map((row) => Array.isArray(row) ? row.length : 0));
+    return [{
+      sheetId: (p.sheetId as string) ?? sheetId,
+      startRow: p.startRow,
+      endRow: p.startRow + Math.max(0, rows.length - 1),
+      startColumn: p.startColumn,
+      endColumn: p.startColumn + Math.max(0, columnCount - 1),
+    }];
+  }
   if (typeof p.startRow === 'number') {
     return [{
       sheetId: (p.sheetId as string) ?? sheetId,

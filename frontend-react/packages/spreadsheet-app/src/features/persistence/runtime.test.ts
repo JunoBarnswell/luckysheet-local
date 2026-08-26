@@ -38,13 +38,21 @@ describe('local workspace runtime persistence', () => {
     await runtime.persistenceReady;
     const before = runtime.localRevision;
     runtime.collaboration = null;
+    const target = { sheetId: runtime.model.primarySheetId, row: 0, column: 0 };
+    const value = { value: 'checkpointed' };
     runtime.commands.execute('sheet.cell.set', {
       sheetId: runtime.model.primarySheetId,
       row: 0,
       column: 0,
-      value: { value: 'checkpointed' },
+      value,
+      entryIntent: {
+        kind: 'direct-entry',
+        target,
+        candidate: value,
+        validationDecision: { status: 'accepted' },
+      },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await runtime.checkpointWorkspace(false);
     dispose();
     assert.equal(runtime.localRevision, before + 1);
     assert.equal(runtime.workspaceRecord?.snapshot.schema, 'WorkbookSnapshot');

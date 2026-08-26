@@ -21,7 +21,7 @@ import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } fro
 import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
 import { planFill, validateFillPlan, type FillDirection, type FillMode, type FillPlanParams, type FillWrite } from './fill-series';
-import { AUTO_SUM_FUNCTIONS, type AutoSumDescriptor, type AutoSumFunctionName } from './auto-sum-contract';
+import { AUTO_SUM_FUNCTIONS, type AutoSumFunctionName } from './auto-sum-contract';
 
 /**
  * The Home tab owns high-level semantic commands.  Low-level mutations remain
@@ -134,7 +134,6 @@ export interface RangeMoveParams {
   sheetId: string;
   sourceRange: RangeRef;
   targetOrigin: { row: number; column: number };
-  inputContext: CellInputInterpretationContext;
 }
 
 export interface FormatPainterCell {
@@ -209,38 +208,6 @@ function rangeEquals(left: RangeRef, right: RangeRef): boolean {
 
 function cellRange(sheetId: string, row: number, column: number): RangeRef {
   return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
-}
-
-function scriptEntryIntent(sheetId: string, row: number, column: number, candidate: CellData) {
-  return {
-    kind: 'script' as const,
-    target: { sheetId, row, column },
-    candidate: structuredClone(candidate),
-    validationDecision: { status: 'not-applicable' as const },
-  };
-}
-
-function rangeEntryIntent(
-  kind: 'script' | 'formula-result',
-  sheetId: string,
-  startRow: number,
-  startColumn: number,
-  values: CellData[][],
-  autoSum?: AutoSumDescriptor,
-) {
-  return {
-    kind,
-    target: {
-      sheetId,
-      startRow,
-      endRow: startRow + Math.max(0, values.length - 1),
-      startColumn,
-      endColumn: startColumn + Math.max(0, Math.max(1, ...values.map((row) => row.length)) - 1),
-    },
-    candidate: structuredClone(values),
-    validationDecision: { status: 'not-applicable' as const },
-    ...(autoSum ? { autoSum: structuredClone(autoSum) } : {}),
-  };
 }
 
 function rangeAffected(range: RangeRef): RangeRef[] {
@@ -433,8 +400,7 @@ function isValidFormatPainterParams(value: unknown): value is FormatPainterParam
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
   return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange)
-    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column)
-    && isCellInputInterpretationContext(value.inputContext);
+    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column);
 }
 
 function isCellSnapshot(value: unknown): value is { row: number; column: number; cell: CellData } {
@@ -927,12 +893,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
-        inputContext: params.inputContext,
-        entryIntent: {
-          kind: 'paste',
-          target: targetRange,
-          validationDecision: { status: 'not-applicable' },
-        },
         transfer: 'move',
         spec: createPasteSpecialSpec(),
       });
@@ -951,7 +911,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
     const result = runtime.execute('sheet.merge.set', { sheetId: params.sheetId, range });
     if (rangeArea(range) > 1) {
       runtime.execute('sheet.range.clear', { sheetId: params.sheetId, range, family: 'contents' });
-      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor, entryIntent: scriptEntryIntent(params.sheetId, range.startRow, range.startColumn, anchor) });
+      if (anchor) runtime.execute('sheet.cell.set', { sheetId: params.sheetId, row: range.startRow, column: range.startColumn, value: anchor });
     }
     if (center) runtime.execute('sheet.style.set', { sheetId: params.sheetId, range, style: { horizontalAlignment: 'center' } });
     return result;
@@ -1051,18 +1011,11 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         }
         values.push(line);
       }
-      const autoSum: AutoSumDescriptor = {
-        functionName,
-        sourceRange: structuredClone(range),
-        targets: targets.map((target) => ({ ...target })),
-        inferenceMode: 'adjacent',
-      };
       const result = runtime.execute('sheet.range.set', {
         sheetId: params.sheetId,
         startRow: minRow,
         startColumn: minColumn,
         values,
-        entryIntent: rangeEntryIntent('formula-result', params.sheetId, minRow, minColumn, values, autoSum),
       });
       return result;
     },
@@ -1178,12 +1131,6 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           row: patch.row,
           column: patch.column,
           value: patch.next,
-          entryIntent: {
-            kind: 'direct-entry',
-            target: { sheetId: patch.sheetId, row: patch.row, column: patch.column },
-            candidate: structuredClone(patch.next),
-            validationDecision: { status: 'accepted', ...(validation.ruleId ? { ruleId: validation.ruleId } : {}), ...(validation.alertStyle ? { alertStyle: validation.alertStyle } : {}) },
-          },
         });
       }
       const affectedRanges = patches.map((patch) => cellRange(patch.sheetId, patch.row, patch.column));

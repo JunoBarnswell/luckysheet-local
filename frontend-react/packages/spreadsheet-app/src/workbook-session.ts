@@ -4111,17 +4111,6 @@ export class WorkbookSession {
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
         clipboard: internal,
         inputContext,
-        entryIntent: {
-          kind: 'paste',
-          target: {
-            sheetId: this.activeSheetId,
-            startRow: sel.activeCell.row,
-            endRow: sel.activeCell.row + Math.max(0, internal.sourceExtent.rows - 1),
-            startColumn: sel.activeCell.column,
-            endColumn: sel.activeCell.column + Math.max(0, internal.sourceExtent.columns - 1),
-          },
-          validationDecision: { status: 'not-applicable' },
-        },
         transfer: internal.transfer,
         spec,
       } });
@@ -4151,17 +4140,6 @@ export class WorkbookSession {
         targetOrigin: { row: sel.activeCell.row, column: sel.activeCell.column },
       clipboard: { ...clipboard, transfer: 'copy' },
       inputContext,
-      entryIntent: {
-        kind: 'paste',
-        target: {
-          sheetId: this.activeSheetId,
-          startRow: sel.activeCell.row,
-          endRow: sel.activeCell.row + Math.max(0, clipboard.sourceExtent.rows - 1),
-          startColumn: sel.activeCell.column,
-          endColumn: sel.activeCell.column + Math.max(0, clipboard.sourceExtent.columns - 1),
-        },
-        validationDecision: { status: 'not-applicable' },
-      },
       transfer: 'copy',
         spec,
       } });

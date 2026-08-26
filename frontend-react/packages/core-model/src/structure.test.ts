@@ -231,6 +231,7 @@ describe('structural operations', () => {
       transform: { x: 0, y: 0, width: 20, height: 20 },
       zIndex: 0,
     });
+    sheet.drawingPayloads.set('shape-edge', { kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000' });
     sheet.rowCount = 2;
     assert.throws(() => StructuralTransform.apply(workbook, {
       kind: 'cell-shift',
@@ -263,7 +264,7 @@ describe('structural operations', () => {
       blockRowCount: 65_536,
       blocks: [{
         id: 'structure-block', dataSourceId: sourceId, startRow: 0, rowCount: 2,
-        storageKey: 'structure-block', checksum: 'checksum', byteLength: 0,
+        storageKey: 'structure-block', checksum: 'a'.repeat(64), byteLength: 1,
         encoding: 'columnar-v1', revision: 0,
       }],
       revision: 0,
@@ -323,7 +324,7 @@ describe('structural operations', () => {
       rowCount: 2,
       fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }],
       blockRowCount: 65_536,
-      blocks: [{ id: 'move-block', dataSourceId: sourceId, startRow: 0, rowCount: 2, storageKey: 'move-block', checksum: 'checksum', byteLength: 0, encoding: 'columnar-v1', revision: 0 }],
+      blocks: [{ id: 'move-block', dataSourceId: sourceId, startRow: 0, rowCount: 2, storageKey: 'move-block', checksum: 'b'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
       revision: 0,
     });
     sheet.dataRegions.push({

@@ -159,7 +159,7 @@ test('invalid stored byte length and uncovered rows return explicit errors witho
   const block = await buildBlock(sourceId, 'bad-length-block', 0, [['A', 1]]);
   await store.put(block.ref, block.bytes);
   const badRef = { ...block.ref, byteLength: block.ref.byteLength + 1 };
-  const query = new DataSourceContentQuery(manifest(sourceId, 2, [badRef]), store);
+  const query = new DataSourceContentQuery(manifest(sourceId, 1, [badRef]), store);
   const invalid = await query.getRowValues(0);
   assert.equal(invalid.value, undefined);
   assert.equal(invalid.state.availability, 'error');
