@@ -21,6 +21,8 @@ import java.util.Set;
  * never receives a replacement snapshot from a client.
  */
 final class StructuralSnapshotReducer {
+    private static final int MAX_EXACT_RANGE_SEGMENTS = 256;
+
     private StructuralSnapshotReducer() {
     }
 
@@ -896,6 +898,9 @@ final class StructuralSnapshotReducer {
             int start = targetRows[index];
             int end = start;
             while (index + 1 < targetRows.length && targetRows[index + 1] == end + 1) end = targetRows[++index];
+            if (next.size() >= MAX_EXACT_RANGE_SEGMENTS) {
+                throw ServiceException.validation("Row permutation metadata produces too many exact ranges");
+            }
             next.add(new RangeRef(owner.sheetId(), start, end, firstColumn, lastColumn));
             index++;
         }
