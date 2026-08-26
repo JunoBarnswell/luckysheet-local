@@ -278,13 +278,21 @@ export function planCellShift(workbook: WorkbookModel, spec: CellShiftSpec): Cel
   const count = spec.axis === 'row'
     ? selection.endRow - selection.startRow + 1
     : selection.endColumn - selection.startColumn + 1;
+  if (selection.startRow < 0 || selection.startColumn < 0
+    || selection.endRow >= sheet.rowCount || selection.endColumn >= sheet.columnCount) {
+    throw new Error('Cell shift selection is outside worksheet bounds');
+  }
+  // Cell insertion shifts the complete tail of the affected band.  Grow the
+  // runtime extent before calculating that band so the same plan can be
+  // consumed by the model, command runtime, and inverse operation.
+  if (spec.operation === 'insert') {
+    if (spec.axis === 'row') sheet.ensureCellExtent(sheet.rowCount + count - 1, 0);
+    else sheet.ensureCellExtent(0, sheet.columnCount + count - 1);
+  }
   const direction: 1 | -1 = spec.operation === 'insert' ? 1 : -1;
   const band: RangeRef = spec.axis === 'row'
     ? { sheetId: sheet.id, startRow: selection.startRow, endRow: sheet.rowCount - 1, startColumn: selection.startColumn, endColumn: selection.endColumn }
     : { sheetId: sheet.id, startRow: selection.startRow, endRow: selection.endRow, startColumn: selection.startColumn, endColumn: sheet.columnCount - 1 };
-  if (selection.startRow < 0 || selection.startColumn < 0 || selection.endRow >= sheet.rowCount || selection.endColumn >= sheet.columnCount) {
-    throw new Error('Cell shift selection is outside worksheet bounds');
-  }
   validateCellShiftBounds(sheet, selection, band, spec.axis, spec.operation, count);
   validateDataRegionCellShift(sheet, band);
   return { spec: { ...spec, range: selection }, selection, band, count, direction };
@@ -926,9 +934,8 @@ function applyMoveRange(
     endColumn: targetOrigin.column + width - 1,
   };
   if (normalizedSource.sheetId !== sheet.id) throw new Error('Move range source must belong to the target worksheet');
-  if (target.startRow < 0 || target.startColumn < 0 || target.endRow >= sheet.rowCount || target.endColumn >= sheet.columnCount) {
-    throw new Error('Move range target is outside worksheet bounds');
-  }
+  if (target.startRow < 0 || target.startColumn < 0) throw new Error('Move range target is outside worksheet bounds');
+  sheet.ensureRangeExtent(target.startRow, target.endRow, target.startColumn, target.endColumn);
   validateMoveMetadataPreservation(workbook, sheet, normalizedSource, target);
   validateDataRegionMovePreservation(sheet, normalizedSource, target);
 
