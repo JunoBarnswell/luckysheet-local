@@ -91,17 +91,46 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
     case 'range-reference':
       content = formatNode(node.start) + ':' + formatNode(node.end);
       break;
+    case 'whole-column-reference': {
+      const prefix = node.sheetId !== undefined ? formatSheetId(node.sheetId) + '!' : '';
+      const start = columnToLabel(node.startColumn);
+      const end = columnToLabel(node.endColumn);
+      content = prefix + (start === end ? start : `${start}:${end}`);
+      break;
+    }
+    case 'whole-row-reference': {
+      const prefix = node.sheetId !== undefined ? formatSheetId(node.sheetId) + '!' : '';
+      const start = String(node.startRow + 1);
+      const end = String(node.endRow + 1);
+      content = prefix + (start === end ? start : `${start}:${end}`);
+      break;
+    }
     case 'spill-reference':
       content = formatNode(node.operand, precedence(node)) + '#';
+      break;
+    case 'reference-union':
+      content = '(' + node.references.map((reference) => formatNode(reference)).join(',') + ')';
+      break;
+    case 'reference-intersection':
+      content = `${formatNode(node.left, precedence(node))} ${formatNode(node.right, precedence(node))}`;
+      break;
+    case 'sheet-range-reference':
+      content = `${formatSheetId(node.qualifier.startSheetId)}:${formatSheetId(node.qualifier.endSheetId)}!${formatNode(node.reference)}`;
+      break;
+    case 'external-reference':
+      content = `[${node.qualifier.workbookId}]${node.qualifier.sheetId === undefined ? '' : formatSheetId(node.qualifier.sheetId) + '!'}${formatNode(node.reference)}`;
       break;
     case 'name-reference':
       content = node.name;
       break;
     case 'table-reference':
       if (node.specifier && node.columnName) {
-        content = `${node.tableName}[[${formatTableSpecifier(node.specifier)}],[${node.columnName}]]`;
+        const column = node.columnEndName === undefined ? `[${node.columnName}]` : `[${node.columnName}]:[${node.columnEndName}]`;
+        content = `${node.tableName}[[${formatTableSpecifier(node.specifier)}],${column}]`;
       } else if (node.specifier) {
         content = `${node.tableName}[${formatTableSpecifier(node.specifier)}]`;
+      } else if (node.columnName && node.columnEndName) {
+        content = `${node.tableName}[[${node.columnName}]:[${node.columnEndName}]]`;
       } else {
         content = `${node.tableName}[${node.thisRow ? '@' : ''}${node.columnName ?? ''}]`;
       }

@@ -1,9 +1,10 @@
-import type { CellAddress, FormulaAst } from './ast';
+import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
 import { collectFormulaDependencies } from './dependencies';
 import {
   evaluateFormula,
   evaluateFormulaWithTrace,
+  type FormulaEvaluationReference,
   type FormulaEvaluationTrace,
 } from './evaluator';
 import { formatFormula } from './ast-format';
@@ -565,6 +566,7 @@ export class FormulaEngine {
           if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
           return this.evaluateCell(resolved as CellAddress, cache, visiting);
         },
+        resolveReference: (reference) => this.resolveReference(reference, cell.address),
       });
     } catch (error) {
       const value = error instanceof FormulaReferenceError
@@ -753,7 +755,9 @@ export class FormulaEngine {
         || collectFormulaDependencies(cell.ast, cell.address, { sheetTables: this.sheetTables }).some((dependency) =>
           dependency.kind === 'cell'
             ? dependency.address.sheetId === sheetId
-            : dependency.start.sheetId === sheetId,
+            : dependency.kind === 'range'
+              ? dependency.start.sheetId === sheetId
+              : referenceMentionsSheet(dependency.reference, sheetId),
         );
       if (!relevantSheet) continue;
       const remapped = remapAst(cell.ast, shift);
@@ -965,6 +969,7 @@ export class FormulaEngine {
           if ('start' in resolved && 'end' in resolved) return { kind: 'range', range: resolved };
           return this.evaluateCell(resolved as CellAddress, cache, visiting);
         },
+        resolveReference: (reference) => this.resolveReference(reference, cell.address),
       });
     } catch (error) {
       value = error instanceof FormulaReferenceError
@@ -1058,6 +1063,76 @@ export class FormulaEngine {
     });
   }
 
+  private resolveReference(reference: FormulaReferenceNode, currentCell: CellAddress): FormulaEvaluationReference | FormulaError {
+    switch (reference.type) {
+      case 'whole-column-reference': {
+        const sheetId = reference.sheetId ?? currentCell.sheetId;
+        const extent = this.spillEnvironments.get(sheetId);
+        if (!extent || extent.rowCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheetId}`);
+        return {
+          kind: 'reference',
+          ranges: [{
+            kind: 'range',
+            start: { sheetId, row: 0, column: reference.startColumn },
+            end: { sheetId, row: extent.rowCount - 1, column: reference.endColumn },
+          }],
+        };
+      }
+      case 'whole-row-reference': {
+        const sheetId = reference.sheetId ?? currentCell.sheetId;
+        const extent = this.spillEnvironments.get(sheetId);
+        if (!extent || extent.columnCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheetId}`);
+        return {
+          kind: 'reference',
+          ranges: [{
+            kind: 'range',
+            start: { sheetId, row: reference.startRow, column: 0 },
+            end: { sheetId, row: reference.endRow, column: extent.columnCount - 1 },
+          }],
+        };
+      }
+      case 'reference-union': {
+        const ranges: RangeDependency[] = [];
+        for (const item of reference.references) {
+          const resolved = this.resolveReference(item, currentCell);
+          if (isFormulaError(resolved)) return resolved;
+          ranges.push(...resolved.ranges);
+        }
+        return { kind: 'reference', ranges };
+      }
+      case 'reference-intersection': {
+        const left = this.resolveReference(reference.left, currentCell);
+        const right = this.resolveReference(reference.right, currentCell);
+        if (isFormulaError(left)) return left;
+        if (isFormulaError(right)) return right;
+        const ranges: RangeDependency[] = [];
+        for (const leftRange of left.ranges) {
+          for (const rightRange of right.ranges) {
+            if (leftRange.start.sheetId !== rightRange.start.sheetId) continue;
+            const startRow = Math.max(leftRange.start.row, rightRange.start.row);
+            const endRow = Math.min(leftRange.end.row, rightRange.end.row);
+            const startColumn = Math.max(leftRange.start.column, rightRange.start.column);
+            const endColumn = Math.min(leftRange.end.column, rightRange.end.column);
+            if (startRow <= endRow && startColumn <= endColumn) {
+              ranges.push({
+                kind: 'range',
+                start: { sheetId: leftRange.start.sheetId, row: startRow, column: startColumn },
+                end: { sheetId: leftRange.start.sheetId, row: endRow, column: endColumn },
+              });
+            }
+          }
+        }
+        return ranges.length > 0 ? { kind: 'reference', ranges } : createFormulaError('#NULL!', 'Reference intersection is empty');
+      }
+      case 'sheet-range-reference':
+        return createFormulaError('#REF!', '3-D reference requires an ordered worksheet resolver');
+      case 'external-reference':
+        return createFormulaError('#REF!', `External workbook is unavailable: ${reference.qualifier.workbookId}`);
+      default:
+        return createFormulaError('#REF!', `Unsupported structured reference: ${reference.type}`);
+    }
+  }
+
   private readRangeMatrix(
     range: RangeDependency,
     cache: Map<string, FormulaValue>,
@@ -1113,7 +1188,34 @@ function isOccupiedInput(cell: StoredCell): boolean {
 function copyDependency(dependency: FormulaDependency): FormulaDependency {
   return dependency.kind === 'cell'
     ? { kind: 'cell', address: { ...dependency.address } }
-    : { kind: 'range', start: { ...dependency.start }, end: { ...dependency.end } };
+    : dependency.kind === 'range'
+      ? { kind: 'range', start: { ...dependency.start }, end: { ...dependency.end } }
+      : { kind: 'reference', reference: structuredClone(dependency.reference) };
+}
+
+function referenceMentionsSheet(reference: FormulaReferenceNode, sheetId: string): boolean {
+  switch (reference.type) {
+    case 'cell-reference':
+      return reference.reference.sheetId === sheetId;
+    case 'range-reference':
+      return reference.start.reference.sheetId === sheetId || reference.end.reference.sheetId === sheetId;
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+      return reference.sheetId === sheetId;
+    case 'reference-union':
+      return reference.references.some((entry) => referenceMentionsSheet(entry, sheetId));
+    case 'reference-intersection':
+      return referenceMentionsSheet(reference.left, sheetId) || referenceMentionsSheet(reference.right, sheetId);
+    case 'sheet-range-reference':
+      return reference.qualifier.startSheetId === sheetId || reference.qualifier.endSheetId === sheetId;
+    case 'external-reference':
+      return reference.qualifier.sheetId === sheetId;
+    case 'spill-reference':
+      return reference.operand.type === 'cell-reference' ? reference.operand.reference.sheetId === sheetId : false;
+    case 'table-reference':
+    case 'invalid-reference':
+      return false;
+  }
 }
 
 function copySheetTable(table: SheetTableRef): SheetTableRef {

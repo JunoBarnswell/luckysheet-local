@@ -22,6 +22,7 @@ export type TokenKind =
   | 'left-paren'
   | 'right-paren'
   | 'comma'
+  | 'reference-intersection'
   | 'colon'
   | 'bang'
   | 'left-bracket'
@@ -46,7 +47,17 @@ export function lexFormula(source: string): readonly Token[] {
   while (index < source.length) {
     const character = source[index] ?? '';
     if (/\s/.test(character)) {
+      const whitespaceStart = index;
       index = skipWhitespace(source, index);
+      const previous = tokens[tokens.length - 1];
+      const next = source[index] ?? '';
+      if (previous && canEndReference(previous.kind) && canStartReference(next)) {
+        tokens.push({
+          kind: 'reference-intersection',
+          lexeme: source.slice(whitespaceStart, index),
+          span: { start: whitespaceStart, end: index },
+        });
+      }
       continue;
     }
 
@@ -274,6 +285,14 @@ function isWordStart(character: string): boolean {
 
 function isWordCharacter(character: string): boolean {
   return /^[\p{L}\p{N}_$.]$/u.test(character);
+}
+
+function canEndReference(kind: TokenKind): boolean {
+  return kind === 'identifier' || kind === 'number' || kind === 'right-bracket' || kind === 'spill-operator';
+}
+
+function canStartReference(character: string): boolean {
+  return /[\p{L}\p{N}_$'\[]/u.test(character);
 }
 
 function skipWhitespace(source: string, start: number): number {

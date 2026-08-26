@@ -1,4 +1,4 @@
-import type { CellAddress, CellReferenceNode, FormulaAst, RangeReferenceNode, ParsedCellReference } from './ast';
+import type { CellAddress, CellReferenceNode, FormulaAst, FormulaReferenceNode, RangeReferenceNode, ParsedCellReference } from './ast';
 import { assertCellAddress, cellAddressKey } from './address';
 import { FormulaReferenceError } from './errors';
 import { normalizeRange, type CellDependency, type FormulaDependency, type RangeDependency } from './range-index';
@@ -53,6 +53,15 @@ function visit(
       addDependency(resolveRangeReference(node, owner), dependencies, seen);
       return;
     }
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+    case 'reference-union':
+    case 'reference-intersection':
+    case 'sheet-range-reference':
+    case 'external-reference': {
+      addDependency({ kind: 'reference', reference: node }, dependencies, seen);
+      return;
+    }
     case 'unary-expression':
       visit(node.operand, owner, dependencies, seen, sheetTables);
       return;
@@ -80,6 +89,7 @@ function visit(
         {
           specifier: node.specifier,
           columnName: node.columnName,
+          columnEndName: node.columnEndName,
           thisRow: node.thisRow,
         },
         owner,
@@ -104,7 +114,9 @@ function visit(
 function addDependency(dependency: FormulaDependency, dependencies: FormulaDependency[], seen: Set<string>): void {
   const key = dependency.kind === 'cell'
     ? `cell:${cellAddressKey(dependency.address)}`
-    : `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`;
+    : dependency.kind === 'range'
+      ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
+      : `reference:${JSON.stringify(dependency.reference)}`;
   if (seen.has(key)) return;
   seen.add(key);
   dependencies.push(dependency);

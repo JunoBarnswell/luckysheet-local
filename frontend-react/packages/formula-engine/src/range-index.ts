@@ -1,4 +1,4 @@
-import type { CellAddress } from './ast';
+import type { CellAddress, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
 
@@ -13,7 +13,12 @@ export interface RangeDependency {
   readonly end: CellAddress;
 }
 
-export type FormulaDependency = CellDependency | RangeDependency;
+export interface StructuralReferenceDependency {
+  readonly kind: 'reference';
+  readonly reference: FormulaReferenceNode;
+}
+
+export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency;
 
 interface IndexEntry {
   readonly owner: CellAddress;
@@ -52,7 +57,7 @@ export class RangeIndex {
           this.cellDependents.set(dependencyKey, dependents);
         }
         dependents.add(ownerKey);
-      } else {
+      } else if (dependency.kind === 'range') {
         ranges.push(dependency);
       }
     }
@@ -93,6 +98,11 @@ export class RangeIndex {
 
     const tree = this.rangeTrees.get(address.sheetId);
     for (const ownerKey of queryRangeTree(tree, address)) dependentKeys.add(ownerKey);
+    for (const entry of this.entries.values()) {
+      if (entry.dependencies.some((dependency) => dependency.kind === 'reference' && referenceContainsAddress(dependency.reference, address))) {
+        dependentKeys.add(cellAddressKey(entry.owner));
+      }
+    }
 
     const dependents: CellAddress[] = [];
     for (const dependentKey of dependentKeys) {
@@ -208,7 +218,9 @@ function deduplicateDependencies(dependencies: readonly FormulaDependency[]): re
   for (const dependency of dependencies) {
     const normalized = dependency.kind === 'cell'
       ? { kind: 'cell' as const, address: copyAddress(assertAndReturn(dependency.address)) }
-      : normalizeRange(dependency.start, dependency.end);
+      : dependency.kind === 'range'
+        ? normalizeRange(dependency.start, dependency.end)
+        : { kind: 'reference' as const, reference: dependency.reference };
     const key = dependencyKey(normalized);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -220,7 +232,9 @@ function deduplicateDependencies(dependencies: readonly FormulaDependency[]): re
 function dependencyKey(dependency: FormulaDependency): string {
   return dependency.kind === 'cell'
     ? `cell:${cellAddressKey(dependency.address)}`
-    : `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`;
+    : dependency.kind === 'range'
+      ? `range:${cellAddressKey(dependency.start)}:${cellAddressKey(dependency.end)}`
+      : `reference:${JSON.stringify(dependency.reference)}`;
 }
 
 function assertAndReturn(address: CellAddress): CellAddress {
@@ -235,5 +249,47 @@ function copyAddress(address: CellAddress): CellAddress {
 function copyDependency(dependency: FormulaDependency): FormulaDependency {
   return dependency.kind === 'cell'
     ? { kind: 'cell', address: copyAddress(dependency.address) }
-    : { kind: 'range', start: copyAddress(dependency.start), end: copyAddress(dependency.end) };
+    : dependency.kind === 'range'
+      ? { kind: 'range', start: copyAddress(dependency.start), end: copyAddress(dependency.end) }
+      : { kind: 'reference', reference: structuredClone(dependency.reference) };
+}
+
+function referenceContainsAddress(reference: FormulaReferenceNode, address: CellAddress): boolean {
+  switch (reference.type) {
+    case 'cell-reference':
+      return (reference.reference.sheetId ?? address.sheetId) === address.sheetId
+        && reference.reference.row === address.row
+        && reference.reference.column === address.column;
+    case 'range-reference':
+      return referenceContainsAddress(reference.start, address) || referenceContainsAddress(reference.end, address)
+        || (reference.start.reference.sheetId ?? address.sheetId) === address.sheetId
+          && address.row >= Math.min(reference.start.reference.row, reference.end.reference.row)
+          && address.row <= Math.max(reference.start.reference.row, reference.end.reference.row)
+          && address.column >= Math.min(reference.start.reference.column, reference.end.reference.column)
+          && address.column <= Math.max(reference.start.reference.column, reference.end.reference.column);
+    case 'whole-column-reference':
+      return (reference.sheetId ?? address.sheetId) === address.sheetId
+        && address.column >= reference.startColumn
+        && address.column <= reference.endColumn;
+    case 'whole-row-reference':
+      return (reference.sheetId ?? address.sheetId) === address.sheetId
+        && address.row >= reference.startRow
+        && address.row <= reference.endRow;
+    case 'reference-union':
+      return reference.references.some((entry) => referenceContainsAddress(entry, address));
+    case 'reference-intersection':
+      return referenceContainsAddress(reference.left, address) && referenceContainsAddress(reference.right, address);
+    case 'sheet-range-reference':
+      return reference.qualifier.startSheetId === address.sheetId || reference.qualifier.endSheetId === address.sheetId
+        ? referenceContainsAddress(reference.reference, address)
+        : false;
+    case 'external-reference':
+      return false;
+    case 'spill-reference':
+      return referenceContainsAddress(reference.operand as FormulaReferenceNode, address);
+    case 'table-reference':
+      return false;
+    case 'invalid-reference':
+      return false;
+  }
 }

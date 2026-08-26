@@ -1,11 +1,11 @@
-import type { BinaryOperator, CellAddress, FormulaAst, SpillReferenceNode } from './ast';
+import type { BinaryOperator, CellAddress, FormulaAst, FormulaReferenceNode, SpillReferenceNode } from './ast';
 import { formatFormula } from './ast-format';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
-import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
+import { createFormulaError, isArrayValue, isFormulaError, isReferenceValue, type ArrayValue, type FormulaError, type FormulaValue } from './values';
 import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
 import type { ExcelNumericContext } from './numeric';
 import type { WorkbookCollationContext } from './collation';
@@ -26,8 +26,11 @@ export interface FormulaEvaluationContext {
   resolveTableReference?(tableName: string, request: {
     specifier?: import('./ast').TableReferenceSpecifier;
     columnName?: string;
+    columnEndName?: string;
     thisRow: boolean;
   }): FormulaValue | EvaluationRange | undefined;
+  /** Resolve a structured reference without converting it to an opaque string. */
+  resolveReference?(reference: FormulaReferenceNode): FormulaEvaluationReference | FormulaError | undefined;
   /** Workbook calendar used by serial/date functions. */
   readonly dateSystem?: ExcelDateSystem;
   /** Host-owned deterministic clock; missing means TODAY/NOW fail-close. */
@@ -58,7 +61,12 @@ interface EvaluationRange {
   readonly range: RangeDependency;
 }
 
-type EvaluationValue = FormulaValue | EvaluationRange;
+export interface FormulaEvaluationReference {
+  readonly kind: 'reference';
+  readonly ranges: readonly RangeDependency[];
+}
+
+type EvaluationValue = FormulaValue | EvaluationRange | FormulaEvaluationReference;
 
 export function evaluateFormula(ast: FormulaAst, context: FormulaEvaluationContext): FormulaValue {
   const result = evaluateNode(ast, context);
@@ -81,8 +89,11 @@ export function evaluateFormulaWithTrace(ast: FormulaAst, context: FormulaEvalua
 type EvaluationTraceSink = (node: FormulaAst, value: EvaluationValue) => void;
 
 function materializeEvaluationValue(value: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
-  if (!isEvaluationRange(value)) return value;
-  const matrix = readRangeAsMatrix(value.range, context);
+  if (isReferenceValue(value)) return createFormulaError('#REF!', 'Reference value requires a workbook resolver');
+  if (!isEvaluationRange(value) && !isEvaluationReference(value)) return value;
+  const matrix = isEvaluationRange(value)
+    ? readRangeAsMatrix(value.range, context)
+    : readReferenceAsMatrix(value.ranges, context);
   return matrix.length === 1 && matrix[0]?.length === 1 ? matrix[0][0]! : matrix;
 }
 
@@ -107,6 +118,16 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
     case 'range-reference':
       result = { kind: 'range', range: resolveRangeReference(node, context.currentCell) };
       break;
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+    case 'reference-union':
+    case 'reference-intersection':
+    case 'sheet-range-reference':
+    case 'external-reference': {
+      const resolved = context.resolveReference?.(node);
+      result = resolved ?? createFormulaError('#REF!', 'Reference requires a workbook resolver');
+      break;
+    }
     case 'spill-reference':
       result = evaluateSpillReference(node, context);
       break;
@@ -133,6 +154,7 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
       const resolved = context.resolveTableReference?.(node.tableName, {
         specifier: node.specifier,
         columnName: node.columnName,
+        columnEndName: node.columnEndName,
         thisRow: node.thisRow,
       });
       if (resolved === undefined) {
@@ -152,15 +174,18 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
 
 function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
   if (isFormulaError(operand)) return operand;
-  if (operator === '@' && isEvaluationRange(operand)) {
-    const { start, end } = operand.range;
+  if (operator === '@' && (isEvaluationRange(operand) || isEvaluationReference(operand))) {
+    const range = isEvaluationRange(operand) ? operand.range : operand.ranges[0];
+    if (!range) return createFormulaError('#REF!', 'Implicit intersection has no range');
+    const { start, end } = range;
     const row = context.currentCell.row >= start.row && context.currentCell.row <= end.row ? context.currentCell.row : start.row;
     const column = context.currentCell.column >= start.column && context.currentCell.column <= end.column ? context.currentCell.column : start.column;
     const address = { sheetId: start.sheetId, row, column };
     return context.readSpillValue?.(address) ?? context.readCell(address);
   }
-  if (isEvaluationRange(operand)) {
-    return readRangeAsMatrix(operand.range, context).map((row) => row.map((value) => evaluateUnary(operator, value, context)));
+  if (isEvaluationRange(operand) || isEvaluationReference(operand)) {
+    const matrix = isEvaluationRange(operand) ? readRangeAsMatrix(operand.range, context) : readReferenceAsMatrix(operand.ranges, context);
+    return matrix.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
   }
   if (isArrayValue(operand)) return operand.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
   const number = toNumber(operand);
@@ -191,8 +216,8 @@ function evaluateBinary(
 ): FormulaValue {
   if (isFormulaError(left)) return left;
   if (isFormulaError(right)) return right;
-  const leftValue = isEvaluationRange(left) ? readRangeAsMatrix(left.range, context) : left;
-  const rightValue = isEvaluationRange(right) ? readRangeAsMatrix(right.range, context) : right;
+  const leftValue = isEvaluationRange(left) || isEvaluationReference(left) ? materializeEvaluationValue(left, context) : left;
+  const rightValue = isEvaluationRange(right) || isEvaluationReference(right) ? materializeEvaluationValue(right, context) : right;
   if (isArrayValue(leftValue) || isArrayValue(rightValue)) return liftBinary(operator, leftValue, rightValue, context);
   left = leftValue;
   right = rightValue;
@@ -288,7 +313,7 @@ function evaluateFunction(
   context: FormulaEvaluationContext,
   trace?: EvaluationTraceSink,
   volatileOccurrence?: string,
-): FormulaValue | EvaluationRange {
+): FormulaValue | EvaluationRange | FormulaEvaluationReference {
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context, trace);
   if (native !== undefined) return native;
@@ -306,8 +331,8 @@ function evaluateFunction(
     }
     const value = evaluateNode(argument, context, trace);
     rawRanges.push(value);
-    if (isEvaluationRange(value)) {
-      evaluatedArgs.push(readRangeAsMatrix(value.range, context));
+    if (isEvaluationRange(value) || isEvaluationReference(value)) {
+      evaluatedArgs.push(materializeEvaluationValue(value, context));
     } else {
       evaluatedArgs.push(value);
     }
@@ -384,7 +409,7 @@ function evaluateReferenceFunction(
       const values: FormulaValue[] = [];
       for (const argument of args) {
         const value = evaluateNode(argument, context, trace);
-        values.push(isEvaluationRange(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
+        values.push(isEvaluationRange(value) || isEvaluationReference(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
       }
       const row = toNumber(values[0] ?? 1);
       const column = toNumber(values[1] ?? 1);
@@ -410,7 +435,7 @@ function evaluateReferenceFunction(
       const scalar = (node: FormulaAst | undefined, fallback: number): number | FormulaError => {
         if (!node) return fallback;
         const value = evaluateNode(node, context, trace);
-        if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
+        if (isEvaluationRange(value) || isEvaluationReference(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
         const numeric = toNumber(value);
         return numeric;
       };
@@ -441,7 +466,7 @@ function evaluateReferenceFunction(
       const first = args[0];
       if (!first) return createFormulaError('#REF!', 'INDIRECT expects a text reference');
       const value = evaluateNode(first, context, trace);
-      if (isEvaluationRange(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
+      if (isEvaluationRange(value) || isEvaluationReference(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
       if (typeof value !== 'string') return createFormulaError('#REF!', 'INDIRECT text required');
       try {
         const parsed = parseFormula('=' + value);
@@ -477,4 +502,18 @@ function toNumber(value: FormulaValue): number | ReturnType<typeof createFormula
 
 function isEvaluationRange(value: EvaluationValue): value is EvaluationRange {
   return typeof value === 'object' && value !== null && 'kind' in value && (value as { kind: string }).kind === 'range';
+}
+
+function isEvaluationReference(value: EvaluationValue): value is FormulaEvaluationReference {
+  return typeof value === 'object'
+    && value !== null
+    && 'kind' in value
+    && (value as { kind: string }).kind === 'reference'
+    && 'ranges' in value;
+}
+
+function readReferenceAsMatrix(ranges: readonly RangeDependency[], context: FormulaEvaluationContext): ArrayValue {
+  const matrix: ArrayValue = [];
+  for (const range of ranges) matrix.push(...readRangeAsMatrix(range, context));
+  return matrix;
 }

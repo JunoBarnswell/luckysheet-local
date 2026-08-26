@@ -69,6 +69,78 @@ export interface RangeReferenceNode {
   readonly parenthesized?: boolean;
 }
 
+export interface WholeColumnReferenceNode {
+  readonly type: 'whole-column-reference';
+  readonly sheetId?: string;
+  readonly startColumn: number;
+  readonly endColumn: number;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+export interface WholeRowReferenceNode {
+  readonly type: 'whole-row-reference';
+  readonly sheetId?: string;
+  readonly startRow: number;
+  readonly endRow: number;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+export type FormulaReferenceNode =
+  | CellReferenceNode
+  | InvalidReferenceNode
+  | RangeReferenceNode
+  | WholeColumnReferenceNode
+  | WholeRowReferenceNode
+  | SpillReferenceNode
+  | TableReferenceNode
+  | ReferenceUnionNode
+  | ReferenceIntersectionNode
+  | SheetRangeReferenceNode
+  | ExternalReferenceNode;
+
+export interface ReferenceUnionNode {
+  readonly type: 'reference-union';
+  readonly references: readonly FormulaReferenceNode[];
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+export interface ReferenceIntersectionNode {
+  readonly type: 'reference-intersection';
+  readonly left: FormulaReferenceNode;
+  readonly right: FormulaReferenceNode;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+export interface SheetRangeQualifier {
+  readonly startSheetId: string;
+  readonly endSheetId: string;
+}
+
+export interface SheetRangeReferenceNode {
+  readonly type: 'sheet-range-reference';
+  readonly qualifier: SheetRangeQualifier;
+  readonly reference: Exclude<FormulaReferenceNode, SpillReferenceNode | TableReferenceNode | ReferenceUnionNode | ReferenceIntersectionNode | SheetRangeReferenceNode | ExternalReferenceNode>;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+export interface ExternalWorkbookQualifier {
+  readonly workbookId: string;
+  readonly sheetId?: string;
+}
+
+export interface ExternalReferenceNode {
+  readonly type: 'external-reference';
+  readonly qualifier: ExternalWorkbookQualifier;
+  readonly reference: Exclude<FormulaReferenceNode, SpillReferenceNode | TableReferenceNode | ReferenceUnionNode | ReferenceIntersectionNode | SheetRangeReferenceNode | ExternalReferenceNode>;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
 export interface SpillReferenceNode {
   readonly type: 'spill-reference';
   readonly operand: FormulaAst;
@@ -129,6 +201,7 @@ export interface TableReferenceNode {
   readonly tableName: string;
   readonly specifier?: TableReferenceSpecifier;
   readonly columnName?: string;
+  readonly columnEndName?: string;
   readonly thisRow: boolean;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
@@ -141,7 +214,13 @@ export type FormulaAst =
   | CellReferenceNode
   | InvalidReferenceNode
   | RangeReferenceNode
+  | WholeColumnReferenceNode
+  | WholeRowReferenceNode
   | SpillReferenceNode
+  | ReferenceUnionNode
+  | ReferenceIntersectionNode
+  | SheetRangeReferenceNode
+  | ExternalReferenceNode
   | NameReferenceNode
   | TableReferenceNode
   | UnaryExpressionNode
