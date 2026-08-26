@@ -1159,8 +1159,8 @@ const homeControl = (
 /** Single render catalogue for the Home tab. Components must not invent
  * command placements independently from this declaration. */
 export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
-  ribbonSurface('home', 'history.undo', 'history', 10, 'large', 'undo'),
-  ribbonSurface('home', 'history.redo', 'history', 20, 'large', 'redo'),
+  ribbonSurface('home', 'history.undo', 'history', 10, 'small', 'undo'),
+  ribbonSurface('home', 'history.redo', 'history', 20, 'small', 'redo'),
   ribbonSurface('home', 'clipboard.paste', 'clipboard', 10, 'large', 'paste'),
   ribbonSurface('home', 'clipboard.cut', 'clipboard', 20, 'small', 'cut'),
   ribbonSurface('home', 'clipboard.copy', 'clipboard', 30, 'small', 'copy'),
@@ -1187,7 +1187,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'font.borders.none', 'font', 860, 'menu', 'borderNone', ['wide', 'compact', 'narrow'], undefined, 'control.font-borders-menu'),
   homeControl('font-color', 'font', 90),
   homeControl('fill-color', 'font', 100),
-  homeControl('alignment-menu', 'alignment', 10),
+  homeControl('alignment-menu', 'alignment', 10, ['wide', 'compact', 'narrow'], 'control.orientation-menu'),
   ribbonSurface('home', 'alignment.general', 'alignment', 11, 'menu', 'alignGeneral', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.center-continuous', 'alignment', 12, 'menu', 'alignCenterContinuous', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   ribbonSurface('home', 'alignment.justify', 'alignment', 13, 'menu', 'alignJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
@@ -1202,9 +1202,9 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'alignment.indent-increase', 'alignment', 48, 'small', 'indentIncrease'),
   ribbonSurface('home', 'alignment.indent-decrease', 'alignment', 49, 'small', 'indentDecrease'),
   ribbonSurface('home', 'alignment.wrap', 'alignment', 50, 'small', 'wrapText'),
-  ribbonSurface('home', 'alignment.shrink-to-fit', 'alignment', 51, 'small', 'shrinkToFit'),
-  ribbonSurface('home', 'alignment.vertical-justify', 'alignment', 52, 'small', 'alignVerticalJustify'),
-  ribbonSurface('home', 'alignment.vertical-distributed', 'alignment', 53, 'small', 'alignVerticalDistributed'),
+  ribbonSurface('home', 'alignment.shrink-to-fit', 'alignment', 51, 'menu', 'shrinkToFit', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.vertical-justify', 'alignment', 52, 'menu', 'alignVerticalJustify', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
+  ribbonSurface('home', 'alignment.vertical-distributed', 'alignment', 53, 'menu', 'alignVerticalDistributed', ['wide', 'compact', 'narrow'], undefined, 'control.alignment-menu'),
   homeControl('orientation-menu', 'alignment', 55),
   ribbonSurface('home', 'alignment.orientation-horizontal', 'alignment', 56, 'menu', 'orientationHorizontal', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
   ribbonSurface('home', 'alignment.orientation-up', 'alignment', 57, 'menu', 'orientationRotateUp', ['wide', 'compact', 'narrow'], undefined, 'control.orientation-menu'),
@@ -1219,7 +1219,7 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'number.currency', 'number', 20, 'small', 'numberFormatCurrency'),
   ribbonSurface('home', 'number.percent', 'number', 30, 'small', 'numberFormatPercent'),
   ribbonSurface('home', 'number.comma', 'number', 40, 'small', 'numberFormatComma'),
-  ribbonSurface('home', 'number.decimal', 'number', 50, 'small', 'numberFormatDecimal'),
+  ribbonSurface('home', 'number.decimal', 'number', 50, 'menu', 'numberFormatDecimal', ['wide', 'compact', 'narrow'], undefined, 'control.number-format'),
   ribbonSurface('home', 'number.decimal-increase', 'number', 60, 'small', 'numberFormatDecimalIncrease'),
   ribbonSurface('home', 'number.decimal-decrease', 'number', 70, 'small', 'numberFormatDecimalDecrease'),
   homeControl('cell-styles-menu', 'styles', 5),
@@ -1233,8 +1233,8 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'styles.cell-style.total', 'styles', 18, 'menu', 'cellStyleTotal', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   ribbonSurface('home', 'styles.conditional-format', 'styles', 10, 'tile', 'conditionalFormat'),
   ribbonSurface('home', 'styles.table', 'styles', 30, 'tile', 'formatAsTable'),
-  ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'tile', 'formatCells'),
-  ribbonSurface('home', 'styles.validation', 'styles', 50, 'tile', 'dataValidation'),
+  ribbonSurface('home', 'styles.format-cells', 'styles', 40, 'menu', 'formatCells', ['wide', 'compact', 'narrow'], undefined, 'control.cells-format-menu'),
+  ribbonSurface('home', 'styles.validation', 'styles', 50, 'menu', 'dataValidation', ['wide', 'compact', 'narrow'], undefined, 'control.cell-styles-menu'),
   ribbonSurface('home', 'styles.template', 'styles', 60, 'tile', 'cellTemplate'),
   ribbonSurface('home', 'styles.editor', 'styles', 70, 'tile', 'cellEditor'),
   homeControl('cells-insert-menu', 'cells', 10),
@@ -1260,20 +1260,20 @@ export const HOME_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('home', 'editing.autosum.count', 'editing', 602, 'menu', 'autoSumCount', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
   ribbonSurface('home', 'editing.autosum.max', 'editing', 603, 'menu', 'autoSumMax', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
   ribbonSurface('home', 'editing.autosum.min', 'editing', 604, 'menu', 'autoSumMin', ['wide', 'compact', 'narrow'], undefined, 'control.auto-sum-menu'),
-  ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'small', 'fillDown'),
-  ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'small', 'fillUp'),
-  ribbonSurface('home', 'editing.fill-right', 'editing', 67, 'small', 'fillRight'),
-  ribbonSurface('home', 'editing.fill-left', 'editing', 68, 'small', 'fillLeft'),
-  ribbonSurface('home', 'editing.fill-series', 'editing', 69, 'small', 'fillSeries'),
-  ribbonSurface('home', 'editing.sort', 'editing', 70, 'small', 'sortRange'),
-  ribbonSurface('home', 'editing.filter', 'editing', 80, 'small', 'filterSelection'),
+  ribbonSurface('home', 'editing.fill-down', 'editing', 65, 'tile', 'fillDown'),
+  ribbonSurface('home', 'editing.fill-up', 'editing', 66, 'menu', 'fillUp', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.fill-right', 'editing', 67, 'menu', 'fillRight', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.fill-left', 'editing', 68, 'menu', 'fillLeft', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.fill-series', 'editing', 69, 'menu', 'fillSeries', ['wide', 'compact', 'narrow'], undefined, 'editing.fill-down'),
+  ribbonSurface('home', 'editing.sort', 'editing', 70, 'tile', 'sortRange'),
+  ribbonSurface('home', 'editing.filter', 'editing', 80, 'menu', 'filterSelection', ['wide', 'compact', 'narrow'], undefined, 'editing.sort'),
   homeControl('clear-menu', 'editing', 90),
   ribbonSurface('home', 'editing.clear-contents', 'editing', 91, 'menu', 'clearContents', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-formats', 'editing', 92, 'menu', 'clearFormats', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-all', 'editing', 93, 'menu', 'clearAll', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-comments-notes', 'editing', 94, 'menu', 'clearCommentsNotes', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
   ribbonSurface('home', 'editing.clear-hyperlinks', 'editing', 95, 'menu', 'clearHyperlinks', ['wide', 'compact', 'narrow'], undefined, 'control.clear-menu'),
-  ribbonSurface('home', 'editing.find', 'editing', 100, 'small', 'findReplace'),
+  ribbonSurface('home', 'editing.find', 'editing', 100, 'tile', 'findReplace'),
 ] as const;
 
 export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
@@ -1317,17 +1317,7 @@ export const SHAPE_FORMAT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = 
 
 export const RIBBON_TAB_SURFACES: readonly RibbonSurfaceDefinition[] = [...HOME_RIBBON_SURFACES, ...INSERT_RIBBON_SURFACES, ...SHAPE_FORMAT_RIBBON_SURFACES];
 
-const surfaceNode = (surface: RibbonSurfaceDefinition): RibbonLayoutNode => ({ kind: 'surface', id: surface.id, surfaceId: surface.id });
 const homeSurfaceNode = (surfaceId: string): RibbonLayoutNode => ({ kind: 'surface', id: surfaceId, surfaceId });
-const surfaceLayout = (tab: Extract<RibbonLayoutTab, 'home' | 'insert'>, groups: readonly RibbonGroupId[]): RibbonLayoutSpec => ({
-  tab,
-  groups: groups.map((groupId) => {
-    const group = RIBBON_GROUP_CATALOG.find((candidate) => candidate.id === groupId);
-    if (!group) throw new Error(`Unknown Ribbon group: ${groupId}`);
-    const surfaces = RIBBON_TAB_SURFACES.filter((surface) => surface.tab === tab && surface.group === groupId && !surface.menuId);
-    return groupSpec(groupId, group.priority, ...surfaces.map(surfaceNode));
-  }),
-});
 
 /**
  * The Home tab has a denser, two-dimensional composition than the other
@@ -1356,32 +1346,42 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
     groupSpec(
       'font',
       30,
-      rowNode('font.controls', homeSurfaceNode('control.font-family'), homeSurfaceNode('control.font-size'), homeSurfaceNode('control.font-increase'), homeSurfaceNode('control.font-decrease')),
-      rowNode('font.actions', homeSurfaceNode('font.bold'), homeSurfaceNode('font.italic'), homeSurfaceNode('font.underline'), homeSurfaceNode('font.strikethrough'), homeSurfaceNode('control.font-borders-menu'), homeSurfaceNode('control.font-color'), homeSurfaceNode('control.fill-color')),
+      columnNode(
+        'font.layout',
+        rowNode('font.controls', homeSurfaceNode('control.font-family'), homeSurfaceNode('control.font-size'), homeSurfaceNode('control.font-increase'), homeSurfaceNode('control.font-decrease')),
+        rowNode('font.actions', homeSurfaceNode('font.bold'), homeSurfaceNode('font.italic'), homeSurfaceNode('font.underline'), homeSurfaceNode('font.strikethrough'), homeSurfaceNode('control.font-borders-menu'), homeSurfaceNode('control.font-color'), homeSurfaceNode('control.fill-color')),
+      ),
     ),
     groupSpec(
       'alignment',
       40,
       rowNode(
         'alignment.layout',
-        homeSurfaceNode('control.alignment-menu'),
         columnNode(
           'alignment.controls',
-          rowNode('alignment.controls.top', homeSurfaceNode('control.orientation-menu'), homeSurfaceNode('control.merge-menu'), homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle')),
-          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.bottom'), homeSurfaceNode('alignment.indent-increase'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.wrap'), homeSurfaceNode('alignment.shrink-to-fit'), homeSurfaceNode('alignment.vertical-justify'), homeSurfaceNode('alignment.vertical-distributed')),
+          rowNode('alignment.controls.top', homeSurfaceNode('alignment.top'), homeSurfaceNode('alignment.middle'), homeSurfaceNode('alignment.bottom'), homeSurfaceNode('control.orientation-menu')),
+          rowNode('alignment.controls.bottom', homeSurfaceNode('alignment.left'), homeSurfaceNode('alignment.center'), homeSurfaceNode('alignment.right'), homeSurfaceNode('alignment.indent-decrease'), homeSurfaceNode('alignment.indent-increase')),
+        ),
+        columnNode(
+          'alignment.wrap-merge',
+          homeSurfaceNode('alignment.wrap'),
+          homeSurfaceNode('control.merge-menu'),
         ),
       ),
     ),
     groupSpec(
       'number',
       50,
-      rowNode('number.format', homeSurfaceNode('control.number-format')),
-      rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
+      columnNode(
+        'number.layout',
+        rowNode('number.format', homeSurfaceNode('control.number-format')),
+        rowNode('number.actions', homeSurfaceNode('number.currency'), homeSurfaceNode('number.percent'), homeSurfaceNode('number.comma'), homeSurfaceNode('number.decimal-increase'), homeSurfaceNode('number.decimal-decrease')),
+      ),
     ),
     groupSpec(
       'styles',
       60,
-      rowNode('styles.actions', homeSurfaceNode('control.cell-styles-menu'), homeSurfaceNode('styles.conditional-format'), homeSurfaceNode('styles.table'), homeSurfaceNode('styles.format-cells'), homeSurfaceNode('styles.validation'), homeSurfaceNode('styles.template'), homeSurfaceNode('styles.editor')),
+      rowNode('styles.actions', homeSurfaceNode('styles.conditional-format'), homeSurfaceNode('styles.table'), homeSurfaceNode('control.cell-styles-menu'), homeSurfaceNode('styles.template'), homeSurfaceNode('styles.editor')),
     ),
     groupSpec('cells', 70, rowNode('cells.actions', homeSurfaceNode('control.cells-insert-menu'), homeSurfaceNode('control.cells-delete-menu'), homeSurfaceNode('control.cells-format-menu'))),
     groupSpec(
@@ -1390,12 +1390,13 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
       rowNode(
         'editing.layout',
         columnNode(
-          'editing.actions',
-          rowNode('editing.primary', homeSurfaceNode('control.auto-sum-menu'), homeSurfaceNode('editing.fill-down'), homeSurfaceNode('editing.fill-up')),
-          rowNode('editing.secondary', homeSurfaceNode('editing.fill-right'), homeSurfaceNode('editing.fill-left'), homeSurfaceNode('editing.fill-series'), homeSurfaceNode('editing.sort')),
-          rowNode('editing.tertiary', homeSurfaceNode('editing.filter'), homeSurfaceNode('editing.find')),
+          'editing.stack',
+          homeSurfaceNode('control.auto-sum-menu'),
+          homeSurfaceNode('editing.fill-down'),
+          homeSurfaceNode('control.clear-menu'),
         ),
-        homeSurfaceNode('control.clear-menu'),
+        homeSurfaceNode('editing.sort'),
+        homeSurfaceNode('editing.find'),
       ),
     ),
   ],
@@ -1405,7 +1406,40 @@ const homeRibbonLayout = (): RibbonLayoutSpec => ({
 export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], RibbonLayoutSpec>> = {
   ...BASE_RIBBON_LAYOUT_SPECS,
   home: homeRibbonLayout(),
-  insert: surfaceLayout('insert', ['insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls']),
+  insert: {
+    tab: 'insert',
+    groups: [
+      groupSpec(
+        'insertSheets',
+        10,
+        rowNode('insertSheets.layout', homeSurfaceNode('sheets.table-sheet'), homeSurfaceNode('sheets.gantt-sheet'), homeSurfaceNode('sheets.report-sheet')),
+      ),
+      groupSpec(
+        'insertTables',
+        20,
+        rowNode('insertTables.layout', homeSurfaceNode('tables.worksheet-table'), homeSurfaceNode('tables.pivot'), homeSurfaceNode('tables.slicer')),
+      ),
+      groupSpec(
+        'insertCharts',
+        30,
+        rowNode('insertCharts.layout', homeSurfaceNode('charts.gallery'), homeSurfaceNode('charts.barcode'), homeSurfaceNode('charts.sparkline')),
+      ),
+      groupSpec('insertDataCharts', 40, rowNode('insertDataCharts.layout', homeSurfaceNode('data-charts.insert'))),
+      groupSpec(
+        'illustrations',
+        50,
+        rowNode(
+          'illustrations.layout',
+          homeSurfaceNode('illustrations.picture'),
+          homeSurfaceNode('illustrations.shape'),
+          homeSurfaceNode('illustrations.camera'),
+          homeSurfaceNode('illustrations.controls'),
+        ),
+      ),
+      groupSpec('insertLinks', 60, rowNode('insertLinks.layout', homeSurfaceNode('links.hyperlink'))),
+      groupSpec('insertControls', 70, rowNode('insertControls.layout', homeSurfaceNode('controls.checkbox'), homeSurfaceNode('controls.textbox'))),
+    ],
+  },
 };
 
 export function getRibbonSurfaces(

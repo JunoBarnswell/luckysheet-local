@@ -17,13 +17,13 @@ export interface RibbonTabPresenterProps {
 export function RibbonTabPresenter({ tab, locale, layout, renderCommand }: RibbonTabPresenterProps) {
   const groups = RIBBON_GROUP_CATALOG.filter((group) => group.tab === tab).sort((left, right) => left.priority - right.priority);
   return (
-    <Inline gap="none" className="h-[115px] w-full min-w-0 flex-nowrap items-start overflow-hidden" data-testid={`ribbon-groups-${tab}`} data-ribbon-breakpoint={layout.mode}>
+    <Inline gap="none" className="h-[142px] w-full min-w-0 flex-nowrap items-start overflow-hidden" data-testid={`ribbon-groups-${tab}`} data-ribbon-breakpoint={layout.mode}>
       {groups.map((group, groupIndex) => {
         const commands = RIBBON_COMMAND_CATALOG.filter((command) => command.placements.some((placement) => placement.tab === tab && placement.group === group.id)).sort((left, right) => left.priority - right.priority);
         return (
           <React.Fragment key={group.id}>
-            {groupIndex ? <Divider orientation="vertical" className="h-[108px]" /> : null}
-            <Stack gap="none" className={`h-[115px] min-w-0 shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id, layout.mode)}`}>
+            {groupIndex ? <Divider orientation="vertical" className="h-[136px]" /> : null}
+            <Stack gap="none" className={`h-[142px] min-w-0 shrink-0 justify-between overflow-hidden px-1 ${ribbonGroupWidthClass(group.id, layout.mode, layout.width)}`}>
               <Inline gap="xs" className="min-h-0 flex-1 flex-wrap content-start items-start pt-2">
                 {commands.map((command) => <React.Fragment key={command.id}>{renderCommand(command.id, { tile: command.display === 'large' })}</React.Fragment>)}
               </Inline>

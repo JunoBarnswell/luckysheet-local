@@ -5,13 +5,13 @@ export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' 
 export const DESIGNER_GEOMETRY = {
   viewportWidth: 1920,
   viewportHeight: 1080,
-  ribbonHeight: 157,
-  formulaBarHeight: 37,
-  workspaceHeight: 864,
+  ribbonHeight: 195,
+  formulaBarHeight: 48,
+  workspaceHeight: 815,
   sheetTabsHeight: 29,
   statusBarHeight: 22,
-  ribbonTabHeight: 42,
-  ribbonContentHeight: 115,
+  ribbonTabHeight: 53,
+  ribbonContentHeight: 142,
 } as const;
 
 export interface PeerCursor {

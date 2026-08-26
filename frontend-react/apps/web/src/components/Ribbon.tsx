@@ -181,8 +181,9 @@ function CatalogButton({
   const definition = getRibbonCommandDefinition(id);
   const enabled = isRibbonCommandEnabled(definition, context);
   const label = labelOverride ?? translateRibbonText(locale, definition.labelKey);
-  const compactIcon = layout !== 'wide' && definition.display === 'small';
-  const compactTile = layout !== 'wide' && textBelow;
+  const isNarrow = layout === 'narrow';
+  const compactIcon = isNarrow && definition.display === 'small';
+  const compactTile = isNarrow && textBelow;
   const active = !mixed && Boolean(definition.active?.(context));
   const mixedLabel = mixed ? `${label} (${homeText(locale, 'mixed')})` : label;
   return (
@@ -205,7 +206,7 @@ function CatalogButton({
       size="sm"
       variant={active ? 'primary' : variant}
       className={[
-        textBelow ? compactTile ? '!h-7 !min-h-0 !w-8 rounded-none px-0 [&>svg]:!h-4 [&>svg]:!w-4' : '!h-[68px] !min-h-0 !w-[64px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-6 [&>svg]:!w-6' : undefined,
+        textBelow ? compactTile ? '!h-6 !min-h-0 !w-6 rounded-none px-0 [&>svg]:!h-3 [&>svg]:!w-3' : '!h-[66px] !min-h-0 min-w-[38px] max-w-[50px] flex-col gap-1 overflow-hidden rounded-none px-1 text-center text-[10px] leading-3 !whitespace-normal break-words [&>svg]:!h-5 [&>svg]:!w-5 [&>svg]:!shrink-0' : undefined,
         className,
         mixed ? 'border border-dashed border-slate-400 bg-slate-50 text-slate-600' : undefined,
       ].filter(Boolean).join(' ')}

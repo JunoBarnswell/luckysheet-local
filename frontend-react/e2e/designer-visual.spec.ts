@@ -4,6 +4,7 @@ const viewports = [
   { width: 1280, height: 720 },
   { width: 1366, height: 768 },
   { width: 1440, height: 900 },
+  { width: 1917, height: 900 },
   { width: 1920, height: 1080 },
 ] as const;
 
@@ -45,13 +46,44 @@ for (const viewport of viewports) {
       };
     });
     expect(geometry.shell).toMatchObject({ x: 0, y: 0, width: viewport.width, height: viewport.height });
-    expect(geometry.ribbon).toMatchObject({ x: 0, y: 0, width: viewport.width, height: 157 });
-    expect(geometry.formula).toMatchObject({ x: 0, y: 157, width: viewport.width, height: 37 });
-    expect(geometry.workspace).toMatchObject({ x: 0, y: 194, width: viewport.width, height: viewport.height - 216 });
+    expect(geometry.ribbon).toMatchObject({ x: 0, y: 0, width: viewport.width, height: 195 });
+    expect(geometry.formula).toMatchObject({ x: 0, y: 195, width: viewport.width, height: 48 });
+    expect(geometry.workspace).toMatchObject({ x: 0, y: 243, width: viewport.width, height: viewport.height - 265 });
     expect(geometry.tabs).toMatchObject({ x: 0, y: viewport.height - 51, width: viewport.width, height: 29 });
     expect(geometry.status).toMatchObject({ x: 0, y: viewport.height - 22, width: viewport.width, height: 22 });
     expect(geometry.scrollWidth).toBeLessThanOrEqual(viewport.width);
     expect(geometry.scrollHeight).toBeLessThanOrEqual(viewport.height);
+    if (viewport.width === 1917) {
+      const homeAnchors = await page.evaluate(() => {
+        const bounds = (node: Element | null) => {
+          if (!node) return null;
+          const box = node.getBoundingClientRect();
+          return { x: Math.round(box.x), width: Math.round(box.width), height: Math.round(box.height) };
+        };
+        const tabIds = ['home', 'insert', 'pageLayout', 'formulas', 'data', 'view', 'review', 'settings'];
+        const groups = document.querySelector('[data-testid="home-ribbon-groups"]');
+        return {
+          file: bounds(document.querySelector('[aria-label="Open workbook menu"]')),
+          tabs: tabIds.map((id) => bounds(document.querySelector(`[data-testid="ribbon-tab-${id}"]`))),
+          separators: groups ? Array.from(groups.children).filter((child) => child.tagName === 'HR').map((child) => Math.round(child.getBoundingClientRect().x)) : [],
+          nameBox: bounds(document.querySelector('[data-testid="name-box"]')),
+          formulaInput: bounds(document.querySelector('[data-testid="formula-input"]')),
+        };
+      });
+      expect(homeAnchors.file).toMatchObject({ x: 0, width: 61 });
+      expect(homeAnchors.tabs.map((tab) => tab?.width)).toEqual([62, 68, 91, 72, 57, 66, 66, 66]);
+      expect(homeAnchors.separators).toEqual([60, 182, 405, 659, 813, 1112, 1228]);
+      expect(homeAnchors.nameBox).toMatchObject({ x: 5, width: 165, height: 37 });
+      expect(homeAnchors.formulaInput).toMatchObject({ x: 315, width: 1593, height: 37 });
+      await page.screenshot({ path: 'test-results/grape-city-ribbon-1917-home.png' });
+      await page.getByRole('tab', { name: '插入' }).click();
+      const insertAnchors = await page.evaluate(() => {
+        const root = document.querySelector('[data-testid="insert-ribbon-groups"]');
+        return root ? Array.from(root.children).filter((child) => child.tagName === 'HR').map((child) => Math.round(child.getBoundingClientRect().x)) : [];
+      });
+      expect(insertAnchors).toEqual([135, 271, 408, 499, 675, 766]);
+      await page.screenshot({ path: 'test-results/grape-city-ribbon-1917-insert.png' });
+    }
     await page.getByRole('tab', { name: '视图' }).click();
     await page.getByRole('button', { name: '命令面板' }).click();
     await expect(page.getByTestId('command-palette')).toBeVisible();

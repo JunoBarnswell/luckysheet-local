@@ -411,6 +411,10 @@ function IconPath({ name }: Pick<IconProps, 'name'>) {
       return <><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4 4M10.5 8v5M8 10.5h5" /></>;
     case 'zoom-out':
       return <><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4 4M8 10.5h5" /></>;
+    default: {
+      const unreachable: never = name;
+      throw new Error(`Missing SVG path for icon: ${String(unreachable)}`);
+    }
   }
 }
 
@@ -423,6 +427,8 @@ export function Icon({ name, size = 'md', className, title, ...props }: IconProp
       fill="none"
       focusable="false"
       role={title ? 'img' : undefined}
+      strokeLinecap="round"
+      strokeLinejoin="round"
       viewBox="0 0 24 24"
       {...props}
     >

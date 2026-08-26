@@ -77,9 +77,9 @@ test.describe('spreadsheet baseline', () => {
         statusBar: rect('[data-testid="designer-status-bar"]'),
       };
     });
-    expect(geometry.ribbon).toEqual({ y: 0, height: 157 });
-    expect(geometry.formulaBar).toEqual({ y: 157, height: 37 });
-    expect(geometry.workspace).toEqual({ y: 194, height: 504 });
+    expect(geometry.ribbon).toEqual({ y: 0, height: 195 });
+    expect(geometry.formulaBar).toEqual({ y: 195, height: 48 });
+    expect(geometry.workspace).toEqual({ y: 243, height: 455 });
     expect(geometry.statusBar).toEqual({ y: 698, height: 22 });
     await page.screenshot({ path: 'test-results/designer-demo-1280-current.png' });
     await page.getByRole('tab', { name: '视图' }).click();

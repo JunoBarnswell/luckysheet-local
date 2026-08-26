@@ -94,14 +94,14 @@ export function FormulaBar({
     <Box
       as="form"
       aria-label="Formula bar"
-      className="flex h-[37px] items-center gap-0 border-y border-[#d9d9d9] border-t-[#eeeeee] bg-white px-1"
+      className="flex h-[48px] items-center gap-0 border-y border-[#d9d9d9] border-t-[#eeeeee] bg-white pl-[5px] pr-[9px]"
       data-testid="formula-bar"
       onSubmit={handleSubmit}
     >
       <TextInput
         aria-label={labels.selectedCell}
-        containerClassName="w-[132px] flex-none"
-        className="!h-[30px] !min-h-0 !w-full flex-none rounded-[3px] border-[#d9d9d9] bg-white text-center font-sans text-[13px] text-slate-900"
+        containerClassName="w-[165px] flex-none"
+        className="!h-[37px] !min-h-0 !w-full flex-none rounded-[3px] border-[#d9d9d9] bg-white text-center font-sans text-[13px] text-slate-900"
         data-testid="name-box"
         disabled={disabled}
         readOnly={!onNameBoxCommit}
@@ -116,7 +116,7 @@ export function FormulaBar({
         iconOnly
         size="xs"
         variant="ghost"
-        className="!h-[30px] !min-h-0 !w-7 rounded-none text-[#6b6b6b]"
+        className="!h-[37px] !min-h-0 !w-[35px] rounded-none text-[#6b6b6b]"
         onClick={onOpenNameManager}
       />
       <Button
@@ -128,7 +128,7 @@ export function FormulaBar({
         onClick={onCancel}
         size="xs"
         variant="ghost"
-        className="!h-[30px] !min-h-0 !w-7 rounded-none text-slate-500"
+        className="!h-[37px] !min-h-0 !w-[35px] rounded-none text-slate-500"
       />
       <Button
         aria-label={labels.apply}
@@ -139,14 +139,14 @@ export function FormulaBar({
         onClick={onCommit}
         size="xs"
         variant="ghost"
-        className="!h-[30px] !min-h-0 !w-7 rounded-none text-slate-500"
+        className="!h-[37px] !min-h-0 !w-[35px] rounded-none text-slate-500"
       />
-      <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="xs" variant="ghost" className="!h-[30px] !min-h-0 !w-8 rounded-none text-[#2572bc]">fx</Button>
+      <Button aria-label={labels.insertFunction} disabled={disabled} icon="function" onClick={onOpenWizard} size="xs" variant="ghost" className="!h-[37px] !min-h-0 !w-10 rounded-none text-[#2572bc]">fx</Button>
       <Inline gap="none" className="min-w-0 flex-1">
         <TextInput
           aria-label={labels.formulaInput}
           containerClassName="min-w-0 flex-1"
-          className="!h-[30px] !min-h-0 !w-full rounded-[3px] border-[#d9d9d9] px-2 font-sans text-[13px]"
+          className="!h-[37px] !min-h-0 !w-full rounded-[3px] border-[#d9d9d9] px-2 font-sans text-[13px]"
           data-testid="formula-input"
           disabled={disabled}
           onChange={(event: ChangeEvent<HTMLInputElement>) => {

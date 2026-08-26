@@ -14,6 +14,23 @@ export function ribbonLayoutModeForWidth(width: number): RibbonLayoutMode {
   return 'narrow';
 }
 
+const DENSE_COMPACT_MIN_WIDTH = 1440;
+const RIBBON_TAB_WIDTHS: Partial<Record<RibbonTabId, string>> = {
+  file: 'w-[52px]',
+  home: 'w-[56px]',
+  insert: 'w-[64px]',
+  pageLayout: 'w-[82px]',
+  formulas: 'w-[60px]',
+  data: 'w-[52px]',
+  view: 'w-[58px]',
+  review: 'w-[58px]',
+  settings: 'w-[58px]',
+};
+
+function isDenseCompact(width: number, mode: RibbonLayoutMode): boolean {
+  return mode === 'compact' && width >= DENSE_COMPACT_MIN_WIDTH;
+}
+
 export interface RibbonShellProps {
   activeTab: RibbonTabId;
   children: ReactNode | ((layout: RibbonLayoutState) => ReactNode);
@@ -37,7 +54,11 @@ export function RibbonShell({
   tabLabel,
 }: RibbonShellProps) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const [layout, setLayout] = useState<RibbonLayoutState>({ mode: 'wide', width: 1920 });
+  const [layout, setLayout] = useState<RibbonLayoutState>(() => {
+    const width = typeof window === 'undefined' ? 1920 : Math.round(window.innerWidth);
+    return { mode: ribbonLayoutModeForWidth(width), width };
+  });
+  const denseCompact = isDenseCompact(layout.width, layout.mode);
   const tabs = [
     ...RIBBON_TAB_ORDER.filter((tab) => !onFileEntry || tab !== 'file'),
     ...contextualTabs.filter((tab, index, values) => !RIBBON_TAB_ORDER.includes(tab) && values.indexOf(tab) === index),
@@ -64,15 +85,15 @@ export function RibbonShell({
   }, []);
 
   return (
-    <Tabs ref={rootRef} className="h-[157px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
-      <Inline gap="none" className="h-[42px] min-w-0 flex-nowrap px-2">
+    <Tabs ref={rootRef} className="h-[154px] overflow-hidden border-b border-[#e7e7e7] bg-[#f5f5f3]" data-ribbon-layout={layout.mode} data-testid="ribbon-shell">
+      <Inline gap="none" className={`min-w-0 flex-nowrap ${denseCompact ? 'h-[40px] px-0' : 'h-[34px] px-2'}`}>
         {onFileEntry ? (
           <DropdownMenu
             disabled={disabled}
             trigger={(
               <Button
                 aria-label="Open workbook menu"
-                className={`h-full shrink-0 rounded-none border-b-2 border-transparent px-0 text-xs font-semibold text-slate-700 hover:border-[#217345] hover:bg-[#f3f8f4] hover:text-[#217345] ${layout.mode === 'wide' ? 'w-[52px]' : 'w-[42px]'}`}
+                className={`h-full shrink-0 rounded-none border-b-2 border-transparent px-0 font-semibold text-slate-700 hover:border-[#217345] hover:bg-[#f3f8f4] hover:text-[#217345] ${RIBBON_TAB_WIDTHS.file} ${denseCompact ? 'text-[14px]' : layout.mode === 'wide' ? 'text-xs' : 'text-[11px]'}`}
                 size="sm"
                 variant="ghost"
               >
@@ -95,7 +116,7 @@ export function RibbonShell({
               data-testid={`ribbon-tab-${tab}`}
               disabled={disabled}
               onClick={() => onTabChange(tab)}
-              className={`!h-full !min-h-0 min-w-0 shrink rounded-none border-b-2 border-transparent font-semibold text-[#3d3c41] aria-selected:!bg-white aria-selected:!text-[#217345] aria-selected:border-[#217345] ${layout.mode === 'wide' ? 'px-3 text-xs' : 'px-1.5 text-[11px]'}`}
+              className={`!h-full !min-h-0 min-w-0 !shrink-0 rounded-none border-b-2 border-transparent font-semibold text-[#3d3c41] aria-selected:!bg-white aria-selected:!text-[#217345] aria-selected:border-[#217345] ${RIBBON_TAB_WIDTHS[tab] ?? 'w-[58px]'} !px-0 ${denseCompact ? 'text-[14px]' : layout.mode === 'wide' ? 'text-xs' : 'text-[11px]'}`}
             >
               {tabLabel(tab)}
             </Tab>
@@ -107,7 +128,7 @@ export function RibbonShell({
           </Inline>
         ) : null}
       </Inline>
-      <Box className="h-[115px] overflow-hidden border-t-0 bg-white px-0 py-0">
+      <Box className="h-[120px] overflow-hidden border-t-0 bg-white px-0 py-0">
         {typeof children === 'function' ? children(layout) : children}
       </Box>
     </Tabs>
