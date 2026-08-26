@@ -190,6 +190,7 @@ export type HomeStyleKey = keyof Pick<
   CellStyle,
   | 'fontFamily'
   | 'textRotate'
+  | 'textOrientation'
   | 'fontSizePx'
   | 'bold'
   | 'italic'
@@ -201,6 +202,7 @@ export type HomeStyleKey = keyof Pick<
   | 'verticalAlignment'
   | 'indent'
   | 'wrapText'
+  | 'shrinkToFit'
   | 'numberFormat'
   | 'borders'
   | 'locked'

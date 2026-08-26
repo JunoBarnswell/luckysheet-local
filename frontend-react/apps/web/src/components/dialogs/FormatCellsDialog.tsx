@@ -152,12 +152,17 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
                     <Text size="xs" tone="subtle">{homeText(activeLocale, 'horizontal')}</Text>
                     <Select
                       sizeVariant="sm"
-                      value={style.horizontalAlignment ?? 'left'}
+                      value={style.horizontalAlignment ?? 'general'}
                       onChange={(event) => setStyle({ horizontalAlignment: event.target.value as CellStyle['horizontalAlignment'] })}
                     >
+                      <option value="general">{homeText(activeLocale, 'general')}</option>
                       <option value="left">{homeText(activeLocale, 'left')}</option>
                       <option value="center">{homeText(activeLocale, 'center')}</option>
                       <option value="right">{homeText(activeLocale, 'right')}</option>
+                      <option value="centerContinuous">{homeText(activeLocale, 'centerContinuous')}</option>
+                      <option value="justify">{homeText(activeLocale, 'justify')}</option>
+                      <option value="distributed">{homeText(activeLocale, 'distributed')}</option>
+                      <option value="fill">{homeText(activeLocale, 'fillAlignment')}</option>
                     </Select>
                   </Stack>
                   <Stack gap="xs">
@@ -170,6 +175,8 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
                       <option value="top">{homeText(activeLocale, 'top')}</option>
                       <option value="middle">{homeText(activeLocale, 'middle')}</option>
                       <option value="bottom">{homeText(activeLocale, 'bottom')}</option>
+                      <option value="justify">{homeText(activeLocale, 'justify')}</option>
+                      <option value="distributed">{homeText(activeLocale, 'distributed')}</option>
                     </Select>
                   </Stack>
                   <CheckToggle
@@ -177,6 +184,35 @@ export function FormatCellsDialog({ open, initial, locale, onClose, onApply }: F
                     label={homeText(activeLocale, 'wrapText')}
                     onChange={(event) => setStyle({ wrapText: event.target.checked })}
                   />
+                  <CheckToggle
+                    checked={Boolean(style.shrinkToFit)}
+                    label={homeText(activeLocale, 'shrinkToFit')}
+                    onChange={(event) => setStyle({ shrinkToFit: event.target.checked })}
+                  />
+                  <Stack gap="xs">
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'indent')}</Text>
+                    <TextInput
+                      aria-label={homeText(activeLocale, 'indent')}
+                      type="number"
+                      min={0}
+                      max={250}
+                      value={String(style.indent ?? 0)}
+                      onChange={(event) => setStyle({ indent: Math.min(250, Math.max(0, Number(event.target.value) || 0)) })}
+                    />
+                  </Stack>
+                  <Stack gap="xs">
+                    <Text size="xs" tone="subtle">{homeText(activeLocale, 'textOrientation')}</Text>
+                    <Select
+                      sizeVariant="sm"
+                      value={style.textOrientation ?? 'horizontal'}
+                      onChange={(event) => setStyle({ textOrientation: event.target.value as CellStyle['textOrientation'], ...(event.target.value === 'horizontal' ? { textRotate: 0 } : {}) })}
+                    >
+                      <option value="horizontal">Horizontal</option>
+                      <option value="rotateUp">Rotate up</option>
+                      <option value="rotateDown">Rotate down</option>
+                      <option value="stacked">Stacked</option>
+                    </Select>
+                  </Stack>
                   <Stack gap="xs">
                     <Text size="xs" tone="subtle">{homeText(activeLocale, 'rotation')}</Text>
                     <TextInput

@@ -1,3 +1,5 @@
+import type { HorizontalAlignment as CanonicalHorizontalAlignment, ReadingOrder, TextOrientation, UnsupportedCellAlignment, VerticalAlignment as CanonicalVerticalAlignment } from '@react-sheets/core-model';
+
 export type LayerId = string;
 
 /** 行标题列宽(px) */
@@ -29,8 +31,8 @@ export interface CellRange {
 
 export type CellValue = string | number | boolean | null | undefined;
 
-export type HorizontalAlignment = "left" | "center" | "right";
-export type VerticalAlignment = "top" | "middle" | "bottom";
+export type HorizontalAlignment = CanonicalHorizontalAlignment;
+export type VerticalAlignment = CanonicalVerticalAlignment;
 
 export interface BorderStyle {
   color: string;
@@ -56,6 +58,11 @@ export interface CellRenderStyle {
   font?: string;
   horizontalAlignment?: HorizontalAlignment;
   verticalAlignment?: VerticalAlignment;
+  textOrientation?: TextOrientation;
+  shrinkToFit?: boolean;
+  readingOrder?: ReadingOrder;
+  /** Explicitly retained native values are never sent to Canvas textAlign. */
+  unsupportedAlignment?: UnsupportedCellAlignment;
   indent?: number;
   padding?: number;
   wrapText?: boolean;
@@ -92,6 +99,8 @@ export interface CellRenderData {
   overlay?: ConditionalRenderOverlay;
   hasComment?: boolean;
   invalid?: boolean;
+  /** Center-across-selection content span; it is a render projection only. */
+  alignmentSpan?: { startColumn: number; endColumn: number; isAnchor: boolean };
 }
 
 export type CellProvider = (address: CellAddress) => CellRenderData | undefined;

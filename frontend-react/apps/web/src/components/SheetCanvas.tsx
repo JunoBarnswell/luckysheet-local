@@ -22,6 +22,7 @@ import {
   createEmptyChromeState,
 } from "@react-sheets/render-engine";
 import type {
+  CellData,
   DrawingObject,
   DrawingPayload,
   PivotGridProjection,
@@ -499,6 +500,23 @@ export function SheetCanvas({
 
   const findMerge = useMemo(() => createMergeSpatialIndex(sheet.merges), [sheet.merges]);
 
+  const centerAcrossSpan = (row: number, column: number, style: CellData['style']): NonNullable<CellRenderData['alignmentSpan']> | undefined => {
+    if (style?.horizontalAlignment !== 'centerContinuous') return undefined;
+    let startColumn = column;
+    let endColumn = column;
+    while (startColumn > 0 && sheet.getCell(row, startColumn - 1)?.style?.horizontalAlignment === 'centerContinuous') startColumn -= 1;
+    while (endColumn + 1 < sheet.columnCount && sheet.getCell(row, endColumn + 1)?.style?.horizontalAlignment === 'centerContinuous') endColumn += 1;
+    let anchorColumn = startColumn;
+    for (let current = startColumn; current <= endColumn; current += 1) {
+      const candidate = sheet.getCell(row, current);
+      if (candidate && candidate.value !== null && candidate.value !== undefined && String(candidate.displayValue ?? candidate.value).length > 0) {
+        anchorColumn = current;
+        break;
+      }
+    }
+    return { startColumn, endColumn, isAnchor: column === anchorColumn };
+  };
+
   const cellProvider = useCallback(({ row, column }: { row: number; column: number }): CellRenderData | undefined => {
     const pivotCell = findPivotProjectionCell(sheet, row, column);
     if (pivotCell) return pivotProjectionCellRenderData(pivotCell.cell, locale, pivotCell.projection.presentation);
@@ -527,6 +545,7 @@ export function SheetCanvas({
       formula: cell.formula,
       displayValue: cell.value,
       style: cell.style,
+      alignmentSpan: centerAcrossSpan(row, column, cell.style),
       editor: cell.editor,
       presentation: cell.presentation,
       overlay: cell.overlay

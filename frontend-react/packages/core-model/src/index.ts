@@ -33,6 +33,21 @@ import {
 import { normalizeFontFamily } from './font-family';
 
 export * from './font-family';
+export {
+  HORIZONTAL_ALIGNMENTS,
+  VERTICAL_ALIGNMENTS,
+  READING_ORDERS,
+  TEXT_ORIENTATIONS,
+  isHorizontalAlignment,
+  isVerticalAlignment,
+  isReadingOrder,
+  type HorizontalAlignment,
+  type VerticalAlignment,
+  type ReadingOrder,
+  type TextOrientation,
+  type UnsupportedCellAlignment,
+} from './alignment';
+import type { HorizontalAlignment, VerticalAlignment, ReadingOrder, TextOrientation, UnsupportedCellAlignment } from './alignment';
 
 export type CellValue = string | number | boolean | null;
 
@@ -50,6 +65,7 @@ export interface CellBorders {
 
 export interface CellStyle {
   textRotate?: number;
+  textOrientation?: TextOrientation;
   fontFamily?: string;
   /** Font size in 96-DPI CSS pixels. OOXML point sizes are converted at the import boundary. */
   fontSizePx?: number;
@@ -59,11 +75,16 @@ export interface CellStyle {
   strikethrough?: boolean;
   textColor?: string;
   background?: string;
-  horizontalAlignment?: 'left' | 'center' | 'right';
-  verticalAlignment?: 'top' | 'middle' | 'bottom';
+  horizontalAlignment?: HorizontalAlignment;
+  verticalAlignment?: VerticalAlignment;
   wrapText?: boolean;
+  shrinkToFit?: boolean;
   /** Excel alignment indentation level. One level maps to three rendered spaces. */
   indent?: number;
+  /** OOXML readingOrder: context, left-to-right, or right-to-left. */
+  readingOrder?: ReadingOrder;
+  /** Native alignment values retained explicitly when the editor cannot execute them. */
+  unsupportedAlignment?: UnsupportedCellAlignment;
   numberFormat?: string;
   borders?: CellBorders;
   padding?: number;

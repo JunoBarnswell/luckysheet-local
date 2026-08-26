@@ -27,6 +27,7 @@ import {
   type BorderPlacement,
   type BorderLine,
 } from '@react-sheets/core-model';
+import { isHorizontalAlignment, isReadingOrder, isVerticalAlignment } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
 import { buildCellFromText } from './text-input';
@@ -366,9 +367,21 @@ function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestore
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {
   if (!isRecord(value) || typeof value.sheetId !== 'string') return false;
-  if (isRange(value.range)) return isRecord(value.style) || value.style === undefined || typeof value.numberFormat === 'string';
+  if (isRange(value.range)) return (value.style === undefined || isCellStylePatch(value.style)) && (value.numberFormat === undefined || typeof value.numberFormat === 'string');
   return Array.isArray(value.ranges) && value.ranges.length > 0 && value.ranges.every(isRange)
-    && typeof value.numberFormat === 'string';
+    && typeof value.numberFormat === 'string' && (value.style === undefined || isCellStylePatch(value.style));
+}
+
+function isCellStylePatch(value: unknown): value is Partial<CellStyle> {
+  if (!isRecord(value)) return false;
+  if (value.horizontalAlignment !== undefined && !isHorizontalAlignment(value.horizontalAlignment)) return false;
+  if (value.verticalAlignment !== undefined && !isVerticalAlignment(value.verticalAlignment)) return false;
+  if (value.shrinkToFit !== undefined && typeof value.shrinkToFit !== 'boolean') return false;
+  if (value.readingOrder !== undefined && !isReadingOrder(value.readingOrder)) return false;
+  if (value.textOrientation !== undefined && !['horizontal', 'stacked', 'rotateUp', 'rotateDown'].includes(String(value.textOrientation))) return false;
+  if (value.indent !== undefined && (!Number.isInteger(value.indent) || Number(value.indent) < 0 || Number(value.indent) > 250)) return false;
+  if (value.textRotate !== undefined && (typeof value.textRotate !== 'number' || !Number.isFinite(value.textRotate) || value.textRotate < -180 || value.textRotate > 180)) return false;
+  return value.unsupportedAlignment === undefined;
 }
 
 function normalizeStyleFontFamily(style: Partial<CellStyle> | undefined): Partial<CellStyle> | undefined {
