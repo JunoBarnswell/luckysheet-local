@@ -128,7 +128,9 @@ export function FeaturePanelHost({
           onRemoveDataRegion={session.removeDataRegion.bind(session)}
           onCommand={dispatchCommand}
           onAddSparkline={session.addSparkline.bind(session)}
+          onCreateSparklineGroup={(sparklineIds) => session.createSparklineGroup(sparklineIds)}
           onRemoveSparkline={session.removeSparkline.bind(session)}
+          onInsertChart={(type, sourceRange, title, stacked) => session.insertChartFromPanel(type, sourceRange, title, stacked)}
           onAddConditionalFormat={session.addConditionalFormat.bind(session)}
           onRemoveConditionalFormat={session.removeConditionalFormat.bind(session)}
           onAddDataValidation={session.addDataValidation.bind(session)}

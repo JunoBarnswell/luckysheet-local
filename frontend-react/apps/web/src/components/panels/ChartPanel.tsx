@@ -10,24 +10,12 @@ export interface ChartPanelProps {
   drawingPayloads: ReadonlyMap<string, DrawingPayload>;
   selectedDrawingIds?: readonly string[];
   defaultRange?: string;
+  onInsertChart: (type: ChartDrawingPayload['chartType'], sourceRange: RangeRef, title: string, stacked: NonNullable<ChartDrawingPayload['stacked']>) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onClose?: () => void;
 }
 
 const chartTypes: readonly ChartDrawingPayload['chartType'][] = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'combo'];
-
-function defaultElements(): ChartDrawingPayload['elements'] {
-  return {
-    title: 'Chart',
-    legend: { visible: true, position: 'bottom' },
-    dataLabels: { visible: false },
-    hiddenData: 'show',
-    categoryAxis: { id: 'category', position: 'bottom', visible: true, majorGridlines: { visible: false } },
-    valueAxis: { id: 'value', position: 'left', visible: true, majorGridlines: { visible: true, color: '#e2e8f0', width: 1, dash: 'solid' } },
-    chartArea: { fill: '#ffffff', border: '#cbd5e1', borderWidth: 1 },
-    plotArea: { fill: '#ffffff' },
-  };
-}
 
 function parseA1Range(value: string, sheetId: string): RangeRef | undefined {
   const range = parseRangeInput(value, sheetId);
@@ -45,12 +33,7 @@ function formatRange(range: RangeRef | undefined): string {
   return `${columnLabel(range.startColumn)}${range.startRow + 1}:${columnLabel(range.endColumn)}${range.endRow + 1}`;
 }
 
-function createId(prefix: string): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
-  return `${prefix}-${Date.now().toString(36)}`;
-}
-
-export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], defaultRange, onCommand, onClose }: ChartPanelProps) {
+export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawingIds = [], defaultRange, onInsertChart, onCommand, onClose }: ChartPanelProps) {
   const chartEntries = drawings
     .filter((drawing) => drawing.kind === 'chart')
     .map((drawing) => ({ drawing, payload: drawingPayloads.get(drawing.payloadId) }))
@@ -87,9 +70,7 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   };
   const handleCreate = () => {
     if (!sourceRange) return;
-    const chartId = createId('chart');
-    const drawing: DrawingObject = { id: createId('drawing'), sheetId, kind: 'chart', anchor: { kind: 'absolute' }, transform: { x: 100, y: 100, width: 480, height: 280 }, zIndex: 0, payloadId: chartId };
-    onCommand({ commandId: `chart.insert.${type}`, params: { sheetId, drawing, payload: { kind: 'chart', chartId, chartType: type, sourceRanges: [sourceRange], series: type === 'combo' ? [{ name: 'Series 1', range: structuredClone(sourceRange), chartType: 'column', axis: 'primary' }] : undefined, stacked: stacked === 'none' ? undefined : stacked, elements: { ...defaultElements(), title } } } });
+    onInsertChart(type, sourceRange, title, stacked);
   };
 
   return (

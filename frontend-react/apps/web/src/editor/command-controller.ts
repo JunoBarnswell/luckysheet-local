@@ -1,8 +1,6 @@
 import { useMemo, useState } from "react";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import type {
-  ChartDrawingPayload,
-  DrawingObject,
   PivotAggregateFunction,
   PivotFilter,
   PivotFilterFamily,
@@ -276,10 +274,7 @@ export function useEditorCommandController({
   };
   const createPivotChart = () => {
     if (!activePivot) return;
-    const chartId = `pivot-chart-${activePivot.id}-${Date.now().toString(36)}`;
-    const drawing: DrawingObject = { id: `drawing-${chartId}`, sheetId: activePivotSheetId, kind: "chart", payloadId: chartId, anchor: { kind: "absolute" }, transform: { x: 80, y: 80, width: 480, height: 280, rotation: 0 }, zIndex: 0 };
-    const payload: ChartDrawingPayload = { kind: "chart", chartId, pivotId: activePivot.id, chartType: 'column', sourceRanges: activePivotSourceRange ? [activePivotSourceRange] : [], elements: { title: pivotText(locale, 'pivotChart'), legend: { visible: true, position: 'bottom' }, dataLabels: { visible: false }, hiddenData: 'show' } };
-    dispatchCommand({ commandId: "pivot.chart.create", params: { sheetId: activePivotSheetId, pivotId: activePivot.id, drawing, payload } });
+    session.createPivotChart(activePivot.id, pivotText(locale, 'pivotChart'));
   };
   const removePivotTimeline = () => {
     for (const control of pivotControlRecords.filter((record) => record.payload.kind === "timeline")) session.removePivotControl(control.drawing.id);

@@ -144,7 +144,9 @@ export interface FeatureSidebarProps {
   onRemoveDataRegion: (regionId: string) => void;
   onCommand: (descriptor: CommandDescriptor) => void;
   onAddSparkline: (sparkline: SparklineModel) => void;
+  onCreateSparklineGroup: (sparklineIds: string[]) => void;
   onRemoveSparkline: (id: string) => void;
+  onInsertChart: (type: import('@react-sheets/core-model').ChartDrawingPayload['chartType'], sourceRange: RangeRef, title: string, stacked: NonNullable<import('@react-sheets/core-model').ChartDrawingPayload['stacked']>) => void;
   onAddConditionalFormat: (rule: ConditionalFormatRule) => void;
   onRemoveConditionalFormat: (id: string) => void;
   onAddDataValidation: (rule: DataValidationRule) => void;
@@ -367,7 +369,9 @@ export function FeatureSidebar({
   onRemoveDataRegion,
   onCommand,
   onAddSparkline,
+  onCreateSparklineGroup,
   onRemoveSparkline,
+  onInsertChart,
   onAddConditionalFormat,
   onRemoveConditionalFormat,
   onAddDataValidation,
@@ -521,6 +525,7 @@ export function FeatureSidebar({
             drawingPayloads={drawingPayloads}
             selectedDrawingIds={selectedDrawingIds}
             defaultRange={selectionText}
+            onInsertChart={onInsertChart}
             onCommand={onCommand}
           />
         ) : null}
@@ -623,6 +628,7 @@ export function FeatureSidebar({
             sparklineGroups={sparklineGroups}
             defaultRange={selectionText}
             onAddSparkline={onAddSparkline}
+            onCreateSparklineGroup={onCreateSparklineGroup}
             onRemoveSparkline={onRemoveSparkline}
             onCommand={onCommand}
           />
