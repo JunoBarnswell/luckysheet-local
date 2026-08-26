@@ -1235,6 +1235,7 @@ export class WorkbookSession {
   private resolveCommandContext(commandId: string, params?: unknown): unknown {
     const selectionScoped = new Set([
       'sheet.style.set',
+      'sheet.style.preset.apply',
       'sheet.borders.set',
       'sheet.merge.set',
       'sheet.merge.remove',
@@ -1262,6 +1263,9 @@ export class WorkbookSession {
     if (commandId === 'sheet.style.set' || commandId === 'sheet.merge.set' || commandId === 'sheet.merge.remove'
       || commandId === 'sheet.merge.center' || commandId === 'sheet.merge.cells' || commandId === 'sheet.merge.across' || commandId === 'sheet.merge.unmerge') {
       return { ...input, sheetId, range: input.range ?? range };
+    }
+    if (commandId === 'sheet.style.preset.apply') {
+      return { ...input, sheetId, ranges: input.ranges ?? [range] };
     }
     if (commandId === 'sheet.range.clear') {
       return { ...input, sheetId, range: input.range ?? range, family: input.family ?? 'contents' };

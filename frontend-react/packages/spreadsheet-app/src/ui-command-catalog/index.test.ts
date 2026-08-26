@@ -133,6 +133,33 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(buildRibbonCommand('tableSheet', current)?.type, 'callback');
   });
 
+  it('exposes every canonical cell style preset through the HOME gallery and command palette', () => {
+    const presets = [
+      ['cellStyleNormal', 'normal'],
+      ['cellStyleGood', 'good'],
+      ['cellStyleBad', 'bad'],
+      ['cellStyleNeutral', 'neutral'],
+      ['cellStyleTitle', 'title'],
+      ['cellStyleHeading1', 'heading1'],
+      ['cellStyleHeading2', 'heading2'],
+      ['cellStyleTotal', 'total'],
+    ] as const;
+    const current = context();
+    for (const [commandId, preset] of presets) {
+      assert.deepEqual(buildRibbonCommand(commandId, current), {
+        type: 'command',
+        descriptor: { commandId: 'sheet.style.preset.apply', params: { preset } },
+      });
+      assert.ok(RIBBON_COMMAND_CATALOG.some((definition) => definition.id === commandId));
+    }
+    assert.deepEqual(
+      getRibbonSurfaces('home', 'styles', 'wide')
+        .filter((surface) => surface.menuId === 'control.cell-styles-menu')
+        .map((surface) => surface.commandId),
+      presets.map(([commandId]) => commandId),
+    );
+  });
+
   it('routes all merge actions through the typed high-level callback', () => {
     const operations: string[] = [];
     const current = context({ actions: { ...context().actions, onMerge: (operation) => { operations.push(operation); } } });
