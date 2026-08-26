@@ -421,11 +421,11 @@ export function Ribbon({
 
   const commandPaletteEntries: CommandPaletteEntry[] = RIBBON_COMMAND_CATALOG.map((definition) => {
     const result = isRibbonCommandEnabled(definition, catalogContext) ? buildRibbonCommand(definition.id, catalogContext) : undefined;
-    const group = getRibbonGroupDefinition(definition.group);
+    const groups = [...new Set(definition.placements.map((placement) => translateRibbonText(locale, getRibbonGroupDefinition(placement.group).labelKey)))];
     return {
       id: definition.id,
       label: translateRibbonText(locale, definition.labelKey),
-      group: translateRibbonText(locale, group.labelKey),
+      group: groups.join(' / '),
       keywords: [definition.id, definition.commandId ?? ''],
       tip: definition.tooltipKey ? translateRibbonText(locale, definition.tooltipKey) : undefined,
       commandId: definition.commandId,

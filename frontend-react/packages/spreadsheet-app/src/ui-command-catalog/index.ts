@@ -518,10 +518,14 @@ export type RibbonCommandResult =
   | { type: 'intent'; intent: UiSessionIntent }
   | { type: 'callback'; invoke: () => void };
 
-export interface CommandDefinition {
-  readonly id: RibbonCommandId;
+export interface RibbonCommandPlacement {
   readonly tab: RibbonCatalogTabId;
   readonly group: RibbonGroupId;
+}
+
+export interface CommandDefinition {
+  readonly id: RibbonCommandId;
+  readonly placements: readonly RibbonCommandPlacement[];
   readonly labelKey: RibbonTextKey;
   readonly tooltipKey?: RibbonTextKey;
   readonly icon?: RibbonIconName;
@@ -1205,6 +1209,7 @@ export const INSERT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = [
   ribbonSurface('insert', 'sheets.report-sheet', 'insertSheets', 30, 'large', 'reportSheet'),
   ribbonSurface('insert', 'tables.worksheet-table', 'insertTables', 10, 'split', 'worksheetTable'),
   ribbonSurface('insert', 'tables.pivot', 'insertTables', 20, 'large', 'pivotTable'),
+  ribbonSurface('insert', 'tables.slicer', 'insertTables', 30, 'large', 'pivotSlicer'),
   ribbonSurface('insert', 'charts.gallery', 'insertCharts', 10, 'gallery', 'chartBuilder'),
   ribbonSurface('insert', 'charts.barcode', 'insertCharts', 20, 'large', 'barcode'),
   ribbonSurface('insert', 'charts.sparkline', 'insertCharts', 30, 'split', 'sparkline'),
@@ -1277,8 +1282,7 @@ const command = (
   params?: unknown,
 ): CommandDefinition => ({
   id,
-  tab,
-  group: groupId,
+  placements: [{ tab, group: groupId }],
   commandId,
   labelKey,
   icon,
@@ -1300,8 +1304,7 @@ const callback = (
   icon?: RibbonIconName,
 ): CommandDefinition => ({
   id,
-  tab,
-  group: groupId,
+  placements: [{ tab, group: groupId }],
   labelKey,
   icon,
   priority: 30,
@@ -1318,8 +1321,7 @@ const intent = (
   icon?: RibbonIconName,
 ): CommandDefinition => ({
   id,
-  tab,
-  group: groupId,
+  placements: [{ tab, group: groupId }],
   labelKey,
   icon,
   priority: 30,
@@ -1336,8 +1338,7 @@ const dynamicCommand = (
   icon?: RibbonIconName,
 ): CommandDefinition => ({
   id,
-  tab,
-  group: groupId,
+  placements: [{ tab, group: groupId }],
   labelKey,
   icon,
   priority: 30,
@@ -1588,8 +1589,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     id: 'pivotRefresh',
-    tab: 'pivotAnalyze',
-    group: 'pivotAnalyze',
+    placements: [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }],
     labelKey: RIBBON_TEXT.commands.pivotRefresh,
     icon: 'table-pivot',
     priority: 10,
@@ -1858,7 +1858,7 @@ function layoutCommands(node: RibbonLayoutNode): readonly RibbonCommandId[] {
   }
 }
 
-/** Static catalog gate for the three Designer layout trees. */
+/** Static catalog gate for every Designer layout tree. */
 export function validateRibbonLayoutSpecs(): readonly string[] {
   const errors: string[] = [];
   for (const spec of Object.values(RIBBON_LAYOUT_SPECS)) {
@@ -1880,7 +1880,7 @@ export function validateRibbonLayoutSpecs(): readonly string[] {
         for (const commandId of layoutCommands(node)) {
           const command = commandById.get(commandId);
           if (!command) errors.push(`${spec.tab}: layout node ${node.id} references unknown command ${commandId}`);
-          else if (command.tab !== spec.tab) errors.push(`${spec.tab}: command ${commandId} belongs to ${command.tab}`);
+          else if (node.kind !== 'surface' && !command.placements.some((placement) => placement.tab === spec.tab && placement.group === group.id)) errors.push(`${spec.tab}: layout node ${node.id} references command ${commandId} without a ${spec.tab}/${group.id} placement`);
         }
         if ('children' in node) node.children.forEach(visit);
       };
@@ -1903,7 +1903,7 @@ export function getRibbonGroupDefinition(id: RibbonGroupId): RibbonGroupDefiniti
 }
 
 export function listRibbonCommands(tab: RibbonCatalogTabId, context: RibbonCommandContext): readonly CommandDefinition[] {
-  return RIBBON_COMMAND_CATALOG.filter((definition) => definition.tab === tab && (definition.when?.(context) ?? true));
+  return RIBBON_COMMAND_CATALOG.filter((definition) => definition.placements.some((placement) => placement.tab === tab) && (definition.when?.(context) ?? true));
 }
 
 export function isRibbonCommandEnabled(definition: CommandDefinition, context: RibbonCommandContext): boolean {

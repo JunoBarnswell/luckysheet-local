@@ -103,8 +103,11 @@ describe('Ribbon UI command catalog', () => {
     assert.equal(commandIds.size, RIBBON_COMMAND_CATALOG.length);
     assert.equal(groupIds.size, RIBBON_GROUP_CATALOG.length);
     for (const definition of RIBBON_COMMAND_CATALOG) {
-      assert.ok(groupIds.has(definition.group));
-      assert.equal(getRibbonGroupDefinition(definition.group).tab, definition.tab);
+      assert.ok(definition.placements.length > 0);
+      for (const placement of definition.placements) {
+        assert.ok(groupIds.has(placement.group));
+        assert.equal(getRibbonGroupDefinition(placement.group).tab, placement.tab);
+      }
     }
   });
 
@@ -172,8 +175,10 @@ describe('Ribbon UI command catalog', () => {
         onLayoutChange: (layout) => calls.push(`layout:${layout}`),
       },
     });
-    assert.equal(getRibbonCommandDefinition('pivotFieldList').tab, 'pivotAnalyze');
-    assert.equal(getRibbonCommandDefinition('pivotLayoutCompact').tab, 'pivotDesign');
+    assert.equal(getRibbonCommandDefinition('pivotFieldList').placements[0]?.tab, 'pivotAnalyze');
+    assert.equal(getRibbonCommandDefinition('pivotLayoutCompact').placements[0]?.tab, 'pivotDesign');
+    assert.deepEqual(INSERT_RIBBON_SURFACES.find((surface) => surface.id === 'tables.slicer')?.commandId, 'pivotSlicer');
+    assert.deepEqual(getRibbonCommandDefinition('pivotSlicer').placements, [{ tab: 'pivotAnalyze', group: 'pivotAnalyze' }]);
     for (const id of ['pivotSlicer', 'pivotTimeline', 'pivotChart', 'pivotLayoutCompact', 'pivotLayoutOutline', 'pivotLayoutTabular'] as const) {
       assert.equal(isRibbonCommandEnabled(getRibbonCommandDefinition(id), current), true, id);
       const result = buildRibbonCommand(id, current);
