@@ -208,6 +208,16 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(style?.unsupportedAlignment?.vertical, 'vendorVertical');
     assert.equal(style?.unsupportedAlignment?.attributes?.foo, 'preserve-me');
     assert.equal(style?.shrinkToFit, true);
+    const preserved = await exportXlsx({
+      snapshot: imported.snapshot,
+      nativePackage: imported.nativePackage,
+      fileName: 'alignment-unsupported-roundtrip.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const preservedStyles = strFromU8(loadOpcPackageGraph(preserved.buffer).files['xl/styles.xml']!);
+    assert.match(preservedStyles, /horizontal="vendorAlignment"/);
+    assert.match(preservedStyles, /vertical="vendorVertical"/);
+    assert.match(preservedStyles, /foo="preserve-me"/);
 
     const malformed = strFromU8(output.packageGraph.parts['xl/styles.xml']!).replace('shrinkToFit="1"', 'shrinkToFit="maybe"');
     output.packageGraph.parts['xl/styles.xml'] = strToU8(malformed);

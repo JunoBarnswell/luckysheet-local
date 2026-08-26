@@ -516,7 +516,10 @@ function drawCellValue(
   const style = cell.style;
   const text = resolveDisplayText(cell);
   if (!text) return;
-  if (style?.unsupportedAlignment?.horizontal || style?.unsupportedAlignment?.vertical) return;
+  if (style?.unsupportedAlignment?.horizontal || style?.unsupportedAlignment?.vertical) {
+    drawUnsupportedAlignment(context, rect, theme);
+    return;
+  }
 
   const padding = style?.padding ?? theme.cellPadding;
   const indent = Math.max(0, Math.trunc(style?.indent ?? 0)) * 12;
@@ -767,6 +770,19 @@ function drawStackedText(
   for (let index = 0; index < characters.length; index += 1) {
     context.fillText(characters[index]!, rect.x + rect.width / 2, startY + index * lineHeight);
   }
+}
+
+function drawUnsupportedAlignment(context: CanvasRenderingContext2D, rect: Rect, theme: RenderTheme): void {
+  context.save();
+  context.strokeStyle = theme.invalidColor;
+  context.lineWidth = 1;
+  context.strokeRect(rect.x + 1, rect.y + 1, Math.max(0, rect.width - 2), Math.max(0, rect.height - 2));
+  context.fillStyle = theme.invalidColor;
+  context.font = '10px "Microsoft YaHei", "Segoe UI", sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText('Unsupported alignment', rect.x + rect.width / 2, rect.y + rect.height / 2, Math.max(1, rect.width - 4));
+  context.restore();
 }
 
 // ---------------- 浮动对象层 ----------------

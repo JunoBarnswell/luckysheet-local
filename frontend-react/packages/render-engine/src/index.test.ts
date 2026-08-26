@@ -369,7 +369,7 @@ test('stacked orientation renders explicitly while unsupported native alignment 
   const { context, textCalls, textAlignValues } = recordingContext();
   drawCellLayer({ context, skeleton: renderSkeleton, pane: mainPane(range), visibleRange: range, cellProvider: provider, theme: DEFAULT_RENDER_THEME });
 
-  assert.deepEqual(textCalls.map((call) => call.text), ['A', 'B']);
+  assert.deepEqual(textCalls.map((call) => call.text), ['A', 'B', 'Unsupported alignment']);
   assert.ok(textAlignValues.every((value) => value === 'left' || value === 'center' || value === 'right'));
 });
 
