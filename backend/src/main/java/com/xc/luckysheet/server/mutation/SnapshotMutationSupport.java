@@ -188,19 +188,29 @@ final class SnapshotMutationSupport {
 
     static RangeRef rowRange(ObjectNode root, String sheetId, ObjectNode params) {
         int row = index(root, sheetId, params, "row");
-        return new RangeRef(sheetId, row, row, 0, MAX_COLUMN);
+        ObjectNode sheet = sheet(root, sheetId);
+        return new RangeRef(sheetId, row, row, 0, canonicalDimension(sheet, "columnCount") - 1);
     }
 
     static RangeRef wholeSheetRange(ObjectNode root, String sheetId) {
         ObjectNode sheet = sheet(root, sheetId);
-        int rowCount = positiveDimension(sheet.path("rowCount"), "rowCount", MAX_ROW + 1);
-        int columnCount = positiveDimension(sheet.path("columnCount"), "columnCount", MAX_COLUMN + 1);
+        int rowCount = canonicalDimension(sheet, "rowCount");
+        int columnCount = canonicalDimension(sheet, "columnCount");
         return new RangeRef(sheetId, 0, rowCount - 1, 0, columnCount - 1);
     }
 
     static RangeRef columnRange(ObjectNode root, String sheetId, ObjectNode params) {
         int column = index(root, sheetId, params, "column");
-        return new RangeRef(sheetId, 0, MAX_ROW, column, column);
+        ObjectNode sheet = sheet(root, sheetId);
+        return new RangeRef(sheetId, 0, canonicalDimension(sheet, "rowCount") - 1, column, column);
+    }
+
+    private static int canonicalDimension(ObjectNode sheet, String field) {
+        JsonNode value = sheet.get(field);
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 1) {
+            throw ServiceException.validation("Canonical worksheet " + field + " is required");
+        }
+        return value.intValue();
     }
 
     static RangeRef range(ObjectNode root, JsonNode value) {

@@ -919,6 +919,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, row, column, previous: cell ? structuredClone(cell) : undefined },
         affectedRanges: [cellRange(params.sheetId, row, column)],
+        permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
       }));
       context.applyMutation({
         id: 'format.painter.applied',
@@ -1443,6 +1444,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         sheetId: params.sheetId,
         params: { sheetId: params.sheetId, row, column, previous: cell ? structuredClone(cell) : undefined },
         affectedRanges: [cellRange(params.sheetId, row, column)],
+        permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
       }));
       const mutationParams = { sheetId: params.sheetId, ranges, styleId: preset.id, style: structuredClone(preset.style) };
       context.applyMutation({

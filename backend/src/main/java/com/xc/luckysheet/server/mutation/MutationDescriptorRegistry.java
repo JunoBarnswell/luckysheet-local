@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.stereotype.Component;
@@ -200,11 +201,23 @@ public class MutationDescriptorRegistry {
     }
 
     private void verifyDeclaredCapabilities() {
+        for (String id : descriptors.keySet()) {
+            if (GeneratedWorkbookContract.mutationPermission(id) == null) {
+                throw new IllegalStateException("Mutation descriptor has no generated permission policy: " + id);
+            }
+        }
         for (Map.Entry<String, com.xc.luckysheet.server.contract.GeneratedWorkbookContract.MutationCapability> entry
                 : com.xc.luckysheet.server.contract.GeneratedWorkbookContract.MUTATIONS.entrySet()) {
             MutationDescriptor descriptor = descriptors.get(entry.getKey());
             if (entry.getValue().remote() && (descriptor == null || descriptor instanceof UnavailableDescriptor || descriptor.internalOnly())) {
                 throw new IllegalStateException("Remote contract mutation has no accepted server reducer: " + entry.getKey());
+            }
+            GeneratedWorkbookContract.PermissionPolicy policy = GeneratedWorkbookContract.mutationPermission(entry.getKey());
+            if (policy == null || !policy.protectionAction().equals(entry.getValue().protectionAction())
+                    || policy.checksProtection() != entry.getValue().checksProtection()
+                    || !policy.affectedRangeMode().equals(entry.getValue().affectedRangeMode())
+                    || !policy.objectScope().equals(entry.getValue().objectScope())) {
+                throw new IllegalStateException("Generated mutation capability and permission policy differ: " + entry.getKey());
             }
         }
     }
@@ -212,27 +225,27 @@ public class MutationDescriptorRegistry {
     private static abstract class BaseDescriptor implements MutationDescriptor {
         private final String id;
         private final WorkbookAclRole role;
-        private final boolean checksProtection;
-        private final String action;
+        private final GeneratedWorkbookContract.PermissionPolicy permission;
 
-        private BaseDescriptor(String id, WorkbookAclRole role, boolean checksProtection, String action) {
+        private BaseDescriptor(String id, WorkbookAclRole role) {
+            GeneratedWorkbookContract.PermissionPolicy permission = GeneratedWorkbookContract.mutationPermission(id);
+            if (permission == null) throw new IllegalStateException("Mutation is missing a generated permission policy: " + id);
             this.id = id;
             this.role = role;
-            this.checksProtection = checksProtection;
-            this.action = action;
+            this.permission = permission;
         }
 
         @Override public String id() { return id; }
         @Override public boolean internalOnly() { return false; }
         @Override public WorkbookAclRole requiredRole() { return role; }
         @Override public MutationRebasePolicy rebasePolicy() { return MutationRebasePolicy.EXACT_BASE; }
-        @Override public boolean checksProtection() { return checksProtection; }
-        @Override public String protectionAction() { return action; }
+        @Override public boolean checksProtection() { return permission.checksProtection(); }
+        @Override public String protectionAction() { return permission.protectionAction(); }
     }
 
     private static final class CellDescriptor extends BaseDescriptor {
         private CellDescriptor(String id) {
-            super(id, WorkbookAclRole.EDITOR, true, "edit-cell");
+            super(id, WorkbookAclRole.EDITOR);
         }
 
         @Override
@@ -695,7 +708,7 @@ public class MutationDescriptorRegistry {
 
     private static final class PresentationDescriptor extends BaseDescriptor {
         private PresentationDescriptor(String id) {
-            super(id, WorkbookAclRole.EDITOR, true, "format");
+            super(id, WorkbookAclRole.EDITOR);
         }
 
         @Override
@@ -915,7 +928,7 @@ public class MutationDescriptorRegistry {
      * are workbook scoped; editor writes are range-scoped presentation changes. */
     private static final class CellTemplateDescriptor extends BaseDescriptor {
         private CellTemplateDescriptor(String id) {
-            super(id, WorkbookAclRole.EDITOR, "cell.editor.set".equals(id), "format");
+            super(id, WorkbookAclRole.EDITOR);
         }
 
         @Override
@@ -982,7 +995,7 @@ public class MutationDescriptorRegistry {
 
     private static final class ReviewDescriptor extends BaseDescriptor {
         private ReviewDescriptor(String id) {
-            super(id, WorkbookAclRole.COMMENTER, true, "comment");
+            super(id, WorkbookAclRole.COMMENTER);
         }
 
         @Override
@@ -1101,7 +1114,7 @@ public class MutationDescriptorRegistry {
 
     private static final class ProtectionDescriptor extends BaseDescriptor {
         private ProtectionDescriptor(String id) {
-            super(id, WorkbookAclRole.OWNER, false, "protect");
+            super(id, WorkbookAclRole.OWNER);
         }
 
         @Override
@@ -1151,7 +1164,7 @@ public class MutationDescriptorRegistry {
 
     private static final class WorkbookRenameDescriptor extends BaseDescriptor {
         private WorkbookRenameDescriptor() {
-            super("workbook.renamed", WorkbookAclRole.EDITOR, false, "");
+            super("workbook.renamed", WorkbookAclRole.EDITOR);
         }
 
         @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) { SnapshotMutationSupport.root(snapshot); SnapshotMutationSupport.params(mutation); return List.of(); }
@@ -1169,7 +1182,7 @@ public class MutationDescriptorRegistry {
     }
 
     private static final class RestoreDescriptor extends BaseDescriptor {
-        private RestoreDescriptor() { super("workbook.restore", WorkbookAclRole.OWNER, false, ""); }
+        private RestoreDescriptor() { super("workbook.restore", WorkbookAclRole.OWNER); }
         @Override public boolean internalOnly() { return true; }
         @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) { return List.of(); }
         @Override public JsonNode apply(JsonNode snapshot, OperationMutation mutation) { throw ServiceException.forbidden("Workbook restore is generated only by the server restore operation"); }
@@ -1179,7 +1192,7 @@ public class MutationDescriptorRegistry {
         private final String reason;
 
         private UnavailableDescriptor(String id, String reason) {
-            super(id, WorkbookAclRole.OWNER, false, "");
+            super(id, WorkbookAclRole.OWNER);
             this.reason = reason;
         }
 

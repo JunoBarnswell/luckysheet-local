@@ -16,6 +16,11 @@ import {
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
   WORKBOOK_SNAPSHOT_VERSION,
+  mutationPermission,
+  commandPermission,
+  type PermissionCapability,
+  type PermissionPolicy,
+  type ProtectionAction,
   mutationCapability,
   type ContractErrorCode,
 } from './generated-contract';
@@ -25,8 +30,12 @@ export {
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
   WORKBOOK_SNAPSHOT_VERSION,
+  mutationPermission,
+  commandPermission,
   mutationCapability,
 } from './generated-contract';
+
+export type { PermissionCapability, PermissionPolicy, ProtectionAction } from './generated-contract';
 
 export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
 

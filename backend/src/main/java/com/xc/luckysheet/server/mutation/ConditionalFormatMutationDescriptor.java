@@ -17,7 +17,7 @@ final class ConditionalFormatMutationDescriptor extends CanonicalJsonMutationDes
     private final String mutationId;
 
     ConditionalFormatMutationDescriptor(String mutationId) {
-        super(mutationId, WorkbookAclRole.EDITOR, true, "format");
+        super(mutationId, WorkbookAclRole.EDITOR);
         if (!"cf.reorder".equals(mutationId)) throw new IllegalArgumentException("Unsupported conditional-format mutation: " + mutationId);
         this.mutationId = mutationId;
     }

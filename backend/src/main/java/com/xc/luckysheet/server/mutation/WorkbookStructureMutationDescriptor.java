@@ -26,7 +26,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
     );
 
     WorkbookStructureMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, id.startsWith("hyperlink."), id.startsWith("hyperlink.") ? "edit-cell" : "format");
+        super(id, WorkbookAclRole.EDITOR);
     }
 
     @Override

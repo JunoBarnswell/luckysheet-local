@@ -20,7 +20,7 @@ final class QueryMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Pattern SECRET_KEY = Pattern.compile("(?:pass(word)?|secret|token|api[-_]?key|credential|authorization|private[-_]?key|client[-_]?secret)", Pattern.CASE_INSENSITIVE);
 
     QueryMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, !id.equals("query.definition.replace"), "edit-cell");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported query mutation: " + id);
     }
 

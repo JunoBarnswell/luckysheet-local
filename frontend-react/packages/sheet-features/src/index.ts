@@ -1480,6 +1480,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
           params: { sheetId: params.sheetId, row: item.row, column: item.column, previous: item.value },
+          permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
           affectedRanges: [
             {
               sheetId: params.sheetId,
@@ -1540,6 +1541,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
               unitId: context.workbook.unitId,
               sheetId: params.sheetId,
               params: { sheetId: params.sheetId, row: plannedCell.row, column: plannedCell.column, previous: previous ? structuredClone(previous) : undefined },
+              permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
               affectedRanges: [cellRange],
             }],
             apply: () => runtime.registry.getMutation('style.set')({

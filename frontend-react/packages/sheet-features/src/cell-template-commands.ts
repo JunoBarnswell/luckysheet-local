@@ -272,6 +272,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
           params: { sheetId: params.sheetId, row: entry.row, column: entry.column, previous: entry.cell },
+          permission: { capability: 'format', protectionAction: 'format', checksProtection: true, affectedRangeMode: 'declared', objectScope: 'range' },
           affectedRanges: [{ sheetId: params.sheetId, startRow: entry.row, endRow: entry.row, startColumn: entry.column, endColumn: entry.column }],
         })),
         apply: () => applyEditorMutation({ ...params, ranges }, context),

@@ -1,4 +1,4 @@
-import { WorkbookModel, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -6,6 +6,14 @@ export interface MutationInfo<P = unknown> {
   sheetId: string;
   params: P;
   affectedRanges: RangeRef[];
+  /** Explicit semantic override used by inverses whose storage mutation id is shared. */
+  permission?: {
+    capability: string;
+    protectionAction: ProtectionAction | 'none';
+    checksProtection: boolean;
+    affectedRangeMode: 'none' | 'declared' | 'exact';
+    objectScope: 'cell' | 'range' | 'row' | 'column' | 'drawing' | 'worksheet' | 'workbook';
+  };
 }
 
 /**
@@ -815,6 +823,7 @@ export class CommandRuntime {
           sheetId: mutation.sheetId,
           params: mutation.params,
           affectedRanges: mutation.affectedRanges,
+          ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
         };
         mutations.push(info);
         this.activeEntry?.inversePlan.unshift(...mutation.inverse);

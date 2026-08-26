@@ -29,7 +29,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     );
 
     SheetDataMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, checksProtection(id), protectionAction(id));
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported sheet metadata mutation: " + id);
     }
 
@@ -596,15 +596,4 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return false;
     }
 
-    private static boolean checksProtection(String id) {
-        return !id.equals("sheet.reordered");
-    }
-
-    private static String protectionAction(String id) {
-        if (id.startsWith("autoFilter")) return "auto-filter";
-        if (id.startsWith("cf") || id.startsWith("dv") || id.equals("banded.set") || id.equals("outline.set")
-                || id.startsWith("sheetTable") || id.startsWith("tableSheet")) return "format";
-        if (id.equals("sheet.reordered")) return "edit-cell";
-        return "format";
-    }
 }

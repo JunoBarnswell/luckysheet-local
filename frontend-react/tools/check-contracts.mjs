@@ -7,6 +7,8 @@ const snapshotSchema = JSON.parse(await readFile(resolve(root, '../contracts/wor
 const javaRegistry = await readFile(resolve(root, '../backend/src/main/java/com/xc/luckysheet/server/mutation/MutationDescriptorRegistry.java'), 'utf8');
 const generatedTypeScript = await readFile(resolve(root, 'packages/protocol/src/generated-contract.ts'), 'utf8');
 const generatedJava = await readFile(resolve(root, '../backend/src/main/java/com/xc/luckysheet/server/contract/GeneratedWorkbookContract.java'), 'utf8');
+const permissionService = await readFile(resolve(root, 'packages/spreadsheet-app/src/permission-service.ts'), 'utf8');
+const protectionResolver = await readFile(resolve(root, '../backend/src/main/java/com/xc/luckysheet/server/mutation/ProtectionResolver.java'), 'utf8');
 const protocol = await readFile(resolve(root, 'packages/protocol/src/index.ts'), 'utf8');
 const catalog = await readFile(resolve(root, 'packages/spreadsheet-app/src/features/workbook-catalog/service.ts'), 'utf8');
 const hub = await readFile(resolve(root, 'apps/web/src/containers/WorkbookHubContainer.tsx'), 'utf8');
@@ -18,8 +20,38 @@ const frontend = await Promise.all([
 const violations = [];
 if (snapshotSchema?.properties?.version?.const !== contracts.workbook.snapshotVersion) violations.push('WorkbookSnapshot JSON Schema version is out of sync with workbook-contract.json');
 if (!generatedTypeScript.includes(`WORKBOOK_CONTRACT_API_VERSION = ${JSON.stringify(contracts.apiVersion)}`)
-  || !generatedJava.includes(`API_VERSION = ${JSON.stringify(contracts.apiVersion)}`)) {
+  || !generatedJava.includes(`API_VERSION = ${JSON.stringify(contracts.apiVersion)}`)
+  || !generatedTypeScript.includes('MUTATION_PERMISSION_POLICIES')
+  || !generatedJava.includes('MUTATION_PERMISSIONS')
+  || !generatedTypeScript.includes('COMMAND_PERMISSION_PREFIXES')) {
   violations.push('generated contract outputs are stale; run npm run generate:contracts');
+}
+if (permissionService.includes('isFormatOnlyRestore') || permissionService.includes('protectionActionForCommand') || permissionService.includes('protectionActionForMutation')) {
+  violations.push('permission service must consume generated command and mutation policies');
+}
+if (protectionResolver.includes('boundedDimension') || protectionResolver.includes('for (int row') || protectionResolver.includes('for (int column')) {
+  violations.push('protection resolver must use canonical extents and sparse exception lookup');
+}
+const protectionActions = new Set(['none', 'edit-cell', 'format', 'insert-rows', 'insert-columns', 'delete-rows', 'delete-columns', 'sort', 'auto-filter', 'edit-objects', 'select-locked', 'select-unlocked']);
+const permissionCapabilities = new Set(['navigate', 'edit-cell', 'format', 'structure', 'drawing', 'protect', 'share', 'comment', 'restore', 'query', 'script']);
+if (!contracts.permissions?.commands || !Array.isArray(contracts.permissions?.commandPrefixes) || !contracts.permissions?.mutations) {
+  violations.push('permission contract must declare exact commands, command prefixes, and mutation policies');
+}
+for (const [id, policy] of Object.entries(contracts.permissions?.mutations ?? {})) {
+  if (!permissionCapabilities.has(policy.capability) || !protectionActions.has(policy.protectionAction) || typeof policy.checksProtection !== 'boolean') {
+    violations.push(`mutation permission policy ${id} is invalid`);
+  }
+}
+for (const [id, policy] of Object.entries(contracts.permissions?.commands ?? {})) {
+  if (!permissionCapabilities.has(policy.capability) || !protectionActions.has(policy.protectionAction) || typeof policy.checksProtection !== 'boolean') {
+    violations.push(`command permission policy ${id} is invalid`);
+  }
+}
+for (const policy of contracts.permissions?.commandPrefixes ?? []) {
+  if (typeof policy.prefix !== 'string' || policy.prefix.length === 0 || !permissionCapabilities.has(policy.capability)
+    || !protectionActions.has(policy.protectionAction) || typeof policy.checksProtection !== 'boolean') {
+    violations.push(`command permission prefix policy is invalid: ${policy.prefix ?? '<empty>'}`);
+  }
 }
 for (const required of ['listWorkbookPage', 'listRevisionPage', 'validateUserPreferences', 'validateCursorPage']) {
   if (!protocol.includes(required)) violations.push(`protocol boundary is missing ${required}`);
@@ -42,6 +74,7 @@ for (const [id, capability] of Object.entries(contracts.mutations)) {
   if (capability.durability === 'transient' && !javaRegistry.includes(`Map.entry("${id}"`)) {
     violations.push(`transient mutation ${id} must be explicitly rejected by Java`);
   }
+  if (!contracts.permissions?.mutations?.[id]) violations.push(`mutation ${id} is missing its permission policy`);
 }
 if (violations.length > 0) {
   console.error(violations.join('\n'));

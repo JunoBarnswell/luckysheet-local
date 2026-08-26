@@ -1953,29 +1953,7 @@ export class WorkbookSession {
 
   /** Permission is evaluated again before replaying a historical mutation. */
   private canReplayHistory(mutations: readonly MutationInfo[]): boolean {
-    return mutations.every((mutation) => {
-      const base = mutation.params && typeof mutation.params === 'object' && !Array.isArray(mutation.params)
-        ? mutation.params as Record<string, unknown>
-        : {};
-      if (mutation.id === 'cell.restore' && this.permission.isFormatOnlyRestore(mutation.params)) {
-        return canExecuteCommand(
-          this.permission,
-          this.runtime.model,
-          'sheet.style.set',
-          { ...base, style: (base.previous && typeof base.previous === 'object' && !Array.isArray(base.previous)) ? (base.previous as Record<string, unknown>).style : undefined },
-          this.actorId,
-          mutation.sheetId,
-        ).allowed;
-      }
-      return canExecuteCommand(
-        this.permission,
-        this.runtime.model,
-        mutation.id,
-        { ...base, ranges: mutation.affectedRanges },
-        this.actorId,
-        mutation.sheetId,
-      ).allowed;
-    });
+    return mutations.every((mutation) => this.permission.checkMutation(mutation).allowed);
   }
 
   undo(): void {

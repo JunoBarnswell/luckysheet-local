@@ -20,7 +20,7 @@ final class PivotDrillDownMutationDescriptor extends CanonicalJsonMutationDescri
     static final Set<String> IDS = Set.of("pivot.drilldown.add", "pivot.drilldown.remove");
 
     PivotDrillDownMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "structure");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported pivot drill-down mutation: " + id);
     }
 

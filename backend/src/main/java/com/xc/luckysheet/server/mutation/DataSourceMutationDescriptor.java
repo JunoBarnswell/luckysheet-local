@@ -37,7 +37,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private static final Set<String> FIELD_TYPES = Set.of("text", "number", "boolean", "date", "mixed");
 
     DataSourceMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "structure");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported data-source mutation: " + id);
     }
 

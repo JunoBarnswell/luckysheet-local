@@ -25,7 +25,7 @@ public final class FillMutationDescriptor extends CanonicalJsonMutationDescripto
     public static final Set<String> IDS = Set.of("fill.applied", "fill.restored");
 
     public FillMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "edit-cell");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unknown fill mutation: " + id);
     }
 

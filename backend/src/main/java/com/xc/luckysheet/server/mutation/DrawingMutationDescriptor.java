@@ -21,7 +21,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
     );
 
     DrawingMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, true, "edit-objects");
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported drawing mutation: " + id);
     }
 

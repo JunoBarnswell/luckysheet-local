@@ -23,7 +23,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     );
 
     WorkbookStateMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR, checksProtection(id), action(id));
+        super(id, WorkbookAclRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported workbook state mutation: " + id);
     }
 
@@ -327,11 +327,4 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         if (value == null || !value.isNumber() || !Double.isFinite(value.asDouble()) || value.asDouble() < 0) throw ServiceException.validation(label + " is invalid");
     }
 
-    private static boolean checksProtection(String id) {
-        return id.equals("table.add") || id.equals("table.remove");
-    }
-
-    private static String action(String id) {
-        return id.startsWith("pageLayout.") ? "print" : id.equals("workbook.calculation.mode.set") ? "calculate" : id.startsWith("table.") ? "format" : "edit-cell";
-    }
 }
