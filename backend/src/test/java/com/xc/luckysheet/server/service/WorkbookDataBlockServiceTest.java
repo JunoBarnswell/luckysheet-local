@@ -45,13 +45,14 @@ class WorkbookDataBlockServiceTest {
     @Test
     void delegatesOnlyVerifiedBytesToTheLockedCommitBoundary() {
         byte[] content = "content".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        String checksum = "ed7002b439e9ac845f22357d822bac1444730f18b3f9d4e1f2b05b2d7d3a7f2a";
+        String checksum = "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73";
         var expected = new com.xc.luckysheet.server.contract.DataBlockMetadata("unit", "source", "block", checksum, content.length, java.time.Instant.now());
         when(commits.commit(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.eq("editor"))).thenReturn(expected);
 
         assertEquals(expected, service.put("unit", "source", "block", checksum, content.length,
                 () -> new ByteArrayInputStream(content), "editor"));
-        verify(commits).commit(org.mockito.ArgumentMatchers.argThat(row -> row.content() == content),
+        verify(commits).commit(org.mockito.ArgumentMatchers.argThat(row -> java.util.Arrays.equals(row.content(), content)
+                        && checksum.equals(row.checksum()) && row.byteLength() == content.length),
                 org.mockito.ArgumentMatchers.eq(WorkbookDataBlockService.MAX_WORKBOOK_BLOCK_BYTES),
                 org.mockito.ArgumentMatchers.eq(WorkbookDataBlockService.MAX_WORKBOOK_BLOCK_COUNT), org.mockito.ArgumentMatchers.eq("editor"));
     }

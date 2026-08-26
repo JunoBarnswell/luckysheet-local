@@ -191,7 +191,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("FORBIDDEN", error.code());
 
         var owner = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
-        assertEquals(1_048_575, owner.affectedRanges().get(1).endRow());
+        assertEquals(9, owner.affectedRanges().get(1).endRow());
         assertEquals(0, owner.affectedRanges().get(1).startColumn());
     }
 
@@ -214,22 +214,23 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
                 "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
-                "style.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
+                "style.set", "style.preset.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "workbook.renamed",
                 "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore", "hyperlink.set", "hyperlink.remove",
                 "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
-                "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "dv.add", "dv.remove", "banded.set", "outline.set",
+                "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "cf.reorder", "dv.add", "dv.remove", "banded.set", "outline.set",
                 "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
-                "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore",
+                "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore", "drawing.visibility.set", "drawing.rename",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
                 "table.add", "table.remove", "name.set", "name.remove", "workbook.calculation.mode.set",
                 "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
-                , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source",
-                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted",
+                , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source", "query.load.workbook-table",
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "rows.visibility",
+                "fill.applied", "fill.restored",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove"
         ), Set.copyOf(registry.acceptedIds()));
     }
@@ -316,7 +317,6 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
                 "pivot.chart.create",
-                "query.load.workbook-table",
                 "workbook.restore"
         ), registry.unavailableReasons().keySet());
     }
@@ -347,7 +347,7 @@ class MutationDescriptorRegistryTest {
     void lockedRangeIsResolvedFromSnapshotAndCannotBeBypassedByClientPayload() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","cells":{},"protectionRules":[
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"protectionRules":[
                   {"id":"lock-a1","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"locked":true,"allow":{}}
                 ]}]}
                 """);
@@ -440,20 +440,20 @@ class MutationDescriptorRegistryTest {
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":501,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
                   {"id":"lock-outside-grid","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":500,"endColumn":500},"locked":true,"allow":{}}
                 ]}]}
                 """);
-        var mutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+        var mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":9,"startColumn":0,"endColumn":0},"sourceRows":[5,6,7,8,9,0,1,2,3,4]}
-                """));
+                """)), range(0, 9, 0, 0), "worksheet", null, false, 500);
 
         ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
         assertEquals("FORBIDDEN", error.code());
 
         var owner = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
         assertEquals(0, owner.affectedRanges().getFirst().startColumn());
-        assertEquals(16_383, owner.affectedRanges().getFirst().endColumn());
+        assertEquals(500, owner.affectedRanges().getFirst().endColumn());
         var updated = owner.descriptor().apply(snapshot, mutation);
         assertEquals(5, updated.path("sheets").get(0).path("protectionRules").get(0).path("range").path("startRow").asInt());
     }
@@ -467,6 +467,7 @@ class MutationDescriptorRegistryTest {
         var filter = new OperationMutation("autoFilter.set", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","autoFilter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2},"columns":{}}}
                 """));
+        filter = withDataRegionContext(filter, range(0, 4, 0, 2), "worksheet", null, false);
         var conditionalFormat = new OperationMutation("cf.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","rule":{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0}],"type":"highlight"}}
                 """));
@@ -534,7 +535,7 @@ class MutationDescriptorRegistryTest {
     void printAndQueryRangeReducersPersistOnlyCanonicalDomainState() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","unitId":"book-1","name":"Book","sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}],"printDocuments":[],"queryDefinitions":[]}
+                {"schema":"WorkbookSnapshot","unitId":"book-1","name":"Book","dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}],"printDocuments":[],"queryDefinitions":[]}
                 """);
         OperationMutation print = new OperationMutation("pageLayout.paperSize.set", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","paperSize":"a4"}
@@ -543,12 +544,11 @@ class MutationDescriptorRegistryTest {
         assertEquals("a4", current.path("printDocuments").get(0).path("pageSetup").path("paperSize").asText());
 
         OperationMutation load = new OperationMutation("query.load.range", "sheet-1", mapper.readTree("""
-                {"kind":"cells","queryId":"query-1","queryDefinition":{"schema":"QueryDefinition","id":"query-1","name":"Inline","connectorId":"json","connectorConfig":{"data":[]},"steps":[],"sourceRevision":0},"target":{"kind":"range","sheetId":"sheet-1"},"clearRange":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":1},"values":[[{"value":"Name"},{"value":"Amount"}],[{"value":"East"},{"value":42}]]}
+                {"kind":"data-source-load","queryId":"query-1","queryDefinition":{"schema":"QueryDefinition","id":"query-1","name":"Block backed","connectorId":"json","connectorConfig":{"data":[]},"steps":[],"sourceRevision":0},"target":{"kind":"range","sheetId":"sheet-1"},"sourceId":"query:query-1","source":null,"binding":null}
                 """));
         current = registry.prepare(current, load, WorkbookAclRole.EDITOR).descriptor().apply(current, load);
         assertEquals("query-1", current.path("queryDefinitions").get(0).path("id").asText());
-        assertEquals("East", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
-        assertEquals(42, current.path("sheets").get(0).path("cells").path("1").path("1").path("value").asInt());
+        assertEquals(0, current.path("sheets").get(0).path("cells").size());
     }
 
     @Test
@@ -565,13 +565,14 @@ class MutationDescriptorRegistryTest {
 
         ObjectNode difference = (ObjectNode) pivot.params().deepCopy();
         ObjectNode differenceValue = (ObjectNode) difference.path("layout").path("values").get(0);
-        differenceValue.put("baseFieldId", "sheet:sheet-1:column:0:range:0");
-        differenceValue.set("baseItem", mapper.createObjectNode().put("type", "text").put("value", "East"));
-        differenceValue.set("showAs", mapper.createObjectNode().put("kind", "difference").put("base", "grand"));
+        differenceValue.set("showAs", mapper.createObjectNode()
+                .put("kind", "difference")
+                .put("baseFieldId", "sheet:sheet-1:column:0:range:0")
+                .set("baseItem", mapper.createObjectNode().put("type", "text").put("value", "East")));
         registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", difference), WorkbookAclRole.EDITOR);
 
         ObjectNode missingOperand = (ObjectNode) difference.deepCopy();
-        ((ObjectNode) missingOperand.path("layout").path("values").get(0)).remove("baseItem");
+        ((ObjectNode) missingOperand.path("layout").path("values").get(0).path("showAs")).remove("baseItem");
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", missingOperand), WorkbookAclRole.EDITOR));
 
         ObjectNode highCardinality = (ObjectNode) pivot.params().deepCopy();
@@ -1018,6 +1019,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
                 """));
+        permutation = withSortContext(permutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
         current = registry.prepare(current, permutation, WorkbookAclRole.EDITOR).descriptor().apply(current, permutation);
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
@@ -1069,10 +1071,12 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,0,3,1]}
                 """));
+        permutation = withSortContext(permutation, range(0, 3, 0, 1), "worksheet", null, true, 7);
 
         JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
         JsonNode sheet = current.path("sheets").get(0);
-        assertEquals("b", sheet.path("cells").path("0").path("0").path("value").asText());
+        assertEquals(true, sheet.path("cells").path("0").isMissingNode());
+        assertEquals("b", sheet.path("cells").path("3").path("0").path("value").asText());
         assertEquals(1, sheet.path("hyperlinks").get(0).path("row").asInt());
         assertEquals(0, sheet.path("hyperlinks").get(1).path("row").asInt());
         assertEquals(0, sheet.path("review").path("threadsById").path("outside-comment").path("row").asInt());
@@ -1119,6 +1123,8 @@ class MutationDescriptorRegistryTest {
         params.put("sheetId", "sheet-1");
         params.set("range", mapper.readTree("{\"sheetId\":\"sheet-1\",\"startRow\":0,\"endRow\":" + (rowCount - 1) + ",\"startColumn\":0,\"endColumn\":0}"));
         params.set("sourceRows", sourceRows);
+        params.set("dataRegionContext", dataRegionContext(range(0, rowCount - 1, 0, 0), "worksheet", null, false));
+        params.put("affectedColumnEnd", 0);
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", params);
 
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
@@ -1138,6 +1144,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,3,1]}
                 """));
+        permutation = withSortContext(permutation, range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
 
         JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
         JsonNode sheet = current.path("sheets").get(0);
@@ -1149,9 +1156,41 @@ class MutationDescriptorRegistryTest {
         assertEquals(3, sheet.path("sheetTables").get(0).path("range").path("endRow").asInt());
         assertEquals(0, sheet.path("sheetTables").get(0).path("autoFilter").path("range").path("startRow").asInt());
 
-        OperationMutation duplicate = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+        OperationMutation duplicate = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[1,1,3]}
-                """));
+                """)), range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate));
+    }
+
+    private OperationMutation withDataRegionContext(OperationMutation mutation, ObjectNode range, String ownerKind, String tableId, boolean hasHeader) {
+        ObjectNode params = (ObjectNode) mutation.params().deepCopy();
+        params.set("dataRegionContext", dataRegionContext(range, ownerKind, tableId, hasHeader));
+        return new OperationMutation(mutation.id(), mutation.sheetId(), params);
+    }
+
+    private OperationMutation withSortContext(OperationMutation mutation, ObjectNode range, String ownerKind, String tableId, boolean hasHeader, int affectedColumnEnd) {
+        ObjectNode params = (ObjectNode) withDataRegionContext(mutation, range, ownerKind, tableId, hasHeader).params();
+        params.put("affectedColumnEnd", affectedColumnEnd);
+        return new OperationMutation(mutation.id(), mutation.sheetId(), params);
+    }
+
+    private ObjectNode dataRegionContext(ObjectNode range, String ownerKind, String tableId, boolean hasHeader) {
+        ObjectNode context = mapper.createObjectNode().put("schema", "DataRegionContext").put("version", 1);
+        context.set("selection", range.deepCopy());
+        context.set("currentRegion", range.deepCopy());
+        context.set("usedRange", range.deepCopy());
+        context.set("range", range.deepCopy());
+        ObjectNode owner = context.putObject("owner").put("kind", ownerKind);
+        if (tableId != null) owner.put("tableId", tableId);
+        ObjectNode header = context.putObject("header").put("kind", hasHeader ? "present" : "absent");
+        if (hasHeader) header.put("row", range.path("startRow").asInt());
+        context.putArray("visibleRows");
+        return context;
+    }
+
+    private ObjectNode range(int startRow, int endRow, int startColumn, int endColumn) {
+        return mapper.createObjectNode().put("sheetId", "sheet-1")
+                .put("startRow", startRow).put("endRow", endRow)
+                .put("startColumn", startColumn).put("endColumn", endColumn);
     }
 }

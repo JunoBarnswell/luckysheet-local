@@ -250,6 +250,11 @@ public class MutationDescriptorRegistry {
         public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
             ObjectNode root = SnapshotMutationSupport.root(snapshot);
             ObjectNode params = SnapshotMutationSupport.params(mutation);
+            if (id().equals("range.clear")) {
+                SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "family"), "range.clear");
+            } else if (id().equals("range.clear.restore")) {
+                SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "snapshot"), "range.clear.restore");
+            }
             return switch (id()) {
                 case "cell.set", "cell.restore" -> List.of(SnapshotMutationSupport.cellRange(root, mutation.sheetId(), params));
                 case "range.clear", "range.clear.restore" -> List.of(requireOwnRange(root, mutation.sheetId(), params));
@@ -309,7 +314,10 @@ public class MutationDescriptorRegistry {
                 if (allowedRanges.stream().noneMatch(range -> column >= range.startColumn() && column <= range.endColumn())) {
                     throw ServiceException.validation("Paste snapshot column width is outside its affected range");
                 }
-                RangeRef columnRange = new RangeRef(sheetId, 0, SnapshotMutationSupport.MAX_ROW, column, column);
+                ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+                int canonicalEndRow = sheet.path("rowCount").asInt(0) - 1;
+                if (canonicalEndRow < 0) throw ServiceException.validation("Paste column width requires canonical worksheet rowCount");
+                RangeRef columnRange = new RangeRef(sheetId, 0, canonicalEndRow, column, column);
                 if (!affectedRanges.contains(columnRange)) affectedRanges.add(columnRange);
             }
         }
