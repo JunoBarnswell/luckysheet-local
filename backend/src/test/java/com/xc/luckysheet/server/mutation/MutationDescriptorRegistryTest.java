@@ -489,6 +489,30 @@ class MutationDescriptorRegistryTest {
         JsonNode highCardinalitySnapshot = registry.prepare(snapshot, highCardinalityMutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, highCardinalityMutation);
         assertEquals(10_001, highCardinalitySnapshot.path("sheets").get(0).path("pivots").get(0).path("fieldCatalog").path("fields").get(0).path("values").size());
 
+        ObjectNode boundedManualFilter = (ObjectNode) pivot.params().deepCopy();
+        ObjectNode manualFilter = (ObjectNode) boundedManualFilter.path("layout").path("filters").get(0);
+        manualFilter.put("mode", "exclude");
+        ArrayNode manualMembers = mapper.createArrayNode();
+        for (int index = 0; index < 10_000; index++) {
+            manualMembers.addObject().put("type", "text").put("value", "Member " + index);
+        }
+        manualFilter.set("memberKeys", manualMembers);
+        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", boundedManualFilter), WorkbookAclRole.EDITOR);
+
+        manualMembers.addObject().put("type", "text").put("value", "Member 10000");
+        ServiceException oversizedFilter = assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", boundedManualFilter), WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", oversizedFilter.code());
+
+        ObjectNode oversizedManualGroup = (ObjectNode) pivot.params().deepCopy();
+        ObjectNode rowPlacement = (ObjectNode) oversizedManualGroup.path("layout").path("rows").get(0);
+        ObjectNode group = rowPlacement.putObject("group");
+        group.put("kind", "manual").putArray("groups").addObject()
+                .put("groupId", "group-1").put("name", "Group 1").set("items", manualMembers);
+        ServiceException oversizedGroup = assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
+                new OperationMutation("pivot.add", "sheet-1", oversizedManualGroup), WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", oversizedGroup.code());
+
         ObjectNode malformedValues = (ObjectNode) pivot.params().deepCopy();
         ((ObjectNode) malformedValues.path("fieldCatalog").path("fields").get(0)).set("values", mapper.createObjectNode());
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", malformedValues), WorkbookAclRole.EDITOR));

@@ -21,6 +21,7 @@ import java.util.function.Consumer;
 /** Reducers for the persisted PivotDefinition contract; result trees remain derived. */
 final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final int MAX_MEMBER_COUNT = 1_048_576;
+    private static final int MAX_MANUAL_MEMBER_COUNT = 10_000;
     private static final String SCHEMA = "PivotDefinition";
     private static final String FIELD_CATALOG_SCHEMA = "PivotFieldCatalog";
     private static final Set<String> PIVOT_KEYS = Set.of(
@@ -887,7 +888,9 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void validateMemberValues(JsonNode raw, String label) {
-        if (raw == null || !raw.isArray() || raw.size() > MAX_MEMBER_COUNT) throw ServiceException.validation(label + " must be an array");
+        if (raw == null || !raw.isArray() || raw.size() > MAX_MANUAL_MEMBER_COUNT) {
+            throw ServiceException.validation(label + " must be an array with at most " + MAX_MANUAL_MEMBER_COUNT + " entries");
+        }
         for (JsonNode value : raw) {
             if (!value.isObject()) throw ServiceException.validation(label + " entries must be typed member keys");
             ObjectNode key = (ObjectNode) value;
