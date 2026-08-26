@@ -46,6 +46,8 @@ export interface SpillEnvironment {
   rowCount: number;
   columnCount: number;
   isOccupied: (row: number, column: number) => boolean;
+  /** Grow the host runtime extent before a legal spill is resolved. */
+  ensureExtent?: (rowCount: number, columnCount: number) => void;
   /** Optional exact occupancy materializer for Worker-bound calculation. */
   getOccupiedAddresses?: () => readonly { readonly row: number; readonly column: number }[];
 }
@@ -900,6 +902,7 @@ export class FormulaEngine {
       this.spills.delete(key);
       return;
     }
+    environment.ensureExtent?.(address.row + value.length, address.column + Math.max(0, ...value.map((row) => row.length)));
     const spill = resolveSpill({
       sheetId: address.sheetId,
       anchor: { row: address.row, column: address.column },

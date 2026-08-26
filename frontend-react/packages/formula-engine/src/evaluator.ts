@@ -5,7 +5,7 @@ import { getBuiltinFunction } from './functions';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
-import { createFormulaError, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
+import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 
 export interface FormulaEvaluationContext {
@@ -108,6 +108,7 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
         node.operator,
         evaluateNode(node.left, context, trace),
         evaluateNode(node.right, context, trace),
+        context,
       );
       break;
     case 'function-call':
@@ -148,7 +149,10 @@ function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue
     const address = { sheetId: start.sheetId, row, column };
     return context.readSpillValue?.(address) ?? context.readCell(address);
   }
-  if (isEvaluationRange(operand)) return createFormulaError('#VALUE!', 'A range cannot be used with a unary operator');
+  if (isEvaluationRange(operand)) {
+    return readRangeAsMatrix(operand.range, context).map((row) => row.map((value) => evaluateUnary(operator, value, context)));
+  }
+  if (isArrayValue(operand)) return operand.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
   const number = toNumber(operand);
   if (isFormulaError(number)) return number;
   if (operator === '-') return -number;
@@ -173,12 +177,15 @@ function evaluateBinary(
   operator: BinaryOperator,
   left: EvaluationValue,
   right: EvaluationValue,
+  context: FormulaEvaluationContext,
 ): FormulaValue {
   if (isFormulaError(left)) return left;
   if (isFormulaError(right)) return right;
-  if (isEvaluationRange(left) || isEvaluationRange(right)) {
-    return createFormulaError('#VALUE!', 'A range cannot be used in binary operator');
-  }
+  const leftValue = isEvaluationRange(left) ? readRangeAsMatrix(left.range, context) : left;
+  const rightValue = isEvaluationRange(right) ? readRangeAsMatrix(right.range, context) : right;
+  if (isArrayValue(leftValue) || isArrayValue(rightValue)) return liftBinary(operator, leftValue, rightValue, context);
+  left = leftValue;
+  right = rightValue;
 
   // String concatenation
   if (operator === '&') {
@@ -217,6 +224,24 @@ function evaluateBinary(
     case '^':
       return Math.pow(leftNumber, rightNumber);
   }
+}
+
+function liftBinary(operator: BinaryOperator, left: FormulaValue, right: FormulaValue, context: FormulaEvaluationContext): FormulaValue {
+  const leftMatrix = isArrayValue(left) ? left : [[left]];
+  const rightMatrix = isArrayValue(right) ? right : [[right]];
+  const rows = Math.max(leftMatrix.length, rightMatrix.length);
+  const columns = Math.max(leftMatrix[0]?.length ?? 1, rightMatrix[0]?.length ?? 1);
+  const compatible = (matrix: ArrayValue): boolean =>
+    (matrix.length === 1 || matrix.length === rows)
+    && ((matrix[0]?.length ?? 1) === 1 || (matrix[0]?.length ?? 1) === columns);
+  if (!compatible(leftMatrix) || !compatible(rightMatrix)) return createFormulaError('#VALUE!', 'Array shapes are not compatible');
+  const valueAt = (matrix: ArrayValue, row: number, column: number): FormulaValue => {
+    const sourceRow = matrix.length === 1 ? 0 : row;
+    const sourceColumns = matrix[sourceRow]?.length ?? 1;
+    return matrix[sourceRow]?.[sourceColumns === 1 ? 0 : column] ?? null;
+  };
+  return Array.from({ length: rows }, (_, row) => Array.from({ length: columns }, (_, column) =>
+    evaluateBinary(operator, valueAt(leftMatrix, row, column), valueAt(rightMatrix, row, column), context)));
 }
 
 function compareValues(left: FormulaValue, right: FormulaValue, operator: BinaryOperator): boolean {
