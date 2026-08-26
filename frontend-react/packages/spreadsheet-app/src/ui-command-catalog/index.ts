@@ -586,15 +586,18 @@ export type DesignerIconKey =
   | 'outline'
   | 'find-transform';
 
+export type RibbonLayoutTab = Extract<RibbonCatalogTabId, 'home' | 'insert' | 'pageLayout' | 'formulas' | 'data'>;
+
 export type RibbonLayoutNode =
   | { readonly kind: 'column' | 'row' | 'stack'; readonly id: string; readonly children: readonly RibbonLayoutNode[] }
-  | { readonly kind: 'command'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey; readonly size: 'large' | 'small' }
+  | { readonly kind: 'command'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon?: DesignerIconKey; readonly size: 'large' | 'small' }
   | { readonly kind: 'split'; readonly id: string; readonly primary: RibbonCommandId; readonly primaryIcon: DesignerIconKey; readonly items: readonly { readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }[] }
   | { readonly kind: 'dropdown'; readonly id: string; readonly trigger: RibbonCommandId; readonly triggerIcon: DesignerIconKey; readonly items: readonly { readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }[] }
   | { readonly kind: 'checkbox'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
   | { readonly kind: 'spinner'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
   | { readonly kind: 'combo'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
   | { readonly kind: 'launcher'; readonly id: string; readonly commandId: RibbonCommandId; readonly icon: DesignerIconKey }
+  | { readonly kind: 'surface'; readonly id: string; readonly surfaceId: string }
   | { readonly kind: 'separator'; readonly id: string };
 
 export interface RibbonLayoutGroupSpec {
@@ -604,7 +607,7 @@ export interface RibbonLayoutGroupSpec {
 }
 
 export interface RibbonLayoutSpec {
-  readonly tab: Extract<RibbonCatalogTabId, 'pageLayout' | 'formulas' | 'data'>;
+  readonly tab: RibbonLayoutTab;
   readonly groups: readonly RibbonLayoutGroupSpec[];
 }
 
@@ -1031,7 +1034,7 @@ const splitNode = (id: string, primary: RibbonCommandId, primaryIcon: DesignerIc
 const dropdownNode = (id: string, trigger: RibbonCommandId, triggerIcon: DesignerIconKey, ...items: { commandId: RibbonCommandId; icon: DesignerIconKey }[]): RibbonLayoutNode => ({ kind: 'dropdown', id, trigger, triggerIcon, items });
 const groupSpec = (id: RibbonGroupId, collapsePriority: number, ...children: RibbonLayoutNode[]): RibbonLayoutGroupSpec => ({ id, collapsePriority, children });
 
-export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], RibbonLayoutSpec>> = {
+const BASE_RIBBON_LAYOUT_SPECS: Readonly<Record<Extract<RibbonLayoutSpec['tab'], 'pageLayout' | 'formulas' | 'data'>, RibbonLayoutSpec>> = {
   pageLayout: {
     tab: 'pageLayout',
     groups: [
@@ -1235,6 +1238,24 @@ export const SHAPE_FORMAT_RIBBON_SURFACES: readonly RibbonSurfaceDefinition[] = 
 ] as const;
 
 export const RIBBON_TAB_SURFACES: readonly RibbonSurfaceDefinition[] = [...HOME_RIBBON_SURFACES, ...INSERT_RIBBON_SURFACES, ...SHAPE_FORMAT_RIBBON_SURFACES];
+
+const surfaceNode = (surface: RibbonSurfaceDefinition): RibbonLayoutNode => ({ kind: 'surface', id: surface.id, surfaceId: surface.id });
+const surfaceLayout = (tab: Extract<RibbonLayoutTab, 'home' | 'insert'>, groups: readonly RibbonGroupId[]): RibbonLayoutSpec => ({
+  tab,
+  groups: groups.map((groupId) => {
+    const group = RIBBON_GROUP_CATALOG.find((candidate) => candidate.id === groupId);
+    if (!group) throw new Error(`Unknown Ribbon group: ${groupId}`);
+    const surfaces = RIBBON_TAB_SURFACES.filter((surface) => surface.tab === tab && surface.group === groupId && !surface.menuId);
+    return groupSpec(groupId, group.priority, columnNode(`${groupId}.layout`, ...surfaces.map(surfaceNode)));
+  }),
+});
+
+/** One layout tree drives all Designer ribbon tabs with the same group shell. */
+export const RIBBON_LAYOUT_SPECS: Readonly<Record<RibbonLayoutSpec['tab'], RibbonLayoutSpec>> = {
+  ...BASE_RIBBON_LAYOUT_SPECS,
+  home: surfaceLayout('home', ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing']),
+  insert: surfaceLayout('insert', ['insertSheets', 'insertTables', 'insertCharts', 'insertDataCharts', 'illustrations', 'insertLinks', 'insertControls']),
+};
 
 export function getRibbonSurfaces(
   tab: RibbonCatalogTabId,
@@ -1829,6 +1850,10 @@ function layoutCommands(node: RibbonLayoutNode): readonly RibbonCommandId[] {
     case 'column':
     case 'row':
     case 'stack': return node.children.flatMap(layoutCommands);
+    case 'surface': {
+      const surface = RIBBON_TAB_SURFACES.find((candidate) => candidate.id === node.surfaceId);
+      return surface?.commandId ? [surface.commandId] : [];
+    }
     case 'separator': return [];
   }
 }
@@ -1847,6 +1872,11 @@ export function validateRibbonLayoutSpecs(): readonly string[] {
       const visit = (node: RibbonLayoutNode): void => {
         if (ids.has(node.id)) errors.push(`${spec.tab}: duplicate layout node ${node.id}`);
         ids.add(node.id);
+        if (node.kind === 'surface') {
+          const surface = RIBBON_TAB_SURFACES.find((candidate) => candidate.id === node.surfaceId);
+          if (!surface) errors.push(`${spec.tab}: layout node ${node.id} references unknown surface ${node.surfaceId}`);
+          else if (surface.tab !== spec.tab || surface.group !== group.id) errors.push(`${spec.tab}: surface ${node.surfaceId} is not owned by ${group.id}`);
+        }
         for (const commandId of layoutCommands(node)) {
           const command = commandById.get(commandId);
           if (!command) errors.push(`${spec.tab}: layout node ${node.id} references unknown command ${commandId}`);

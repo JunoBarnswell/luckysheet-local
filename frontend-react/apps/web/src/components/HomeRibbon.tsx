@@ -1,25 +1,20 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   Box,
   Button,
   ColorPicker,
-  Divider,
   DropdownMenu,
-  Inline,
   Select,
   Stack,
-  Text,
   TextInput,
   type RibbonLayoutState,
 } from '@react-sheets/ui-system';
 import {
-  getRibbonGroupDefinition,
   getRibbonSurfaces,
   type HomeRibbonState,
   type RibbonCommandContext,
   type RibbonCommandId,
   type RibbonControlId,
-  type RibbonSurfaceBreakpoint,
   type RibbonSurfaceDefinition,
   type RibbonMergeOperation,
 } from '@react-sheets/spreadsheet-app';
@@ -28,6 +23,7 @@ import type { Locale } from '../i18n';
 import { translateRibbonText } from '../i18n';
 import { HOME_NUMBER_FORMAT_OPTIONS, homeText } from './home/home-localization';
 import { FontFamilyControl } from './FontFamilyControl';
+import { RibbonLayoutRenderer } from './RibbonLayoutRenderer';
 
 export interface HomeRibbonCommandOptions {
   className?: string;
@@ -59,16 +55,9 @@ export interface HomeRibbonProps {
   onUnhideRows: () => void;
 }
 
-type HomeBreakpoint = RibbonSurfaceBreakpoint;
 type HomeGroup = 'history' | 'clipboard' | 'font' | 'alignment' | 'number' | 'styles' | 'cells' | 'editing';
 
 const HOME_GROUPS: readonly HomeGroup[] = ['history', 'clipboard', 'font', 'alignment', 'number', 'styles', 'cells', 'editing'];
-
-function breakpointFor(layout: RibbonLayoutState): HomeBreakpoint {
-  if (layout.width >= 1280) return 'wide';
-  if (layout.width >= 1024) return 'compact';
-  return 'narrow';
-}
 
 const HomeRibbonLocaleContext = React.createContext<Locale>('en-US');
 
@@ -129,14 +118,9 @@ export function HomeRibbon({
   onHideRows,
   onUnhideRows,
 }: HomeRibbonProps) {
-  const breakpoint = breakpointFor(layout);
   const cellStyle = homeState.style;
   const mixed = (key: keyof typeof cellStyle) => homeState.mixedStyleKeys.includes(key as never);
   const canFormat = !disabled && homeState.canFormat;
-  const surfacesByGroup = useMemo(
-    () => new Map(HOME_GROUPS.map((group) => [group, getRibbonSurfaces('home', group, breakpoint)] as const)),
-    [breakpoint],
-  );
   const allSurfaces = (group: HomeGroup): readonly RibbonSurfaceDefinition[] => {
     const seen = new Set<string>();
     return (['wide', 'compact', 'narrow'] as const)
@@ -147,7 +131,6 @@ export function HomeRibbon({
         return true;
       });
   };
-  const topLevelSurfaces = (group: HomeGroup): readonly RibbonSurfaceDefinition[] => allSurfaces(group).filter((surface) => !surface.menuId);
   const menuMembers = (menuId: string): readonly RibbonSurfaceDefinition[] => HOME_GROUPS.flatMap((group) => allSurfaces(group)).filter((surface) => surface.menuId === menuId);
 
   const renderSurface = (surface: RibbonSurfaceDefinition, mode: 'wide' | 'menu'): React.ReactNode => {
@@ -256,35 +239,15 @@ export function HomeRibbon({
     }
   };
 
-  const renderGroupMenu = (group: HomeGroup) => {
-    const label = translateRibbonText(locale, getRibbonGroupDefinition(group).labelKey);
-    return <DropdownMenu key={group} align="left" trigger={<Button aria-label={label} title={label} disabled={disabled} icon="more-horizontal" size="sm" variant="ghost" className="h-[68px] min-w-0 flex-1 flex-col gap-1 rounded-none px-1 text-[10px] leading-3">{label}</Button>}>
-      <Stack gap="none" className="min-w-[14rem] p-1">{topLevelSurfaces(group).map((surface) => renderSurface(surface, 'menu'))}</Stack>
-    </DropdownMenu>;
-  };
-
-  const groupLabel = (group: HomeGroup) => translateRibbonText(locale, getRibbonGroupDefinition(group).labelKey);
-
   return (
     <HomeRibbonLocaleContext.Provider value={locale}>
-      {breakpoint !== 'wide' ? (
-        <Inline gap="none" className="h-[102px] w-full min-w-0 flex-nowrap items-start overflow-visible" data-testid="home-ribbon-groups" data-ribbon-breakpoint={breakpoint}>
-          {HOME_GROUPS.map((group, index) => <React.Fragment key={group}>{index > 0 ? <Divider orientation="vertical" className="h-[96px]" /> : null}{renderGroupMenu(group)}</React.Fragment>)}
-        </Inline>
-      ) : (
-        <Inline gap="none" className="h-[102px] w-full min-w-0 flex-nowrap items-start overflow-visible" data-testid="home-ribbon-groups" data-ribbon-breakpoint={breakpoint}>
-          {HOME_GROUPS.map((group, index) => {
-            const surfaces = (surfacesByGroup.get(group) ?? []).filter((surface) => !surface.menuId);
-            return <React.Fragment key={group}>
-              {index > 0 ? <Divider orientation="vertical" className="h-[96px]" /> : null}
-              <Stack gap="none" className="h-[102px] min-w-0 flex-1 justify-between overflow-visible px-1">
-                <Inline gap="none" className="min-h-0 flex-1 items-start justify-center overflow-visible pt-2">{surfaces.map((surface) => renderSurface(surface, 'wide'))}</Inline>
-                <Text size="xs" tone="subtle" className="pointer-events-none h-4 shrink-0 text-center text-[10px] font-medium text-[#5b555a]">{groupLabel(group)}</Text>
-              </Stack>
-            </React.Fragment>;
-          })}
-        </Inline>
-      )}
+      <RibbonLayoutRenderer
+        tab="home"
+        locale={locale}
+        layout={layout}
+        renderCommand={renderCommand}
+        renderSurface={(surface, context) => renderSurface(surface, context.mode)}
+      />
     </HomeRibbonLocaleContext.Provider>
   );
 }
