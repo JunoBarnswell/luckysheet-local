@@ -18,6 +18,10 @@ import {
   NATIVE_PACKAGE_STORE_NAME,
   OVERLAY_STORE_NAME,
   WORKSPACE_STORE_NAME,
+  WORKSPACE_HEAD_STORE_NAME,
+  WORKSPACE_SNAPSHOT_STORE_NAME,
+  WORKSPACE_OPERATION_STORE_NAME,
+  WORKSPACE_CATALOG_STORE_NAME,
   WorkspaceDatabaseCoordinator,
   WorkspaceStorageError,
   requestResult,
@@ -38,7 +42,7 @@ function fakeDatabase(): IDBDatabase {
     onversionchange: null,
     close: () => undefined,
     objectStoreNames: {
-      contains: (name: string) => [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME, ASSET_STORE_NAME].includes(name),
+        contains: (name: string) => [WORKSPACE_STORE_NAME, WORKSPACE_HEAD_STORE_NAME, WORKSPACE_SNAPSHOT_STORE_NAME, WORKSPACE_OPERATION_STORE_NAME, WORKSPACE_CATALOG_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME, ASSET_STORE_NAME].includes(name),
     },
   } as unknown as IDBDatabase;
 }
@@ -91,8 +95,8 @@ describe('persistence storage', () => {
   });
 
   it('opens, lists, checkpoints, and deletes local workspaces through IndexedDB', async () => {
-    const store = new LocalWorkspaceStore({ databaseName: 'persistence-test-catalog' });
-    const persistence = new WorkspacePersistence({ databaseName: 'persistence-test-catalog' });
+    const store = new LocalWorkspaceStore({ databaseName: 'persistence-test-catalog', indexedDB });
+    const persistence = new WorkspacePersistence({ databaseName: 'persistence-test-catalog', indexedDB });
     const snapshot = new WorkbookModel('wb-catalog', 'Catalog').snapshot();
     const record = await store.create({
       unitId: snapshot.unitId,
@@ -114,7 +118,7 @@ describe('persistence storage', () => {
 
   it('checkpoints the workspace and source artifact through the same persistence namespace', async () => {
     const databaseName = `persistence-artifact-${Date.now()}-${Math.random()}`;
-    const persistence = new WorkspacePersistence({ databaseName });
+    const persistence = new WorkspacePersistence({ databaseName, indexedDB });
     const snapshot = new WorkbookModel('wb-artifact', 'Artifact').snapshot();
     const sourceBytes = exportSnapshotToXlsxBuffer(snapshot);
     const artifact = await createNativePackageState({
@@ -130,7 +134,50 @@ describe('persistence storage', () => {
     assert.equal((await persistence.nativePackages.load(snapshot.unitId))?.checksum, artifact.checksum);
   });
 
-  it('upgrades v6 to v7 without deleting workspace, package, block, or overlay records', async () => {
+  it('commits operation journal and rejects a stale storage revision', async () => {
+    const databaseName = `persistence-operation-${Date.now()}-${Math.random()}`;
+    const persistence = new WorkspacePersistence({ databaseName, indexedDB });
+    const snapshot = new WorkbookModel('wb-operation', 'Operation').snapshot();
+    const created = await persistence.checkpoint(snapshot, 1, 0, 'local-only');
+    const operation = {
+      schema: 'OperationEnvelope' as const,
+      operationId: 'operation-1',
+      unitId: snapshot.unitId,
+      clientSequence: 1,
+      baseRevision: 0,
+      mutations: [],
+      createdAt: new Date().toISOString(),
+    };
+    const nextRevision = await persistence.commitOperationJournal(snapshot.unitId, [operation], 1, created.storageRevision);
+    assert.equal(nextRevision, created.storageRevision + 1);
+    const loaded = await persistence.load(snapshot.unitId);
+    assert.equal(loaded?.pending.operations[0]?.operationId, operation.operationId);
+    await assert.rejects(
+      persistence.commitOperationJournal(snapshot.unitId, [], 2, created.storageRevision),
+      (error: unknown) => (error as WorkspaceStorageError).code === 'STORAGE_REVISION_CONFLICT',
+    );
+  });
+
+  it('patches catalog atomically without changing the checkpoint snapshot', async () => {
+    const databaseName = `persistence-catalog-patch-${Date.now()}-${Math.random()}`;
+    const persistence = new WorkspacePersistence({ databaseName, indexedDB });
+    const snapshot = new WorkbookModel('wb-catalog-patch', 'Catalog patch').snapshot();
+    const created = await persistence.checkpoint(snapshot, 1, 0, 'local-only');
+    const patched = await persistence.updateMetadata(snapshot.unitId, { lifecycle: 'trashed' }, created.storageRevision);
+    assert.equal(patched.metadata.lifecycle, 'trashed');
+    assert.deepEqual(patched.snapshot, snapshot);
+    assert.equal(patched.storageRevision, created.storageRevision + 1);
+  });
+
+  it('fails immediately when no IndexedDB factory is available', async () => {
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'unavailable-storage-test', indexedDB: null, broadcast: false });
+    await assert.rejects(coordinator.open(), (error: unknown) => {
+      assert.equal((error as WorkspaceStorageError).code, 'STORAGE_UNAVAILABLE');
+      return true;
+    });
+  });
+
+  it('upgrades v6 to v8 without deleting workspace, package, block, or overlay records', async () => {
     const databaseName = `persistence-v6-upgrade-${Date.now()}-${Math.random()}`;
     const request = indexedDB.open(databaseName, 6);
     request.onupgradeneeded = () => {
@@ -148,7 +195,19 @@ describe('persistence storage', () => {
       [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME],
       'readwrite',
     );
-    seed.objectStore(WORKSPACE_STORE_NAME).put({ unitId: 'legacy-workbook', unknownField: { preserved: true } });
+    const legacySnapshot = new WorkbookModel('legacy-workbook', 'Legacy').snapshot();
+    seed.objectStore(WORKSPACE_STORE_NAME).put({
+      ...buildWorkspaceRecord({
+        unitId: legacySnapshot.unitId,
+        snapshot: legacySnapshot,
+        localRevision: 1,
+        serverRevision: 0,
+        syncMode: 'local-only',
+        operations: [],
+        nextClientSequence: 0,
+      }),
+      unknownField: { preserved: true },
+    });
     seed.objectStore(DATA_BLOCK_STORE_NAME).put({ sourceId: 'legacy-source', blockId: 'block-1', bytes: new Uint8Array([1, 2, 3]) });
     seed.objectStore(NATIVE_PACKAGE_STORE_NAME).put({ unitId: 'legacy-workbook', opaqueBinary: new Uint8Array([4, 5, 6]) });
     seed.objectStore(OVERLAY_STORE_NAME).put({ sourceId: 'legacy-source', blockId: 'block-1', revision: 2, marker: 'overlay' });
@@ -157,7 +216,7 @@ describe('persistence storage', () => {
 
     const coordinator = new WorkspaceDatabaseCoordinator({ databaseName, indexedDB, broadcast: false });
     const upgraded = await coordinator.open();
-    assert.equal(upgraded.version, 7);
+    assert.equal(upgraded.version, 8);
     assert.equal(upgraded.objectStoreNames.contains(ASSET_STORE_NAME), true);
     const read = upgraded.transaction(
       [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME],
@@ -174,6 +233,9 @@ describe('persistence storage', () => {
     assert.deepEqual([...((block as { bytes: Uint8Array }).bytes)], [1, 2, 3]);
     assert.deepEqual([...((nativePackage as { opaqueBinary: Uint8Array }).opaqueBinary)], [4, 5, 6]);
     assert.equal((overlay as { marker: string }).marker, 'overlay');
+    const migrated = await new LocalWorkspaceStore({ databaseName, indexedDB }).open('legacy-workbook');
+    assert.equal(migrated?.snapshot.name, 'Legacy');
+    assert.equal(migrated?.storageRevision, 0);
     await coordinator.close();
   });
 
@@ -210,6 +272,48 @@ describe('persistence storage', () => {
     );
 
     assert.equal(await coordinator.open(), database);
+  });
+
+  it('returns STORAGE_OPEN_TIMEOUT when an open request never becomes blocked or ready', async () => {
+    const factory = { open: () => ({ result: fakeDatabase(), onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null }) };
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'open-timeout-test', indexedDB: factory, openTimeoutMs: 5, broadcast: false });
+    await assert.rejects(coordinator.open(), (error: unknown) => {
+      assert.equal((error as WorkspaceStorageError).code, 'STORAGE_OPEN_TIMEOUT');
+      return true;
+    });
+    assert.equal(coordinator.state, 'failed');
+  });
+
+  it('closes a late zombie success without replacing the next generation connection', async () => {
+    const requests: FakeOpenRequest[] = [];
+    const databases = [fakeDatabase(), fakeDatabase()];
+    let opens = 0;
+    const factory = { open: () => {
+      const request: FakeOpenRequest = { result: databases[opens++]!, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+      requests.push(request);
+      return request;
+    } };
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'zombie-open-test', indexedDB: factory, openTimeoutMs: 5, broadcast: false });
+    await assert.rejects(coordinator.open(), (error: unknown) => (error as WorkspaceStorageError).code === 'STORAGE_OPEN_TIMEOUT');
+    const retry = coordinator.open();
+    requests[1]!.onsuccess?.();
+    assert.equal(await retry, databases[1]);
+    let zombieClosed = false;
+    databases[0]!.close = () => { zombieClosed = true; };
+    requests[0]!.onsuccess?.();
+    assert.equal(zombieClosed, true);
+    assert.equal(coordinator.state, 'ready');
+  });
+
+  it('keeps a blocked open in the same generation after a peer closed message', async () => {
+    const request: FakeOpenRequest = { result: fakeDatabase(), onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+    const factory = { open: () => { queueMicrotask(() => request.onblocked?.()); return request; } };
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'peer-closed-test', indexedDB: factory, openTimeoutMs: 50, broadcast: false });
+    const opening = coordinator.open();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    coordinator.deliverPeerMessageForTest({ type: 'closed', databaseName: 'peer-closed-test', targetVersion: 8, instanceId: 'peer' });
+    request.onsuccess?.();
+    assert.equal(await opening, request.result);
   });
 
   it('closes an open connection when a later schema upgrade requests a version change', async () => {
@@ -264,5 +368,27 @@ describe('persistence storage', () => {
     assert.equal(await reopening, databases[1]);
     assert.equal(coordinator.state, 'ready');
     assert.equal(openAttempts, 2);
+  });
+
+  it('fails a close when transactions do not drain, then remains reopenable', async () => {
+    const database = fakeDatabase();
+    let opens = 0;
+    const factory = { open: () => {
+      const request: FakeOpenRequest = { result: database, onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null };
+      queueMicrotask(() => request.onsuccess?.());
+      opens += 1;
+      return request;
+    } };
+    const coordinator = new WorkspaceDatabaseCoordinator({ databaseName: 'drain-timeout-test', indexedDB: factory, closeDrainTimeoutMs: 5, broadcast: false });
+    await coordinator.open();
+    (coordinator as unknown as { activeTransactions: number }).activeTransactions = 1;
+    await assert.rejects(coordinator.close(), (error: unknown) => {
+      assert.equal((error as WorkspaceStorageError).code, 'STORAGE_CLOSE_TIMEOUT');
+      return true;
+    });
+    assert.equal(coordinator.state, 'failed');
+    (coordinator as unknown as { activeTransactions: number }).activeTransactions = 0;
+    assert.equal(await coordinator.open(), database);
+    assert.equal(opens, 2);
   });
 });

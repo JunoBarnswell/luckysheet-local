@@ -7,9 +7,13 @@
  * WorkbookSnapshot or an operation envelope.
  */
 export const WORKSPACE_DATABASE_NAME = 'react-sheets-workspaces';
-export const WORKSPACE_DATABASE_VERSION = 7;
+export const WORKSPACE_DATABASE_VERSION = 8;
 
 export const WORKSPACE_STORE_NAME = 'workspaces';
+export const WORKSPACE_HEAD_STORE_NAME = 'workspaceHeads';
+export const WORKSPACE_SNAPSHOT_STORE_NAME = 'workspaceSnapshots';
+export const WORKSPACE_OPERATION_STORE_NAME = 'workspaceOperations';
+export const WORKSPACE_CATALOG_STORE_NAME = 'workspaceCatalog';
 export const DATA_BLOCK_STORE_NAME = 'dataBlocks';
 export const NATIVE_PACKAGE_STORE_NAME = 'nativePackages';
 export const OVERLAY_STORE_NAME = 'sparseOverlays';
@@ -26,7 +30,10 @@ export type WorkspaceStorageErrorCode =
   | 'STORAGE_UNAVAILABLE'
   | 'STORAGE_UPGRADE_BLOCKED'
   | 'STORAGE_OPEN_TIMEOUT'
+  | 'STORAGE_CLOSE_TIMEOUT'
   | 'STORAGE_SCHEMA_INVALID'
+  | 'STORAGE_REVISION_CONFLICT'
+  | 'STORAGE_WRITER_UNAVAILABLE'
   | 'STORAGE_TRANSACTION_FAILED';
 
 export class WorkspaceStorageError extends Error {
@@ -52,6 +59,20 @@ export class WorkspaceStorageError extends Error {
     this.operation = input.operation;
     this.recovery = input.recovery;
   }
+}
+
+export function isWorkspaceStorageError(error: unknown): error is WorkspaceStorageError {
+  if (!error || typeof error !== 'object' || !('code' in error) || !('databaseName' in error) || !('operation' in error)) return false;
+  return [
+    'STORAGE_UNAVAILABLE',
+    'STORAGE_UPGRADE_BLOCKED',
+    'STORAGE_OPEN_TIMEOUT',
+    'STORAGE_CLOSE_TIMEOUT',
+    'STORAGE_SCHEMA_INVALID',
+    'STORAGE_REVISION_CONFLICT',
+    'STORAGE_WRITER_UNAVAILABLE',
+    'STORAGE_TRANSACTION_FAILED',
+  ].includes(String((error as { code: unknown }).code));
 }
 
 export interface IndexedDbStoreOptions {
@@ -87,19 +108,11 @@ export function unnamespaceWorkspaceSourceId(sourceId: string): string {
     : sourceId;
 }
 
-export type WorkspaceStorageMode = 'persistent' | 'memory' | 'unavailable';
+export type WorkspaceStorageMode = 'persistent' | 'unavailable';
 
 interface FactorySelection {
   factory: IndexedDbFactoryLike | null;
   mode: WorkspaceStorageMode;
-  allowMemoryFallback: boolean;
-}
-
-let inMemoryIndexedDb: IDBFactory | null = null;
-
-function memoryFactory(): IDBFactory {
-  inMemoryIndexedDb ??= new InMemoryIndexedDbFactory();
-  return inMemoryIndexedDb;
 }
 
 function isBrowserRuntime(): boolean {
@@ -107,25 +120,19 @@ function isBrowserRuntime(): boolean {
 }
 
 function resolveFactorySelection(explicit: IndexedDbFactoryLike | null | undefined): FactorySelection {
-  if (explicit !== undefined) return { factory: explicit, mode: explicit ? 'persistent' : 'unavailable', allowMemoryFallback: false };
-  if (!isBrowserRuntime()) return { factory: null, mode: 'unavailable', allowMemoryFallback: false };
+  if (explicit !== undefined) return { factory: explicit, mode: explicit ? 'persistent' : 'unavailable' };
   try {
     const nativeFactory = (globalThis as typeof globalThis & { indexedDB?: IDBFactory }).indexedDB;
-    if (nativeFactory) return { factory: nativeFactory, mode: 'persistent', allowMemoryFallback: true };
+    if (nativeFactory) return { factory: nativeFactory, mode: 'persistent' };
   } catch {
     // Access itself may throw SecurityError in a restricted browser context.
   }
-  return { factory: memoryFactory(), mode: 'memory', allowMemoryFallback: false };
+  if (!isBrowserRuntime()) return { factory: null, mode: 'unavailable' };
+  return { factory: null, mode: 'unavailable' };
 }
 
 function resolveFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {
   return resolveFactorySelection(explicit).factory;
-}
-
-function isUnsupportedIndexedDbError(cause: unknown): boolean {
-  if (!cause || typeof cause !== 'object') return false;
-  const name = 'name' in cause ? String(cause.name) : '';
-  return name === 'NotSupportedError' || name === 'SecurityError';
 }
 
 export function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -182,11 +189,128 @@ export function ensureWorkspaceStores(database: IDBDatabase): void {
   }
   createOverlayStore(database);
   createAssetStore(database);
+  if (!database.objectStoreNames.contains(WORKSPACE_HEAD_STORE_NAME)) {
+    database.createObjectStore(WORKSPACE_HEAD_STORE_NAME, { keyPath: 'unitId' });
+  }
+  if (!database.objectStoreNames.contains(WORKSPACE_SNAPSHOT_STORE_NAME)) {
+    database.createObjectStore(WORKSPACE_SNAPSHOT_STORE_NAME, { keyPath: ['unitId', 'revision'] });
+  }
+  if (!database.objectStoreNames.contains(WORKSPACE_OPERATION_STORE_NAME)) {
+    const store = database.createObjectStore(WORKSPACE_OPERATION_STORE_NAME, { keyPath: ['unitId', 'clientSequence'] });
+    store.createIndex('operationId', 'operationId', { unique: true });
+  }
+  if (!database.objectStoreNames.contains(WORKSPACE_CATALOG_STORE_NAME)) {
+    database.createObjectStore(WORKSPACE_CATALOG_STORE_NAME, { keyPath: 'unitId' });
+  }
+}
+
+interface LegacyWorkspaceRecord {
+  unitId: string;
+  snapshot: unknown;
+  checksum: string;
+  localRevision: number;
+  serverRevision: number;
+  syncMode: 'remote' | 'local-only';
+  pending?: { nextClientSequence: number; operations: unknown[] };
+  updatedAt: string;
+  metadata?: unknown;
+  userState?: unknown;
+}
+
+function isLegacyWorkspaceRecord(value: unknown): value is LegacyWorkspaceRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<LegacyWorkspaceRecord>;
+  return typeof record.unitId === 'string'
+    && record.unitId.trim().length > 0
+    && Boolean(record.snapshot && typeof record.snapshot === 'object')
+    && typeof record.checksum === 'string'
+    && Number.isSafeInteger(record.localRevision)
+    && Number(record.localRevision) >= 0
+    && Number.isSafeInteger(record.serverRevision)
+    && Number(record.serverRevision) >= 0
+    && (record.syncMode === 'remote' || record.syncMode === 'local-only')
+    && typeof record.updatedAt === 'string'
+    && (!record.pending || (
+      Number.isSafeInteger(record.pending.nextClientSequence)
+      && record.pending.nextClientSequence >= 0
+      && Array.isArray(record.pending.operations)
+    ));
+}
+
+function migrateLegacyWorkspaceRecords(
+  database: IDBDatabase,
+  event: IDBVersionChangeEvent,
+  onInvalid: (message: string) => void,
+): void {
+  if (event.oldVersion >= WORKSPACE_DATABASE_VERSION || !database.objectStoreNames.contains(WORKSPACE_STORE_NAME)) return;
+  const upgradeTransaction = (event.target as IDBOpenDBRequest | null)?.transaction;
+  if (!upgradeTransaction) {
+    onInvalid('数据库迁移事务不可用');
+    return;
+  }
+  const legacyStore = upgradeTransaction.objectStore(WORKSPACE_STORE_NAME);
+  const headStore = upgradeTransaction.objectStore(WORKSPACE_HEAD_STORE_NAME);
+  const snapshotStore = upgradeTransaction.objectStore(WORKSPACE_SNAPSHOT_STORE_NAME);
+  const operationStore = upgradeTransaction.objectStore(WORKSPACE_OPERATION_STORE_NAME);
+  const catalogStore = upgradeTransaction.objectStore(WORKSPACE_CATALOG_STORE_NAME);
+  const cursorRequest = legacyStore.openCursor();
+  cursorRequest.onerror = () => onInvalid('读取旧版工作簿记录失败');
+  cursorRequest.onsuccess = () => {
+    const cursor = cursorRequest.result;
+    if (!cursor) return;
+    const record = cursor.value as unknown;
+    if (!isLegacyWorkspaceRecord(record)) {
+      onInvalid(`旧版工作簿记录校验失败：${typeof record === 'object' && record && 'unitId' in record ? String(record.unitId) : 'unknown'}`);
+      try { upgradeTransaction.abort(); } catch { /* transaction already aborted */ }
+      return;
+    }
+    const pending = record.pending ?? { nextClientSequence: 0, operations: [] };
+    const revision = record.localRevision;
+    headStore.put({
+      schema: 'WorkspaceHead',
+      unitId: record.unitId,
+      snapshotRevision: revision,
+      checkpointRevision: revision,
+      localRevision: record.localRevision,
+      serverRevision: record.serverRevision,
+      syncMode: record.syncMode,
+      storageRevision: 0,
+      nextClientSequence: pending.nextClientSequence,
+      updatedAt: record.updatedAt,
+    });
+    snapshotStore.put({
+      schema: 'WorkspaceSnapshot',
+      unitId: record.unitId,
+      revision,
+      snapshot: record.snapshot,
+      checksum: record.checksum,
+      localRevision: record.localRevision,
+      serverRevision: record.serverRevision,
+      syncMode: record.syncMode,
+      updatedAt: record.updatedAt,
+    });
+    catalogStore.put({
+      schema: 'WorkspaceCatalog',
+      unitId: record.unitId,
+      metadata: record.metadata ?? {},
+      userState: record.userState ?? {},
+      updatedAt: record.updatedAt,
+    });
+    for (const operation of pending.operations) {
+      if (!operation || typeof operation !== 'object' || !('clientSequence' in operation)) {
+        onInvalid(`旧版工作簿操作记录校验失败：${record.unitId}`);
+        try { upgradeTransaction.abort(); } catch { /* transaction already aborted */ }
+        return;
+      }
+      operationStore.put({ ...(operation as Record<string, unknown>), unitId: record.unitId });
+    }
+    cursor.continue();
+  };
 }
 
 interface IndexedDbOpenRequest {
   result: IDBDatabase;
-  onupgradeneeded: (() => void) | null;
+  onupgradeneeded: ((event: IDBVersionChangeEvent) => void) | null;
   onsuccess: (() => void) | null;
   onerror: (() => void) | null;
   onblocked: (() => void) | null;
@@ -224,7 +348,16 @@ function storageError(
 }
 
 function assertWorkspaceSchema(database: IDBDatabase, databaseName: string): void {
-  const required = [WORKSPACE_STORE_NAME, DATA_BLOCK_STORE_NAME, NATIVE_PACKAGE_STORE_NAME, OVERLAY_STORE_NAME, ASSET_STORE_NAME];
+  const required = [
+    DATA_BLOCK_STORE_NAME,
+    NATIVE_PACKAGE_STORE_NAME,
+    OVERLAY_STORE_NAME,
+    ASSET_STORE_NAME,
+    WORKSPACE_HEAD_STORE_NAME,
+    WORKSPACE_SNAPSHOT_STORE_NAME,
+    WORKSPACE_OPERATION_STORE_NAME,
+    WORKSPACE_CATALOG_STORE_NAME,
+  ];
   const missing = required.filter((store) => !database.objectStoreNames.contains(store));
   if (missing.length > 0) {
     throw storageError(
@@ -246,7 +379,6 @@ export class WorkspaceDatabaseCoordinator {
   readonly instanceId: string;
   private factory: IndexedDbFactoryLike | null;
   private storageModeValue: WorkspaceStorageMode;
-  private allowMemoryFallback: boolean;
   private readonly channel: BroadcastChannel | null;
   private readonly openTimeoutMs: number;
   private readonly closeDrainTimeoutMs: number;
@@ -269,7 +401,6 @@ export class WorkspaceDatabaseCoordinator {
     const selection = resolveFactorySelection(options.indexedDB);
     this.factory = selection.factory;
     this.storageModeValue = selection.mode;
-    this.allowMemoryFallback = selection.allowMemoryFallback;
     this.openTimeoutMs = options.openTimeoutMs ?? WORKSPACE_DATABASE_OPEN_TIMEOUT_MS;
     this.closeDrainTimeoutMs = options.closeDrainTimeoutMs ?? WORKSPACE_DATABASE_CLOSE_DRAIN_TIMEOUT_MS;
     this.instanceId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -308,16 +439,11 @@ export class WorkspaceDatabaseCoordinator {
     this.stateValue = 'opening';
     this.opening = new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
+      let upgradeError: WorkspaceStorageError | null = null;
       let request: IndexedDbOpenRequest;
       try {
         request = (this.factory as IndexedDbFactory).open(this.databaseName, WORKSPACE_DATABASE_VERSION) as IndexedDbOpenRequest;
       } catch (error) {
-        if (this.isCurrentGeneration(generation) && this.switchToMemoryIfUnsupported(error)) {
-          this.clearOpening(generation);
-          this.stateValue = 'idle';
-          void this.open().then(resolve, reject);
-          return;
-        }
         this.failOpening(generation, storageError(
           'STORAGE_UNAVAILABLE',
           this.databaseName,
@@ -339,12 +465,21 @@ export class WorkspaceDatabaseCoordinator {
       const timeoutId = setTimeout(() => finishFailure(this.openTimeoutError(attempt)), this.openTimeoutMs);
       this.cancelOpening = finishFailure;
 
-      request.onupgradeneeded = () => {
+      request.onupgradeneeded = (event) => {
         if (!this.isCurrentGeneration(generation)) {
           try { request.result.close(); } catch { /* ignore zombie upgrade handle */ }
           return;
         }
         ensureWorkspaceStores(request.result);
+        migrateLegacyWorkspaceRecords(request.result, event, (message) => {
+          upgradeError = storageError(
+            'STORAGE_SCHEMA_INVALID',
+            this.databaseName,
+            'migrate-schema',
+            message,
+            '数据库迁移未完成；请保留浏览器数据并联系管理员执行显式恢复。',
+          );
+        });
       };
       request.onblocked = () => {
         if (!this.isCurrentGeneration(generation)) return;
@@ -358,16 +493,7 @@ export class WorkspaceDatabaseCoordinator {
       };
       request.onerror = () => {
         if (!this.isCurrentGeneration(generation)) return;
-        if (this.switchToMemoryIfUnsupported(request.error)) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeoutId);
-          this.clearOpening(generation);
-          this.stateValue = 'idle';
-          void this.open().then(resolve, reject);
-          return;
-        }
-        finishFailure(storageError(
+        finishFailure(upgradeError ?? storageError(
           'STORAGE_TRANSACTION_FAILED',
           this.databaseName,
           'open',
@@ -395,7 +521,15 @@ export class WorkspaceDatabaseCoordinator {
         if (this.cancelOpening === finishFailure) this.cancelOpening = null;
         this.clearOpening(generation);
         this.database = request.result;
-        this.database.onversionchange = () => { void this.close('versionchange'); };
+        const connection = this.database;
+        connection.onversionchange = () => { this.closeImmediatelyForUpgrade('versionchange'); };
+        if (typeof connection.addEventListener === 'function') {
+          connection.addEventListener('close', () => {
+            if (this.database !== connection) return;
+            this.database = null;
+            if (this.stateValue === 'ready') this.stateValue = 'failed';
+          }, { once: true });
+        }
         this.stateValue = 'ready';
         resolve(request.result);
       };
@@ -452,6 +586,10 @@ export class WorkspaceDatabaseCoordinator {
 
   close(reason: 'dispose' | 'pagehide' | 'versionchange' | 'upgrade-request' = 'dispose'): Promise<void> {
     if (this.closing) return this.closing;
+    if (reason === 'versionchange' || reason === 'upgrade-request') {
+      this.closeImmediatelyForUpgrade(reason);
+      return Promise.resolve();
+    }
     this.cancelOpening?.(storageError(
       'STORAGE_UNAVAILABLE',
       this.databaseName,
@@ -464,6 +602,7 @@ export class WorkspaceDatabaseCoordinator {
     this.openingAttempt = null;
     this.stateValue = 'closing';
     const closing = Promise.resolve().then(async () => {
+      let drainError: WorkspaceStorageError | null = null;
       if (this.activeTransactions > 0) {
         await Promise.race([
           new Promise<void>((resolve) => this.drainWaiters.push(resolve)),
@@ -472,6 +611,13 @@ export class WorkspaceDatabaseCoordinator {
           }),
         ]);
         if (this.activeTransactions > 0) {
+          drainError = storageError(
+            'STORAGE_CLOSE_TIMEOUT',
+            this.databaseName,
+            'close',
+            '本地工作簿存储事务排空超时，已强制关闭连接。',
+            '请停止正在运行的本地操作并完整刷新当前页面后重试。',
+          );
           this.activeTransactions = 0;
           const waiters = this.drainWaiters;
           this.drainWaiters = [];
@@ -481,12 +627,8 @@ export class WorkspaceDatabaseCoordinator {
       try { this.database?.close(); } catch { /* ignore already-closed handle */ }
       this.database = null;
       this.opening = null;
-      this.stateValue = 'idle';
-      if (reason === 'upgrade-request') {
-        this.channel?.postMessage({
-          type: 'closed', databaseName: this.databaseName, targetVersion: WORKSPACE_DATABASE_VERSION, instanceId: this.instanceId,
-        } satisfies WorkspaceDatabaseMessage);
-      }
+      this.stateValue = drainError ? 'failed' : 'idle';
+      if (drainError) throw drainError;
     }).finally(() => {
       if (this.closing === closing) this.closing = null;
     });
@@ -511,10 +653,30 @@ export class WorkspaceDatabaseCoordinator {
 
   private readonly handlePageHide = (): void => { void this.close('pagehide'); };
 
+  private closeImmediatelyForUpgrade(reason: 'versionchange' | 'upgrade-request'): void {
+    this.cancelOpening?.(storageError(
+      'STORAGE_UNAVAILABLE',
+      this.databaseName,
+      'close',
+      '本地工作簿存储正在响应数据库升级请求。',
+      '请等待页面重新建立存储连接后重试。',
+    ));
+    this.cancelOpening = null;
+    this.openGeneration += 1;
+    this.openingAttempt = null;
+    this.opening = null;
+    try { this.database?.close(); } catch { /* ignore already-closed handle */ }
+    this.database = null;
+    this.stateValue = 'idle';
+    this.channel?.postMessage({
+      type: 'closed', databaseName: this.databaseName, targetVersion: WORKSPACE_DATABASE_VERSION, instanceId: this.instanceId,
+    } satisfies WorkspaceDatabaseMessage);
+  }
+
   private receive(message: WorkspaceDatabaseMessage): void {
     if (!message || message.databaseName !== this.databaseName || message.instanceId === this.instanceId) return;
     if (message.type === 'close-request' && message.targetVersion >= WORKSPACE_DATABASE_VERSION) {
-      void this.close('upgrade-request');
+      this.closeImmediatelyForUpgrade('upgrade-request');
       return;
     }
     if (message.type === 'closed') {
@@ -568,14 +730,6 @@ export class WorkspaceDatabaseCoordinator {
     );
   }
 
-  private switchToMemoryIfUnsupported(cause: unknown): boolean {
-    if (!this.allowMemoryFallback || !isUnsupportedIndexedDbError(cause)) return false;
-    this.channel?.close();
-    this.factory = memoryFactory();
-    this.storageModeValue = 'memory';
-    this.allowMemoryFallback = false;
-    return true;
-  }
 }
 
 type CoordinatorMap = Map<string, WorkspaceDatabaseCoordinator>;
@@ -595,9 +749,12 @@ export function resolveWorkspaceDatabaseCoordinator(options: IndexedDbStoreOptio
   const name = options.databaseName ?? WORKSPACE_DATABASE_NAME;
   let coordinator = byName.get(name);
   if (!coordinator) {
-    coordinator = selection.mode === 'memory'
-      ? new WorkspaceDatabaseCoordinator({ databaseName: name, broadcast: false })
-      : new WorkspaceDatabaseCoordinator({ databaseName: name, indexedDB: factory, broadcast: selection.mode === 'persistent' });
+    coordinator = new WorkspaceDatabaseCoordinator({
+      ...options,
+      databaseName: name,
+      indexedDB: factory,
+      broadcast: selection.mode === 'persistent',
+    });
     byName.set(name, coordinator);
     ownedCoordinators.add(coordinator);
   }
@@ -617,4 +774,3 @@ hotModule?.dispose(() => disposeOwnedWorkspaceCoordinators());
 export function resolveIndexedDbFactory(explicit: IndexedDbFactoryLike | null | undefined): IndexedDbFactoryLike | null {
   return resolveFactory(explicit);
 }
-import { IDBFactory as InMemoryIndexedDbFactory } from 'fake-indexeddb';

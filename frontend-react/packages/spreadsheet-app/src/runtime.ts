@@ -233,7 +233,17 @@ export function createSpreadsheetRuntime(options: {
     },
     persistPending: (operations, nextClientSequence) => {
       operationJournal.write(runtime.model.unitId, operations, nextClientSequence);
-      runtime.handlers.onWorkspacePersisted?.();
+      void enqueuePersistenceWrite(runtime, async () => {
+        const current = await runtime.workspacePersistence.load(runtime.model.unitId);
+        const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
+          runtime.model.unitId,
+          operations,
+          nextClientSequence,
+          current?.storageRevision,
+        );
+        if (runtime.workspaceRecord) runtime.workspaceRecord.storageRevision = storageRevision;
+        runtime.handlers.onWorkspacePersisted?.();
+      }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
     },
   });
   runtime.checkpointWorkspace = (advanceLocalRevision = true) => checkpointWorkspace(runtime, advanceLocalRevision);
@@ -473,6 +483,14 @@ function assertNoSpillChildWrite(
 }
 
 const checkpointChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+const persistenceWriteChains = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+
+function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
+  const previous = persistenceWriteChains.get(runtime) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
+  persistenceWriteChains.set(runtime, next.then(() => undefined, () => undefined));
+  return next;
+}
 
 function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision = true): Promise<void> {
   if (runtime.disposed) return Promise.resolve();
@@ -492,7 +510,7 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
   const previous = checkpointChains.get(runtime) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
-    .then(async () => {
+    .then(() => enqueuePersistenceWrite(runtime, async () => {
       if (runtime.disposed) return;
       const record = await runtime.workspacePersistence.checkpoint(
         snapshot,
@@ -511,7 +529,7 @@ function checkpointWorkspace(runtime: SpreadsheetRuntime, advanceLocalRevision =
       ]));
       if (runtime.disposed) return;
       runtime.handlers.onWorkspacePersisted?.();
-    });
+    }));
   checkpointChains.set(runtime, next);
   return next;
 }
@@ -671,7 +689,17 @@ function replaceCollaborationSession(runtime: SpreadsheetRuntime, record: Worksp
     },
     persistPending: (operations, sequence) => {
       runtime.operationJournal.write(runtime.model.unitId, operations, sequence);
-      runtime.handlers.onWorkspacePersisted?.();
+      void enqueuePersistenceWrite(runtime, async () => {
+        const current = await runtime.workspacePersistence.load(runtime.model.unitId);
+        const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
+          runtime.model.unitId,
+          operations,
+          sequence,
+          current?.storageRevision,
+        );
+        if (runtime.workspaceRecord) runtime.workspaceRecord.storageRevision = storageRevision;
+        runtime.handlers.onWorkspacePersisted?.();
+      }).catch((error: unknown) => publishPersistenceFailure(runtime, error));
     },
   });
   runtime.collaboration.setRevision(runtime.remoteRevision);

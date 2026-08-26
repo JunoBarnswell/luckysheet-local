@@ -5,6 +5,7 @@ import {
   WorkbookCatalogService,
   WorkspacePersistence,
   WorkspaceStorageError,
+  isWorkspaceStorageError,
   resolveShareToken,
   type WorkbookSessionOptions,
   type WorkspaceDatabaseState,
@@ -21,6 +22,7 @@ export interface ApplicationServices {
   catalog: WorkbookCatalogService;
   persistence: WorkspacePersistence;
   ensureStorageReady: () => Promise<IDBDatabase>;
+  retryStorage: () => Promise<IDBDatabase>;
   storageReadiness: StorageReadiness;
   workbookApi: WorkbookApiClient;
   createWorkbookSessionOptions: (unitId: string, authTokenProvider: AuthTokenProvider) => WorkbookSessionOptions;
@@ -30,6 +32,19 @@ const ApplicationServicesContext = createContext<ApplicationServices | null>(nul
 
 function formatStorageError(error: unknown): WorkspaceStorageError {
   if (error instanceof WorkspaceStorageError) return error;
+  if (isWorkspaceStorageError(error)) {
+    const candidate = error as Partial<WorkspaceStorageError>;
+    if (typeof candidate.code === 'string' && typeof candidate.databaseName === 'string' && typeof candidate.operation === 'string') {
+      return new WorkspaceStorageError({
+        code: candidate.code as WorkspaceStorageError['code'],
+        databaseName: candidate.databaseName,
+        operation: candidate.operation,
+        message: String(candidate.message),
+        recovery: typeof candidate.recovery === 'string' ? candidate.recovery : '请保留当前页面并重试。',
+        cause: error,
+      });
+    }
+  }
   return new WorkspaceStorageError({
     code: 'STORAGE_UNAVAILABLE',
     databaseName: 'react-sheets-workspaces',
@@ -57,6 +72,7 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
         throw error;
       }
     };
+    const retryStorage = (): Promise<IDBDatabase> => ensureStorageReady();
     const shareTokenProvider = () => resolveShareToken();
     const workbookApi = new WorkbookApiClient({ authTokenProvider: auth.getAccessToken, shareTokenProvider });
     const catalog = new WorkbookCatalogService({
@@ -73,7 +89,7 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
       shareTokenProvider,
       assetStore: new RemoteAssetStore(unitId, workbookApi),
     });
-    return { catalog, persistence, ensureStorageReady, workbookApi, createWorkbookSessionOptions };
+    return { catalog, persistence, ensureStorageReady, retryStorage, workbookApi, createWorkbookSessionOptions };
   }, [auth]);
 
   useEffect(() => {
@@ -85,6 +101,8 @@ export function ApplicationServicesProvider({ children }: { children: ReactNode 
     });
     return () => { cancelled = true; };
   }, [core]);
+
+  useEffect(() => () => { void core.persistence.disposeAsync(); }, [core]);
 
   const services = useMemo<ApplicationServices>(() => ({
     ...core,
