@@ -68,7 +68,7 @@ export interface RibbonProps {
   onToggleViewHeadings: () => void;
   onTogglePrintHeadings: () => void;
   onAutoSum: () => void;
-  onFill: (direction: 'down' | 'right') => void;
+  onFill: (direction: 'down' | 'up' | 'right' | 'left', mode?: 'copy' | 'series') => void;
   onFreezeAtPrimary: () => void;
   onOpenColumnWidth: () => void;
   onAutoFitColumns: () => void;

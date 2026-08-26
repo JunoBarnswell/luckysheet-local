@@ -79,6 +79,8 @@ import {
   type FindSearchParams,
   type FindSearchTarget,
   type FindScope,
+  type FillDirection,
+  type FillMode,
 } from '@react-sheets/sheet-features';
 import { isSpillChild, type RecalculationMode } from '@react-sheets/formula-engine';
 import { EditSession } from './edit-session';
@@ -3927,25 +3929,53 @@ export class WorkbookSession {
     const sel = this.selectionService.getState();
     const primary = sel.ranges[sel.primaryRangeIndex] ?? sel.ranges[0];
     if (!primary) return;
+    const source = normalizeRangeRef({ ...primary, sheetId: this.activeSheetId });
+    const target = normalizeRangeRef({ sheetId: this.activeSheetId, ...targetRange });
+    const direction: FillDirection = target.endRow > source.endRow && target.startRow === source.startRow
+      && target.startColumn === source.startColumn && target.endColumn === source.endColumn
+      ? 'down'
+      : target.startRow < source.startRow && target.endRow === source.endRow
+        && target.startColumn === source.startColumn && target.endColumn === source.endColumn
+        ? 'up'
+        : target.endColumn > source.endColumn && target.startColumn === source.startColumn
+          && target.startRow === source.startRow && target.endRow === source.endRow
+          ? 'right'
+          : target.startColumn < source.startColumn && target.endColumn === source.endColumn
+            && target.startRow === source.startRow && target.endRow === source.endRow
+            ? 'left'
+            : (() => { this.notify('Fill must extend the selection along one axis'); return 'down' as FillDirection; })();
+    if (direction === 'down' && !(target.endRow > source.endRow && target.startRow === source.startRow
+      && target.startColumn === source.startColumn && target.endColumn === source.endColumn)) return;
     this.dispatch({ commandId: 'sheet.range.fill', params: {
       sheetId: this.activeSheetId,
-      sourceRange: { sheetId: this.activeSheetId, startRow: primary.startRow, endRow: primary.endRow, startColumn: primary.startColumn, endColumn: primary.endColumn },
-      targetRange: { sheetId: this.activeSheetId, ...targetRange },
+      sourceRange: source,
+      targetRange: target,
+      direction,
+      mode: 'copy' as FillMode,
     } });
   }
 
-  fillSelection(direction: 'down' | 'up' | 'right' | 'left', mode: 'copy' | 'series' = 'copy'): void {
+  fillSelection(direction: FillDirection, mode: FillMode = 'copy'): void {
     const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
-    const sourceRange = direction === 'down'
-      ? { ...range, endRow: range.startRow }
-      : direction === 'up'
-        ? { ...range, startRow: range.endRow }
-        : direction === 'right'
-          ? { ...range, endColumn: range.startColumn }
-          : { ...range, startColumn: range.endColumn };
+    const sourceRange = mode === 'series'
+      ? range
+      : direction === 'down'
+        ? { ...range, endRow: range.startRow }
+        : direction === 'up'
+          ? { ...range, startRow: range.endRow }
+          : direction === 'right'
+            ? { ...range, endColumn: range.startColumn }
+            : { ...range, startColumn: range.endColumn };
     if (sourceRange.startRow === range.startRow && sourceRange.endRow === range.endRow
       && sourceRange.startColumn === range.startColumn && sourceRange.endColumn === range.endColumn) {
-      this.notify('Select a source cell and target cells before filling');
+      if (mode === 'copy') this.notify('Select a source cell and target cells before filling');
+      else this.dispatch({ commandId: 'sheet.range.fill', params: {
+        sheetId: this.activeSheetId,
+        sourceRange,
+        targetRange: range,
+        direction,
+        mode,
+      } });
       return;
     }
     this.dispatch({ commandId: 'sheet.range.fill', params: {
@@ -3955,6 +3985,12 @@ export class WorkbookSession {
       direction,
       mode,
     } });
+  }
+
+  fillSeries(): void {
+    const range = normalizeRangeRef({ ...this.getPrimaryRange(), sheetId: this.activeSheetId });
+    const direction: FillDirection = range.endRow - range.startRow >= range.endColumn - range.startColumn ? 'down' : 'right';
+    this.fillSelection(direction, 'series');
   }
   setSelectedFloatingId(id: string | null): void {
     this.setDrawingSelection(id ? [id] : [], 'replace');

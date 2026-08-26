@@ -31,7 +31,7 @@ public class MutationDescriptorRegistry {
     private static final Set<String> CLEAR_FAMILIES = Set.of("all", "contents", "formats", "comments-and-notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
             "automation.recording.changed", "banded.set",
-            "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set",
+            "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set", "fill.applied", "fill.restored",
             "cf.add", "cf.clear", "cf.remove",
             "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
             "comment.add", "comment.remove", "comment.reply", "comment.reply.remove", "comment.resolve",
@@ -73,6 +73,7 @@ public class MutationDescriptorRegistry {
         register(new PresentationDescriptor("style.set"));
         register(new CellTemplateDescriptor("cellTemplate.set"));
         register(new CellTemplateDescriptor("cellTemplate.remove"));
+        for (String id : FillMutationDescriptor.IDS) register(new FillMutationDescriptor(id));
         register(new CellTemplateDescriptor("cell.editor.set"));
         register(new PresentationDescriptor("merge.set"));
         register(new PresentationDescriptor("merge.remove"));

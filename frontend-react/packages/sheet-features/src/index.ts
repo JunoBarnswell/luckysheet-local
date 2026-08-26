@@ -20,7 +20,6 @@ import type {
 import { StructuralTransform, normalizeDefinedNameModel } from '@react-sheets/core-model';
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { isSpillChild } from '@react-sheets/formula-engine';
-import { shiftFormula } from './clipboard';
 import { buildCellFromText } from './text-input';
 import { registerEditingCommands, rewriteFormulasForSheetRename } from './editing';
 import { registerDataToolCommands, normalizeConditionalFormatRule, normalizeDataValidationRule, validateDataInput } from './data-features';
@@ -60,6 +59,7 @@ export * from './outline-commands';
 export * from './outline-features';
 export * from './text-input';
 export * from './home-commands';
+export * from './fill-series';
 export * from './find-replace';
 export * from './cell-template-commands';
 export * from './clear-planner';
@@ -194,12 +194,6 @@ export interface SortRangeParams {
   sortColumn: number;
   ascending: boolean;
   hasHeader?: boolean;
-}
-
-export interface AutoFillParams {
-  sheetId: string;
-  sourceRange: RangeRef;
-  targetRange: RangeRef;
 }
 
 export interface AddConditionalFormatParams {
@@ -1575,57 +1569,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     }),
   });
 
-  // 10. AutoFill Sequence / Formula shift
-  runtime.registry.registerCommand<AutoFillParams>({
-    id: 'sheet.autofill',
-    execute: (params, context) => {
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const { sourceRange, targetRange } = params;
-      const values: CellData[][] = [];
-
-      const sourceRowCount = sourceRange.endRow - sourceRange.startRow + 1;
-      const sourceColCount = sourceRange.endColumn - sourceRange.startColumn + 1;
-
-      for (let r = targetRange.startRow; r <= targetRange.endRow; r++) {
-        const rowList: CellData[] = [];
-        const sourceR = sourceRange.startRow + ((r - targetRange.startRow) % sourceRowCount);
-        const rowOffset = r - sourceR;
-
-        for (let c = targetRange.startColumn; c <= targetRange.endColumn; c++) {
-          const sourceC =
-            sourceRange.startColumn + ((c - targetRange.startColumn) % sourceColCount);
-          const colOffset = c - sourceC;
-          const sourceCell = sheet.cells.get(sourceR, sourceC);
-
-          if (!sourceCell) {
-            rowList.push({ value: null });
-            continue;
-          }
-
-          if (sourceCell.formula) {
-            const shifted = shiftFormula(sourceCell.formula, rowOffset, colOffset);
-            rowList.push({ ...sourceCell, formula: shifted, value: null });
-          } else if (typeof sourceCell.value === 'number') {
-            // Sequence extension
-            const step = rowOffset !== 0 ? Math.floor((r - sourceRange.endRow) / sourceRowCount) + 1 : 0;
-            rowList.push({ ...sourceCell, value: sourceCell.value + step });
-          } else {
-            rowList.push(structuredClone(sourceCell));
-          }
-        }
-        values.push(rowList);
-      }
-
-      return runtime.execute('sheet.range.set', {
-        sheetId: params.sheetId,
-        startRow: targetRange.startRow,
-        startColumn: targetRange.startColumn,
-        values,
-      });
-    },
-  });
-
-  // 11. 结构操作:行/列插入与删除（统一走 StructuralTransform）
+  // 10. 结构操作:行/列插入与删除（统一走 StructuralTransform）
   runtime.registry.registerMutation<{ sheetId: string; at: number; count: number }>({
     id: 'rows.inserted',
     handler: (item, context) => {

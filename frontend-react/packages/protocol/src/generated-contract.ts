@@ -30,6 +30,8 @@ export const MUTATION_CAPABILITIES = {
   "cellTemplate.set": { durability: "remote", remote: true, schema: "CellStyleTemplateSet", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "cellTemplate.remove": { durability: "remote", remote: true, schema: "CellStyleTemplateRemove", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "cell.editor.set": { durability: "remote", remote: true, schema: "CellEditorSet", minRole: "editor", rebasePolicy: "range", javaReducer: true },
+  "fill.applied": { durability: "remote", remote: true, schema: "FillApplied", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
+  "fill.restored": { durability: "remote", remote: true, schema: "FillRestored", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "tableSheet.update": { durability: "remote", remote: true, schema: "TableSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "ganttSheet.update": { durability: "remote", remote: true, schema: "GanttSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },
   "reportSheet.update": { durability: "remote", remote: true, schema: "ReportSheetDefinitionUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true },

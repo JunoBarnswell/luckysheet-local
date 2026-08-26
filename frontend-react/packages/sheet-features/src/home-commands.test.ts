@@ -4,6 +4,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createFormulaError } from '@react-sheets/formula-engine';
 import { registerSheetCommands } from './index';
+import './fill-series.test';
 import { parseReplacementValue } from './home-commands';
 
 function setup(): { workbook: WorkbookModel; runtime: CommandRuntime } {
@@ -269,9 +270,99 @@ test('Home cell commands fail closed on block-backed data regions', () => {
     revision: 1,
   });
   const range = { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 1 };
-  assert.throws(() => runtime.execute('sheet.range.fill', { sheetId: sheet.id, sourceRange: range, targetRange: range }), /data-region/);
+  assert.throws(() => runtime.execute('sheet.range.fill', {
+    sheetId: sheet.id,
+    sourceRange: range,
+    targetRange: range,
+    direction: 'down',
+    mode: 'copy',
+  }), /data-region/);
   assert.throws(() => runtime.execute('formula.autosum', { sheetId: sheet.id, range }), /data-region/);
   assert.throws(() => runtime.execute('sheet.range.replace', { sheetId: sheet.id, find: 'a', replace: 'b', range }), /data-region/);
+});
+
+test('canonical fill is one mutation, preserves seeds, and replays/undoes atomically', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 };
+  const targetRange = { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 0 };
+  sheet.cells.set(0, 0, { value: 1 });
+  sheet.cells.set(1, 0, { value: 3 });
+  const before = workbook.snapshot();
+  const seen: string[] = [];
+  runtime.onMutation((mutation, source) => { if (source === 'command') seen.push(mutation.id); });
+
+  const result = runtime.execute('sheet.range.fill', {
+    sheetId: sheet.id,
+    sourceRange,
+    targetRange,
+    direction: 'down',
+    mode: 'series',
+  });
+  assert.equal(result.mutationCount, 1);
+  assert.deepEqual(seen, ['fill.applied']);
+  assert.deepEqual([2, 3, 4].map((row) => sheet.cells.get(row, 0)?.value), [5, 7, 9]);
+  assert.deepEqual([sheet.cells.get(0, 0)?.value, sheet.cells.get(1, 0)?.value], [1, 3]);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  const entry = runtime.getUndoEntries()[0];
+  assert.ok(entry);
+  assert.equal(entry.redo.length, 1);
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteRuntime = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(entry.redo);
+  const remoteSheet = remoteWorkbook.getSheet(sheet.id);
+  assert.deepEqual([2, 3, 4].map((row) => remoteSheet.cells.get(row, 0)?.value), [5, 7, 9]);
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(2, 0), undefined);
+  assert.deepEqual([sheet.cells.get(0, 0)?.value, sheet.cells.get(1, 0)?.value], [1, 3]);
+  assert.equal(runtime.redo(), true);
+  assert.deepEqual([2, 3, 4].map((row) => sheet.cells.get(row, 0)?.value), [5, 7, 9]);
+});
+
+test('fill fails closed for protected or block-backed targets without history or partial writes', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const targetRange = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 };
+  sheet.cells.set(0, 0, { value: 10 });
+  sheet.protectionRules.push({
+    id: 'fill-protected',
+    scope: 'range',
+    range: targetRange,
+    locked: true,
+    allow: {},
+  });
+  const before = workbook.snapshot();
+  assert.throws(() => runtime.execute('sheet.range.fill', {
+    sheetId: sheet.id,
+    sourceRange,
+    targetRange,
+    direction: 'down',
+    mode: 'series',
+  }), /protected/);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.deepEqual(workbook.snapshot(), before);
+
+  sheet.protectionRules.length = 0;
+  sheet.dataRegions.push({
+    id: 'fill-block',
+    sourceId: 'fill-source',
+    range: targetRange,
+    headerRow: 0,
+    revision: 1,
+  });
+  assert.throws(() => runtime.execute('sheet.range.fill', {
+    sheetId: sheet.id,
+    sourceRange,
+    targetRange,
+    direction: 'down',
+    mode: 'series',
+  }), /data-region/);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(sheet.cells.get(1, 0), undefined);
 });
 
 test('merge center keeps the anchor, clears non-anchor contents, and undoes atomically', () => {

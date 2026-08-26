@@ -14,7 +14,37 @@ function selectCell(app: WorkbookSession, row: number, column: number): void {
   });
 }
 
+function selectRange(app: WorkbookSession, startRow: number, endRow: number, startColumn = 0, endColumn = 0): void {
+  const sheetId = app.getActiveSheetId();
+  app.runCommand('selection.set', {
+    sheetId,
+    ranges: [{ sheetId, startRow, endRow, startColumn, endColumn }],
+    primaryRangeIndex: 0,
+    activeCell: { row: startRow, column: startColumn },
+    anchorCell: { row: startRow, column: startColumn },
+  });
+}
+
 describe('WorkbookSession core editing integration', () => {
+  it('Fill Series keeps the complete selected seed range in the canonical planner', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    sheet.cells.set(0, 0, { value: 1 });
+    sheet.cells.set(1, 0, { value: 3 });
+    selectRange(app, 0, 4);
+
+    app.fillSelection('down', 'series');
+    assert.deepEqual([2, 3, 4].map((row) => sheet.cells.get(row, 0)?.value), [5, 7, 9]);
+    assert.deepEqual([sheet.cells.get(0, 0)?.value, sheet.cells.get(1, 0)?.value], [1, 3]);
+
+    app.undo();
+    assert.equal(sheet.cells.get(2, 0), undefined);
+    assert.deepEqual([sheet.cells.get(0, 0)?.value, sheet.cells.get(1, 0)?.value], [1, 3]);
+    app.redo();
+    assert.deepEqual([2, 3, 4].map((row) => sheet.cells.get(row, 0)?.value), [5, 7, 9]);
+  });
+
   it('preserves AutoFit dimension results through undo and redo', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
