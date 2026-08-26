@@ -4,6 +4,7 @@ import type { SheetTableRef } from './sheet-table-resolver';
 import type { ScalarValue } from './values';
 import type { FormulaDefinedName } from './defined-names';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
+import type { ExcelNumericContext } from './numeric';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -14,6 +15,7 @@ export interface FormulaCalculationSnapshot {
   readonly recalculationMode: RecalculationMode;
   readonly dateSystem: ExcelDateSystem;
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  readonly numericContext: ExcelNumericContext;
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
@@ -53,6 +55,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (value.canonicalReferenceDate !== undefined && !isCanonicalDateParts(value.canonicalReferenceDate)) {
     throw new Error('Calculation snapshot has an invalid canonical reference date');
   }
+  if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
   }
@@ -148,6 +151,13 @@ function isCanonicalDateParts(value: unknown): value is CanonicalExcelDateParts 
     && Number.isInteger(value.minute) && value.minute >= 0 && value.minute <= 59
     && Number.isInteger(value.second) && value.second >= 0 && value.second <= 59
     && Number.isInteger(value.millisecond) && value.millisecond >= 0 && value.millisecond <= 999;
+}
+
+function isExcelNumericContext(value: unknown): value is ExcelNumericContext {
+  if (!isRecord(value)) return false;
+  return Number.isSafeInteger(value.significantDigits)
+    && value.significantDigits >= 1
+    && value.significantDigits <= 15;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

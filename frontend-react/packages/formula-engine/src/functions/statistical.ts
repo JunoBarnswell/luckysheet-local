@@ -1,4 +1,5 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
+import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
 import { flattenNumericArgs } from './math';
 
 export const statisticalFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
@@ -6,7 +7,7 @@ export const statisticalFunctions: Record<string, (args: FormulaValue[]) => Form
     const nums = flattenNumericArgs(args);
     if (isFormulaError(nums)) return nums;
     if (nums.length === 0) return createFormulaError('#DIV/0!', 'No numbers to average');
-    return nums.reduce((acc, n) => acc + n, 0) / nums.length;
+    return normalizeExcelPrecision(nums.reduce((acc, n) => acc + n, 0) / nums.length);
   },
 
   COUNT: (args) => {
@@ -59,14 +60,14 @@ export const statisticalFunctions: Record<string, (args: FormulaValue[]) => Form
     const nums = flattenNumericArgs(args);
     if (isFormulaError(nums)) return nums;
     if (nums.length === 0) return 0;
-    return Math.min(...nums);
+    return normalizeExcelPrecision(Math.min(...nums));
   },
 
   MAX: (args) => {
     const nums = flattenNumericArgs(args);
     if (isFormulaError(nums)) return nums;
     if (nums.length === 0) return 0;
-    return Math.max(...nums);
+    return normalizeExcelPrecision(Math.max(...nums));
   },
 
   MEDIAN: (args) => {
@@ -75,25 +76,25 @@ export const statisticalFunctions: Record<string, (args: FormulaValue[]) => Form
     if (nums.length === 0) return createFormulaError('#NUM!', 'No numbers for MEDIAN');
     nums.sort((a, b) => a - b);
     const mid = Math.floor(nums.length / 2);
-    return nums.length % 2 !== 0 ? nums[mid]! : (nums[mid - 1]! + nums[mid]!) / 2;
+    return normalizeExcelPrecision(nums.length % 2 !== 0 ? nums[mid]! : (nums[mid - 1]! + nums[mid]!) / 2);
   },
 
   LARGE: (args) => {
     const nums = flattenNumericArgs([args[0]!]);
     if (isFormulaError(nums)) return nums;
-    const k = Number(args[1]);
-    if (Number.isNaN(k) || k <= 0 || k > nums.length) return createFormulaError('#NUM!', 'Invalid k in LARGE');
+    const k = coerceExcelNumber(args[1]);
+    if (isFormulaError(k) || k <= 0 || k > nums.length) return isFormulaError(k) ? k : createFormulaError('#NUM!', 'Invalid k in LARGE');
     nums.sort((a, b) => b - a);
-    return nums[k - 1]!;
+    return normalizeExcelPrecision(nums[k - 1]!);
   },
 
   SMALL: (args) => {
     const nums = flattenNumericArgs([args[0]!]);
     if (isFormulaError(nums)) return nums;
-    const k = Number(args[1]);
-    if (Number.isNaN(k) || k <= 0 || k > nums.length) return createFormulaError('#NUM!', 'Invalid k in SMALL');
+    const k = coerceExcelNumber(args[1]);
+    if (isFormulaError(k) || k <= 0 || k > nums.length) return isFormulaError(k) ? k : createFormulaError('#NUM!', 'Invalid k in SMALL');
     nums.sort((a, b) => a - b);
-    return nums[k - 1]!;
+    return normalizeExcelPrecision(nums[k - 1]!);
   },
 
   COUNTIF: (args) => {
@@ -133,26 +134,31 @@ export const statisticalFunctions: Record<string, (args: FormulaValue[]) => Form
           if (matchesCriteria(row[c], criteriaStr, isComparison)) {
             const sumVal = Array.isArray(sumRow) ? sumRow[c] : sumRow;
             if (typeof sumVal === 'number') sum += sumVal;
-            else if (typeof sumVal === 'string' && !Number.isNaN(Number(sumVal))) sum += Number(sumVal);
+            else if (typeof sumVal === 'string') {
+              const numeric = coerceExcelNumber(sumVal);
+              if (!isFormulaError(numeric)) sum += numeric;
+            }
           }
         }
       }
     }
-    return sum;
+    return normalizeExcelPrecision(sum);
   },
 };
 
 function matchesCriteria(cellValue: unknown, criteria: string, isComparison: boolean): boolean {
   if (isComparison) {
-    const num = Number(cellValue);
-    if (Number.isNaN(num)) return false;
-    if (criteria.startsWith('>=')) return num >= Number(criteria.slice(2));
-    if (criteria.startsWith('<=')) return num <= Number(criteria.slice(2));
-    if (criteria.startsWith('>')) return num > Number(criteria.slice(1));
-    if (criteria.startsWith('<')) return num < Number(criteria.slice(1));
+    const num = coerceExcelNumber(cellValue as FormulaValue);
+    const threshold = (text: string) => coerceExcelNumber(text);
+    if (isFormulaError(num)) return false;
+    if (criteria.startsWith('>=')) { const value = threshold(criteria.slice(2)); return !isFormulaError(value) && num >= value; }
+    if (criteria.startsWith('<=')) { const value = threshold(criteria.slice(2)); return !isFormulaError(value) && num <= value; }
+    if (criteria.startsWith('>')) { const value = threshold(criteria.slice(1)); return !isFormulaError(value) && num > value; }
+    if (criteria.startsWith('<')) { const value = threshold(criteria.slice(1)); return !isFormulaError(value) && num < value; }
   }
-  if (typeof cellValue === 'number' && !Number.isNaN(Number(criteria))) {
-    return cellValue === Number(criteria);
+  if (typeof cellValue === 'number') {
+    const numericCriteria = coerceExcelNumber(criteria);
+    if (!isFormulaError(numericCriteria)) return cellValue === numericCriteria;
   }
   return String(cellValue ?? '').toLowerCase() === criteria.toLowerCase();
 }

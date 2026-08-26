@@ -1,4 +1,5 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
+import { coerceExcelNumber, normalizeExcelPrecision, roundExcel, roundExcelDown, roundExcelUp, truncateExcel } from '../numeric';
 
 export function flattenNumericArgs(args: FormulaValue[]): number[] | ReturnType<typeof createFormulaError> {
   const numbers: number[] = [];
@@ -9,17 +10,17 @@ export function flattenNumericArgs(args: FormulaValue[]): number[] | ReturnType<
         if (Array.isArray(row)) {
           for (const cell of row) {
             if (isFormulaError(cell)) return cell;
-            if (typeof cell === 'number' && !Number.isNaN(cell)) numbers.push(cell);
+            if (typeof cell === 'number' && Number.isFinite(cell)) numbers.push(cell);
           }
-        } else if (typeof row === 'number' && !Number.isNaN(row)) {
+        } else if (typeof row === 'number' && Number.isFinite(row)) {
           numbers.push(row);
         }
       }
-    } else if (typeof arg === 'number' && !Number.isNaN(arg)) {
+    } else if (typeof arg === 'number' && Number.isFinite(arg)) {
       numbers.push(arg);
     } else if (typeof arg === 'string') {
-      const parsed = Number(arg);
-      if (!Number.isNaN(parsed)) numbers.push(parsed);
+      const parsed = coerceExcelNumber(arg);
+      if (!isFormulaError(parsed)) numbers.push(parsed);
     } else if (typeof arg === 'boolean') {
       numbers.push(arg ? 1 : 0);
     }
@@ -31,99 +32,95 @@ export const mathFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
   SUM: (args) => {
     const nums = flattenNumericArgs(args);
     if (isFormulaError(nums)) return nums;
-    return nums.reduce((acc, n) => acc + n, 0);
+    return normalizeExcelPrecision(nums.reduce((acc, n) => acc + n, 0));
   },
 
   PRODUCT: (args) => {
     const nums = flattenNumericArgs(args);
     if (isFormulaError(nums)) return nums;
     if (nums.length === 0) return 0;
-    return nums.reduce((acc, n) => acc * n, 1);
+    return normalizeExcelPrecision(nums.reduce((acc, n) => acc * n, 1));
   },
 
   ABS: (args) => {
     const arg = args[0];
     if (isFormulaError(arg)) return arg;
-    const n = Number(arg);
-    if (Number.isNaN(n)) return createFormulaError('#VALUE!', 'Expected a number');
-    return Math.abs(n);
+    const n = coerceExcelNumber(arg);
+    if (isFormulaError(n)) return n;
+    return normalizeExcelPrecision(Math.abs(n));
   },
 
   SQRT: (args) => {
     const arg = args[0];
     if (isFormulaError(arg)) return arg;
-    const n = Number(arg);
-    if (Number.isNaN(n) || n < 0) return createFormulaError('#NUM!', 'Negative number or NaN in SQRT');
-    return Math.sqrt(n);
+    const n = coerceExcelNumber(arg);
+    if (isFormulaError(n) || n < 0) return isFormulaError(n) ? n : createFormulaError('#NUM!', 'Negative number in SQRT');
+    return normalizeExcelPrecision(Math.sqrt(n));
   },
 
   POWER: (args) => {
-    const base = Number(args[0]);
-    const exp = Number(args[1]);
-    if (Number.isNaN(base) || Number.isNaN(exp)) return createFormulaError('#VALUE!', 'Expected numbers');
-    return Math.pow(base, exp);
+    const base = coerceExcelNumber(args[0]);
+    const exp = coerceExcelNumber(args[1]);
+    if (isFormulaError(base) || isFormulaError(exp)) return isFormulaError(base) ? base : exp;
+    return normalizeExcelPrecision(Math.pow(base, exp));
   },
 
   MOD: (args) => {
-    const n = Number(args[0]);
-    const d = Number(args[1]);
-    if (Number.isNaN(n) || Number.isNaN(d)) return createFormulaError('#VALUE!', 'Expected numbers');
+    const n = coerceExcelNumber(args[0]);
+    const d = coerceExcelNumber(args[1]);
+    if (isFormulaError(n) || isFormulaError(d)) return isFormulaError(n) ? n : d;
     if (d === 0) return createFormulaError('#DIV/0!', 'Division by zero in MOD');
-    return ((n % d) + d) % d;
+    return normalizeExcelPrecision(((n % d) + d) % d);
   },
 
   ROUND: (args) => {
-    const n = Number(args[0]);
-    const digits = args[1] !== undefined ? Number(args[1]) : 0;
-    if (Number.isNaN(n) || Number.isNaN(digits)) return createFormulaError('#VALUE!', 'Expected numbers');
-    const factor = Math.pow(10, digits);
-    return Math.round(n * factor) / factor;
+    const n = coerceExcelNumber(args[0]);
+    const digits = args[1] !== undefined ? coerceExcelNumber(args[1]) : 0;
+    if (isFormulaError(n) || isFormulaError(digits)) return isFormulaError(n) ? n : digits;
+    return roundExcel(n, digits);
   },
 
   ROUNDUP: (args) => {
-    const n = Number(args[0]);
-    const digits = args[1] !== undefined ? Number(args[1]) : 0;
-    if (Number.isNaN(n) || Number.isNaN(digits)) return createFormulaError('#VALUE!', 'Expected numbers');
-    const factor = Math.pow(10, digits);
-    return (n >= 0 ? Math.ceil(n * factor) : Math.floor(n * factor)) / factor;
+    const n = coerceExcelNumber(args[0]);
+    const digits = args[1] !== undefined ? coerceExcelNumber(args[1]) : 0;
+    if (isFormulaError(n) || isFormulaError(digits)) return isFormulaError(n) ? n : digits;
+    return roundExcelUp(n, digits);
   },
 
   ROUNDDOWN: (args) => {
-    const n = Number(args[0]);
-    const digits = args[1] !== undefined ? Number(args[1]) : 0;
-    if (Number.isNaN(n) || Number.isNaN(digits)) return createFormulaError('#VALUE!', 'Expected numbers');
-    const factor = Math.pow(10, digits);
-    return (n >= 0 ? Math.floor(n * factor) : Math.ceil(n * factor)) / factor;
+    const n = coerceExcelNumber(args[0]);
+    const digits = args[1] !== undefined ? coerceExcelNumber(args[1]) : 0;
+    if (isFormulaError(n) || isFormulaError(digits)) return isFormulaError(n) ? n : digits;
+    return roundExcelDown(n, digits);
   },
 
   INT: (args) => {
-    const n = Number(args[0]);
-    if (Number.isNaN(n)) return createFormulaError('#VALUE!', 'Expected a number');
-    return Math.floor(n);
+    const n = coerceExcelNumber(args[0]);
+    if (isFormulaError(n)) return n;
+    return normalizeExcelPrecision(Math.floor(n));
   },
 
   TRUNC: (args) => {
-    const n = Number(args[0]);
-    const digits = args[1] !== undefined ? Number(args[1]) : 0;
-    if (Number.isNaN(n) || Number.isNaN(digits)) return createFormulaError('#VALUE!', 'Expected numbers');
-    const factor = Math.pow(10, digits);
-    return Math.trunc(n * factor) / factor;
+    const n = coerceExcelNumber(args[0]);
+    const digits = args[1] !== undefined ? coerceExcelNumber(args[1]) : 0;
+    if (isFormulaError(n) || isFormulaError(digits)) return isFormulaError(n) ? n : digits;
+    return truncateExcel(n, digits);
   },
 
   CEILING: (args) => {
-    const n = Number(args[0]);
-    const sig = args[1] !== undefined ? Number(args[1]) : 1;
-    if (Number.isNaN(n) || Number.isNaN(sig)) return createFormulaError('#VALUE!', 'Expected numbers');
+    const n = coerceExcelNumber(args[0]);
+    const sig = args[1] !== undefined ? coerceExcelNumber(args[1]) : 1;
+    if (isFormulaError(n) || isFormulaError(sig)) return isFormulaError(n) ? n : sig;
     if (sig === 0) return 0;
-    return Math.ceil(n / sig) * sig;
+    return normalizeExcelPrecision(Math.ceil(n / sig) * sig);
   },
 
   FLOOR: (args) => {
-    const n = Number(args[0]);
-    const sig = args[1] !== undefined ? Number(args[1]) : 1;
-    if (Number.isNaN(n) || Number.isNaN(sig)) return createFormulaError('#VALUE!', 'Expected numbers');
+    const n = coerceExcelNumber(args[0]);
+    const sig = args[1] !== undefined ? coerceExcelNumber(args[1]) : 1;
+    if (isFormulaError(n) || isFormulaError(sig)) return isFormulaError(n) ? n : sig;
     if (sig === 0) return 0;
-    return Math.floor(n / sig) * sig;
+    return normalizeExcelPrecision(Math.floor(n / sig) * sig);
   },
 
   PI: () => Math.PI,
@@ -131,42 +128,46 @@ export const mathFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
   RAND: () => Math.random(),
 
   RANDBETWEEN: (args) => {
-    const min = Math.ceil(Number(args[0]));
-    const max = Math.floor(Number(args[1]));
-    if (Number.isNaN(min) || Number.isNaN(max) || min > max) return createFormulaError('#NUM!', 'Invalid range in RANDBETWEEN');
+    const minArg = coerceExcelNumber(args[0]);
+    const maxArg = coerceExcelNumber(args[1]);
+    if (isFormulaError(minArg) || isFormulaError(maxArg)) return isFormulaError(minArg) ? minArg : maxArg;
+    const min = Math.ceil(minArg);
+    const max = Math.floor(maxArg);
+    if (min > max) return createFormulaError('#NUM!', 'Invalid range in RANDBETWEEN');
     return Math.floor(Math.random() * (max - min + 1)) + min;
   },
 
   EXP: (args) => {
-    const n = Number(args[0]);
-    if (Number.isNaN(n)) return createFormulaError('#VALUE!', 'Expected a number');
-    return Math.exp(n);
+    const n = coerceExcelNumber(args[0]);
+    if (isFormulaError(n)) return n;
+    return normalizeExcelPrecision(Math.exp(n));
   },
 
   LN: (args) => {
-    const n = Number(args[0]);
-    if (Number.isNaN(n) || n <= 0) return createFormulaError('#NUM!', 'Number must be positive in LN');
-    return Math.log(n);
+    const n = coerceExcelNumber(args[0]);
+    if (isFormulaError(n) || n <= 0) return isFormulaError(n) ? n : createFormulaError('#NUM!', 'Number must be positive in LN');
+    return normalizeExcelPrecision(Math.log(n));
   },
 
   LOG: (args) => {
-    const n = Number(args[0]);
-    const base = args[1] !== undefined ? Number(args[1]) : 10;
-    if (Number.isNaN(n) || Number.isNaN(base) || n <= 0 || base <= 0 || base === 1) {
+    const n = coerceExcelNumber(args[0]);
+    const base = args[1] !== undefined ? coerceExcelNumber(args[1]) : 10;
+    if (isFormulaError(n) || isFormulaError(base)) return isFormulaError(n) ? n : base;
+    if (n <= 0 || base <= 0 || base === 1) {
       return createFormulaError('#NUM!', 'Invalid base or number in LOG');
     }
-    return Math.log(n) / Math.log(base);
+    return normalizeExcelPrecision(Math.log(n) / Math.log(base));
   },
 
   LOG10: (args) => {
-    const n = Number(args[0]);
-    if (Number.isNaN(n) || n <= 0) return createFormulaError('#NUM!', 'Number must be positive in LOG10');
-    return Math.log10(n);
+    const n = coerceExcelNumber(args[0]);
+    if (isFormulaError(n) || n <= 0) return isFormulaError(n) ? n : createFormulaError('#NUM!', 'Number must be positive in LOG10');
+    return normalizeExcelPrecision(Math.log10(n));
   },
 
   SIGN: (args) => {
-    const n = Number(args[0]);
-    if (Number.isNaN(n)) return createFormulaError('#VALUE!', 'Expected a number');
+    const n = coerceExcelNumber(args[0]);
+    if (isFormulaError(n)) return n;
     return Math.sign(n);
   },
 };

@@ -16,6 +16,7 @@ import { normalizeDefinedNameModels, normalizeDefinedNames, resolveDefinedNameSo
 import { collectNameReferences, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
+import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
 import {
   assertCalculationTaskRequest,
   InlineCalculationTaskPort,
@@ -82,6 +83,7 @@ export interface FormulaEngineOptions {
   readonly recalculationMode?: RecalculationMode;
   readonly dateSystem?: ExcelDateSystem;
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  readonly numericContext?: Partial<ExcelNumericContext>;
 }
 
 export interface CalculationTaskPortOptions {
@@ -121,6 +123,7 @@ export class FormulaEngine {
   private defaultTaskPort: CalculationTaskPort | null = null;
   private readonly dateSystem: ExcelDateSystem;
   private readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  private readonly numericContext: ExcelNumericContext;
 
   private readonly cells = new Map<string, StoredCell>();
 
@@ -129,6 +132,7 @@ export class FormulaEngine {
     this.recalculationMode = options.recalculationMode ?? 'automatic';
     this.dateSystem = options.dateSystem ?? '1900';
     this.canonicalReferenceDate = options.canonicalReferenceDate ? structuredClone(options.canonicalReferenceDate) : undefined;
+    this.numericContext = normalizeExcelNumericContext(options.numericContext ?? DEFAULT_EXCEL_NUMERIC_CONTEXT);
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -141,6 +145,7 @@ export class FormulaEngine {
       recalculationMode: 'manual',
       dateSystem: snapshot.dateSystem,
       canonicalReferenceDate: snapshot.canonicalReferenceDate,
+      numericContext: snapshot.numericContext,
     });
     engine.definedNameModels = normalizeDefinedNameModels(snapshot.definedNameModels);
     engine.sheetTables = normalizeSheetTables(snapshot.sheetTables);
@@ -213,6 +218,10 @@ export class FormulaEngine {
 
   getDateSystem(): ExcelDateSystem {
     return this.dateSystem;
+  }
+
+  getNumericContext(): ExcelNumericContext {
+    return { ...this.numericContext };
   }
 
   /** Monotonic input/calculation generation used by derived consumers. */
@@ -369,6 +378,7 @@ export class FormulaEngine {
       recalculationMode: this.recalculationMode,
       dateSystem: this.dateSystem,
       canonicalReferenceDate: this.canonicalReferenceDate ? structuredClone(this.canonicalReferenceDate) : undefined,
+      numericContext: { ...this.numericContext },
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),
@@ -485,6 +495,7 @@ export class FormulaEngine {
         currentCell: cell.address,
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
+        numericContext: this.numericContext,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
@@ -860,6 +871,7 @@ export class FormulaEngine {
         currentCell: cell.address,
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
+        numericContext: this.numericContext,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
@@ -972,6 +984,7 @@ export class FormulaEngine {
       currentCell,
       readCell: (reference) => this.evaluateCell(reference, cache, visiting),
       readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
+      numericContext: this.numericContext,
     });
   }
 

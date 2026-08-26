@@ -4,6 +4,7 @@ import { normalizeRange, type RangeDependency } from './range-index';
 import { evaluateFormula } from './evaluator';
 import { parseFormula } from './parser';
 import { createFormulaError, isArrayValue, type ArrayValue, type FormulaValue } from './values';
+import type { ExcelNumericContext } from './numeric';
 
 /** Formula-engine representation of the workbook's canonical scoped names. */
 export interface FormulaDefinedName {
@@ -17,6 +18,7 @@ export interface DefinedNameContext {
   currentCell: CellAddress;
   readCell: (address: CellAddress) => FormulaValue;
   readRangeMatrix: (range: RangeDependency) => ArrayValue;
+  numericContext?: ExcelNumericContext;
 }
 
 export function normalizeDefinedNames(names: Record<string, string>): Record<string, string> {
@@ -82,6 +84,7 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
         return values;
       },
       resolveName: undefined,
+      numericContext: context.numericContext,
     });
   } catch {
     return createFormulaError('#NAME?', `Cannot resolve defined name: ${trimmed}`);

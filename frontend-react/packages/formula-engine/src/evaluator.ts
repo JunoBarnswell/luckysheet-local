@@ -6,6 +6,8 @@ import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue } from './values';
+import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
+import type { ExcelNumericContext } from './numeric';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 
 export interface FormulaEvaluationContext {
@@ -29,6 +31,8 @@ export interface FormulaEvaluationContext {
   readonly dateSystem?: ExcelDateSystem;
   /** Host-owned deterministic clock; missing means TODAY/NOW fail-close. */
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  /** Workbook numeric semantics shared by inline and Worker evaluation. */
+  readonly numericContext?: ExcelNumericContext;
 }
 
 /** A data-only evaluation step used by Formula Auditing's Evaluate Formula view. */
@@ -155,9 +159,9 @@ function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue
   if (isArrayValue(operand)) return operand.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
   const number = toNumber(operand);
   if (isFormulaError(number)) return number;
-  if (operator === '-') return -number;
-  if (operator === '%') return number / 100;
-  return number;
+  if (operator === '-') return normalizeExcelPrecision(-number, context.numericContext);
+  if (operator === '%') return normalizeExcelPrecision(number / 100, context.numericContext);
+  return normalizeExcelPrecision(number, context.numericContext);
 }
 
 function evaluateSpillReference(node: SpillReferenceNode, context: FormulaEvaluationContext): EvaluationValue {
@@ -214,15 +218,15 @@ function evaluateBinary(
 
   switch (operator) {
     case '+':
-      return leftNumber + rightNumber;
+      return normalizeExcelPrecision(leftNumber + rightNumber, context.numericContext);
     case '-':
-      return leftNumber - rightNumber;
+      return normalizeExcelPrecision(leftNumber - rightNumber, context.numericContext);
     case '*':
-      return leftNumber * rightNumber;
+      return normalizeExcelPrecision(leftNumber * rightNumber, context.numericContext);
     case '/':
-      return rightNumber === 0 ? createFormulaError('#DIV/0!', 'Division by zero') : leftNumber / rightNumber;
+      return rightNumber === 0 ? createFormulaError('#DIV/0!', 'Division by zero') : normalizeExcelPrecision(leftNumber / rightNumber, context.numericContext);
     case '^':
-      return Math.pow(leftNumber, rightNumber);
+      return normalizeExcelPrecision(Math.pow(leftNumber, rightNumber), context.numericContext);
   }
 }
 
@@ -461,15 +465,7 @@ function readRangeAsMatrix(range: RangeDependency, context: FormulaEvaluationCon
 }
 
 function toNumber(value: FormulaValue): number | ReturnType<typeof createFormulaError> {
-  if (isFormulaError(value)) return value;
-  if (value === null) return 0;
-  if (typeof value === 'boolean') return value ? 1 : 0;
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string') {
-    const n = Number(value);
-    if (!Number.isNaN(n)) return n;
-  }
-  return createFormulaError('#VALUE!', 'Expected a number');
+  return coerceExcelNumber(value);
 }
 
 function isEvaluationRange(value: EvaluationValue): value is EvaluationRange {
