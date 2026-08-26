@@ -10,6 +10,7 @@ import { coerceExcelNumber, normalizeExcelPrecision } from './numeric';
 import type { ExcelNumericContext } from './numeric';
 import type { WorkbookCollationContext } from './collation';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
+import { createReferenceCursor, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
@@ -38,6 +39,10 @@ export interface FormulaEvaluationContext {
   /** Workbook numeric semantics shared by inline and Worker evaluation. */
   readonly numericContext?: ExcelNumericContext;
   readonly collationContext?: WorkbookCollationContext;
+  /** Canonical worksheet row visibility used by provenance-aware references. */
+  readonly rowVisibility?: RowVisibilityResolver;
+  /** Formula identity for a source cell, used to suppress nested aggregates. */
+  readonly readFormulaKind?: (address: CellAddress) => ReferenceFormulaKind;
   /** Stable AST identity for the current function occurrence. */
   readonly volatileOccurrence?: string;
   /** Host-provided order-independent random source for volatile functions. */
@@ -348,9 +353,12 @@ function evaluateFunction(
 
   // 上下文感知函数(SUMIFS 家族 / SUMPRODUCT / SUBTOTAL 等)
   const advanced = evaluateAdvancedFunction(name, { values: evaluatedArgs, ranges: rawRanges } as AdvancedFunctionArgs, {
-    currentCell: context.currentCell,
-    readMatrix: (range: RangeDependency) => readRangeAsMatrix(range, context),
-    toRange: (value: EvaluationValue) => (isEvaluationRange(value) ? value.range : undefined),
+    toRanges: (value: EvaluationValue) => isEvaluationRange(value)
+      ? [value.range]
+      : isEvaluationReference(value)
+        ? value.ranges
+        : undefined,
+    readCursor: (range: RangeDependency) => createReferenceCursor(range, context),
   });
   if (advanced !== undefined) return advanced;
 

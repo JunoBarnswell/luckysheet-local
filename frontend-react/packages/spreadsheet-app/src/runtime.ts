@@ -18,6 +18,7 @@ import { createDefaultConnectorRegistry, type ConnectorRegistry } from './featur
 import { FormulaAuditController, registerFormulaAuditCommands } from './features/formula-audit';
 import { DataSourceContentQuery, migrateDataRegionCellPatches } from './features/data-source';
 import { CollaborationSession } from './collaboration/collaboration-session';
+import { createWorkbookRowVisibilityResolver, type WorkbookRowVisibilityResolver } from './formula-visibility';
 import { mapPeerCursor, updatePresenceFromPeer } from './collaboration';
 import {
   configureFormulaSpillEnvironment,
@@ -50,6 +51,7 @@ export interface RuntimeHandlers {
 export interface SpreadsheetRuntime {
   api: WorkbookApiClient;
   formula: FormulaEngine;
+  rowVisibilityResolver: WorkbookRowVisibilityResolver;
   formulaAudit: FormulaAuditController;
   dateSystem: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
@@ -130,7 +132,12 @@ export function createSpreadsheetRuntime(options: {
   const commands = new CommandRuntime(model);
   const drawing = new DrawingRuntime();
   const connectors = createDefaultConnectorRegistry();
-  const formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate, collationContext: model.collationContext });
+  let formula: FormulaEngine | undefined;
+  const rowVisibilityResolver = createWorkbookRowVisibilityResolver(model, dateSystem, (sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    return formula?.getCellResult(address)?.value;
+  });
+  formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate, collationContext: model.collationContext, rowVisibilityResolver });
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
@@ -147,7 +154,8 @@ export function createSpreadsheetRuntime(options: {
   });
   runtime = {
     api,
-    formula,
+    formula: formula as FormulaEngine,
+    rowVisibilityResolver,
     formulaAudit,
     dateSystem,
     canonicalReferenceDate,
@@ -264,6 +272,25 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'table.remove',
   'name.set',
   'name.remove',
+  'row.hidden',
+  'row.unhidden',
+  'rows.unhidden.all',
+  'rows.hidden.restore',
+  'sheet.rows.visibility.set',
+  'sheet.rows.unhide.all',
+  'autoFilter.set',
+  'autoFilter.remove',
+  'sheet.autoFilter.set',
+  'sheet.autoFilter.remove',
+  'outline.group.toggle',
+  'outline.showLevel',
+]);
+
+const VISIBILITY_MUTATIONS = new Set([
+  'row.hidden', 'row.unhidden', 'rows.unhidden.all', 'rows.hidden.restore',
+  'sheet.rows.visibility.set', 'sheet.rows.unhide.all',
+  'autoFilter.set', 'autoFilter.remove', 'sheet.autoFilter.set', 'sheet.autoFilter.remove',
+  'outline.group.toggle', 'outline.showLevel',
 ]);
 
 const DIRECT_CELL_WRITE_MUTATIONS = new Set([
@@ -455,6 +482,8 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source) => {
       if (runtime.disposed) return;
+      runtime.rowVisibilityResolver.invalidate();
+      runtime.formula.notifyVisibilityChanged();
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
       // direct write into a dynamic-array child cannot leave partial model or
@@ -474,7 +503,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         if (runtime.formula.getRecalculationMode() === 'manual' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
           synchronizeManualCellMutation(runtime.formula, runtime.model, mutation);
         } else {
-          void scheduleFormulaRecalculation(runtime);
+          void scheduleFormulaRecalculation(runtime, VISIBILITY_MUTATIONS.has(mutation.id));
         }
       }
     }),
@@ -622,14 +651,18 @@ export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: E
   runtime.dateSystem = dateSystem;
   runtime.canonicalReferenceDate = canonicalReferenceDate ? structuredClone(canonicalReferenceDate) : runtime.canonicalReferenceDate;
   runtime.formula.disposeCalculationTasks();
-  runtime.formula = rebuildFormulaEngine(runtime.model, runtime.dateSystem, runtime.canonicalReferenceDate);
+  runtime.rowVisibilityResolver = createWorkbookRowVisibilityResolver(runtime.model, runtime.dateSystem, (sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    return runtime.formula?.getCellResult(address)?.value;
+  });
+  runtime.formula = rebuildFormulaEngine(runtime.model, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
   runtime.formulaAudit.setFormula(runtime.formula);
   runtime.formulaAudit.refresh();
   void scheduleFormulaRecalculation(runtime);
 }
 
-function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext });
+function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts, rowVisibilityResolver?: WorkbookRowVisibilityResolver): FormulaEngine {
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, rowVisibilityResolver });
   loadFormulaInputs(engine, workbook);
   return engine;
 }
@@ -643,9 +676,13 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   detachCoreListeners(runtime);
   runtime.formula.disposeCalculationTasks();
   runtime.model = workbook;
+  runtime.rowVisibilityResolver = createWorkbookRowVisibilityResolver(workbook, runtime.dateSystem, (sheet, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    return runtime.formula?.getCellResult(address)?.value;
+  });
   runtime.commands = new CommandRuntime(workbook);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
-  runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate);
+  runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
   installCommandCellValueResolver(runtime);
   runtime.formulaAudit.setFormula(runtime.formula);
   registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);

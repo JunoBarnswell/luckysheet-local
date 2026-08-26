@@ -21,6 +21,7 @@ import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type Excel
 import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
 import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from './collation';
 import { findFormulaComponents } from './circular';
+import { createSnapshotVisibilityResolver, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, normalizeWorkbookCalculationSettings, type WorkbookCalculationMode, type WorkbookCalculationSettings } from './calculation-settings';
 import {
   assertCalculationTaskRequest,
@@ -93,6 +94,7 @@ export interface FormulaEngineOptions {
   readonly calculationEntropySeed?: string;
   readonly collationContext?: Partial<WorkbookCollationContext>;
   readonly calculationSettings?: Partial<WorkbookCalculationSettings>;
+  readonly rowVisibilityResolver?: RowVisibilityResolver;
 }
 
 export interface CalculationTaskPortOptions {
@@ -137,6 +139,7 @@ export class FormulaEngine {
   private calculationCycleSequence = 0;
   private activeCalculationEntropy?: CalculationEntropyContext;
   private readonly collationContext: WorkbookCollationContext;
+  private readonly rowVisibilityResolver?: RowVisibilityResolver;
   private calculationSettings: WorkbookCalculationSettings;
   private iterationFallbackValues?: ReadonlyMap<string, FormulaValue>;
 
@@ -155,6 +158,7 @@ export class FormulaEngine {
     this.numericContext = normalizeExcelNumericContext(options.numericContext ?? DEFAULT_EXCEL_NUMERIC_CONTEXT);
     this.calculationEntropySeed = options.calculationEntropySeed?.trim() || 'react-sheets-calculation';
     this.collationContext = normalizeWorkbookCollation(options.collationContext ?? DEFAULT_WORKBOOK_COLLATION);
+    this.rowVisibilityResolver = options.rowVisibilityResolver;
     if (!this.defaultSheetId) throw new Error('FormulaEngine requires a default worksheet id');
     this.dependencies = new RangeIndex();
   }
@@ -171,6 +175,7 @@ export class FormulaEngine {
       numericContext: snapshot.numericContext,
       calculationEntropySeed: snapshot.calculationEntropy.entropySeed,
       collationContext: snapshot.collationContext,
+      rowVisibilityResolver: snapshot.visibility ? createSnapshotVisibilityResolver(snapshot.visibility) : undefined,
     });
     engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
     engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
@@ -288,6 +293,11 @@ export class FormulaEngine {
   /** Monotonic input/calculation generation used by derived consumers. */
   getCalculationGeneration(): number {
     return this.calculationGeneration;
+  }
+
+  /** Advance the calculation generation when visibility changes without cell writes. */
+  notifyVisibilityChanged(): void {
+    this.markCalculationStateChanged();
   }
 
   /**
@@ -449,6 +459,7 @@ export class FormulaEngine {
       numericContext: { ...this.numericContext },
       calculationEntropy: this.activeCalculationEntropy ?? createCalculationEntropyContext(this.calculationEntropySeed, this.calculationCycleSequence),
       collationContext: structuredClone(this.collationContext),
+      ...(this.rowVisibilityResolver?.snapshot ? { visibility: structuredClone(this.rowVisibilityResolver.snapshot()) } : {}),
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables().map(copySheetTable),
@@ -571,6 +582,8 @@ export class FormulaEngine {
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
         collationContext: this.collationContext,
+        rowVisibility: this.rowVisibilityResolver,
+        readFormulaKind: (reference) => this.formulaKindAt(reference),
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
@@ -1048,6 +1061,8 @@ export class FormulaEngine {
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
         collationContext: this.collationContext,
+        rowVisibility: this.rowVisibilityResolver,
+        readFormulaKind: (reference) => this.formulaKindAt(reference),
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRange: (range) => this.readRange(range, cache, visiting),
@@ -1207,6 +1222,13 @@ export class FormulaEngine {
     return definition.scope === 'sheet'
       ? `sheet:${definition.sheetId?.trim().toUpperCase()}:${definition.name.trim().toUpperCase()}`
       : `workbook:${definition.name.trim().toUpperCase()}`;
+  }
+
+  private formulaKindAt(address: CellAddress): ReferenceFormulaKind {
+    const ast = this.cells.get(cellAddressKey(address))?.ast;
+    if (ast?.type !== 'function-call') return 'ordinary';
+    const name = ast.name.trim().toUpperCase();
+    return name === 'SUBTOTAL' ? 'subtotal' : name === 'AGGREGATE' ? 'aggregate' : 'ordinary';
   }
 
   private resolveReference(reference: FormulaReferenceNode, currentCell: CellAddress): FormulaEvaluationReference | FormulaError {

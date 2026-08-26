@@ -7,6 +7,7 @@ import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import type { ExcelNumericContext } from './numeric';
 import type { CalculationEntropyContext } from './random';
 import type { WorkbookCollationContext } from './collation';
+import { assertFormulaVisibilitySnapshot, type FormulaVisibilitySnapshot } from './reference-cursor';
 
 /**
  * A data-only copy of the formula inputs required by an isolated calculation
@@ -20,6 +21,7 @@ export interface FormulaCalculationSnapshot {
   readonly numericContext: ExcelNumericContext;
   readonly calculationEntropy: CalculationEntropyContext;
   readonly collationContext: WorkbookCollationContext;
+  readonly visibility?: FormulaVisibilitySnapshot;
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
@@ -60,6 +62,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
   if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation snapshot has an invalid calculation entropy');
   if (!isWorkbookCollationContext(value.collationContext)) throw new Error('Calculation snapshot has an invalid collation context');
+  if (value.visibility !== undefined) assertFormulaVisibilitySnapshot(value.visibility);
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
   }

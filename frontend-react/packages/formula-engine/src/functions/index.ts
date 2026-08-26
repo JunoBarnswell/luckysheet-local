@@ -9,6 +9,7 @@ import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
 import { extendedMatrixFunctions } from './extended-matrix';
 import { dynamicArrayFunctions } from './dynamic-array';
+import { ADVANCED_FUNCTIONS } from './advanced';
 
 export type BuiltinFunction = (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue;
 
@@ -31,13 +32,13 @@ export interface FunctionDescriptor {
   volatile: boolean;
 }
 
-const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'SUMPRODUCT']);
+const RANGE_FUNCTIONS = new Set(['SUM', 'COUNT', 'COUNTA', 'AVERAGE', 'MIN', 'MAX', 'PRODUCT', 'VAR', 'VARP', 'STDEV', 'STDEVP', 'SUMIF', 'SUMIFS', 'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'SUBTOTAL', 'AGGREGATE', 'SUMPRODUCT']);
 const SORT_FUNCTIONS = new Set(['LOOKUP', 'VLOOKUP', 'HLOOKUP', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'MEDIAN', 'PERCENTILE', 'SORT', 'FILTER', 'UNIQUE']);
 const VOLATILE_FUNCTIONS = new Set(['NOW', 'TODAY', 'RAND', 'RANDBETWEEN', 'OFFSET', 'INDIRECT', 'RANDARRAY']);
 const MATRIX_FUNCTIONS = new Set(['GROUPBY', 'PIVOTBY', 'FILTER', 'UNIQUE', 'SORT', 'SORTBY', 'SEQUENCE', 'RANDARRAY', 'HSTACK', 'VSTACK', 'TAKE', 'DROP']);
 
 export const FUNCTION_DESCRIPTORS: ReadonlyMap<string, FunctionDescriptor> = new Map(
-  Object.keys(BUILTIN_FUNCTIONS).map((name) => {
+  [...new Set([...Object.keys(BUILTIN_FUNCTIONS), ...Object.keys(ADVANCED_FUNCTIONS)])].map((name) => {
     const id = name.toUpperCase();
     const volatile = VOLATILE_FUNCTIONS.has(id);
     const cost = volatile ? 'volatile' : MATRIX_FUNCTIONS.has(id) ? 'range' : RANGE_FUNCTIONS.has(id) ? 'range' : SORT_FUNCTIONS.has(id) ? 'sort' : 'scalar';
