@@ -64,12 +64,17 @@ function graph(): DrawingGraphSheet {
   };
 }
 
+function payloadAt(graph: DrawingGraphSheet, payloadId: string) {
+  const payloads = graph.drawingPayloads;
+  return payloads instanceof Map ? payloads.get(payloadId) : (payloads as Readonly<Record<string, unknown>>)[payloadId];
+}
+
 describe('canonical drawing graph planner', () => {
   it('plans and validates a connector route from typed endpoints', () => {
     const value = graph();
     validateDrawingGraph(value);
     const connector = value.drawings.find((drawing) => drawing.kind === 'connector')!;
-    const payload = value.drawingPayloads.get(connector.payloadId) as ConnectorDrawingPayload;
+    const payload = payloadAt(value, connector.payloadId) as ConnectorDrawingPayload;
     assert.deepEqual(payload.route.points[0], { x: 60, y: 30 });
     assert.deepEqual(payload.route.points.at(-1), { x: 180, y: 90 });
   });
@@ -77,7 +82,7 @@ describe('canonical drawing graph planner', () => {
   it('rejects an unknown connector endpoint and illegal worksheet grid', () => {
     const value = graph();
     const connector = value.drawings.find((drawing) => drawing.kind === 'connector')!;
-    const payload = value.drawingPayloads.get(connector.payloadId) as ConnectorDrawingPayload;
+    const payload = payloadAt(value, connector.payloadId) as ConnectorDrawingPayload;
     assert.throws(() => planConnectorRoute(value, connector, { ...payload, end: { drawingId: 'missing', connectionPoint: 'left' } }), /missing/);
     assert.throws(() => validateDrawingGraph({ ...value, snapSettings: { enabled: true, snapToGrid: true, gridSize: 0 } }), /snap settings/);
   });
@@ -85,12 +90,12 @@ describe('canonical drawing graph planner', () => {
   it('rejects duplicate group ownership and non-canonical route data', () => {
     const value = graph();
     const connector = value.drawings.find((drawing) => drawing.kind === 'connector')!;
-    const payload = value.drawingPayloads.get(connector.payloadId) as ConnectorDrawingPayload;
+    const payload = payloadAt(value, connector.payloadId) as ConnectorDrawingPayload;
     assert.throws(() => validateDrawingGraph({ ...value, drawingGroups: [
       { id: 'group-a', sheetId, memberDrawingIds: ['shape-a', 'shape-b'] },
       { id: 'group-b', sheetId, memberDrawingIds: ['shape-b', 'connector-1'] },
     ] }), /multiple groups/);
-    const broken = new Map(value.drawingPayloads);
+    const broken = new Map(value.drawingPayloads instanceof Map ? value.drawingPayloads : Object.entries(value.drawingPayloads));
     broken.set(connector.payloadId, { ...payload, route: { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } });
     assert.throws(() => validateDrawingGraph({ ...value, drawingPayloads: broken }), /not canonical/);
   });

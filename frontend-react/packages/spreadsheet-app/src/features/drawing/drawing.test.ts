@@ -138,7 +138,7 @@ describe('drawing feature', () => {
     });
     runtime.clearHistory();
     const transaction = drawingRuntime.beginPointerTransform(workbook.getSheet('sheet-1'), 'draw-pointer');
-    drawingRuntime.previewPointerTransform(transaction.id, { x: 21, y: 29, width: 44, height: 36, rotation: 13 }, 8);
+    drawingRuntime.previewPointerTransform(workbook.getSheet('sheet-1'), transaction.id, { x: 21, y: 29, width: 44, height: 36, rotation: 13 });
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.transform, { x: 10, y: 10, width: 40, height: 30, rotation: 0 });
     const commit = drawingRuntime.finishPointerTransform(transaction.id);
     runtime.execute('drawing.transform.commit', { sheetId: 'sheet-1', ...commit });
@@ -373,5 +373,75 @@ describe('drawing feature', () => {
     assert.equal(workbook.getSheet('sheet-1').drawings.find((entry) => entry.id === 'drawing-copy')?.transform.x, 22);
     assert.equal(runtime.undo(), true);
     assert.equal(workbook.getSheet('sheet-1').drawings.length, 3);
+  });
+
+  it('adds typed connectors, recomputes bound routes atomically, and replays them', () => {
+    const workbook = new WorkbookModel('drawing-connector-test', 'Drawing Connector');
+    const runtime = new CommandRuntime(workbook);
+    registerDrawingFeature(runtime);
+    const sheetId = 'sheet-1';
+    const addShape = (id: string, x: number, y: number) => runtime.execute('drawing.add.shape', {
+      sheetId,
+      drawing: { id, sheetId, kind: 'shape' as const, payloadId: `${id}-payload`, anchor: { kind: 'absolute' as const }, transform: { x, y, width: 40, height: 20, rotation: 0 }, zIndex: 1 },
+      payload: { kind: 'shape' as const, type: 'rectangle' as const, fill: '#fff', stroke: '#000' },
+    });
+    addShape('connector-source', 20, 20);
+    addShape('connector-target', 180, 80);
+    runtime.execute('drawing.connector.add', {
+      sheetId,
+      drawing: { id: 'connector-1', sheetId, kind: 'connector', payloadId: 'connector-payload', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 0, height: 0, rotation: 0 }, zIndex: 2 },
+      payload: { kind: 'connector', connectorType: 'elbow', start: { drawingId: 'connector-source', connectionPoint: 'right' }, end: { drawingId: 'connector-target', connectionPoint: 'left' }, stroke: '#111827', startArrowhead: 'none', endArrowhead: 'triangle', route: { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } },
+    });
+    const before = workbook.snapshot();
+    runtime.clearHistory();
+    runtime.execute('drawing.move', { sheetId, drawingId: 'connector-source', transform: { x: 40, y: 40, width: 40, height: 20, rotation: 0 } });
+    const connector = workbook.getSheet(sheetId).drawings.find((drawing) => drawing.id === 'connector-1')!;
+    const movedPayload = workbook.getSheet(sheetId).drawingPayloads.get(connector.payloadId) as { kind: 'connector'; route: { points: Array<{ x: number; y: number }> } };
+    assert.deepEqual(movedPayload.route.points[0], { x: 80, y: 50 });
+    assert.equal(runtime.getUndoEntries().at(-1)?.redo[0]?.params && (runtime.getUndoEntries().at(-1)!.redo[0]!.params as { connectorRoutes?: unknown[] }).connectorRoutes?.length, 1);
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.equal(runtime.redo(), true);
+
+    const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+    const remoteRuntime = new CommandRuntime(remoteWorkbook);
+    registerDrawingFeature(remoteRuntime);
+    remoteRuntime.applyRemoteMutations(runtime.getUndoEntries().at(-1)!.redo);
+    assert.deepEqual(remoteWorkbook.snapshot(), workbook.snapshot());
+    assert.throws(() => runtime.execute('drawing.connector.add', {
+      sheetId,
+      drawing: { id: 'invalid-connector', sheetId, kind: 'connector', payloadId: 'invalid-connector-payload', anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 0, height: 0, rotation: 0 }, zIndex: 3 },
+      payload: { kind: 'connector', connectorType: 'straight', start: { drawingId: 'missing', connectionPoint: 'center' }, end: { drawingId: 'connector-target', connectionPoint: 'center' }, stroke: '#000', startArrowhead: 'none', endArrowhead: 'none', route: { points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } },
+    }), /missing/);
+  });
+
+  it('groups drawings and persists worksheet-owned snap settings with fail-close validation', () => {
+    const workbook = new WorkbookModel('drawing-group-snap-test', 'Drawing Group Snap');
+    const runtime = new CommandRuntime(workbook);
+    const drawingRuntime = new DrawingRuntime();
+    registerDrawingFeature(runtime, drawingRuntime);
+    const sheetId = 'sheet-1';
+    const add = (id: string) => runtime.execute('drawing.add.shape', {
+      sheetId,
+      drawing: { id, sheetId, kind: 'shape' as const, payloadId: `${id}-payload`, anchor: { kind: 'absolute' as const }, transform: { x: 0, y: 0, width: 20, height: 20 }, zIndex: 1 },
+      payload: { kind: 'shape' as const, type: 'rectangle' as const, fill: '#fff', stroke: '#000' },
+    });
+    add('group-a');
+    add('group-b');
+    runtime.clearHistory();
+    runtime.execute('drawing.group', { sheetId, group: { id: 'group-1', sheetId, memberDrawingIds: ['group-a', 'group-b'] } });
+    assert.deepEqual(workbook.getSheet(sheetId).drawingGroups, [{ id: 'group-1', sheetId, memberDrawingIds: ['group-a', 'group-b'] }]);
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(workbook.getSheet(sheetId).drawingGroups, []);
+    assert.equal(runtime.redo(), true);
+    const sheet = workbook.getSheet(sheetId);
+    const before = structuredClone(sheet.snapSettings);
+    runtime.execute('drawing.snapSettings.set', { sheetId, before, after: { enabled: true, snapToGrid: true, gridSize: 16 } });
+    const pointer = drawingRuntime.beginPointerTransform(sheet, 'group-a');
+    assert.deepEqual(drawingRuntime.previewPointerTransform(sheet, pointer.id, { x: 21, y: 29, width: 20, height: 20 }), { x: 16, y: 32, width: 16, height: 16, rotation: 0 });
+    drawingRuntime.cancelPointerTransform(pointer.id);
+    const invalidBefore = structuredClone(sheet.snapSettings);
+    assert.throws(() => runtime.execute('drawing.snapSettings.set', { sheetId, before: invalidBefore, after: { enabled: true, snapToGrid: true, gridSize: 0 } }), /invalid/);
+    assert.deepEqual(sheet.snapSettings, invalidBefore);
   });
 });

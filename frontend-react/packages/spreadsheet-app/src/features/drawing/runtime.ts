@@ -1,4 +1,5 @@
 import type { DrawingObject, DrawingTransform, WorksheetModel } from '@react-sheets/core-model';
+import { isWorksheetSnapSettings } from '@react-sheets/core-model';
 
 export type DrawingSelectionMode = 'replace' | 'add' | 'toggle';
 
@@ -113,10 +114,13 @@ export class DrawingRuntime {
   }
 
   /** Update only the transient preview; callers commit it through drawing.transform.commit. */
-  previewPointerTransform(transactionId: string, transform: DrawingTransform, grid = 1): DrawingTransform {
+  previewPointerTransform(sheet: WorksheetModel, transactionId: string, transform: DrawingTransform): DrawingTransform {
     const transaction = this.pointerTransactions.get(transactionId);
     if (!transaction) throw new Error(`Unknown drawing pointer transaction: ${transactionId}`);
-    transaction.preview = snapTransform(normalizeTransform(transform), grid);
+    if (transaction.sheetId !== sheet.id) throw new Error(`Drawing pointer worksheet mismatch: ${transactionId}`);
+    if (!isWorksheetSnapSettings(sheet.snapSettings)) throw new Error(`Worksheet snap settings are invalid: ${sheet.id}`);
+    const gridSize = sheet.snapSettings.enabled && sheet.snapSettings.snapToGrid ? sheet.snapSettings.gridSize : undefined;
+    transaction.preview = snapTransform(normalizeTransform(transform), gridSize);
     return structuredClone(transaction.preview);
   }
 
@@ -182,15 +186,16 @@ export function normalizeTransform(transform: DrawingTransform): DrawingTransfor
   };
 }
 
-export function snapTransform(transform: DrawingTransform, gridSize = 1): DrawingTransform {
-  if (!Number.isFinite(gridSize) || gridSize <= 0) return structuredClone(transform);
-  const snap = (value: number): number => Math.round(value / gridSize) * gridSize;
+export function snapTransform(transform: DrawingTransform, gridSize?: number): DrawingTransform {
+  const resolvedGridSize = gridSize;
+  if (resolvedGridSize === undefined || !Number.isFinite(resolvedGridSize) || resolvedGridSize <= 0) return structuredClone(transform);
+  const snap = (value: number): number => Math.round(value / resolvedGridSize) * resolvedGridSize;
   return {
     ...transform,
     x: snap(transform.x),
     y: snap(transform.y),
-    width: Math.max(gridSize, snap(transform.width)),
-    height: Math.max(gridSize, snap(transform.height)),
+    width: Math.max(resolvedGridSize, snap(transform.width)),
+    height: Math.max(resolvedGridSize, snap(transform.height)),
   };
 }
 

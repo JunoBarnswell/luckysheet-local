@@ -154,7 +154,8 @@ export function validateDrawingGraph(sheet: DrawingGraphSheet): void {
     ids.add(drawing.id);
   }
   const payloadEntries = sheet.drawingPayloads instanceof Map ? [...sheet.drawingPayloads.entries()] : Object.entries(sheet.drawingPayloads);
-  if (payloadEntries.some(([payloadId]) => !payloadIds.has(payloadId))) throw new Error('Drawing payload collection contains an orphan payload');
+  const orphanConnector = payloadEntries.find(([payloadId, payload]) => !payloadIds.has(payloadId) && payload.kind === 'connector');
+  if (orphanConnector) throw new Error(`Connector payload is orphaned: ${orphanConnector[0]}`);
   for (const drawing of sheet.drawings) {
     const payload = payloadAt(sheet, drawing.payloadId);
     if (payload?.kind === 'connector') assertCanonicalConnector(sheet, drawing, payload);
