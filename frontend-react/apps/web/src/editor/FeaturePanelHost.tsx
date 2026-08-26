@@ -173,8 +173,6 @@ export function FeaturePanelHost({
           onRemoveComment={session.removeComment.bind(session)}
           onAddNote={session.addNote.bind(session)}
           onRemoveNote={session.removeNote.bind(session)}
-          onSetHyperlink={session.setHyperlink.bind(session)}
-          onRemoveHyperlink={session.removeHyperlink.bind(session)}
         />
       </Suspense>
     </SidebarShell>

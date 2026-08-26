@@ -311,6 +311,9 @@ export function EditorShell({
                 onShortcut={controller.executeShortcut}
                 canRepeat={session.canRepeatLastCommand()}
                 onOpenInspector={() => dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Select a cell and use Review tools for comments." })}
+                onOpenHyperlink={() => dispatchSessionIntent({ type: "dialog.open", dialog: "hyperlink" })}
+                onRemoveHyperlink={session.removeHyperlink.bind(session)}
+                hasActiveHyperlink={Boolean(session.getActiveHyperlink())}
                 onApplyFilter={(column, patch) => session.applyFilter(column, patch)}
                 onSortFilterColumn={(column, ascending) => session.sortFilterColumn(column, ascending)}
                 onToggleOutline={(groupId) => session.toggleOutlineGroup(groupId)}
@@ -342,6 +345,8 @@ export function EditorShell({
         formatCellsInitial={formatCellsInitial}
         pivotSourceOptions={controller.pivotSourceOptions}
         createPivotFromDialog={controller.createPivotFromDialog}
+        hyperlinkInitial={session.getActiveHyperlink()}
+        hyperlinkSheets={session.getSheetOptions()}
       />
       <ColumnWidthDialog
         open={state.dialogs.active === 'column-width'}

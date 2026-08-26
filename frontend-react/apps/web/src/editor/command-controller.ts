@@ -417,7 +417,7 @@ export function useEditorCommandController({
       case "name.goto": case "navigation.goto": dispatchSessionIntent({ type: "dialog.open", dialog: "goto" }); return true;
       case "ribbon.home.keyTips": session.setRibbonTab("home"); session.notify("Home shortcuts are active"); return true;
       case "format.cells": dispatchSessionIntent({ type: "dialog.open", dialog: "format-cells" }); return true;
-      case "hyperlink.insert": dispatchSessionIntent({ type: "panel.open", panel: "inspector", notice: "Use the Inspector to insert a hyperlink." }); return true;
+      case "hyperlink.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "hyperlink" }); return true;
       case "row.select": session.selectActiveRow(); return true;
       case "column.select": session.selectActiveColumn(); return true;
       case "sheet.previous": session.selectAdjacentSheet("previous"); return true;

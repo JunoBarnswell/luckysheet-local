@@ -131,6 +131,9 @@ export interface SheetCanvasProps {
   onShortcut?: (id: string) => boolean;
   canRepeat?: boolean;
   onOpenInspector: () => void;
+  onOpenHyperlink: () => void;
+  onRemoveHyperlink: () => void;
+  hasActiveHyperlink: boolean;
   onApplyFilter: (column: number, patch: FilterPatch) => void;
   onSortFilterColumn: (column: number, ascending: boolean) => void;
   onToggleOutline?: (groupId: string) => void;
@@ -461,6 +464,9 @@ export function SheetCanvas({
   onShortcut,
   canRepeat = false,
   onOpenInspector,
+  onOpenHyperlink,
+  onRemoveHyperlink,
+  hasActiveHyperlink,
   onApplyFilter,
   onSortFilterColumn,
   onToggleOutline,
@@ -806,9 +812,11 @@ export function SheetCanvas({
       { id: "clear", label: "Clear contents", onSelect: () => onClearSelection("contents") },
       { id: "clear-formats", label: "Clear formats", onSelect: () => onClearSelection("formats") },
       { id: "comment-add", label: "Add comment", onSelect: onOpenInspector },
+      { id: "hyperlink-open", label: hasActiveHyperlink ? "Edit Hyperlink" : "Insert Hyperlink", onSelect: onOpenHyperlink },
+      { id: "hyperlink-remove", label: "Remove Hyperlink", disabled: !hasActiveHyperlink, danger: true, onSelect: onRemoveHyperlink },
     ];
     return items;
-  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenInspector, onOpenRowHeightDialog, onPaste, onPivotShowDetails, selectedFloatingId, selection, sheetId]);
+  }, [columnDimensions, contextHit, drawingPayloads, drawings, getPivotContextMenuItems, hasActiveHyperlink, onBeginTextBoxEdit, onClearSelection, onCommand, onCopy, onCut, onOpenColumnWidthDialog, onOpenHyperlink, onOpenInspector, onOpenRowHeightDialog, onPaste, onPivotShowDetails, onRemoveHyperlink, selectedFloatingId, selection, sheetId]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();

@@ -87,7 +87,7 @@ export interface PanelState {
   dock: 'left' | 'right';
 }
 
-export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'merge-confirm' | 'column-width' | 'row-height' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture';
+export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'merge-confirm' | 'column-width' | 'row-height' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink';
 export type FindDialogMode = 'find' | 'replace';
 export type CellShiftOperation = 'insert' | 'delete';
 export type MergeOperation = 'center' | 'cells' | 'across' | 'unmerge';
@@ -162,7 +162,7 @@ export type ActiveContext =
 /** Ephemeral chrome state; these intents never write the workbook model. */
 export type UiSessionIntent =
   | { type: 'panel.open'; panel: SidebarPanelId; notice?: string }
-  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture'; operation?: CellShiftOperation; findQuery?: string; findMode?: FindDialogMode; columnWidth?: { columns: number[]; defaultMode: boolean }; rowHeight?: { rows: number[] }; sheet?: SheetDialogState }
+  | { type: 'dialog.open'; dialog: 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'shift-cells' | 'create-pivot' | 'create-table' | 'column-width' | 'row-height' | 'sheet-rename' | 'sheet-tab-color' | 'sheet-delete' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink'; operation?: CellShiftOperation; findQuery?: string; findMode?: FindDialogMode; columnWidth?: { columns: number[]; defaultMode: boolean }; rowHeight?: { rows: number[] }; sheet?: SheetDialogState }
   | { type: 'dialog.close' }
   | { type: 'dialog.update'; value: string }
   | { type: 'command-palette.open' }

@@ -36,6 +36,24 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void hyperlinkSetAcceptsTypedTargetsAndRejectsUnknownDestinations() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"definedNameModels":[{"name":"SalesTotal","formula":"=Sheet1!A1","scope":"workbook"}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{},"hyperlinks":[]}]}
+                """);
+        var valid = new OperationMutation("hyperlink.set", "sheet-1", mapper.readTree("""
+                {"row":0,"column":0,"hyperlink":{"id":"link-1","target":{"kind":"sheet","sheetId":"sheet-1","address":"B2"},"tooltip":"Open"}}
+                """));
+        var next = registry.applyPublicMutations(snapshot, List.of(valid));
+        assertEquals("sheet", next.path("sheets").get(0).path("hyperlinks").get(0).path("hyperlink").path("target").path("kind").asText());
+        var invalid = new OperationMutation("hyperlink.set", "sheet-1", mapper.readTree("""
+                {"row":0,"column":0,"hyperlink":{"id":"link-2","target":{"kind":"sheet","sheetId":"missing","address":"A1"}}}
+                """));
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(next, List.of(invalid)));
+    }
+
+    @Test
     void rangePasteAppliesCanonicalSnapshotAndClearsABoundedSource() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""

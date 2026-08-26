@@ -231,7 +231,7 @@ export function parseLoadedXlsx(loaded: LoadedOpcPackageGraph, options: ParseLoa
   const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
-  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate));
+  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = {};
   for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
@@ -331,7 +331,7 @@ export function exportSnapshotToOpcPackageGraph(
       [...requiredHyperlinks, ...tableParts.required],
     );
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id))));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])))));
   }
 
   const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
@@ -437,6 +437,7 @@ function parseSheet(
   sharedStrings: SharedStringRecord[],
   styles: StyleContext,
   canonicalReferenceDate?: CanonicalExcelDateParts,
+  sheetDescriptors: readonly SheetDescriptor[] = [],
 ): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
   const root = firstElement(parseXml(xml), 'worksheet');
@@ -488,10 +489,14 @@ function parseSheet(
         ...(style?.style ? { style: structuredClone(style.style) } : {}),
         ...(style?.numberFormat ? { numberFormat: style.numberFormat } : {}),
       };
-      const hyperlink = hyperlinkForCell(root, pkg.relationships[descriptor.part] ?? [], address.row, address.column);
-      if (hyperlink) hyperlinks.push({ row: address.row, column: address.column, hyperlink });
       cells[String(address.row)] ??= {};
       cells[String(address.row)]![String(address.column)] = cell;
+  }
+  for (const hyperlinkNode of children(child(root, 'hyperlinks'), 'hyperlink')) {
+    const address = parseA1(hyperlinkNode.attrs.ref ?? '');
+    if (!address) throw new Error(`Worksheet ${descriptor.name} contains an invalid hyperlink reference: ${hyperlinkNode.attrs.ref ?? ''}`);
+    const hyperlink = hyperlinkForCell(root, pkg.relationships[descriptor.part] ?? [], address.row, address.column, sheetDescriptors);
+    if (hyperlink) hyperlinks.push({ row: address.row, column: address.column, hyperlink });
   }
   const merges = children(child(root, 'mergeCells'), 'mergeCell')
     .map((node) => requireSheetRange(node.attrs.ref, descriptor, 'merge'))
@@ -1315,6 +1320,7 @@ function buildWorksheetXml(
   nativeDisplayCells?: Record<string, Record<string, CellData>>,
   nativeControls: NativePivotControlDefinition[] = [],
   printDocument?: NonNullable<WorkbookSnapshot['printDocuments']>[number],
+  sheetNames: ReadonlyMap<string, string> = new Map(),
 ): string {
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
   if (sheet.tabColor || sheet.outline?.groups.length) xml += `<sheetPr>${sheet.tabColor ? `<tabColor rgb="${ooxmlRgb(sheet.tabColor)}"/>` : ''}${sheet.outline?.groups.length ? '<outlinePr summaryBelow="1" summaryRight="1"/>' : ''}</sheetPr>`;
@@ -1363,9 +1369,14 @@ function buildWorksheetXml(
     const address = `${columnToLetter(entry.column)}${entry.row + 1}`;
     const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, 'hyperlink') && candidate.target === hyperlinkTarget(link));
     const target = link.target.kind === 'url' || link.target.kind === 'email';
-    const location = link.target.kind === 'sheet'
-      ? `${encodeXml(link.target.sheetId)}!${encodeXml(link.target.address ?? (link.target.row !== undefined && link.target.column !== undefined ? `${columnToLetter(link.target.column)}${link.target.row + 1}` : 'A1'))}`
-      : link.target.kind === 'name' ? encodeXml(link.target.name) : undefined;
+    let location: string | undefined;
+    if (link.target.kind === 'sheet') {
+      const targetSheetName = sheetNames.get(link.target.sheetId);
+      if (!targetSheetName) throw new Error(`Hyperlink target sheet not found: ${link.target.sheetId}`);
+      location = `${encodeXml(excelSheetName(targetSheetName))}!${encodeXml(link.target.address ?? (link.target.row !== undefined && link.target.column !== undefined ? `${columnToLetter(link.target.column)}${link.target.row + 1}` : 'A1'))}`;
+    } else if (link.target.kind === 'name') {
+      location = encodeXml(link.target.name);
+    }
     return `<hyperlink ref="${address}"${target && relation ? ` r:id="${relation.id}"` : ''}${location ? ` location="${location}"` : ''}${link.tooltip ? ` tooltip="${encodeXml(link.tooltip)}"` : ''}/>`;
   });
   if (hyperlinks.length) xml += `<hyperlinks>${hyperlinks.join('')}</hyperlinks>`;
@@ -1869,7 +1880,7 @@ function hyperlinkTarget(link: CellHyperlink): string {
   }
 }
 
-function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row: number, column: number): CellHyperlink | undefined {
+function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row: number, column: number, sheetDescriptors: readonly SheetDescriptor[]): CellHyperlink | undefined {
   const hyperlinks = child(root, 'hyperlinks');
   const reference = `${columnToLetter(column)}${row + 1}`;
   const node = children(hyperlinks, 'hyperlink').find((candidate) => candidate.attrs.ref === reference);
@@ -1879,13 +1890,31 @@ function hyperlinkForCell(root: XmlNode, relationships: XlsxRelationship[], row:
     const relation = relationships.find((candidate) => candidate.id === relationId);
     if (relation) {
       if (relation.target.startsWith('mailto:')) {
-        return { id: `hyperlink-${row}-${column}`, target: { kind: 'email', address: relation.target.slice(7) }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
+        const [address = '', query = ''] = relation.target.slice(7).split('?');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('Worksheet contains an invalid email hyperlink');
+        const subject = new URLSearchParams(query).get('subject') ?? undefined;
+        return { id: `hyperlink-${row}-${column}`, target: { kind: 'email', address, ...(subject ? { subject } : {}) }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
       }
       return { id: `hyperlink-${row}-${column}`, target: { kind: 'url', url: relation.target }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
     }
   }
-  if (node.attrs.location) return { id: `hyperlink-${row}-${column}`, target: { kind: 'name', name: node.attrs.location }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
+  if (node.attrs.location) {
+    const location = node.attrs.location;
+    const separator = location.lastIndexOf('!');
+    if (separator > 0) {
+      const rawSheetName = location.slice(0, separator).replace(/^'(.*)'$/, '$1').replace(/''/g, "'");
+      const targetSheet = sheetDescriptors.find((descriptor) => descriptor.name === rawSheetName);
+      const targetAddress = location.slice(separator + 1);
+      if (!targetSheet || !parseA1(targetAddress)) throw new Error(`Hyperlink worksheet location is invalid: ${location}`);
+      return { id: `hyperlink-${row}-${column}`, target: { kind: 'sheet', sheetId: targetSheet.id, address: targetAddress }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
+    }
+    return { id: `hyperlink-${row}-${column}`, target: { kind: 'name', name: location }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
+  }
   return undefined;
+}
+
+function excelSheetName(name: string): string {
+  return /[\s!'"(),]/.test(name) ? `'${name.replace(/'/g, "''")}'` : name;
 }
 
 function parseNotes(root: XmlNode, descriptor: SheetDescriptor, files: Record<string, Uint8Array>, pkg: OpcPackageGraph): SheetSnapshot['notes'] {

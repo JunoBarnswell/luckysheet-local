@@ -337,14 +337,22 @@ describe('exchange-excel-ooxml', () => {
   it('writes hyperlinks from the canonical worksheet hyperlink collection', async () => {
     const workbook = new WorkbookModel('wb-links', 'Links');
     const sheet = workbook.getSheet(workbook.primarySheetId);
+    const targetSheet = workbook.addSheet('sheet-target', 'Target', 20, 20);
+    workbook.setDefinedName({ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' });
     sheet.cells.set(0, 0, { value: 'OpenAI' });
     sheet.hyperlinks.set('0:0', { id: 'link-1', target: { kind: 'url', url: 'https://openai.com/' }, tooltip: 'Open' });
+    sheet.hyperlinks.set('1:0', { id: 'link-2', target: { kind: 'email', address: 'team@example.com', subject: 'Review' } });
+    sheet.hyperlinks.set('2:0', { id: 'link-3', target: { kind: 'sheet', sheetId: targetSheet.id, address: 'B2' } });
+    sheet.hyperlinks.set('3:0', { id: 'link-4', target: { kind: 'name', name: 'SalesTotal' } });
     const buffer = exportSnapshotToXlsxBuffer(workbook.snapshot());
     const emitted = loadOpcPackageGraph(buffer);
     assert.match(strFromU8(emitted.files['xl/worksheets/sheet1.xml']!), /<hyperlink ref="A1"/);
     assert.match(strFromU8(emitted.files['xl/worksheets/_rels/sheet1.xml.rels']!), /https:\/\/openai\.com\//);
     const imported = await importXlsx({ fileName: 'links.xlsx', buffer, options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
+    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
+    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });
+    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[3]?.hyperlink.target, { kind: 'name', name: 'SalesTotal' });
   });
 
   it('writes a canonical table Pivot as a native cache and table graph', async () => {
