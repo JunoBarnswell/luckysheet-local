@@ -1,10 +1,18 @@
 import type { RangeRef, SheetId, UnitId } from '@react-sheets/core-model';
 import { normalizeRangeRef } from '@react-sheets/sheet-features';
 import { cellAddress } from './address';
+import { moveSelection, reduceSelectionInteraction } from './selection-interaction-machine';
 
 export interface SelectionCell {
   row: number;
   column: number;
+}
+
+export type SelectionKind = 'cells' | 'rows' | 'columns' | 'sheet';
+export type SelectionMode = 'normal' | 'formulaReference';
+export interface SelectionArea {
+  kind: SelectionKind;
+  range: RangeRef;
 }
 
 /**
@@ -17,6 +25,8 @@ export interface SelectionState {
   primaryRangeIndex: number;
   activeCell: SelectionCell;
   anchorCell: SelectionCell;
+  selectionKind?: SelectionKind;
+  mode?: SelectionMode;
 }
 
 export interface SelectionSnapshot {
@@ -26,6 +36,8 @@ export interface SelectionSnapshot {
   primaryRangeIndex: number;
   activeCell: SelectionCell;
   anchorCell: SelectionCell;
+  selectionKind?: SelectionKind;
+  mode?: SelectionMode;
 }
 
 export function createInitialSelection(sheetId: SheetId): SelectionState {
@@ -35,6 +47,8 @@ export function createInitialSelection(sheetId: SheetId): SelectionState {
     primaryRangeIndex: 0,
     activeCell: { row: 0, column: 0 },
     anchorCell: { row: 0, column: 0 },
+    selectionKind: 'cells',
+    mode: 'normal',
   };
 }
 
@@ -44,7 +58,7 @@ export class SelectionService {
   constructor(
     private readonly unitId: UnitId,
     private readonly getActiveSheetId: () => SheetId,
-    private readonly getSheetBounds: () => { rowCount: number; columnCount: number },
+    private readonly getSheetBounds: () => { rowCount: number; columnCount: number; hiddenRows?: readonly number[]; hiddenColumns?: readonly number[] },
     initial?: SelectionState,
   ) {
     this.state = this.normalizeState(initial ?? createInitialSelection(getActiveSheetId()));
@@ -59,6 +73,8 @@ export class SelectionService {
       primaryRangeIndex: state.primaryRangeIndex,
       activeCell: { ...state.activeCell },
       anchorCell: { ...state.anchorCell },
+      selectionKind: state.selectionKind,
+      mode: state.mode,
     };
   }
 
@@ -68,6 +84,8 @@ export class SelectionService {
       primaryRangeIndex: this.state.primaryRangeIndex,
       activeCell: { ...this.state.activeCell },
       anchorCell: { ...this.state.anchorCell },
+      selectionKind: this.state.selectionKind,
+      mode: this.state.mode,
     };
   }
 
@@ -81,6 +99,7 @@ export class SelectionService {
 
   selectCell(address: string, opts?: { insertRef?: (ref: string) => void; editing?: boolean }): boolean {
     if (opts?.editing && opts.insertRef) {
+      this.setInteractionMode('formulaReference');
       const parsed = parseAddressForSelection(address);
       if (parsed) opts.insertRef(`${columnLabel(parsed.column)}${parsed.row + 1}`);
       return false;
@@ -100,12 +119,15 @@ export class SelectionService {
       primaryRangeIndex: 0,
       activeCell: { row: nextRow, column: nextColumn },
       anchorCell: { row: nextRow, column: nextColumn },
+      selectionKind: 'cells',
+      mode: this.state.mode ?? 'normal',
     });
   }
 
   selectRange(
     range: { startRow: number; startColumn: number; endRow: number; endColumn: number },
     mode: 'replace' | 'add' | 'extend' = 'replace',
+    release?: SelectionCell,
   ): void {
     const normalized = this.normalizeRange(range);
     if (mode === 'extend') {
@@ -118,6 +140,8 @@ export class SelectionService {
         primaryRangeIndex: 0,
         activeCell: { row: normalized.endRow, column: normalized.endColumn },
         anchorCell: { ...this.state.anchorCell },
+        selectionKind: 'cells',
+        mode: this.state.mode ?? 'normal',
       });
       return;
     }
@@ -125,8 +149,10 @@ export class SelectionService {
       this.applyState({
         ranges: [...this.state.ranges, normalized],
         primaryRangeIndex: this.state.ranges.length,
-        activeCell: { row: normalized.startRow, column: normalized.startColumn },
-        anchorCell: { row: normalized.startRow, column: normalized.startColumn },
+        activeCell: release ? { ...release } : { row: normalized.startRow, column: normalized.startColumn },
+        anchorCell: release ? { ...this.state.anchorCell } : { row: normalized.startRow, column: normalized.startColumn },
+        selectionKind: 'cells',
+        mode: this.state.mode ?? 'normal',
       });
       return;
     }
@@ -134,7 +160,9 @@ export class SelectionService {
       ranges: [normalized],
       primaryRangeIndex: 0,
       activeCell: { row: normalized.startRow, column: normalized.startColumn },
-      anchorCell: { row: normalized.startRow, column: normalized.startColumn },
+      anchorCell: release ? { ...release } : { row: normalized.startRow, column: normalized.startColumn },
+      selectionKind: 'cells',
+      mode: this.state.mode ?? 'normal',
     });
   }
 
@@ -145,6 +173,8 @@ export class SelectionService {
       primaryRangeIndex: 0,
       activeCell: { row: targetRow, column: 0 },
       anchorCell: { row: targetRow, column: 0 },
+      selectionKind: 'rows',
+      mode: this.state.mode ?? 'normal',
     });
   }
 
@@ -155,6 +185,8 @@ export class SelectionService {
       primaryRangeIndex: 0,
       activeCell: { row: 0, column: targetColumn },
       anchorCell: { row: 0, column: targetColumn },
+      selectionKind: 'columns',
+      mode: this.state.mode ?? 'normal',
     });
   }
 
@@ -164,23 +196,13 @@ export class SelectionService {
     this.state = this.normalizeState(selection);
   }
 
+  setInteractionMode(mode: SelectionMode): void {
+    this.applyState(reduceSelectionInteraction(this.state, { type: mode === 'formulaReference' ? 'formula-reference.enter' : 'formula-reference.exit' }));
+  }
+
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
-    const target = {
-      row: this.clampRow(this.state.activeCell.row + rowDelta),
-      column: this.clampColumn(this.state.activeCell.column + columnDelta),
-    };
-    if (opts?.extend && this.state.ranges.length > 0) {
-      const ranges = this.state.ranges.map((range) => ({ ...range }));
-      ranges[this.state.primaryRangeIndex] = this.rangeFromCells(this.state.anchorCell, target);
-      this.applyState({
-        ranges,
-        primaryRangeIndex: this.state.primaryRangeIndex,
-        activeCell: target,
-        anchorCell: { ...this.state.anchorCell },
-      });
-      return;
-    }
-    this.selectCellAt(target.row, target.column);
+    const bounds = this.getSheetBounds();
+    this.applyState(moveSelection(this.state, rowDelta, columnDelta, Boolean(opts?.extend), bounds));
   }
 
   selectAll(rowCount: number, columnCount: number): void {
@@ -191,6 +213,8 @@ export class SelectionService {
       primaryRangeIndex: 0,
       activeCell: { row: 0, column: 0 },
       anchorCell: { row: 0, column: 0 },
+      selectionKind: 'sheet',
+      mode: this.state.mode ?? 'normal',
     });
   }
 
@@ -212,6 +236,8 @@ export class SelectionService {
       primaryRangeIndex,
       activeCell,
       anchorCell,
+      selectionKind: selection.selectionKind ?? this.state.selectionKind ?? 'cells',
+      mode: selection.mode ?? this.state.mode ?? 'normal',
     };
   }
 

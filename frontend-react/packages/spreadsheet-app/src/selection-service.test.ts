@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { moveSelection, selectionFromGesture } from './selection-interaction-machine';
+import { resolveSelectionTarget } from './selection-target-resolver';
 import { SelectionService, createInitialSelection } from './selection-service';
 
 function createService() {
@@ -19,6 +21,8 @@ test('canonical state keeps release cell active for a forward drag', () => {
     primaryRangeIndex: 0,
     activeCell: { row: 8, column: 2 },
     anchorCell: { row: 1, column: 0 },
+    selectionKind: 'cells',
+    mode: 'normal',
   });
 
   assert.deepEqual(service.getState(), {
@@ -26,6 +30,8 @@ test('canonical state keeps release cell active for a forward drag', () => {
     primaryRangeIndex: 0,
     activeCell: { row: 8, column: 2 },
     anchorCell: { row: 1, column: 0 },
+    selectionKind: 'cells',
+    mode: 'normal',
   });
   assert.equal(service.activeCell, 'C9');
 });
@@ -37,6 +43,8 @@ test('reverse drag keeps the release cell active and normalizes the range', () =
     primaryRangeIndex: 0,
     activeCell: { row: 1, column: 0 },
     anchorCell: { row: 8, column: 2 },
+    selectionKind: 'cells',
+    mode: 'normal',
   });
 
   assert.equal(service.activeCell, 'A2');
@@ -53,6 +61,8 @@ test('extend and add transitions update all canonical fields together', () => {
     primaryRangeIndex: 0,
     activeCell: { row: 8, column: 2 },
     anchorCell: { row: 1, column: 0 },
+    selectionKind: 'cells',
+    mode: 'normal',
   });
 
   service.selectRange({ startRow: 10, endRow: 11, startColumn: 3, endColumn: 4 }, 'add');
@@ -77,6 +87,8 @@ test('selection snapshots and states are defensive copies', () => {
     primaryRangeIndex: 0,
     activeCell: { row: 0, column: 0 },
     anchorCell: { row: 0, column: 0 },
+    selectionKind: 'cells',
+    mode: 'normal',
   });
 });
 
@@ -88,4 +100,39 @@ test('row, column, and all selection use explicit bounds instead of sentinels', 
   assert.deepEqual(service.primaryRangeOrDefault(), { sheetId: 'sheet-1', startRow: 0, endRow: 8, startColumn: 3, endColumn: 3 });
   service.selectAll(9, 7);
   assert.deepEqual(service.primaryRangeOrDefault(), { sheetId: 'sheet-1', startRow: 0, endRow: 8, startColumn: 0, endColumn: 6 });
+});
+
+test('selection machine preserves release target and fixed drag anchor', () => {
+  const initial = createInitialSelection('sheet-1');
+  const forward = selectionFromGesture(initial, {
+    origin: { row: 1, column: 0 },
+    target: { row: 8, column: 2 },
+    expandedRange: { sheetId: 'sheet-1', startRow: 1, endRow: 8, startColumn: 0, endColumn: 2 },
+  }, 'sheet-1');
+  const reverse = selectionFromGesture(initial, {
+    origin: { row: 8, column: 2 },
+    target: { row: 1, column: 0 },
+    expandedRange: { sheetId: 'sheet-1', startRow: 1, endRow: 8, startColumn: 0, endColumn: 2 },
+  }, 'sheet-1');
+  assert.deepEqual(forward.activeCell, { row: 8, column: 2 });
+  assert.deepEqual(forward.anchorCell, { row: 1, column: 0 });
+  assert.deepEqual(reverse.activeCell, { row: 1, column: 0 });
+  assert.deepEqual(reverse.anchorCell, { row: 8, column: 2 });
+  assert.deepEqual(reverse.ranges, forward.ranges);
+});
+
+test('selection machine rejects hidden keyboard targets by moving to the next visible coordinate', () => {
+  const initial = createInitialSelection('sheet-1');
+  const next = moveSelection({ ...initial, activeCell: { row: 1, column: 0 } }, 1, 0, false, { rowCount: 10, columnCount: 4, hiddenRows: [2] });
+  assert.deepEqual(next.activeCell, { row: 3, column: 0 });
+});
+
+test('selection target resolver returns merge anchor and exact merge range', () => {
+  const target = resolveSelectionTarget({
+    rowCount: 20,
+    columnCount: 10,
+    merges: [{ range: { sheetId: 'sheet-1', startRow: 2, endRow: 4, startColumn: 3, endColumn: 5 }, anchor: { row: 2, column: 3 } }],
+  }, { row: 3, column: 4 }, 'cells', 'sheet-1');
+  assert.deepEqual(target.cell, { row: 2, column: 3 });
+  assert.deepEqual(target.range, { sheetId: 'sheet-1', startRow: 2, endRow: 4, startColumn: 3, endColumn: 5 });
 });

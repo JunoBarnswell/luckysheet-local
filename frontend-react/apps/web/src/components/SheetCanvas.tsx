@@ -43,7 +43,7 @@ import type {
 import { DEFAULT_PIVOT_STYLE_OPTIONS, formatPivotMember, isPivotError } from "@react-sheets/core-model";
 import { CellEditor } from "./CellEditor";
 import { FilterPopover, type FilterPatch } from "./FilterPopover";
-import { buildPivotGroupedFilterMembers, resolveContextHit, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
+import { buildPivotGroupedFilterMembers, expandSelectionRangeForMerges, intersectsRange, resolveContextHit, resolveSelectionTarget, selectionFromGesture, type PeerCursor, type ResolvedContextHit, type SelectionState, type CanvasSheetSnapshot, type AppPhase } from "@react-sheets/spreadsheet-app";
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
@@ -146,46 +146,6 @@ export interface SheetCanvasProps {
   getValidationList: (row: number, column: number) => string[] | undefined;
   onRetry: () => void;
   onCreateSheet: () => void;
-}
-
-function mergeAtCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }) {
-  return sheet.merges.find((merge) =>
-    cell.row >= merge.range.startRow && cell.row <= merge.range.endRow
-    && cell.column >= merge.range.startColumn && cell.column <= merge.range.endColumn);
-}
-
-function resolveMergedCell(sheet: CanvasSheetSnapshot, cell: { row: number; column: number }): { row: number; column: number } {
-  const merge = mergeAtCell(sheet, cell);
-  return merge ? { ...merge.anchor } : { ...cell };
-}
-
-function intersectsRange(
-  first: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-  second: { startRow: number; endRow: number; startColumn: number; endColumn: number },
-): boolean {
-  return first.startRow <= second.endRow && second.startRow <= first.endRow
-    && first.startColumn <= second.endColumn && second.startColumn <= first.endColumn;
-}
-
-function expandRangeForMerges(sheet: CanvasSheetSnapshot, range: RangeRef): RangeRef {
-  let expanded = { ...range };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const merge of sheet.merges) {
-      if (!intersectsRange(expanded, merge.range)) continue;
-      const next = {
-        startRow: Math.min(expanded.startRow, merge.range.startRow),
-        endRow: Math.max(expanded.endRow, merge.range.endRow),
-        startColumn: Math.min(expanded.startColumn, merge.range.startColumn),
-        endColumn: Math.max(expanded.endColumn, merge.range.endColumn),
-      };
-      changed = next.startRow !== expanded.startRow || next.endRow !== expanded.endRow
-        || next.startColumn !== expanded.startColumn || next.endColumn !== expanded.endColumn;
-      expanded = { ...expanded, ...next };
-    }
-  }
-  return expanded;
 }
 
 function toChromeSelection(selection: SelectionState): ChromeState['selection'] {
@@ -865,24 +825,26 @@ export function SheetCanvas({
       onSelectAll();
     } else if (headerHit?.kind === "row") {
       const row = headerHit.index;
-      contextRangeRef.current = { sheetId, startRow: row, endRow: row, startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) };
-      onSelectionChange({
-        ranges: [{ sheetId, startRow: row, endRow: row, startColumn: 0, endColumn: Math.max(0, skeleton.columnCount - 1) }],
-        primaryRangeIndex: 0,
-        activeCell: { row, column: 0 },
-        anchorCell: { row, column: 0 },
-      });
+      const target = resolveSelectionTarget(sheet, { row, column: 0 }, 'rows', sheetId);
+      contextRangeRef.current = target.range;
+      onSelectionChange(selectionFromGesture(selection, {
+        origin: target.cell,
+        target: target.cell,
+        kind: 'rows',
+        expandedRange: target.range,
+      }, sheetId));
     } else if (headerHit?.kind === "col") {
       const column = headerHit.index;
       const alreadySelected = selection.ranges.some((range) => range.startRow === 0 && range.endRow >= sheet.rowCount - 1 && column >= range.startColumn && column <= range.endColumn);
       if (!alreadySelected) {
-        contextRangeRef.current = { sheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: column, endColumn: column };
-        onSelectionChange({
-          ranges: [contextRangeRef.current],
-          primaryRangeIndex: 0,
-          activeCell: { row: 0, column },
-          anchorCell: { row: 0, column },
-        });
+        const target = resolveSelectionTarget(sheet, { row: 0, column }, 'columns', sheetId);
+        contextRangeRef.current = target.range;
+        onSelectionChange(selectionFromGesture(selection, {
+          origin: target.cell,
+          target: target.cell,
+          kind: 'columns',
+          expandedRange: target.range,
+        }, sheetId));
       }
     } else {
       const hitCell = engine.cellAtLocalPoint(local);
@@ -901,35 +863,29 @@ export function SheetCanvas({
           const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
           if (!alreadySelected) {
             contextRangeRef.current = targetRange;
-            onSelectionChange({
-              ranges: [targetRange],
-              primaryRangeIndex: 0,
-              activeCell: { row: hitCell.row, column: hitCell.column },
-              anchorCell: { row: hitCell.row, column: hitCell.column },
-            });
+            onSelectionChange(selectionFromGesture(selection, {
+              origin: { row: hitCell.row, column: hitCell.column },
+              target: { row: hitCell.row, column: hitCell.column },
+              kind: 'cells',
+              expandedRange: targetRange,
+            }, sheetId));
           } else {
             contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
           }
         } else {
           setContextHit(null);
-          const cell = resolveMergedCell(sheet, hitCell);
-          const merge = mergeAtCell(sheet, hitCell);
-          const targetRange: RangeRef = merge?.range ?? {
-            sheetId,
-            startRow: cell.row,
-            endRow: cell.row,
-            startColumn: cell.column,
-            endColumn: cell.column,
-          };
+          const target = resolveSelectionTarget(sheet, hitCell, 'cells', sheetId);
+          const cell = target.cell;
+          const targetRange = expandSelectionRangeForMerges(sheet, target.range);
           const alreadySelected = selection.ranges.some((range) => intersectsRange(range, targetRange));
           if (!alreadySelected) {
-            contextRangeRef.current = expandRangeForMerges(sheet, targetRange);
-            onSelectionChange({
-              ranges: [contextRangeRef.current],
-              primaryRangeIndex: 0,
-              activeCell: cell,
-              anchorCell: cell,
-            });
+            contextRangeRef.current = targetRange;
+            onSelectionChange(selectionFromGesture(selection, {
+              origin: cell,
+              target: cell,
+              kind: 'cells',
+              expandedRange: targetRange,
+            }, sheetId));
           } else {
             contextRangeRef.current = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0] ?? targetRange;
           }

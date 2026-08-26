@@ -570,7 +570,12 @@ export class WorkbookSession {
       () => this.activeSheetId,
       () => {
         const sheet = this.runtime.model.getSheet(this.activeSheetId);
-        return { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+        return {
+          rowCount: sheet.rowCount,
+          columnCount: sheet.columnCount,
+          hiddenRows: [...sheet.hiddenRows],
+          hiddenColumns: [...sheet.hiddenColumns],
+        };
       },
       createInitialSelection(this.activeSheetId),
     );
@@ -2191,6 +2196,7 @@ export class WorkbookSession {
       const draft = this.editSession.active.currentDraft;
       if (targetRange && (this.editSession.active.referenceMode || draft.startsWith('='))) {
         this.editSession.enterReferenceMode();
+        this.selectionService.setInteractionMode('formulaReference');
         const reference = targetRange.startRow === targetRange.endRow && targetRange.startColumn === targetRange.endColumn
           ? cellAddress(targetRange.startRow, targetRange.startColumn)
           : `${cellAddress(targetRange.startRow, targetRange.startColumn)}:${cellAddress(targetRange.endRow, targetRange.endColumn)}`;
@@ -2518,6 +2524,7 @@ export class WorkbookSession {
       this.notify('This formula is hidden while the worksheet is protected');
       return false;
     }
+    this.selectionService.setInteractionMode('normal');
     this.editSession.begin({
       sheetId: this.activeSheetId,
       row: sel.activeCell.row,
@@ -2537,6 +2544,7 @@ export class WorkbookSession {
     const originalSelection = this.editSession.active?.originalSelection;
     this.editSession.cancel();
     if (originalSelection) this.selectionService.applyState(originalSelection);
+    else this.selectionService.setInteractionMode('normal');
     this.setFocusState('grid', 'grid');
     this.emit();
   }
@@ -2581,6 +2589,7 @@ export class WorkbookSession {
       return;
     }
     this.editSession.apply();
+    this.selectionService.setInteractionMode('normal');
     const deltas = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] } as const;
     const [dr, dc] = deltas[moveAfter];
     this.movePrimary(dr, dc);
@@ -2590,7 +2599,10 @@ export class WorkbookSession {
   }
 
   insertRefIntoDraft(refText: string): void {
-    if (this.editSession.active) this.editSession.insertRef(refText);
+    if (this.editSession.active) {
+      this.selectionService.setInteractionMode('formulaReference');
+      this.editSession.insertRef(refText);
+    }
     this.emit();
   }
 
